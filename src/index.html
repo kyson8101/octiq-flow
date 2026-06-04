@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>octiq-flow</title>
+
+    <!-- xterm.js vendored locally (no CDN, no bundler, works offline) -->
+    <link rel="stylesheet" href="vendor/xterm.min.css" />
+    <script src="vendor/xterm.min.js"></script>
+    <script src="vendor/addon-fit.min.js"></script>
+
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <div class="app">
+      <header class="toolbar">
+        <span class="brand">octiq-flow</span>
+        <button id="launch-claude" class="btn btn-accent">Launch Claude</button>
+        <span id="status" class="status">starting shell…</span>
+      </header>
+
+      <div id="terminal" class="terminal"></div>
+
+      <footer class="injectbar">
+        <input
+          id="inject-input"
+          class="inject-input"
+          placeholder="Type text to inject into the terminal…"
+          autocomplete="off"
+        />
+        <button id="inject-text" class="btn">Inject</button>
+        <button id="inject-enter" class="btn btn-primary">Inject + Enter</button>
+      </footer>
+    </div>
+  </body>
+</html>

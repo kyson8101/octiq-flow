@@ -1,0 +1,113 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #0d1117;
+  color: #c9d1d9;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Top toolbar */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 14px;
+  color: #e6edf3;
+}
+
+.status {
+  margin-left: auto;
+  font-size: 12px;
+  color: #8b949e;
+}
+
+/* Terminal area fills the middle */
+.terminal {
+  flex: 1;
+  min-height: 0;
+  padding: 6px;
+  background: #0d1117;
+}
+
+/* Bottom inject bar */
+.injectbar {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #161b22;
+  border-top: 1px solid #30363d;
+}
+
+.inject-input {
+  flex: 1;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #e6edf3;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  outline: none;
+}
+
+.inject-input:focus {
+  border-color: #58a6ff;
+}
+
+/* Buttons */
+.btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e6edf3;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.btn:hover {
+  background: #30363d;
+}
+
+.btn-primary {
+  background: #238636;
+  border-color: #2ea043;
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: #2ea043;
+}
+
+.btn-accent {
+  background: #1f6feb;
+  border-color: #388bfd;
+  color: #ffffff;
+}
+
+.btn-accent:hover {
+  background: #388bfd;
+}
