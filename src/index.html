@@ -11,29 +11,213 @@
     <script src="vendor/addon-fit.min.js"></script>
 
     <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/workspaces.js" defer></script>
     <script type="module" src="/main.js" defer></script>
   </head>
 
   <body>
-    <div class="app">
-      <header class="toolbar">
-        <span class="brand">octiq-flow</span>
-        <button id="launch-claude" class="btn btn-accent">Launch Claude</button>
-        <span id="status" class="status">starting shell…</span>
-      </header>
+    <div class="shell">
+      <!-- The three columns sit in a row; the paths footer spans below them -->
+      <div class="columns">
+      <!-- Left panel: only the list of workspaces -->
+      <aside class="sidebar">
+        <div class="sidebar-head">
+          <span class="sidebar-title">Workspaces</span>
+          <button id="new-workspace" class="btn btn-sm">+ New</button>
+        </div>
 
-      <div id="terminal" class="terminal"></div>
+        <ul id="workspace-list" class="ws-list"></ul>
+        <p id="workspace-empty" class="ws-empty">No workspaces yet. Click “+ New”.</p>
+      </aside>
 
-      <footer class="injectbar">
-        <input
-          id="inject-input"
-          class="inject-input"
-          placeholder="Type text to inject into the terminal…"
-          autocomplete="off"
-        />
-        <button id="inject-text" class="btn">Inject</button>
-        <button id="inject-enter" class="btn btn-primary">Inject + Enter</button>
-      </footer>
+      <!-- Middle column: the dev-work area for the selected workspace -->
+      <main class="workarea">
+        <header class="workarea-head">
+          <span class="brand">octiq-flow</span>
+          <span id="workarea-title" class="workarea-title">Select a workspace</span>
+        </header>
+
+        <div id="workarea-body" class="workarea-body">
+          <p id="workarea-empty-hint" class="workarea-empty">
+            Pick or create a workspace on the left to start working here.
+          </p>
+
+          <!-- Sessions: one per job, each with its own docs folder -->
+          <section id="sessions" class="sessions hidden">
+            <div class="sessions-head">
+              <span class="sessions-title">Sessions</span>
+              <button id="new-session" class="btn btn-sm">+ New session</button>
+            </div>
+
+            <div id="new-session-row" class="new-session-row hidden">
+              <input
+                id="new-session-input"
+                class="inline-input"
+                placeholder="Session name (the job)…"
+                autocomplete="off"
+              />
+            </div>
+
+            <ul id="session-list" class="session-list"></ul>
+            <p id="session-empty" class="ws-empty">No sessions yet. Click “+ New session”.</p>
+          </section>
+
+          <!-- Session view: the workflow stages for one session -->
+          <section id="session-view" class="session-view hidden">
+            <div class="session-view-head">
+              <button id="session-back" class="btn btn-sm">← Sessions</button>
+              <span id="session-view-name" class="session-view-name"></span>
+            </div>
+
+            <nav class="tabs">
+              <button class="tab tab-active" data-tab="planning">Planning</button>
+              <button class="tab" data-tab="tasks">Tasks</button>
+              <button class="tab" data-tab="executed">Executed</button>
+              <button class="tab" data-tab="devspace">Dev-space</button>
+            </nav>
+
+            <!-- Planning -->
+            <div class="tab-panel" data-panel="planning">
+              <textarea
+                id="plan-text"
+                class="plan-text"
+                placeholder="Write the plan for this session…"
+              ></textarea>
+              <div class="panel-actions">
+                <button id="plan-save" class="btn btn-primary btn-sm">Save plan</button>
+                <span id="plan-status" class="muted"></span>
+              </div>
+            </div>
+
+            <!-- Tasks (not done) -->
+            <div class="tab-panel hidden" data-panel="tasks">
+              <div class="add-row">
+                <input id="task-input" class="inline-input" placeholder="Add a task…" autocomplete="off" />
+                <button id="task-add" class="btn btn-sm">Add</button>
+              </div>
+              <ul id="task-list" class="task-list"></ul>
+              <p id="task-empty" class="ws-empty">No open tasks.</p>
+            </div>
+
+            <!-- Executed (done) -->
+            <div class="tab-panel hidden" data-panel="executed">
+              <ul id="executed-list" class="task-list"></ul>
+              <p id="executed-empty" class="ws-empty">Nothing executed yet.</p>
+            </div>
+
+            <!-- Dev-space -->
+            <div class="tab-panel hidden" data-panel="devspace">
+              <div class="devspace-head">
+                <span class="muted">Runs in: <span id="devspace-cwd" class="mono"></span></span>
+                <button id="action-add" class="btn btn-sm">+ Add action</button>
+              </div>
+
+              <div id="action-form" class="action-form hidden">
+                <input id="action-label" class="inline-input" placeholder="Button label (e.g. Dev all)" autocomplete="off" />
+                <input id="action-command" class="inline-input" placeholder="Command (e.g. pnpm dev:all)" autocomplete="off" />
+                <div class="panel-actions">
+                  <button id="action-form-cancel" class="btn btn-sm">Cancel</button>
+                  <button id="action-form-save" class="btn btn-primary btn-sm">Save action</button>
+                </div>
+              </div>
+
+              <div id="action-list" class="action-list"></div>
+              <p id="action-empty" class="ws-empty">No actions yet. Click “+ Add action”.</p>
+
+              <div class="output-head">
+                <span class="muted">Output</span>
+                <span class="output-head-actions">
+                  <span id="run-status" class="muted"></span>
+                  <button id="run-stop" class="btn btn-sm hidden">Stop</button>
+                  <button id="output-clear" class="btn btn-sm">Clear</button>
+                </span>
+              </div>
+              <pre id="output" class="output"></pre>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <!-- Right dock: the full live terminal, like the VSCode chat panel -->
+      <section class="termdock">
+        <header class="toolbar">
+          <span class="termdock-title">Terminal</span>
+          <span id="status" class="status">starting shell…</span>
+        </header>
+
+        <div id="terminal" class="terminal"></div>
+      </section>
+      </div>
+      <!-- end .columns -->
+
+      <!-- Paths footer: full-width bar across all three columns.
+           Click anywhere to open the edit modal. -->
+      <button id="paths-footer" class="paths-footer hidden" type="button">
+        <span id="paths-footer-name" class="pf-name"></span>
+        <span id="paths-footer-paths" class="pf-paths"></span>
+        <span class="pf-edit">Edit</span>
+      </button>
+    </div>
+
+    <!-- New-workspace modal: choose folder first, then name, then create -->
+    <div id="new-modal" class="modal-backdrop hidden">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="modal-title">New workspace</span>
+          <button id="new-modal-close" class="icon-btn" title="Close">✕</button>
+        </div>
+
+        <label class="modal-label">Primary folder</label>
+        <span id="new-modal-folder" class="ws-primary-path"></span>
+
+        <label class="modal-label" for="new-modal-name">Name</label>
+        <input id="new-modal-name" class="inline-input" autocomplete="off" placeholder="Workspace name…" />
+
+        <div class="modal-foot">
+          <button id="new-modal-cancel" class="btn">Cancel</button>
+          <button id="new-modal-create" class="btn btn-primary">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit-workspace modal: rename, primary path, other paths, delete -->
+    <div id="ws-modal" class="modal-backdrop hidden">
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span class="modal-title">Edit workspace</span>
+          <button id="modal-close" class="icon-btn" title="Close">✕</button>
+        </div>
+
+        <label class="modal-label" for="modal-name">Name</label>
+        <input id="modal-name" class="inline-input" autocomplete="off" />
+
+        <div class="modal-section-head">
+          <span class="badge-primary">Primary</span>
+          <button id="modal-change-primary" class="btn btn-sm">Change folder</button>
+        </div>
+        <span id="modal-primary-path" class="ws-primary-path"></span>
+
+        <div class="modal-section-head">
+          <span>Docs root</span>
+          <span class="modal-section-actions">
+            <button id="modal-docs-default" class="btn btn-sm">Use default</button>
+            <button id="modal-docs-change" class="btn btn-sm">Change folder</button>
+          </span>
+        </div>
+        <span id="modal-docs-path" class="ws-primary-path"></span>
+
+        <div class="modal-section-head">
+          <span>Other paths</span>
+          <button id="modal-add-path" class="btn btn-sm">+ Add folder</button>
+        </div>
+        <ul id="modal-paths" class="ws-paths"></ul>
+        <p id="modal-paths-empty" class="ws-empty">No other folders added yet.</p>
+
+        <div class="modal-foot">
+          <button id="modal-delete" class="icon-btn icon-btn-danger">Delete workspace</button>
+          <button id="modal-done" class="btn btn-primary">Done</button>
+        </div>
+      </div>
     </div>
   </body>
 </html>
