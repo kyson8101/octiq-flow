@@ -106,9 +106,80 @@ function renderList() {
     count.textContent = total === 1 ? "1 path" : `${total} paths`;
 
     li.append(name, count);
+    li.dataset.id = ws.id;
+    li.draggable = true;
     li.addEventListener("click", () => selectWorkspace(ws.id));
+    li.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openProjectMenu(e.clientX, e.clientY, ws, name);
+    });
+    wireDrag(li);
     listEl.append(li);
   }
+}
+
+// --- Drag-and-drop reorder of the project list -----------------------------
+let dragId = null;
+
+function clearDropMarkers() {
+  for (const el of listEl.querySelectorAll(".ws-item")) {
+    el.classList.remove("drop-before", "drop-after");
+  }
+}
+
+/** True when the cursor is in the top half of the row (drop before it). */
+function isBefore(li, clientY) {
+  const r = li.getBoundingClientRect();
+  return clientY < r.top + r.height / 2;
+}
+
+function wireDrag(li) {
+  li.addEventListener("dragstart", (e) => {
+    dragId = li.dataset.id;
+    li.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    // Firefox needs data set for the drag to start.
+    try {
+      e.dataTransfer.setData("text/plain", dragId);
+    } catch (_) {}
+  });
+
+  li.addEventListener("dragend", () => {
+    li.classList.remove("dragging");
+    clearDropMarkers();
+    dragId = null;
+  });
+
+  li.addEventListener("dragover", (e) => {
+    if (!dragId || li.dataset.id === dragId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    clearDropMarkers();
+    li.classList.add(isBefore(li, e.clientY) ? "drop-before" : "drop-after");
+  });
+
+  li.addEventListener("drop", (e) => {
+    if (!dragId || li.dataset.id === dragId) return;
+    e.preventDefault();
+    const before = isBefore(li, e.clientY);
+    const movedId = dragId;
+    clearDropMarkers();
+    reorderProject(movedId, li.dataset.id, before);
+  });
+}
+
+/** Move `movedId` to just before/after `targetId`, persist, and re-render. */
+async function reorderProject(movedId, targetId, before) {
+  const ids = workspaces.map((w) => w.id);
+  const from = ids.indexOf(movedId);
+  if (from < 0) return;
+  ids.splice(from, 1);
+  let to = ids.indexOf(targetId);
+  if (to < 0) to = ids.length;
+  if (!before) to += 1;
+  ids.splice(to, 0, movedId);
+  await invoke("reorder_workspaces", { ids });
+  await refresh();
 }
 
 function selectWorkspace(id) {
@@ -116,6 +187,137 @@ function selectWorkspace(id) {
   renderList();
   renderFooter();
   emitProjectSelected();
+}
+
+// --- Project context menu (right-click: Rename / Edit / Delete) -------------
+let ctxMenuEl = null;
+
+function closeProjectMenu() {
+  if (!ctxMenuEl) return;
+  ctxMenuEl.remove();
+  ctxMenuEl = null;
+  document.removeEventListener("click", closeProjectMenu);
+  document.removeEventListener("contextmenu", onDocContextMenu, true);
+  document.removeEventListener("keydown", onMenuKeydown);
+  window.removeEventListener("blur", closeProjectMenu);
+  window.removeEventListener("resize", closeProjectMenu);
+}
+
+// A right-click anywhere outside the open menu closes it (a new one opens after).
+function onDocContextMenu(e) {
+  if (ctxMenuEl && !ctxMenuEl.contains(e.target)) closeProjectMenu();
+}
+
+function onMenuKeydown(e) {
+  if (e.key === "Escape") closeProjectMenu();
+}
+
+/** Show the right-click menu for one project at the cursor. `nameEl` is that
+ *  row's name span, reused by the inline rename. */
+function openProjectMenu(x, y, ws, nameEl) {
+  closeProjectMenu();
+
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+
+  const item = (label, danger, onClick) => {
+    const b = document.createElement("button");
+    b.className = "ctx-item" + (danger ? " ctx-item-danger" : "");
+    b.textContent = label;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onClick(b);
+    });
+    return b;
+  };
+
+  menu.append(
+    item("Rename", false, () => {
+      closeProjectMenu();
+      startInlineRename(ws, nameEl);
+    }),
+    item("Edit…", false, () => {
+      closeProjectMenu();
+      selectWorkspace(ws.id);
+      openModal();
+    }),
+  );
+
+  // Delete needs a confirm: first click arms, second click deletes (matches the
+  // edit modal's two-click pattern; no native dialog).
+  let armed = false;
+  menu.append(
+    item("Delete", true, (btn) => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = "Click again to delete";
+        return;
+      }
+      closeProjectMenu();
+      deleteWorkspace(ws.id);
+    }),
+  );
+
+  document.body.append(menu);
+  ctxMenuEl = menu;
+
+  // Keep the menu inside the viewport.
+  const rect = menu.getBoundingClientRect();
+  const px = Math.min(x, window.innerWidth - rect.width - 4);
+  const py = Math.min(y, window.innerHeight - rect.height - 4);
+  menu.style.left = `${Math.max(4, px)}px`;
+  menu.style.top = `${Math.max(4, py)}px`;
+
+  // Defer wiring the close listeners so the opening event does not close it.
+  setTimeout(() => {
+    document.addEventListener("click", closeProjectMenu);
+    document.addEventListener("contextmenu", onDocContextMenu, true);
+    document.addEventListener("keydown", onMenuKeydown);
+    window.addEventListener("blur", closeProjectMenu);
+    window.addEventListener("resize", closeProjectMenu);
+  }, 0);
+}
+
+/** Inline-rename a project: swap its name span for an input. Enter/blur saves,
+ *  Escape cancels. Saves via rename_workspace, then re-renders. */
+function startInlineRename(ws, nameEl) {
+  // A draggable parent blocks text selection inside the input in WebKit, so
+  // turn off drag on this row while editing (refresh() restores it).
+  const row = nameEl.closest(".ws-item");
+  if (row) row.draggable = false;
+
+  const input = document.createElement("input");
+  input.className = "inline-input ws-rename-input";
+  input.value = ws.name;
+  // Do not let the row click select/deselect while editing.
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("mousedown", (e) => e.stopPropagation());
+
+  let done = false;
+  const finish = async (saveIt) => {
+    if (done) return;
+    done = true;
+    const name = input.value.trim();
+    if (saveIt && name && name !== ws.name) {
+      await invoke("rename_workspace", { id: ws.id, name });
+    }
+    await refresh(); // restores or updates the row
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 // --- Paths footer ----------------------------------------------------------
@@ -135,18 +337,57 @@ function renderFooter() {
   for (const path of ws.paths) {
     footerPathsEl.append(makeChip(path, false));
   }
+
+  // Fill in the git branch for each path (async; reuses the dashboard command).
+  annotateFooterBranches(ws);
 }
 
-/** A small inline chip showing a folder's short name. Primary is highlighted. */
+/** A small inline chip showing a folder's short name + (later) its git branch.
+ *  Primary is highlighted. */
 function makeChip(path, isPrimary) {
   const chip = document.createElement("span");
   chip.className = "pf-chip" + (isPrimary ? " pf-chip-primary" : "");
-  chip.textContent = baseName(path);
+  chip.dataset.path = path;
   chip.title = path;
+
+  const nameEl = document.createElement("span");
+  nameEl.className = "pf-chip-name";
+  nameEl.textContent = baseName(path);
+
+  const branchEl = document.createElement("span");
+  branchEl.className = "pf-chip-branch"; // filled by annotateFooterBranches
+
+  chip.append(nameEl, branchEl);
   return chip;
 }
 
-footerEl.addEventListener("click", openModal);
+/** Ask the backend for each path's git branch and show it on its footer chip.
+ *  Guards against a stale result when the selected project changed meanwhile. */
+async function annotateFooterBranches(ws) {
+  const paths = [];
+  if (ws.primary_path) paths.push(ws.primary_path);
+  paths.push(...ws.paths);
+  if (!paths.length) return;
+
+  let statuses;
+  try {
+    statuses = await invoke("git_status_summary", { paths });
+  } catch (_) {
+    return; // leave chips without a branch on error
+  }
+  if (selectedId !== ws.id) return; // project changed while we waited
+
+  const byPath = new Map(statuses.map((s) => [s.path, s]));
+  for (const chip of footerPathsEl.querySelectorAll(".pf-chip")) {
+    const branchEl = chip.querySelector(".pf-chip-branch");
+    if (!branchEl) continue;
+    const s = byPath.get(chip.dataset.path);
+    branchEl.textContent = s && s.is_repo && s.branch ? `⎇ ${s.branch}` : "";
+  }
+}
+
+// The footer is informational only now — Edit/Rename/Delete live in the project
+// right-click menu, so the footer no longer opens the edit modal on click.
 
 // --- Create workspace (folder first, then name, then create) ---------------
 let newFolder = null; // the folder chosen for the workspace being created
@@ -324,6 +565,20 @@ function resetDeleteButton() {
   modalDeleteBtn.textContent = "Delete workspace";
 }
 
+/** Delete a project, tear down its terminals (P1), and re-render. Shared by the
+ *  edit-modal delete button and the right-click context menu. */
+async function deleteWorkspace(id) {
+  await invoke("delete_workspace", { id });
+  // Tell the per-project modules to dispose this project's terminals so their
+  // PTYs do not leak until app close (P1). Fire BEFORE refresh so the groups
+  // are gone before the selection re-renders.
+  window.dispatchEvent(
+    new CustomEvent("project-deleted", { detail: { id } }),
+  );
+  if (selectedId === id) selectedId = null;
+  await refresh();
+}
+
 modalDeleteBtn.addEventListener("click", async () => {
   const ws = selected();
   if (!ws) return;
@@ -335,17 +590,9 @@ modalDeleteBtn.addEventListener("click", async () => {
     }, 3000);
     return;
   }
-  const deletedId = ws.id;
-  await invoke("delete_workspace", { id: deletedId });
-  // Tell the per-project modules to tear down this project's terminals so
-  // their PTYs do not leak until app close (P1). Fire BEFORE refresh so the
-  // groups are gone before the selection re-renders.
-  window.dispatchEvent(
-    new CustomEvent("project-deleted", { detail: { id: deletedId } }),
-  );
-  selectedId = null;
+  const id = ws.id;
   closeModal();
-  await refresh();
+  await deleteWorkspace(id);
 });
 
 // Close the modal (committing the name first).

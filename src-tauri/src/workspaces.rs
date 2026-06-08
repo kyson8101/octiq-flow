@@ -171,6 +171,18 @@ pub fn delete_workspace(state: State<WorkspaceState>, id: String) -> Result<(), 
     state.save(&data)
 }
 
+/// Reorder the workspace list to match `ids` (the new top-to-bottom order from
+/// the frontend, after a drag-and-drop). The sort is stable: any workspace whose
+/// id is not in `ids` keeps its relative order at the end, so a partial or stale
+/// list can never drop a workspace.
+#[tauri::command]
+pub fn reorder_workspaces(state: State<WorkspaceState>, ids: Vec<String>) -> Result<(), String> {
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    data.workspaces
+        .sort_by_key(|w| ids.iter().position(|x| x == &w.id).unwrap_or(usize::MAX));
+    state.save(&data)
+}
+
 /// Add a folder path to a workspace. Duplicate paths are ignored.
 #[tauri::command]
 pub fn add_workspace_path(

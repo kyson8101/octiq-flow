@@ -12,11 +12,12 @@
 // pty-output listener (terminals.js) and the ONE pty-attention listener
 // (alerts.js) cover the drawer too — this file adds no event listeners for PTY
 // streams.
-import { createTerminalGroup } from "/terminals.js";
+import { createTerminalGroup, onTerminalLine } from "/terminals.js";
 
 const { invoke } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
+const footerCmdEl = document.querySelector("#paths-footer-cmd");
 const panelEl = document.querySelector("#cmd-panel");
 const toggleBtn = document.querySelector("#cmd-panel-toggle");
 const addBtn = document.querySelector("#cmd-add");
@@ -42,6 +43,27 @@ let editingActionId = null;
 // (with scrollback) when the user switches projects, like the center group.
 const drawers = new Map();
 
+// ptyId -> command label, for the terminals launched from the command panel.
+// The footer shows the latest output line of any of these (one line, right side).
+const cmdLabelById = new Map();
+
+/** Set the one-line command message on the footer right (or clear it). */
+function setFooterCmd(text) {
+  if (footerCmdEl) footerCmdEl.textContent = text || "";
+}
+
+// Show the latest output line of a command terminal on the footer. Ignores
+// non-command terminals (project / chat / utilities) AND command terminals that
+// belong to a DIFFERENT project (their ids are namespaced `cmd:<projectId>:N`),
+// so a command still running in a background project never overwrites the footer
+// of the project the user is currently viewing.
+onTerminalLine((id, line) => {
+  const label = cmdLabelById.get(id);
+  if (label && currentId && id.startsWith(`cmd:${currentId}:`)) {
+    setFooterCmd(`▶ ${label} · ${line}`);
+  }
+});
+
 // --- Project selection -----------------------------------------------------
 function onProjectSelected(detail) {
   if (!detail) {
@@ -50,6 +72,7 @@ function onProjectSelected(detail) {
     currentActions = [];
     hideAllDrawers();
     closeForm();
+    setFooterCmd("");
     renderList();
     return;
   }
@@ -57,7 +80,10 @@ function onProjectSelected(detail) {
   currentId = detail.id;
   currentPath = detail.primaryPath || "";
   currentActions = detail.actions || [];
-  if (switching) closeForm();
+  if (switching) {
+    closeForm();
+    setFooterCmd(""); // the footer message belongs to the previous project
+  }
   showDrawerFor(currentId);
   renderList();
 }
@@ -80,6 +106,7 @@ window.addEventListener("project-deleted", (e) => {
     currentId = null;
     currentPath = "";
     currentActions = [];
+    setFooterCmd("");
   }
   updateDrawerVisibility();
 });
@@ -259,10 +286,12 @@ async function runCommand(action) {
   const rec = drawerFor(currentId);
   rec.group.show();
   drawerEl.classList.remove("hidden");
-  await rec.group.newTerminal({
+  setFooterCmd(`▶ ${action.label} · running…`);
+  const ptyId = await rec.group.newTerminal({
     cwd: currentPath,
     startCmd: action.command,
     title: action.label,
   });
+  if (ptyId) cmdLabelById.set(ptyId, action.label);
   updateDrawerVisibility();
 }

@@ -44,11 +44,43 @@ function reportTermError(term, message) {
 // chunk into the matching xterm, no matter which group owns it.
 const idToEntry = new Map();
 
+// Subscribers that want the latest non-empty OUTPUT line of any terminal, by id
+// (e.g. commands.js shows it on the footer). Each is called fn(id, line).
+const lineSubscribers = new Set();
+
+/** Subscribe to the latest output line of any terminal. Returns an unsubscribe
+ *  function. Used by the footer command-status line. */
+export function onTerminalLine(fn) {
+  lineSubscribers.add(fn);
+  return () => lineSubscribers.delete(fn);
+}
+
+/** Strip ANSI escape sequences so a chunk can be reduced to plain text. */
+function stripAnsi(s) {
+  return s
+    .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
+}
+
+/** The last non-empty line in a raw chunk, or null. CR is treated as a line
+ *  break so progress-bar style output still yields a current line. */
+function lastLine(chunk) {
+  const parts = stripAnsi(chunk)
+    .split(/\r\n|\r|\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : null;
+}
+
 // THE single pty-output listener for the whole app. Do not add another one
 // anywhere else. Registered once at module load (modules load once).
 listen("pty-output", (event) => {
   const { id, chunk } = event.payload;
   idToEntry.get(id)?.term.write(chunk);
+  if (lineSubscribers.size && idToEntry.has(id)) {
+    const line = lastLine(chunk);
+    if (line) for (const fn of lineSubscribers) fn(id, line);
+  }
 });
 
 // ---- Attention flags ------------------------------------------------------

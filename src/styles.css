@@ -491,13 +491,8 @@ body {
   border: none;
   border-top: 1px solid #30363d;
   color: #c9d1d9;
-  cursor: pointer;
   text-align: left;
   font: inherit;
-}
-
-.paths-footer:hover {
-  background: #11161d;
 }
 
 .pf-name {
@@ -532,12 +527,6 @@ body {
 .pf-chip-primary {
   color: #aff0c0;
   border-color: #2ea043;
-}
-
-.pf-edit {
-  flex-shrink: 0;
-  font-size: 11px;
-  color: #8b949e;
 }
 
 /* ---- Edit-workspace modal --------------------------------------------- */
@@ -1458,4 +1447,100 @@ body {
   .tg-tab-attention .tg-tab-label::before {
     animation: none;
   }
+}
+
+/* === Project context menu (right-click: Rename / Edit / Delete) === */
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(1, 4, 9, 0.6);
+}
+
+.ctx-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #c9d1d9;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ctx-item:hover {
+  background: #21262d;
+}
+
+.ctx-item-danger {
+  color: #f85149;
+}
+
+.ctx-item-danger:hover {
+  background: rgba(248, 81, 73, 0.15);
+}
+
+/* Inline rename input that replaces a project's name span in the list. */
+.ws-rename-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* === Project list drag-and-drop reorder === */
+.ws-item.dragging {
+  opacity: 0.5;
+}
+
+/* Insert markers use inset shadow so they do not shift the row layout. */
+.ws-item.drop-before {
+  box-shadow: inset 0 2px 0 #1f6feb;
+}
+
+.ws-item.drop-after {
+  box-shadow: inset 0 -2px 0 #1f6feb;
+}
+
+/* === Footer: git branch on each path chip === */
+.pf-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.pf-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pf-chip-branch {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #7d8590;
+}
+
+.pf-chip-primary .pf-chip-branch {
+  color: #7ee2a8;
+}
+
+/* === Footer: one-line command message (right side) === */
+.pf-cmd {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #7d8590;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
 }

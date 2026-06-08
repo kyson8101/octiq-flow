@@ -45,6 +45,7 @@ pub fn run() {
             workspaces::set_primary_path,
             workspaces::rename_workspace,
             workspaces::delete_workspace,
+            workspaces::reorder_workspaces,
             workspaces::add_workspace_path,
             workspaces::remove_workspace_path,
             workspaces::set_docs_path,
