@@ -64,6 +64,26 @@ function onProjectSelected(detail) {
 
 window.addEventListener("project-selected", (e) => onProjectSelected(e.detail));
 
+// When a project is deleted (workspaces.js), tear down its drawer terminal
+// group so its command PTYs are closed and the group leaves the registries
+// (P1). Then refresh drawer visibility in case the deleted project's drawer
+// was showing.
+window.addEventListener("project-deleted", (e) => {
+  const id = e.detail?.id;
+  if (!id) return;
+  const rec = drawers.get(id);
+  if (rec) {
+    rec.group.dispose();
+    drawers.delete(id);
+  }
+  if (currentId === id) {
+    currentId = null;
+    currentPath = "";
+    currentActions = [];
+  }
+  updateDrawerVisibility();
+});
+
 // --- Command list (right panel) --------------------------------------------
 function renderList() {
   listEl.innerHTML = "";
@@ -196,9 +216,10 @@ toggleBtn.addEventListener("click", () => {
 function drawerFor(id) {
   let rec = drawers.get(id);
   if (!rec) {
-    const group = createTerminalGroup(drawerMount, `cmd:${id}`);
-    // The drawer "+" has no command behind it; leave it inert for alpha.
-    group.onAdd = null;
+    // The drawer has no "+" behavior, so hide the button entirely (P5).
+    const group = createTerminalGroup(drawerMount, `cmd:${id}`, {
+      showAdd: false,
+    });
     rec = { group };
     drawers.set(id, rec);
   }

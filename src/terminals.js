@@ -27,6 +27,18 @@ function makeTerminal() {
   });
 }
 
+// Surface a PTY error into the terminal pane itself (red ANSI line) and the
+// console, instead of swallowing it. Kept tiny: one visible line + a log.
+// `term` may be undefined (e.g. spawn failed before the xterm existed) — then
+// we only log.
+function reportTermError(term, message) {
+  // eslint-disable-next-line no-console
+  console.error(`[octiq] ${message}`);
+  // \x1b[31m = red, \x1b[0m = reset. Leading/trailing CRLF keep it on its own
+  // line regardless of where the cursor was.
+  term?.write(`\r\n\x1b[31m[octiq: ${message}]\x1b[0m\r\n`);
+}
+
 // ---- Global routing -------------------------------------------------------
 // ptyId -> { term, group }. The ONE pty-output listener uses this to write each
 // chunk into the matching xterm, no matter which group owns it.
@@ -139,15 +151,20 @@ window.addEventListener("resize", () => {
  *   count()           // number of live terminals
  *   refitActive()     // refit the active terminal if the group is visible
  *   dispose()         // close all terminals + remove from registries
+ *
+ * createTerminalGroup(mountEl, idPrefix, { showAdd } = {})
  */
-export function createTerminalGroup(mountEl, idPrefix) {
-  return new TerminalGroup(mountEl, idPrefix);
+export function createTerminalGroup(mountEl, idPrefix, { showAdd = true } = {}) {
+  return new TerminalGroup(mountEl, idPrefix, { showAdd });
 }
 
 class TerminalGroup {
-  constructor(mountEl, idPrefix) {
+  constructor(mountEl, idPrefix, { showAdd = true } = {}) {
     this.idPrefix = idPrefix;
     this.seq = 0;
+    // Monotonic counter for DEFAULT tab titles ("term N"). Never decremented,
+    // so closing a tab and opening a new one cannot reuse a number (P4).
+    this.titleSeq = 0;
     this.activeId = null;
     // ptyId -> { term, fitAddon, paneEl, tabEl, title }
     this.tabs = new Map();
@@ -162,16 +179,21 @@ class TerminalGroup {
     this.tabsEl = document.createElement("div");
     this.tabsEl.className = "tg-tabs";
 
-    this.addBtn = document.createElement("button");
-    this.addBtn.className = "tg-add";
-    this.addBtn.title = "New terminal";
-    this.addBtn.textContent = "+";
     // The "+" callback is set by the owner via onAdd; default is a no-op so the
     // primitive does not assume any cwd/startCmd policy.
     this.onAdd = null;
-    this.addBtn.addEventListener("click", () => this.onAdd?.());
-
-    this.stripEl.append(this.tabsEl, this.addBtn);
+    if (showAdd) {
+      this.addBtn = document.createElement("button");
+      this.addBtn.className = "tg-add";
+      this.addBtn.title = "New terminal";
+      this.addBtn.textContent = "+";
+      this.addBtn.addEventListener("click", () => this.onAdd?.());
+      this.stripEl.append(this.tabsEl, this.addBtn);
+    } else {
+      // Drawer groups (P5) have no add behavior; do not render the button.
+      this.addBtn = null;
+      this.stripEl.append(this.tabsEl);
+    }
 
     this.panesEl = document.createElement("div");
     this.panesEl.className = "tg-panes";
@@ -195,7 +217,10 @@ class TerminalGroup {
     return this.root.offsetParent !== null;
   }
 
-  async newTerminal({ cwd = "", startCmd = null, title = "term" } = {}) {
+  async newTerminal({ cwd = "", startCmd = null, title = null } = {}) {
+    // No explicit title -> auto-number from the monotonic counter (P4). An
+    // explicit title (command label, chat label) is used verbatim.
+    if (title == null) title = `term ${++this.titleSeq}`;
     const ptyId = `${this.idPrefix}:${this.seq++}`;
 
     const pane = document.createElement("div");
@@ -207,7 +232,9 @@ class TerminalGroup {
     term.loadAddon(fitAddon);
     term.open(pane);
     term.onData((data) => {
-      invoke("pty_write", { id: ptyId, data }).catch(() => {});
+      invoke("pty_write", { id: ptyId, data }).catch((err) => {
+        reportTermError(term, `write failed: ${err}`);
+      });
     });
 
     const tabEl = document.createElement("div");
@@ -231,8 +258,14 @@ class TerminalGroup {
     this.tabs.set(ptyId, entry);
     idToEntry.set(ptyId, { term, group: this });
 
-    // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd.
-    await invoke("pty_spawn", { id: ptyId, cwd, startCmd });
+    // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd. If the
+    // spawn fails, the pane + tab already exist, so show the error there (P3)
+    // rather than swallowing it; the tab stays so the user sees what happened.
+    try {
+      await invoke("pty_spawn", { id: ptyId, cwd, startCmd });
+    } catch (err) {
+      reportTermError(term, `failed to start terminal: ${err}`);
+    }
 
     this.activate(ptyId);
     return ptyId;

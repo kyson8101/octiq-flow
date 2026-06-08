@@ -17,6 +17,11 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
+/// Upper bound on the OSC scan buffer's retained tail (bytes). An OSC
+/// attention sequence is tiny; anything longer is plain output that can be
+/// dropped, so the reader never holds unbounded scrollback.
+const SCAN_TAIL_CAP: usize = 8 * 1024;
+
 /// One live PTY session: the master (for resize), the writer (for input), and
 /// the child process handle (so close can kill the whole shell + its children).
 ///
@@ -54,28 +59,40 @@ struct AttentionEvent {
     body: String,
 }
 
-/// Scan one decoded output chunk for OSC 9 / OSC 777 attention sequences and
-/// return the (title, body) pairs found, in order.
+/// Scan a decoded buffer for OSC 9 / OSC 777 attention sequences.
 ///
-/// Shapes handled (terminator is BEL 0x07 or ST = ESC `\`):
-/// - OSC 9:   ESC ] 9 ; <body>            -> ("", body)
-/// - OSC 777: ESC ] 777 ; notify ; <title> ; <body>  -> (title, body)
+/// Returns the hits found AND `keep_from`: the byte index from which the
+/// caller should retain the tail for the next read. Everything before
+/// `keep_from` is either an already-emitted hit or plain output that can
+/// never start a sequence, so dropping it (a) stops the same hit being
+/// re-emitted as the buffer grows and (b) bounds the retained buffer.
 ///
-/// Best-effort, per-chunk matching. A sequence split across two reads (its ESC
-/// in one chunk and its terminator in the next) will be missed — fine for alpha.
-fn scan_attention(chunk: &str) -> Vec<(String, String)> {
+/// `keep_from` is, in priority order:
+///   - the start of the last UNTERMINATED `ESC ]` introducer (a possible
+///     split sequence whose terminator may arrive next read), else
+///   - the end of the last COMPLETED terminator (all settled, drop it all),
+///     else
+///   - 0 (nothing matched and no trailing introducer — but the caller caps
+///     the retained tail anyway, see the reader loop).
+///
+/// Shapes handled (terminator BEL 0x07 or ST = ESC `\`):
+/// - OSC 9:   ESC ] 9 ; <body>                         -> ("", body)
+/// - OSC 777: ESC ] 777 ; notify ; <title> ; <body>    -> (title, body)
+fn scan_attention(buf: &str) -> (Vec<(String, String)>, usize) {
     let mut hits = Vec::new();
-    let bytes = chunk.as_bytes();
+    let bytes = buf.as_bytes();
     let mut i = 0;
+    let mut consumed = 0; // end (exclusive) of the last completed terminator
+    let mut last_introducer = None; // start of a trailing unterminated ESC ]
     while i < bytes.len() {
         // Find the next OSC introducer: ESC (0x1B) followed by ']'.
         if bytes[i] != 0x1b || i + 1 >= bytes.len() || bytes[i + 1] != b']' {
             i += 1;
             continue;
         }
+        let intro_start = i;
         let body_start = i + 2;
-        // Locate the terminator: BEL, or ST (ESC `\`). Everything between the
-        // introducer and the terminator is the OSC payload.
+        // Locate the terminator: BEL, or ST (ESC `\`).
         let mut j = body_start;
         let mut term_end = None; // index just past the terminator
         while j < bytes.len() {
@@ -90,10 +107,12 @@ fn scan_attention(chunk: &str) -> Vec<(String, String)> {
             j += 1;
         }
         let Some(end) = term_end else {
-            // No terminator in this chunk; stop — likely a split sequence.
+            // No terminator yet: this introducer may complete on the next
+            // read. Remember it as the tail to keep, and stop scanning.
+            last_introducer = Some(intro_start);
             break;
         };
-        let payload = &chunk[body_start..j];
+        let payload = &buf[body_start..j];
 
         // OSC 777: "777;notify;<title>;<body>". OSC 9: "9;<body>".
         if let Some(rest) = payload.strip_prefix("777;notify;") {
@@ -105,9 +124,11 @@ fn scan_attention(chunk: &str) -> Vec<(String, String)> {
             hits.push((String::new(), body.to_string()));
         }
 
+        consumed = end;
         i = end;
     }
-    hits
+    let keep_from = last_introducer.unwrap_or(consumed);
+    (hits, keep_from)
 }
 
 /// Open a new PTY and spawn a login shell in it.
@@ -188,15 +209,23 @@ pub fn pty_spawn(
     let mut reader = reader;
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        // Carry-over buffer so an OSC sequence split across two reads is still
+        // detected. Holds only the unsettled tail (a partial introducer), so it
+        // stays small; capped at SCAN_TAIL_CAP as a hard safety bound.
+        let mut scan_buf = String::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break, // EOF: shell exited
                 Ok(n) => {
                     let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
-                    // Look for OSC 9 / OSC 777 attention sequences. On a match,
-                    // raise the flag and tell the frontend. We do NOT strip the
-                    // sequence — `pty-output` still gets the chunk verbatim.
-                    for (title, body) in scan_attention(&chunk) {
+
+                    // Append to the carry-over, scan the whole thing, emit any
+                    // hits, then keep only the unsettled tail for the next read.
+                    // scan_attention dedupes by advancing past matched
+                    // terminators, so a hit is emitted exactly once.
+                    scan_buf.push_str(&chunk);
+                    let (hits, keep_from) = scan_attention(&scan_buf);
+                    for (title, body) in hits {
                         attention_flag.store(true, Ordering::SeqCst);
                         let _ = app_handle.emit(
                             "pty-attention",
@@ -207,6 +236,24 @@ pub fn pty_spawn(
                             },
                         );
                     }
+                    // Drop the settled prefix; retain the tail. Then cap the
+                    // tail so a stream of bare `ESC ]` with no terminator can
+                    // never grow the buffer without bound. keep_from is a char
+                    // boundary (see scan_attention), so this slice is valid.
+                    if keep_from > 0 {
+                        scan_buf.drain(..keep_from);
+                    }
+                    if scan_buf.len() > SCAN_TAIL_CAP {
+                        let cut = scan_buf.len() - SCAN_TAIL_CAP;
+                        // Move cut to the next char boundary so drain is valid.
+                        let cut = (cut..=scan_buf.len())
+                            .find(|&k| scan_buf.is_char_boundary(k))
+                            .unwrap_or(scan_buf.len());
+                        scan_buf.drain(..cut);
+                    }
+
+                    // pty-output ALWAYS streams the raw per-read chunk
+                    // unchanged — the scan buffer never affects what is shown.
                     let _ = app_handle.emit(
                         "pty-output",
                         OutputEvent {

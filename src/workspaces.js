@@ -335,7 +335,14 @@ modalDeleteBtn.addEventListener("click", async () => {
     }, 3000);
     return;
   }
-  await invoke("delete_workspace", { id: ws.id });
+  const deletedId = ws.id;
+  await invoke("delete_workspace", { id: deletedId });
+  // Tell the per-project modules to tear down this project's terminals so
+  // their PTYs do not leak until app close (P1). Fire BEFORE refresh so the
+  // groups are gone before the selection re-renders.
+  window.dispatchEvent(
+    new CustomEvent("project-deleted", { detail: { id: deletedId } }),
+  );
   selectedId = null;
   closeModal();
   await refresh();

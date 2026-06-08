@@ -36,11 +36,11 @@ function groupFor(id, primaryPath) {
 async function spawnInProject(id) {
   const rec = projects.get(id);
   if (!rec) return;
-  const n = rec.group.count() + 1;
+  // No explicit title: the group numbers the tab from its monotonic counter
+  // (P4), so closing then reopening a tab never shows a duplicate number.
   await rec.group.newTerminal({
     cwd: rec.primaryPath,
     startCmd: null,
-    title: `term ${n}`,
   });
 }
 
@@ -73,6 +73,18 @@ function onProjectSelected(detail) {
 }
 
 window.addEventListener("project-selected", (e) => onProjectSelected(e.detail));
+
+// When a project is deleted (workspaces.js), tear down its terminal group so
+// its PTYs are closed and the group leaves the global registries (P1).
+window.addEventListener("project-deleted", (e) => {
+  const id = e.detail?.id;
+  if (!id) return;
+  const rec = projects.get(id);
+  if (!rec) return;
+  rec.group.dispose();
+  projects.delete(id);
+  if (currentId === id) currentId = null;
+});
 
 // If workspaces.js already fired `project-selected` before this listener was
 // attached (module load order), recover by hiding nothing — workspaces.js

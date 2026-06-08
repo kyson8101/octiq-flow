@@ -263,11 +263,6 @@ body {
   font-size: 12px;
 }
 
-.new-ws-row {
-  padding: 8px 12px;
-  border-bottom: 1px solid #30363d;
-}
-
 .inline-input {
   width: 100%;
   padding: 6px 8px;
@@ -332,36 +327,6 @@ body {
   color: #6e7681;
 }
 
-/* ---- Selected workspace detail (paths) -------------------------------- */
-.ws-detail {
-  margin-top: auto;
-  border-top: 1px solid #30363d;
-  padding: 10px 12px;
-}
-
-.ws-detail-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.ws-detail-name {
-  font-weight: 600;
-  font-size: 13px;
-  color: #e6edf3;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.ws-detail-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
 .icon-btn {
   padding: 3px 7px;
   font-size: 11px;
@@ -380,18 +345,6 @@ body {
   background: #b62324;
   border-color: #f85149;
   color: #ffffff;
-}
-
-/* Primary path block */
-.ws-primary {
-  margin-bottom: 12px;
-}
-
-.ws-primary-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
 }
 
 .badge-primary {
@@ -424,15 +377,6 @@ body {
   color: #f0883e;
   border-color: #bb8009;
   direction: ltr;
-}
-
-.ws-paths-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 12px;
-  color: #8b949e;
-  margin-bottom: 6px;
 }
 
 .ws-paths {
@@ -482,45 +426,6 @@ body {
 
 .hidden {
   display: none !important;
-}
-
-/* Top toolbar */
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
-}
-
-.brand {
-  font-weight: 600;
-  font-size: 14px;
-  color: #e6edf3;
-}
-
-.status {
-  margin-left: auto;
-  font-size: 12px;
-  color: #8b949e;
-}
-
-/* Terminal area fills the middle */
-.terminal {
-  flex: 1;
-  min-height: 0;
-  padding: 6px;
-  background: #0d1117;
-}
-
-/* Bottom inject bar */
-.injectbar {
-  display: flex;
-  gap: 8px;
-  padding: 10px 12px;
-  background: #161b22;
-  border-top: 1px solid #30363d;
 }
 
 .inject-input {
