@@ -1,0 +1,336 @@
+// Shared terminal-tab-group primitive. This file is the SINGLE source of
+// terminal management for the whole app. Project (card 04), Chat (card 07),
+// and Utilities (card 09) all create groups through createTerminalGroup().
+//
+// One xterm per PTY. One global pty-output listener routes { id, chunk } to the
+// right xterm across ALL groups. Terminals stay alive when their group is
+// hidden (scrollback kept in memory); they refit when shown again.
+//
+// `Terminal` and `FitAddon` come from the vendored scripts in index.html.
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+// Shared dark theme + font for every terminal in the app.
+const TERM_THEME = {
+  background: "#0d1117",
+  foreground: "#c9d1d9",
+  cursor: "#58a6ff",
+  selectionBackground: "#264f78",
+};
+
+function makeTerminal() {
+  return new Terminal({
+    fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+    fontSize: 13,
+    cursorBlink: true,
+    theme: TERM_THEME,
+  });
+}
+
+// ---- Global routing -------------------------------------------------------
+// ptyId -> { term, group }. The ONE pty-output listener uses this to write each
+// chunk into the matching xterm, no matter which group owns it.
+const idToEntry = new Map();
+
+// THE single pty-output listener for the whole app. Do not add another one
+// anywhere else. Registered once at module load (modules load once).
+listen("pty-output", (event) => {
+  const { id, chunk } = event.payload;
+  idToEntry.get(id)?.term.write(chunk);
+});
+
+// ---- Attention flags ------------------------------------------------------
+// Set of pty ids that currently need the user's attention (card 13). A tab is
+// badged (class tg-tab-attention + a dot) while its id is in here. alerts.js
+// reads this list and reacts to the "tg-attention-change" event to rebuild its
+// banner. Insertion order is preserved (Set) so "jump to next" cycles in the
+// order the attentions arrived.
+const attention = new Set();
+
+// Fire a DOM event so alerts.js (and anything else) can rebuild its UI whenever
+// the attention set changes. Detail carries a fresh snapshot of the ids.
+function emitAttentionChange() {
+  window.dispatchEvent(
+    new CustomEvent("tg-attention-change", { detail: [...attention] }),
+  );
+}
+
+/** The pty ids that currently need attention, in arrival order. */
+export function attentionList() {
+  return [...attention];
+}
+
+/** Find the { term, group } entry for a pty id, or undefined. */
+function entryFor(id) {
+  return idToEntry.get(id);
+}
+
+/**
+ * Badge a terminal's TAB so the user can see it needs attention (card 13).
+ * Adds the id to the attention set and paints its tab. No-op if the id is
+ * unknown (its terminal may have been closed). Safe to call repeatedly.
+ */
+export function badgeTab(id) {
+  const entry = entryFor(id);
+  if (!entry) return;
+  attention.add(id);
+  entry.group._paintAttention(id, true);
+  emitAttentionChange();
+}
+
+/**
+ * Clear a terminal's attention badge. Removes it from the set, un-paints the
+ * tab, and tells the backend to clear its OSC attention state (card 12) so the
+ * same alert does not re-fire. Safe to call when the id is already clear.
+ */
+export function clearAttention(id) {
+  if (!attention.has(id)) return;
+  attention.delete(id);
+  entryFor(id)?.group._paintAttention(id, false);
+  // Tell the backend this terminal no longer needs attention. Ignore errors
+  // (the PTY may already be gone); this must never throw into the UI.
+  invoke("pty_clear_attention", { id }).catch(() => {});
+  emitAttentionChange();
+}
+
+// modes.js owns the top-level view router but does not export a setMode. We
+// switch views by clicking the matching mode button, exactly as a user would.
+// The mode of a group is read from the #view-<mode> section that contains its
+// root element, so no other file needs to tell terminals.js where it lives.
+function switchToMode(mode) {
+  const btn = document.querySelector(`.modebtn[data-mode="${mode}"]`);
+  if (btn && !btn.classList.contains("modebtn-active")) btn.click();
+}
+
+/**
+ * Jump to a terminal by id (card 13): switch to its mode if needed, activate
+ * its tab inside its group, and clear its attention flag. No-op if unknown.
+ */
+export function focusTerminal(id) {
+  const entry = entryFor(id);
+  if (!entry) return;
+  const mode = entry.group._mode();
+  if (mode) switchToMode(mode);
+  entry.group.show();
+  entry.group.activate(id);
+  // Focusing a terminal is the user acknowledging the alert: clear it.
+  clearAttention(id);
+}
+
+// Keep every visible group's active terminal sized to the window. Groups that
+// are hidden are skipped (fit on a hidden element measures zero).
+const groups = new Set();
+window.addEventListener("resize", () => {
+  for (const g of groups) g.refitActive();
+});
+
+/**
+ * Create a terminal-tab-group mounted inside `mountEl`.
+ * `idPrefix` namespaces this group's PTY ids so they are unique app-wide
+ * (e.g. the project id for card 04, "chat" for card 07).
+ *
+ * Returns the group API:
+ *   newTerminal({ cwd, startCmd, title }) -> ptyId (async)
+ *   closeTerminal(ptyId)
+ *   activate(ptyId)
+ *   show()            // un-hide + refit active
+ *   hide()            // keep terminals alive, just hide the DOM
+ *   ids()             // current pty ids in tab order
+ *   count()           // number of live terminals
+ *   refitActive()     // refit the active terminal if the group is visible
+ *   dispose()         // close all terminals + remove from registries
+ */
+export function createTerminalGroup(mountEl, idPrefix) {
+  return new TerminalGroup(mountEl, idPrefix);
+}
+
+class TerminalGroup {
+  constructor(mountEl, idPrefix) {
+    this.idPrefix = idPrefix;
+    this.seq = 0;
+    this.activeId = null;
+    // ptyId -> { term, fitAddon, paneEl, tabEl, title }
+    this.tabs = new Map();
+
+    // Group DOM: a tab strip on top, a panes area filling the rest.
+    this.root = document.createElement("div");
+    this.root.className = "tg";
+
+    this.stripEl = document.createElement("div");
+    this.stripEl.className = "tg-strip";
+
+    this.tabsEl = document.createElement("div");
+    this.tabsEl.className = "tg-tabs";
+
+    this.addBtn = document.createElement("button");
+    this.addBtn.className = "tg-add";
+    this.addBtn.title = "New terminal";
+    this.addBtn.textContent = "+";
+    // The "+" callback is set by the owner via onAdd; default is a no-op so the
+    // primitive does not assume any cwd/startCmd policy.
+    this.onAdd = null;
+    this.addBtn.addEventListener("click", () => this.onAdd?.());
+
+    this.stripEl.append(this.tabsEl, this.addBtn);
+
+    this.panesEl = document.createElement("div");
+    this.panesEl.className = "tg-panes";
+
+    this.root.append(this.stripEl, this.panesEl);
+    mountEl.append(this.root);
+
+    groups.add(this);
+  }
+
+  ids() {
+    return [...this.tabs.keys()];
+  }
+
+  count() {
+    return this.tabs.size;
+  }
+
+  visible() {
+    // The group is visible when neither it nor any ancestor is display:none.
+    return this.root.offsetParent !== null;
+  }
+
+  async newTerminal({ cwd = "", startCmd = null, title = "term" } = {}) {
+    const ptyId = `${this.idPrefix}:${this.seq++}`;
+
+    const pane = document.createElement("div");
+    pane.className = "tg-pane";
+    this.panesEl.append(pane);
+
+    const term = makeTerminal();
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(pane);
+    term.onData((data) => {
+      invoke("pty_write", { id: ptyId, data }).catch(() => {});
+    });
+
+    const tabEl = document.createElement("div");
+    tabEl.className = "tg-tab";
+    const label = document.createElement("span");
+    label.className = "tg-tab-label";
+    label.textContent = title;
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "tg-tab-close";
+    closeBtn.textContent = "✕";
+    closeBtn.title = "Close terminal";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.closeTerminal(ptyId);
+    });
+    tabEl.append(label, closeBtn);
+    tabEl.addEventListener("click", () => this.activate(ptyId));
+    this.tabsEl.append(tabEl);
+
+    const entry = { term, fitAddon, paneEl: pane, tabEl, title };
+    this.tabs.set(ptyId, entry);
+    idToEntry.set(ptyId, { term, group: this });
+
+    // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd.
+    await invoke("pty_spawn", { id: ptyId, cwd, startCmd });
+
+    this.activate(ptyId);
+    return ptyId;
+  }
+
+  activate(ptyId) {
+    if (!this.tabs.has(ptyId)) return;
+    this.activeId = ptyId;
+    for (const [id, e] of this.tabs) {
+      const on = id === ptyId;
+      e.tabEl.classList.toggle("tg-tab-active", on);
+      e.paneEl.classList.toggle("tg-pane-active", on);
+    }
+    // Becoming the active tab counts as the user attending to this terminal, so
+    // clear any attention flag on it (card 13). clearAttention is a no-op when
+    // the id is not flagged, so this is cheap on normal tab switches.
+    if (attention.has(ptyId)) clearAttention(ptyId);
+    // Fit + focus on the next frame so the now-shown pane has a real size.
+    requestAnimationFrame(() => {
+      this._fit(ptyId);
+      this.tabs.get(ptyId)?.term.focus();
+    });
+  }
+
+  // ---- Attention helpers (card 13) ----------------------------------------
+  // Paint or un-paint a tab's attention badge. Called by the module-level
+  // badgeTab / clearAttention so the Set and the DOM stay in lock-step.
+  _paintAttention(ptyId, on) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    entry.tabEl.classList.toggle("tg-tab-attention", on);
+  }
+
+  // Which top-level mode this group lives in ("project" | "chat" | "utilities"
+  // | "dashboard"), read from the enclosing #view-<mode> section. Returns null
+  // if the group is not (yet) inside a view. Used by focusTerminal to switch
+  // modes before activating a tab in another mode.
+  _mode() {
+    const view = this.root.closest(".view");
+    if (!view || !view.id?.startsWith("view-")) return null;
+    return view.id.slice("view-".length);
+  }
+
+  closeTerminal(ptyId) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    // Drop any attention flag so the banner does not list a dead terminal
+    // (card 13). Done before deleting the entry so the change event is clean.
+    if (attention.has(ptyId)) {
+      attention.delete(ptyId);
+      emitAttentionChange();
+    }
+    invoke("pty_close", { id: ptyId }).catch(() => {});
+    entry.term.dispose();
+    entry.tabEl.remove();
+    entry.paneEl.remove();
+    this.tabs.delete(ptyId);
+    idToEntry.delete(ptyId);
+    if (this.activeId === ptyId) {
+      const next = this.tabs.keys().next();
+      this.activeId = next.done ? null : next.value;
+      if (this.activeId) this.activate(this.activeId);
+    }
+  }
+
+  show() {
+    this.root.style.display = "";
+    // Refit the active terminal after the element is laid out and measurable.
+    requestAnimationFrame(() => this.refitActive());
+  }
+
+  hide() {
+    // Keep terminals alive; just hide the DOM subtree.
+    this.root.style.display = "none";
+  }
+
+  refitActive() {
+    if (this.activeId && this.visible()) this._fit(this.activeId);
+  }
+
+  _fit(ptyId) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry || !this.visible()) return;
+    try {
+      entry.fitAddon.fit();
+      invoke("pty_resize", {
+        id: ptyId,
+        rows: entry.term.rows,
+        cols: entry.term.cols,
+      }).catch(() => {});
+    } catch (_) {
+      // Not mounted / zero size yet; ignore.
+    }
+  }
+
+  dispose() {
+    for (const id of [...this.tabs.keys()]) this.closeTerminal(id);
+    groups.delete(this);
+    this.root.remove();
+  }
+}

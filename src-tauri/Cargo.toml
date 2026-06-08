@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Agent workflow orchestrator: run agents in a real terminal inside a desktop app"
 authors = ["kyson"]
 edition = "2021"
+default-run = "octiq-flow"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

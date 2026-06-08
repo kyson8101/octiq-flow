@@ -13,151 +13,175 @@
     <link rel="stylesheet" href="styles.css" />
     <script type="module" src="/workspaces.js" defer></script>
     <script type="module" src="/main.js" defer></script>
+    <script type="module" src="/project.js" defer></script>
+    <script type="module" src="/commands.js" defer></script>
+    <script type="module" src="/modes.js" defer></script>
+    <script type="module" src="/chat.js" defer></script>
+    <script type="module" src="/utilities.js" defer></script>
+    <script type="module" src="/dashboard.js" defer></script>
+    <script type="module" src="/alerts.js" defer></script>
   </head>
 
   <body>
     <div class="shell">
-      <!-- The three columns sit in a row; the paths footer spans below them -->
+      <!-- Attention banner (card 13): lists terminals waiting for the user. Hidden
+           until at least one terminal needs attention; alerts.js fills/clears it. -->
+      <div id="alert-banner" class="alert-banner hidden"></div>
+
+      <!-- Top-level mode bar: one view shows at a time (router in modes.js) -->
+      <nav class="modebar">
+        <span class="modebar-brand">octiq-flow</span>
+        <div class="modebar-tabs">
+          <button class="modebtn modebtn-active" data-mode="project">Project</button>
+          <button class="modebtn" data-mode="chat">Chat</button>
+          <button class="modebtn" data-mode="utilities">Utilities</button>
+          <button class="modebtn" data-mode="dashboard">Dashboard</button>
+        </div>
+      </nav>
+
+      <!-- Project view: sidebar (projects) | center (terminals + command drawer)
+           | right (collapsible command panel); paths footer spans below. -->
+      <section id="view-project" class="view view-active">
       <div class="columns">
       <!-- Left panel: only the list of workspaces -->
       <aside class="sidebar">
         <div class="sidebar-head">
-          <span class="sidebar-title">Workspaces</span>
+          <span class="sidebar-title">Projects</span>
           <button id="new-workspace" class="btn btn-sm">+ New</button>
         </div>
 
         <ul id="workspace-list" class="ws-list"></ul>
-        <p id="workspace-empty" class="ws-empty">No workspaces yet. Click “+ New”.</p>
+        <p id="workspace-empty" class="ws-empty">No projects yet. Click “+ New”.</p>
       </aside>
 
-      <!-- Middle column: the dev-work area for the selected workspace -->
-      <main class="workarea">
-        <header class="workarea-head">
-          <span class="brand">octiq-flow</span>
-          <span id="workarea-title" class="workarea-title">Select a workspace</span>
-        </header>
-
-        <div id="workarea-body" class="workarea-body">
-          <p id="workarea-empty-hint" class="workarea-empty">
-            Pick or create a workspace on the left to start working here.
-          </p>
-
-          <!-- Sessions: one per job, each with its own docs folder -->
-          <section id="sessions" class="sessions hidden">
-            <div class="sessions-head">
-              <span class="sessions-title">Sessions</span>
-              <button id="new-session" class="btn btn-sm">+ New session</button>
-            </div>
-
-            <div id="new-session-row" class="new-session-row hidden">
-              <input
-                id="new-session-input"
-                class="inline-input"
-                placeholder="Session name (the job)…"
-                autocomplete="off"
-              />
-            </div>
-
-            <ul id="session-list" class="session-list"></ul>
-            <p id="session-empty" class="ws-empty">No sessions yet. Click “+ New session”.</p>
-          </section>
-
-          <!-- Session view: the workflow stages for one session -->
-          <section id="session-view" class="session-view hidden">
-            <div class="session-view-head">
-              <button id="session-back" class="btn btn-sm">← Sessions</button>
-              <span id="session-view-name" class="session-view-name"></span>
-            </div>
-
-            <nav class="tabs">
-              <button class="tab tab-active" data-tab="planning">Planning</button>
-              <button class="tab" data-tab="tasks">Tasks</button>
-              <button class="tab" data-tab="executed">Executed</button>
-              <button class="tab" data-tab="devspace">Dev-space</button>
-            </nav>
-
-            <!-- Planning -->
-            <div class="tab-panel" data-panel="planning">
-              <textarea
-                id="plan-text"
-                class="plan-text"
-                placeholder="Write the plan for this session…"
-              ></textarea>
-              <div class="panel-actions">
-                <button id="plan-save" class="btn btn-primary btn-sm">Save plan</button>
-                <span id="plan-status" class="muted"></span>
-              </div>
-            </div>
-
-            <!-- Tasks (not done) -->
-            <div class="tab-panel hidden" data-panel="tasks">
-              <div class="add-row">
-                <input id="task-input" class="inline-input" placeholder="Add a task…" autocomplete="off" />
-                <button id="task-add" class="btn btn-sm">Add</button>
-              </div>
-              <ul id="task-list" class="task-list"></ul>
-              <p id="task-empty" class="ws-empty">No open tasks.</p>
-            </div>
-
-            <!-- Executed (done) -->
-            <div class="tab-panel hidden" data-panel="executed">
-              <ul id="executed-list" class="task-list"></ul>
-              <p id="executed-empty" class="ws-empty">Nothing executed yet.</p>
-            </div>
-
-            <!-- Dev-space -->
-            <div class="tab-panel hidden" data-panel="devspace">
-              <div class="devspace-head">
-                <span class="muted">Runs in: <span id="devspace-cwd" class="mono"></span></span>
-                <button id="action-add" class="btn btn-sm">+ Add action</button>
-              </div>
-
-              <div id="action-form" class="action-form hidden">
-                <input id="action-label" class="inline-input" placeholder="Button label (e.g. Dev all)" autocomplete="off" />
-                <input id="action-command" class="inline-input" placeholder="Command (e.g. pnpm dev:all)" autocomplete="off" />
-                <div class="panel-actions">
-                  <button id="action-form-cancel" class="btn btn-sm">Cancel</button>
-                  <button id="action-form-save" class="btn btn-primary btn-sm">Save action</button>
-                </div>
-              </div>
-
-              <div id="action-list" class="action-list"></div>
-              <p id="action-empty" class="ws-empty">No actions yet. Click “+ Add action”.</p>
-
-              <div class="output-head">
-                <span class="muted">Output</span>
-                <span class="output-head-actions">
-                  <span id="run-status" class="muted"></span>
-                  <button id="run-stop" class="btn btn-sm hidden">Stop</button>
-                  <button id="output-clear" class="btn btn-sm">Clear</button>
-                </span>
-              </div>
-              <pre id="output" class="output"></pre>
-            </div>
-          </section>
+      <!-- Center: per-project terminals on top, command drawer at the bottom -->
+      <main class="center">
+        <div class="center-terms">
+          <div id="project-terminals" class="project-terminals"></div>
         </div>
+
+        <!-- Bottom command drawer: real PTY terminals launched from registered
+             commands, shown as tabs. project.js mounts a TerminalGroup in
+             #cmd-drawer-mount. Hidden until the first command runs. -->
+        <section id="cmd-drawer" class="cmd-drawer hidden">
+          <div class="cmd-drawer-head">
+            <span class="cmd-drawer-title">Command terminals</span>
+          </div>
+          <div id="cmd-drawer-mount" class="cmd-drawer-mount"></div>
+        </section>
       </main>
 
-      <!-- Right dock: the full live terminal, like the VSCode chat panel -->
-      <section class="termdock">
-        <header class="toolbar">
-          <span class="termdock-title">Terminal</span>
-          <span id="status" class="status">starting shell…</span>
-        </header>
+      <!-- Right: collapsible command panel (registered commands for the
+           selected project). commands.js fills #cmd-list and runs commands. -->
+      <aside id="cmd-panel" class="cmd-panel">
+        <div class="cmd-panel-head">
+          <span class="cmd-panel-title">Commands</span>
+          <button id="cmd-panel-toggle" class="icon-btn" title="Collapse panel" aria-expanded="true">▶</button>
+        </div>
 
-        <div id="terminal" class="terminal"></div>
-      </section>
+        <div class="cmd-panel-body">
+          <div class="cmd-panel-bar">
+            <button id="cmd-add" class="btn btn-sm">+ Add command</button>
+          </div>
+
+          <div id="cmd-form" class="cmd-form hidden">
+            <input id="cmd-label" class="inline-input" placeholder="Label (e.g. Dev all)" autocomplete="off" />
+            <input id="cmd-command" class="inline-input" placeholder="Command (e.g. pnpm dev:all)" autocomplete="off" />
+            <div class="panel-actions">
+              <button id="cmd-form-cancel" class="btn btn-sm">Cancel</button>
+              <button id="cmd-form-save" class="btn btn-primary btn-sm">Save</button>
+            </div>
+          </div>
+
+          <ul id="cmd-list" class="cmd-list"></ul>
+          <p id="cmd-empty" class="ws-empty">No commands yet. Click “+ Add command”.</p>
+        </div>
+      </aside>
       </div>
       <!-- end .columns -->
 
-      <!-- Paths footer: full-width bar across all three columns.
-           Click anywhere to open the edit modal. -->
+      <!-- Paths footer: full-width bar across all columns. Click to edit. -->
       <button id="paths-footer" class="paths-footer hidden" type="button">
         <span id="paths-footer-name" class="pf-name"></span>
         <span id="paths-footer-paths" class="pf-paths"></span>
         <span class="pf-edit">Edit</span>
       </button>
+      </section>
+      <!-- end #view-project -->
+
+      <!-- Chat mode (card 07): a full area of free terminals -->
+      <section id="view-chat" class="view hidden">
+        <!-- Card 07 — Chat mode: a full area of free terminals, not tied to any
+           project. chat.js mounts a single TerminalGroup here; each tab is its
+           own real terminal (claude / codex / shell) at HOME. -->
+      <div id="chat-terminals" class="chat-terminals"></div>
+      </section>
+
+      <!-- Utilities mode (card 09): prompt templates + run terminals -->
+      <section id="view-utilities" class="view hidden">
+        <div class="util-layout">
+  <div class="util-panel">
+    <div class="util-head">
+      <span class="util-head-title">Templates</span>
+      <button id="util-add" class="btn btn-sm btn-primary">+ New template</button>
     </div>
+
+    <ul id="util-list" class="util-list"></ul>
+    <div id="util-empty" class="util-empty hidden">No templates yet. Create one to run an agent.</div>
+
+    <div id="util-form" class="util-form hidden">
+      <div id="util-form-title" class="util-form-title">New template</div>
+
+      <label class="modal-label" for="util-label">Label</label>
+      <input id="util-label" class="inject-input" type="text" placeholder="e.g. generate random avatar" />
+
+      <label class="modal-label" for="util-agent">Agent</label>
+      <select id="util-agent" class="util-select">
+        <option value="claude">claude</option>
+        <option value="codex">codex</option>
+      </select>
+
+      <label class="modal-label" for="util-prompt">Prompt</label>
+      <textarea id="util-prompt" class="util-textarea" rows="4" placeholder="What should the agent do?"></textarea>
+
+      <label class="modal-label">Working folder (optional)</label>
+      <div id="util-cwd" class="util-cwd-row">
+        <span id="util-cwd-path" class="util-cwd-path unset">Not set — you will pick a folder when you Run</span>
+        <button id="util-cwd-pick" class="btn btn-sm">Pick folder</button>
+        <button id="util-cwd-clear" class="btn btn-sm util-danger hidden">Clear</button>
+      </div>
+
+      <div class="util-form-grid">
+        <div>
+          <label class="modal-label" for="util-group">Group (optional)</label>
+          <input id="util-group" class="inject-input" type="text" placeholder="e.g. avatars" />
+        </div>
+        <div>
+          <label class="modal-label" for="util-hotkey">Hotkey (optional)</label>
+          <input id="util-hotkey" class="inject-input" type="text" placeholder="e.g. cmd+1" />
+        </div>
+      </div>
+
+      <div class="util-form-foot">
+        <button id="util-form-cancel" class="btn btn-sm">Cancel</button>
+        <button id="util-form-save" class="btn btn-sm btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="util-terminals" class="util-terminals"></div>
+</div>
+      </section>
+
+      <!-- Dashboard mode (card 10): read-only widget block grid -->
+      <section id="view-dashboard" class="view hidden">
+        <div class="dash-head">
+        <span class="dash-head-title">Dashboard</span>
+        <span class="dash-head-sub">Git status across your workspace folders</span>
+        <button id="dashboard-refresh" class="btn btn-accent dash-refresh" type="button">Refresh</button>
+      </div>
+      <div id="dashboard-grid" class="dash-grid"></div>
+      </section>
 
     <!-- New-workspace modal: choose folder first, then name, then create -->
     <div id="new-modal" class="modal-backdrop hidden">
@@ -219,5 +243,7 @@
         </div>
       </div>
     </div>
+    </div>
+    <!-- end .shell -->
   </body>
 </html>

@@ -28,8 +28,12 @@ body {
   min-height: 0;
 }
 
-/* ---- Middle column: dev-work area ------------------------------------- */
-.workarea {
+/* ===================================================================== */
+/* === Project mode layout (cards 05/06) =============================== */
+/* sidebar | center (terminals + command drawer) | right command panel.  */
+
+/* ---- Center: per-project terminals on top, command drawer below ----- */
+.center {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -38,49 +42,195 @@ body {
   background: #0d1117;
 }
 
-.workarea-head {
+/* Terminals fill the center above the drawer. */
+.center-terms {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Bottom command drawer ------------------------------------------ */
+/* A fixed-height strip under the center terminals. Holds a TerminalGroup
+   (its own tab strip + panes). Hidden until the first command runs. */
+.cmd-drawer {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  height: 260px;
+  min-height: 120px;
+  background: #0d1117;
+  border-top: 1px solid #30363d;
+}
+
+.cmd-drawer-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: #161b22;
+  flex-shrink: 0;
+  padding: 4px 10px;
+  background: #010409;
   border-bottom: 1px solid #30363d;
 }
 
-.workarea-title {
-  font-size: 14px;
+.cmd-drawer-title {
+  font-size: 11px;
   font-weight: 600;
-  color: #e6edf3;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8b949e;
 }
 
-.workarea-body {
+/* The TerminalGroup mounts here and fills the rest of the drawer. */
+.cmd-drawer-mount {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  padding: 18px;
-}
-
-.workarea-empty {
-  margin: 0;
-  font-size: 13px;
-  color: #6e7681;
-}
-
-/* ---- Right dock: terminal (VSCode-chat style) ------------------------- */
-.termdock {
   display: flex;
   flex-direction: column;
-  width: 480px;
-  flex-shrink: 0;
-  height: 100%;
-  background: #0d1117;
-  border-left: 1px solid #30363d;
 }
 
-.termdock-title {
+/* ---- Right: collapsible command panel ------------------------------- */
+.cmd-panel {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  flex-shrink: 0;
+  height: 100%;
+  background: #0b0f14;
+  border-left: 1px solid #30363d;
+  transition: width 0.15s ease;
+}
+
+/* Collapsed: only the head bar (with the toggle) stays visible. */
+.cmd-panel.collapsed {
+  width: 44px;
+}
+
+.cmd-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid #30363d;
+}
+
+.cmd-panel-title {
   font-weight: 600;
   font-size: 13px;
   color: #e6edf3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Hide the body and the title text when collapsed; keep the toggle. */
+.cmd-panel.collapsed .cmd-panel-title,
+.cmd-panel.collapsed .cmd-panel-body {
+  display: none;
+}
+
+.cmd-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 8px;
+}
+
+.cmd-panel-bar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Inline add/edit form, same dark styling as other forms. */
+.cmd-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+/* Command list */
+.cmd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 0;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+/* The big run button: label on top, command underneath. */
+.cmd-run {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  background: #238636;
+  border: none;
+  border-radius: 6px;
+  color: #ffffff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.cmd-run:hover {
+  background: #2ea043;
+}
+
+.cmd-run-label {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.cmd-run-cmd {
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 10px;
+  color: #aff0c0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.cmd-mini {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: #8b949e;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.cmd-mini:hover {
+  color: #e6edf3;
+}
+
+.cmd-mini.danger:hover {
+  color: #f85149;
 }
 
 /* ---- Left panel: workspaces ------------------------------------------- */
@@ -551,141 +701,7 @@ body {
   gap: 6px;
 }
 
-/* ---- Sessions (middle dev-work area) ---------------------------------- */
-.sessions {
-  max-width: 720px;
-}
-
-.sessions-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.sessions-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #e6edf3;
-}
-
-.new-session-row {
-  margin-bottom: 10px;
-}
-
-.session-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.session-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-}
-
-.session-item.selected {
-  border-color: #1f6feb;
-}
-
-.session-main {
-  min-width: 0;
-}
-
-.session-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: #e6edf3;
-}
-
-.session-docs {
-  font-size: 11px;
-  color: #8b949e;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  direction: rtl;
-  text-align: left;
-}
-
-.session-remove {
-  flex-shrink: 0;
-  padding: 0 6px;
-  color: #8b949e;
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.session-remove:hover {
-  color: #f85149;
-}
-
-/* ---- Session view (workflow tabs) ------------------------------------- */
-.session-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.session-view-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.session-view-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #e6edf3;
-}
-
-.tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid #30363d;
-  margin-bottom: 12px;
-}
-
-.tab {
-  padding: 6px 12px;
-  font-size: 13px;
-  color: #8b949e;
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-}
-
-.tab:hover {
-  color: #e6edf3;
-}
-
-.tab-active {
-  color: #e6edf3;
-  border-bottom-color: #1f6feb;
-}
-
-.tab-panel {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
+/* ---- Shared bits reused by the command panel form -------------------- */
 .muted {
   font-size: 12px;
   color: #8b949e;
@@ -703,169 +719,838 @@ body {
   margin-top: 8px;
 }
 
-/* Planning */
-.plan-text {
-  flex: 1;
-  min-height: 160px;
-  resize: vertical;
-  padding: 10px;
-  font-family: Menlo, Monaco, "Courier New", monospace;
+/* --- Mode shell (card 03) --------------------------------------------- */
+/* The shell is a vertical stack: the slim mode bar on top, then the active
+   view fills the rest. .shell already is `flex-direction: column; height:
+   100vh` (see top of file), so the mode bar takes its own height and each
+   .view flexes to fill the remaining space. */
+
+/* Slim top strip: brand on the left, the mode buttons next to it */
+.modebar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  padding: 0 14px;
+  height: 38px;
+  background: #010409;
+  border-bottom: 1px solid #30363d;
+}
+
+.modebar-brand {
+  font-weight: 700;
   font-size: 13px;
+  letter-spacing: 0.2px;
   color: #e6edf3;
+}
+
+.modebar-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+/* Subtle dark button; the active one is highlighted with the blue accent */
+.modebtn {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #8b949e;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.modebtn:hover {
+  color: #e6edf3;
+}
+
+.modebtn-active {
+  color: #e6edf3;
+  border-bottom-color: #58a6ff;
+}
+
+/* Each view fills the area under the mode bar and stacks its children in a
+   column, so #view-project's .columns (flex: 1) keeps filling height exactly
+   as it did when .columns flexed against .shell directly. */
+.view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Router hides the inactive views. The shared `.hidden` utility already sets
+   `display: none !important`, so `.view.hidden` is covered; this rule is kept
+   as a clear, explicit fallback. */
+.view.hidden {
+  display: none;
+}
+
+/* Placeholder for the not-yet-built modes: centered muted text, dark themed */
+.view-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  color: #6e7681;
+  background: #0d1117;
+}
+
+/* ---- Per-project terminal group mount (card 04) ----------------------- */
+/* Fills the termdock; the group renders its own strip + panes inside. */
+.project-terminals {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: #0d1117;
+}
+
+/* ---- Terminal-tab-group primitive (terminals.js) --------------------- */
+/* One .tg per group: a tab strip on top, a panes area filling the rest. */
+.tg {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Tab strip: the row of tabs plus the "+" button */
+.tg-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 4px 6px 0;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  overflow-x: auto;
+}
+
+.tg-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tg-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  padding: 6px 8px 6px 10px;
+  font-size: 12px;
+  color: #8b949e;
   background: #0d1117;
   border: 1px solid #30363d;
-  border-radius: 8px;
-  outline: none;
-}
-
-.plan-text:focus {
-  border-color: #58a6ff;
-}
-
-/* Tasks */
-.add-row {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
-.add-row .inline-input {
-  flex: 1;
-}
-
-.task-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow: auto;
-}
-
-.task-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-}
-
-.task-title {
-  flex: 1;
-  font-size: 13px;
-  color: #e6edf3;
-}
-
-.task-item.done .task-title {
-  color: #8b949e;
-  text-decoration: line-through;
-}
-
-/* Dev-space */
-.devspace-head,
-.output-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.output-head {
-  margin-top: 14px;
-}
-
-.output-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.action-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  margin-bottom: 10px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-}
-
-.action-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.action-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 4px 4px 0;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-}
-
-.action-run {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  padding: 6px 10px;
-  background: #238636;
-  border: none;
-  border-radius: 6px;
-  color: #ffffff;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.action-run:hover {
-  background: #2ea043;
+.tg-tab:hover {
+  color: #e6edf3;
+  background: #11161d;
 }
 
-.action-run-label {
-  font-size: 13px;
-  font-weight: 600;
+.tg-tab-active {
+  color: #e6edf3;
+  background: #0d1117;
+  border-color: #1f6feb;
+  border-bottom-color: #0d1117;
 }
 
-.action-run-cmd {
-  font-family: Menlo, Monaco, "Courier New", monospace;
-  font-size: 10px;
-  color: #aff0c0;
+.tg-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.action-mini {
-  padding: 2px 6px;
-  font-size: 11px;
-  color: #8b949e;
+.tg-tab-close {
+  flex-shrink: 0;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: #6e7681;
   background: transparent;
   border: none;
   cursor: pointer;
 }
 
-.action-mini:hover {
-  color: #e6edf3;
-}
-
-.action-mini.danger:hover {
+.tg-tab-close:hover {
   color: #f85149;
 }
 
-.output {
+/* "+" new-terminal button */
+.tg-add {
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: 4px;
+  padding: 2px 9px;
+  font-size: 15px;
+  line-height: 1;
+  color: #8b949e;
+  background: transparent;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tg-add:hover {
+  color: #e6edf3;
+  background: #21262d;
+  border-color: #388bfd;
+}
+
+/* Panes area: all panes stack; only the active one shows. */
+.tg-panes {
+  position: relative;
   flex: 1;
-  min-height: 120px;
+  min-height: 0;
+  background: #0d1117;
+}
+
+.tg-pane {
+  display: none;
+  position: absolute;
+  inset: 0;
+  padding: 6px;
+}
+
+.tg-pane-active {
+  display: block;
+}
+
+/* ===================================================================== */
+/* === Card 07 — Chat mode ============================================= */
+/* ===================================================================== */
+/* ---- Chat-mode terminal group mount (card 07) ------------------------ */
+/* Fills #view-chat; the group renders its own strip + panes inside. Mirrors
+   .project-terminals so the chat area fills its view the same way. The shared
+   .tg* styles (terminals.js primitive) already cover tabs and panes. */
+.chat-terminals {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: #0d1117;
+}
+
+/* ===================================================================== */
+/* === Card 09 — Utilities mode ======================================== */
+/* ===================================================================== */
+/* ---- Utilities mode (card 09) ---------------------------------------- */
+/* Left = template list + editor; right = run-terminal area. Fills the view. */
+.util-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  background: #0d1117;
+}
+
+/* Left panel: scrollable list + inline form. Fixed-ish width, dark themed. */
+.util-panel {
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  min-width: 320px;
+  flex-shrink: 0;
+  border-right: 1px solid #30363d;
+  background: #161b22;
+  overflow-y: auto;
+}
+
+.util-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #30363d;
+}
+
+.util-head-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+/* Template list */
+.util-list {
+  list-style: none;
   margin: 0;
-  padding: 10px;
-  overflow: auto;
-  font-family: Menlo, Monaco, "Courier New", monospace;
-  font-size: 12px;
-  color: #c9d1d9;
-  background: #010409;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.util-empty {
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: #6e7681;
+}
+
+.util-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #0d1117;
   border: 1px solid #30363d;
   border-radius: 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
+}
+
+.util-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.util-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.util-row-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.util-tag {
+  font-size: 11px;
+  color: #c9d1d9;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+
+.util-tag-agent {
+  color: #aff0c0;
+  border-color: #2ea043;
+}
+
+.util-tag-hotkey {
+  color: #88c0ff;
+  border-color: #1f6feb;
+}
+
+.util-row-prompt {
+  font-size: 12px;
+  color: #8b949e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.util-row-cwd {
+  font-size: 11px;
+  color: #6e7681;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.util-row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.util-danger {
+  color: #f0a6a0;
+  border-color: #5a2b2b;
+}
+
+.util-danger:hover {
+  background: #3a1f1f;
+  border-color: #f85149;
+  color: #ffb3ab;
+}
+
+/* Inline add/edit form */
+.util-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px;
+  padding: 12px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+.util-form-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+  margin-bottom: 6px;
+}
+
+.util-select {
+  width: 100%;
+  padding: 7px 8px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: #e6edf3;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  outline: none;
+}
+
+.util-select:focus {
+  border-color: #58a6ff;
+}
+
+.util-textarea {
+  width: 100%;
+  padding: 7px 8px;
+  margin-bottom: 4px;
+  font-family: inherit;
+  font-size: 13px;
+  color: #e6edf3;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  outline: none;
+  resize: vertical;
+}
+
+.util-textarea:focus {
+  border-color: #58a6ff;
+}
+
+.util-cwd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.util-cwd-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: #c9d1d9;
+}
+
+.util-cwd-path.unset {
+  color: #6e7681;
+}
+
+.util-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.util-form-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* Right area: holds the shared terminal group for template runs. */
+.util-terminals {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: #0d1117;
+}
+
+/* ===================================================================== */
+/* === Card 10 — Dashboard mode ======================================== */
+/* ===================================================================== */
+/* ---- Dashboard mode (card 10): read-only widget block grid ----------- */
+/* The view is `flex: 1; display: flex; flex-direction: column`, so a fixed
+   header sits on top and the grid scrolls in the remaining space. */
+.dash-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+
+.dash-head-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.dash-head-sub {
+  font-size: 12px;
+  color: #6e7681;
+}
+
+/* Push the Refresh button to the right edge of the header. */
+.dash-refresh {
+  margin-left: auto;
+}
+
+/* Auto-fill block grid: blocks wrap into as many columns as fit. */
+.dash-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  padding: 16px;
+  background: #0d1117;
+  align-content: start;
+}
+
+/* One widget block (Wave-style card), dark themed. */
+.dash-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+}
+
+/* A non-repo block is dimmed so it reads as "no data here". */
+.dash-block-norepo {
+  opacity: 0.7;
+}
+
+.dash-block-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dash-block-title {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e6edf3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Small uppercase tag marking the block kind (e.g. "git"). */
+.dash-block-kind {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8b949e;
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+/* Quiet full-path subtitle under the title. */
+.dash-block-sub {
+  font-size: 11px;
+  color: #6e7681;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* "not a git repo" state line. */
+.dash-norepo {
+  font-size: 12px;
+  color: #6e7681;
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* A label : value row inside a block. */
+.dash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.dash-row-label {
+  width: 56px;
+  flex-shrink: 0;
+  color: #8b949e;
+}
+
+.dash-branch {
+  color: #58a6ff;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Changed-file count badge. */
+.dash-badge {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
+.dash-badge-changed {
+  color: #f0d97d;
+  background: rgba(187, 128, 9, 0.18);
+  border: 1px solid rgba(187, 128, 9, 0.4);
+}
+
+/* Clean (no changes) state. */
+.dash-clean {
+  color: #3fb950;
+  font-weight: 500;
+}
+
+/* Ahead / behind sync indicators. */
+.dash-tracking {
+  display: inline-flex;
+  gap: 8px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-weight: 600;
+}
+
+.dash-ahead {
+  color: #3fb950;
+}
+
+.dash-behind {
+  color: #f85149;
+}
+
+/* Full-grid message (empty workspace list or load error). */
+.dash-message {
+  grid-column: 1 / -1;
+  padding: 24px;
+  text-align: center;
+  font-size: 13px;
+  color: #6e7681;
+}
+
+
+/* === Card 11: active-terminals + docs blocks === */
+/* ---- Card 11: active-terminals + docs blocks ---- */
+
+/* Active-terminals block: rows read "label .... count", so spread them apart. */
+.dash-term-row {
+  justify-content: space-between;
+}
+
+/* The group label can be a long project name; let it grow and ellipsis. */
+.dash-term-row .dash-row-label {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #c9d1d9;
+}
+
+/* A project row is clickable (jump to that project); Chat/Utilities are not. */
+.dash-term-jump {
+  cursor: pointer;
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.dash-term-jump:hover {
+  background: #21262d;
+}
+
+.dash-term-jump:hover .dash-row-label {
+  color: #58a6ff;
+}
+
+/* Live-terminal count badge (accent blue, distinct from the git "changed" badge). */
+.dash-badge-term {
+  flex-shrink: 0;
+  color: #58a6ff;
+  background: rgba(31, 111, 235, 0.18);
+  border: 1px solid rgba(31, 111, 235, 0.4);
+}
+
+/* The active-terminals subtitle is plain text, not a path, so undo the
+   right-to-left path truncation inherited from .dash-block-sub. */
+.dash-block-terminals .dash-block-sub {
+  direction: ltr;
+  font-family: inherit;
+}
+
+/* Empty state shared by the active-terminals and docs blocks. */
+.dash-empty {
+  font-size: 12px;
+  color: #6e7681;
+  font-style: italic;
+  margin-top: 2px;
+}
+
+/* Docs block: a scrollable list of file names. */
+.dash-doc-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dash-doc-item {
+  font-size: 12px;
+  color: #c9d1d9;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  padding: 2px 4px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dash-doc-item:hover {
+  background: #21262d;
+}
+
+/* === Card 13: attention alerts === */
+/* ---- Attention alerts (card 13) ----------------------------------------- */
+/* Top banner: full-width row above the mode bar listing terminals that need
+   the user. Amber accent = "needs attention" (distinct from the blue accent
+   used for active/selected UI). Hidden via the shared .hidden class when empty. */
+.alert-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 14px;
+  background: #2d2008;            /* dark amber wash on the #0d1117 base */
+  border-bottom: 1px solid #9e6a03;
+  color: #e3b341;
+  font-size: 12px;
+}
+
+/* .hidden may be defined elsewhere; this keeps the banner collapsed even if a
+   later rule sets display on .alert-banner. */
+.alert-banner.hidden {
+  display: none;
+}
+
+.alert-banner-label {
+  font-weight: 600;
+  color: #f2cc60;
+  white-space: nowrap;
+}
+
+.alert-banner-hint {
+  margin-left: auto;
+  color: #d29922;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+/* One chip per waiting terminal. Click jumps to that terminal. */
+.alert-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: #e6edf3;
+  background: #161b22;
+  border: 1px solid #9e6a03;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.alert-chip:hover {
+  background: #21262d;
+  border-color: #e3b341;
+}
+
+.alert-chip-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e3b341;
+  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+}
+
+.alert-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tab badge: a terminal tab that needs attention gets an amber ring + a dot
+   before its label, so the user can spot it even in another project/mode.
+   Works on top of the existing .tg-tab and .tg-tab-active styles. */
+.tg-tab-attention {
+  border-color: #9e6a03;
+  color: #f2cc60;
+}
+
+.tg-tab-attention.tg-tab-active {
+  border-color: #e3b341;
+  border-bottom-color: #0d1117;
+}
+
+/* The attention dot sits before the tab label. Pulses gently to draw the eye. */
+.tg-tab-attention .tg-tab-label::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: #e3b341;
+  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+  animation: tg-attention-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes tg-attention-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Respect users who prefer no motion: keep the dot, drop the pulse. */
+@media (prefers-reduced-motion: reduce) {
+  .tg-tab-attention .tg-tab-label::before {
+    animation: none;
+  }
 }
