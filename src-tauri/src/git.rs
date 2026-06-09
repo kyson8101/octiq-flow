@@ -61,6 +61,50 @@ pub struct ChangedFile {
     pub binary: bool,
 }
 
+/// Per-path git summary for the Dashboard grid and the sidebar line counts. A
+/// path that is missing, not a repo, or whose git call fails comes back with
+/// `is_repo = false` and zeros — never an error — so one bad path does not break
+/// the whole grid. Unlike `RepoChanges` this is per-PATH (not de-duplicated by
+/// repo), because both callers match results back to the path they sent.
+#[derive(Debug, Clone, Serialize)]
+pub struct GitStatus {
+    /// The folder path this summary is for (echoed back so the UI can match it).
+    pub path: String,
+    /// Current branch name, or empty when not a repo / detached with no name.
+    pub branch: String,
+    /// Number of changed entries (staged + unstaged + untracked).
+    pub changed: usize,
+    /// Lines added in the working tree vs HEAD. Counted with the SAME
+    /// `git diff HEAD --numstat -M` the diff panel uses, so this total equals the
+    /// sum of the panel's per-file `added`. Untracked files have no HEAD side and
+    /// are not counted; binary files contribute nothing.
+    pub insertions: u32,
+    /// Lines removed in the working tree vs HEAD (same source as `insertions`).
+    pub deletions: u32,
+    /// Commits ahead of the upstream branch.
+    pub ahead: u32,
+    /// Commits behind the upstream branch.
+    pub behind: u32,
+    /// True only when `git status` ran cleanly and the folder is a git repo.
+    pub is_repo: bool,
+}
+
+impl GitStatus {
+    /// A "not a git repo" result for `path`: everything zeroed, `is_repo` false.
+    fn not_repo(path: String) -> Self {
+        Self {
+            path,
+            branch: String::new(),
+            changed: 0,
+            insertions: 0,
+            deletions: 0,
+            ahead: 0,
+            behind: 0,
+            is_repo: false,
+        }
+    }
+}
+
 /// The unified diff for one file, served on demand.
 #[derive(Debug, Clone, Serialize)]
 pub struct FileDiff {
@@ -434,6 +478,95 @@ fn synthesize_untracked_diff(content: &str) -> String {
     s
 }
 
+// --- Per-path summary (Dashboard grid + sidebar line counts) ----------------
+
+/// Run a git summary for every path. One `GitStatus` per input path, in the same
+/// order. Failures fall back to a `not_repo` entry so the grid always renders.
+#[tauri::command]
+pub fn git_status_summary(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
+    Ok(paths.into_iter().map(status_for_path).collect())
+}
+
+/// Summarize one path: branch + ahead/behind + changed-entry count from
+/// `git status --porcelain=v2 --branch`, then the +/- line totals from the shared
+/// numstat (the same source the diff panel uses). Any error yields a `not_repo`
+/// entry rather than propagating.
+fn status_for_path(path: String) -> GitStatus {
+    let Some(text) = run_git(&path, &["status", "--porcelain=v2", "--branch"]) else {
+        return GitStatus::not_repo(path);
+    };
+    let mut status = parse_status(path.clone(), &text);
+    let (insertions, deletions) = diff_line_counts(&path);
+    status.insertions = insertions;
+    status.deletions = deletions;
+    status
+}
+
+/// Sum a repo's working-tree-vs-HEAD line changes using the SAME
+/// `git diff HEAD --numstat -M` the file list uses, so this total equals the sum
+/// of the panel's per-file counts. Falls back to a no-HEAD diff for a repo with
+/// no commits yet. Untracked files are not counted (no HEAD side); binary files
+/// contribute nothing.
+fn diff_line_counts(path: &str) -> (u32, u32) {
+    let text = run_git(
+        path,
+        &["-c", "core.quotePath=false", "diff", "HEAD", "--numstat", "-M"],
+    )
+    .or_else(|| run_git(path, &["-c", "core.quotePath=false", "diff", "--numstat", "-M"]))
+    .unwrap_or_default();
+    sum_numstat(&text)
+}
+
+/// Total the added / removed columns across all files of one numstat output,
+/// reusing the shared per-file `parse_numstat` so both views count identically.
+fn sum_numstat(text: &str) -> (u32, u32) {
+    let mut insertions = 0u32;
+    let mut deletions = 0u32;
+    for (_, added, removed, _binary) in parse_numstat(text) {
+        insertions += added;
+        deletions += removed;
+    }
+    (insertions, deletions)
+}
+
+/// Parse porcelain v2 `--branch` text into a `GitStatus` (branch, ahead/behind,
+/// changed-entry count). Line counts are filled in later by `status_for_path`.
+fn parse_status(path: String, text: &str) -> GitStatus {
+    let mut branch = String::new();
+    let mut ahead: u32 = 0;
+    let mut behind: u32 = 0;
+    let mut changed: usize = 0;
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.head ") {
+            branch = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix("# branch.ab ") {
+            // Shape: "+<ahead> -<behind>". Tolerate missing/garbled tokens.
+            for token in rest.split_whitespace() {
+                if let Some(n) = token.strip_prefix('+') {
+                    ahead = n.parse().unwrap_or(0);
+                } else if let Some(n) = token.strip_prefix('-') {
+                    behind = n.parse().unwrap_or(0);
+                }
+            }
+        } else if !line.starts_with('#') && !line.trim().is_empty() {
+            // Any non-header, non-blank line is a changed/untracked entry.
+            changed += 1;
+        }
+    }
+
+    GitStatus {
+        path,
+        branch,
+        changed,
+        insertions: 0, // filled by status_for_path via diff_line_counts
+        deletions: 0,
+        ahead,
+        behind,
+        is_repo: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,5 +641,33 @@ mod tests {
     #[test]
     fn synthesize_untracked_empty_is_empty() {
         assert_eq!(synthesize_untracked_diff(""), "");
+    }
+
+    #[test]
+    fn sum_numstat_totals_added_and_deleted() {
+        assert_eq!(sum_numstat("1\t10\tsrc/a.rs\n124\t14\tsrc/b.rs\n"), (125, 24));
+    }
+
+    #[test]
+    fn sum_numstat_skips_binary_dash_rows() {
+        // Binary files report "-" for both counts; they must add nothing.
+        assert_eq!(sum_numstat("-\t-\timg.png\n5\t2\tsrc/c.rs\n"), (5, 2));
+    }
+
+    #[test]
+    fn sum_numstat_empty_output_is_zero() {
+        assert_eq!(sum_numstat(""), (0, 0));
+    }
+
+    #[test]
+    fn parse_status_reads_branch_ahead_behind_and_changed() {
+        let text = "# branch.head main\n# branch.ab +2 -1\n1 .M N... 100644 100644 100644 aaa bbb file.rs\n";
+        let status = parse_status("/tmp/x".into(), text);
+        assert_eq!(status.branch, "main");
+        assert_eq!(status.ahead, 2);
+        assert_eq!(status.behind, 1);
+        assert_eq!(status.changed, 1);
+        // Line counts are filled later, not by parse_status.
+        assert_eq!((status.insertions, status.deletions), (0, 0));
     }
 }
