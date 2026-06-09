@@ -28,6 +28,13 @@ const TERM_THEME = {
   selectionBackground: "#264f78",
 };
 
+// Visible text of the break banner drawn between a restored session and the
+// fresh shell. Kept as a constant because we both WRITE it (on restore) and
+// STRIP it (from the prior scrollback) — they must use the exact same text or
+// banners would stack up across restarts.
+const SESSION_BREAK_TEXT = "session restored · shell restarted";
+const SESSION_BREAK_LINE = `\r\n\x1b[2m──────── ${SESSION_BREAK_TEXT} ────────\x1b[0m\r\n`;
+
 function makeTerminal() {
   const s = getTerminalSettings();
   return new Terminal({
@@ -436,10 +443,18 @@ class TerminalGroup {
     // in idToEntry, so writing the saved scrollback first guarantees the fresh
     // shell's first prompt lands AFTER the restored block, never interleaved.
     if (restoreScrollback) {
-      term.write(restoreScrollback);
-      term.write(
-        "\r\n\x1b[2m──────── session restored · shell restarted ────────\x1b[0m\r\n",
-      );
+      // Earlier restores wrote their own break banner into the buffer, which
+      // then got serialized into this saved scrollback. Drop those carried-over
+      // banner lines so they do not stack up over many restarts — we add back
+      // exactly one fresh banner below. The marker text is literal in the
+      // serialized output, so a line-level includes() match is enough even
+      // though the surrounding dim SGR codes may be re-encoded.
+      const cleaned = restoreScrollback
+        .split(/\r?\n/)
+        .filter((line) => !line.includes(SESSION_BREAK_TEXT))
+        .join("\r\n");
+      term.write(cleaned);
+      term.write(SESSION_BREAK_LINE);
     }
     idToEntry.set(ptyId, { term, group: this, persistKey });
 

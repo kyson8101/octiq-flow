@@ -4,8 +4,8 @@ description: >-
   Manually invoked as `/ship` (or by an explicit "ship it" / "ship this build"
   mention) to run the fixed release sequence for the OctiqFlow Tauri app:
   (1) commit every working-tree change to the current branch, (2) build the
-  release installer with `npm run tauri build`, then (3) print the path of the
-  produced `.dmg`. Commits with a conventional message and no AI attribution;
+  release installer with `npm run tauri build`, then (3) print the folder that
+  holds the produced `.dmg`. Commits with a conventional message and no AI attribution;
   skips the commit step when the tree is already clean. Never pushes, never
   branches, never signs/notarizes, never opens a PR. Does NOT auto-trigger —
   only on the `/ship` slash command or an explicit "ship" mention; a finished
@@ -15,7 +15,7 @@ description: >-
 # Ship
 
 Run the release sequence for this project end to end: **commit → build the
-installer → show the `.dmg` path**. The project is a Tauri 2 desktop app; the
+installer → show the dmg folder path**. The project is a Tauri 2 desktop app; the
 frontend is served straight from `src/` (no bundler) and the installer is
 produced by `npm run tauri build`.
 
@@ -50,17 +50,19 @@ Always run all three steps in order. Stop and report if any step fails.
 2. If the build fails (non-zero exit, `error[...]`, or `failed to bundle`),
    **stop** and show the relevant tail of the build output. Do not continue.
 
-## Step 3 — Show the `.dmg` path
+## Step 3 — Show the dmg folder path
 
-1. Find the newest `.dmg` under the bundle output — do **not** hardcode the
-   version or architecture, they change:
+1. Confirm the build produced a `.dmg` — do **not** hardcode the version or
+   architecture, they change:
 
    ```bash
    ls -t src-tauri/target/release/bundle/dmg/*.dmg 2>/dev/null | head -1
    ```
 
-2. Print its **absolute path** and a clickable relative link, plus the file
-   size. If more than one `.dmg` exists, list them all and mark the newest.
+2. Print the **absolute path of the folder that holds the `.dmg`**:
+   `/Users/kyson/Developer/personal/octiq-flow/src-tauri/target/release/bundle/dmg`,
+   plus a clickable relative link to that folder. Still confirm a `.dmg` is on
+   disk first — never report the folder without a real artifact in it.
 
 ## Rules
 

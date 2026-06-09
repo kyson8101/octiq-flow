@@ -769,12 +769,15 @@ body {
 
 /* Settings gear: a mode button pushed to the right of the mode bar. It reuses
    the .modebtn base (wiring + the active highlight) and only changes position. */
-.modebtn-gear {
+/* Use a doubled-class selector (.modebtn.modebtn-gear) so this beats the base
+   .modebtn rule, which is defined LATER in this file — with equal specificity
+   the later rule would otherwise win and clamp the gear back to 13px. */
+.modebtn.modebtn-gear {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 20px;
+  font-size: 28px;
   line-height: 1;
-  padding: 2px 8px;
+  padding: 2px 10px;
 }
 
 /* ---- Settings page (gear) -------------------------------------------- */
