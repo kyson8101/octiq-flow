@@ -6,11 +6,14 @@
 // on restore launch the agent with its native resume command and that id —
 // `claude --resume <session-id>` — in the same tab.
 //
-// Capture happens OUTSIDE this process: a Claude hook (claude-session-capture.cjs)
-// runs on SessionStart/SessionEnd and writes a tab -> session map to a shared
-// JSON store. We only READ that store here (to build the resume command) and
-// PRUNE it (to drop tabs that no longer exist). The hook is the only writer at
-// runtime; `setup_agent_hooks` installs it into ~/.claude/settings.json.
+// Capture happens OUTSIDE this process: an agent hook (agent-session-capture.cjs)
+// runs on SessionStart and RECORDS a tab -> session map in a shared JSON store.
+// It never deletes — a session ending is not a "forget me" signal, because the
+// app kills the agent on every quit. We READ that store here (to build the resume
+// command) and own ALL cleanup: `prune` drops tabs that no longer exist, and
+// `prune_exited_agent_sessions` drops tabs whose agent the user finished (via the
+// PTY's foreground process). `setup_agent_hooks` installs the hook into each
+// agent's config; `refresh_hook_script` keeps the on-disk script current.
 //
 // Store: ~/.octiqflow/agent-sessions.json, keyed by each tab's stable persistKey:
 //   { "<persistKey>": { "agent": "claude", "sessionId": "...", "cwd": "...", "updatedAt": "..." } }
@@ -123,8 +126,9 @@ fn build_resume_cmd(entry: &SessionEntry) -> Option<String> {
 /// removed. A key ABSENT from the map has no live session this run — a closed
 /// tab, or one not yet restored — so it is left untouched (the layout reconcile
 /// owns closed-tab cleanup, and a not-yet-restored mapping must survive). Returns
-/// whether anything was removed. This is how a Codex tab, which has no
-/// SessionEnd hook, still stops resuming once the user exits the agent.
+/// whether anything was removed. This is the single way a tab stops resuming once
+/// the user exits the agent — for every agent, since the hook now records only and
+/// never deletes on SessionEnd.
 fn drop_exited(
     store: &mut HashMap<String, SessionEntry>,
     running_by_key: &HashMap<String, bool>,
@@ -187,6 +191,23 @@ fn entry_mentions(entry: &Value, marker: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Remove every hook entry we installed (its command mentions `marker`) from one
+/// settings event, and drop the event key entirely if that leaves it empty. Used
+/// to retire an event we no longer register on (Claude's SessionEnd) without
+/// disturbing the user's own hooks under the same event.
+fn remove_event_marker(settings: &mut Value, event: &str, marker: &str) {
+    let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) else {
+        return;
+    };
+    let Some(arr) = hooks.get_mut(event).and_then(|e| e.as_array_mut()) else {
+        return;
+    };
+    arr.retain(|entry| !entry_mentions(entry, marker));
+    if arr.is_empty() {
+        hooks.remove(event);
+    }
+}
+
 /// Shell-quote a path for a hook command. We only ever pass paths under the
 /// user's home; double-quoting handles spaces, and a literal `"` (not expected
 /// in a home path) is backslash-escaped so the quoting can't be broken.
@@ -234,8 +255,10 @@ pub fn prune(live: &HashSet<String>) {
 /// Clear the resume mapping of every tab whose agent has exited (its PTY's
 /// foreground is back to the shell). The frontend calls this on a timer and at
 /// app close, so a tab where the user finished the agent — then left the tab
-/// open — does NOT resume on the next launch. This gives Codex the same
-/// "finished means no resume" behaviour Claude gets from its SessionEnd hook.
+/// open — does NOT resume on the next launch. This is the one "finished means no
+/// resume" signal for every agent: the capture hook only records and never
+/// deletes (deleting on SessionEnd would wipe a live mapping when the app kills
+/// the agent on quit), so this foreground check is what retires exited sessions.
 #[tauri::command]
 pub fn prune_exited_agent_sessions(manager: State<PtyManager>) {
     let running_by_key = manager.agent_foreground_by_key();
@@ -250,12 +273,14 @@ pub fn prune_exited_agent_sessions(manager: State<PtyManager>) {
 }
 
 /// Read a JSON hook-config file (or start empty), register `command` on each of
-/// `events` (idempotent — replaces our own prior entry), and write it back.
-/// Unknown keys and other hook events are preserved, so we never clobber the
-/// user's existing config. Parent dirs are created as needed.
+/// `install_events` (idempotent — replaces our own prior entry), retire our entry
+/// from each of `retire_events` (e.g. a SessionEnd we used to install), and write
+/// it back. Unknown keys and the user's own hooks are preserved, so we never
+/// clobber the user's existing config. Parent dirs are created as needed.
 fn install_hook_into(
     config_path: &std::path::Path,
-    events: &[&str],
+    install_events: &[&str],
+    retire_events: &[&str],
     command: &str,
 ) -> Result<(), String> {
     if let Some(parent) = config_path.parent() {
@@ -268,20 +293,43 @@ fn install_hook_into(
     if !config.is_object() {
         config = json!({});
     }
-    for event in events {
+    for event in install_events {
         upsert_event(&mut config, event, command, HOOK_MARKER);
+    }
+    for event in retire_events {
+        remove_event_marker(&mut config, event, HOOK_MARKER);
     }
     let raw = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(config_path, raw).map_err(|e| e.to_string())
 }
 
+/// Best-effort: rewrite the embedded capture script to its stable on-disk path so
+/// the latest hook logic is always live, even when the user has not re-run
+/// `setup_agent_hooks` from Settings. Called once at app startup. Touches ONLY the
+/// script file under ~/.octiqflow/hooks — never the agents' settings files — so it
+/// is safe to run every launch. Any error is ignored (the feature degrades to the
+/// previously-installed script).
+pub fn refresh_hook_script() {
+    let Some(dir) = octiqflow_dir() else {
+        return;
+    };
+    let hooks_dir = dir.join("hooks");
+    if fs::create_dir_all(&hooks_dir).is_err() {
+        return;
+    }
+    let _ = fs::write(hooks_dir.join(HOOK_SCRIPT_NAME), HOOK_SCRIPT);
+}
+
 /// Install the session-capture hook for every supported agent: write the shared
-/// script to a stable ~/.octiqflow/hooks path, then register it in each agent's
-/// hook config (idempotent):
-///   - Claude: ~/.claude/settings.json, on SessionStart + SessionEnd.
-///   - Codex:  ~/.codex/hooks.json, on SessionStart only (Codex has no
-///     SessionEnd event, so a Codex tab keeps its mapping until the tab closes
-///     or a newer Codex session replaces it).
+/// script to a stable ~/.octiqflow/hooks path, then register it on each agent's
+/// SessionStart (idempotent). We deliberately do NOT register SessionEnd: the app
+/// kills the agent on quit, so a SessionEnd delete would wipe the mapping we need
+/// to resume. Finished-session cleanup is deterministic instead
+/// (`prune_exited_agent_sessions`). Any SessionEnd entry an older build installed
+/// is retired here, so re-running setup tidies it up.
+///   - Claude: ~/.claude/settings.json — register SessionStart, retire SessionEnd.
+///   - Codex:  ~/.codex/hooks.json — register SessionStart (Codex has no
+///     SessionEnd event).
 /// Returns a short status line for the UI.
 #[tauri::command]
 pub fn setup_agent_hooks() -> Result<String, String> {
@@ -300,12 +348,12 @@ pub fn setup_agent_hooks() -> Result<String, String> {
 
     if let Some(claude) = claude_settings_path() {
         let command = format!("node {script} claude");
-        install_hook_into(&claude, &["SessionStart", "SessionEnd"], &command)?;
+        install_hook_into(&claude, &["SessionStart"], &["SessionEnd"], &command)?;
         installed.push("Claude");
     }
     if let Some(codex) = codex_hooks_path() {
         let command = format!("node {script} codex");
-        install_hook_into(&codex, &["SessionStart"], &command)?;
+        install_hook_into(&codex, &["SessionStart"], &[], &command)?;
         installed.push("Codex");
     }
 
@@ -389,6 +437,44 @@ mod tests {
             .filter(|e| entry_mentions(e, HOOK_MARKER))
             .count();
         assert_eq!(marker_entries, 1);
+    }
+
+    #[test]
+    fn remove_event_marker_drops_our_entry_and_empties_the_event() {
+        let mut settings = json!({
+            "hooks": {
+                "SessionEnd": [ { "hooks": [ { "type": "command", "command": "node \"/h/agent-session-capture.cjs\" claude" } ] } ],
+                "SessionStart": [ { "hooks": [ { "type": "command", "command": "node \"/h/agent-session-capture.cjs\" claude" } ] } ]
+            }
+        });
+        remove_event_marker(&mut settings, "SessionEnd", HOOK_MARKER);
+        // SessionEnd held only our entry, so the whole event key is gone now.
+        assert!(settings["hooks"].get("SessionEnd").is_none());
+        // SessionStart is untouched.
+        assert!(settings["hooks"]["SessionStart"].is_array());
+    }
+
+    #[test]
+    fn remove_event_marker_keeps_the_users_own_entries() {
+        let mut settings = json!({
+            "hooks": {
+                "SessionEnd": [
+                    { "hooks": [ { "type": "command", "command": "echo bye" } ] },
+                    { "hooks": [ { "type": "command", "command": "node \"/h/agent-session-capture.cjs\" claude" } ] }
+                ]
+            }
+        });
+        remove_event_marker(&mut settings, "SessionEnd", HOOK_MARKER);
+        let arr = settings["hooks"]["SessionEnd"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["hooks"][0]["command"], json!("echo bye"));
+    }
+
+    #[test]
+    fn remove_event_marker_is_a_no_op_when_absent() {
+        let mut settings = json!({ "model": "x", "hooks": { "PreToolUse": [] } });
+        remove_event_marker(&mut settings, "SessionEnd", HOOK_MARKER);
+        assert_eq!(settings["model"], json!("x"));
     }
 
     #[test]

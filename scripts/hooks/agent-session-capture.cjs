@@ -22,15 +22,19 @@
  *   { "<persistKey>": { "agent": "claude|codex", "sessionId": "...", "cwd": "...", "updatedAt": "..." } }
  *
  * Both Claude and Codex pass the same stdin shape (session_id, hook_event_name,
- * cwd), so one script serves both. Codex has no SessionEnd event, so for Codex
- * the SessionEnd branch is simply never reached.
+ * cwd), so one script serves both.
  *
  * Design rules:
  *   - Never break the agent. Any error -> exit 0 with no output.
  *   - Best effort. A missing env var, empty stdin, or unwritable store is a
  *     silent no-op, not a failure.
- *   - SessionStart upserts the mapping; SessionEnd removes it only when the
- *     stored session id matches, so a newer session in the same tab is kept.
+ *   - RECORD ONLY, never delete. SessionStart upserts the mapping; we do NOT act
+ *     on SessionEnd. The app kills the agent on every quit, so deleting on
+ *     SessionEnd would wipe the very mapping we need to resume on the next
+ *     launch. Dropping the mapping of a tab whose agent the user actually
+ *     finished is the app's job (prune_exited_agent_sessions, which checks each
+ *     PTY's foreground process) — so a finished agent still stops resuming, but a
+ *     live one is never lost on shutdown.
  */
 "use strict";
 
@@ -92,21 +96,10 @@ function main() {
   const file = storeFile();
   const store = readStore(file);
 
-  if (event === "SessionEnd") {
-    // Only drop the mapping if it still points at the session that just ended.
-    // A newer session may already own this tab. (Claude only — Codex has no
-    // SessionEnd event, so this branch never runs for Codex.)
-    if (store[key] && store[key].sessionId === sessionId) {
-      delete store[key];
-      writeStore(file, store);
-    }
-    return;
-  }
-
   // SessionStart (startup | resume | clear | compact): record / refresh the map.
-  // We only ever register on SessionStart and SessionEnd, so guard explicitly —
-  // any other event (a future or mis-wired registration) is ignored, never an
-  // accidental overwrite.
+  // This is the ONLY event we act on. Any other event — including a SessionEnd
+  // left over from an earlier registration — is a deliberate no-op, so the app
+  // killing the agent on quit can never erase a mapping we still need to resume.
   if (event === "SessionStart") {
     store[key] = {
       agent,

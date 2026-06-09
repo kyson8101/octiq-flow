@@ -61,6 +61,11 @@ pub fn run() {
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load(app.handle()));
+            // Keep the agent session-capture hook script on disk current with this
+            // build, so resume fixes ship without the user re-running setup from
+            // Settings. Writes only the script file (never an agent's settings);
+            // best-effort, so a failure here never blocks startup.
+            agent_resume::refresh_hook_script();
 
             Ok(())
         })
