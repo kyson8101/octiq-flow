@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
+mod agent_resume;
 mod dashboard;
 mod fsbrowse;
 mod pty;
@@ -104,12 +105,18 @@ pub fn run() {
             workspaces::update_action,
             workspaces::delete_action,
             workspaces::set_startup,
+            workspaces::set_terminal_command,
+            workspaces::set_description,
+            workspaces::set_color,
             workspaces::pick_folder,
             terminal_layout::save_terminal_layout,
             terminal_layout::load_terminal_layouts,
             terminal_layout::save_scrollback,
             terminal_layout::load_scrollback,
             terminal_layout::clear_project_layout,
+            agent_resume::agent_resume_cmd,
+            agent_resume::setup_agent_hooks,
+            agent_resume::prune_exited_agent_sessions,
             confirm_close,
             dashboard::git_status_summary,
             dashboard::list_docs,

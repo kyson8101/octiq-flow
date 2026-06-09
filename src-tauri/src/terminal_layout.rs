@@ -198,7 +198,11 @@ pub fn save_terminal_layout(
         data.projects.insert(project_id, terminals);
     }
     state.save(&data)?;
-    reconcile_scrollback(&state.scrollback_dir, &live_keys(&data));
+    let live = live_keys(&data);
+    reconcile_scrollback(&state.scrollback_dir, &live);
+    // Drop any captured agent session whose tab no longer exists (e.g. a tab was
+    // closed while its agent still ran, so the hook never removed it).
+    crate::agent_resume::prune(&live);
     Ok(())
 }
 
@@ -245,7 +249,9 @@ pub fn clear_project_layout(
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.projects.remove(&project_id);
     state.save(&data)?;
-    reconcile_scrollback(&state.scrollback_dir, &live_keys(&data));
+    let live = live_keys(&data);
+    reconcile_scrollback(&state.scrollback_dir, &live);
+    crate::agent_resume::prune(&live);
     Ok(())
 }
 

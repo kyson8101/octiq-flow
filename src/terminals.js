@@ -434,11 +434,17 @@ class TerminalGroup {
     }
     idToEntry.set(ptyId, { term, group: this, persistKey });
 
-    // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd. If the
-    // spawn fails, the pane + tab already exist, so show the error there (P3)
-    // rather than swallowing it; the tab stays so the user sees what happened.
+    // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd and
+    // persist_key -> persistKey. The persist key is exported into the shell as
+    // OCTIQ_TERM_KEY so an agent's capture hook can tag its session to this tab
+    // (session resume on restart). `shell` is the Windows shell pick from
+    // Settings (ignored on Unix); it is read at spawn time so a new terminal
+    // always uses the current choice. If the spawn fails, the pane + tab already
+    // exist, so show the error there (P3) rather than swallowing it; the tab
+    // stays so the user sees what happened.
+    const { shell } = getTerminalSettings();
     try {
-      await invoke("pty_spawn", { id: ptyId, cwd, startCmd });
+      await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell });
     } catch (err) {
       reportTermError(term, `failed to start terminal: ${err}`);
     }

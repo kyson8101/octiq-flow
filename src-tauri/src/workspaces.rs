@@ -67,6 +67,21 @@ pub struct Workspace {
     /// first open of this project in a session. Defaults to empty.
     #[serde(default)]
     pub startup: Startup,
+    /// A command auto-run in EVERY new terminal opened in this project (for
+    /// example `nvm use` or `source .venv/bin/activate`). Empty means none. A
+    /// startup terminal's own command takes precedence; session-restore
+    /// terminals never auto-run it (they restore prior output instead).
+    #[serde(default)]
+    pub terminal_command: String,
+    /// A short, user-entered description shown under the project name in the
+    /// sidebar tab. Empty means none.
+    #[serde(default)]
+    pub description: String,
+    /// Accent color for the project's sidebar tab, as a `#rrggbb` hex string.
+    /// Empty means "derive a color from the name" (the frontend does this), so
+    /// every project shows a distinct bar even before the user picks one.
+    #[serde(default)]
+    pub color: String,
 }
 
 /// The full on-disk shape. Wrapped in a struct so the file format can grow
@@ -117,10 +132,23 @@ pub fn list_workspaces(state: State<WorkspaceState>) -> Result<Vec<Workspace>, S
     Ok(data.workspaces.clone())
 }
 
-/// Create a new workspace and return it. A name and a primary path are both
-/// required: the primary path is the main folder the workspace runs in.
+/// Resolve the user's home folder. Used as the default primary path when a
+/// project is created without one. Falls back to $HOME, then "/".
+fn home_dir(app: &AppHandle) -> String {
+    app.path()
+        .home_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| std::env::var("HOME").ok())
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// Create a new workspace and return it. A name is required. The primary path
+/// is the main folder the workspace runs in; when it is empty the user's home
+/// folder is used, so a project can be created without picking a folder first.
 #[tauri::command]
 pub fn add_workspace(
+    app: AppHandle,
     state: State<WorkspaceState>,
     name: String,
     primary_path: String,
@@ -130,9 +158,11 @@ pub fn add_workspace(
         return Err("workspace name cannot be empty".into());
     }
     let primary_path = primary_path.trim().to_string();
-    if primary_path.is_empty() {
-        return Err("primary path is required".into());
-    }
+    let primary_path = if primary_path.is_empty() {
+        home_dir(&app)
+    } else {
+        primary_path
+    };
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     let workspace = Workspace {
         id: Uuid::new_v4().to_string(),
@@ -142,6 +172,9 @@ pub fn add_workspace(
         paths: Vec::new(),
         actions: Vec::new(),
         startup: Startup::default(),
+        terminal_command: String::new(),
+        description: String::new(),
+        color: String::new(),
     };
     data.workspaces.push(workspace.clone());
     state.save(&data)?;
@@ -250,11 +283,7 @@ pub fn remove_workspace_path(
 /// Set the workspace docs root (where session folders are created). A path
 /// from the folder picker, for example an Obsidian vault folder.
 #[tauri::command]
-pub fn set_docs_path(
-    state: State<WorkspaceState>,
-    id: String,
-    path: String,
-) -> Result<(), String> {
+pub fn set_docs_path(state: State<WorkspaceState>, id: String, path: String) -> Result<(), String> {
     let path = path.trim().to_string();
     if path.is_empty() {
         return Err("docs path is required".into());
@@ -404,6 +433,72 @@ pub fn set_startup(
     state.save(&data)
 }
 
+/// Set (or clear) the command auto-run in every new terminal opened in this
+/// project. The command is trimmed; an empty string clears it, so new terminals
+/// open a plain shell again.
+#[tauri::command]
+pub fn set_terminal_command(
+    state: State<WorkspaceState>,
+    id: String,
+    command: String,
+) -> Result<(), String> {
+    let command = command.trim().to_string();
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.terminal_command = command;
+    state.save(&data)
+}
+
+/// Set (or clear) the short description shown under the project name in the
+/// sidebar tab. The text is trimmed; an empty string clears it.
+#[tauri::command]
+pub fn set_description(
+    state: State<WorkspaceState>,
+    id: String,
+    description: String,
+) -> Result<(), String> {
+    let description = description.trim().to_string();
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.description = description;
+    state.save(&data)
+}
+
+/// Set (or clear) the project's accent color for its sidebar tab. Accepts a
+/// `#rrggbb` hex string, or an empty string to clear it (the frontend then
+/// derives a color from the name). Any other value is rejected so a malformed
+/// color can never reach the store.
+#[tauri::command]
+pub fn set_color(state: State<WorkspaceState>, id: String, color: String) -> Result<(), String> {
+    let color = color.trim().to_string();
+    if !color.is_empty() && !is_hex_color(&color) {
+        return Err("color must be a #rrggbb hex string".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.color = color;
+    state.save(&data)
+}
+
+/// True when `s` is a `#rrggbb` hex color: a leading '#' then exactly six
+/// hex digits.
+fn is_hex_color(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(u8::is_ascii_hexdigit)
+}
+
 /// Open the native folder picker and return the chosen path, or `None` if the
 /// user cancelled. Done in Rust so the web view needs no bundler or plugin JS.
 /// `blocking_pick_folder` is safe here: the command runs off the main thread,
@@ -415,4 +510,26 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
         .blocking_pick_folder()
         .and_then(|p| p.into_path().ok())
         .map(|p| p.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_hex_color;
+
+    #[test]
+    fn accepts_valid_six_digit_hex() {
+        assert!(is_hex_color("#1f6feb"));
+        assert!(is_hex_color("#ABCDEF"));
+        assert!(is_hex_color("#000000"));
+    }
+
+    #[test]
+    fn rejects_malformed_colors() {
+        assert!(!is_hex_color(""), "empty is not a hex color");
+        assert!(!is_hex_color("1f6feb"), "missing leading '#'");
+        assert!(!is_hex_color("#fff"), "shorthand 3-digit not accepted");
+        assert!(!is_hex_color("#1f6feb0"), "too long");
+        assert!(!is_hex_color("#12345g"), "non-hex digit");
+        assert!(!is_hex_color("#12 456"), "whitespace inside");
+    }
 }

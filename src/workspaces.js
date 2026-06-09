@@ -13,6 +13,7 @@ const emptyEl = document.querySelector("#workspace-empty");
 const newBtn = document.querySelector("#new-workspace");
 const newModalEl = document.querySelector("#new-modal");
 const newModalFolderEl = document.querySelector("#new-modal-folder");
+const newModalPickBtn = document.querySelector("#new-modal-pick");
 const newModalNameEl = document.querySelector("#new-modal-name");
 const newModalCreateBtn = document.querySelector("#new-modal-create");
 const newModalCancelBtn = document.querySelector("#new-modal-cancel");
@@ -30,11 +31,14 @@ const modalEl = document.querySelector("#ws-modal");
 const modalCloseBtn = document.querySelector("#modal-close");
 const modalDoneBtn = document.querySelector("#modal-done");
 const modalNameEl = document.querySelector("#modal-name");
+const modalDescriptionEl = document.querySelector("#modal-description");
+const modalColorSwatchesEl = document.querySelector("#modal-color-swatches");
 const modalPrimaryEl = document.querySelector("#modal-primary-path");
 const modalChangePrimaryBtn = document.querySelector("#modal-change-primary");
 const modalAddPathBtn = document.querySelector("#modal-add-path");
 const modalPathsEl = document.querySelector("#modal-paths");
 const modalPathsEmptyEl = document.querySelector("#modal-paths-empty");
+const modalTerminalCmdEl = document.querySelector("#modal-terminal-command");
 const modalDeleteBtn = document.querySelector("#modal-delete");
 
 // Startup-layout section (Edit modal).
@@ -62,6 +66,42 @@ function baseName(path) {
   return parts[parts.length - 1] || path;
 }
 
+// --- Project accent color --------------------------------------------------
+// Each project tab shows a thin colored bar (cmux-style). The color is either
+// the one the user picked (stored on the workspace as a #rrggbb hex) or, when
+// none is set, one derived from the project name so every tab still looks
+// distinct. The picker in the Edit modal offers this same fixed palette.
+const COLOR_PALETTE = [
+  "#f87171", // red
+  "#fb923c", // orange
+  "#fbbf24", // amber
+  "#a3e635", // lime
+  "#34d399", // emerald
+  "#22d3ee", // cyan
+  "#60a5fa", // blue
+  "#a78bfa", // violet
+  "#f472b6", // pink
+  "#94a3b8", // slate
+];
+
+/** Pick a stable palette color from a project's name (or id), so the same
+ *  project always gets the same auto color. */
+function autoColor(ws) {
+  const seed = ws.name || ws.id || "";
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) {
+    h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return COLOR_PALETTE[h % COLOR_PALETTE.length];
+}
+
+/** The color to paint a project's accent bar: the picked color, else the
+ *  name-derived auto color. */
+function barColor(ws) {
+  const c = (ws.color || "").trim();
+  return c || autoColor(ws);
+}
+
 /** The currently selected workspace, or undefined. */
 function selected() {
   return workspaces.find((w) => w.id === selectedId);
@@ -80,6 +120,7 @@ function emitProjectSelected() {
             primaryPath: ws.primary_path || "",
             actions: ws.actions || [],
             startup: ws.startup || { terminals: [], command_ids: [] },
+            terminalCommand: ws.terminal_command || "",
           }
         : null,
     }),
@@ -111,16 +152,35 @@ function renderList() {
     const li = document.createElement("li");
     li.className = "ws-item" + (ws.id === selectedId ? " selected" : "");
 
+    // cmux-style accent bar down the left of the tab.
+    const bar = document.createElement("span");
+    bar.className = "ws-item-bar";
+    bar.style.setProperty("--ws-bar", barColor(ws));
+
+    // Title + optional description, stacked.
+    const body = document.createElement("div");
+    body.className = "ws-item-body";
+
     const name = document.createElement("span");
     name.className = "ws-item-name";
     name.textContent = ws.name;
+    body.append(name);
+
+    const desc = (ws.description || "").trim();
+    if (desc) {
+      const descEl = document.createElement("span");
+      descEl.className = "ws-item-desc";
+      descEl.textContent = desc;
+      descEl.title = desc;
+      body.append(descEl);
+    }
 
     const total = (ws.primary_path ? 1 : 0) + ws.paths.length;
     const count = document.createElement("span");
     count.className = "ws-item-count";
     count.textContent = total === 1 ? "1 path" : `${total} paths`;
 
-    li.append(name, count);
+    li.append(bar, body, count);
     li.dataset.id = ws.id;
     li.draggable = true;
     li.addEventListener("click", () => selectWorkspace(ws.id));
@@ -420,19 +480,40 @@ async function annotateFooterBranches(ws) {
 // The footer is informational only now — Edit/Rename/Delete live in the project
 // right-click menu, so the footer no longer opens the edit modal on click.
 
-// --- Create workspace (folder first, then name, then create) ---------------
-let newFolder = null; // the folder chosen for the workspace being created
+// --- Create workspace (optional folder, then name, then create) ------------
+// The primary folder is optional now: leaving it unset makes the backend use
+// the user's home folder, so a project can be created without picking a folder.
+let newFolder = null; // the folder chosen for the workspace, or null for home
 
-newBtn.addEventListener("click", async () => {
+/** Render the chosen folder in the new-project modal, or the home-default hint
+ *  when none is chosen yet. */
+function renderNewFolder() {
+  if (newFolder) {
+    newModalFolderEl.textContent = newFolder;
+    newModalFolderEl.title = newFolder;
+    newModalFolderEl.classList.remove("unset");
+  } else {
+    newModalFolderEl.textContent = "Default: your home folder";
+    newModalFolderEl.title = "";
+    newModalFolderEl.classList.add("unset");
+  }
+}
+
+newBtn.addEventListener("click", () => {
+  newFolder = null;
+  renderNewFolder();
+  newModalNameEl.value = "";
+  newModalEl.classList.remove("hidden");
+  newModalNameEl.focus();
+});
+
+newModalPickBtn.addEventListener("click", async () => {
   const folder = await invoke("pick_folder");
   if (!folder) return; // cancelled the dialog
   newFolder = folder;
-  newModalFolderEl.textContent = folder;
-  newModalFolderEl.title = folder;
-  newModalNameEl.value = baseName(folder); // sensible default name
-  newModalEl.classList.remove("hidden");
-  newModalNameEl.focus();
-  newModalNameEl.select();
+  renderNewFolder();
+  // Fill a sensible default name from the folder if the user has not typed one.
+  if (!newModalNameEl.value.trim()) newModalNameEl.value = baseName(folder);
 });
 
 function closeNewModal() {
@@ -443,10 +524,9 @@ function closeNewModal() {
 
 async function createWorkspace() {
   const name = newModalNameEl.value.trim();
-  if (!name || !newFolder) return;
+  if (!name) return; // name is required; folder is optional (defaults to home)
 
-  const folder = newFolder;
-  const ws = await invoke("add_workspace", { name, primaryPath: folder });
+  const ws = await invoke("add_workspace", { name, primaryPath: newFolder || "" });
   closeNewModal();
   await refresh();
   selectWorkspace(ws.id);
@@ -489,6 +569,8 @@ function renderModal() {
   if (!ws) return;
 
   modalNameEl.value = ws.name;
+  modalDescriptionEl.value = ws.description || "";
+  renderColorSwatches(ws);
   resetDeleteButton();
 
   if (ws.primary_path) {
@@ -531,6 +613,8 @@ function renderModal() {
     li.append(text, remove);
     modalPathsEl.append(li);
   }
+
+  modalTerminalCmdEl.value = ws.terminal_command || "";
 
   seedStartupDraft(ws);
   renderStartup();
@@ -674,6 +758,79 @@ modalNameEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     modalNameEl.blur(); // triggers change -> commitName
+  }
+});
+
+/** Save the description when it changes (on blur or Enter). An empty value
+ *  clears it. */
+async function commitDescription() {
+  const ws = selected();
+  if (!ws) return;
+  const description = modalDescriptionEl.value.trim();
+  if (description === (ws.description || "")) return; // unchanged
+  await invoke("set_description", { id: ws.id, description });
+  await refresh();
+}
+
+modalDescriptionEl.addEventListener("change", commitDescription);
+modalDescriptionEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    modalDescriptionEl.blur(); // triggers change -> commitDescription
+  }
+});
+
+/** Render the color-swatch picker for a project. The first swatch is the
+ *  auto/rainbow option (clears the stored color, falling back to a name-derived
+ *  hue); the rest are the fixed palette. The active one is ringed. */
+function renderColorSwatches(ws) {
+  if (!modalColorSwatchesEl) return;
+  modalColorSwatchesEl.innerHTML = "";
+  const current = (ws.color || "").trim().toLowerCase();
+
+  const auto = document.createElement("button");
+  auto.type = "button";
+  auto.className = "color-swatch color-swatch-auto" + (current === "" ? " active" : "");
+  auto.title = "Auto (from name)";
+  auto.textContent = "A";
+  auto.style.setProperty("--swatch", autoColor(ws));
+  auto.addEventListener("click", () => pickColor(ws.id, ""));
+  modalColorSwatchesEl.append(auto);
+
+  for (const hex of COLOR_PALETTE) {
+    const sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "color-swatch" + (current === hex.toLowerCase() ? " active" : "");
+    sw.title = hex;
+    sw.style.setProperty("--swatch", hex);
+    sw.addEventListener("click", () => pickColor(ws.id, hex));
+    modalColorSwatchesEl.append(sw);
+  }
+}
+
+/** Persist a project's accent color (empty = auto) and re-render so the bar and
+ *  the active swatch update. */
+async function pickColor(id, color) {
+  await invoke("set_color", { id, color });
+  await refresh();
+}
+
+/** Save the per-project "run on every new terminal" command when it changes
+ *  (on blur or Enter). An empty value clears it. */
+async function commitTerminalCommand() {
+  const ws = selected();
+  if (!ws) return;
+  const command = modalTerminalCmdEl.value.trim();
+  if (command === (ws.terminal_command || "")) return; // unchanged
+  await invoke("set_terminal_command", { id: ws.id, command });
+  await refresh();
+}
+
+modalTerminalCmdEl.addEventListener("change", commitTerminalCommand);
+modalTerminalCmdEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    modalTerminalCmdEl.blur(); // triggers change -> commitTerminalCommand
   }
 });
 

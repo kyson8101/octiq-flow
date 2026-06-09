@@ -32,8 +32,16 @@ const DEFAULT_BODY: &str = "needs attention";
 
 /// What the parsed command line resolved to: either values to emit, or a
 /// request to print help (which is not an error).
+///
+/// `osc99` selects the Kitty OSC 99 wire format instead of the default OSC 777.
+/// Both reach the same scanner in `pty.rs`; the flag exists so the OSC 99 path
+/// can be exercised end-to-end from a real terminal.
 enum Parsed {
-    Notify { title: String, body: String },
+    Notify {
+        title: String,
+        body: String,
+        osc99: bool,
+    },
     Help,
 }
 
@@ -44,13 +52,21 @@ fn main() -> ExitCode {
             print!("{}", help_text());
             ExitCode::SUCCESS
         }
-        Ok(Parsed::Notify { title, body }) => {
+        Ok(Parsed::Notify { title, body, osc99 }) => {
             // Write the raw sequence to stdout. If stdout is the octiq PTY, the
             // scanner picks it up; if it is a plain terminal, the bytes are
             // harmless (an unknown OSC is ignored by terminals).
-            let seq = build_sequence(&title, &body);
+            let seq = if osc99 {
+                build_osc99(&title, &body)
+            } else {
+                build_sequence(&title, &body)
+            };
             let mut out = std::io::stdout();
-            if out.write_all(seq.as_bytes()).and_then(|_| out.flush()).is_err() {
+            if out
+                .write_all(seq.as_bytes())
+                .and_then(|_| out.flush())
+                .is_err()
+            {
                 return ExitCode::FAILURE;
             }
             ExitCode::SUCCESS
@@ -79,6 +95,7 @@ fn main() -> ExitCode {
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut title: Option<String> = None;
     let mut body: Option<String> = None;
+    let mut osc99 = false;
     let mut positional: Vec<String> = Vec::new();
 
     let mut i = 0;
@@ -86,6 +103,10 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         let arg = args[i].as_str();
         match arg {
             "--help" | "-h" => return Ok(Parsed::Help),
+            "--osc99" => {
+                osc99 = true;
+                i += 1;
+            }
             "--title" | "-t" => {
                 let value = args
                     .get(i + 1)
@@ -122,6 +143,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
     Ok(Parsed::Notify {
         title: title.unwrap_or_default(),
         body,
+        osc99,
     })
 }
 
@@ -150,18 +172,48 @@ fn sanitize(value: &str) -> String {
         .collect()
 }
 
+/// Build a Kitty OSC 99 notification for the scanner's `parse_osc99` path.
+///
+/// OSC 99 carries its text in a single trailing payload that the scanner splits
+/// off on the FIRST `;`, so unlike OSC 777 the text may keep its own `;` — we
+/// only strip control bytes, never rewrite `;`.
+///
+/// When a title is given we emit Kitty's canonical TWO-chunk form: a `d=0`
+/// (not-done) title chunk followed by the closing body chunk, both sharing
+/// `i=1`. The scanner skips the `d=0` chunk and raises one alert from the body
+/// chunk. With no title we emit a single `p=body` chunk. Terminator is BEL, to
+/// match `build_sequence`.
+fn build_osc99(title: &str, body: &str) -> String {
+    let body = strip_controls(body);
+    if title.is_empty() {
+        format!("{ESC}]99;p=body;{body}{BEL}")
+    } else {
+        let title = strip_controls(title);
+        format!("{ESC}]99;i=1:d=0:p=title;{title}{BEL}{ESC}]99;i=1:p=body;{body}{BEL}")
+    }
+}
+
+/// Drop ASCII control characters (ESC, BEL, and the other C0 controls) so a
+/// value can never close the OSC sequence early or inject another. Unlike
+/// [`sanitize`], `;` is left intact — the OSC 99 scanner splits on the first
+/// `;` only, so a `;` inside the text is safe.
+fn strip_controls(value: &str) -> String {
+    value.chars().filter(|c| !c.is_control()).collect()
+}
+
 /// Usage text shared by `--help` and the parse-error path.
 fn help_text() -> String {
     "\
 octiq-notify - raise an octiq attention alert from inside an octiq terminal
 
 USAGE:
-    octiq-notify [--title <title>] [--body <body>]
+    octiq-notify [--title <title>] [--body <body>] [--osc99]
     octiq-notify <body words...>
 
 OPTIONS:
     -t, --title <title>   Alert title (optional).
     -b, --body  <body>    Alert body (optional; defaults to \"needs attention\").
+        --osc99           Emit the Kitty OSC 99 format instead of OSC 777.
     -h, --help            Show this help.
 
 NOTES:
@@ -178,9 +230,14 @@ mod tests {
     use super::*;
 
     fn notify(args: &[&str]) -> (String, String) {
+        let (title, body, _osc99) = notify_full(args);
+        (title, body)
+    }
+
+    fn notify_full(args: &[&str]) -> (String, String, bool) {
         let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         match parse_args(&owned).expect("parse should succeed") {
-            Parsed::Notify { title, body } => (title, body),
+            Parsed::Notify { title, body, osc99 } => (title, body, osc99),
             Parsed::Help => panic!("expected Notify, got Help"),
         }
     }
@@ -250,5 +307,48 @@ mod tests {
         // An embedded ESC or BEL must not be able to close or restart the OSC.
         let seq = build_sequence("ti\x1btle", "bo\x07dy");
         assert_eq!(seq, "\x1b]777;notify;title;body\x07");
+    }
+
+    #[test]
+    fn osc99_flag_is_parsed() {
+        let (title, body, osc99) = notify_full(&["--osc99", "-b", "ping"]);
+        assert_eq!(title, "");
+        assert_eq!(body, "ping");
+        assert!(osc99);
+    }
+
+    #[test]
+    fn osc99_defaults_to_false() {
+        let (_t, _b, osc99) = notify_full(&["-b", "ping"]);
+        assert!(!osc99);
+    }
+
+    #[test]
+    fn osc99_body_only_is_single_p_body_chunk() {
+        let seq = build_osc99("", "needs input");
+        assert_eq!(seq, "\x1b]99;p=body;needs input\x07");
+    }
+
+    #[test]
+    fn osc99_with_title_emits_two_chunks() {
+        // Title chunk is d=0 (skipped by the scanner); body chunk fires the alert.
+        let seq = build_osc99("Claude", "needs input");
+        assert_eq!(
+            seq,
+            "\x1b]99;i=1:d=0:p=title;Claude\x07\x1b]99;i=1:p=body;needs input\x07"
+        );
+    }
+
+    #[test]
+    fn osc99_keeps_semicolons_in_text() {
+        // OSC 99 splits on the FIRST ';' only, so text may keep its own ';'.
+        let seq = build_osc99("", "a;b;c");
+        assert_eq!(seq, "\x1b]99;p=body;a;b;c\x07");
+    }
+
+    #[test]
+    fn osc99_strips_control_bytes() {
+        let seq = build_osc99("", "bo\x07dy\x1b");
+        assert_eq!(seq, "\x1b]99;p=body;body\x07");
     }
 }

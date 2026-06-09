@@ -282,9 +282,8 @@ body {
 
 .ws-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  align-items: stretch;
+  gap: 10px;
   padding: 8px 10px;
   border-radius: 6px;
   font-size: 13px;
@@ -301,13 +300,48 @@ body {
   color: #ffffff;
 }
 
+/* cmux-style accent bar: a thin colored strip down the left of each tab.
+   Its color is set inline via the --ws-bar custom property (stored color, or
+   a hue derived from the project name when none is picked). */
+.ws-item-bar {
+  flex: 0 0 3px;
+  align-self: stretch;
+  min-height: 18px;
+  border-radius: 2px;
+  background: var(--ws-bar, #6e7681);
+}
+
+.ws-item-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .ws-item-name {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* Optional description line under the project name. Hidden when empty. */
+.ws-item-desc {
+  font-size: 11px;
+  line-height: 1.3;
+  color: #8b949e;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ws-item.selected .ws-item-desc {
+  color: #cbe1ff;
+}
+
 .ws-item-count {
+  align-self: center;
   font-size: 11px;
   color: #8b949e;
   flex-shrink: 0;
@@ -315,6 +349,56 @@ body {
 
 .ws-item.selected .ws-item-count {
   color: #cbe1ff;
+}
+
+/* Color swatch picker (Edit modal). The first swatch is the auto/rainbow
+   option: it clears the stored color and falls back to a name-derived hue. */
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0;
+}
+
+.color-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--swatch, #6e7681);
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.08s ease;
+}
+
+.color-swatch:hover {
+  transform: scale(1.12);
+}
+
+.color-swatch.active {
+  border-color: #0d1117;
+  box-shadow: 0 0 0 2px var(--swatch, #c9d1d9);
+}
+
+.color-swatch-auto {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #0d1117;
+  background: conic-gradient(
+    from 90deg,
+    #f87171,
+    #fbbf24,
+    #34d399,
+    #22d3ee,
+    #60a5fa,
+    #a78bfa,
+    #f472b6,
+    #f87171
+  );
 }
 
 .ws-empty {
@@ -712,6 +796,35 @@ body {
   font-size: 12px;
   line-height: 1.5;
   color: #8b949e;
+}
+
+/* Inline code chip inside help text (e.g. `claude --resume`). */
+.settings-help code {
+  font-family: "Fira Code", Menlo, monospace;
+  font-size: 11px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: #c9d1d9;
+}
+
+/* Result line next to an action button (hook setup). Neutral by default; green
+   on success, red on failure. */
+.settings-status {
+  display: inline-block;
+  margin-left: 10px;
+  font-size: 12px;
+  vertical-align: middle;
+  color: #8b949e;
+}
+
+.settings-status-ok {
+  color: #3fb950;
+}
+
+.settings-status-error {
+  color: #f85149;
 }
 
 /* A labelled control row inside a settings section (font family / size / line

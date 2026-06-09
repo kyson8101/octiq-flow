@@ -15,6 +15,8 @@
 //   - system — only renders if the font is installed on this machine; its CSS
 //     stack falls back to a generic monospace otherwise.
 
+const { invoke } = window.__TAURI__.core;
+
 // ---- Pure state layer -----------------------------------------------------
 
 /** The terminal font choices shown in the picker. `stack` is the CSS
@@ -30,11 +32,30 @@ export const TERMINAL_FONTS = [
   { id: "courier-new", label: "Courier New", kind: "system", stack: `"Courier New", Courier, monospace` },
 ];
 
+/** The shell choices shown in the Windows-only picker. `id` is the value sent
+ *  to the backend (pty_spawn -> resolve_shell). PowerShell is first and is the
+ *  default: it handles modern CLI agents (claude, codex) far better than cmd.exe
+ *  (ANSI, line editing). This picker is hidden on macOS/Linux, where the login
+ *  shell is always used regardless of this value. */
+export const WINDOWS_SHELLS = [
+  { id: "powershell", label: "PowerShell" },
+  { id: "cmd", label: "Command Prompt (cmd.exe)" },
+];
+
 export const DEFAULT_TERMINAL_SETTINGS = {
   fontId: "fira-code",
   fontSize: 13,
   lineHeight: 1.0,
+  shell: "powershell",
 };
+
+/** The shell id if it is a known choice, else the default. Never returns an
+ *  unknown value, so a corrupt or renamed saved pick can never reach the
+ *  backend as a bad program name. */
+export function shellById(id) {
+  const found = WINDOWS_SHELLS.find((s) => s.id === id);
+  return found ? found.id : DEFAULT_TERMINAL_SETTINGS.shell;
+}
 
 // Allowed numeric ranges. load() clamps to these, so a hand-edited or corrupt
 // localStorage value can never push an absurd size/line-height into xterm.
@@ -81,6 +102,7 @@ export function getTerminalSettings() {
     fontFamily: font.stack,
     fontSize: clamp(saved.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_TERMINAL_SETTINGS.fontSize),
     lineHeight: clamp(saved.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, DEFAULT_TERMINAL_SETTINGS.lineHeight),
+    shell: shellById(saved.shell),
   };
 }
 
@@ -91,7 +113,12 @@ export function saveTerminalSettings(partial) {
   const next = { ...getTerminalSettings(), ...partial };
   localStorage.setItem(
     KEY,
-    JSON.stringify({ fontId: next.fontId, fontSize: next.fontSize, lineHeight: next.lineHeight }),
+    JSON.stringify({
+      fontId: next.fontId,
+      fontSize: next.fontSize,
+      lineHeight: next.lineHeight,
+      shell: next.shell,
+    }),
   );
   const settings = getTerminalSettings();
   window.dispatchEvent(new CustomEvent(TERMINAL_SETTINGS_CHANGED, { detail: settings }));
@@ -128,6 +155,43 @@ function paintPreview(preview, settings) {
   preview.style.lineHeight = String(settings.lineHeight);
 }
 
+/** True when the app runs on Windows. The shell picker only makes sense there;
+ *  macOS and Linux always use the login shell. */
+function isWindows() {
+  return /win/i.test(navigator.userAgent) && !/darwin|mac/i.test(navigator.userAgent);
+}
+
+/** Fill the shell <select> with the Windows shell catalog. */
+function buildShellOptions(select) {
+  for (const shell of WINDOWS_SHELLS) {
+    const opt = document.createElement("option");
+    opt.value = shell.id;
+    opt.textContent = shell.label;
+    select.append(opt);
+  }
+}
+
+/** Wire the Windows shell picker. The field is hidden on macOS/Linux, where the
+ *  login shell is always used, so the control never confuses non-Windows users.
+ *  Saving fires the settings event, but the shell only takes effect on NEWLY
+ *  opened terminals (a running shell cannot be swapped live). Bails quietly when
+ *  the controls are absent. */
+function wireShellPicker() {
+  const field = document.getElementById("term-shell-field");
+  const select = document.getElementById("term-shell");
+  if (!field || !select) return;
+  if (!isWindows()) {
+    field.hidden = true;
+    return;
+  }
+  field.hidden = false;
+  buildShellOptions(select);
+  select.value = getTerminalSettings().shell;
+  select.addEventListener("change", () => {
+    saveTerminalSettings({ shell: select.value });
+  });
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   const fontSel = document.getElementById("term-font-family");
   const sizeInput = document.getElementById("term-font-size");
@@ -157,4 +221,38 @@ document.addEventListener("DOMContentLoaded", () => {
   fontSel.addEventListener("change", () => reflect(saveTerminalSettings({ fontId: fontSel.value })));
   sizeInput.addEventListener("input", () => reflect(saveTerminalSettings({ fontSize: Number(sizeInput.value) })));
   lineInput.addEventListener("input", () => reflect(saveTerminalSettings({ lineHeight: Number(lineInput.value) })));
+
+  wireShellPicker();
+  wireAgentHookSetup();
 });
+
+/** Wire the "Set up Claude resume hook" button: install the session-capture
+ *  hook into ~/.claude/settings.json on click, and show the backend's status (or
+ *  the error) next to the button. The button is disabled while it runs so a
+ *  double-click cannot install twice. Bails quietly if the controls are absent. */
+function wireAgentHookSetup() {
+  const btn = document.getElementById("setup-agent-hooks");
+  const status = document.getElementById("setup-agent-hooks-status");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    if (status) {
+      status.textContent = "Setting up…";
+      status.classList.remove("settings-status-error", "settings-status-ok");
+    }
+    try {
+      const message = await invoke("setup_agent_hooks");
+      if (status) {
+        status.textContent = message || "Done.";
+        status.classList.add("settings-status-ok");
+      }
+    } catch (err) {
+      if (status) {
+        status.textContent = `Could not set up the hook: ${err}`;
+        status.classList.add("settings-status-error");
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}

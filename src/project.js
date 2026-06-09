@@ -23,7 +23,7 @@ const { listen } = window.__TAURI__.event;
 
 const mountEl = document.querySelector("#project-terminals");
 
-// projectId -> { group, primaryPath, startup, restoring, dirty:Set<ptyId>, saveTimer }
+// projectId -> { group, primaryPath, startup, terminalCommand, restoring, dirty:Set<ptyId>, saveTimer }
 const projects = new Map();
 // Project ids whose startup terminals / restore have already opened this
 // session, so neither runs twice — re-opening an emptied project later gives
@@ -48,7 +48,7 @@ const LAYOUT_SAVE_MS = 500;
 const SCROLLBACK_FLUSH_MS = 5000;
 
 /** Get or create the terminal group for a project id. */
-function groupFor(id, primaryPath, startup) {
+function groupFor(id, primaryPath, startup, terminalCommand) {
   let rec = projects.get(id);
   if (!rec) {
     const group = createTerminalGroup(mountEl, id);
@@ -58,6 +58,7 @@ function groupFor(id, primaryPath, startup) {
       group,
       primaryPath,
       startup,
+      terminalCommand,
       restoring: false,
       dirty: new Set(),
       saveTimer: null,
@@ -68,14 +69,18 @@ function groupFor(id, primaryPath, startup) {
     group.onOutput = (ptyId) => rec.dirty.add(ptyId);
     projects.set(id, rec);
   } else {
-    // Primary path / startup layout may have changed since last time; keep fresh.
+    // Primary path / startup layout / terminal command may have changed since
+    // last time; keep fresh so the next spawn uses the latest values.
     rec.primaryPath = primaryPath;
     rec.startup = startup;
+    rec.terminalCommand = terminalCommand;
   }
   return rec;
 }
 
-/** Spawn one terminal in a project's group, cd'd to its primary path. */
+/** Spawn one terminal in a project's group, cd'd to its primary path. If the
+ *  project defines a "run on every new terminal" command, it is sent to the new
+ *  shell on open. */
 async function spawnInProject(id) {
   const rec = projects.get(id);
   if (!rec) return;
@@ -83,7 +88,7 @@ async function spawnInProject(id) {
   // (P4), so closing then reopening a tab never shows a duplicate number.
   await rec.group.newTerminal({
     cwd: rec.primaryPath,
-    startCmd: null,
+    startCmd: rec.terminalCommand || null,
   });
 }
 
@@ -101,9 +106,11 @@ async function spawnStartup(id) {
     return;
   }
   for (const entry of terms) {
+    // A startup terminal's own command wins; otherwise fall back to the
+    // project's "run on every new terminal" command (null = plain shell).
     await rec.group.newTerminal({
       cwd: rec.primaryPath,
-      startCmd: entry.cmd || null,
+      startCmd: entry.cmd || rec.terminalCommand || null,
       title: entry.title || undefined,
     });
   }
@@ -125,11 +132,21 @@ async function restoreProject(id, saved) {
       } catch {
         restoreScrollback = "";
       }
+      // If this tab was running an AI agent (captured by its hook), re-launch the
+      // agent's native resume command so the conversation continues — e.g.
+      // `claude --resume <session-id>`. Plain shells get no startCmd. The backend
+      // validates and builds the command, so we just pass it through.
+      let startCmd = null;
+      try {
+        startCmd = (await invoke("agent_resume_cmd", { key: t.persistKey })) || null;
+      } catch {
+        startCmd = null;
+      }
       await rec.group.newTerminal({
         persistKey: t.persistKey,
         title: t.title || undefined,
         cwd: t.cwd || rec.primaryPath,
-        startCmd: null,
+        startCmd,
         restoreScrollback,
       });
     }
@@ -147,17 +164,25 @@ async function onProjectSelected(detail) {
     return;
   }
 
-  const { id, primaryPath, startup } = detail;
+  const { id, primaryPath, startup, terminalCommand } = detail;
   if (id === currentId) {
-    // Re-selecting the same project (e.g. a refresh): keep it shown + refit.
-    projects.get(id)?.group.show();
+    // Re-selecting the same project (e.g. a refresh after an edit): keep the
+    // latest primary path / startup / terminal command on the live record so
+    // the next spawned terminal uses them, then keep it shown + refit.
+    const rec = projects.get(id);
+    if (rec) {
+      rec.primaryPath = primaryPath;
+      rec.startup = startup;
+      rec.terminalCommand = terminalCommand;
+      rec.group.show();
+    }
     return;
   }
 
   // Hide the previous project's group (terminals stay alive).
   if (currentId) projects.get(currentId)?.group.hide();
 
-  const rec = groupFor(id, primaryPath, startup);
+  const rec = groupFor(id, primaryPath, startup, terminalCommand);
   currentId = id;
 
   // Show first so the panes have a real size before we fit/spawn.
@@ -223,6 +248,10 @@ function flushDirty() {
       invoke("save_scrollback", { key, data: rec.group.scrollbackFor(ptyId) }).catch(() => {});
     }
   }
+  // Clear resume mappings for tabs whose agent has exited (shell back at the
+  // prompt). Doing it on this timer means an exited agent stops being a resume
+  // candidate within seconds, so even a crash leaves the store correct.
+  invoke("prune_exited_agent_sessions").catch(() => {});
 }
 setInterval(flushDirty, SCROLLBACK_FLUSH_MS);
 
@@ -250,6 +279,9 @@ async function flushAll() {
 listen("app-closing", async () => {
   try {
     await flushAll();
+    // Last chance to drop tabs whose agent already exited, so they do not resume
+    // on the next launch. Agents still running now stay mapped and DO resume.
+    await invoke("prune_exited_agent_sessions").catch(() => {});
   } finally {
     invoke("confirm_close").catch(() => {});
   }

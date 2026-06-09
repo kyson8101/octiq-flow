@@ -265,6 +265,17 @@
                 <span class="settings-label">Preview</span>
                 <pre id="term-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
               </div>
+
+              <!-- Windows-only: pick the shell new terminals start with. Hidden
+                   by default; settings.js unhides it only on Windows. -->
+              <div class="settings-field" id="term-shell-field" hidden>
+                <label class="settings-label" for="term-shell">Shell (Windows)</label>
+                <select id="term-shell" class="settings-select"></select>
+                <p class="settings-help">
+                  Used by new terminals only. PowerShell is recommended; it works
+                  better with agents like Claude than Command Prompt.
+                </p>
+              </div>
             </section>
 
             <section class="settings-section">
@@ -276,11 +287,25 @@
               </p>
               <button id="test-notify" class="btn btn-sm" title="Send a test OS notification (banner + sound)">🔔 Send test notification</button>
             </section>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Agent session resume</div>
+              <p class="settings-help">
+                Let a terminal that runs Claude or Codex re-open its session after
+                OctiqFlow restarts. This installs a small hook for each agent that
+                records the tab's session id, so a restored tab runs
+                <code>claude --resume</code> or <code>codex resume</code> on its own
+                instead of starting a fresh prompt. Set it up once.
+              </p>
+              <button id="setup-agent-hooks" class="btn btn-sm" title="Install the session-capture hooks for Claude (~/.claude/settings.json) and Codex (~/.codex/hooks.json)">↺ Set up agent resume hooks</button>
+              <span id="setup-agent-hooks-status" class="settings-status"></span>
+            </section>
           </div>
         </div>
       </section>
 
-    <!-- New-workspace modal: choose folder first, then name, then create -->
+    <!-- New-workspace modal: pick a folder (optional — defaults to home), name,
+         then create -->
     <div id="new-modal" class="modal-backdrop hidden">
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-head">
@@ -288,8 +313,11 @@
           <button id="new-modal-close" class="icon-btn" title="Close">✕</button>
         </div>
 
-        <label class="modal-label">Primary folder</label>
-        <span id="new-modal-folder" class="ws-primary-path"></span>
+        <div class="modal-section-head">
+          <span>Primary folder</span>
+          <button id="new-modal-pick" class="btn btn-sm" type="button">Choose folder</button>
+        </div>
+        <span id="new-modal-folder" class="ws-primary-path unset"></span>
 
         <label class="modal-label" for="new-modal-name">Name</label>
         <input id="new-modal-name" class="inline-input" autocomplete="off" placeholder="Workspace name…" />
@@ -312,6 +340,14 @@
         <label class="modal-label" for="modal-name">Name</label>
         <input id="modal-name" class="inline-input" autocomplete="off" />
 
+        <label class="modal-label" for="modal-description">Description</label>
+        <input id="modal-description" class="inline-input" autocomplete="off" placeholder="Short description (optional)" />
+
+        <div class="modal-section-head">
+          <span>Color</span>
+        </div>
+        <div id="modal-color-swatches" class="color-swatches"></div>
+
         <div class="modal-section-head">
           <span class="badge-primary">Primary</span>
           <button id="modal-change-primary" class="btn btn-sm">Change folder</button>
@@ -333,6 +369,15 @@
         </div>
         <ul id="modal-paths" class="ws-paths"></ul>
         <p id="modal-paths-empty" class="ws-empty">No other folders added yet.</p>
+
+        <div class="modal-section-head">
+          <span>Run on every new terminal</span>
+        </div>
+        <input id="modal-terminal-command" class="inline-input" autocomplete="off" placeholder="e.g. nvm use (optional)" />
+        <p class="modal-section-hint">
+          Runs in each new terminal opened in this project. A startup terminal's
+          own command takes precedence. Restored terminals do not re-run it.
+        </p>
 
         <section class="startup-section" id="modal-startup-section">
           <div class="modal-section-head">
