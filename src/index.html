@@ -33,6 +33,7 @@
     <script type="module" src="/utilities.js" defer></script>
     <script type="module" src="/dashboard.js" defer></script>
     <script type="module" src="/browser.js" defer></script>
+    <script type="module" src="/gitdiff.js" defer></script>
     <script type="module" src="/alerts.js" defer></script>
     <script type="module" src="/settings.js" defer></script>
   </head>
@@ -110,6 +111,35 @@
                 </span>
               </div>
               <div id="pb-preview-body" class="pb-preview-body"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Git changes (right-click "Git changes"). A GitHub-style diff of the
+             project's uncommitted changes across all its folder paths. Hidden
+             until opened; gitdiff.js fills it and toggles it against
+             .center-terms (and the file browser above). No PTY here. -->
+        <div id="project-gitdiff" class="project-gitdiff hidden">
+          <div class="gd-head">
+            <span id="gd-title" class="gd-title">Git changes</span>
+            <div class="gd-view-toggle" role="group" aria-label="Diff view">
+              <button id="gd-view-unified" class="gd-toggle-btn gd-toggle-active" type="button">Unified</button>
+              <button id="gd-view-split" class="gd-toggle-btn" type="button">Split</button>
+            </div>
+            <button id="gd-refresh" class="pb-btn" type="button" title="Reload changes">↻ Refresh</button>
+            <button id="gd-back" class="pb-btn pb-back" type="button" title="Back to terminals">✕ Terminals</button>
+          </div>
+
+          <!-- Body: changed-file list (left) | diff for the selected file (right). -->
+          <div class="gd-body">
+            <div id="gd-list" class="gd-list"></div>
+
+            <div class="gd-diff-pane">
+              <div id="gd-diff-head" class="gd-diff-head hidden">
+                <span id="gd-diff-name" class="gd-diff-name"></span>
+                <span id="gd-diff-stat" class="gd-diff-stat"></span>
+              </div>
+              <div id="gd-diff-body" class="gd-diff-body"></div>
             </div>
           </div>
         </div>

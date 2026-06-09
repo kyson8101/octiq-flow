@@ -282,7 +282,10 @@ function groupFor(id) {
     const group = createTerminalGroup(drawerMount, `cmd:${id}`, {
       showAdd: false,
     });
-    rec = { group };
+    // actionPty maps an action id -> the ptyId of the terminal that command is
+    // currently running in, so re-running the SAME command replaces (kills) its
+    // own terminal instead of stacking a new tab each time.
+    rec = { group, actionPty: new Map() };
     drawers.set(id, rec);
   }
   return rec;
@@ -352,11 +355,22 @@ cmdObserver.observe(drawerMount, { childList: true, subtree: true });
 async function runCommand(action) {
   if (!currentId) return;
   const rec = groupFor(currentId);
+  // One terminal per command: if this command already has a live terminal, kill
+  // it first so a repeated run replaces that same terminal instead of opening
+  // another tab. A stale id (its tab was closed manually) is ignored.
+  const prevId = rec.actionPty.get(action.id);
+  if (prevId && rec.group.ids().includes(prevId)) {
+    rec.group.closeTerminal(prevId);
+    cmdLabelById.delete(prevId);
+  }
   setFooterCmd(`▶ ${action.label} · running…`);
   const ptyId = await rec.group.newTerminal({
     cwd: currentPath,
     startCmd: action.command,
     title: action.label,
   });
-  if (ptyId) cmdLabelById.set(ptyId, action.label);
+  if (ptyId) {
+    cmdLabelById.set(ptyId, action.label);
+    rec.actionPty.set(action.id, ptyId);
+  }
 }

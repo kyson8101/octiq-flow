@@ -11,6 +11,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 mod agent_resume;
 mod dashboard;
 mod fsbrowse;
+mod git;
 mod pty;
 mod terminal_layout;
 mod utilities;
@@ -44,6 +45,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // Lift macOS WKWebView's 60fps requestAnimationFrame cap so the terminal
+        // can scroll at the display's native refresh rate (e.g. 120Hz ProMotion).
+        // No-op on non-macOS platforms.
+        .plugin(tauri_plugin_macos_fps::init())
         .manage(CloseGuard(AtomicBool::new(false)))
         .setup(|app| {
             // Load the persisted workspace store (folders the user works in).
@@ -120,6 +125,8 @@ pub fn run() {
             confirm_close,
             dashboard::git_status_summary,
             dashboard::list_docs,
+            git::git_changed_files,
+            git::git_file_diff,
             fsbrowse::list_dir,
             fsbrowse::read_file_preview,
         ])

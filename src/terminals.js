@@ -36,6 +36,15 @@ function makeTerminal() {
     lineHeight: s.lineHeight,
     cursorBlink: true,
     theme: TERM_THEME,
+    // Scrolling feel. smoothScrollDuration animates each wheel scroll over N ms
+    // instead of jumping line-by-line, so the viewport glides. scrollSensitivity
+    // sets how many lines one wheel notch moves; fastScroll* is the Alt-held
+    // boost for jumping long distances. These only affect user wheel scrolling —
+    // programmatic scroll-to-bottom on new output stays instant.
+    smoothScrollDuration: 100,
+    scrollSensitivity: 3,
+    fastScrollModifier: "alt",
+    fastScrollSensitivity: 8,
   });
 }
 

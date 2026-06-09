@@ -24,6 +24,12 @@ pub struct GitStatus {
     pub branch: String,
     /// Number of changed entries (staged + unstaged + untracked).
     pub changed: usize,
+    /// Lines added in the working tree vs HEAD (staged + unstaged tracked
+    /// changes). Untracked files have no diff base, so they are not counted.
+    pub insertions: u32,
+    /// Lines removed in the working tree vs HEAD (staged + unstaged tracked
+    /// changes).
+    pub deletions: u32,
     /// Commits ahead of the upstream branch.
     pub ahead: u32,
     /// Commits behind the upstream branch.
@@ -39,6 +45,8 @@ impl GitStatus {
             path,
             branch: String::new(),
             changed: 0,
+            insertions: 0,
+            deletions: 0,
             ahead: 0,
             behind: 0,
             is_repo: false,
@@ -70,7 +78,52 @@ fn status_for_path(path: String) -> GitStatus {
     };
 
     let text = String::from_utf8_lossy(&output.stdout);
-    parse_status(path, &text)
+    let mut status = parse_status(path.clone(), &text);
+    // A second, cheap git call adds the +/- line counts. Kept separate from the
+    // porcelain status because porcelain v2 reports changed entries, not line
+    // deltas. Any failure leaves the zeros set by parse_status.
+    let (insertions, deletions) = diff_line_counts(&path);
+    status.insertions = insertions;
+    status.deletions = deletions;
+    status
+}
+
+/// Sum the inserted/deleted lines of a repo's working tree vs HEAD via
+/// `git diff --numstat HEAD` (staged + unstaged tracked changes). Falls back to
+/// the plain `git diff --numstat` when HEAD does not resolve (a repo with no
+/// commits yet). Any failure yields (0, 0) so a clean-looking row never breaks.
+fn diff_line_counts(path: &str) -> (u32, u32) {
+    let run = |rev: Option<&str>| {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(path).args(["diff", "--numstat"]);
+        if let Some(r) = rev {
+            cmd.arg(r);
+        }
+        cmd.output().ok().filter(|out| out.status.success())
+    };
+
+    match run(Some("HEAD")).or_else(|| run(None)) {
+        Some(out) => parse_numstat(&String::from_utf8_lossy(&out.stdout)),
+        None => (0, 0),
+    }
+}
+
+/// Sum the added/deleted columns of `git diff --numstat` output. Each line is
+/// "<added>\t<deleted>\t<path>"; a binary file shows "-" in both number columns
+/// and is skipped (its non-numeric tokens fail to parse and add nothing).
+fn parse_numstat(text: &str) -> (u32, u32) {
+    let mut insertions: u32 = 0;
+    let mut deletions: u32 = 0;
+    for line in text.lines() {
+        let mut cols = line.split('\t');
+        if let Some(n) = cols.next().and_then(|c| c.parse::<u32>().ok()) {
+            insertions += n;
+        }
+        if let Some(n) = cols.next().and_then(|c| c.parse::<u32>().ok()) {
+            deletions += n;
+        }
+    }
+    (insertions, deletions)
 }
 
 /// Parse porcelain v2 `--branch` text into a `GitStatus`. Pulls the branch name
@@ -106,6 +159,9 @@ fn parse_status(path: String, text: &str) -> GitStatus {
         path,
         branch,
         changed,
+        // Filled in by status_for_path via diff_line_counts; zero here.
+        insertions: 0,
+        deletions: 0,
         ahead,
         behind,
         is_repo: true,
@@ -149,4 +205,37 @@ fn docs_for_path(path: String) -> DocsEntry {
     };
     files.sort();
     DocsEntry { path, files }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numstat_sums_added_and_deleted_columns() {
+        let text = "1\t10\tsrc/a.rs\n124\t14\tsrc/b.rs\n";
+        assert_eq!(parse_numstat(text), (125, 24));
+    }
+
+    #[test]
+    fn numstat_skips_binary_dash_rows() {
+        // Binary files report "-" for both counts; they must add nothing.
+        let text = "-\t-\timg.png\n5\t2\tsrc/c.rs\n";
+        assert_eq!(parse_numstat(text), (5, 2));
+    }
+
+    #[test]
+    fn numstat_empty_output_is_zero() {
+        assert_eq!(parse_numstat(""), (0, 0));
+    }
+
+    #[test]
+    fn parse_status_zeroes_line_counts() {
+        // parse_status only reads porcelain; line counts come later, so it must
+        // leave them at zero rather than guess from the changed-entry count.
+        let text = "# branch.head main\n1 .M N... 100644 100644 100644 aaa bbb file.rs\n";
+        let status = parse_status("/tmp/x".into(), text);
+        assert_eq!(status.changed, 1);
+        assert_eq!((status.insertions, status.deletions), (0, 0));
+    }
 }

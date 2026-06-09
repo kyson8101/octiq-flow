@@ -351,6 +351,44 @@ body {
   color: #cbe1ff;
 }
 
+/* Per-path git line changes on a sidebar row: "+added/-removed" tokens, one per
+   changed path, joined by "; ". Hidden when the project has no changes. */
+.ws-item-diff {
+  font-size: 11px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ws-diff-add {
+  color: #3fb950;
+}
+
+.ws-diff-del {
+  color: #f85149;
+}
+
+.ws-diff-slash,
+.ws-diff-sep {
+  color: #8b949e;
+}
+
+/* On the selected (blue) row, brighten so the counts stay legible. */
+.ws-item.selected .ws-diff-add {
+  color: #56d364;
+}
+
+.ws-item.selected .ws-diff-del {
+  color: #ff7b72;
+}
+
+.ws-item.selected .ws-diff-slash,
+.ws-item.selected .ws-diff-sep {
+  color: #cbe1ff;
+}
+
 /* Color swatch picker (Edit modal). The first swatch is the auto/rainbow
    option: it clears the stored color and falls back to a name-derived hue. */
 .color-swatches {
@@ -2185,4 +2223,351 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* ===================================================================== */
+/* === Git changes panel (GitHub-style diff) ========================== */
+/* Sits next to .center-terms in <main class="center"> like the file     */
+/* browser; gitdiff.js toggles one against the others. Same GitHub-dark   */
+/* palette as the rest of the app (#0d1117 base, #161b22 raised, #30363d  */
+/* borders), with GitHub's add-green / del-red wash on the diff rows.     */
+.project-gitdiff {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: #0d1117;
+  color: #c9d1d9;
+}
+.project-gitdiff.hidden {
+  display: none;
+}
+
+/* ---- Head bar: title | view toggle | refresh | back ----------------- */
+.gd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #30363d;
+  background: #161b22;
+}
+
+.gd-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+/* Segmented Unified / Split control. */
+.gd-view-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.gd-toggle-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #8b949e;
+  background: #0d1117;
+  border: 0;
+  cursor: pointer;
+}
+.gd-toggle-btn + .gd-toggle-btn {
+  border-left: 1px solid #30363d;
+}
+.gd-toggle-btn:hover {
+  color: #c9d1d9;
+}
+.gd-toggle-active,
+.gd-toggle-active:hover {
+  color: #fff;
+  background: #21262d;
+}
+
+/* ---- Body: file list (left) | diff (right) -------------------------- */
+.gd-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.gd-list {
+  flex: 0 0 320px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  border-right: 1px solid #30363d;
+}
+
+.gd-message {
+  padding: 12px 10px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+/* A repo section in the list. */
+.gd-group {
+  margin-bottom: 10px;
+}
+.gd-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  position: sticky;
+  top: 0;
+  background: #0d1117;
+}
+.gd-group-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9d1d9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gd-group-branch {
+  flex: 0 0 auto;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  color: #8b949e;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 999px;
+  padding: 0 7px;
+}
+.gd-group-clean {
+  padding: 4px 8px 4px 24px;
+  font-size: 12px;
+  color: #6e7681;
+}
+
+/* A changed-file row. */
+.gd-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #c9d1d9;
+  text-align: left;
+  cursor: pointer;
+}
+.gd-file:hover {
+  background: #161b22;
+}
+.gd-file-selected,
+.gd-file-selected:hover {
+  background: #1f6feb33;
+}
+
+/* Status letter badge (A / M / D / R / U). */
+.gd-st {
+  flex: 0 0 auto;
+  width: 16px;
+  text-align: center;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 3px;
+}
+.gd-st-add,
+.gd-st-new {
+  color: #3fb950;
+}
+.gd-st-del {
+  color: #f85149;
+}
+.gd-st-mod {
+  color: #d29922;
+}
+.gd-st-ren {
+  color: #58a6ff;
+}
+
+.gd-file-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+}
+.gd-file-dir {
+  color: #6e7681;
+}
+.gd-file-name {
+  color: #c9d1d9;
+}
+
+.gd-file-counts {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 6px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+}
+.gd-add-n {
+  color: #3fb950;
+}
+.gd-del-n {
+  color: #f85149;
+}
+.gd-bin {
+  color: #8b949e;
+}
+
+/* ---- Right diff pane ------------------------------------------------- */
+.gd-diff-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+}
+
+.gd-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #30363d;
+  background: #161b22;
+}
+.gd-diff-head.hidden {
+  display: none;
+}
+.gd-diff-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  color: #c9d1d9;
+}
+.gd-diff-stat {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 8px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+}
+
+.gd-diff-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.gd-diff-msg {
+  padding: 16px 14px;
+  font-size: 13px;
+  color: #8b949e;
+}
+
+/* The diff itself. min-width:max-content lets each row's background span the
+   widest line when the pane scrolls horizontally (the GitHub trick). */
+.gd-diff {
+  min-width: max-content;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+/* Unified row: [old gutter][new gutter][sign][code]. */
+.gd-row {
+  display: flex;
+  width: 100%;
+}
+.gd-ln {
+  flex: 0 0 auto;
+  width: 44px;
+  padding: 0 8px 0 0;
+  text-align: right;
+  color: #6e7681;
+  user-select: none;
+  white-space: pre;
+}
+.gd-sign {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+  user-select: none;
+  white-space: pre;
+}
+.gd-code {
+  flex: 1 1 auto;
+  white-space: pre;
+  padding-right: 14px;
+}
+
+.gd-row-add {
+  background: rgba(46, 160, 67, 0.15);
+}
+.gd-row-add .gd-sign {
+  color: #3fb950;
+}
+.gd-row-del {
+  background: rgba(248, 81, 73, 0.15);
+}
+.gd-row-del .gd-sign {
+  color: #f85149;
+}
+
+/* Hunk header band (@@ -a,b +c,d @@). */
+.gd-row-hunk {
+  background: rgba(56, 139, 253, 0.1);
+}
+.gd-hunk-text {
+  padding: 0 12px;
+  color: #79c0ff;
+  white-space: pre;
+}
+
+/* Split (side-by-side): [old gutter | old code][new gutter | new code]. Two
+   equal halves (1fr) so the gutters and the center divider line up across every
+   row; a long line scrolls inside its own half. */
+.gd-diff-split {
+  min-width: 0;
+  width: 100%;
+}
+.gd-diff-split .gd-srow {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr);
+  width: 100%;
+}
+.gd-diff-split .gd-srow > .gd-ln {
+  width: auto;
+  padding: 0 8px;
+}
+.gd-diff-split .gd-srow > *:nth-child(3) {
+  border-left: 1px solid #30363d;
+}
+.gd-side {
+  min-width: 0;
+  padding: 0 14px 0 4px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.gd-side-add {
+  background: rgba(46, 160, 67, 0.15);
+}
+.gd-side-del {
+  background: rgba(248, 81, 73, 0.15);
+}
+.gd-side-empty {
+  background: #0b0f14;
 }

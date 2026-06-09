@@ -175,6 +175,12 @@ function renderList() {
       body.append(descEl);
     }
 
+    // Per-path git line changes ("+added/-removed", one token per changed path).
+    // Empty + hidden until annotateListDiffs() fills it from the backend.
+    const diffEl = document.createElement("span");
+    diffEl.className = "ws-item-diff hidden";
+    body.append(diffEl);
+
     const total = (ws.primary_path ? 1 : 0) + ws.paths.length;
     const count = document.createElement("span");
     count.className = "ws-item-count";
@@ -190,6 +196,77 @@ function renderList() {
     });
     wireDrag(li);
     listEl.append(li);
+  }
+
+  // Fill in each row's git +/- line counts (async; one backend call for all).
+  annotateListDiffs();
+}
+
+/** Show each project's per-path git line changes on its sidebar row. One
+ *  "+added/-removed" token per path that has changes, joined by "; " — e.g.
+ *  "+1/-10; +124/-14". Paths that are clean or not a git repo are left out, and
+ *  a project with no changes shows nothing. A render epoch guards against a
+ *  stale async result writing over a list that was rebuilt while we waited. */
+let listDiffEpoch = 0;
+async function annotateListDiffs() {
+  const epoch = ++listDiffEpoch;
+
+  // Union of every path across all projects: one git_status_summary call covers
+  // the whole list instead of one call per project.
+  const allPaths = [];
+  for (const ws of workspaces) {
+    if (ws.primary_path) allPaths.push(ws.primary_path);
+    allPaths.push(...ws.paths);
+  }
+  if (!allPaths.length) return;
+
+  let statuses;
+  try {
+    statuses = await invoke("git_status_summary", { paths: allPaths });
+  } catch (_) {
+    return; // leave rows without diff counts on error
+  }
+  if (epoch !== listDiffEpoch) return; // the list re-rendered while we waited
+
+  const byPath = new Map(statuses.map((s) => [s.path, s]));
+  // Match rows by dataset id (avoids building a CSS selector from a project id).
+  const rows = new Map();
+  for (const li of listEl.querySelectorAll(".ws-item")) rows.set(li.dataset.id, li);
+
+  for (const ws of workspaces) {
+    const li = rows.get(ws.id);
+    const diffEl = li?.querySelector(".ws-item-diff");
+    if (!diffEl) continue;
+
+    const paths = [];
+    if (ws.primary_path) paths.push(ws.primary_path);
+    paths.push(...ws.paths);
+
+    diffEl.innerHTML = "";
+    let shown = 0;
+    for (const p of paths) {
+      const s = byPath.get(p);
+      if (!s || !s.is_repo || (!s.insertions && !s.deletions)) continue;
+      if (shown > 0) {
+        const sep = document.createElement("span");
+        sep.className = "ws-diff-sep";
+        sep.textContent = "; ";
+        diffEl.append(sep);
+      }
+      const add = document.createElement("span");
+      add.className = "ws-diff-add";
+      add.textContent = `+${s.insertions}`;
+      const slash = document.createElement("span");
+      slash.className = "ws-diff-slash";
+      slash.textContent = "/";
+      const del = document.createElement("span");
+      del.className = "ws-diff-del";
+      del.textContent = `-${s.deletions}`;
+      diffEl.append(add, slash, del);
+      shown++;
+    }
+    diffEl.title = diffEl.textContent;
+    diffEl.classList.toggle("hidden", shown === 0);
   }
 }
 
@@ -320,9 +397,23 @@ function openProjectMenu(x, y, ws, nameEl) {
     );
   };
 
+  // Open the GitHub-style git diff of this project's uncommitted changes across
+  // every folder path it owns (primary + extras). gitdiff.js fills the center.
+  const gitChanges = () => {
+    closeProjectMenu();
+    selectWorkspace(ws.id);
+    const paths = [ws.primary_path || "", ...(ws.paths || [])].filter((p) => (p || "").trim());
+    window.dispatchEvent(
+      new CustomEvent("project-gitdiff", {
+        detail: { id: ws.id, name: ws.name || "", paths },
+      }),
+    );
+  };
+
   menu.append(
     item("Files", false, () => browse("files", ws.primary_path || "")),
     item("Documentation", false, () => browse("docs", ws.docs_path || "")),
+    item("Git changes", false, gitChanges),
     item("Rename", false, () => {
       closeProjectMenu();
       startInlineRename(ws, nameEl);

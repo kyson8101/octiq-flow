@@ -79,6 +79,8 @@ function textEl(tag, className, text) {
 // --- Show / hide the panel --------------------------------------------------
 function showBrowser() {
   if (termsEl) termsEl.classList.add("hidden");
+  // The git-diff panel shares the center area; hide it so only one shows.
+  document.querySelector("#project-gitdiff")?.classList.add("hidden");
   panelEl.classList.remove("hidden");
 }
 
