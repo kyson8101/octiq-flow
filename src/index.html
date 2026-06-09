@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>octiq-flow</title>
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="assets/brand/app-icons/octiq-flow-32.png"
+    />
+    <link
+      rel="apple-touch-icon"
+      sizes="180x180"
+      href="assets/brand/app-icons/octiq-flow-256.png"
+    />
 
     <!-- xterm.js vendored locally (no CDN, no bundler, works offline) -->
     <link rel="stylesheet" href="vendor/xterm.min.css" />
@@ -31,7 +42,16 @@
 
       <!-- Top-level mode bar: one view shows at a time (router in modes.js) -->
       <nav class="modebar">
-        <span class="modebar-brand">octiq-flow</span>
+        <span class="modebar-brand" aria-label="octiq-flow">
+          <img
+            class="modebar-brand-mark"
+            src="assets/brand/app-icons/octiq-flow-64.png"
+            alt=""
+            width="24"
+            height="24"
+          />
+          <span>octiq-flow</span>
+        </span>
         <div class="modebar-tabs">
           <button class="modebtn modebtn-active" data-mode="project">Project</button>
           <button class="modebtn" data-mode="chat">Chat</button>

@@ -682,10 +682,21 @@ body {
 }
 
 .modebar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
   font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.2px;
   color: #e6edf3;
+}
+
+.modebar-brand-mark {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 .modebar-tabs {
