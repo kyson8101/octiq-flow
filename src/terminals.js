@@ -274,6 +274,12 @@ class TerminalGroup {
     const label = document.createElement("span");
     label.className = "tg-tab-label";
     label.textContent = title;
+    label.title = "Double-click to rename";
+    // Double-click the label to rename the tab inline (card: rename tab).
+    label.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      this._beginRename(ptyId);
+    });
     const closeBtn = document.createElement("button");
     closeBtn.className = "tg-tab-close";
     closeBtn.textContent = "✕";
@@ -286,7 +292,7 @@ class TerminalGroup {
     tabEl.addEventListener("click", () => this.activate(ptyId));
     this.tabsEl.append(tabEl);
 
-    const entry = { term, fitAddon, paneEl: pane, tabEl, title };
+    const entry = { term, fitAddon, paneEl: pane, tabEl, labelEl: label, title };
     this.tabs.set(ptyId, entry);
     idToEntry.set(ptyId, { term, group: this });
 
@@ -316,10 +322,64 @@ class TerminalGroup {
     // the id is not flagged, so this is cheap on normal tab switches.
     if (attention.has(ptyId)) clearAttention(ptyId);
     // Fit + focus on the next frame so the now-shown pane has a real size.
+    // Skip focusing the terminal while the tab is being renamed, or the rAF
+    // would steal focus from the inline rename input.
     requestAnimationFrame(() => {
       this._fit(ptyId);
-      this.tabs.get(ptyId)?.term.focus();
+      const e = this.tabs.get(ptyId);
+      if (e && !e.renaming) e.term.focus();
     });
+  }
+
+  /**
+   * Start inline rename of a tab (double-click its label). Swaps the label span
+   * for a text input seeded with the current title. Enter or blur commits;
+   * Escape cancels. An empty/whitespace title is rejected so the tab always
+   * keeps a name. The new title lives in entry.title for the session — terminals
+   * are not persisted across restarts, so neither is the rename.
+   */
+  _beginRename(ptyId) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry || entry.renaming) return;
+    entry.renaming = true;
+    const { labelEl } = entry;
+
+    const input = document.createElement("input");
+    input.className = "tg-tab-rename";
+    input.value = entry.title;
+    // Pointer events inside the field must not bubble to the tab (which would
+    // re-activate it and pull focus back to the terminal).
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("mousedown", (e) => e.stopPropagation());
+    input.addEventListener("dblclick", (e) => e.stopPropagation());
+
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      const next = input.value.trim();
+      if (save && next) {
+        entry.title = next;
+        labelEl.textContent = next;
+      }
+      input.replaceWith(labelEl);
+      entry.renaming = false;
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+
+    labelEl.replaceWith(input);
+    input.focus();
+    input.select();
   }
 
   // ---- Attention helpers (card 13) ----------------------------------------

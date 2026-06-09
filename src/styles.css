@@ -817,6 +817,21 @@ body {
   white-space: nowrap;
 }
 
+/* Inline rename input shown while a tab label is being edited (double-click).
+   Sized to sit in place of the label without resizing the tab. */
+.tg-tab-rename {
+  min-width: 0;
+  width: 90px;
+  margin: 0;
+  padding: 1px 4px;
+  font: inherit;
+  color: #e6edf3;
+  background: #161b22;
+  border: 1px solid #1f6feb;
+  border-radius: 3px;
+  outline: none;
+}
+
 .tg-tab-close {
   flex-shrink: 0;
   padding: 0 2px;
