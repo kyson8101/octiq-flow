@@ -98,8 +98,15 @@ function lastLine(chunk) {
 // anywhere else. Registered once at module load (modules load once).
 listen("pty-output", (event) => {
   const { id, chunk } = event.payload;
-  idToEntry.get(id)?.term.write(chunk);
-  if (lineSubscribers.size && idToEntry.has(id)) {
+  const entry = idToEntry.get(id);
+  if (entry) {
+    entry.term.write(chunk);
+    // Tell the owning group one of its terminals produced output. An owner that
+    // persists scrollback (project.js) uses this to mark the terminal dirty so
+    // the next save captures the new output.
+    entry.group.onOutput?.(id);
+  }
+  if (lineSubscribers.size && entry) {
     const line = lastLine(chunk);
     if (line) for (const fn of lineSubscribers) fn(id, line);
   }
@@ -236,6 +243,12 @@ class TerminalGroup {
     // The "+" callback is set by the owner via onAdd; default is a no-op so the
     // primitive does not assume any cwd/startCmd policy.
     this.onAdd = null;
+    // Optional owner hooks for persistence. onLayoutChange fires after a
+    // structural change (new/close/rename); onOutput(ptyId) fires when a
+    // terminal in this group produces output. Both default to no-op — only a
+    // group whose owner persists state (project.js) sets them.
+    this.onLayoutChange = null;
+    this.onOutput = null;
     if (showAdd) {
       this.addBtn = document.createElement("button");
       this.addBtn.className = "tg-add";
@@ -266,15 +279,60 @@ class TerminalGroup {
     return this.tabs.size;
   }
 
+  // ---- Persistence (session restore) --------------------------------------
+  // The owner (project.js) reads these to save the group and writes them back
+  // via newTerminal({ persistKey, restoreScrollback }) on the next launch.
+
+  /** Ordered layout of this group: each terminal's stable key, current title,
+   *  and the cwd it was spawned in. Tab order = insertion order of `tabs`. */
+  serialize() {
+    return [...this.tabs.values()].map((e) => ({
+      persistKey: e.persistKey,
+      title: e.title,
+      cwd: e.cwd || "",
+    }));
+  }
+
+  /** Snapshot every terminal's scrollback (text + styles) for saving. The
+   *  `scrollback` cap bounds how many lines are serialized; the backend caps
+   *  bytes again as the hard limit. */
+  scrollbackEntries() {
+    return [...this.tabs.values()].map((e) => ({
+      persistKey: e.persistKey,
+      data: e.serializeAddon ? e.serializeAddon.serialize({ scrollback: 2000 }) : "",
+    }));
+  }
+
+  /** One terminal's scrollback snapshot, by pty id (or "" if unknown). */
+  scrollbackFor(ptyId) {
+    const e = this.tabs.get(ptyId);
+    return e?.serializeAddon ? e.serializeAddon.serialize({ scrollback: 2000 }) : "";
+  }
+
+  /** Stable persist key for a pty id, or null. */
+  persistKeyFor(ptyId) {
+    return this.tabs.get(ptyId)?.persistKey ?? null;
+  }
+
   visible() {
     // The group is visible when neither it nor any ancestor is display:none.
     return this.root.offsetParent !== null;
   }
 
-  async newTerminal({ cwd = "", startCmd = null, title = null } = {}) {
+  async newTerminal({
+    cwd = "",
+    startCmd = null,
+    title = null,
+    persistKey = null,
+    restoreScrollback = "",
+  } = {}) {
     // No explicit title -> auto-number from the monotonic counter (P4). An
     // explicit title (command label, chat label) is used verbatim.
     if (title == null) title = `term ${++this.titleSeq}`;
+    // Stable key for this terminal's saved scrollback. Generated once and kept
+    // across restarts (the live ptyId is regenerated each session, so it cannot
+    // be the key). On restore the owner passes the saved key back in.
+    if (persistKey == null) persistKey = crypto.randomUUID();
     const ptyId = `${this.idPrefix}:${this.seq++}`;
 
     const pane = document.createElement("div");
@@ -287,6 +345,10 @@ class TerminalGroup {
     term.open(pane);
     // WebGL renderer must load AFTER open() — it needs the live DOM element.
     attachWebgl(term);
+    // Serialize addon snapshots the buffer (text + styles) to a string we save
+    // to disk and write back on the next launch (session persistence).
+    const serializeAddon = new SerializeAddon.SerializeAddon();
+    term.loadAddon(serializeAddon);
     // Follow the pane's real size. A ResizeObserver fires for layout changes the
     // window "resize" event misses (drawer toggles, panel collapse, tab show),
     // so the fit — and the rows/cols we report to the PTY — never drift out of
@@ -327,14 +389,29 @@ class TerminalGroup {
     const entry = {
       term,
       fitAddon,
+      serializeAddon,
       paneEl: pane,
       tabEl,
       labelEl: label,
       title,
+      cwd,
+      startCmd,
+      persistKey,
       ro,
     };
     this.tabs.set(ptyId, entry);
-    idToEntry.set(ptyId, { term, group: this });
+
+    // Restore prior output BEFORE routing goes live (idToEntry.set) and before
+    // the PTY spawns. The global pty-output listener only writes once the id is
+    // in idToEntry, so writing the saved scrollback first guarantees the fresh
+    // shell's first prompt lands AFTER the restored block, never interleaved.
+    if (restoreScrollback) {
+      term.write(restoreScrollback);
+      term.write(
+        "\r\n\x1b[2m──────── session restored · shell restarted ────────\x1b[0m\r\n",
+      );
+    }
+    idToEntry.set(ptyId, { term, group: this, persistKey });
 
     // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd. If the
     // spawn fails, the pane + tab already exist, so show the error there (P3)
@@ -346,6 +423,8 @@ class TerminalGroup {
     }
 
     this.activate(ptyId);
+    // A tab was added: let the owner persist the new layout.
+    this.onLayoutChange?.();
     return ptyId;
   }
 
@@ -375,8 +454,8 @@ class TerminalGroup {
    * Start inline rename of a tab (double-click its label). Swaps the label span
    * for a text input seeded with the current title. Enter or blur commits;
    * Escape cancels. An empty/whitespace title is rejected so the tab always
-   * keeps a name. The new title lives in entry.title for the session — terminals
-   * are not persisted across restarts, so neither is the rename.
+   * keeps a name. The new title lives in entry.title and is saved with the
+   * group's layout (onLayoutChange), so a rename survives a restart.
    */
   _beginRename(ptyId) {
     const entry = this.tabs.get(ptyId);
@@ -398,12 +477,15 @@ class TerminalGroup {
       if (done) return;
       done = true;
       const next = input.value.trim();
+      const changed = save && next && next !== entry.title;
       if (save && next) {
         entry.title = next;
         labelEl.textContent = next;
       }
       input.replaceWith(labelEl);
       entry.renaming = false;
+      // Persist the renamed tab so the title survives a restart.
+      if (changed) this.onLayoutChange?.();
     };
 
     input.addEventListener("keydown", (e) => {
@@ -462,6 +544,9 @@ class TerminalGroup {
       this.activeId = next.done ? null : next.value;
       if (this.activeId) this.activate(this.activeId);
     }
+    // A tab was removed: let the owner persist the shrunken layout. The backend
+    // reconciles and deletes the closed terminal's saved scrollback file.
+    this.onLayoutChange?.();
   }
 
   show() {
