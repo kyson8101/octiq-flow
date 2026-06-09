@@ -14,10 +14,13 @@
 // whole grid every frame, so that breakage cannot build up. If the GPU context
 // is lost (driver reset, tab backgrounded on some GPUs) we dispose the addon and
 // fall back to the DOM renderer so the terminal keeps working.
+import { getTerminalSettings, TERMINAL_SETTINGS_CHANGED } from "/settings.js";
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Shared dark theme + font for every terminal in the app.
+// Shared dark theme for every terminal in the app. The font (family, size, line
+// height) is NOT fixed here — it comes from the user's Settings (settings.js).
 const TERM_THEME = {
   background: "#0d1117",
   foreground: "#c9d1d9",
@@ -26,9 +29,11 @@ const TERM_THEME = {
 };
 
 function makeTerminal() {
+  const s = getTerminalSettings();
   return new Terminal({
-    fontFamily: "Menlo, Monaco, 'Courier New', monospace",
-    fontSize: 13,
+    fontFamily: s.fontFamily,
+    fontSize: s.fontSize,
+    lineHeight: s.lineHeight,
     cursorBlink: true,
     theme: TERM_THEME,
   });
@@ -194,6 +199,22 @@ export function focusTerminal(id) {
 // are hidden are skipped (fit on a hidden element measures zero).
 const groups = new Set();
 window.addEventListener("resize", () => {
+  for (const g of groups) g.refitActive();
+});
+
+// Apply a font setting change (family / size / line height) to every OPEN
+// terminal live, then refit so each group's rows/cols and PTY size track the
+// new glyph metrics. xterm 5 applies option writes immediately and the WebGL
+// renderer rebuilds its glyph atlas on a char-size change, so no reopen is
+// needed. Non-active tabs and hidden groups re-fit themselves when next
+// activated/shown, so refitting the active visible terminal here is enough.
+window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
+  const s = e.detail || getTerminalSettings();
+  for (const { term } of idToEntry.values()) {
+    term.options.fontFamily = s.fontFamily;
+    term.options.fontSize = s.fontSize;
+    term.options.lineHeight = s.lineHeight;
+  }
   for (const g of groups) g.refitActive();
 });
 

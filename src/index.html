@@ -34,6 +34,7 @@
     <script type="module" src="/dashboard.js" defer></script>
     <script type="module" src="/browser.js" defer></script>
     <script type="module" src="/alerts.js" defer></script>
+    <script type="module" src="/settings.js" defer></script>
   </head>
 
   <body>
@@ -231,6 +232,40 @@
         <div class="settings-page">
           <div class="settings-inner">
             <h1 class="settings-title">Settings</h1>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Terminal</div>
+              <p class="settings-help">
+                Choose the font for every terminal in the app. Changes apply
+                right away to open terminals.
+              </p>
+
+              <div class="settings-field">
+                <label class="settings-label" for="term-font-family">Font family</label>
+                <select id="term-font-family" class="settings-select"></select>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="term-font-size">Font size</label>
+                <div class="settings-range-row">
+                  <input id="term-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
+                  <span id="term-font-size-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="term-line-height">Line height</label>
+                <div class="settings-range-row">
+                  <input id="term-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
+                  <span id="term-line-height-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <span class="settings-label">Preview</span>
+                <pre id="term-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
+              </div>
+            </section>
 
             <section class="settings-section">
               <div class="settings-section-title">Notifications</div>

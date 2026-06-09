@@ -1,3 +1,36 @@
+/* Bundled coding fonts for the terminal (picked on the Settings page). Local
+   woff2 under vendor/fonts — no CDN, works offline like the rest of the
+   vendored assets. Each family ships a regular (400) and bold (700) face so
+   xterm can render bold text in the same family. */
+@font-face {
+  font-family: "Fira Code";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("vendor/fonts/fira-code-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Fira Code";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("vendor/fonts/fira-code-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("vendor/fonts/jetbrains-mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("vendor/fonts/jetbrains-mono-700.woff2") format("woff2");
+}
+
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   color-scheme: dark;
@@ -679,6 +712,70 @@ body {
   font-size: 12px;
   line-height: 1.5;
   color: #8b949e;
+}
+
+/* A labelled control row inside a settings section (font family / size / line
+   height). Stacks the label above its control, full width of the card. */
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.settings-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #adbac7;
+}
+
+.settings-select {
+  max-width: 280px;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.settings-select:focus {
+  outline: none;
+  border-color: #58a6ff;
+}
+
+.settings-range-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.settings-range {
+  flex: 1;
+  max-width: 280px;
+  accent-color: #58a6ff;
+}
+
+.settings-range-val {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: #8b949e;
+  min-width: 34px;
+}
+
+/* Live preview of the chosen terminal font. JS sets its font-family/size/
+   line-height inline so the box always shows the current pick. */
+.term-font-preview {
+  margin: 0;
+  width: 100%;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  white-space: pre;
 }
 
 .modebar-brand {
