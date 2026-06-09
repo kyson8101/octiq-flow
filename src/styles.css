@@ -1703,3 +1703,95 @@ body {
   color: #8b949e;
   font-size: 13px;
 }
+
+/* --- Startup layout section (Edit modal) ---------------------------------- */
+.startup-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.modal-section-hint,
+.startup-status {
+  color: #8b949e;
+  font-size: 12px;
+  margin: 0;
+}
+
+.startup-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.startup-sub-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.startup-sub-title {
+  color: #e6edf3;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Terminal rows: title input + command input + remove button. */
+.startup-term-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.startup-term-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.startup-term-cmd {
+  font-family: Menlo, Monaco, "Courier New", monospace;
+}
+
+/* Command checklist. */
+.startup-cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.startup-cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #c9d1d9;
+  font-size: 13px;
+}
+
+.startup-cmd-item:hover {
+  background: #161b22;
+}
+
+.startup-cmd-item input[type="checkbox"] {
+  accent-color: #58a6ff;
+}
+
+.startup-cmds-empty {
+  color: #8b949e;
+  font-size: 12px;
+  margin: 0;
+}
+
+.startup-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

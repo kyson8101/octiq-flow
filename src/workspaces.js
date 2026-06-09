@@ -37,11 +37,24 @@ const modalPathsEl = document.querySelector("#modal-paths");
 const modalPathsEmptyEl = document.querySelector("#modal-paths-empty");
 const modalDeleteBtn = document.querySelector("#modal-delete");
 
+// Startup-layout section (Edit modal).
+const modalStartupTerminalsEl = document.querySelector("#modal-startup-terminals");
+const modalStartupAddTermBtn = document.querySelector("#modal-startup-add-term");
+const modalStartupCmdsEl = document.querySelector("#modal-startup-cmds");
+const modalStartupCmdsEmptyEl = document.querySelector("#modal-startup-cmds-empty");
+const modalStartupSaveBtn = document.querySelector("#modal-startup-save");
+const modalStartupStatusEl = document.querySelector("#modal-startup-status");
+
 // --- State -----------------------------------------------------------------
 let workspaces = [];
 let selectedId = null;
 let modalOpen = false;
 let deleteArmed = false; // true after the first click on "Delete workspace"
+
+// Draft of the startup layout being edited in the modal. Seeded from the
+// selected workspace when the modal opens / the selection changes. `ownerId`
+// guards against re-seeding (and discarding edits) on an unrelated refresh.
+let startupDraft = { ownerId: null, terminals: [], commandIds: [] };
 
 /** The last segment of a path, used as a short label. */
 function baseName(path) {
@@ -55,7 +68,8 @@ function selected() {
 }
 
 /** Tell other modules which project is now selected (project.js terminals,
- *  commands.js command panel). detail = { id, primaryPath, actions } or null. */
+ *  commands.js command panel). detail = { id, primaryPath, actions, startup }
+ *  or null. */
 function emitProjectSelected() {
   const ws = selected();
   window.dispatchEvent(
@@ -65,6 +79,7 @@ function emitProjectSelected() {
             id: ws.id,
             primaryPath: ws.primary_path || "",
             actions: ws.actions || [],
+            startup: ws.startup || { terminals: [], command_ids: [] },
           }
         : null,
     }),
@@ -457,6 +472,7 @@ function openModal() {
   if (!selected()) return;
   modalOpen = true;
   deleteArmed = false;
+  startupDraft.ownerId = null; // re-seed startup draft from saved truth
   modalEl.classList.remove("hidden");
   renderModal();
   modalNameEl.focus();
@@ -515,6 +531,131 @@ function renderModal() {
     li.append(text, remove);
     modalPathsEl.append(li);
   }
+
+  seedStartupDraft(ws);
+  renderStartup();
+  if (modalStartupStatusEl) modalStartupStatusEl.textContent = "";
+}
+
+/** Seed the startup draft from a workspace, but only when it belongs to a
+ *  different project than the one currently drafted (so an unrelated refresh
+ *  does not wipe unsaved edits to the same project). */
+function seedStartupDraft(ws) {
+  if (startupDraft.ownerId === ws.id) return;
+  const s = ws.startup || { terminals: [], command_ids: [] };
+  startupDraft = {
+    ownerId: ws.id,
+    terminals: (s.terminals || []).map((t) => ({
+      title: t.title || "",
+      cmd: t.cmd || "",
+    })),
+    commandIds: [...(s.command_ids || [])],
+  };
+}
+
+/** Render the startup-layout editor (terminal rows + command checklist) from
+ *  the current draft. Re-called whenever the draft changes. */
+function renderStartup() {
+  const ws = selected();
+  if (!ws) return;
+
+  // --- terminal rows ---
+  modalStartupTerminalsEl.innerHTML = "";
+  startupDraft.terminals.forEach((term, i) => {
+    const row = document.createElement("li");
+    row.className = "startup-term-row";
+
+    const title = document.createElement("input");
+    title.className = "inline-input startup-term-title";
+    title.placeholder = "Tab title (optional)";
+    title.value = term.title;
+    title.addEventListener("input", () => {
+      startupDraft.terminals[i].title = title.value;
+      markStartupDirty();
+    });
+
+    const cmd = document.createElement("input");
+    cmd.className = "inline-input startup-term-cmd";
+    cmd.placeholder = "Command to run (optional)";
+    cmd.value = term.cmd;
+    cmd.addEventListener("input", () => {
+      startupDraft.terminals[i].cmd = cmd.value;
+      markStartupDirty();
+    });
+
+    const remove = document.createElement("button");
+    remove.className = "ws-path-remove";
+    remove.textContent = "✕";
+    remove.title = "Remove startup terminal";
+    remove.addEventListener("click", () => {
+      startupDraft.terminals.splice(i, 1);
+      markStartupDirty();
+      renderStartup();
+    });
+
+    row.append(title, cmd, remove);
+    modalStartupTerminalsEl.append(row);
+  });
+
+  // --- command checklist ---
+  const actions = ws.actions || [];
+  modalStartupCmdsEl.innerHTML = "";
+  modalStartupCmdsEmptyEl.classList.toggle("hidden", actions.length > 0);
+  for (const a of actions) {
+    const item = document.createElement("label");
+    item.className = "startup-cmd-item";
+
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = startupDraft.commandIds.includes(a.id);
+    box.addEventListener("change", () => {
+      if (box.checked) {
+        if (!startupDraft.commandIds.includes(a.id)) {
+          startupDraft.commandIds.push(a.id);
+        }
+      } else {
+        startupDraft.commandIds = startupDraft.commandIds.filter(
+          (x) => x !== a.id,
+        );
+      }
+      markStartupDirty();
+    });
+
+    const text = document.createElement("span");
+    text.className = "startup-cmd-label";
+    text.textContent = a.label;
+
+    item.append(box, text);
+    modalStartupCmdsEl.append(item);
+  }
+}
+
+/** Show that the startup draft has unsaved edits. */
+function markStartupDirty() {
+  if (modalStartupStatusEl) modalStartupStatusEl.textContent = "Unsaved changes";
+}
+
+/** Persist the startup draft via set_startup, then refresh so the new layout
+ *  flows back out on the next project-selected emit. */
+async function saveStartup() {
+  const ws = selected();
+  if (!ws) return;
+  // Map the draft to the serde shape: title/cmd verbatim, command_ids.
+  const terminals = startupDraft.terminals.map((t) => ({
+    title: t.title.trim(),
+    cmd: t.cmd.trim(),
+  }));
+  const commandIds = [...startupDraft.commandIds];
+  if (modalStartupStatusEl) modalStartupStatusEl.textContent = "Saving…";
+  await invoke("set_startup", {
+    id: ws.id,
+    terminals,
+    commandIds,
+  });
+  // Force a re-seed from the saved truth on the next render.
+  startupDraft.ownerId = null;
+  await refresh();
+  if (modalStartupStatusEl) modalStartupStatusEl.textContent = "Saved";
 }
 
 /** Save the name when it changes (on blur or Enter). */
@@ -553,6 +694,14 @@ modalAddPathBtn.addEventListener("click", async () => {
   await invoke("add_workspace_path", { id: ws.id, path });
   await refresh();
 });
+
+modalStartupAddTermBtn.addEventListener("click", () => {
+  startupDraft.terminals.push({ title: "", cmd: "" });
+  markStartupDirty();
+  renderStartup();
+});
+
+modalStartupSaveBtn.addEventListener("click", saveStartup);
 
 modalDocsChangeBtn.addEventListener("click", async () => {
   const ws = selected();

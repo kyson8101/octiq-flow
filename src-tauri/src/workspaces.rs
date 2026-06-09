@@ -20,6 +20,29 @@ pub struct Action {
     pub command: String,
 }
 
+/// One terminal in a project's startup layout: a tab title and an optional
+/// command to run on open. An empty `cmd` means "just open a plain shell".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartupTerminal {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub cmd: String,
+}
+
+/// A project's startup layout: terminals to open and registered command ids to
+/// auto-run the first time the project is opened in a session. Every field uses
+/// `#[serde(default)]` so a `workspaces.json` written before this feature loads
+/// unchanged — a missing `startup` becomes an empty layout (no auto-open).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Startup {
+    #[serde(default)]
+    pub terminals: Vec<StartupTerminal>,
+    /// References existing `Action` ids on the same workspace.
+    #[serde(default)]
+    pub command_ids: Vec<String>,
+}
+
 /// One workspace: a name, the main folder it runs in (primary_path), extra
 /// folder paths, a docs root (`docs_path`), and its registered command actions.
 /// New fields use `#[serde(default)]` so stores written before they existed
@@ -40,6 +63,10 @@ pub struct Workspace {
     /// Dev-space action buttons, shared by all sessions in this workspace.
     #[serde(default)]
     pub actions: Vec<Action>,
+    /// Startup layout: terminals to open and command ids to auto-run on the
+    /// first open of this project in a session. Defaults to empty.
+    #[serde(default)]
+    pub startup: Startup,
 }
 
 /// The full on-disk shape. Wrapped in a struct so the file format can grow
@@ -114,6 +141,7 @@ pub fn add_workspace(
         docs_path: String::new(),
         paths: Vec::new(),
         actions: Vec::new(),
+        startup: Startup::default(),
     };
     data.workspaces.push(workspace.clone());
     state.save(&data)?;
@@ -327,6 +355,52 @@ pub fn delete_action(
         .find(|w| w.id == workspace_id)
         .ok_or("workspace not found")?;
     ws.actions.retain(|a| a.id != action_id);
+    state.save(&data)
+}
+
+/// Replace the whole startup layout of a workspace and save. `terminals` is the
+/// ordered list of startup terminals (each: title + optional cmd). `command_ids`
+/// references existing `Action` ids on the same workspace; ids that do not match
+/// an action are dropped, and duplicates are removed while preserving order.
+/// Empty terminal rows (no title and no cmd) are dropped. Passing two empty
+/// vecs clears the layout (project opens with one plain terminal, as before).
+#[tauri::command]
+pub fn set_startup(
+    state: State<WorkspaceState>,
+    id: String,
+    terminals: Vec<StartupTerminal>,
+    command_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+
+    // Trim each terminal and drop rows that carry neither a title nor a cmd.
+    let terminals: Vec<StartupTerminal> = terminals
+        .into_iter()
+        .map(|t| StartupTerminal {
+            title: t.title.trim().to_string(),
+            cmd: t.cmd.trim().to_string(),
+        })
+        .filter(|t| !t.title.is_empty() || !t.cmd.is_empty())
+        .collect();
+
+    // Keep only command ids that point at a real action on this workspace, with
+    // duplicates removed and original order preserved.
+    let mut seen = std::collections::HashSet::new();
+    let command_ids: Vec<String> = command_ids
+        .into_iter()
+        .filter(|cid| ws.actions.iter().any(|a| &a.id == cid))
+        .filter(|cid| seen.insert(cid.clone()))
+        .collect();
+
+    ws.startup = Startup {
+        terminals,
+        command_ids,
+    };
     state.save(&data)
 }
 

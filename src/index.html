@@ -241,6 +241,42 @@
         <ul id="modal-paths" class="ws-paths"></ul>
         <p id="modal-paths-empty" class="ws-empty">No other folders added yet.</p>
 
+        <section class="startup-section" id="modal-startup-section">
+          <div class="modal-section-head">
+            <span>Startup layout</span>
+          </div>
+          <p class="modal-section-hint">
+            Opens automatically the first time this project is opened in a session.
+          </p>
+
+          <div class="startup-sub">
+            <div class="startup-sub-head">
+              <span class="startup-sub-title">Terminals</span>
+              <button type="button" class="btn btn-sm" id="modal-startup-add-term">
+                + Add terminal
+              </button>
+            </div>
+            <ul class="startup-term-list" id="modal-startup-terminals"></ul>
+          </div>
+
+          <div class="startup-sub">
+            <div class="startup-sub-head">
+              <span class="startup-sub-title">Auto-run commands</span>
+            </div>
+            <p class="startup-cmds-empty hidden" id="modal-startup-cmds-empty">
+              No registered commands yet. Add commands in the right panel first.
+            </p>
+            <div class="startup-cmd-list" id="modal-startup-cmds"></div>
+          </div>
+
+          <div class="startup-foot">
+            <button type="button" class="btn btn-sm btn-primary" id="modal-startup-save">
+              Save startup layout
+            </button>
+            <span class="startup-status" id="modal-startup-status"></span>
+          </div>
+        </section>
+
         <div class="modal-foot">
           <button id="modal-delete" class="icon-btn icon-btn-danger">Delete workspace</button>
           <button id="modal-done" class="btn btn-primary">Done</button>

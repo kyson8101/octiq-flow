@@ -48,6 +48,11 @@ let editingActionId = null;
 // (with scrollback) when the user switches projects, like the center group.
 const drawers = new Map();
 
+// Project ids whose startup command_ids have already been auto-run this
+// session. A Set, so each project's startup commands run at most once per
+// session even across repeated project switches.
+const startupCmdsRan = new Set();
+
 // ptyId -> command label, for the terminals launched from the command panel.
 // The footer shows the latest output line of any of these (one line, right side).
 const cmdLabelById = new Map();
@@ -92,6 +97,28 @@ function onProjectSelected(detail) {
     closeCmdModal();
   }
   renderList();
+  maybeRunStartupCommands(detail);
+}
+
+/** Auto-run a project's startup command_ids ONCE per project per session. Looks
+ *  each id up in detail.actions and runs it as a background command terminal,
+ *  exactly like a manual run (footer status, same shared primitive). No-op on
+ *  later switches because the project id is recorded in startupCmdsRan. */
+function maybeRunStartupCommands(detail) {
+  const id = detail.id;
+  if (startupCmdsRan.has(id)) return;
+  const ids = detail.startup?.command_ids || [];
+  if (ids.length === 0) return;
+
+  // Mark as ran up-front so a second project-selected during this turn (e.g. a
+  // refresh()) cannot double-fire the commands.
+  startupCmdsRan.add(id);
+
+  const actions = detail.actions || [];
+  for (const cid of ids) {
+    const action = actions.find((a) => a.id === cid);
+    if (action) runCommand(action);
+  }
 }
 
 window.addEventListener("project-selected", (e) => onProjectSelected(e.detail));
@@ -108,6 +135,7 @@ window.addEventListener("project-deleted", (e) => {
     rec.group.dispose();
     drawers.delete(id);
   }
+  startupCmdsRan.delete(id);
   if (currentId === id) {
     currentId = null;
     currentPath = "";

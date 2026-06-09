@@ -55,6 +55,7 @@ pub fn run() {
             workspaces::add_action,
             workspaces::update_action,
             workspaces::delete_action,
+            workspaces::set_startup,
             workspaces::pick_folder,
             dashboard::git_status_summary,
             dashboard::list_docs,
