@@ -624,23 +624,60 @@ body {
   box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
 }
 
-/* Test-notification button: pushed to the right of the mode bar. */
-.test-notify {
+/* Settings gear: a mode button pushed to the right of the mode bar. It reuses
+   the .modebtn base (wiring + the active highlight) and only changes position. */
+.modebtn-gear {
   margin-left: auto;
   flex-shrink: 0;
-  font: inherit;
-  font-size: 12px;
-  color: #8b949e;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  padding: 3px 10px;
-  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
 }
 
-.test-notify:hover {
-  color: #c9d1d9;
-  border-color: #58a6ff;
+/* ---- Settings page (gear) -------------------------------------------- */
+.settings-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 28px 24px;
+}
+
+.settings-inner {
+  max-width: 680px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 16px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 10px;
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.settings-help {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8b949e;
 }
 
 .modebar-brand {

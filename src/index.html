@@ -38,7 +38,7 @@
           <button class="modebtn" data-mode="utilities">Utilities</button>
           <button class="modebtn" data-mode="dashboard">Dashboard</button>
         </div>
-        <button id="test-notify" class="test-notify" title="Send a test OS notification (banner + sound)">🔔 Test</button>
+        <button class="modebtn modebtn-gear" data-mode="settings" title="Settings">⚙</button>
       </nav>
 
       <!-- Project view: sidebar (projects) | center (terminals + command drawer)
@@ -185,6 +185,25 @@
         <button id="dashboard-refresh" class="btn btn-accent dash-refresh" type="button">Refresh</button>
       </div>
       <div id="dashboard-grid" class="dash-grid"></div>
+      </section>
+
+      <!-- Settings mode: opened by the gear button in the mode bar. -->
+      <section id="view-settings" class="view hidden">
+        <div class="settings-page">
+          <div class="settings-inner">
+            <h1 class="settings-title">Settings</h1>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Notifications</div>
+              <p class="settings-help">
+                octiq-flow shows an OS notification with sound when an agent stops
+                or waits for your input. Use this button to check it works on this
+                machine.
+              </p>
+              <button id="test-notify" class="btn btn-sm" title="Send a test OS notification (banner + sound)">🔔 Send test notification</button>
+            </section>
+          </div>
+        </div>
       </section>
 
     <!-- New-workspace modal: choose folder first, then name, then create -->

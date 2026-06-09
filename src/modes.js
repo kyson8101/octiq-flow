@@ -5,7 +5,8 @@
 // no Tauri import needed here.
 
 // The modes, in bar order. Each maps to a `#view-<mode>` section in index.html.
-const MODES = ["project", "chat", "utilities", "dashboard"];
+// "settings" has no tab — it is opened by the gear button on the right.
+const MODES = ["project", "chat", "utilities", "dashboard", "settings"];
 
 // localStorage key for the last chosen mode.
 const KEY = "octiq.mode";
