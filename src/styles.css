@@ -51,43 +51,6 @@ body {
 }
 
 /* ---- Bottom command drawer ------------------------------------------ */
-/* A fixed-height strip under the center terminals. Holds a TerminalGroup
-   (its own tab strip + panes). Hidden until the first command runs. */
-.cmd-drawer {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  height: 260px;
-  min-height: 120px;
-  background: #0d1117;
-  border-top: 1px solid #30363d;
-}
-
-.cmd-drawer-head {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 4px 10px;
-  background: #010409;
-  border-bottom: 1px solid #30363d;
-}
-
-.cmd-drawer-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: #8b949e;
-}
-
-/* The TerminalGroup mounts here and fills the rest of the drawer. */
-.cmd-drawer-mount {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 /* ---- Right: collapsible command panel ------------------------------- */
 .cmd-panel {
   display: flex;
@@ -1543,4 +1506,42 @@ body {
   color: #7d8590;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 11px;
+  cursor: pointer; /* click opens the command modal */
+}
+
+.pf-cmd:hover {
+  color: #c9d1d9;
+}
+
+/* === Command terminal modal === */
+/* Placed after .modal so it overrides the form-modal width/sizing. */
+.cmd-modal-box {
+  width: min(900px, 92vw);
+  max-width: 92vw;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* The command TerminalGroup mounts here (#cmd-drawer-mount). Fixed height so the
+   xterm has room to fit when the modal opens. */
+.cmd-modal-body {
+  height: 60vh;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* End-command button: a red action in the modal foot. */
+.cmd-end {
+  color: #f85149;
+  border-color: rgba(248, 81, 73, 0.5);
+}
+
+.cmd-end:hover {
+  background: rgba(248, 81, 73, 0.15);
 }

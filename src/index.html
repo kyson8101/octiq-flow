@@ -59,16 +59,6 @@
         <div class="center-terms">
           <div id="project-terminals" class="project-terminals"></div>
         </div>
-
-        <!-- Bottom command drawer: real PTY terminals launched from registered
-             commands, shown as tabs. project.js mounts a TerminalGroup in
-             #cmd-drawer-mount. Hidden until the first command runs. -->
-        <section id="cmd-drawer" class="cmd-drawer hidden">
-          <div class="cmd-drawer-head">
-            <span class="cmd-drawer-title">Command terminals</span>
-          </div>
-          <div id="cmd-drawer-mount" class="cmd-drawer-mount"></div>
-        </section>
       </main>
 
       <!-- Right: collapsible command panel (registered commands for the
@@ -240,6 +230,22 @@
         <div class="modal-foot">
           <button id="modal-delete" class="icon-btn icon-btn-danger">Delete workspace</button>
           <button id="modal-done" class="btn btn-primary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Command terminal modal: a registered command runs in the background and
+         shows a one-line status in the footer. Clicking the footer opens this
+         modal with the command terminal(s) and an End button to stop one. -->
+    <div id="cmd-modal" class="modal-backdrop hidden">
+      <div class="modal cmd-modal-box" role="dialog" aria-modal="true">
+        <div class="modal-head">
+          <span id="cmd-modal-title" class="modal-title">Command</span>
+          <button id="cmd-modal-close" class="icon-btn" title="Close">✕</button>
+        </div>
+        <div id="cmd-drawer-mount" class="cmd-modal-body"></div>
+        <div class="modal-foot">
+          <button id="cmd-modal-end" class="btn btn-sm cmd-end">End command</button>
         </div>
       </div>
     </div>

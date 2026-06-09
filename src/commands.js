@@ -29,8 +29,13 @@ const formCancelBtn = document.querySelector("#cmd-form-cancel");
 const listEl = document.querySelector("#cmd-list");
 const emptyEl = document.querySelector("#cmd-empty");
 
-const drawerEl = document.querySelector("#cmd-drawer");
+// The command terminals mount inside a modal now (no bottom drawer). The footer
+// one-liner is the at-a-glance status; clicking it opens this modal.
 const drawerMount = document.querySelector("#cmd-drawer-mount");
+const cmdModalEl = document.querySelector("#cmd-modal");
+const cmdModalTitle = document.querySelector("#cmd-modal-title");
+const cmdModalCloseBtn = document.querySelector("#cmd-modal-close");
+const cmdModalEndBtn = document.querySelector("#cmd-modal-end");
 
 // --- State -----------------------------------------------------------------
 // The currently selected project, mirrored from the project-selected event.
@@ -70,7 +75,8 @@ function onProjectSelected(detail) {
     currentId = null;
     currentPath = "";
     currentActions = [];
-    hideAllDrawers();
+    hideAllGroups();
+    closeCmdModal();
     closeForm();
     setFooterCmd("");
     renderList();
@@ -83,8 +89,8 @@ function onProjectSelected(detail) {
   if (switching) {
     closeForm();
     setFooterCmd(""); // the footer message belongs to the previous project
+    closeCmdModal();
   }
-  showDrawerFor(currentId);
   renderList();
 }
 
@@ -107,8 +113,8 @@ window.addEventListener("project-deleted", (e) => {
     currentPath = "";
     currentActions = [];
     setFooterCmd("");
+    closeCmdModal();
   }
-  updateDrawerVisibility();
 });
 
 // --- Command list (right panel) --------------------------------------------
@@ -238,12 +244,13 @@ toggleBtn.addEventListener("click", () => {
   toggleBtn.textContent = collapsed ? "◀" : "▶";
 });
 
-// --- Drawer: run a command as a real PTY -----------------------------------
-/** Get or create the drawer TerminalGroup for a project id. */
-function drawerFor(id) {
+// --- Command terminals: run in the background, view in a modal -------------
+/** Get or create the TerminalGroup for a project's command terminals. They all
+ *  mount into the modal body; show()/hide() picks which project's group shows. */
+function groupFor(id) {
   let rec = drawers.get(id);
   if (!rec) {
-    // The drawer has no "+" behavior, so hide the button entirely (P5).
+    // No "+" button — command terminals are only started from the panel.
     const group = createTerminalGroup(drawerMount, `cmd:${id}`, {
       showAdd: false,
     });
@@ -253,39 +260,70 @@ function drawerFor(id) {
   return rec;
 }
 
-/** Show the current project's drawer group, hide the others. */
-function showDrawerFor(id) {
-  for (const [pid, rec] of drawers) {
-    if (pid === id) rec.group.show();
-    else rec.group.hide();
-  }
-  updateDrawerVisibility();
-}
-
-function hideAllDrawers() {
+function hideAllGroups() {
   for (const rec of drawers.values()) rec.group.hide();
-  drawerEl.classList.add("hidden");
 }
 
-/** Show the bottom drawer only when the current project has a command terminal. */
-function updateDrawerVisibility() {
+/** Open the command modal for the current project (only if it has a running or
+ *  finished command terminal). Shows that project's group, hides others, refits. */
+function openCmdModal() {
   const rec = currentId ? drawers.get(currentId) : null;
-  const hasTabs = !!rec && rec.group.count() > 0;
-  drawerEl.classList.toggle("hidden", !hasTabs);
-  if (hasTabs) rec.group.refitActive();
+  if (!rec || rec.group.count() === 0) return; // nothing to show
+  for (const [pid, r] of drawers) {
+    if (pid === currentId) r.group.show();
+    else r.group.hide();
+  }
+  cmdModalEl.classList.remove("hidden");
+  requestAnimationFrame(() => rec.group.refitActive());
 }
+
+/** Close the modal. Terminals stay alive in the background; footer keeps status. */
+function closeCmdModal() {
+  cmdModalEl.classList.add("hidden");
+}
+
+/** End the active command terminal in the current project. */
+function endActiveCommand() {
+  const rec = currentId ? drawers.get(currentId) : null;
+  if (!rec) return;
+  const id = rec.group.activeId;
+  if (id) rec.group.closeTerminal(id);
+  if (rec.group.count() === 0) {
+    closeCmdModal();
+    setFooterCmd("");
+  }
+}
+
+// The footer one-liner opens the modal; the modal's controls close / end.
+footerCmdEl?.addEventListener("click", openCmdModal);
+cmdModalCloseBtn.addEventListener("click", closeCmdModal);
+cmdModalEndBtn.addEventListener("click", endActiveCommand);
+cmdModalEl.addEventListener("click", (e) => {
+  if (e.target === cmdModalEl) closeCmdModal(); // click the dark backdrop
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !cmdModalEl.classList.contains("hidden")) {
+    closeCmdModal();
+  }
+});
 
 // The primitive removes a tab's DOM when its terminal is closed but emits no
-// event. Watch the active drawer mount so closing the last command terminal
-// hides the empty drawer. One observer for the whole app.
-const drawerObserver = new MutationObserver(() => updateDrawerVisibility());
-drawerObserver.observe(drawerMount, { childList: true, subtree: true });
+// event. Watch the mount so closing the last command terminal (a tab's ✕ or the
+// End button) auto-closes the modal and clears the footer. One observer total.
+const cmdObserver = new MutationObserver(() => {
+  const rec = currentId ? drawers.get(currentId) : null;
+  if (rec && rec.group.count() === 0) {
+    closeCmdModal();
+    setFooterCmd("");
+  }
+});
+cmdObserver.observe(drawerMount, { childList: true, subtree: true });
 
+/** Run a registered command as a REAL PTY in the background. The footer shows
+ *  its latest output line; clicking the footer opens the modal to view it. */
 async function runCommand(action) {
   if (!currentId) return;
-  const rec = drawerFor(currentId);
-  rec.group.show();
-  drawerEl.classList.remove("hidden");
+  const rec = groupFor(currentId);
   setFooterCmd(`▶ ${action.label} · running…`);
   const ptyId = await rec.group.newTerminal({
     cwd: currentPath,
@@ -293,5 +331,4 @@ async function runCommand(action) {
     title: action.label,
   });
   if (ptyId) cmdLabelById.set(ptyId, action.label);
-  updateDrawerVisibility();
 }
