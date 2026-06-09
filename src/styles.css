@@ -295,9 +295,16 @@ body {
   background: #161b22;
 }
 
+/* Selected project: a subtle blue-tinted wash instead of a loud solid fill, so
+   the row reads as "current" without shouting. The per-project accent bar on the
+   left still marks identity. */
 .ws-item.selected {
-  background: #1f6feb;
+  background: rgba(56, 139, 253, 0.14);
   color: #ffffff;
+}
+
+.ws-item.selected:hover {
+  background: rgba(56, 139, 253, 0.2);
 }
 
 /* cmux-style accent bar: a thin colored strip down the left of each tab.
@@ -336,10 +343,6 @@ body {
   text-overflow: ellipsis;
 }
 
-.ws-item.selected .ws-item-desc {
-  color: #cbe1ff;
-}
-
 .ws-item-count {
   align-self: center;
   font-size: 11px;
@@ -347,15 +350,14 @@ body {
   flex-shrink: 0;
 }
 
-.ws-item.selected .ws-item-count {
-  color: #cbe1ff;
-}
-
 /* Per-path git line changes on a sidebar row: "+added/-removed" tokens, one per
-   changed path, joined by "; ". Hidden when the project has no changes. */
+   changed path, joined by "; ". The slot always reserves one line of height
+   (min-height) even when empty, so the counts loading in never grows the row and
+   shifts the list — they just fill the space already held for them. */
 .ws-item-diff {
   font-size: 11px;
   line-height: 1.3;
+  min-height: 1.3em;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   white-space: nowrap;
@@ -373,20 +375,6 @@ body {
 .ws-diff-slash,
 .ws-diff-sep {
   color: #8b949e;
-}
-
-/* On the selected (blue) row, brighten so the counts stay legible. */
-.ws-item.selected .ws-diff-add {
-  color: #56d364;
-}
-
-.ws-item.selected .ws-diff-del {
-  color: #ff7b72;
-}
-
-.ws-item.selected .ws-diff-slash,
-.ws-item.selected .ws-diff-sep {
-  color: #cbe1ff;
 }
 
 /* Color swatch picker (Edit modal). The first swatch is the auto/rainbow

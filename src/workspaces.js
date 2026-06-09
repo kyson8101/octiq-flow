@@ -52,6 +52,11 @@ const modalStartupStatusEl = document.querySelector("#modal-startup-status");
 // --- State -----------------------------------------------------------------
 let workspaces = [];
 let selectedId = null;
+// Last git_status_summary, keyed by path. renderList() paints each row's +/-
+// counts from this synchronously, so re-selecting a project keeps the counts on
+// screen instead of blanking them and popping them back in a moment later (that
+// late height change was a visible jump). annotateListDiffs() refreshes it.
+let diffByPath = new Map();
 let modalOpen = false;
 let deleteArmed = false; // true after the first click on "Delete workspace"
 
@@ -176,9 +181,12 @@ function renderList() {
     }
 
     // Per-path git line changes ("+added/-removed", one token per changed path).
-    // Empty + hidden until annotateListDiffs() fills it from the backend.
+    // Painted now from the cached statuses so a re-render keeps the counts on
+    // screen; annotateListDiffs() refreshes them in the background. The slot
+    // reserves a line of height in CSS, so filling it never shifts the row.
     const diffEl = document.createElement("span");
-    diffEl.className = "ws-item-diff hidden";
+    diffEl.className = "ws-item-diff";
+    fillDiffRow(diffEl, ws);
     body.append(diffEl);
 
     const total = (ws.primary_path ? 1 : 0) + ws.paths.length;
@@ -202,17 +210,51 @@ function renderList() {
   annotateListDiffs();
 }
 
-/** Show each project's per-path git line changes on its sidebar row. One
- *  "+added/-removed" token per path that has changes, joined by "; " — e.g.
- *  "+1/-10; +124/-14". Paths that are clean or not a git repo are left out, and
- *  a project with no changes shows nothing. A render epoch guards against a
- *  stale async result writing over a list that was rebuilt while we waited. */
+/** Paint one row's "+added/-removed" tokens from the cached git statuses in
+ *  diffByPath — one token per path that has changes, joined by "; " (e.g.
+ *  "+1/-10; +124/-14"). Pure render, no I/O, so renderList() can call it
+ *  synchronously. Paths that are clean or not a git repo are left out; a project
+ *  with no changes leaves the slot empty (its height is reserved in CSS). */
+function fillDiffRow(diffEl, ws) {
+  const paths = [];
+  if (ws.primary_path) paths.push(ws.primary_path);
+  paths.push(...ws.paths);
+
+  diffEl.innerHTML = "";
+  let shown = 0;
+  for (const p of paths) {
+    const s = diffByPath.get(p);
+    if (!s || !s.is_repo || (!s.insertions && !s.deletions)) continue;
+    if (shown > 0) {
+      const sep = document.createElement("span");
+      sep.className = "ws-diff-sep";
+      sep.textContent = "; ";
+      diffEl.append(sep);
+    }
+    const add = document.createElement("span");
+    add.className = "ws-diff-add";
+    add.textContent = `+${s.insertions}`;
+    const slash = document.createElement("span");
+    slash.className = "ws-diff-slash";
+    slash.textContent = "/";
+    const del = document.createElement("span");
+    del.className = "ws-diff-del";
+    del.textContent = `-${s.deletions}`;
+    diffEl.append(add, slash, del);
+    shown++;
+  }
+  diffEl.title = diffEl.textContent;
+}
+
+/** Refresh the cached git line changes for every project, then repaint each
+ *  sidebar row's counts from the cache. One git_status_summary call covers the
+ *  whole list. A render epoch guards against a stale async result writing over a
+ *  list that was rebuilt while we waited. */
 let listDiffEpoch = 0;
 async function annotateListDiffs() {
   const epoch = ++listDiffEpoch;
 
-  // Union of every path across all projects: one git_status_summary call covers
-  // the whole list instead of one call per project.
+  // Union of every path across all projects: one call covers the whole list.
   const allPaths = [];
   for (const ws of workspaces) {
     if (ws.primary_path) allPaths.push(ws.primary_path);
@@ -224,49 +266,18 @@ async function annotateListDiffs() {
   try {
     statuses = await invoke("git_status_summary", { paths: allPaths });
   } catch (_) {
-    return; // leave rows without diff counts on error
+    return; // keep the last cached counts on error
   }
   if (epoch !== listDiffEpoch) return; // the list re-rendered while we waited
 
-  const byPath = new Map(statuses.map((s) => [s.path, s]));
+  // Update the cache, then repaint every row from it.
+  diffByPath = new Map(statuses.map((s) => [s.path, s]));
   // Match rows by dataset id (avoids building a CSS selector from a project id).
   const rows = new Map();
   for (const li of listEl.querySelectorAll(".ws-item")) rows.set(li.dataset.id, li);
-
   for (const ws of workspaces) {
-    const li = rows.get(ws.id);
-    const diffEl = li?.querySelector(".ws-item-diff");
-    if (!diffEl) continue;
-
-    const paths = [];
-    if (ws.primary_path) paths.push(ws.primary_path);
-    paths.push(...ws.paths);
-
-    diffEl.innerHTML = "";
-    let shown = 0;
-    for (const p of paths) {
-      const s = byPath.get(p);
-      if (!s || !s.is_repo || (!s.insertions && !s.deletions)) continue;
-      if (shown > 0) {
-        const sep = document.createElement("span");
-        sep.className = "ws-diff-sep";
-        sep.textContent = "; ";
-        diffEl.append(sep);
-      }
-      const add = document.createElement("span");
-      add.className = "ws-diff-add";
-      add.textContent = `+${s.insertions}`;
-      const slash = document.createElement("span");
-      slash.className = "ws-diff-slash";
-      slash.textContent = "/";
-      const del = document.createElement("span");
-      del.className = "ws-diff-del";
-      del.textContent = `-${s.deletions}`;
-      diffEl.append(add, slash, del);
-      shown++;
-    }
-    diffEl.title = diffEl.textContent;
-    diffEl.classList.toggle("hidden", shown === 0);
+    const diffEl = rows.get(ws.id)?.querySelector(".ws-item-diff");
+    if (diffEl) fillDiffRow(diffEl, ws);
   }
 }
 
