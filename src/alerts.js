@@ -165,6 +165,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // Ask for notification permission up front so the first alert is not delayed
   // by a permission prompt mid-event.
   ensureNotifyPermission();
+
+  // Test button (mode bar): fire a sample OS notification so the user can check
+  // the banner + sound work on their machine.
+  const testBtn = document.getElementById("test-notify");
+  testBtn?.addEventListener("click", () =>
+    osNotify("octiq-flow", "Test notification — banner + sound working ✅"),
+  );
 });
 
 // THE single pty-attention listener for the whole app. Badge the tab (which

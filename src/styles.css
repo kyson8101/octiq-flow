@@ -594,6 +594,25 @@ body {
   border-bottom: 1px solid #30363d;
 }
 
+/* Test-notification button: pushed to the right of the mode bar. */
+.test-notify {
+  margin-left: auto;
+  flex-shrink: 0;
+  font: inherit;
+  font-size: 12px;
+  color: #8b949e;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.test-notify:hover {
+  color: #c9d1d9;
+  border-color: #58a6ff;
+}
+
 .modebar-brand {
   font-weight: 700;
   font-size: 13px;
