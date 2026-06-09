@@ -131,6 +131,57 @@ fn scan_attention(buf: &str) -> (Vec<(String, String)>, usize) {
     (hits, keep_from)
 }
 
+/// Incrementally decode a PTY byte stream as UTF-8.
+///
+/// Returns the text for every COMPLETE UTF-8 sequence in `bytes`, plus any
+/// trailing bytes that form an INCOMPLETE (but so far valid) multi-byte
+/// sequence. The caller prepends those leftover bytes to the next read, so a
+/// character split across a read boundary is decoded whole instead of being
+/// turned into replacement chars.
+///
+/// This is the rule every real terminal follows: the PTY is ONE continuous byte
+/// stream, so a multi-byte glyph (a box-drawing border, a braille spinner) that
+/// straddles two reads must be held, not decoded in halves. Decoding each 4096-
+/// byte read on its own — as `String::from_utf8_lossy` did — split those glyphs
+/// at the boundary and showed "?" all over a Unicode-heavy TUI (e.g. the Claude
+/// or Codex agent UIs).
+///
+/// Genuinely invalid bytes (an error that is NOT just an incomplete tail) are
+/// replaced with U+FFFD, exactly like `from_utf8_lossy`, so one bad byte can
+/// never stall the stream.
+fn decode_utf8_stream(bytes: &[u8]) -> (String, Vec<u8>) {
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match std::str::from_utf8(&bytes[i..]) {
+            Ok(valid) => {
+                out.push_str(valid);
+                return (out, Vec::new());
+            }
+            Err(err) => {
+                let good = err.valid_up_to();
+                if good > 0 {
+                    // SAFETY: from_utf8 reported bytes[i..i+good] as valid UTF-8.
+                    out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[i..i + good]) });
+                    i += good;
+                }
+                match err.error_len() {
+                    // No error_len => an incomplete sequence at the very end.
+                    // Hold the rest for the next read.
+                    None => return (out, bytes[i..].to_vec()),
+                    // A real invalid sequence mid-stream: emit a replacement,
+                    // skip exactly those bytes, and keep decoding.
+                    Some(bad) => {
+                        out.push('\u{FFFD}');
+                        i += bad;
+                    }
+                }
+            }
+        }
+    }
+    (out, Vec::new())
+}
+
 /// Open a new PTY and spawn a login shell in it.
 ///
 /// - `id`: caller-chosen key for this session. If a session with this id
@@ -213,11 +264,21 @@ pub fn pty_spawn(
         // detected. Holds only the unsettled tail (a partial introducer), so it
         // stays small; capped at SCAN_TAIL_CAP as a hard safety bound.
         let mut scan_buf = String::new();
+        // Incomplete trailing UTF-8 bytes carried from the previous read, so a
+        // multi-byte glyph split across the 4096-byte boundary is never decoded
+        // in halves. Holds at most one partial UTF-8 sequence (a few bytes).
+        let mut byte_carry: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break, // EOF: shell exited
                 Ok(n) => {
-                    let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                    // Prepend the bytes held back from the previous read, decode
+                    // only the complete UTF-8, and carry any incomplete tail to
+                    // the next read (see decode_utf8_stream). This is what stops
+                    // multi-byte glyphs from corrupting at read boundaries.
+                    byte_carry.extend_from_slice(&buf[..n]);
+                    let (chunk, tail) = decode_utf8_stream(&byte_carry);
+                    byte_carry = tail;
 
                     // Append to the carry-over, scan the whole thing, emit any
                     // hits, then keep only the unsettled tail for the next read.
@@ -359,4 +420,53 @@ pub fn pty_clear_attention(manager: State<PtyManager>, id: String) -> Result<(),
         session.needs_attention.store(false, Ordering::SeqCst);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_utf8_stream;
+
+    #[test]
+    fn plain_ascii_decodes_whole_with_no_carry() {
+        let (text, tail) = decode_utf8_stream(b"hello");
+        assert_eq!(text, "hello");
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn complete_multibyte_decodes_whole_with_no_carry() {
+        // "│" box-drawing (U+2502) is 3 bytes; "⠋" braille (U+280B) is 3 bytes.
+        let (text, tail) = decode_utf8_stream("a│b⠋".as_bytes());
+        assert_eq!(text, "a│b⠋");
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn multibyte_split_across_reads_is_carried_then_completed() {
+        // "│" = E2 94 82. Split it: first read ends after E2 94, second read
+        // brings the final 82. This is the exact 4096-byte-boundary case.
+        let full = "x│".as_bytes(); // 78 E2 94 82
+        let first = &full[..3]; // "x" + E2 94 (incomplete)
+        let second = &full[3..]; // 82 (completes the glyph)
+
+        let (text1, carry) = decode_utf8_stream(first);
+        assert_eq!(text1, "x"); // only the complete part is emitted
+        assert_eq!(carry, vec![0xE2, 0x94]); // the partial glyph is held
+
+        // Caller prepends the carry to the next read before decoding.
+        let mut next = carry;
+        next.extend_from_slice(second);
+        let (text2, carry2) = decode_utf8_stream(&next);
+        assert_eq!(text2, "│"); // now whole — no replacement char
+        assert!(carry2.is_empty());
+    }
+
+    #[test]
+    fn genuinely_invalid_byte_becomes_replacement_and_does_not_stall() {
+        // 0xFF is never valid UTF-8. It must not be carried forever; it becomes
+        // U+FFFD and decoding continues past it.
+        let (text, tail) = decode_utf8_stream(&[b'a', 0xFF, b'b']);
+        assert_eq!(text, "a\u{FFFD}b");
+        assert!(tail.is_empty());
+    }
 }
