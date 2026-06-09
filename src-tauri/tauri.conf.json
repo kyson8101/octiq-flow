@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "octiq-flow",
+  "productName": "OctiqFlow",
   "version": "0.1.0",
   "identifier": "com.kyson.octiq-flow",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "octiq-flow",
+        "title": "OctiqFlow",
         "width": 1280,
         "height": 800,
         "minWidth": 1000,

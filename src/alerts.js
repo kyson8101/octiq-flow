@@ -47,7 +47,7 @@ async function osNotify(title, body) {
   try {
     await invoke("plugin:notification|notify", {
       options: {
-        title: title && title.trim() ? title : "octiq-flow",
+        title: title && title.trim() ? title : "OctiqFlow",
         body: body && body.trim() ? body : "An agent needs your input.",
         sound: "default", // play the OS notification sound
       },
@@ -170,7 +170,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // the banner + sound work on their machine.
   const testBtn = document.getElementById("test-notify");
   testBtn?.addEventListener("click", () =>
-    osNotify("octiq-flow", "Test notification — banner + sound working ✅"),
+    osNotify("OctiqFlow", "Test notification — banner + sound working ✅"),
   );
 
   // The project list re-renders (workspaces.js) on select / refresh, which drops
