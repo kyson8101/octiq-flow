@@ -8,18 +8,54 @@
 //      to that terminal and clears its flag.
 //   3. A keyboard shortcut (Ctrl/Cmd + .) jumps to the NEXT waiting terminal,
 //      cycling through them in arrival order.
+//   4. It raises an OS-level notification (with the system sound) so the user
+//      notices even when octiq-flow is in the background.
 //
 // There is exactly ONE listen("pty-attention", ...) in the whole app and it
 // lives here. The single source of the attention SET lives in terminals.js;
 // this file only reflects that set in the UI and reacts to its change event.
 //
-// Follow-up (deferred for alpha): raise an OS notification via the Tauri
-// notification plugin when the app window is NOT focused. Skipped here so the
-// alpha does not pull in a new Cargo plugin. See card 13 "Scope".
-
 import { badgeTab, focusTerminal, attentionList } from "/terminals.js";
 
 const { listen } = window.__TAURI__.event;
+const { invoke } = window.__TAURI__.core;
+
+// ---- OS notification ------------------------------------------------------
+// Raise an OS-level banner + system sound when an agent stops / waits for input.
+// We call the notification plugin's commands directly (no npm bindings needed).
+// Cached permission so we ask at most once.
+let notifyAllowed = null;
+
+async function ensureNotifyPermission() {
+  if (notifyAllowed !== null) return notifyAllowed;
+  try {
+    let granted = await invoke("plugin:notification|is_permission_granted");
+    // null/undefined means "not decided yet" — ask the user once.
+    if (granted === null || granted === undefined) {
+      const res = await invoke("plugin:notification|request_permission");
+      granted = res === "granted";
+    }
+    notifyAllowed = !!granted;
+  } catch (_) {
+    notifyAllowed = false; // plugin missing / denied — degrade to in-app only
+  }
+  return notifyAllowed;
+}
+
+async function osNotify(title, body) {
+  if (!(await ensureNotifyPermission())) return;
+  try {
+    await invoke("plugin:notification|notify", {
+      options: {
+        title: title && title.trim() ? title : "octiq-flow",
+        body: body && body.trim() ? body : "An agent needs your input.",
+        sound: "default", // play the OS notification sound
+      },
+    });
+  } catch (_) {
+    // Non-fatal — the in-app banner still shows.
+  }
+}
 
 // The banner element is declared in index.html (a hidden div). We look it up
 // once the DOM is ready. Everything degrades to a no-op if it is missing.
@@ -126,6 +162,9 @@ function onKeydown(e) {
 document.addEventListener("DOMContentLoaded", () => {
   bannerEl = document.getElementById("alert-banner");
   renderBanner();
+  // Ask for notification permission up front so the first alert is not delayed
+  // by a permission prompt mid-event.
+  ensureNotifyPermission();
 });
 
 // THE single pty-attention listener for the whole app. Badge the tab (which
@@ -133,9 +172,10 @@ document.addEventListener("DOMContentLoaded", () => {
 // which re-renders the banner. We do not render here directly; the change event
 // is the single path so the banner and the tab badges never drift apart.
 listen("pty-attention", (event) => {
-  const { id } = event.payload || {};
+  const { id, title, body } = event.payload || {};
   if (!id) return;
   badgeTab(id);
+  osNotify(title, body); // OS-level banner + sound
 });
 
 // Rebuild the banner whenever the attention set changes — from a new alert, a
