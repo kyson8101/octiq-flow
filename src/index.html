@@ -71,7 +71,24 @@
             <span id="pb-path" class="pb-path"></span>
             <button id="pb-back" class="pb-btn pb-back" type="button" title="Back to terminals">✕ Terminals</button>
           </div>
-          <div id="pb-list" class="pb-list"></div>
+
+          <!-- Body splits into two panes: the folder list (left) and, once a
+               file is clicked, a content preview (right). browser.js toggles the
+               .split class on .pb-body and shows/hides #pb-preview. -->
+          <div class="pb-body">
+            <div id="pb-list" class="pb-list"></div>
+
+            <div id="pb-preview" class="pb-preview hidden">
+              <div class="pb-preview-head">
+                <span id="pb-preview-name" class="pb-preview-name"></span>
+                <span class="pb-preview-actions">
+                  <button id="pb-preview-open" class="pb-btn" type="button" title="Open with the default app">Open externally</button>
+                  <button id="pb-preview-close" class="pb-btn" type="button" title="Close preview">✕</button>
+                </span>
+              </div>
+              <div id="pb-preview-body" class="pb-preview-body"></div>
+            </div>
+          </div>
         </div>
       </main>
 

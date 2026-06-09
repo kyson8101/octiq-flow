@@ -1,8 +1,10 @@
 // Center file browser (right-click "Files" / "Documentation"). Shows the
 // contents of one folder inside #project-browser, sitting next to the project
 // terminals in <main class="center">. fs-only: it lists folders/files with the
-// `list_dir` backend command and opens a file with the opener plugin. It never
-// touches a PTY.
+// `list_dir` backend command. Clicking a file splits the body into two panes
+// and shows a text preview (via the `read_file_preview` backend command) in the
+// right pane; binary files instead offer "Open externally" (the opener plugin).
+// It never touches a PTY.
 //
 // How it is driven:
 //   * workspaces.js dispatches `project-browse` { id, kind, root } when the user
@@ -11,15 +13,21 @@
 //   * `project-selected` from workspaces.js: when the selected project CHANGES
 //     while the browser is open, we close the browser and return to terminals so
 //     switching projects always lands on that project's terminals.
-const { invoke } = window.__TAURI__.core;
+const { invoke, convertFileSrc } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
 const termsEl = document.querySelector(".center-terms");
 const panelEl = document.querySelector("#project-browser");
 const headPathEl = document.querySelector("#pb-path");
+const bodyEl = document.querySelector(".pb-body");
 const listEl = document.querySelector("#pb-list");
 const upBtn = document.querySelector("#pb-up");
 const backBtn = document.querySelector("#pb-back");
+const previewEl = document.querySelector("#pb-preview");
+const previewNameEl = document.querySelector("#pb-preview-name");
+const previewBodyEl = document.querySelector("#pb-preview-body");
+const previewOpenBtn = document.querySelector("#pb-preview-open");
+const previewCloseBtn = document.querySelector("#pb-preview-close");
 
 // --- State -----------------------------------------------------------------
 // The chosen root for the current browse session. "Up" never goes above it.
@@ -29,6 +37,11 @@ let currentDir = "";
 // The project whose folder we are browsing, so a switch to a DIFFERENT project
 // closes the browser.
 let browsingProjectId = null;
+// The file currently shown in the preview pane, or null when it is closed. Also
+// used to drop a slow read whose result arrives after a newer click.
+let previewPath = null;
+// The list row whose file is previewed, so we can clear its highlight.
+let selectedRow = null;
 
 /** Last path segment of an absolute path, used as a short label. */
 function baseName(path) {
@@ -71,6 +84,7 @@ function showBrowser() {
 
 /** Back to terminals: hide the browser, show the terminals, clear state. */
 function backToTerminals() {
+  closePreview();
   panelEl.classList.add("hidden");
   if (termsEl) termsEl.classList.remove("hidden");
   rootDir = "";
@@ -109,7 +123,7 @@ function entryRow(entry) {
     if (entry.is_dir) {
       navigateTo(entry.path);
     } else {
-      openFile(entry.path);
+      previewFile(entry.path, entry.name, row);
     }
   });
   return row;
@@ -121,6 +135,9 @@ function entryRow(entry) {
 async function navigateTo(dir) {
   currentDir = dir;
   renderHead();
+  // The list is about to be rebuilt, so the highlighted row is detached. Drop
+  // the reference; the preview pane (if open) stays as a sticky preview.
+  selectedRow = null;
 
   let entries;
   try {
@@ -148,15 +165,122 @@ function goUp() {
   navigateTo(parent);
 }
 
+// --- Preview pane -----------------------------------------------------------
+/** Human-readable file size, e.g. "812 B", "1.2 KB", "3.4 MB". */
+function humanSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/** Highlight `row` as the previewed file, clearing any previous highlight. */
+function selectRow(row) {
+  if (selectedRow) selectedRow.classList.remove("pb-row-selected");
+  selectedRow = row || null;
+  if (selectedRow) selectedRow.classList.add("pb-row-selected");
+}
+
+/** Close the preview pane and return the body to a single full-width list. */
+function closePreview() {
+  previewEl.classList.add("hidden");
+  bodyEl.classList.remove("split");
+  previewBodyEl.replaceChildren();
+  previewNameEl.textContent = "";
+  previewNameEl.removeAttribute("title");
+  previewPath = null;
+  selectRow(null);
+}
+
+/** A single-line message node for the preview body (loading / error / binary). */
+function previewMessage(text) {
+  return textEl("div", "pb-preview-msg", text);
+}
+
+/** Open the preview pane (splitting the body into two panes) and load `fullPath`
+ *  into it. Text files show their content; binary files show a hint to open
+ *  externally. A slow read is dropped if a newer file was clicked meanwhile. */
+async function previewFile(fullPath, name, row) {
+  previewPath = fullPath;
+  selectRow(row);
+
+  // Reveal the right pane and split the body into two columns.
+  previewEl.classList.remove("hidden");
+  bodyEl.classList.add("split");
+  previewNameEl.textContent = name;
+  previewNameEl.title = fullPath;
+  previewBodyEl.replaceChildren(previewMessage("Loading…"));
+
+  let preview;
+  try {
+    preview = await invoke("read_file_preview", { path: fullPath });
+  } catch (err) {
+    if (previewPath !== fullPath) return; // superseded by a newer click
+    previewBodyEl.replaceChildren(previewMessage(String(err)));
+    return;
+  }
+  if (previewPath !== fullPath) return; // a newer click won the race
+
+  // Image: load the file itself via the asset protocol (convertFileSrc), shown
+  // centered and scaled to fit the pane.
+  if (preview.kind === "image") {
+    const img = document.createElement("img");
+    img.className = "pb-preview-img";
+    img.alt = name;
+    img.src = convertFileSrc(fullPath);
+    img.addEventListener("error", () => {
+      previewBodyEl.replaceChildren(
+        previewMessage("Could not show this image. Use “Open externally” to view it."),
+      );
+    });
+    const wrap = textEl("div", "pb-preview-media");
+    wrap.append(img);
+    previewBodyEl.replaceChildren(wrap);
+    return;
+  }
+
+  // PDF: render via the asset protocol in an iframe (the webview's built-in PDF
+  // viewer). If it stays blank, "Open externally" is the fallback.
+  if (preview.kind === "pdf") {
+    const frame = document.createElement("iframe");
+    frame.className = "pb-preview-pdf";
+    frame.title = name;
+    frame.src = convertFileSrc(fullPath);
+    previewBodyEl.replaceChildren(frame);
+    return;
+  }
+
+  if (preview.kind === "binary") {
+    previewBodyEl.replaceChildren(
+      previewMessage(
+        `This file is not text (${humanSize(preview.size)}). Use “Open externally” to view it.`,
+      ),
+    );
+    return;
+  }
+
+  const pre = textEl("pre", "pb-preview-text", preview.content);
+  if (preview.truncated) {
+    const note = textEl(
+      "div",
+      "pb-preview-note",
+      `Large file (${humanSize(preview.size)}) — showing the first part only. Open externally for the full file.`,
+    );
+    previewBodyEl.replaceChildren(note, pre);
+  } else {
+    previewBodyEl.replaceChildren(pre);
+  }
+}
+
 /** Open a file with the OS default app via the opener plugin. The command name
  *  and payload are exact: `plugin:opener|open_path` with { path, with }. `with:
  *  null` means "use the default app". Requires the opener:allow-open-path
  *  permission + a path scope in the capability (see the backend spec). */
-async function openFile(fullPath) {
+async function openExternally(fullPath) {
   try {
     await invoke("plugin:opener|open_path", { path: fullPath, with: null });
   } catch (err) {
-    showMessage(`Could not open file: ${err}`);
+    previewBodyEl.replaceChildren(previewMessage(`Could not open file: ${err}`));
   }
 }
 
@@ -169,6 +293,7 @@ function startBrowse(detail) {
   rootDir = (root || "").replace(/[/\\]+$/, "");
   currentDir = rootDir;
 
+  closePreview(); // start each browse session as a single full-width list
   showBrowser();
   renderHead();
 
@@ -196,3 +321,7 @@ window.addEventListener("project-selected", (e) => {
 
 upBtn.addEventListener("click", goUp);
 backBtn.addEventListener("click", backToTerminals);
+previewCloseBtn.addEventListener("click", closePreview);
+previewOpenBtn.addEventListener("click", () => {
+  if (previewPath) openExternally(previewPath);
+});

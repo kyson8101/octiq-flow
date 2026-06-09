@@ -60,6 +60,7 @@ pub fn run() {
             dashboard::git_status_summary,
             dashboard::list_docs,
             fsbrowse::list_dir,
+            fsbrowse::read_file_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

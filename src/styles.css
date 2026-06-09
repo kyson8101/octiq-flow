@@ -1691,11 +1691,123 @@ body {
   margin-left: auto;
 }
 
+/* Body holds the list pane and (once a file is clicked) the preview pane,
+   side by side. browser.js adds .split to give the list a fixed width and
+   reveal the preview; without it the list fills the whole body. */
+.pb-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
 .pb-list {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding: 6px;
+}
+
+/* Split view: list becomes a fixed left pane, preview takes the rest. */
+.pb-body.split .pb-list {
+  flex: 0 0 340px;
+  border-right: 1px solid #30363d;
+}
+
+/* Right preview pane. Hidden until a file is clicked. */
+.pb-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+}
+.pb-preview.hidden {
+  display: none;
+}
+
+.pb-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #30363d;
+  background: #161b22;
+}
+.pb-preview-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  color: #e6edf3;
+}
+.pb-preview-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.pb-preview-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.pb-preview-text {
+  margin: 0;
+  padding: 12px 14px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c9d1d9;
+  white-space: pre;
+  tab-size: 4;
+}
+.pb-preview-note {
+  position: sticky;
+  top: 0;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: #d29922;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+}
+.pb-preview-msg {
+  padding: 24px 14px;
+  text-align: center;
+  color: #8b949e;
+  font-size: 13px;
+}
+
+/* Image preview: center and scale to fit the pane. */
+.pb-preview-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+}
+.pb-preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* PDF preview: fill the pane; white backdrop for the viewer. */
+.pb-preview-pdf {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+/* The row whose file is showing in the preview pane. */
+.pb-row-selected,
+.pb-row-selected:hover {
+  background: #1f6feb33;
 }
 
 .pb-row {
