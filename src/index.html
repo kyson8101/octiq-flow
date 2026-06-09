@@ -19,6 +19,7 @@
     <script type="module" src="/chat.js" defer></script>
     <script type="module" src="/utilities.js" defer></script>
     <script type="module" src="/dashboard.js" defer></script>
+    <script type="module" src="/browser.js" defer></script>
     <script type="module" src="/alerts.js" defer></script>
   </head>
 
@@ -59,6 +60,18 @@
       <main class="center">
         <div class="center-terms">
           <div id="project-terminals" class="project-terminals"></div>
+        </div>
+
+        <!-- File browser (right-click "Files" / "Documentation"). Hidden until a
+             browse action fires; browser.js fills the header + list and toggles
+             this against .center-terms. fs-only — no PTY here. -->
+        <div id="project-browser" class="project-browser hidden">
+          <div class="pb-head">
+            <button id="pb-up" class="pb-btn" type="button" title="Go up one folder">↑ Up</button>
+            <span id="pb-path" class="pb-path"></span>
+            <button id="pb-back" class="pb-btn pb-back" type="button" title="Back to terminals">✕ Terminals</button>
+          </div>
+          <div id="pb-list" class="pb-list"></div>
         </div>
       </main>
 

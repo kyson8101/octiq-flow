@@ -231,7 +231,23 @@ function openProjectMenu(x, y, ws, nameEl) {
     return b;
   };
 
+  // Browse the project's files / docs in the center. Each closes the menu,
+  // selects the project, then asks the center browser (browser.js) to open that
+  // folder. An empty root is allowed: 'docs' with no docs_path shows an "unset"
+  // message in the browser instead of listing anything.
+  const browse = (kind, root) => {
+    closeProjectMenu();
+    selectWorkspace(ws.id);
+    window.dispatchEvent(
+      new CustomEvent("project-browse", {
+        detail: { id: ws.id, kind, root: root || "" },
+      }),
+    );
+  };
+
   menu.append(
+    item("Files", false, () => browse("files", ws.primary_path || "")),
+    item("Documentation", false, () => browse("docs", ws.docs_path || "")),
     item("Rename", false, () => {
       closeProjectMenu();
       startInlineRename(ws, nameEl);

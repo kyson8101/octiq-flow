@@ -6,6 +6,7 @@
 use tauri::Manager;
 
 mod dashboard;
+mod fsbrowse;
 mod pty;
 mod utilities;
 mod workspaces;
@@ -57,6 +58,7 @@ pub fn run() {
             workspaces::pick_folder,
             dashboard::git_status_summary,
             dashboard::list_docs,
+            fsbrowse::list_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
