@@ -892,6 +892,11 @@ body {
   position: absolute;
   inset: 0;
   padding: 6px;
+  /* Clip the terminal to the pane. xterm's grid is a hard rectangle; without
+     this its square corners can sit over the surrounding border, which read as
+     the terminal being "stamped on". The leftover fit-gap blends in because the
+     pane background matches the terminal background (#0d1117). */
+  overflow: hidden;
 }
 
 .tg-pane-active {

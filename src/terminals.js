@@ -6,7 +6,14 @@
 // right xterm across ALL groups. Terminals stay alive when their group is
 // hidden (scrollback kept in memory); they refit when shown again.
 //
-// `Terminal` and `FitAddon` come from the vendored scripts in index.html.
+// `Terminal`, `FitAddon` and `WebglAddon` come from the vendored scripts in
+// index.html. We render with the WebGL renderer (one GPU canvas, full repaint
+// each frame) instead of xterm's default DOM renderer. The DOM renderer draws
+// one node per cell and leaves stale glyphs after a resize/reflow, which showed
+// up as ghosted/overlapping text and a "stamped-on" look. WebGL repaints the
+// whole grid every frame, so that breakage cannot build up. If the GPU context
+// is lost (driver reset, tab backgrounded on some GPUs) we dispose the addon and
+// fall back to the DOM renderer so the terminal keeps working.
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
@@ -25,6 +32,21 @@ function makeTerminal() {
     cursorBlink: true,
     theme: TERM_THEME,
   });
+}
+
+// Attach the WebGL renderer to an already-opened terminal. On GPU context loss
+// the addon disposes itself; xterm then transparently falls back to the DOM
+// renderer, so the terminal keeps working — no crash, just the slower path.
+// If the addon throws (no WebGL2 at all), we swallow it and stay on DOM.
+function attachWebgl(term) {
+  try {
+    const addon = new WebglAddon.WebglAddon();
+    addon.onContextLoss(() => addon.dispose());
+    term.loadAddon(addon);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[octiq] WebGL renderer unavailable, using DOM renderer:", err);
+  }
 }
 
 // Surface a PTY error into the terminal pane itself (red ANSI line) and the
@@ -263,6 +285,16 @@ class TerminalGroup {
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(pane);
+    // WebGL renderer must load AFTER open() — it needs the live DOM element.
+    attachWebgl(term);
+    // Follow the pane's real size. A ResizeObserver fires for layout changes the
+    // window "resize" event misses (drawer toggles, panel collapse, tab show),
+    // so the fit — and the rows/cols we report to the PTY — never drift out of
+    // sync with what is painted. We refit only when this tab is the active one.
+    const ro = new ResizeObserver(() => {
+      if (this.activeId === ptyId) this._fit(ptyId);
+    });
+    ro.observe(pane);
     term.onData((data) => {
       invoke("pty_write", { id: ptyId, data }).catch((err) => {
         reportTermError(term, `write failed: ${err}`);
@@ -292,7 +324,15 @@ class TerminalGroup {
     tabEl.addEventListener("click", () => this.activate(ptyId));
     this.tabsEl.append(tabEl);
 
-    const entry = { term, fitAddon, paneEl: pane, tabEl, labelEl: label, title };
+    const entry = {
+      term,
+      fitAddon,
+      paneEl: pane,
+      tabEl,
+      labelEl: label,
+      title,
+      ro,
+    };
     this.tabs.set(ptyId, entry);
     idToEntry.set(ptyId, { term, group: this });
 
@@ -411,6 +451,7 @@ class TerminalGroup {
       emitAttentionChange();
     }
     invoke("pty_close", { id: ptyId }).catch(() => {});
+    entry.ro?.disconnect();
     entry.term.dispose();
     entry.tabEl.remove();
     entry.paneEl.remove();
