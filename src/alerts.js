@@ -172,6 +172,14 @@ document.addEventListener("DOMContentLoaded", () => {
   testBtn?.addEventListener("click", () =>
     osNotify("octiq-flow", "Test notification — banner + sound working ✅"),
   );
+
+  // The project list re-renders (workspaces.js) on select / refresh, which drops
+  // the dot classes — re-apply them whenever the list changes, plus once now.
+  const list = document.getElementById("workspace-list");
+  if (list) {
+    new MutationObserver(applyAttentionBadges).observe(list, { childList: true });
+  }
+  applyAttentionBadges();
 });
 
 // THE single pty-attention listener for the whole app. Badge the tab (which
@@ -188,6 +196,45 @@ listen("pty-attention", (event) => {
 // Rebuild the banner whenever the attention set changes — from a new alert, a
 // jump/focus that cleared one, a tab activation, or a closed terminal.
 window.addEventListener("tg-attention-change", renderBanner);
+
+// ---- Cross-mode attention badges -----------------------------------------
+// Beyond the tab badge, show an amber dot on the MODE BAR (the mode that holds a
+// waiting terminal) and on the PROJECT LIST row (the project that holds one), so
+// the alert is visible even when that terminal is in another mode / project.
+// PTY ids are namespaced: "chat:N", "util:N", "cmd:<projectId>:N" (a command
+// terminal), or "<projectId>:N" (a project terminal).
+function deriveAttention() {
+  const modes = new Set();
+  const projects = new Set();
+  for (const id of attentionList()) {
+    if (id.startsWith("chat:")) {
+      modes.add("chat");
+    } else if (id.startsWith("util:")) {
+      modes.add("utilities");
+    } else if (id.startsWith("cmd:")) {
+      modes.add("project");
+      const pid = id.split(":")[1];
+      if (pid) projects.add(pid);
+    } else {
+      modes.add("project");
+      const pid = id.split(":")[0];
+      if (pid) projects.add(pid);
+    }
+  }
+  return { modes, projects };
+}
+
+function applyAttentionBadges() {
+  const { modes, projects } = deriveAttention();
+  for (const btn of document.querySelectorAll(".modebtn")) {
+    btn.classList.toggle("modebtn-attention", modes.has(btn.dataset.mode));
+  }
+  for (const row of document.querySelectorAll("#workspace-list .ws-item")) {
+    row.classList.toggle("ws-item-attention", projects.has(row.dataset.id));
+  }
+}
+
+window.addEventListener("tg-attention-change", applyAttentionBadges);
 
 // Bind the keyboard shortcut once at module load.
 window.addEventListener("keydown", onKeydown);

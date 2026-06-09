@@ -594,6 +594,36 @@ body {
   border-bottom: 1px solid #30363d;
 }
 
+/* Cross-mode attention dot on a mode-bar button (amber, top-right corner). */
+.modebtn-attention {
+  position: relative;
+}
+
+.modebtn-attention::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #e3b341;
+  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+}
+
+/* Cross-mode attention dot on a project-list row (amber, before the name). */
+.ws-item-attention .ws-item-name::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: #e3b341;
+  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+}
+
 /* Test-notification button: pushed to the right of the mode bar. */
 .test-notify {
   margin-left: auto;
