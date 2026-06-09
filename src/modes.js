@@ -11,9 +11,17 @@ const MODES = ["project", "chat", "utilities", "dashboard", "settings"];
 // localStorage key for the last chosen mode.
 const KEY = "octiq.mode";
 
+// The mode showing now, and the last non-settings mode, so the gear can toggle
+// Settings off (a second click returns to where you were).
+let currentMode = null;
+let lastNonSettingsMode = "project";
+
 // Switch to one mode: highlight its button, show its view, hide the rest,
 // and remember the choice.
 function setMode(mode) {
+  currentMode = mode;
+  if (mode !== "settings") lastNonSettingsMode = mode;
+
   // Highlight the matching mode button (and un-highlight the others).
   for (const btn of document.querySelectorAll(".modebtn")) {
     btn.classList.toggle("modebtn-active", btn.dataset.mode === mode);
@@ -41,9 +49,17 @@ function setMode(mode) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Wire each mode button to switch modes on click.
+  // Wire each mode button to switch modes on click. The gear toggles Settings:
+  // clicking it while Settings is open returns to the previous mode.
   for (const btn of document.querySelectorAll(".modebtn")) {
-    btn.addEventListener("click", () => setMode(btn.dataset.mode));
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.mode;
+      if (target === "settings" && currentMode === "settings") {
+        setMode(lastNonSettingsMode);
+      } else {
+        setMode(target);
+      }
+    });
   }
 
   // Restore the last mode if it is still a valid one; otherwise start on Project.

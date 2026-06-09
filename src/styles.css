@@ -629,8 +629,9 @@ body {
 .modebtn-gear {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 15px;
+  font-size: 20px;
   line-height: 1;
+  padding: 2px 8px;
 }
 
 /* ---- Settings page (gear) -------------------------------------------- */
