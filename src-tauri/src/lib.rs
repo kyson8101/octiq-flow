@@ -125,6 +125,7 @@ pub fn run() {
             terminal_layout::load_scrollback,
             terminal_layout::clear_project_layout,
             agent_resume::agent_resume_cmd,
+            agent_resume::agent_tab_info,
             agent_resume::setup_agent_hooks,
             agent_resume::prune_exited_agent_sessions,
             confirm_close,

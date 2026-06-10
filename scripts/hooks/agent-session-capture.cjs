@@ -19,7 +19,9 @@
  * this hook (a child of the agent process). We key the mapping by it.
  *
  * Store (one JSON file at ~/.octiqflow/agent-sessions.json):
- *   { "<persistKey>": { "agent": "claude|codex", "sessionId": "...", "cwd": "...", "updatedAt": "..." } }
+ *   { "<persistKey>": { "agent": "claude|codex", "sessionId": "...", "cwd": "...", "transcriptPath": "...", "updatedAt": "..." } }
+ * `transcriptPath` (when the agent passes it) lets the app read the session's
+ * generated title without re-deriving the transcript location from the cwd.
  *
  * Both Claude and Codex pass the same stdin shape (session_id, hook_event_name,
  * cwd), so one script serves both.
@@ -105,6 +107,11 @@ function main() {
       agent,
       sessionId,
       cwd: typeof input.cwd === "string" ? input.cwd : "",
+      // The agent passes the absolute path of its transcript file (Claude:
+      // transcript_path). The app reads the session title from it. Best effort —
+      // an absent path just means the app derives the location from cwd instead.
+      transcriptPath:
+        typeof input.transcript_path === "string" ? input.transcript_path : "",
       updatedAt: new Date().toISOString(),
     };
     writeStore(file, store);

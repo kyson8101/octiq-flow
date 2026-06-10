@@ -1,10 +1,12 @@
 // Projects. The left sidebar lists projects (workspaces). The selected
-// project's paths show in the bottom paths footer; clicking that footer opens a
-// modal to edit the project (name, primary path, docs root, other paths,
-// delete). All data lives in the Rust backend (workspaces.json); this file only
-// renders it and calls commands. Per-project terminals (project.js) and the
-// registered-command panel (commands.js) react to the `project-selected` event
-// this module emits.
+// project's paths show in the bottom paths footer. A project's right-click menu
+// "Edit…" opens a full-screen edit page (#view-editproject, like Settings) to
+// change name, color, primary path, docs root, other paths, startup layout, or
+// delete the project. modes.js shows/hides that view; this module opens it via
+// `open-editproject` / `close-editproject` window events. All data lives in the
+// Rust backend (workspaces.json); this file only renders it and calls commands.
+// Per-project terminals (project.js) and the registered-command panel
+// (commands.js) react to the `project-selected` event this module emits.
 const { invoke } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
@@ -27,7 +29,7 @@ const modalDocsPathEl = document.querySelector("#modal-docs-path");
 const modalDocsChangeBtn = document.querySelector("#modal-docs-change");
 const modalDocsDefaultBtn = document.querySelector("#modal-docs-default");
 
-const modalEl = document.querySelector("#ws-modal");
+const editViewEl = document.querySelector("#view-editproject");
 const modalCloseBtn = document.querySelector("#modal-close");
 const modalDoneBtn = document.querySelector("#modal-done");
 const modalNameEl = document.querySelector("#modal-name");
@@ -649,13 +651,16 @@ newModalEl.addEventListener("click", (e) => {
   if (e.target === newModalEl) closeNewModal();
 });
 
-// --- Edit modal ------------------------------------------------------------
+// --- Edit page (full-screen view, opened from the project right-click menu) --
+// modes.js owns showing/hiding #view-editproject. We only ask it to open or
+// close the view via window events, and keep our own `modalOpen` flag so
+// refresh() knows whether to re-render the page.
 function openModal() {
   if (!selected()) return;
   modalOpen = true;
   deleteArmed = false;
   startupDraft.ownerId = null; // re-seed startup draft from saved truth
-  modalEl.classList.remove("hidden");
+  window.dispatchEvent(new CustomEvent("open-editproject"));
   renderModal();
   modalNameEl.focus();
 }
@@ -663,7 +668,7 @@ function openModal() {
 function closeModal() {
   modalOpen = false;
   resetDeleteButton();
-  modalEl.classList.add("hidden");
+  window.dispatchEvent(new CustomEvent("close-editproject"));
 }
 
 function renderModal() {
@@ -1027,11 +1032,12 @@ async function done() {
 
 modalDoneBtn.addEventListener("click", done);
 modalCloseBtn.addEventListener("click", done);
-modalEl.addEventListener("click", (e) => {
-  if (e.target === modalEl) done(); // click on the dark backdrop
-});
+// Escape closes the page — but only while it is actually the visible view, so it
+// does not yank the user back to a prior mode if they left via a mode tab.
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && modalOpen) done();
+  if (e.key === "Escape" && editViewEl && !editViewEl.classList.contains("hidden")) {
+    done();
+  }
 });
 
 // --- Boot ------------------------------------------------------------------

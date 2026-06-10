@@ -269,8 +269,10 @@ fn changes_for_repo(root: String) -> RepoChanges {
                 files.push(new_file(line, "untracked"));
             }
         }
-    } else if let Some(st) = run_git(&root, &["-c", "core.quotePath=false", "status", "--porcelain"])
-    {
+    } else if let Some(st) = run_git(
+        &root,
+        &["-c", "core.quotePath=false", "status", "--porcelain"],
+    ) {
         // Brand-new repo (no HEAD): every staged-or-untracked file is new.
         files = parse_porcelain_as_new(&st);
     }
@@ -456,7 +458,11 @@ fn parse_porcelain_as_new(text: &str) -> Vec<ChangedFile> {
         if path.is_empty() {
             continue;
         }
-        let status = if xy.contains('?') { "untracked" } else { "added" };
+        let status = if xy.contains('?') {
+            "untracked"
+        } else {
+            "added"
+        };
         out.push(new_file(path, status));
     }
     out
@@ -510,9 +516,21 @@ fn status_for_path(path: String) -> GitStatus {
 fn diff_line_counts(path: &str) -> (u32, u32) {
     let text = run_git(
         path,
-        &["-c", "core.quotePath=false", "diff", "HEAD", "--numstat", "-M"],
+        &[
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "HEAD",
+            "--numstat",
+            "-M",
+        ],
     )
-    .or_else(|| run_git(path, &["-c", "core.quotePath=false", "diff", "--numstat", "-M"]))
+    .or_else(|| {
+        run_git(
+            path,
+            &["-c", "core.quotePath=false", "diff", "--numstat", "-M"],
+        )
+    })
     .unwrap_or_default();
     sum_numstat(&text)
 }
@@ -645,7 +663,10 @@ mod tests {
 
     #[test]
     fn sum_numstat_totals_added_and_deleted() {
-        assert_eq!(sum_numstat("1\t10\tsrc/a.rs\n124\t14\tsrc/b.rs\n"), (125, 24));
+        assert_eq!(
+            sum_numstat("1\t10\tsrc/a.rs\n124\t14\tsrc/b.rs\n"),
+            (125, 24)
+        );
     }
 
     #[test]

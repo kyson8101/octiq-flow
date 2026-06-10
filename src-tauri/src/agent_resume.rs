@@ -22,6 +22,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -55,8 +57,25 @@ pub struct SessionEntry {
     pub session_id: String,
     #[serde(default)]
     pub cwd: String,
+    /// Absolute path of the agent's transcript file, when the hook captured it
+    /// (Claude passes `transcript_path`). Empty for older entries / agents that
+    /// do not pass it — then the title reader derives the path from `cwd`.
+    #[serde(default)]
+    pub transcript_path: String,
     #[serde(default)]
     pub updated_at: String,
+}
+
+/// What a tab's terminal is running, for auto-naming its tab. `is_agent` is true
+/// when an AI agent session was captured for this tab (so the tab should follow
+/// the agent's title, not its first shell command). `title` is the agent's
+/// generated session title when available — `None` until the agent has produced
+/// one (it is generated a moment after the first exchange).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTabInfo {
+    pub is_agent: bool,
+    pub title: Option<String>,
 }
 
 // ---- Paths ----------------------------------------------------------------
@@ -118,6 +137,105 @@ fn build_resume_cmd(entry: &SessionEntry) -> Option<String> {
         "codex" => Some(format!("codex resume {}", entry.session_id)),
         _ => None,
     }
+}
+
+/// Longest tab title we keep. Agent titles are a short phrase; this guards
+/// against a pathological transcript line bloating a tab. The tab strip
+/// ellipsizes anyway, but a bounded string keeps the layout file small.
+const MAX_TITLE_LEN: usize = 80;
+
+/// Encode a cwd into Claude's project-dir name: every `/` and `.` becomes `-`.
+/// e.g. `/Users/me/dev/app` -> `-Users-me-dev-app`. Used only as a fallback when
+/// the hook did not capture the transcript path directly.
+fn encode_project_dir(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect()
+}
+
+/// The transcript file for a captured entry: the hook-provided path when present,
+/// else `~/.claude/projects/<enc(cwd)>/<sessionId>.jsonl`. `None` when neither
+/// source yields a path (no transcript path, and missing cwd/session id/home).
+fn transcript_path_for(entry: &SessionEntry) -> Option<PathBuf> {
+    if !entry.transcript_path.is_empty() {
+        return Some(PathBuf::from(&entry.transcript_path));
+    }
+    if entry.cwd.is_empty() || entry.session_id.is_empty() {
+        return None;
+    }
+    home_dir().map(|h| {
+        h.join(".claude")
+            .join("projects")
+            .join(encode_project_dir(&entry.cwd))
+            .join(format!("{}.jsonl", entry.session_id))
+    })
+}
+
+/// The latest agent-generated title in a transcript's text, or `None`. Claude
+/// writes one JSON object per line; a title line is `{"type":"ai-title",
+/// "aiTitle":"..."}` and is rewritten as the conversation evolves, so we keep the
+/// LAST non-empty one. We pre-filter on the `aiTitle` substring so only the few
+/// title lines are JSON-parsed, not every message line. The result is trimmed and
+/// length-capped for use as a tab label.
+fn latest_ai_title(contents: &str) -> Option<String> {
+    let mut found: Option<String> = None;
+    for line in contents.lines() {
+        if !line.contains("aiTitle") {
+            continue;
+        }
+        let Ok(obj) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if obj.get("type").and_then(|t| t.as_str()) != Some("ai-title") {
+            continue;
+        }
+        if let Some(title) = obj.get("aiTitle").and_then(|t| t.as_str()) {
+            let trimmed = title.trim();
+            if !trimmed.is_empty() {
+                found = Some(cap_title(trimmed));
+            }
+        }
+    }
+    found
+}
+
+/// Trim a title to `MAX_TITLE_LEN` chars (not bytes), so the cut is always on a
+/// char boundary even for multi-byte titles.
+fn cap_title(title: &str) -> String {
+    if title.chars().count() <= MAX_TITLE_LEN {
+        return title.to_string();
+    }
+    title.chars().take(MAX_TITLE_LEN).collect()
+}
+
+/// Cache of `path -> (mtime, last title)` so an unchanged transcript is not
+/// re-parsed every poll. The frontend polls every few seconds per agent tab; a
+/// finished agent's transcript never changes, so this turns that into a cheap
+/// metadata stat instead of a full read + scan.
+fn title_cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, Option<String>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, Option<String>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The latest agent title for a transcript file, reading it only when its mtime
+/// changed since the last read. Any IO error -> `None` (the tab keeps its current
+/// name). A poisoned cache lock is recovered into, so one panic cannot wedge
+/// titles for the rest of the session.
+fn read_title_cached(path: &PathBuf) -> Option<String> {
+    let mtime = fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    let mut cache = title_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached_mtime, cached_title)) = cache.get(path) {
+        if *cached_mtime == mtime {
+            return cached_title.clone();
+        }
+    }
+    let title = fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| latest_ai_title(&raw));
+    cache.insert(path.clone(), (mtime, title.clone()));
+    title
 }
 
 /// Drop the mappings of tabs whose agent has exited. `running_by_key` maps each
@@ -233,6 +351,26 @@ fn load_store() -> std::collections::HashMap<String, SessionEntry> {
 #[tauri::command]
 pub fn agent_resume_cmd(key: String) -> Option<String> {
     load_store().get(&key).and_then(build_resume_cmd)
+}
+
+/// What a tab is running, so the frontend can auto-name the tab: whether an agent
+/// session was captured for it, and the agent's current session title when one
+/// exists. The frontend uses the title for an agent tab and falls back to the
+/// tab's first shell command when `is_agent` is false. Polled per agent tab on a
+/// timer; the title read is mtime-cached so a quiet tab costs only a stat.
+#[tauri::command]
+pub fn agent_tab_info(key: String) -> AgentTabInfo {
+    let Some(entry) = load_store().get(&key).cloned() else {
+        return AgentTabInfo {
+            is_agent: false,
+            title: None,
+        };
+    };
+    let title = transcript_path_for(&entry).and_then(|p| read_title_cached(&p));
+    AgentTabInfo {
+        is_agent: true,
+        title,
+    }
 }
 
 /// Drop store entries whose tab no longer exists. Called from the terminal-layout
@@ -372,6 +510,7 @@ mod tests {
             agent: agent.to_string(),
             session_id: id.to_string(),
             cwd: String::new(),
+            transcript_path: String::new(),
             updated_at: String::new(),
         }
     }
@@ -545,10 +684,77 @@ mod tests {
 
     #[test]
     fn session_entry_round_trips_camel_case_from_the_hook() {
-        let raw = r#"{ "agent": "claude", "sessionId": "s1", "cwd": "/w", "updatedAt": "t" }"#;
+        let raw = r#"{ "agent": "claude", "sessionId": "s1", "cwd": "/w", "transcriptPath": "/t.jsonl", "updatedAt": "t" }"#;
         let parsed: SessionEntry = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.agent, "claude");
         assert_eq!(parsed.session_id, "s1");
         assert_eq!(parsed.cwd, "/w");
+        assert_eq!(parsed.transcript_path, "/t.jsonl");
+        // An older entry without the field still parses (defaults to empty).
+        let old = r#"{ "agent": "claude", "sessionId": "s1" }"#;
+        let parsed_old: SessionEntry = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed_old.transcript_path, "");
+    }
+
+    #[test]
+    fn encode_project_dir_maps_slash_and_dot_to_dash() {
+        assert_eq!(
+            encode_project_dir("/Users/me/Developer/octiq-flow"),
+            "-Users-me-Developer-octiq-flow"
+        );
+        // Dots in a segment (e.g. a hidden dir) also become dashes, matching how
+        // Claude names its project transcript folders.
+        assert_eq!(
+            encode_project_dir("/Users/me/.claude/app"),
+            "-Users-me--claude-app"
+        );
+    }
+
+    #[test]
+    fn transcript_path_prefers_the_captured_path() {
+        let mut e = entry("claude", "sess-1");
+        e.transcript_path = "/tmp/explicit.jsonl".to_string();
+        assert_eq!(
+            transcript_path_for(&e),
+            Some(PathBuf::from("/tmp/explicit.jsonl"))
+        );
+    }
+
+    #[test]
+    fn latest_ai_title_keeps_the_last_nonempty_title() {
+        let jsonl = concat!(
+            r#"{"type":"user","message":{"content":"hi"}}"#,
+            "\n",
+            r#"{"type":"ai-title","aiTitle":"First guess","sessionId":"s"}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":"ok"}}"#,
+            "\n",
+            r#"{"type":"ai-title","aiTitle":"Refined title","sessionId":"s"}"#,
+            "\n",
+        );
+        assert_eq!(latest_ai_title(jsonl), Some("Refined title".to_string()));
+    }
+
+    #[test]
+    fn latest_ai_title_is_none_without_a_title_line() {
+        let jsonl = concat!(
+            r#"{"type":"user","message":{"content":"hi"}}"#,
+            "\n",
+            r#"{"type":"summary","summary":"not an ai-title"}"#,
+        );
+        assert_eq!(latest_ai_title(jsonl), None);
+        // A line that merely mentions aiTitle in text but is not a title entry is
+        // ignored (pre-filter matches, type check rejects).
+        let decoy = r#"{"type":"assistant","message":{"content":"set aiTitle later"}}"#;
+        assert_eq!(latest_ai_title(decoy), None);
+    }
+
+    #[test]
+    fn cap_title_trims_on_a_char_boundary() {
+        let short = "Add agent quick spawn";
+        assert_eq!(cap_title(short), short);
+        let long: String = "あ".repeat(MAX_TITLE_LEN + 10);
+        let capped = cap_title(&long);
+        assert_eq!(capped.chars().count(), MAX_TITLE_LEN);
     }
 }

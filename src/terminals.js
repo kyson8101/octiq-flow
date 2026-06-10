@@ -105,6 +105,48 @@ function stripAnsi(s) {
     .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, "");
 }
 
+// Longest first-command title we keep. The tab strip ellipsizes, but a bounded
+// string keeps the saved layout small and the tab readable.
+const MAX_CMD_TITLE_LEN = 60;
+
+/**
+ * Feed raw terminal INPUT (the bytes the user types, as xterm reports them via
+ * onData) into a small line buffer and return the first completed command line,
+ * or null until one is entered. `state` is `{ buf, esc }`, carried across calls.
+ *
+ * This reconstructs the typed line well enough to name a tab — it handles the
+ * common edits (printable chars, Backspace, Ctrl-U/Ctrl-C clear, Enter commits)
+ * and skips escape sequences (arrow keys, bracketed-paste markers). It is a
+ * heuristic, not a shell parser: tab-completion rewrites and in-line cursor
+ * edits may yield an imperfect name, which the user can always fix by hand.
+ */
+function nextTypedCommand(state, data) {
+  for (let i = 0; i < data.length; i++) {
+    const code = data.charCodeAt(i);
+    if (state.esc) {
+      // Inside an escape sequence (CSI etc.); a final byte in @-~ ends it.
+      if (code >= 0x40 && code <= 0x7e) state.esc = false;
+      continue;
+    }
+    if (code === 0x1b) {
+      state.esc = true; // ESC: start skipping the sequence that follows.
+    } else if (code === 0x0d || code === 0x0a) {
+      // Enter: a non-empty line is the command we were waiting for.
+      const cmd = state.buf.trim();
+      state.buf = "";
+      if (cmd) return cmd.slice(0, MAX_CMD_TITLE_LEN);
+    } else if (code === 0x7f || code === 0x08) {
+      state.buf = state.buf.slice(0, -1); // Backspace.
+    } else if (code === 0x15 || code === 0x03) {
+      state.buf = ""; // Ctrl-U (kill line) / Ctrl-C (abandon).
+    } else if (code >= 0x20) {
+      if (state.buf.length < 256) state.buf += data[i]; // Printable.
+    }
+    // Other control bytes (Tab, etc.) are ignored.
+  }
+  return null;
+}
+
 /** The last non-empty line in a raw chunk, or null. CR is treated as a line
  *  break so progress-bar style output still yields a current line. */
 function lastLine(chunk) {
@@ -250,14 +292,22 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
  *   refitActive()     // refit the active terminal if the group is visible
  *   dispose()         // close all terminals + remove from registries
  *
- * createTerminalGroup(mountEl, idPrefix, { showAdd } = {})
+ * With `quickSpawn: true` the strip also renders a right-aligned "Claude | Codex"
+ * control; clicking a side calls the owner's `onQuickSpawn(agent)` hook so the
+ * owner can open a new terminal and launch that agent (project mode uses this).
+ *
+ * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn } = {})
  */
-export function createTerminalGroup(mountEl, idPrefix, { showAdd = true } = {}) {
-  return new TerminalGroup(mountEl, idPrefix, { showAdd });
+export function createTerminalGroup(
+  mountEl,
+  idPrefix,
+  { showAdd = true, quickSpawn = false } = {},
+) {
+  return new TerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn });
 }
 
 class TerminalGroup {
-  constructor(mountEl, idPrefix, { showAdd = true } = {}) {
+  constructor(mountEl, idPrefix, { showAdd = true, quickSpawn = false } = {}) {
     this.idPrefix = idPrefix;
     this.seq = 0;
     // Monotonic counter for DEFAULT tab titles ("term N"). Never decremented,
@@ -280,6 +330,10 @@ class TerminalGroup {
     // The "+" callback is set by the owner via onAdd; default is a no-op so the
     // primitive does not assume any cwd/startCmd policy.
     this.onAdd = null;
+    // Quick-spawn callback (quickSpawn groups only): onQuickSpawn(agent) fires
+    // with "claude" | "codex" when the user clicks that side of the strip's
+    // agents control. The owner decides cwd + launch command.
+    this.onQuickSpawn = null;
     // Optional owner hooks for persistence. onLayoutChange fires after a
     // structural change (new/close/rename); onOutput(ptyId) fires when a
     // terminal in this group produces output. Both default to no-op — only a
@@ -299,6 +353,15 @@ class TerminalGroup {
       this.stripEl.append(this.tabsEl);
     }
 
+    // Right-aligned "Claude | Codex" quick-spawn control. Only rendered when the
+    // owner opts in; its margin-left:auto pushes it to the strip's right end.
+    if (quickSpawn) {
+      this.agentsEl = this._buildQuickSpawn();
+      this.stripEl.append(this.agentsEl);
+    } else {
+      this.agentsEl = null;
+    }
+
     this.panesEl = document.createElement("div");
     this.panesEl.className = "tg-panes";
 
@@ -316,6 +379,35 @@ class TerminalGroup {
     return this.tabs.size;
   }
 
+  /**
+   * Build the right-aligned "Claude | Codex" agents control. Each side is a
+   * button whose click forwards a fixed agent name to onQuickSpawn — the names
+   * are hard-coded here (never user-supplied), so nothing is interpolated into a
+   * shell command downstream. A thin divider span sits between the two sides.
+   */
+  _buildQuickSpawn() {
+    const wrap = document.createElement("div");
+    wrap.className = "tg-agents";
+    wrap.title = "Open a new terminal and start an agent";
+
+    const makeBtn = (agent, text) => {
+      const btn = document.createElement("button");
+      btn.className = "tg-agent";
+      btn.dataset.agent = agent;
+      btn.textContent = text;
+      btn.title = `New ${text} terminal`;
+      btn.addEventListener("click", () => this.onQuickSpawn?.(agent));
+      return btn;
+    };
+
+    const sep = document.createElement("span");
+    sep.className = "tg-agent-sep";
+    sep.setAttribute("aria-hidden", "true");
+
+    wrap.append(makeBtn("claude", "Claude"), sep, makeBtn("codex", "Codex"));
+    return wrap;
+  }
+
   // ---- Persistence (session restore) --------------------------------------
   // The owner (project.js) reads these to save the group and writes them back
   // via newTerminal({ persistKey, restoreScrollback }) on the next launch.
@@ -326,6 +418,7 @@ class TerminalGroup {
     return [...this.tabs.values()].map((e) => ({
       persistKey: e.persistKey,
       title: e.title,
+      titleManual: !!e.titleManual,
       cwd: e.cwd || "",
     }));
   }
@@ -351,6 +444,37 @@ class TerminalGroup {
     return this.tabs.get(ptyId)?.persistKey ?? null;
   }
 
+  /** The first command typed in a tab, or null if none captured yet. */
+  firstCmdFor(ptyId) {
+    return this.tabs.get(ptyId)?.firstCmd ?? null;
+  }
+
+  /**
+   * Set a tab's title automatically. `fromAgent` marks the title as coming from
+   * an agent session (vs the tab's first command). No-op when the tab is
+   * unknown, the user has renamed it by hand (titleManual), the title is
+   * unchanged, or a first-command title would overwrite a stickier agent title —
+   * so a poll loop calling this every few seconds is cheap and never downgrades
+   * or fights a name. Returns whether the title actually changed (so the caller
+   * can persist only real changes).
+   */
+  setAutoTitle(ptyId, title, fromAgent = false) {
+    const entry = this.tabs.get(ptyId);
+    const next = (title || "").trim();
+    if (!entry || entry.titleManual || !next || next === entry.title) {
+      return false;
+    }
+    // An agent title outranks a first-command title: once an agent named the
+    // tab, the first-command path must not rename it after the agent exits.
+    if (!fromAgent && entry.titleFromAgent) return false;
+    entry.title = next;
+    entry.labelEl.textContent = next;
+    entry.titleFromAgent = fromAgent;
+    // Persist the new title so it survives a restart (debounced by the owner).
+    this.onLayoutChange?.();
+    return true;
+  }
+
   visible() {
     // The group is visible when neither it nor any ancestor is display:none.
     return this.root.offsetParent !== null;
@@ -360,6 +484,7 @@ class TerminalGroup {
     cwd = "",
     startCmd = null,
     title = null,
+    titleManual = false,
     persistKey = null,
     restoreScrollback = "",
   } = {}) {
@@ -394,7 +519,16 @@ class TerminalGroup {
       if (this.activeId === ptyId) this._fit(ptyId);
     });
     ro.observe(pane);
+    // Reconstruct the first command typed in this tab, so a plain (non-agent)
+    // terminal can auto-name itself from it. State is carried across onData
+    // calls; once a command is captured we stop tracking. `entry` is assigned
+    // just below and always exists by the time the user types.
+    const cmdState = { buf: "", esc: false };
     term.onData((data) => {
+      if (entry && !entry.firstCmd) {
+        const cmd = nextTypedCommand(cmdState, data);
+        if (cmd) entry.firstCmd = cmd;
+      }
       invoke("pty_write", { id: ptyId, data }).catch((err) => {
         reportTermError(term, `write failed: ${err}`);
       });
@@ -431,6 +565,16 @@ class TerminalGroup {
       tabEl,
       labelEl: label,
       title,
+      // True once the user renames the tab by hand: auto-rename then leaves it
+      // alone. Restored from the saved layout so a manual name survives restart.
+      titleManual,
+      // True once an agent session title named this tab. It makes the agent
+      // title "sticky": after the agent exits (its session mapping is pruned),
+      // the first-command path must not downgrade the tab back to "claude".
+      titleFromAgent: false,
+      // The first command typed in this tab (null until one is entered). Used to
+      // auto-name a plain terminal that never launched an agent.
+      firstCmd: null,
       cwd,
       startCmd,
       persistKey,
@@ -532,6 +676,8 @@ class TerminalGroup {
       if (save && next) {
         entry.title = next;
         labelEl.textContent = next;
+        // A hand-typed name pins the tab: auto-rename must not override it.
+        entry.titleManual = true;
       }
       input.replaceWith(labelEl);
       entry.renaming = false;

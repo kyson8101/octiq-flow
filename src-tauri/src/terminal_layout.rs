@@ -40,6 +40,11 @@ pub struct TermEntry {
     pub title: String,
     #[serde(default)]
     pub cwd: String,
+    /// True once the user has renamed this tab by hand. The auto-rename poller
+    /// (agent title / first command) skips a manual tab, so the user's chosen
+    /// name survives both the next poll and a restart.
+    #[serde(default)]
+    pub title_manual: bool,
 }
 
 /// The on-disk shape of `terminal_layout.json`: each project id maps to its
@@ -327,6 +332,7 @@ mod tests {
                 persist_key: "k1".to_string(),
                 title: "term 1".to_string(),
                 cwd: "/work".to_string(),
+                title_manual: false,
             }],
         );
         let raw = serde_json::to_string(&data).unwrap();
@@ -347,6 +353,7 @@ mod tests {
         assert_eq!(entry.persist_key, "k");
         assert_eq!(entry.title, "");
         assert_eq!(entry.cwd, "");
+        assert!(!entry.title_manual);
     }
 
     #[test]
@@ -358,6 +365,7 @@ mod tests {
                 persist_key: "a".into(),
                 title: String::new(),
                 cwd: String::new(),
+                title_manual: false,
             }],
         );
         data.projects.insert(
@@ -366,6 +374,7 @@ mod tests {
                 persist_key: "b".into(),
                 title: String::new(),
                 cwd: String::new(),
+                title_manual: false,
             }],
         );
         let keys = live_keys(&data);

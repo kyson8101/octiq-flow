@@ -51,9 +51,11 @@ const SCROLLBACK_FLUSH_MS = 5000;
 function groupFor(id, primaryPath, startup, terminalCommand) {
   let rec = projects.get(id);
   if (!rec) {
-    const group = createTerminalGroup(mountEl, id);
+    const group = createTerminalGroup(mountEl, id, { quickSpawn: true });
     // "+" spawns another terminal in THIS project, at its primary path.
     group.onAdd = () => spawnInProject(id);
+    // "Claude | Codex" quick-spawn: open a new terminal and launch that agent.
+    group.onQuickSpawn = (agent) => spawnAgentInProject(id, agent);
     rec = {
       group,
       primaryPath,
@@ -89,6 +91,23 @@ async function spawnInProject(id) {
   await rec.group.newTerminal({
     cwd: rec.primaryPath,
     startCmd: rec.terminalCommand || null,
+  });
+}
+
+/** Open a new terminal in a project and immediately launch an AI agent in it
+ *  (Claude Code or Codex), cd'd to the project's primary path. The binary is
+ *  picked from a fixed allowlist — the agent name from the UI is only used to
+ *  choose between two literal strings, never interpolated — so the start command
+ *  can never inject extra shell commands. The tab is titled after the agent. */
+async function spawnAgentInProject(id, agent) {
+  const rec = projects.get(id);
+  if (!rec) return;
+  const bin = agent === "codex" ? "codex" : "claude";
+  const title = bin === "codex" ? "Codex" : "Claude";
+  await rec.group.newTerminal({
+    cwd: rec.primaryPath,
+    startCmd: bin,
+    title,
   });
 }
 
@@ -145,6 +164,9 @@ async function restoreProject(id, saved) {
       await rec.group.newTerminal({
         persistKey: t.persistKey,
         title: t.title || undefined,
+        // Carry the manual-rename flag so a hand-named tab is not re-titled by
+        // the auto-rename poller after a restart.
+        titleManual: !!t.titleManual,
         cwd: t.cwd || rec.primaryPath,
         startCmd,
         restoreScrollback,
@@ -252,8 +274,41 @@ function flushDirty() {
   // prompt). Doing it on this timer means an exited agent stops being a resume
   // candidate within seconds, so even a crash leaves the store correct.
   invoke("prune_exited_agent_sessions").catch(() => {});
+  // Auto-name tabs from their agent's session title or first command (P: tab
+  // auto-rename). Fire-and-forget; setAutoTitle skips manual + unchanged names.
+  refreshTitles();
 }
 setInterval(flushDirty, SCROLLBACK_FLUSH_MS);
+
+/** Auto-name each project tab. A tab that launched an agent follows that agent's
+ *  session title (e.g. Claude's generated title); a plain terminal that never
+ *  launched an agent follows the first command typed in it. A hand-renamed tab is
+ *  left alone (setAutoTitle checks the manual flag). Backend reads are cheap
+ *  (mtime-cached), so polling every tab on the flush timer is fine. */
+async function refreshTitles() {
+  for (const [, rec] of projects) {
+    if (rec.restoring) continue;
+    for (const ptyId of rec.group.ids()) {
+      const key = rec.group.persistKeyFor(ptyId);
+      if (!key) continue;
+      let info;
+      try {
+        info = await invoke("agent_tab_info", { key });
+      } catch {
+        continue; // backend hiccup: keep the current name, try again next tick
+      }
+      if (info?.isAgent) {
+        // Agent tab: use the session title once the agent has generated one.
+        // Until then leave the current name — do NOT fall back to a command.
+        if (info.title) rec.group.setAutoTitle(ptyId, info.title, true);
+      } else {
+        // Plain tab: name it after the first command the user ran.
+        const cmd = rec.group.firstCmdFor(ptyId);
+        if (cmd) rec.group.setAutoTitle(ptyId, cmd, false);
+      }
+    }
+  }
+}
 
 /** Flush every visited project's layout + every terminal's scrollback. Used by
  *  the quit handshake so a clean quit never loses the most recent output. */

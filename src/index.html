@@ -359,98 +359,126 @@
       </div>
     </div>
 
-    <!-- Edit-workspace modal: rename, primary path, other paths, delete -->
-    <div id="ws-modal" class="modal-backdrop hidden">
-      <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-head">
-          <span class="modal-title">Edit workspace</span>
-          <button id="modal-close" class="icon-btn" title="Close">✕</button>
-        </div>
-
-        <label class="modal-label" for="modal-name">Name</label>
-        <input id="modal-name" class="inline-input" autocomplete="off" />
-
-        <label class="modal-label" for="modal-description">Description</label>
-        <input id="modal-description" class="inline-input" autocomplete="off" placeholder="Short description (optional)" />
-
-        <div class="modal-section-head">
-          <span>Color</span>
-        </div>
-        <div id="modal-color-swatches" class="color-swatches"></div>
-
-        <div class="modal-section-head">
-          <span class="badge-primary">Primary</span>
-          <button id="modal-change-primary" class="btn btn-sm">Change folder</button>
-        </div>
-        <span id="modal-primary-path" class="ws-primary-path"></span>
-
-        <div class="modal-section-head">
-          <span>Docs root</span>
-          <span class="modal-section-actions">
-            <button id="modal-docs-default" class="btn btn-sm">Use default</button>
-            <button id="modal-docs-change" class="btn btn-sm">Change folder</button>
-          </span>
-        </div>
-        <span id="modal-docs-path" class="ws-primary-path"></span>
-
-        <div class="modal-section-head">
-          <span>Other paths</span>
-          <button id="modal-add-path" class="btn btn-sm">+ Add folder</button>
-        </div>
-        <ul id="modal-paths" class="ws-paths"></ul>
-        <p id="modal-paths-empty" class="ws-empty">No other folders added yet.</p>
-
-        <div class="modal-section-head">
-          <span>Run on every new terminal</span>
-        </div>
-        <input id="modal-terminal-command" class="inline-input" autocomplete="off" placeholder="e.g. nvm use (optional)" />
-        <p class="modal-section-hint">
-          Runs in each new terminal opened in this project. A startup terminal's
-          own command takes precedence. Restored terminals do not re-run it.
-        </p>
-
-        <section class="startup-section" id="modal-startup-section">
-          <div class="modal-section-head">
-            <span>Startup layout</span>
-          </div>
-          <p class="modal-section-hint">
-            Opens automatically the first time this project is opened in a session.
-          </p>
-
-          <div class="startup-sub">
-            <div class="startup-sub-head">
-              <span class="startup-sub-title">Terminals</span>
-              <button type="button" class="btn btn-sm" id="modal-startup-add-term">
-                + Add terminal
-              </button>
-            </div>
-            <ul class="startup-term-list" id="modal-startup-terminals"></ul>
+    <!-- Edit-project page: a full-screen view (like Settings), opened from a
+         project's right-click "Edit…". Same fields as the old modal, now laid
+         out as settings-style cards. modes.js shows/hides this view. -->
+    <section id="view-editproject" class="view hidden">
+      <div class="settings-page">
+        <div class="settings-inner">
+          <div class="editproject-head">
+            <button id="modal-close" class="btn btn-sm editproject-back" type="button" title="Back">← Back</button>
+            <h1 class="settings-title">Edit project</h1>
           </div>
 
-          <div class="startup-sub">
-            <div class="startup-sub-head">
-              <span class="startup-sub-title">Auto-run commands</span>
+          <section class="settings-section">
+            <div class="settings-section-title">Name &amp; color</div>
+
+            <div class="settings-field">
+              <label class="settings-label" for="modal-name">Name</label>
+              <input id="modal-name" class="inline-input" autocomplete="off" />
             </div>
-            <p class="startup-cmds-empty hidden" id="modal-startup-cmds-empty">
-              No registered commands yet. Add commands in the right panel first.
+
+            <div class="settings-field">
+              <label class="settings-label" for="modal-description">Description</label>
+              <input id="modal-description" class="inline-input" autocomplete="off" placeholder="Short description (optional)" />
+            </div>
+
+            <div class="settings-field">
+              <span class="settings-label">Color</span>
+              <div id="modal-color-swatches" class="color-swatches"></div>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section-title">Folders</div>
+
+            <div class="settings-field">
+              <div class="modal-section-head">
+                <span class="badge-primary">Primary</span>
+                <button id="modal-change-primary" class="btn btn-sm">Change folder</button>
+              </div>
+              <span id="modal-primary-path" class="ws-primary-path"></span>
+            </div>
+
+            <div class="settings-field">
+              <div class="modal-section-head">
+                <span>Docs root</span>
+                <span class="modal-section-actions">
+                  <button id="modal-docs-default" class="btn btn-sm">Use default</button>
+                  <button id="modal-docs-change" class="btn btn-sm">Change folder</button>
+                </span>
+              </div>
+              <span id="modal-docs-path" class="ws-primary-path"></span>
+            </div>
+
+            <div class="settings-field">
+              <div class="modal-section-head">
+                <span>Other paths</span>
+                <button id="modal-add-path" class="btn btn-sm">+ Add folder</button>
+              </div>
+              <ul id="modal-paths" class="ws-paths"></ul>
+              <p id="modal-paths-empty" class="ws-empty">No other folders added yet.</p>
+            </div>
+          </section>
+
+          <section class="settings-section">
+            <div class="settings-section-title">Run on every new terminal</div>
+            <input id="modal-terminal-command" class="inline-input" autocomplete="off" placeholder="e.g. nvm use (optional)" />
+            <p class="settings-help">
+              Runs in each new terminal opened in this project. A startup terminal's
+              own command takes precedence. Restored terminals do not re-run it.
             </p>
-            <div class="startup-cmd-list" id="modal-startup-cmds"></div>
-          </div>
+          </section>
 
-          <div class="startup-foot">
-            <button type="button" class="btn btn-sm btn-primary" id="modal-startup-save">
-              Save startup layout
-            </button>
-            <span class="startup-status" id="modal-startup-status"></span>
-          </div>
-        </section>
+          <section class="settings-section" id="modal-startup-section">
+            <div class="settings-section-title">Startup layout</div>
+            <p class="settings-help">
+              Opens automatically the first time this project is opened in a session.
+            </p>
 
-        <div class="modal-foot">
-          <button id="modal-delete" class="icon-btn icon-btn-danger">Delete workspace</button>
-          <button id="modal-done" class="btn btn-primary">Done</button>
+            <div class="startup-sub">
+              <div class="startup-sub-head">
+                <span class="startup-sub-title">Terminals</span>
+                <button type="button" class="btn btn-sm" id="modal-startup-add-term">
+                  + Add terminal
+                </button>
+              </div>
+              <ul class="startup-term-list" id="modal-startup-terminals"></ul>
+            </div>
+
+            <div class="startup-sub">
+              <div class="startup-sub-head">
+                <span class="startup-sub-title">Auto-run commands</span>
+              </div>
+              <p class="startup-cmds-empty hidden" id="modal-startup-cmds-empty">
+                No registered commands yet. Add commands in the right panel first.
+              </p>
+              <div class="startup-cmd-list" id="modal-startup-cmds"></div>
+            </div>
+
+            <div class="startup-foot">
+              <button type="button" class="btn btn-sm btn-primary" id="modal-startup-save">
+                Save startup layout
+              </button>
+              <span class="startup-status" id="modal-startup-status"></span>
+            </div>
+          </section>
+
+          <section class="settings-section editproject-danger">
+            <div class="settings-section-title">Danger zone</div>
+            <p class="settings-help">
+              Deleting a project removes it and closes its terminals. This cannot
+              be undone.
+            </p>
+            <button id="modal-delete" class="icon-btn icon-btn-danger">Delete project</button>
+          </section>
+
+          <div class="editproject-foot">
+            <button id="modal-done" class="btn btn-primary">Done</button>
+          </div>
         </div>
       </div>
-    </div>
+    </section>
 
     <!-- Command terminal modal: a registered command runs in the background and
          shows a one-line status in the footer. Clicking the footer opens this

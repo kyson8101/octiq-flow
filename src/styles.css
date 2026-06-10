@@ -920,6 +920,47 @@ body {
   white-space: pre;
 }
 
+/* ---- Edit-project page (full-screen view, like Settings) ------------- */
+/* Reuses the Settings card shell (.settings-page / .settings-inner /
+   .settings-section). Only the header (Back + title), the footer (Done), the
+   danger card accent, and a few full-width fixes for the reused modal blocks
+   are page-specific. */
+.editproject-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Keep the back button from stretching in the flex row. */
+.editproject-back {
+  flex-shrink: 0;
+}
+
+.editproject-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Danger card: a red-tinted border so Delete stands apart from the rest. */
+.editproject-danger {
+  border-color: #5d2b2b;
+}
+
+/* Settings cards align their children to the start (no stretch), so the reused
+   modal sub-blocks must claim the full card width to lay out as they did in the
+   old modal. */
+#view-editproject .startup-sub,
+#view-editproject .startup-foot,
+#view-editproject .settings-field > .modal-section-head {
+  width: 100%;
+}
+
+/* The reused section heads carried a 16px top margin from the modal; the
+   Settings card gap handles the vertical rhythm now, so drop the extra space. */
+#view-editproject .modal-section-head {
+  margin-top: 0;
+}
+
 .modebar-brand {
   display: inline-flex;
   align-items: center;
@@ -1116,6 +1157,42 @@ body {
   color: #e6edf3;
   background: #21262d;
   border-color: #388bfd;
+}
+
+/* "Claude | Codex" quick-spawn control, pinned to the strip's right end.
+   margin-left:auto eats the free space so it sits far-right; when the tabs
+   overflow it simply follows them and the strip scrolls. */
+.tg-agents {
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+}
+
+.tg-agent {
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8b949e;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.tg-agent:hover {
+  color: #e6edf3;
+  background: #21262d;
+}
+
+/* Thin vertical divider between the two agent sides. */
+.tg-agent-sep {
+  flex-shrink: 0;
+  width: 1px;
+  background: #30363d;
 }
 
 /* Panes area: all panes stack; only the active one shows. */
