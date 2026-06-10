@@ -7,6 +7,9 @@
 // Rust backend (workspaces.json); this file only renders it and calls commands.
 // Per-project terminals (project.js) and the registered-command panel
 // (commands.js) react to the `project-selected` event this module emits.
+import { ICONS } from "/icons.js";
+import { openCtxMenu } from "/ctxmenu.js";
+
 const { invoke } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
@@ -380,53 +383,15 @@ function selectWorkspace(id) {
 }
 
 // --- Project context menu (right-click: Rename / Edit / Delete) -------------
-let ctxMenuEl = null;
-
-function closeProjectMenu() {
-  if (!ctxMenuEl) return;
-  ctxMenuEl.remove();
-  ctxMenuEl = null;
-  document.removeEventListener("click", closeProjectMenu);
-  document.removeEventListener("contextmenu", onDocContextMenu, true);
-  document.removeEventListener("keydown", onMenuKeydown);
-  window.removeEventListener("blur", closeProjectMenu);
-  window.removeEventListener("resize", closeProjectMenu);
-}
-
-// A right-click anywhere outside the open menu closes it (a new one opens after).
-function onDocContextMenu(e) {
-  if (ctxMenuEl && !ctxMenuEl.contains(e.target)) closeProjectMenu();
-}
-
-function onMenuKeydown(e) {
-  if (e.key === "Escape") closeProjectMenu();
-}
+// Built on the shared ctxmenu.js helper; this only declares the items.
 
 /** Show the right-click menu for one project at the cursor. `nameEl` is that
  *  row's name span, reused by the inline rename. */
 function openProjectMenu(x, y, ws, nameEl) {
-  closeProjectMenu();
-
-  const menu = document.createElement("div");
-  menu.className = "ctx-menu";
-
-  const item = (label, danger, onClick) => {
-    const b = document.createElement("button");
-    b.className = "ctx-item" + (danger ? " ctx-item-danger" : "");
-    b.textContent = label;
-    b.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onClick(b);
-    });
-    return b;
-  };
-
-  // Browse the project's files / docs in the center. Each closes the menu,
-  // selects the project, then asks the center browser (browser.js) to open that
-  // folder. An empty root is allowed: 'docs' with no docs_path shows an "unset"
-  // message in the browser instead of listing anything.
+  // Browse the project's files / docs in the center: select the project, then
+  // ask the center browser (browser.js) to open that folder. An empty root is
+  // allowed: 'docs' with no docs_path shows an "unset" message instead.
   const browse = (kind, root) => {
-    closeProjectMenu();
     selectWorkspace(ws.id);
     window.dispatchEvent(
       new CustomEvent("project-browse", {
@@ -438,7 +403,6 @@ function openProjectMenu(x, y, ws, nameEl) {
   // Open the GitHub-style git diff of this project's uncommitted changes across
   // every folder path it owns (primary + extras). gitdiff.js fills the center.
   const gitChanges = () => {
-    closeProjectMenu();
     selectWorkspace(ws.id);
     const paths = [ws.primary_path || "", ...(ws.paths || [])].filter((p) => (p || "").trim());
     window.dispatchEvent(
@@ -448,54 +412,25 @@ function openProjectMenu(x, y, ws, nameEl) {
     );
   };
 
-  menu.append(
-    item("Files", false, () => browse("files", ws.primary_path || "")),
-    item("Documentation", false, () => browse("docs", ws.docs_path || "")),
-    item("Git changes", false, gitChanges),
-    item("Rename", false, () => {
-      closeProjectMenu();
-      startInlineRename(ws, nameEl);
-    }),
-    item("Edit…", false, () => {
-      closeProjectMenu();
-      selectWorkspace(ws.id);
-      openModal();
-    }),
-  );
-
-  // Delete needs a confirm: first click arms, second click deletes (matches the
-  // edit modal's two-click pattern; no native dialog).
-  let armed = false;
-  menu.append(
-    item("Delete", true, (btn) => {
-      if (!armed) {
-        armed = true;
-        btn.textContent = "Click again to delete";
-        return;
-      }
-      closeProjectMenu();
-      deleteWorkspace(ws.id);
-    }),
-  );
-
-  document.body.append(menu);
-  ctxMenuEl = menu;
-
-  // Keep the menu inside the viewport.
-  const rect = menu.getBoundingClientRect();
-  const px = Math.min(x, window.innerWidth - rect.width - 4);
-  const py = Math.min(y, window.innerHeight - rect.height - 4);
-  menu.style.left = `${Math.max(4, px)}px`;
-  menu.style.top = `${Math.max(4, py)}px`;
-
-  // Defer wiring the close listeners so the opening event does not close it.
-  setTimeout(() => {
-    document.addEventListener("click", closeProjectMenu);
-    document.addEventListener("contextmenu", onDocContextMenu, true);
-    document.addEventListener("keydown", onMenuKeydown);
-    window.addEventListener("blur", closeProjectMenu);
-    window.addEventListener("resize", closeProjectMenu);
-  }, 0);
+  openCtxMenu(x, y, [
+    { label: "Files", onClick: () => browse("files", ws.primary_path || "") },
+    { label: "Documentation", onClick: () => browse("docs", ws.docs_path || "") },
+    { label: "Git changes", onClick: gitChanges },
+    { label: "Rename", onClick: () => startInlineRename(ws, nameEl) },
+    {
+      label: "Edit…",
+      onClick: () => {
+        selectWorkspace(ws.id);
+        openModal();
+      },
+    },
+    {
+      label: "Delete",
+      danger: true,
+      confirm: "Click again to delete",
+      onClick: () => deleteWorkspace(ws.id),
+    },
+  ]);
 }
 
 /** Inline-rename a project: swap its name span for an input. Enter/blur saves,
@@ -738,7 +673,7 @@ function renderModal() {
 
     const remove = document.createElement("button");
     remove.className = "ws-path-remove";
-    remove.textContent = "✕";
+    remove.innerHTML = ICONS.x(12);
     remove.title = "Remove folder";
     remove.addEventListener("click", () => removePath(ws.id, path));
 
@@ -801,7 +736,7 @@ function renderStartup() {
 
     const remove = document.createElement("button");
     remove.className = "ws-path-remove";
-    remove.textContent = "✕";
+    remove.innerHTML = ICONS.x(12);
     remove.title = "Remove startup terminal";
     remove.addEventListener("click", () => {
       startupDraft.terminals.splice(i, 1);

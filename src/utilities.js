@@ -7,6 +7,7 @@
 // list, drives the form, and spawns the run terminal through the shared
 // terminal-tab-group primitive (card 04).
 import { createTerminalGroup } from "/terminals.js";
+import { ICONS } from "/icons.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -127,18 +128,21 @@ function makeRow(t) {
   actions.className = "util-row-actions";
 
   const runBtn = document.createElement("button");
-  runBtn.className = "btn btn-sm btn-accent";
-  runBtn.textContent = "Run";
+  runBtn.className = "btn btn-sm btn-accent util-run";
+  runBtn.innerHTML = `${ICONS.play(12)}<span>Run</span>`;
+  runBtn.title = "Run this template";
   runBtn.addEventListener("click", () => runTemplate(t));
 
   const editBtn = document.createElement("button");
-  editBtn.className = "btn btn-sm";
-  editBtn.textContent = "Edit";
+  editBtn.className = "icon-btn";
+  editBtn.innerHTML = ICONS.pencil(13);
+  editBtn.title = "Edit template";
   editBtn.addEventListener("click", () => openForm(t));
 
   const delBtn = document.createElement("button");
-  delBtn.className = "btn btn-sm util-danger";
-  delBtn.textContent = "Delete";
+  delBtn.className = "icon-btn icon-btn-danger";
+  delBtn.innerHTML = ICONS.trash(13);
+  delBtn.title = "Delete template";
   delBtn.addEventListener("click", () => deleteTemplate(t.id));
 
   actions.append(runBtn, editBtn, delBtn);

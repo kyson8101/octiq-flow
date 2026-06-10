@@ -15,17 +15,21 @@
 // is lost (driver reset, tab backgrounded on some GPUs) we dispose the addon and
 // fall back to the DOM renderer so the terminal keeps working.
 import { getTerminalSettings, TERMINAL_SETTINGS_CHANGED } from "/settings.js";
+import { ICONS } from "/icons.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 // Shared dark theme for every terminal in the app. The font (family, size, line
 // height) is NOT fixed here — it comes from the user's Settings (settings.js).
+// MUST stay in sync with the CSS tokens in styles.css (:root): background =
+// --bg-0, foreground = --fg-1, cursor = --accent. The pane background blends
+// with the terminal only while these match.
 const TERM_THEME = {
-  background: "#0d1117",
-  foreground: "#c9d1d9",
-  cursor: "#58a6ff",
-  selectionBackground: "#264f78",
+  background: "#141417",
+  foreground: "#c9c9c5",
+  cursor: "#8fbfa8",
+  selectionBackground: "#31443c",
 };
 
 // Visible text of the break banner drawn between a restored session and the
@@ -40,7 +44,9 @@ function makeTerminal() {
   return new Terminal({
     fontFamily: s.fontFamily,
     fontSize: s.fontSize,
+    fontWeight: s.fontWeight,
     lineHeight: s.lineHeight,
+    letterSpacing: s.letterSpacing,
     cursorBlink: true,
     theme: TERM_THEME,
     // Scrolling feel. smoothScrollDuration animates each wheel scroll over N ms
@@ -269,7 +275,9 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
   for (const { term } of idToEntry.values()) {
     term.options.fontFamily = s.fontFamily;
     term.options.fontSize = s.fontSize;
+    term.options.fontWeight = s.fontWeight;
     term.options.lineHeight = s.lineHeight;
+    term.options.letterSpacing = s.letterSpacing;
   }
   const liveGroups = new Set([...idToEntry.values()].map((e) => e.group));
   for (const g of liveGroups) g.refitActive();
@@ -554,7 +562,7 @@ class TerminalGroup {
     });
     const closeBtn = document.createElement("button");
     closeBtn.className = "tg-tab-close";
-    closeBtn.textContent = "✕";
+    closeBtn.innerHTML = ICONS.x(11);
     closeBtn.title = "Close terminal";
     closeBtn.addEventListener("click", (e) => {
       e.stopPropagation();

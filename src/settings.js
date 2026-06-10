@@ -42,10 +42,24 @@ export const WINDOWS_SHELLS = [
   { id: "cmd", label: "Command Prompt (cmd.exe)" },
 ];
 
+/** Font weight choices for terminal text. The bundled fonts ship 400 and 700
+ *  faces only, so for them 300/500 render with the regular face and 600 with
+ *  the bold face (CSS nearest-face matching); system fonts use whichever
+ *  weights are installed. Bold ANSI text keeps xterm's own fontWeightBold. */
+export const FONT_WEIGHTS = [
+  { value: 300, label: "Light (300)" },
+  { value: 400, label: "Regular (400)" },
+  { value: 500, label: "Medium (500)" },
+  { value: 600, label: "Semi-bold (600)" },
+  { value: 700, label: "Bold (700)" },
+];
+
 export const DEFAULT_TERMINAL_SETTINGS = {
   fontId: "fira-code",
   fontSize: 13,
+  fontWeight: 400,
   lineHeight: 1.0,
+  letterSpacing: 0,
   shell: "powershell",
 };
 
@@ -63,6 +77,18 @@ export const FONT_SIZE_MIN = 8;
 export const FONT_SIZE_MAX = 28;
 export const LINE_HEIGHT_MIN = 1.0;
 export const LINE_HEIGHT_MAX = 2.5;
+// xterm letterSpacing is in whole pixels. 0 = the font's natural spacing.
+export const LETTER_SPACING_MIN = 0;
+export const LETTER_SPACING_MAX = 8;
+
+/** The font weight if it is a known choice, else the default. Keeps a corrupt
+ *  saved value from reaching xterm as a nonsense weight. */
+export function fontWeightOf(value) {
+  const n = Number(value);
+  return FONT_WEIGHTS.some((w) => w.value === n)
+    ? n
+    : DEFAULT_TERMINAL_SETTINGS.fontWeight;
+}
 
 const KEY = "octiq.terminal.settings";
 
@@ -101,7 +127,11 @@ export function getTerminalSettings() {
     fontId: font.id,
     fontFamily: font.stack,
     fontSize: clamp(saved.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_TERMINAL_SETTINGS.fontSize),
+    fontWeight: fontWeightOf(saved.fontWeight),
     lineHeight: clamp(saved.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, DEFAULT_TERMINAL_SETTINGS.lineHeight),
+    letterSpacing: Math.round(
+      clamp(saved.letterSpacing, LETTER_SPACING_MIN, LETTER_SPACING_MAX, DEFAULT_TERMINAL_SETTINGS.letterSpacing),
+    ),
     shell: shellById(saved.shell),
   };
 }
@@ -116,7 +146,9 @@ export function saveTerminalSettings(partial) {
     JSON.stringify({
       fontId: next.fontId,
       fontSize: next.fontSize,
+      fontWeight: next.fontWeight,
       lineHeight: next.lineHeight,
+      letterSpacing: next.letterSpacing,
       shell: next.shell,
     }),
   );
@@ -147,12 +179,24 @@ function buildFontOptions(select) {
   }
 }
 
+/** Fill the font-weight <select> with the weight catalog. */
+function buildWeightOptions(select) {
+  for (const w of FONT_WEIGHTS) {
+    const opt = document.createElement("option");
+    opt.value = String(w.value);
+    opt.textContent = w.label;
+    select.append(opt);
+  }
+}
+
 /** Paint the preview box with the given settings so it always matches the pick. */
 function paintPreview(preview, settings) {
   if (!preview) return;
   preview.style.fontFamily = settings.fontFamily;
   preview.style.fontSize = `${settings.fontSize}px`;
+  preview.style.fontWeight = String(settings.fontWeight);
   preview.style.lineHeight = String(settings.lineHeight);
+  preview.style.letterSpacing = `${settings.letterSpacing}px`;
 }
 
 /** True when the app runs on Windows. The shell picker only makes sense there;
@@ -194,23 +238,30 @@ function wireShellPicker() {
 
 document.addEventListener("DOMContentLoaded", () => {
   const fontSel = document.getElementById("term-font-family");
+  const weightSel = document.getElementById("term-font-weight");
   const sizeInput = document.getElementById("term-font-size");
   const sizeVal = document.getElementById("term-font-size-val");
   const lineInput = document.getElementById("term-line-height");
   const lineVal = document.getElementById("term-line-height-val");
+  const spacingInput = document.getElementById("term-letter-spacing");
+  const spacingVal = document.getElementById("term-letter-spacing-val");
   const preview = document.getElementById("term-font-preview");
   // The settings page may not exist in every build; bail quietly if so.
   if (!fontSel || !sizeInput || !lineInput) return;
 
   buildFontOptions(fontSel);
+  if (weightSel) buildWeightOptions(weightSel);
 
   // Seed every control from the saved settings.
   const reflect = (s) => {
     fontSel.value = s.fontId;
+    if (weightSel) weightSel.value = String(s.fontWeight);
     sizeInput.value = String(s.fontSize);
     if (sizeVal) sizeVal.textContent = `${s.fontSize}px`;
     lineInput.value = String(s.lineHeight);
     if (lineVal) lineVal.textContent = s.lineHeight.toFixed(2);
+    if (spacingInput) spacingInput.value = String(s.letterSpacing);
+    if (spacingVal) spacingVal.textContent = `${s.letterSpacing}px`;
     paintPreview(preview, s);
   };
   reflect(getTerminalSettings());
@@ -219,8 +270,10 @@ document.addEventListener("DOMContentLoaded", () => {
   // that updates open terminals. We reflect the returned (clamped) value so the
   // readouts and preview always show what was actually stored.
   fontSel.addEventListener("change", () => reflect(saveTerminalSettings({ fontId: fontSel.value })));
+  weightSel?.addEventListener("change", () => reflect(saveTerminalSettings({ fontWeight: Number(weightSel.value) })));
   sizeInput.addEventListener("input", () => reflect(saveTerminalSettings({ fontSize: Number(sizeInput.value) })));
   lineInput.addEventListener("input", () => reflect(saveTerminalSettings({ lineHeight: Number(lineInput.value) })));
+  spacingInput?.addEventListener("input", () => reflect(saveTerminalSettings({ letterSpacing: Number(spacingInput.value) })));
 
   wireShellPicker();
   wireAgentHookSetup();

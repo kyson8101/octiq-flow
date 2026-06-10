@@ -63,7 +63,9 @@
           <button class="modebtn" data-mode="utilities">Utilities</button>
           <button class="modebtn" data-mode="dashboard">Dashboard</button>
         </div>
-        <button class="modebtn modebtn-gear" data-mode="settings" title="Settings">⚙</button>
+        <button class="modebtn modebtn-gear" data-mode="settings" data-tip="Settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
       </nav>
 
       <!-- Project view: sidebar (projects) | center (terminals + command drawer)
@@ -74,11 +76,13 @@
       <aside class="sidebar">
         <div class="sidebar-head">
           <span class="sidebar-title">Projects</span>
-          <button id="new-workspace" class="btn btn-sm">+ New</button>
+          <button id="new-workspace" class="icon-btn" data-tip="New project">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
         </div>
 
         <ul id="workspace-list" class="ws-list"></ul>
-        <p id="workspace-empty" class="ws-empty">No projects yet. Click “+ New”.</p>
+        <p id="workspace-empty" class="ws-empty">No projects yet. Press + to add one.</p>
       </aside>
 
       <!-- Center: per-project terminals on top, command drawer at the bottom -->
@@ -92,9 +96,13 @@
              this against .center-terms. fs-only — no PTY here. -->
         <div id="project-browser" class="project-browser hidden">
           <div class="pb-head">
-            <button id="pb-up" class="pb-btn" type="button" title="Go up one folder">↑ Up</button>
+            <button id="pb-up" class="icon-btn" type="button" data-tip="Go up one folder">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+            </button>
             <span id="pb-path" class="pb-path"></span>
-            <button id="pb-back" class="pb-btn pb-back" type="button" title="Back to terminals">✕ Terminals</button>
+            <button id="pb-back" class="icon-btn pb-back" type="button" data-tip="Back to terminals">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
           </div>
 
           <!-- Body splits into two panes: the folder list (left) and, once a
@@ -107,8 +115,12 @@
               <div class="pb-preview-head">
                 <span id="pb-preview-name" class="pb-preview-name"></span>
                 <span class="pb-preview-actions">
-                  <button id="pb-preview-open" class="pb-btn" type="button" title="Open with the default app">Open externally</button>
-                  <button id="pb-preview-close" class="pb-btn" type="button" title="Close preview">✕</button>
+                  <button id="pb-preview-open" class="icon-btn" type="button" data-tip="Open with the default app">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                  </button>
+                  <button id="pb-preview-close" class="icon-btn" type="button" data-tip="Close preview">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
                 </span>
               </div>
               <div id="pb-preview-body" class="pb-preview-body"></div>
@@ -127,8 +139,12 @@
               <button id="gd-view-unified" class="gd-toggle-btn gd-toggle-active" type="button">Unified</button>
               <button id="gd-view-split" class="gd-toggle-btn" type="button">Split</button>
             </div>
-            <button id="gd-refresh" class="pb-btn" type="button" title="Reload changes">↻ Refresh</button>
-            <button id="gd-back" class="pb-btn pb-back" type="button" title="Back to terminals">✕ Terminals</button>
+            <button id="gd-refresh" class="icon-btn" type="button" data-tip="Reload changes">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+            </button>
+            <button id="gd-back" class="icon-btn pb-back" type="button" data-tip="Back to terminals">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
           </div>
 
           <!-- Body: changed-file list (left) | diff for the selected file (right). -->
@@ -167,7 +183,9 @@
           <!-- Commands tab -->
           <div id="cmd-tab-commands" class="cmd-tabpane">
             <div class="cmd-panel-bar">
-              <button id="cmd-add" class="btn btn-sm">+ Add command</button>
+              <button id="cmd-add" class="icon-btn" data-tip="Add command">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
             </div>
 
             <div id="cmd-form" class="cmd-form hidden">
@@ -180,7 +198,7 @@
             </div>
 
             <ul id="cmd-list" class="cmd-list"></ul>
-            <p id="cmd-empty" class="ws-empty">No commands yet. Click “+ Add command”.</p>
+            <p id="cmd-empty" class="ws-empty">No commands yet. Press + to add one.</p>
           </div>
 
           <!-- Git tab: common git actions for the project's primary repo. -->
@@ -191,7 +209,9 @@
               <div class="git-branch-line">
                 <span class="git-branch-label">On branch</span>
                 <span id="git-current-branch" class="git-branch-name" title="Current branch">—</span>
-                <button id="git-branch-refresh" class="icon-btn" title="Refresh branches">↻</button>
+                <button id="git-branch-refresh" class="icon-btn" data-tip="Refresh branches">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+                </button>
               </div>
 
               <button id="git-diff-btn" class="btn git-action-btn">View diff</button>
@@ -241,7 +261,9 @@
   <div class="util-panel">
     <div class="util-head">
       <span class="util-head-title">Templates</span>
-      <button id="util-add" class="btn btn-sm btn-primary">+ New template</button>
+      <button id="util-add" class="icon-btn" data-tip="New template">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
     </div>
 
     <ul id="util-list" class="util-list"></ul>
@@ -296,7 +318,9 @@
         <div class="dash-head">
         <span class="dash-head-title">Dashboard</span>
         <span class="dash-head-sub">Git status across your workspace folders</span>
-        <button id="dashboard-refresh" class="btn btn-accent dash-refresh" type="button">Refresh</button>
+        <button id="dashboard-refresh" class="icon-btn dash-refresh" type="button" data-tip="Refresh">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+        </button>
       </div>
       <div id="dashboard-grid" class="dash-grid"></div>
       </section>
@@ -320,6 +344,16 @@
               </div>
 
               <div class="settings-field">
+                <label class="settings-label" for="term-font-weight">Font weight</label>
+                <select id="term-font-weight" class="settings-select"></select>
+                <p class="settings-help">
+                  Bundled fonts ship regular and bold faces, so Light/Medium
+                  render as Regular and Semi-bold as Bold. System fonts use
+                  whichever weights this Mac has installed.
+                </p>
+              </div>
+
+              <div class="settings-field">
                 <label class="settings-label" for="term-font-size">Font size</label>
                 <div class="settings-range-row">
                   <input id="term-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
@@ -332,6 +366,14 @@
                 <div class="settings-range-row">
                   <input id="term-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
                   <span id="term-line-height-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="term-letter-spacing">Letter spacing</label>
+                <div class="settings-range-row">
+                  <input id="term-letter-spacing" class="settings-range" type="range" min="0" max="8" step="1" />
+                  <span id="term-letter-spacing-val" class="settings-range-val"></span>
                 </div>
               </div>
 
@@ -359,7 +401,7 @@
                 or waits for your input. Use this button to check it works on this
                 machine.
               </p>
-              <button id="test-notify" class="btn btn-sm" title="Send a test OS notification (banner + sound)">🔔 Send test notification</button>
+              <button id="test-notify" class="btn btn-sm" data-tip="Send a test OS notification (banner + sound)">Send test notification</button>
             </section>
 
             <section class="settings-section">
@@ -384,7 +426,9 @@
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-head">
           <span class="modal-title">New workspace</span>
-          <button id="new-modal-close" class="icon-btn" title="Close">✕</button>
+          <button id="new-modal-close" class="icon-btn" data-tip="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
         </div>
 
         <div class="modal-section-head">
@@ -531,7 +575,9 @@
       <div class="modal cmd-modal-box" role="dialog" aria-modal="true">
         <div class="modal-head">
           <span id="cmd-modal-title" class="modal-title">Command</span>
-          <button id="cmd-modal-close" class="icon-btn" title="Close">✕</button>
+          <button id="cmd-modal-close" class="icon-btn" data-tip="Close">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
         </div>
         <div id="cmd-drawer-mount" class="cmd-modal-body"></div>
         <div class="modal-foot">

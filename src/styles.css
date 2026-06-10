@@ -31,9 +31,60 @@
   src: url("vendor/fonts/jetbrains-mono-700.woff2") format("woff2");
 }
 
+/* ---- Design tokens — warm "zen" dark theme ---------------------------- */
+/* One calm sage accent; warm graphite surfaces. Every color in this sheet
+   reads from these tokens. The terminal theme (terminals.js TERM_THEME) must
+   stay in sync with --bg-0 / --fg-1 / --accent. */
 :root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  /* Surfaces, from deepest to most raised. */
+  --bg-0: #141417; /* app base — matches the xterm background */
+  --bg-sunken: #0f0f12; /* mode bar, side rails */
+  --bg-1: #1b1b1f; /* raised: cards, panels, forms */
+  --bg-2: #232329; /* hover / pressed / chips */
+  --border: #28282e;
+  --border-strong: #36363e;
+
+  /* Warm grays for text. */
+  --fg-0: #ececea;
+  --fg-1: #c9c9c5;
+  --fg-2: #8f8f8a;
+  --fg-3: #67675f;
+
+  /* The single accent: muted sage. */
+  --accent: #8fbfa8;
+  --accent-bg: rgba(143, 191, 168, 0.16);
+  --accent-bg-hover: rgba(143, 191, 168, 0.26);
+  --accent-tint: rgba(143, 191, 168, 0.13);
+  --accent-tint-strong: rgba(143, 191, 168, 0.22);
+  --accent-tint-faint: rgba(143, 191, 168, 0.08);
+  --accent-soft-border: rgba(143, 191, 168, 0.35);
+
+  /* Status colors, all desaturated to stay cozy. */
+  --ok: #85c79a;
+  --ok-tint: rgba(133, 199, 154, 0.14);
+  --danger: #de8d85;
+  --danger-bg: rgba(222, 141, 133, 0.18);
+  --danger-tint: rgba(222, 141, 133, 0.12);
+  --danger-soft-border: rgba(222, 141, 133, 0.4);
+  --warn: #d4b06a;
+  --warn-bright: #e3c78a;
+  --warn-tint: rgba(212, 176, 106, 0.12);
+  --warn-soft-border: rgba(212, 176, 106, 0.45);
+  --warn-ring: rgba(212, 176, 106, 0.22);
+
+  --backdrop: rgba(10, 10, 12, 0.6);
+
+  /* Shape + depth. */
+  --r-sm: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.38);
+
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter,
+    "Segoe UI", Helvetica, Arial, sans-serif;
   color-scheme: dark;
+  -webkit-font-smoothing: antialiased;
 }
 
 * {
@@ -44,8 +95,8 @@ html,
 body {
   margin: 0;
   height: 100%;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--bg-0);
+  color: var(--fg-1);
 }
 
 /* Outer shell: a row of three columns, with a full-width footer below them */
@@ -72,7 +123,7 @@ body {
   flex: 1;
   min-width: 0;
   height: 100%;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 
 /* Terminals fill the center above the drawer. */
@@ -91,8 +142,8 @@ body {
   width: 300px;
   flex-shrink: 0;
   height: 100%;
-  background: #0b0f14;
-  border-left: 1px solid #30363d;
+  background: var(--bg-sunken);
+  border-left: 1px solid var(--border);
   transition: width 0.15s ease;
 }
 
@@ -107,7 +158,7 @@ body {
   justify-content: space-between;
   flex-shrink: 0;
   padding: 10px 12px;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--border);
 }
 
 /* Tab bar in the panel head: Commands | Git. */
@@ -121,21 +172,21 @@ body {
   padding: 4px 10px;
   font-size: 12px;
   font-weight: 600;
-  color: #8b949e;
+  color: var(--fg-2);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 
 .cmd-tab:hover {
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .cmd-tab-active {
-  color: #e6edf3;
-  background: #161b22;
-  border-color: #30363d;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border-color: var(--border);
 }
 
 /* Hide the tabs and the body when collapsed; keep the toggle. */
@@ -150,11 +201,11 @@ body {
   align-items: center;
   justify-content: center;
   padding: 4px;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 .cmd-panel-toggle:hover {
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .cmd-panel-toggle svg {
@@ -193,55 +244,54 @@ body {
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
-/* Command list */
+/* Command list: quiet rows, like the project list. */
 .cmd-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
 .cmd-item {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 0;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  align-items: stretch;
 }
 
-/* The big run button: label on top, command underneath. */
+/* One command = one subtle row. Click runs it; right-click opens the shared
+   ctx menu (Edit / Remove). The play glyph fades in on hover. */
 .cmd-run {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 2px;
-  padding: 8px 10px;
-  background: #238636;
+  padding: 7px 30px 7px 10px;
+  background: transparent;
   border: none;
-  border-radius: 6px;
-  color: #ffffff;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
   cursor: pointer;
   text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .cmd-run:hover {
-  background: #2ea043;
+  background: var(--bg-1);
+  color: var(--fg-0);
 }
 
 .cmd-run-label {
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -251,29 +301,35 @@ body {
 .cmd-run-cmd {
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 10px;
-  color: #aff0c0;
+  color: var(--fg-3);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   max-width: 100%;
 }
 
-.cmd-mini {
-  flex-shrink: 0;
-  padding: 2px 6px;
-  font-size: 11px;
-  color: #8b949e;
-  background: transparent;
-  border: none;
-  cursor: pointer;
+.cmd-run:hover .cmd-run-cmd {
+  color: var(--fg-2);
 }
 
-.cmd-mini:hover {
-  color: #e6edf3;
+/* Run affordance: a sage play glyph, hidden until the row is hovered. */
+.cmd-run-play {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s ease;
 }
 
-.cmd-mini.danger:hover {
-  color: #f85149;
+.cmd-run-play svg {
+  display: block;
+}
+
+.cmd-run:hover .cmd-run-play {
+  opacity: 1;
 }
 
 /* ---- Git tab (right panel) -------------------------------------------- */
@@ -292,7 +348,7 @@ body {
 }
 
 .git-branch-label {
-  color: #8b949e;
+  color: var(--fg-2);
   flex-shrink: 0;
 }
 
@@ -300,7 +356,7 @@ body {
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -322,7 +378,7 @@ body {
 .git-field-label {
   font-size: 11px;
   font-weight: 600;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 /* A full-width action button (View diff, Push). */
@@ -341,15 +397,15 @@ body {
   min-width: 0;
   padding: 6px 8px;
   font-size: 12px;
-  color: #e6edf3;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   outline: none;
 }
 
 .git-select:focus {
-  border-color: #58a6ff;
+  border-color: var(--accent);
 }
 
 .git-select:disabled {
@@ -370,8 +426,8 @@ body {
   flex-direction: column;
   width: 260px;
   flex-shrink: 0;
-  background: #0b0f14;
-  border-right: 1px solid #30363d;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
   overflow-y: auto;
 }
 
@@ -380,13 +436,15 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-title {
   font-weight: 600;
-  font-size: 13px;
-  color: #e6edf3;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-2);
 }
 
 .btn-sm {
@@ -398,15 +456,15 @@ body {
   width: 100%;
   padding: 6px 8px;
   font-size: 13px;
-  color: #e6edf3;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   outline: none;
 }
 
 .inline-input:focus {
-  border-color: #58a6ff;
+  border-color: var(--accent);
 }
 
 .ws-list {
@@ -420,26 +478,26 @@ body {
   align-items: stretch;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   font-size: 13px;
-  color: #c9d1d9;
+  color: var(--fg-1);
   cursor: pointer;
 }
 
 .ws-item:hover {
-  background: #161b22;
+  background: var(--bg-1);
 }
 
 /* Selected project: a subtle blue-tinted wash instead of a loud solid fill, so
    the row reads as "current" without shouting. The per-project accent bar on the
    left still marks identity. */
 .ws-item.selected {
-  background: rgba(56, 139, 253, 0.14);
-  color: #ffffff;
+  background: var(--accent-tint);
+  color: var(--fg-0);
 }
 
 .ws-item.selected:hover {
-  background: rgba(56, 139, 253, 0.2);
+  background: var(--accent-tint-strong);
 }
 
 /* cmux-style accent bar: a thin colored strip down the left of each tab.
@@ -450,7 +508,7 @@ body {
   align-self: stretch;
   min-height: 18px;
   border-radius: 2px;
-  background: var(--ws-bar, #6e7681);
+  background: var(--ws-bar, var(--fg-3));
 }
 
 .ws-item-body {
@@ -472,7 +530,7 @@ body {
 .ws-item-desc {
   font-size: 11px;
   line-height: 1.3;
-  color: #8b949e;
+  color: var(--fg-2);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -481,7 +539,7 @@ body {
 .ws-item-count {
   align-self: center;
   font-size: 11px;
-  color: #8b949e;
+  color: var(--fg-2);
   flex-shrink: 0;
 }
 
@@ -500,16 +558,16 @@ body {
 }
 
 .ws-diff-add {
-  color: #3fb950;
+  color: var(--ok);
 }
 
 .ws-diff-del {
-  color: #f85149;
+  color: var(--danger);
 }
 
 .ws-diff-slash,
 .ws-diff-sep {
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 /* Color swatch picker (Edit modal). The first swatch is the auto/rainbow
@@ -527,7 +585,7 @@ body {
   padding: 0;
   border-radius: 50%;
   border: 2px solid transparent;
-  background: var(--swatch, #6e7681);
+  background: var(--swatch, var(--fg-3));
   cursor: pointer;
   outline: none;
   transition: transform 0.08s ease;
@@ -538,8 +596,8 @@ body {
 }
 
 .color-swatch.active {
-  border-color: #0d1117;
-  box-shadow: 0 0 0 2px var(--swatch, #c9d1d9);
+  border-color: var(--bg-0);
+  box-shadow: 0 0 0 2px var(--swatch, var(--fg-1));
 }
 
 .color-swatch-auto {
@@ -548,7 +606,7 @@ body {
   justify-content: center;
   font-size: 10px;
   font-weight: 700;
-  color: #0d1117;
+  color: var(--bg-0);
   background: conic-gradient(
     from 90deg,
     #f87171,
@@ -565,27 +623,40 @@ body {
 .ws-empty {
   margin: 6px 12px;
   font-size: 12px;
-  color: #6e7681;
+  color: var(--fg-3);
 }
 
+/* Ghost icon button — the app's main control pattern. Square-ish, quiet,
+   reveals itself on hover; the label lives in the hover tooltip. */
 .icon-btn {
-  padding: 3px 7px;
-  font-size: 11px;
-  color: #c9d1d9;
-  background: #21262d;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 5px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 
 .icon-btn:hover {
-  background: #30363d;
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.icon-btn svg {
+  display: block;
 }
 
 .icon-btn-danger:hover {
-  background: #b62324;
-  border-color: #f85149;
-  color: #ffffff;
+  background: var(--danger-tint);
+  color: var(--danger);
 }
 
 .badge-primary {
@@ -593,8 +664,8 @@ body {
   font-weight: 600;
   letter-spacing: 0.4px;
   text-transform: uppercase;
-  color: #0d1117;
-  background: #2ea043;
+  color: var(--bg-0);
+  background: var(--accent);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -602,10 +673,10 @@ body {
 .ws-primary-path {
   display: block;
   font-size: 12px;
-  color: #c9d1d9;
-  background: #0d1117;
-  border: 1px solid #2ea043;
-  border-radius: 6px;
+  color: var(--fg-1);
+  background: var(--bg-0);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--r-sm);
   padding: 6px 8px;
   overflow: hidden;
   white-space: nowrap;
@@ -615,8 +686,8 @@ body {
 }
 
 .ws-primary-path.unset {
-  color: #f0883e;
-  border-color: #bb8009;
+  color: var(--warn);
+  border-color: var(--warn-soft-border);
   direction: ltr;
 }
 
@@ -636,10 +707,10 @@ body {
   gap: 6px;
   padding: 6px 8px;
   font-size: 12px;
-  color: #c9d1d9;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
 }
 
 .ws-path-text {
@@ -652,17 +723,26 @@ body {
 
 .ws-path-remove {
   flex-shrink: 0;
-  padding: 0 6px;
-  color: #8b949e;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  color: var(--fg-2);
   background: transparent;
   border: none;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
   line-height: 1;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.ws-path-remove svg {
+  display: block;
 }
 
 .ws-path-remove:hover {
-  color: #f85149;
+  color: var(--danger);
+  background: var(--danger-tint);
 }
 
 .hidden {
@@ -673,52 +753,56 @@ body {
   flex: 1;
   padding: 8px 10px;
   font-size: 13px;
-  color: #e6edf3;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   outline: none;
 }
 
 .inject-input:focus {
-  border-color: #58a6ff;
+  border-color: var(--accent);
 }
 
-/* Buttons */
+/* Buttons. Quiet by default; the primary/accent variants use a soft accent
+   tint instead of a solid loud fill. */
 .btn {
-  padding: 8px 14px;
+  padding: 7px 14px;
   font-size: 13px;
   font-weight: 500;
-  color: #e6edf3;
-  background: #21262d;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .btn:hover {
-  background: #30363d;
+  background: var(--border-strong);
+  color: var(--fg-0);
 }
 
 .btn-primary {
-  background: #238636;
-  border-color: #2ea043;
-  color: #ffffff;
+  background: var(--accent-bg);
+  border-color: transparent;
+  color: var(--accent);
 }
 
 .btn-primary:hover {
-  background: #2ea043;
+  background: var(--accent-bg-hover);
+  color: var(--accent);
 }
 
 .btn-accent {
-  background: #1f6feb;
-  border-color: #388bfd;
-  color: #ffffff;
+  background: var(--accent-bg);
+  border-color: transparent;
+  color: var(--accent);
 }
 
 .btn-accent:hover {
-  background: #388bfd;
+  background: var(--accent-bg-hover);
+  color: var(--accent);
 }
 
 /* ---- Right-panel paths footer ----------------------------------------- */
@@ -728,10 +812,10 @@ body {
   gap: 10px;
   width: 100%;
   padding: 8px 12px;
-  background: #0b0f14;
+  background: var(--bg-sunken);
   border: none;
-  border-top: 1px solid #30363d;
-  color: #c9d1d9;
+  border-top: 1px solid var(--border);
+  color: var(--fg-1);
   text-align: left;
   font: inherit;
 }
@@ -739,7 +823,7 @@ body {
 .pf-name {
   font-weight: 600;
   font-size: 12px;
-  color: #e6edf3;
+  color: var(--fg-0);
   flex-shrink: 0;
 }
 
@@ -758,23 +842,23 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 11px;
-  color: #c9d1d9;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 10px;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   padding: 2px 8px;
 }
 
 .pf-chip-primary {
-  color: #aff0c0;
-  border-color: #2ea043;
+  color: var(--accent);
+  border-color: var(--accent-soft-border);
 }
 
 /* ---- Edit-workspace modal --------------------------------------------- */
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(1, 4, 9, 0.7);
+  background: var(--backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -786,9 +870,9 @@ body {
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 40px);
   overflow-y: auto;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   padding: 16px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
 }
@@ -803,13 +887,13 @@ body {
 .modal-title {
   font-weight: 600;
   font-size: 15px;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .modal-label {
   display: block;
   font-size: 12px;
-  color: #8b949e;
+  color: var(--fg-2);
   margin-bottom: 4px;
 }
 
@@ -818,7 +902,7 @@ body {
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
-  color: #8b949e;
+  color: var(--fg-2);
   margin: 16px 0 6px;
 }
 
@@ -828,7 +912,7 @@ body {
   justify-content: space-between;
   margin-top: 18px;
   padding-top: 14px;
-  border-top: 1px solid #30363d;
+  border-top: 1px solid var(--border);
 }
 
 .modal-section-actions {
@@ -839,12 +923,12 @@ body {
 /* ---- Shared bits reused by the command panel form -------------------- */
 .muted {
   font-size: 12px;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 .mono {
   font-family: Menlo, Monaco, "Courier New", monospace;
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 .panel-actions {
@@ -864,12 +948,12 @@ body {
 .modebar {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 18px;
   flex-shrink: 0;
-  padding: 0 14px;
-  height: 38px;
-  background: #010409;
-  border-bottom: 1px solid #30363d;
+  padding: 0 16px;
+  height: 44px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
 }
 
 /* Cross-mode attention dot on a mode-bar button (amber, top-right corner). */
@@ -885,8 +969,8 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #e3b341;
-  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--warn-ring);
 }
 
 /* Cross-mode attention dot on a project-list row (amber, before the name). */
@@ -898,8 +982,8 @@ body {
   margin-right: 6px;
   vertical-align: middle;
   border-radius: 50%;
-  background: #e3b341;
-  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--warn-ring);
 }
 
 /* Settings gear: a mode button pushed to the right of the mode bar. It reuses
@@ -910,9 +994,16 @@ body {
 .modebtn.modebtn-gear {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: 28px;
-  line-height: 1;
-  padding: 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+.modebtn.modebtn-gear svg {
+  display: block;
 }
 
 /* ---- Settings page (gear) -------------------------------------------- */
@@ -935,7 +1026,7 @@ body {
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .settings-section {
@@ -944,33 +1035,33 @@ body {
   gap: 10px;
   align-items: flex-start;
   padding: 16px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
 }
 
 .settings-section-title {
   font-size: 13px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .settings-help {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 /* Inline code chip inside help text (e.g. `claude --resume`). */
 .settings-help code {
   font-family: "Fira Code", Menlo, monospace;
   font-size: 11px;
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 1px 5px;
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 /* Result line next to an action button (hook setup). Neutral by default; green
@@ -980,15 +1071,15 @@ body {
   margin-left: 10px;
   font-size: 12px;
   vertical-align: middle;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 .settings-status-ok {
-  color: #3fb950;
+  color: var(--ok);
 }
 
 .settings-status-error {
-  color: #f85149;
+  color: var(--danger);
 }
 
 /* A labelled control row inside a settings section (font family / size / line
@@ -1003,22 +1094,22 @@ body {
 .settings-label {
   font-size: 12px;
   font-weight: 600;
-  color: #adbac7;
+  color: var(--fg-1);
 }
 
 .settings-select {
   max-width: 280px;
-  background: #0d1117;
-  color: #c9d1d9;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  background: var(--bg-0);
+  color: var(--fg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   padding: 6px 8px;
   font-size: 13px;
 }
 
 .settings-select:focus {
   outline: none;
-  border-color: #58a6ff;
+  border-color: var(--accent);
 }
 
 .settings-range-row {
@@ -1031,13 +1122,13 @@ body {
 .settings-range {
   flex: 1;
   max-width: 280px;
-  accent-color: #58a6ff;
+  accent-color: var(--accent);
 }
 
 .settings-range-val {
   font-variant-numeric: tabular-nums;
   font-size: 12px;
-  color: #8b949e;
+  color: var(--fg-2);
   min-width: 34px;
 }
 
@@ -1046,10 +1137,10 @@ body {
 .term-font-preview {
   margin: 0;
   width: 100%;
-  background: #0d1117;
-  color: #c9d1d9;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  background: var(--bg-0);
+  color: var(--fg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   padding: 10px 12px;
   overflow-x: auto;
   white-space: pre;
@@ -1078,7 +1169,7 @@ body {
 
 /* Danger card: a red-tinted border so Delete stands apart from the rest. */
 .editproject-danger {
-  border-color: #5d2b2b;
+  border-color: var(--danger-soft-border);
 }
 
 /* Settings cards align their children to the start (no stretch), so the reused
@@ -1104,7 +1195,7 @@ body {
   font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.2px;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .modebar-brand-mark {
@@ -1119,26 +1210,26 @@ body {
   gap: 4px;
 }
 
-/* Subtle dark button; the active one is highlighted with the blue accent */
+/* Pill nav buttons; the active one sits on a soft raised pill. */
 .modebtn {
-  padding: 6px 12px;
+  padding: 5px 13px;
   font-size: 13px;
   font-weight: 500;
-  color: #8b949e;
+  color: var(--fg-2);
   background: transparent;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-radius: 999px;
   cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .modebtn:hover {
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .modebtn-active {
-  color: #e6edf3;
-  border-bottom-color: #58a6ff;
+  color: var(--fg-0);
+  background: var(--bg-2);
 }
 
 /* Each view fills the area under the mode bar and stacks its children in a
@@ -1165,8 +1256,8 @@ body {
   align-items: center;
   justify-content: center;
   font-size: 14px;
-  color: #6e7681;
-  background: #0d1117;
+  color: var(--fg-3);
+  background: var(--bg-0);
 }
 
 /* ---- Per-project terminal group mount (card 04) ----------------------- */
@@ -1177,7 +1268,7 @@ body {
   flex: 1;
   min-height: 0;
   height: 100%;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 
 /* ---- Terminal-tab-group primitive (terminals.js) --------------------- */
@@ -1197,8 +1288,8 @@ body {
   gap: 2px;
   flex-shrink: 0;
   padding: 4px 6px 0;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
   overflow-x: auto;
 }
 
@@ -1216,25 +1307,25 @@ body {
   max-width: 160px;
   padding: 6px 8px 6px 10px;
   font-size: 12px;
-  color: #8b949e;
-  background: #0d1117;
-  border: 1px solid #30363d;
+  color: var(--fg-2);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
   border-bottom: none;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .tg-tab:hover {
-  color: #e6edf3;
-  background: #11161d;
+  color: var(--fg-0);
+  background: var(--bg-1);
 }
 
 .tg-tab-active {
-  color: #e6edf3;
-  background: #0d1117;
-  border-color: #1f6feb;
-  border-bottom-color: #0d1117;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border-color: var(--accent);
+  border-bottom-color: var(--bg-0);
 }
 
 .tg-tab-label {
@@ -1251,26 +1342,35 @@ body {
   margin: 0;
   padding: 1px 4px;
   font: inherit;
-  color: #e6edf3;
-  background: #161b22;
-  border: 1px solid #1f6feb;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border: 1px solid var(--accent);
   border-radius: 3px;
   outline: none;
 }
 
 .tg-tab-close {
   flex-shrink: 0;
-  padding: 0 2px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
   line-height: 1;
-  color: #6e7681;
+  color: var(--fg-3);
   background: transparent;
   border: none;
+  border-radius: 4px;
   cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.tg-tab-close svg {
+  display: block;
 }
 
 .tg-tab-close:hover {
-  color: #f85149;
+  color: var(--danger);
+  background: var(--danger-tint);
 }
 
 /* "+" new-terminal button */
@@ -1281,17 +1381,17 @@ body {
   padding: 2px 9px;
   font-size: 15px;
   line-height: 1;
-  color: #8b949e;
+  color: var(--fg-2);
   background: transparent;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 
 .tg-add:hover {
-  color: #e6edf3;
-  background: #21262d;
-  border-color: #388bfd;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border-color: var(--accent);
 }
 
 /* "Claude | Codex" quick-spawn control, pinned to the strip's right end.
@@ -1304,30 +1404,30 @@ body {
   display: inline-flex;
   align-items: stretch;
   overflow: hidden;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
 }
 
 .tg-agent {
   padding: 3px 10px;
   font-size: 12px;
   line-height: 1.5;
-  color: #8b949e;
+  color: var(--fg-2);
   background: transparent;
   border: none;
   cursor: pointer;
 }
 
 .tg-agent:hover {
-  color: #e6edf3;
-  background: #21262d;
+  color: var(--fg-0);
+  background: var(--bg-2);
 }
 
 /* Thin vertical divider between the two agent sides. */
 .tg-agent-sep {
   flex-shrink: 0;
   width: 1px;
-  background: #30363d;
+  background: var(--border);
 }
 
 /* Panes area: all panes stack; only the active one shows. overflow:hidden
@@ -1337,7 +1437,7 @@ body {
   position: relative;
   flex: 1;
   min-height: 0;
-  background: #0d1117;
+  background: var(--bg-0);
   overflow: hidden;
 }
 
@@ -1345,11 +1445,11 @@ body {
   display: none;
   position: absolute;
   inset: 0;
-  padding: 6px;
+  padding: 10px;
   /* Clip the terminal to the pane. xterm's grid is a hard rectangle; without
      this its square corners can sit over the surrounding border, which read as
      the terminal being "stamped on". The leftover fit-gap blends in because the
-     pane background matches the terminal background (#0d1117). */
+     pane background matches the terminal background (var(--bg-0)). */
   overflow: hidden;
 }
 
@@ -1370,7 +1470,7 @@ body {
   flex: 1;
   min-height: 0;
   height: 100%;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 
 /* ===================================================================== */
@@ -1382,7 +1482,7 @@ body {
   display: flex;
   flex: 1;
   min-height: 0;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 
 /* Left panel: scrollable list + inline form. Fixed-ish width, dark themed. */
@@ -1392,8 +1492,8 @@ body {
   width: 380px;
   min-width: 320px;
   flex-shrink: 0;
-  border-right: 1px solid #30363d;
-  background: #161b22;
+  border-right: 1px solid var(--border);
+  background: var(--bg-1);
   overflow-y: auto;
 }
 
@@ -1402,13 +1502,15 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--border);
 }
 
 .util-head-title {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
-  color: #e6edf3;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-2);
 }
 
 /* Template list */
@@ -1425,7 +1527,7 @@ body {
   padding: 24px 16px;
   text-align: center;
   font-size: 13px;
-  color: #6e7681;
+  color: var(--fg-3);
 }
 
 .util-row {
@@ -1433,9 +1535,9 @@ body {
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
 .util-row-main {
@@ -1455,31 +1557,31 @@ body {
 .util-row-label {
   font-size: 13px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .util-tag {
   font-size: 11px;
-  color: #c9d1d9;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 10px;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   padding: 1px 8px;
 }
 
 .util-tag-agent {
-  color: #aff0c0;
-  border-color: #2ea043;
+  color: var(--accent);
+  border-color: var(--accent-soft-border);
 }
 
 .util-tag-hotkey {
-  color: #88c0ff;
-  border-color: #1f6feb;
+  color: var(--accent);
+  border-color: var(--accent-soft-border);
 }
 
 .util-row-prompt {
   font-size: 12px;
-  color: #8b949e;
+  color: var(--fg-2);
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -1489,7 +1591,7 @@ body {
 
 .util-row-cwd {
   font-size: 11px;
-  color: #6e7681;
+  color: var(--fg-3);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -1497,18 +1599,31 @@ body {
 
 .util-row-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 
+/* Run keeps a tiny label next to its play icon — it is the row's primary
+   action; edit/delete stay icon-only. */
+.util-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.util-run svg {
+  display: block;
+}
+
 .util-danger {
-  color: #f0a6a0;
-  border-color: #5a2b2b;
+  color: var(--danger);
+  border-color: var(--danger-soft-border);
 }
 
 .util-danger:hover {
-  background: #3a1f1f;
-  border-color: #f85149;
-  color: #ffb3ab;
+  background: var(--danger-tint);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 /* Inline add/edit form */
@@ -1518,15 +1633,15 @@ body {
   gap: 4px;
   margin: 8px;
   padding: 12px;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
 .util-form-title {
   font-size: 13px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
   margin-bottom: 6px;
 }
 
@@ -1535,15 +1650,15 @@ body {
   padding: 7px 8px;
   margin-bottom: 4px;
   font-size: 13px;
-  color: #e6edf3;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   outline: none;
 }
 
 .util-select:focus {
-  border-color: #58a6ff;
+  border-color: var(--accent);
 }
 
 .util-textarea {
@@ -1552,16 +1667,16 @@ body {
   margin-bottom: 4px;
   font-family: inherit;
   font-size: 13px;
-  color: #e6edf3;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   outline: none;
   resize: vertical;
 }
 
 .util-textarea:focus {
-  border-color: #58a6ff;
+  border-color: var(--accent);
 }
 
 .util-cwd-row {
@@ -1578,11 +1693,11 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: 12px;
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 .util-cwd-path.unset {
-  color: #6e7681;
+  color: var(--fg-3);
 }
 
 .util-form-grid {
@@ -1605,7 +1720,7 @@ body {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 
 /* ===================================================================== */
@@ -1620,19 +1735,19 @@ body {
   gap: 12px;
   flex-shrink: 0;
   padding: 12px 16px;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
 }
 
 .dash-head-title {
   font-size: 14px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 
 .dash-head-sub {
   font-size: 12px;
-  color: #6e7681;
+  color: var(--fg-3);
 }
 
 /* Push the Refresh button to the right edge of the header. */
@@ -1649,7 +1764,7 @@ body {
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
   padding: 16px;
-  background: #0d1117;
+  background: var(--bg-0);
   align-content: start;
 }
 
@@ -1659,9 +1774,9 @@ body {
   flex-direction: column;
   gap: 8px;
   padding: 14px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
 /* A non-repo block is dimmed so it reads as "no data here". */
@@ -1679,7 +1794,7 @@ body {
   flex: 1;
   font-size: 14px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1691,9 +1806,9 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  color: #8b949e;
-  background: #21262d;
-  border: 1px solid #30363d;
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 2px 6px;
 }
@@ -1701,7 +1816,7 @@ body {
 /* Quiet full-path subtitle under the title. */
 .dash-block-sub {
   font-size: 11px;
-  color: #6e7681;
+  color: var(--fg-3);
   font-family: Menlo, Monaco, "Courier New", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1713,7 +1828,7 @@ body {
 /* "not a git repo" state line. */
 .dash-norepo {
   font-size: 12px;
-  color: #6e7681;
+  color: var(--fg-3);
   font-style: italic;
   margin-top: 2px;
 }
@@ -1729,11 +1844,11 @@ body {
 .dash-row-label {
   width: 56px;
   flex-shrink: 0;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 .dash-branch {
-  color: #58a6ff;
+  color: var(--accent);
   font-family: Menlo, Monaco, "Courier New", monospace;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1750,14 +1865,14 @@ body {
 }
 
 .dash-badge-changed {
-  color: #f0d97d;
-  background: rgba(187, 128, 9, 0.18);
-  border: 1px solid rgba(187, 128, 9, 0.4);
+  color: var(--warn-bright);
+  background: var(--warn-tint);
+  border: 1px solid var(--warn-soft-border);
 }
 
 /* Clean (no changes) state. */
 .dash-clean {
-  color: #3fb950;
+  color: var(--ok);
   font-weight: 500;
 }
 
@@ -1770,11 +1885,11 @@ body {
 }
 
 .dash-ahead {
-  color: #3fb950;
+  color: var(--ok);
 }
 
 .dash-behind {
-  color: #f85149;
+  color: var(--danger);
 }
 
 /* Full-grid message (empty workspace list or load error). */
@@ -1783,7 +1898,7 @@ body {
   padding: 24px;
   text-align: center;
   font-size: 13px;
-  color: #6e7681;
+  color: var(--fg-3);
 }
 
 
@@ -1803,7 +1918,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 /* A project row is clickable (jump to that project); Chat/Utilities are not. */
@@ -1811,23 +1926,23 @@ body {
   cursor: pointer;
   margin: 0 -6px;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
 }
 
 .dash-term-jump:hover {
-  background: #21262d;
+  background: var(--bg-2);
 }
 
 .dash-term-jump:hover .dash-row-label {
-  color: #58a6ff;
+  color: var(--accent);
 }
 
 /* Live-terminal count badge (accent blue, distinct from the git "changed" badge). */
 .dash-badge-term {
   flex-shrink: 0;
-  color: #58a6ff;
-  background: rgba(31, 111, 235, 0.18);
-  border: 1px solid rgba(31, 111, 235, 0.4);
+  color: var(--accent);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-soft-border);
 }
 
 /* The active-terminals subtitle is plain text, not a path, so undo the
@@ -1840,7 +1955,7 @@ body {
 /* Empty state shared by the active-terminals and docs blocks. */
 .dash-empty {
   font-size: 12px;
-  color: #6e7681;
+  color: var(--fg-3);
   font-style: italic;
   margin-top: 2px;
 }
@@ -1859,7 +1974,7 @@ body {
 
 .dash-doc-item {
   font-size: 12px;
-  color: #c9d1d9;
+  color: var(--fg-1);
   font-family: Menlo, Monaco, "Courier New", monospace;
   padding: 2px 4px;
   border-radius: 4px;
@@ -1869,7 +1984,7 @@ body {
 }
 
 .dash-doc-item:hover {
-  background: #21262d;
+  background: var(--bg-2);
 }
 
 /* === Card 13: attention alerts === */
@@ -1884,9 +1999,9 @@ body {
   gap: 8px;
   flex-shrink: 0;
   padding: 6px 14px;
-  background: #2d2008;            /* dark amber wash on the #0d1117 base */
-  border-bottom: 1px solid #9e6a03;
-  color: #e3b341;
+  background: var(--warn-tint);            /* dark amber wash on the var(--bg-0) base */
+  border-bottom: 1px solid var(--warn-soft-border);
+  color: var(--warn);
   font-size: 12px;
 }
 
@@ -1898,13 +2013,13 @@ body {
 
 .alert-banner-label {
   font-weight: 600;
-  color: #f2cc60;
+  color: var(--warn-bright);
   white-space: nowrap;
 }
 
 .alert-banner-hint {
   margin-left: auto;
-  color: #d29922;
+  color: var(--warn);
   opacity: 0.8;
   white-space: nowrap;
 }
@@ -1917,17 +2032,17 @@ body {
   max-width: 220px;
   padding: 3px 9px;
   font-size: 12px;
-  color: #e6edf3;
-  background: #161b22;
-  border: 1px solid #9e6a03;
+  color: var(--fg-0);
+  background: var(--bg-1);
+  border: 1px solid var(--warn-soft-border);
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .alert-chip:hover {
-  background: #21262d;
-  border-color: #e3b341;
+  background: var(--bg-2);
+  border-color: var(--warn);
 }
 
 .alert-chip-dot {
@@ -1935,8 +2050,8 @@ body {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #e3b341;
-  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--warn-ring);
 }
 
 .alert-chip-label {
@@ -1949,13 +2064,13 @@ body {
    before its label, so the user can spot it even in another project/mode.
    Works on top of the existing .tg-tab and .tg-tab-active styles. */
 .tg-tab-attention {
-  border-color: #9e6a03;
-  color: #f2cc60;
+  border-color: var(--warn-soft-border);
+  color: var(--warn-bright);
 }
 
 .tg-tab-attention.tg-tab-active {
-  border-color: #e3b341;
-  border-bottom-color: #0d1117;
+  border-color: var(--warn);
+  border-bottom-color: var(--bg-0);
 }
 
 /* The attention dot sits before the tab label. Pulses gently to draw the eye. */
@@ -1967,8 +2082,8 @@ body {
   margin-right: 6px;
   vertical-align: middle;
   border-radius: 50%;
-  background: #e3b341;
-  box-shadow: 0 0 0 2px rgba(227, 179, 65, 0.25);
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--warn-ring);
   animation: tg-attention-pulse 1.4s ease-in-out infinite;
 }
 
@@ -1993,34 +2108,34 @@ body {
   flex-direction: column;
   gap: 2px;
   padding: 4px;
-  background: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(1, 4, 9, 0.6);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
 .ctx-item {
   text-align: left;
   background: transparent;
   border: none;
-  color: #c9d1d9;
+  color: var(--fg-1);
   font: inherit;
   font-size: 13px;
   padding: 6px 10px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 
 .ctx-item:hover {
-  background: #21262d;
+  background: var(--bg-2);
 }
 
 .ctx-item-danger {
-  color: #f85149;
+  color: var(--danger);
 }
 
 .ctx-item-danger:hover {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-tint);
 }
 
 /* Inline rename input that replaces a project's name span in the list. */
@@ -2036,11 +2151,11 @@ body {
 
 /* Insert markers use inset shadow so they do not shift the row layout. */
 .ws-item.drop-before {
-  box-shadow: inset 0 2px 0 #1f6feb;
+  box-shadow: inset 0 2px 0 var(--accent);
 }
 
 .ws-item.drop-after {
-  box-shadow: inset 0 -2px 0 #1f6feb;
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* === Footer: git branch on each path chip === */
@@ -2060,11 +2175,11 @@ body {
 .pf-chip-branch {
   flex-shrink: 0;
   font-size: 10px;
-  color: #7d8590;
+  color: var(--fg-2);
 }
 
 .pf-chip-primary .pf-chip-branch {
-  color: #7ee2a8;
+  color: var(--ok);
 }
 
 /* === Footer: one-line command message (right side) === */
@@ -2075,14 +2190,14 @@ body {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: #7d8590;
+  color: var(--fg-2);
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 11px;
   cursor: pointer; /* click opens the command modal */
 }
 
 .pf-cmd:hover {
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 /* === Command terminal modal === */
@@ -2102,34 +2217,34 @@ body {
   min-height: 240px;
   display: flex;
   flex-direction: column;
-  background: #0d1117;
-  border: 1px solid #30363d;
-  border-radius: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   overflow: hidden;
 }
 
 /* End-command button: a red action in the modal foot. */
 .cmd-end {
-  color: #f85149;
-  border-color: rgba(248, 81, 73, 0.5);
+  color: var(--danger);
+  border-color: var(--danger-soft-border);
 }
 
 .cmd-end:hover {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-tint);
 }
 
 /* --- Center file browser (Files / Documentation) ------------------------- */
 /* Sits next to .center-terms in <main class="center">; browser.js toggles one
    against the other. Uses the same dark hex palette as the rest of the app
-   (#0d1117 base, #161b22 raised, #30363d borders) — this project has no :root
+   (var(--bg-0) base, var(--bg-1) raised, var(--border) borders) — this project has no :root
    custom properties, so the spec's var(--x) tokens are inlined as hex here. */
 .project-browser {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--bg-0);
+  color: var(--fg-1);
 }
 .project-browser.hidden {
   display: none;
@@ -2140,8 +2255,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid #30363d;
-  background: #161b22;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
 }
 
 .pb-path {
@@ -2152,21 +2267,21 @@ body {
   white-space: nowrap;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 .pb-btn {
   flex: 0 0 auto;
   padding: 4px 10px;
   font-size: 12px;
-  color: #c9d1d9;
-  background: #21262d;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   cursor: pointer;
 }
 .pb-btn:hover:not(:disabled) {
-  background: #30363d;
+  background: var(--border);
 }
 .pb-btn:disabled {
   opacity: 0.4;
@@ -2196,7 +2311,7 @@ body {
 /* Split view: list becomes a fixed left pane, preview takes the rest. */
 .pb-body.split .pb-list {
   flex: 0 0 340px;
-  border-right: 1px solid #30363d;
+  border-right: 1px solid var(--border);
 }
 
 /* Right preview pane. Hidden until a file is clicked. */
@@ -2205,7 +2320,7 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 .pb-preview.hidden {
   display: none;
@@ -2216,8 +2331,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid #30363d;
-  background: #161b22;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
 }
 .pb-preview-name {
   flex: 1 1 auto;
@@ -2227,7 +2342,7 @@ body {
   white-space: nowrap;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 .pb-preview-actions {
   flex: 0 0 auto;
@@ -2246,7 +2361,7 @@ body {
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
   line-height: 1.5;
-  color: #c9d1d9;
+  color: var(--fg-1);
   white-space: pre;
   tab-size: 4;
 }
@@ -2255,14 +2370,14 @@ body {
   top: 0;
   padding: 6px 14px;
   font-size: 11px;
-  color: #d29922;
-  background: #161b22;
-  border-bottom: 1px solid #30363d;
+  color: var(--warn);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
 }
 .pb-preview-msg {
   padding: 24px 14px;
   text-align: center;
-  color: #8b949e;
+  color: var(--fg-2);
   font-size: 13px;
 }
 
@@ -2292,7 +2407,7 @@ body {
 /* The row whose file is showing in the preview pane. */
 .pb-row-selected,
 .pb-row-selected:hover {
-  background: #1f6feb33;
+  background: var(--accent-tint);
 }
 
 .pb-row {
@@ -2304,13 +2419,13 @@ body {
   text-align: left;
   background: transparent;
   border: none;
-  border-radius: 6px;
-  color: #c9d1d9;
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
   font-size: 13px;
   cursor: pointer;
 }
 .pb-row:hover {
-  background: #161b22;
+  background: var(--bg-1);
 }
 .pb-icon {
   flex: 0 0 auto;
@@ -2326,16 +2441,16 @@ body {
 }
 .pb-row-dir .pb-name {
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--fg-0);
 }
 .pb-row-file .pb-name {
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 .pb-message {
   padding: 24px 14px;
   text-align: center;
-  color: #8b949e;
+  color: var(--fg-2);
   font-size: 13px;
 }
 
@@ -2349,7 +2464,7 @@ body {
 
 .modal-section-hint,
 .startup-status {
-  color: #8b949e;
+  color: var(--fg-2);
   font-size: 12px;
   margin: 0;
 }
@@ -2367,7 +2482,7 @@ body {
 }
 
 .startup-sub-title {
-  color: #e6edf3;
+  color: var(--fg-0);
   font-size: 13px;
   font-weight: 600;
 }
@@ -2405,22 +2520,22 @@ body {
   align-items: center;
   gap: 8px;
   padding: 4px 6px;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   cursor: pointer;
-  color: #c9d1d9;
+  color: var(--fg-1);
   font-size: 13px;
 }
 
 .startup-cmd-item:hover {
-  background: #161b22;
+  background: var(--bg-1);
 }
 
 .startup-cmd-item input[type="checkbox"] {
-  accent-color: #58a6ff;
+  accent-color: var(--accent);
 }
 
 .startup-cmds-empty {
-  color: #8b949e;
+  color: var(--fg-2);
   font-size: 12px;
   margin: 0;
 }
@@ -2435,15 +2550,15 @@ body {
 /* === Git changes panel (GitHub-style diff) ========================== */
 /* Sits next to .center-terms in <main class="center"> like the file     */
 /* browser; gitdiff.js toggles one against the others. Same GitHub-dark   */
-/* palette as the rest of the app (#0d1117 base, #161b22 raised, #30363d  */
+/* palette as the rest of the app (var(--bg-0) base, var(--bg-1) raised, var(--border)  */
 /* borders), with GitHub's add-green / del-red wash on the diff rows.     */
 .project-gitdiff {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--bg-0);
+  color: var(--fg-1);
 }
 .project-gitdiff.hidden {
   display: none;
@@ -2455,8 +2570,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border-bottom: 1px solid #30363d;
-  background: #161b22;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
 }
 
 .gd-title {
@@ -2467,35 +2582,35 @@ body {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 /* Segmented Unified / Split control. */
 .gd-view-toggle {
   display: inline-flex;
   flex: 0 0 auto;
-  border: 1px solid #30363d;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
   overflow: hidden;
 }
 .gd-toggle-btn {
   padding: 4px 10px;
   font-size: 12px;
-  color: #8b949e;
-  background: #0d1117;
+  color: var(--fg-2);
+  background: var(--bg-0);
   border: 0;
   cursor: pointer;
 }
 .gd-toggle-btn + .gd-toggle-btn {
-  border-left: 1px solid #30363d;
+  border-left: 1px solid var(--border);
 }
 .gd-toggle-btn:hover {
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 .gd-toggle-active,
 .gd-toggle-active:hover {
-  color: #fff;
-  background: #21262d;
+  color: var(--fg-0);
+  background: var(--bg-2);
 }
 
 /* ---- Body: file list (left) | diff (right) -------------------------- */
@@ -2510,13 +2625,13 @@ body {
   min-height: 0;
   overflow-y: auto;
   padding: 6px;
-  border-right: 1px solid #30363d;
+  border-right: 1px solid var(--border);
 }
 
 .gd-message {
   padding: 12px 10px;
   font-size: 13px;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 /* A repo section in the list. */
@@ -2530,12 +2645,12 @@ body {
   padding: 4px 6px;
   position: sticky;
   top: 0;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 .gd-group-name {
   font-size: 12px;
   font-weight: 600;
-  color: #c9d1d9;
+  color: var(--fg-1);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2544,16 +2659,16 @@ body {
   flex: 0 0 auto;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 11px;
-  color: #8b949e;
-  background: #161b22;
-  border: 1px solid #30363d;
+  color: var(--fg-2);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0 7px;
 }
 .gd-group-clean {
   padding: 4px 8px 4px 24px;
   font-size: 12px;
-  color: #6e7681;
+  color: var(--fg-3);
 }
 
 /* A changed-file row. */
@@ -2564,18 +2679,18 @@ body {
   width: 100%;
   padding: 4px 6px;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: transparent;
-  color: #c9d1d9;
+  color: var(--fg-1);
   text-align: left;
   cursor: pointer;
 }
 .gd-file:hover {
-  background: #161b22;
+  background: var(--bg-1);
 }
 .gd-file-selected,
 .gd-file-selected:hover {
-  background: #1f6feb33;
+  background: var(--accent-tint);
 }
 
 /* Status letter badge (A / M / D / R / U). */
@@ -2590,16 +2705,16 @@ body {
 }
 .gd-st-add,
 .gd-st-new {
-  color: #3fb950;
+  color: var(--ok);
 }
 .gd-st-del {
-  color: #f85149;
+  color: var(--danger);
 }
 .gd-st-mod {
-  color: #d29922;
+  color: var(--warn);
 }
 .gd-st-ren {
-  color: #58a6ff;
+  color: var(--accent);
 }
 
 .gd-file-path {
@@ -2612,10 +2727,10 @@ body {
   font-size: 12px;
 }
 .gd-file-dir {
-  color: #6e7681;
+  color: var(--fg-3);
 }
 .gd-file-name {
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 
 .gd-file-counts {
@@ -2626,13 +2741,13 @@ body {
   font-size: 11px;
 }
 .gd-add-n {
-  color: #3fb950;
+  color: var(--ok);
 }
 .gd-del-n {
-  color: #f85149;
+  color: var(--danger);
 }
 .gd-bin {
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 /* ---- Right diff pane ------------------------------------------------- */
@@ -2641,7 +2756,7 @@ body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #0d1117;
+  background: var(--bg-0);
 }
 
 .gd-diff-head {
@@ -2649,8 +2764,8 @@ body {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
-  border-bottom: 1px solid #30363d;
-  background: #161b22;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
 }
 .gd-diff-head.hidden {
   display: none;
@@ -2663,7 +2778,7 @@ body {
   white-space: nowrap;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
-  color: #c9d1d9;
+  color: var(--fg-1);
 }
 .gd-diff-stat {
   flex: 0 0 auto;
@@ -2681,7 +2796,7 @@ body {
 .gd-diff-msg {
   padding: 16px 14px;
   font-size: 13px;
-  color: #8b949e;
+  color: var(--fg-2);
 }
 
 /* The diff itself. min-width:max-content lets each row's background span the
@@ -2703,7 +2818,7 @@ body {
   width: 44px;
   padding: 0 8px 0 0;
   text-align: right;
-  color: #6e7681;
+  color: var(--fg-3);
   user-select: none;
   white-space: pre;
 }
@@ -2721,25 +2836,25 @@ body {
 }
 
 .gd-row-add {
-  background: rgba(46, 160, 67, 0.15);
+  background: var(--ok-tint);
 }
 .gd-row-add .gd-sign {
-  color: #3fb950;
+  color: var(--ok);
 }
 .gd-row-del {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-tint);
 }
 .gd-row-del .gd-sign {
-  color: #f85149;
+  color: var(--danger);
 }
 
 /* Hunk header band (@@ -a,b +c,d @@). */
 .gd-row-hunk {
-  background: rgba(56, 139, 253, 0.1);
+  background: var(--accent-tint-faint);
 }
 .gd-hunk-text {
   padding: 0 12px;
-  color: #79c0ff;
+  color: var(--accent);
   white-space: pre;
 }
 
@@ -2760,7 +2875,7 @@ body {
   padding: 0 8px;
 }
 .gd-diff-split .gd-srow > *:nth-child(3) {
-  border-left: 1px solid #30363d;
+  border-left: 1px solid var(--border);
 }
 .gd-side {
   min-width: 0;
@@ -2769,11 +2884,92 @@ body {
   overflow-x: auto;
 }
 .gd-side-add {
-  background: rgba(46, 160, 67, 0.15);
+  background: var(--ok-tint);
 }
 .gd-side-del {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-tint);
 }
 .gd-side-empty {
-  background: #0b0f14;
+  background: var(--bg-sunken);
+}
+
+/* ===================================================================== */
+/* === Zen refit: global finish layer ================================== */
+/* Scrollbars, text selection, focus rings, and the shared tooltip. */
+
+/* Thin, rounded, quiet scrollbars everywhere. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-2);
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::selection {
+  background: var(--accent-tint-strong);
+}
+
+/* Soft accent focus ring on every text-ish control. The accent border color
+   is set per-control above; this adds the gentle outer glow. */
+.inline-input:focus,
+.inject-input:focus,
+.git-select:focus,
+.util-select:focus,
+.util-textarea:focus,
+.settings-select:focus {
+  box-shadow: 0 0 0 3px var(--accent-tint-faint);
+}
+
+/* ---- Shared hover tooltip (main.js) ---------------------------------- */
+/* One floating element reused for every [data-tip]. Fixed-positioned by JS so
+   it never gets clipped by overflow containers. Native `title` attributes are
+   converted to data-tip on first hover, so everything funnels through this. */
+#app-tooltip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 340px;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+}
+
+#app-tooltip.show {
+  opacity: 1;
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app-tooltip {
+    transition: none;
+  }
 }

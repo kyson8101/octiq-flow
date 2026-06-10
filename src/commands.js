@@ -14,6 +14,8 @@
 // streams.
 import { createTerminalGroup, onTerminalLine } from "/terminals.js";
 import { refresh as refreshWorkspaces } from "/workspaces.js";
+import { ICONS } from "/icons.js";
+import { openCtxMenu } from "/ctxmenu.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -153,41 +155,47 @@ function renderList() {
   emptyEl.classList.toggle("hidden", !!have);
   // With no project, hide the empty hint too (nothing to add to).
   emptyEl.textContent = currentId
-    ? "No commands yet. Click “+ Add command”."
+    ? "No commands yet. Press + to add one."
     : "Select a project to see its commands.";
   if (!currentId) return;
 
   for (const a of currentActions) listEl.append(makeRow(a));
 }
 
+// A command is one quiet row: click runs it, right-click offers Edit / Remove
+// (shared ctx menu). A play glyph fades in on hover as the run affordance.
 function makeRow(action) {
   const li = document.createElement("li");
   li.className = "cmd-item";
 
   const run = document.createElement("button");
   run.className = "cmd-run";
-  run.title = `Run: ${action.command}`;
+  run.title = `Run: ${action.command}\nRight-click to edit or remove`;
   const label = document.createElement("span");
   label.className = "cmd-run-label";
   label.textContent = action.label;
   const cmd = document.createElement("span");
   cmd.className = "cmd-run-cmd";
   cmd.textContent = action.command;
-  run.append(label, cmd);
+  const play = document.createElement("span");
+  play.className = "cmd-run-play";
+  play.innerHTML = ICONS.play(12);
+  run.append(label, cmd, play);
   run.addEventListener("click", () => runCommand(action));
+  run.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openCtxMenu(e.clientX, e.clientY, [
+      { label: "Edit", onClick: () => openForm(action) },
+      {
+        label: "Remove",
+        danger: true,
+        confirm: "Click again to remove",
+        onClick: () => removeCommand(action.id),
+      },
+    ]);
+  });
 
-  const edit = document.createElement("button");
-  edit.className = "cmd-mini";
-  edit.textContent = "Edit";
-  edit.addEventListener("click", () => openForm(action));
-
-  const del = document.createElement("button");
-  del.className = "cmd-mini danger";
-  del.textContent = "✕";
-  del.title = "Remove command";
-  del.addEventListener("click", () => removeCommand(action.id));
-
-  li.append(run, edit, del);
+  li.append(run);
   return li;
 }
 
