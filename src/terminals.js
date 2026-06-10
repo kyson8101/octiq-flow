@@ -253,12 +253,10 @@ export function focusTerminal(id) {
   clearAttention(id);
 }
 
-// Keep every visible group's active terminal sized to the window. Groups that
-// are hidden are skipped (fit on a hidden element measures zero).
-const groups = new Set();
-window.addEventListener("resize", () => {
-  for (const g of groups) g.refitActive();
-});
+// Sizing: every pane has its own ResizeObserver (see newTerminal), so window
+// resizes AND in-page layout shifts (alert banner, paths footer, panel
+// collapse) all trigger a refit. There is no window "resize" listener — it
+// would miss the in-page shifts anyway.
 
 // Apply a font setting change (family / size / line height) to every OPEN
 // terminal live, then refit so each group's rows/cols and PTY size track the
@@ -273,7 +271,8 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
     term.options.fontSize = s.fontSize;
     term.options.lineHeight = s.lineHeight;
   }
-  for (const g of groups) g.refitActive();
+  const liveGroups = new Set([...idToEntry.values()].map((e) => e.group));
+  for (const g of liveGroups) g.refitActive();
 });
 
 /**
@@ -367,8 +366,6 @@ class TerminalGroup {
 
     this.root.append(this.stripEl, this.panesEl);
     mountEl.append(this.root);
-
-    groups.add(this);
   }
 
   ids() {
@@ -788,7 +785,6 @@ class TerminalGroup {
 
   dispose() {
     for (const id of [...this.tabs.keys()]) this.closeTerminal(id);
-    groups.delete(this);
     this.root.remove();
   }
 }

@@ -140,8 +140,10 @@ function emitProjectSelected() {
   );
 }
 
-/** Reload from the backend and re-render everything that is visible. */
-async function refresh() {
+/** Reload from the backend and re-render everything that is visible. Exported
+ *  so commands.js can refresh the shared cache after add/edit/delete of a
+ *  command — otherwise a later project switch re-emits stale actions. */
+export async function refresh() {
   workspaces = await invoke("list_workspaces");
   if (!selectedId || !selected()) {
     selectedId = workspaces.length > 0 ? workspaces[0].id : null;
