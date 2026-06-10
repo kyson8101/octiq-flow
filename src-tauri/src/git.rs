@@ -290,6 +290,10 @@ fn run_git(dir: &str, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
+        // Never take optional locks: keeps `git status` from rewriting
+        // `.git/index`, which would re-trigger the git_watch.rs fs watcher in a
+        // feedback loop (watcher → status → index write → watcher → …).
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(args)
         .output()
         .ok()?;

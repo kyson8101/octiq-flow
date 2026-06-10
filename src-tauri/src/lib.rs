@@ -12,6 +12,7 @@ mod agent_resume;
 mod dashboard;
 mod fsbrowse;
 mod git;
+mod git_watch;
 mod pty;
 mod terminal_layout;
 mod utilities;
@@ -61,6 +62,9 @@ pub fn run() {
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load(app.handle()));
+            // Fs watcher behind the sidebar's live git counts; the frontend
+            // installs the watched paths via git_watch_paths after each render.
+            app.manage(git_watch::GitWatchState::default());
             // Keep the agent session-capture hook script on disk current with this
             // build, so resume fixes ship without the user re-running setup from
             // Settings. Writes only the script file (never an agent's settings);
@@ -131,6 +135,7 @@ pub fn run() {
             confirm_close,
             dashboard::list_docs,
             git::git_status_summary,
+            git_watch::git_watch_paths,
             git::git_changed_files,
             git::git_file_diff,
             git::git_local_branches,

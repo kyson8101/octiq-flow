@@ -268,6 +268,10 @@ async function annotateListDiffs() {
     if (ws.primary_path) allPaths.push(ws.primary_path);
     allPaths.push(...ws.paths);
   }
+  // Keep the backend fs watcher pointed at the current path set, so a file
+  // change or commit in any project re-triggers this annotation (see the
+  // git-status-changed listener at the bottom of this file).
+  syncGitWatcher(allPaths);
   if (!allPaths.length) return;
 
   let statuses;
@@ -287,6 +291,19 @@ async function annotateListDiffs() {
     const diffEl = rows.get(ws.id)?.querySelector(".ws-item-diff");
     if (diffEl) fillDiffRow(diffEl, ws);
   }
+}
+
+/** (Re)install the backend fs watcher over the given paths, but only when the
+ *  set actually changed — annotateListDiffs() runs on every list render, and
+ *  rebuilding the watcher each time would be wasted work. */
+let watchedPathsKey = null;
+function syncGitWatcher(paths) {
+  const key = paths.join("\n");
+  if (key === watchedPathsKey) return;
+  watchedPathsKey = key;
+  invoke("git_watch_paths", { paths }).catch(() => {
+    watchedPathsKey = null; // retry on the next render
+  });
 }
 
 // --- Drag-and-drop reorder of the project list -----------------------------
@@ -1048,3 +1065,14 @@ document.addEventListener("keydown", (e) => {
 
 // --- Boot ------------------------------------------------------------------
 window.addEventListener("DOMContentLoaded", refresh);
+
+// Live git counts: the backend fs watcher (git_watch.rs) emits a debounced
+// git-status-changed whenever a project folder changes in a way that can move
+// `git status` — an edit, a new file, or a commit. Re-pull the sidebar's +/-
+// counts and the selected project's footer branch chips; both repaint in place
+// (no list rebuild), so this never disturbs an open menu or drag.
+window.__TAURI__.event.listen("git-status-changed", () => {
+  annotateListDiffs();
+  const ws = selected();
+  if (ws) annotateFooterBranches(ws);
+});
