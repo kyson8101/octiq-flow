@@ -484,6 +484,64 @@ fn synthesize_untracked_diff(content: &str) -> String {
     s
 }
 
+// --- Local branches (Git tab switch-branch dropdown) ------------------------
+
+/// The local branches of one repo, for the Git tab's switch-branch dropdown.
+#[derive(Debug, Clone, Serialize)]
+pub struct BranchList {
+    /// True only when `path` resolves to a git repo.
+    pub is_repo: bool,
+    /// The checked-out branch name (empty for a detached HEAD or a non-repo).
+    pub current: String,
+    /// Local branch names, most-recently-committed first.
+    pub branches: Vec<String>,
+}
+
+/// List a repo's local branches for the Git tab's switch dropdown. Read-only.
+/// A path that is not a git repo comes back with `is_repo = false` and no
+/// branches rather than an error, so the panel can show a hint instead.
+#[tauri::command]
+pub fn git_local_branches(path: String) -> Result<BranchList, String> {
+    let Some(root) = repo_root(&path) else {
+        return Ok(BranchList {
+            is_repo: false,
+            current: String::new(),
+            branches: Vec::new(),
+        });
+    };
+    let current = run_git(&root, &["branch", "--show-current"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    // Sort by last-commit time, newest first, so branches the user touched
+    // recently sit at the top of the dropdown (they switch branches a lot).
+    let raw = run_git(
+        &root,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=-committerdate",
+            "refs/heads/",
+        ],
+    )
+    .unwrap_or_default();
+    Ok(BranchList {
+        is_repo: true,
+        current,
+        branches: parse_branch_lines(&raw),
+    })
+}
+
+/// Split `git for-each-ref` output into a clean branch-name list (one per line,
+/// trimmed, blanks dropped).
+fn parse_branch_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 // --- Per-path summary (Dashboard grid + sidebar line counts) ----------------
 
 /// Run a git summary for every path. One `GitStatus` per input path, in the same
@@ -678,6 +736,17 @@ mod tests {
     #[test]
     fn sum_numstat_empty_output_is_zero() {
         assert_eq!(sum_numstat(""), (0, 0));
+    }
+
+    #[test]
+    fn branch_lines_trim_and_drop_blanks() {
+        let names = parse_branch_lines("main\nfeature/x\n\n  hotfix \n");
+        assert_eq!(names, vec!["main", "feature/x", "hotfix"]);
+    }
+
+    #[test]
+    fn branch_lines_empty_is_empty() {
+        assert!(parse_branch_lines("").is_empty());
     }
 
     #[test]

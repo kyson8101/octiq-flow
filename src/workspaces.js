@@ -115,8 +115,8 @@ function selected() {
 }
 
 /** Tell other modules which project is now selected (project.js terminals,
- *  commands.js command panel). detail = { id, primaryPath, actions, startup }
- *  or null. */
+ *  commands.js command panel, gitactions.js Git tab). detail =
+ *  { id, name, primaryPath, paths, actions, startup } or null. */
 function emitProjectSelected() {
   const ws = selected();
   window.dispatchEvent(
@@ -124,7 +124,13 @@ function emitProjectSelected() {
       detail: ws
         ? {
             id: ws.id,
+            name: ws.name || "",
             primaryPath: ws.primary_path || "",
+            // All folder paths (primary first), so the Git tab can open the
+            // diff viewer across every repo the project holds.
+            paths: [ws.primary_path || "", ...(ws.paths || [])].filter((p) =>
+              (p || "").trim(),
+            ),
             actions: ws.actions || [],
             startup: ws.startup || { terminals: [], command_ids: [] },
             terminalCommand: ws.terminal_command || "",

@@ -28,6 +28,7 @@
     <script type="module" src="/main.js" defer></script>
     <script type="module" src="/project.js" defer></script>
     <script type="module" src="/commands.js" defer></script>
+    <script type="module" src="/gitactions.js" defer></script>
     <script type="module" src="/modes.js" defer></script>
     <script type="module" src="/chat.js" defer></script>
     <script type="module" src="/utilities.js" defer></script>
@@ -145,30 +146,68 @@
         </div>
       </main>
 
-      <!-- Right: collapsible command panel (registered commands for the
-           selected project). commands.js fills #cmd-list and runs commands. -->
+      <!-- Right: collapsible panel with two tabs — Commands (registered
+           project commands, commands.js) and Git (common git actions for the
+           project's primary repo, gitactions.js). -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
-          <span class="cmd-panel-title">Commands</span>
+          <div class="cmd-tabs" role="tablist">
+            <button id="cmd-tab-btn-commands" class="cmd-tab cmd-tab-active" role="tab" aria-selected="true">Commands</button>
+            <button id="cmd-tab-btn-git" class="cmd-tab" role="tab" aria-selected="false">Git</button>
+          </div>
           <button id="cmd-panel-toggle" class="icon-btn" title="Collapse panel" aria-expanded="true">▶</button>
         </div>
 
         <div class="cmd-panel-body">
-          <div class="cmd-panel-bar">
-            <button id="cmd-add" class="btn btn-sm">+ Add command</button>
+          <!-- Commands tab -->
+          <div id="cmd-tab-commands" class="cmd-tabpane">
+            <div class="cmd-panel-bar">
+              <button id="cmd-add" class="btn btn-sm">+ Add command</button>
+            </div>
+
+            <div id="cmd-form" class="cmd-form hidden">
+              <input id="cmd-label" class="inline-input" placeholder="Label (e.g. Dev all)" autocomplete="off" />
+              <input id="cmd-command" class="inline-input" placeholder="Command (e.g. pnpm dev:all)" autocomplete="off" />
+              <div class="panel-actions">
+                <button id="cmd-form-cancel" class="btn btn-sm">Cancel</button>
+                <button id="cmd-form-save" class="btn btn-primary btn-sm">Save</button>
+              </div>
+            </div>
+
+            <ul id="cmd-list" class="cmd-list"></ul>
+            <p id="cmd-empty" class="ws-empty">No commands yet. Click “+ Add command”.</p>
           </div>
 
-          <div id="cmd-form" class="cmd-form hidden">
-            <input id="cmd-label" class="inline-input" placeholder="Label (e.g. Dev all)" autocomplete="off" />
-            <input id="cmd-command" class="inline-input" placeholder="Command (e.g. pnpm dev:all)" autocomplete="off" />
-            <div class="panel-actions">
-              <button id="cmd-form-cancel" class="btn btn-sm">Cancel</button>
-              <button id="cmd-form-save" class="btn btn-primary btn-sm">Save</button>
+          <!-- Git tab: common git actions for the project's primary repo. -->
+          <div id="cmd-tab-git" class="cmd-tabpane hidden">
+            <p id="git-hint" class="ws-empty">Select a project to use git.</p>
+
+            <div id="git-actions" class="git-actions hidden">
+              <div class="git-branch-line">
+                <span class="git-branch-label">On branch</span>
+                <span id="git-current-branch" class="git-branch-name" title="Current branch">—</span>
+                <button id="git-branch-refresh" class="icon-btn" title="Refresh branches">↻</button>
+              </div>
+
+              <button id="git-diff-btn" class="btn git-action-btn">View diff</button>
+
+              <div class="git-section">
+                <label class="git-field-label" for="git-branch-select">Switch branch</label>
+                <div class="git-switch-row">
+                  <select id="git-branch-select" class="git-select"></select>
+                  <button id="git-switch-btn" class="btn btn-sm">Switch</button>
+                </div>
+              </div>
+
+              <div class="git-section">
+                <label class="git-field-label" for="git-commit-msg">Commit (tracked changes)</label>
+                <input id="git-commit-msg" class="inline-input" placeholder="Commit message" autocomplete="off" />
+                <button id="git-commit-btn" class="btn btn-primary btn-sm">Commit</button>
+              </div>
+
+              <button id="git-push-btn" class="btn btn-accent git-action-btn">Push</button>
             </div>
           </div>
-
-          <ul id="cmd-list" class="cmd-list"></ul>
-          <p id="cmd-empty" class="ws-empty">No commands yet. Click “+ Add command”.</p>
         </div>
       </aside>
       </div>

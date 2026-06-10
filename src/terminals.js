@@ -519,6 +519,16 @@ class TerminalGroup {
       if (this.activeId === ptyId) this._fit(ptyId);
     });
     ro.observe(pane);
+    // Also watch the rendered grid (.xterm-screen). Its height is rows × cell
+    // height, so it changes when cell METRICS change with no layout resize at
+    // all — WebGL context loss swapping in the DOM renderer, a display-DPI
+    // move, a font swap. Without this, a grid that became taller than the pane
+    // stays clipped by the pane's overflow:hidden (hiding the bottom rows,
+    // e.g. an agent's input box) until the user resizes the window. Re-running
+    // fit settles in one round: once rows/cols match the pane, fit no longer
+    // changes the grid and the observer goes quiet.
+    const screenEl = term.element?.querySelector(".xterm-screen");
+    if (screenEl) ro.observe(screenEl);
     // Reconstruct the first command typed in this tab, so a plain (non-agent)
     // terminal can auto-name itself from it. State is carried across onData
     // calls; once a command is captured we stop tracking. `entry` is assigned

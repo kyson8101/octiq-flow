@@ -374,3 +374,14 @@ async function runCommand(action) {
     rec.actionPty.set(action.id, ptyId);
   }
 }
+
+/** Run an ad-hoc command (e.g. a Git tab action) in the current project's
+ *  command-terminal group, then open the modal so its live output is visible.
+ *  Reuses the same one-terminal-per-id replace behaviour as runCommand: re-running
+ *  the same `id` (e.g. "git:push") replaces its own terminal instead of stacking.
+ *  No-op when no project is selected. */
+export async function runManagedCommand({ id, label, command }) {
+  if (!currentId) return;
+  await runCommand({ id, label, command });
+  openCmdModal();
+}

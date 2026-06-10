@@ -133,6 +133,7 @@ pub fn run() {
             git::git_status_summary,
             git::git_changed_files,
             git::git_file_diff,
+            git::git_local_branches,
             fsbrowse::list_dir,
             fsbrowse::read_file_preview,
         ])

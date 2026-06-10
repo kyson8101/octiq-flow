@@ -110,17 +110,36 @@ body {
   border-bottom: 1px solid #30363d;
 }
 
-.cmd-panel-title {
-  font-weight: 600;
-  font-size: 13px;
-  color: #e6edf3;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+/* Tab bar in the panel head: Commands | Git. */
+.cmd-tabs {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
 }
 
-/* Hide the body and the title text when collapsed; keep the toggle. */
-.cmd-panel.collapsed .cmd-panel-title,
+.cmd-tab {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8b949e;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.cmd-tab:hover {
+  color: #e6edf3;
+}
+
+.cmd-tab-active {
+  color: #e6edf3;
+  background: #161b22;
+  border-color: #30363d;
+}
+
+/* Hide the tabs and the body when collapsed; keep the toggle. */
+.cmd-panel.collapsed .cmd-tabs,
 .cmd-panel.collapsed .cmd-panel-body {
   display: none;
 }
@@ -131,8 +150,14 @@ body {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  padding: 10px;
+}
+
+/* One tab's content. Only the active pane shows (the other has .hidden). */
+.cmd-tabpane {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
+  padding: 10px;
 }
 
 .cmd-panel-bar {
@@ -227,6 +252,94 @@ body {
 
 .cmd-mini.danger:hover {
   color: #f85149;
+}
+
+/* ---- Git tab (right panel) -------------------------------------------- */
+.git-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Current-branch line at the top of the tab. */
+.git-branch-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.git-branch-label {
+  color: #8b949e;
+  flex-shrink: 0;
+}
+
+.git-branch-name {
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e6edf3;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+#git-branch-refresh {
+  flex-shrink: 0;
+}
+
+/* A labelled action group (switch branch, commit). */
+.git-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.git-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8b949e;
+}
+
+/* A full-width action button (View diff, Push). */
+.git-action-btn {
+  width: 100%;
+  text-align: center;
+}
+
+.git-switch-row {
+  display: flex;
+  gap: 6px;
+}
+
+.git-select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #e6edf3;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  outline: none;
+}
+
+.git-select:focus {
+  border-color: #58a6ff;
+}
+
+.git-select:disabled {
+  opacity: 0.5;
+}
+
+/* Disabled git actions (no repo / no branch) read as inactive. */
+#cmd-tab-git .btn:disabled,
+#cmd-tab-git .icon-btn:disabled,
+#cmd-tab-git .inline-input:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 /* ---- Left panel: workspaces ------------------------------------------- */
