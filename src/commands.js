@@ -13,6 +13,7 @@
 // (alerts.js) cover the drawer too — this file adds no event listeners for PTY
 // streams.
 import { createTerminalGroup, onTerminalLine } from "/terminals.js";
+import { refresh as refreshWorkspaces } from "/workspaces.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -222,26 +223,18 @@ async function saveCommand() {
     await invoke("add_action", { workspaceId: currentId, label, command });
   }
   closeForm();
-  // The backend is the source of truth; workspaces.js re-emits actions on
-  // refresh. We trigger that by reloading the list ourselves so the panel
-  // updates without waiting for an unrelated refresh.
-  await reloadActions();
+  // Refresh the SHARED workspaces cache (workspaces.js), which re-emits
+  // project-selected with the fresh actions — this panel re-renders from that
+  // event. A private side-load here would leave the cache stale, so the next
+  // project switch would re-emit the old actions and the new command would
+  // vanish from the panel.
+  await refreshWorkspaces();
 }
 
 async function removeCommand(actionId) {
   if (!currentId) return;
   await invoke("delete_action", { workspaceId: currentId, actionId });
-  await reloadActions();
-}
-
-/** Re-fetch the selected project's actions and re-render the panel. */
-async function reloadActions() {
-  if (!currentId) return;
-  const all = await invoke("list_workspaces");
-  const ws = all.find((w) => w.id === currentId);
-  currentActions = ws ? ws.actions || [] : [];
-  currentPath = ws ? ws.primary_path || "" : currentPath;
-  renderList();
+  await refreshWorkspaces();
 }
 
 addBtn.addEventListener("click", () => openForm(null));
