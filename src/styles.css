@@ -144,6 +144,28 @@ body {
   display: none;
 }
 
+/* Panel toggle: chevrons point right (collapse) and flip when collapsed. */
+.cmd-panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  color: #8b949e;
+}
+
+.cmd-panel-toggle:hover {
+  color: #e6edf3;
+}
+
+.cmd-panel-toggle svg {
+  display: block;
+  transition: transform 0.15s ease;
+}
+
+.cmd-panel.collapsed .cmd-panel-toggle svg {
+  transform: rotate(180deg);
+}
+
 .cmd-panel-body {
   flex: 1;
   min-height: 0;

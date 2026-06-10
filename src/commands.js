@@ -269,7 +269,6 @@ toggleBtn.addEventListener("click", () => {
   const collapsed = panelEl.classList.toggle("collapsed");
   toggleBtn.setAttribute("aria-expanded", String(!collapsed));
   toggleBtn.title = collapsed ? "Expand panel" : "Collapse panel";
-  toggleBtn.textContent = collapsed ? "◀" : "▶";
 });
 
 // --- Command terminals: run in the background, view in a modal -------------
