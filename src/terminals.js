@@ -161,12 +161,10 @@ export function focusTerminal(id) {
   clearAttention(id);
 }
 
-// Keep every visible group's active terminal sized to the window. Groups that
-// are hidden are skipped (fit on a hidden element measures zero).
-const groups = new Set();
-window.addEventListener("resize", () => {
-  for (const g of groups) g.refitActive();
-});
+// Each group watches its own panes area with a ResizeObserver (see the
+// constructor), so window resizes AND in-page layout shifts (alert banner,
+// paths footer, panel collapse) all trigger a refit. Hidden groups are skipped
+// inside refitActive (fit on a hidden element measures zero).
 
 /**
  * Create a terminal-tab-group mounted inside `mountEl`.
@@ -233,7 +231,15 @@ class TerminalGroup {
     this.root.append(this.stripEl, this.panesEl);
     mountEl.append(this.root);
 
-    groups.add(this);
+    // Refit whenever the panes area changes size for ANY reason — window
+    // resize, the alert banner or paths footer appearing, the command panel
+    // collapsing. A plain window "resize" listener misses the in-page shifts,
+    // which left the terminal overflowing the panel bottom. The rAF coalesces
+    // bursts and keeps the fit() DOM writes out of the observer callback.
+    this.resizeObserver = new ResizeObserver(() => {
+      requestAnimationFrame(() => this.refitActive());
+    });
+    this.resizeObserver.observe(this.panesEl);
   }
 
   ids() {
@@ -395,7 +401,7 @@ class TerminalGroup {
 
   dispose() {
     for (const id of [...this.tabs.keys()]) this.closeTerminal(id);
-    groups.delete(this);
+    this.resizeObserver.disconnect();
     this.root.remove();
   }
 }

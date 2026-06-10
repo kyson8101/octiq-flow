@@ -853,12 +853,15 @@ body {
   border-color: #388bfd;
 }
 
-/* Panes area: all panes stack; only the active one shows. */
+/* Panes area: all panes stack; only the active one shows. overflow:hidden
+   clips any not-yet-refitted xterm so it can never paint past the panel
+   edge while a resize is settling. */
 .tg-panes {
   position: relative;
   flex: 1;
   min-height: 0;
   background: #0d1117;
+  overflow: hidden;
 }
 
 .tg-pane {
@@ -866,6 +869,7 @@ body {
   position: absolute;
   inset: 0;
   padding: 6px;
+  overflow: hidden;
 }
 
 .tg-pane-active {
