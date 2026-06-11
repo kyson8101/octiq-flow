@@ -230,8 +230,131 @@ async function deleteTemplate(id) {
   await refresh();
 }
 
+// --- Parameterized templates -----------------------------------------------
+// A template prompt may contain {{name}} placeholders. At run time we collect a
+// value for each unique placeholder in a small form, then substitute. Names are
+// letters/digits/underscore/dot/dash; surrounding whitespace inside the braces
+// is ignored ({{ ticket }} == {{ticket}}).
+const PLACEHOLDER_RE = /\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g;
+
+/** Unique placeholder names in first-seen order, or [] if the text has none. */
+function extractPlaceholders(text) {
+  const seen = new Set();
+  const names = [];
+  for (const m of String(text).matchAll(PLACEHOLDER_RE)) {
+    const name = m[1];
+    if (!seen.has(name)) {
+      seen.add(name);
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+/** Replace every {{name}} with values[name] (missing -> empty string). */
+function fillPlaceholders(text, values) {
+  return String(text).replace(PLACEHOLDER_RE, (_, name) => values[name] ?? "");
+}
+
+/**
+ * Show a modal with one input per placeholder name and resolve to a values
+ * object, or null if the user cancels (Escape, Cancel, the X, or a backdrop
+ * click). Enter in any field submits. The modal is built and removed per use so
+ * no markup lives in index.html.
+ */
+function promptForPlaceholders(names, label) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement("div");
+    backdrop.className = "modal-backdrop";
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+
+    const head = document.createElement("div");
+    head.className = "modal-head";
+    const titleEl = document.createElement("span");
+    titleEl.className = "modal-title";
+    titleEl.textContent = `Fill in: ${label}`;
+    head.append(titleEl);
+    modal.append(head);
+
+    // One labelled input per placeholder. The label is the placeholder name as
+    // typed — that is the contract the user wrote in the prompt.
+    const inputs = new Map();
+    for (const name of names) {
+      const lab = document.createElement("label");
+      lab.className = "modal-label";
+      lab.textContent = name;
+      const input = document.createElement("input");
+      input.className = "inline-input";
+      input.type = "text";
+      input.placeholder = `Value for {{${name}}}`;
+      input.autocomplete = "off";
+      inputs.set(name, input);
+      modal.append(lab, input);
+    }
+
+    const foot = document.createElement("div");
+    foot.className = "modal-foot";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "btn";
+    cancelBtn.textContent = "Cancel";
+    const runBtn = document.createElement("button");
+    runBtn.className = "btn btn-primary";
+    runBtn.textContent = "Run";
+    foot.append(cancelBtn, runBtn);
+    modal.append(foot);
+    backdrop.append(modal);
+    document.body.append(backdrop);
+
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      backdrop.remove();
+      resolve(result);
+    };
+    const submit = () => {
+      const values = {};
+      for (const [name, input] of inputs) values[name] = input.value;
+      finish(values);
+    };
+
+    cancelBtn.addEventListener("click", () => finish(null));
+    runBtn.addEventListener("click", submit);
+    // Click on the backdrop itself (not the modal) cancels.
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) finish(null);
+    });
+    modal.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        finish(null);
+      }
+    });
+
+    // Focus the first field so the user can type immediately.
+    inputs.values().next().value?.focus();
+  });
+}
+
 // --- Run a template --------------------------------------------------------
 async function runTemplate(t) {
+  // If the prompt has {{placeholders}}, collect their values first. Asking
+  // before the folder pick keeps a cancel cheap and the order natural (fill the
+  // prompt, then choose where to run).
+  let prompt = t.prompt;
+  const names = extractPlaceholders(prompt);
+  if (names.length > 0) {
+    const values = await promptForPlaceholders(names, t.label);
+    if (!values) return; // cancelled
+    prompt = fillPlaceholders(prompt, values);
+  }
+
   // Working path: the template cwd if set; otherwise ask the user. A cancelled
   // folder dialog aborts the run.
   let path = t.cwd || "";
@@ -241,10 +364,10 @@ async function runTemplate(t) {
   }
 
   // Build the start command safely. The binary is chosen from a fixed allowlist
-  // (never interpolated), and the prompt is passed as ONE quoted shell word so
-  // its contents can never inject extra shell commands.
+  // (never interpolated), and the (now-substituted) prompt is passed as ONE
+  // quoted shell word so its contents can never inject extra shell commands.
   const bin = t.agent === "codex" ? "codex" : "claude";
-  const startCmd = `${bin} ${posixQuote(t.prompt)}`;
+  const startCmd = `${bin} ${posixQuote(prompt)}`;
 
   const g = ensureGroup();
   g.show();

@@ -1687,6 +1687,23 @@ body {
   border-color: var(--accent);
 }
 
+/* Discoverability hint under the prompt textarea: how {{name}} fields work. */
+.util-hint {
+  margin-bottom: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-2);
+}
+
+.util-hint code {
+  padding: 1px 4px;
+  font-size: 11px;
+  color: var(--fg-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 .util-cwd-row {
   display: flex;
   align-items: center;
