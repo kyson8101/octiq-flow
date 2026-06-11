@@ -1960,6 +1960,43 @@ body {
   font-family: inherit;
 }
 
+/* Agent-usage block: each row reads "folder · agent .... 1.2M tok  $0.34". */
+.dash-block-usage .dash-block-sub {
+  direction: ltr;
+  font-family: inherit;
+}
+
+.dash-usage-row {
+  justify-content: space-between;
+}
+
+.dash-usage-row .dash-row-label {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-1);
+}
+
+.dash-usage-val {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+}
+
+.dash-usage-tokens {
+  color: var(--fg-2);
+}
+
+.dash-usage-cost {
+  font-weight: 600;
+  color: var(--accent);
+}
+
 /* Empty state shared by the active-terminals and docs blocks. */
 .dash-empty {
   font-size: 12px;

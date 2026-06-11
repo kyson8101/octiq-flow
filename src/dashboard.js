@@ -232,6 +232,88 @@ function termRow(label, count, workspaceId, workspaces) {
   return row;
 }
 
+// --- Agent usage block ------------------------------------------------------
+// One block listing each captured agent session's token use and estimated cost
+// (from agent_usage_all). Tokens are exact; cost is an estimate and may be
+// missing ("—") or partial ("+") when a session used a model we have no price
+// for. Sessions are pre-sorted by the backend, biggest first.
+
+// Compact a token count: 1_234_567 -> "1.2M", 12_345 -> "12.3K", 850 -> "850".
+function fmtTokens(n) {
+  const v = Number(n) || 0;
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
+  return String(v);
+}
+
+// Format an estimated cost. `complete` false means the figure is a lower bound
+// (some tokens came from an unpriced model), shown with a trailing "+". A null
+// cost (no priced model at all) renders as a dash.
+function fmtCost(usd, complete) {
+  if (usd == null) return "—";
+  const dollars = usd < 0.01 && usd > 0 ? usd.toFixed(4) : usd.toFixed(2);
+  return `$${dollars}${complete ? "" : "+"}`;
+}
+
+// Sum a numeric field across all usage rows.
+function sumField(usages, field) {
+  return (usages ?? []).reduce((acc, u) => acc + (Number(u[field]) || 0), 0);
+}
+
+function agentUsageBlock(usages) {
+  const block = document.createElement("div");
+  block.className = "dash-block dash-block-usage";
+
+  const head = textEl("div", "dash-block-head");
+  head.append(textEl("span", "dash-block-title", "Agent usage"));
+  head.append(textEl("span", "dash-block-kind", "tokens"));
+  block.append(head);
+
+  const rows = usages ?? [];
+  if (rows.length === 0) {
+    block.append(
+      textEl("div", "dash-block-sub", "Token use across agent sessions"),
+    );
+    block.append(
+      textEl("div", "dash-empty", "No agent sessions tracked yet."),
+    );
+    return block;
+  }
+
+  // Subtitle: total tokens + summed known cost across all sessions. The cost is
+  // marked partial if any single session's cost is partial or missing.
+  const totalTokens = sumField(rows, "totalTokens");
+  const knownCost = rows.reduce((acc, u) => acc + (u.costUsd ?? 0), 0);
+  const allComplete = rows.every((u) => u.costComplete);
+  block.append(
+    textEl(
+      "div",
+      "dash-block-sub",
+      `${fmtTokens(totalTokens)} tokens · ${fmtCost(knownCost, allComplete)} est.`,
+    ),
+  );
+
+  for (const u of rows) {
+    const row = textEl("div", "dash-row dash-usage-row");
+    // Label: the working folder's base name + the agent, or just the agent when
+    // no cwd was captured.
+    const label = u.cwd ? `${baseName(u.cwd)} · ${u.agent}` : u.agent || "agent";
+    const labelEl = textEl("span", "dash-row-label", label);
+    labelEl.title = u.models?.length ? u.models.join(", ") : label;
+    row.append(labelEl);
+
+    const val = textEl("span", "dash-usage-val");
+    val.append(textEl("span", "dash-usage-tokens", `${fmtTokens(u.totalTokens)} tok`));
+    val.append(
+      textEl("span", "dash-usage-cost", fmtCost(u.costUsd, u.costComplete)),
+    );
+    row.append(val);
+    block.append(row);
+  }
+
+  return block;
+}
+
 // --- Docs block -------------------------------------------------------------
 // Build one block per workspace that set a docs root, listing the file names
 // found directly under that folder. Returns an array of block elements.
@@ -295,16 +377,19 @@ async function refresh() {
       .filter((w) => w.docsPath);
     const docsPaths = docsWorkspaces.map((w) => w.docsPath);
 
-    // Fetch git summaries, the live PTY list, and the docs listings together.
+    // Fetch git summaries, the live PTY list, the agent usage readout, and the
+    // docs listings together.
     const paths = collectPaths(workspaces);
-    const [statuses, activeIds, docsEntries] = await Promise.all([
+    const [statuses, activeIds, usages, docsEntries] = await Promise.all([
       paths.length > 0 ? invoke("git_status_summary", { paths }) : [],
       invoke("pty_list_active"),
+      invoke("agent_usage_all").catch(() => []),
       docsPaths.length > 0 ? invoke("list_docs", { paths: docsPaths }) : [],
     ]);
 
     const blocks = [
       activeTerminalsBlock(activeIds, workspaces),
+      agentUsageBlock(usages),
       ...(statuses ?? []).map(gitBlock),
       ...docsBlocks(docsWorkspaces, docsEntries),
     ];

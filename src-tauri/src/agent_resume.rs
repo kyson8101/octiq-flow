@@ -156,7 +156,9 @@ fn encode_project_dir(cwd: &str) -> String {
 /// The transcript file for a captured entry: the hook-provided path when present,
 /// else `~/.claude/projects/<enc(cwd)>/<sessionId>.jsonl`. `None` when neither
 /// source yields a path (no transcript path, and missing cwd/session id/home).
-fn transcript_path_for(entry: &SessionEntry) -> Option<PathBuf> {
+/// `pub(crate)` so the usage reader can locate the same transcript this module
+/// already maps each tab to.
+pub(crate) fn transcript_path_for(entry: &SessionEntry) -> Option<PathBuf> {
     if !entry.transcript_path.is_empty() {
         return Some(PathBuf::from(&entry.transcript_path));
     }
@@ -335,8 +337,9 @@ fn quote_path(path: &str) -> String {
 
 // ---- Store I/O ------------------------------------------------------------
 
-/// Load the whole tab -> session map, or an empty map on any error.
-fn load_store() -> std::collections::HashMap<String, SessionEntry> {
+/// Load the whole tab -> session map, or an empty map on any error. `pub(crate)`
+/// so the usage reader can enumerate the same captured sessions this module owns.
+pub(crate) fn load_store() -> std::collections::HashMap<String, SessionEntry> {
     store_path()
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|raw| serde_json::from_str(&raw).ok())

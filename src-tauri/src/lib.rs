@@ -9,6 +9,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
+mod agent_usage;
 mod dashboard;
 mod fsbrowse;
 mod git;
@@ -130,6 +131,7 @@ pub fn run() {
             terminal_layout::clear_project_layout,
             agent_resume::agent_resume_cmd,
             agent_resume::agent_tab_info,
+            agent_usage::agent_usage_all,
             agent_resume::setup_agent_hooks,
             agent_resume::prune_exited_agent_sessions,
             confirm_close,
