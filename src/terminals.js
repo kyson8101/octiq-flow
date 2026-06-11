@@ -780,7 +780,38 @@ class TerminalGroup {
     const entry = this.tabs.get(ptyId);
     if (!entry || !this.visible()) return;
     try {
-      entry.fitAddon.fit();
+      // FitAddon's row count comes from the fractional CSS cell height
+      // (fontSize × lineHeight, e.g. 15.6px), but the renderer rounds each
+      // cell UP to whole device pixels, so the painted grid is slightly
+      // taller than the math assumes. Over a tall pane that adds up to whole
+      // rows, which the pane's overflow:hidden then clips at the bottom
+      // (hiding e.g. an agent's input box). So don't trust the math alone:
+      // cap rows by the PAINTED cell height (current .xterm-screen height ÷
+      // current rows) and take the smaller. A stale measurement (font just
+      // changed) self-corrects: the screen ResizeObserver re-runs this after
+      // the next paint, and the bound is idempotent once paint catches up.
+      const dims = entry.fitAddon.proposeDimensions();
+      if (!dims || !isFinite(dims.cols) || !isFinite(dims.rows)) return;
+      let rows = dims.rows;
+      let cols = dims.cols;
+      const screenEl = entry.term.element?.querySelector(".xterm-screen");
+      const paneH = entry.paneEl.clientHeight;
+      const paneW = entry.paneEl.clientWidth;
+      if (screenEl && entry.term.rows > 0 && entry.term.cols > 0) {
+        const rect = screenEl.getBoundingClientRect();
+        const cellH = rect.height / entry.term.rows;
+        const cellW = rect.width / entry.term.cols;
+        if (paneH > 0 && cellH > 0) rows = Math.min(rows, Math.floor(paneH / cellH));
+        // Same rounding overflow exists horizontally (clips the right edge of
+        // full-width TUI boxes). min() against the math keeps this shrink-only,
+        // so the scrollbar gutter FitAddon already subtracted stays respected.
+        if (paneW > 0 && cellW > 0) cols = Math.min(cols, Math.floor(paneW / cellW));
+      }
+      rows = Math.max(rows, 1);
+      cols = Math.max(cols, 2);
+      if (entry.term.cols !== cols || entry.term.rows !== rows) {
+        entry.term.resize(cols, rows);
+      }
       invoke("pty_resize", {
         id: ptyId,
         rows: entry.term.rows,
