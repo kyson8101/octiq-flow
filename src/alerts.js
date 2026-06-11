@@ -190,7 +190,13 @@ listen("pty-attention", (event) => {
   const { id, title, body } = event.payload || {};
   if (!id) return;
   badgeTab(id);
-  osNotify(title, body); // OS-level banner + sound
+  // Only push an OS notification when the app window is NOT focused — if the
+  // user is already in OctiqFlow, the in-app banner + tab badge are enough and a
+  // desktop banner would just be noise. document.hasFocus() is true whenever the
+  // window has focus, even if the user is looking at a different tab/mode (the
+  // banner covers that case). When backgrounded, the OS banner + sound is how an
+  // agent that needs input reaches the user.
+  if (!document.hasFocus()) osNotify(title, body);
 });
 
 // Rebuild the banner whenever the attention set changes — from a new alert, a
