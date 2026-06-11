@@ -65,6 +65,8 @@
   --danger: #de8d85;
   --danger-bg: rgba(222, 141, 133, 0.18);
   --danger-tint: rgba(222, 141, 133, 0.12);
+  --diff-add-bg: rgba(34, 122, 67, 0.42);
+  --diff-del-bg: rgba(153, 48, 48, 0.4);
   --danger-soft-border: rgba(222, 141, 133, 0.4);
   --warn: #d4b06a;
   --warn-bright: #e3c78a;
@@ -1444,8 +1446,14 @@ body {
 .tg-pane {
   display: none;
   position: absolute;
-  inset: 0;
-  padding: 10px;
+  /*
+   * FitAddon measures the xterm element's parent border box. Parent padding is
+   * not deducted, so padding this pane made xterm allocate rows for 20px more
+   * height than it could actually paint and clipped the bottom prompt. Use the
+   * absolute inset for the same visual gutter so the measured box is the real
+   * drawable area.
+   */
+  inset: 10px;
   /* Clip the terminal to the pane. xterm's grid is a hard rectangle; without
      this its square corners can sit over the surrounding border, which read as
      the terminal being "stamped on". The leftover fit-gap blends in because the
@@ -2836,13 +2844,13 @@ body {
 }
 
 .gd-row-add {
-  background: var(--ok-tint);
+  background: var(--diff-add-bg);
 }
 .gd-row-add .gd-sign {
   color: var(--ok);
 }
 .gd-row-del {
-  background: var(--danger-tint);
+  background: var(--diff-del-bg);
 }
 .gd-row-del .gd-sign {
   color: var(--danger);
@@ -2884,10 +2892,10 @@ body {
   overflow-x: auto;
 }
 .gd-side-add {
-  background: var(--ok-tint);
+  background: var(--diff-add-bg);
 }
 .gd-side-del {
-  background: var(--danger-tint);
+  background: var(--diff-del-bg);
 }
 .gd-side-empty {
   background: var(--bg-sunken);
