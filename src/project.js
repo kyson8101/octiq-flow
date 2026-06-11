@@ -23,7 +23,31 @@ const { listen } = window.__TAURI__.event;
 
 const mountEl = document.querySelector("#project-terminals");
 
-// projectId -> { group, primaryPath, startup, terminalCommand, restoring, dirty:Set<ptyId>, saveTimer }
+/** Single-quote a string for a POSIX login shell (the shell every project
+ *  terminal runs). Inside single quotes everything is literal, so the only
+ *  escape needed is for an embedded single quote: end the quote, add an escaped
+ *  quote, reopen. This makes a folder path with spaces or shell metacharacters
+ *  safe to splice into a start command — it can never break out of its argument
+ *  and run extra shell commands. */
+function shQuote(s) {
+  return "'" + String(s).replace(/'/g, "'\\''") + "'";
+}
+
+/** The ` --add-dir '<path>'` suffix that gives Claude tool access to a project's
+ *  other folders. A project can group several folders; the terminal starts in
+ *  one of them (`cwd`), which Claude already sees, so that folder is left out and
+ *  every other project folder is added with its own `--add-dir`. Each path is
+ *  single-quoted so a folder name with spaces or shell metacharacters cannot
+ *  break out of its argument. Returns "" when the project has no other folder.
+ *  Claude-only — Codex takes no such flag, so callers add it only for Claude. */
+function claudeAddDirSuffix(rec, cwd) {
+  const extras = (rec.paths || []).filter((p) => (p || "").trim() && p !== cwd);
+  return extras.length
+    ? " " + extras.map((p) => `--add-dir ${shQuote(p)}`).join(" ")
+    : "";
+}
+
+// projectId -> { group, primaryPath, paths, startup, terminalCommand, restoring, dirty:Set<ptyId>, saveTimer }
 const projects = new Map();
 // Project ids whose startup terminals / restore have already opened this
 // session, so neither runs twice — re-opening an emptied project later gives
@@ -47,8 +71,10 @@ const LAYOUT_SAVE_MS = 500;
 // How often to flush scrollback of terminals that produced output.
 const SCROLLBACK_FLUSH_MS = 5000;
 
-/** Get or create the terminal group for a project id. */
-function groupFor(id, primaryPath, startup, terminalCommand) {
+/** Get or create the terminal group for a project id. `paths` is every folder
+ *  the project groups (primary first), used to give a launched agent tool access
+ *  to the whole project. */
+function groupFor(id, primaryPath, paths, startup, terminalCommand) {
   let rec = projects.get(id);
   if (!rec) {
     const group = createTerminalGroup(mountEl, id, { quickSpawn: true });
@@ -59,6 +85,7 @@ function groupFor(id, primaryPath, startup, terminalCommand) {
     rec = {
       group,
       primaryPath,
+      paths,
       startup,
       terminalCommand,
       restoring: false,
@@ -71,9 +98,10 @@ function groupFor(id, primaryPath, startup, terminalCommand) {
     group.onOutput = (ptyId) => rec.dirty.add(ptyId);
     projects.set(id, rec);
   } else {
-    // Primary path / startup layout / terminal command may have changed since
-    // last time; keep fresh so the next spawn uses the latest values.
+    // Primary path / all paths / startup layout / terminal command may have
+    // changed since last time; keep fresh so the next spawn uses the latest.
     rec.primaryPath = primaryPath;
+    rec.paths = paths;
     rec.startup = startup;
     rec.terminalCommand = terminalCommand;
   }
@@ -97,16 +125,20 @@ async function spawnInProject(id) {
 /** Open a new terminal in a project and immediately launch an AI agent in it
  *  (Claude Code or Codex), cd'd to the project's primary path. The binary is
  *  picked from a fixed allowlist — the agent name from the UI is only used to
- *  choose between two literal strings, never interpolated — so the start command
- *  can never inject extra shell commands. The tab is titled after the agent. */
+ *  choose between two literal strings, never interpolated. For Claude, the
+ *  project's other folders are appended with `--add-dir` (see claudeAddDirSuffix)
+ *  so Claude has tool access across the whole project. The tab is titled after
+ *  the agent. */
 async function spawnAgentInProject(id, agent) {
   const rec = projects.get(id);
   if (!rec) return;
   const bin = agent === "codex" ? "codex" : "claude";
   const title = bin === "codex" ? "Codex" : "Claude";
+  const startCmd =
+    bin === "claude" ? bin + claudeAddDirSuffix(rec, rec.primaryPath) : bin;
   await rec.group.newTerminal({
     cwd: rec.primaryPath,
-    startCmd: bin,
+    startCmd,
     title,
   });
 }
@@ -161,13 +193,21 @@ async function restoreProject(id, saved) {
       } catch {
         startCmd = null;
       }
+      // The terminal reopens in its saved cwd (the folder the agent ran in).
+      const cwd = t.cwd || rec.primaryPath;
+      // A resumed Claude tab should get the same whole-project tool access as a
+      // fresh launch: append --add-dir for the project's other folders. Only for
+      // a Claude resume (`claude …`) — a Codex resume takes no such flag.
+      if (startCmd && /^claude(\s|$)/.test(startCmd)) {
+        startCmd += claudeAddDirSuffix(rec, cwd);
+      }
       await rec.group.newTerminal({
         persistKey: t.persistKey,
         title: t.title || undefined,
         // Carry the manual-rename flag so a hand-named tab is not re-titled by
         // the auto-rename poller after a restart.
         titleManual: !!t.titleManual,
-        cwd: t.cwd || rec.primaryPath,
+        cwd,
         startCmd,
         restoreScrollback,
       });
@@ -186,14 +226,15 @@ async function onProjectSelected(detail) {
     return;
   }
 
-  const { id, primaryPath, startup, terminalCommand } = detail;
+  const { id, primaryPath, paths, startup, terminalCommand } = detail;
   if (id === currentId) {
     // Re-selecting the same project (e.g. a refresh after an edit): keep the
-    // latest primary path / startup / terminal command on the live record so
-    // the next spawned terminal uses them, then keep it shown + refit.
+    // latest primary path / all paths / startup / terminal command on the live
+    // record so the next spawned terminal uses them, then keep it shown + refit.
     const rec = projects.get(id);
     if (rec) {
       rec.primaryPath = primaryPath;
+      rec.paths = paths;
       rec.startup = startup;
       rec.terminalCommand = terminalCommand;
       rec.group.show();
@@ -204,7 +245,7 @@ async function onProjectSelected(detail) {
   // Hide the previous project's group (terminals stay alive).
   if (currentId) projects.get(currentId)?.group.hide();
 
-  const rec = groupFor(id, primaryPath, startup, terminalCommand);
+  const rec = groupFor(id, primaryPath, paths, startup, terminalCommand);
   currentId = id;
 
   // Show first so the panes have a real size before we fit/spawn.
