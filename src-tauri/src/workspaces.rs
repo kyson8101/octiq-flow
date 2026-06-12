@@ -82,6 +82,13 @@ pub struct Workspace {
     /// every project shows a distinct bar even before the user picks one.
     #[serde(default)]
     pub color: String,
+    /// True when the user has set this project "off work": it is moved to the
+    /// Shelved section of the sidebar and hidden from the active project list
+    /// until the user brings it back. Fully reversible — no data (paths,
+    /// startup, terminals) is removed. Defaults to false so a store written
+    /// before this field existed loads with every project active.
+    #[serde(default)]
+    pub shelved: bool,
 }
 
 /// The full on-disk shape. Wrapped in a struct so the file format can grow
@@ -175,6 +182,7 @@ pub fn add_workspace(
         terminal_command: String::new(),
         description: String::new(),
         color: String::new(),
+        shelved: false,
     };
     data.workspaces.push(workspace.clone());
     state.save(&data)?;
@@ -489,6 +497,26 @@ pub fn set_color(state: State<WorkspaceState>, id: String, color: String) -> Res
         .find(|w| w.id == id)
         .ok_or("workspace not found")?;
     ws.color = color;
+    state.save(&data)
+}
+
+/// Set or clear a workspace's "shelved" (off-work) flag. A shelved workspace is
+/// moved to the Shelved section of the sidebar and hidden from the active project
+/// list until the user brings it back. The workspace and all of its data are kept
+/// untouched — this is a temporary, fully reversible toggle, not a delete.
+#[tauri::command]
+pub fn set_workspace_shelved(
+    state: State<WorkspaceState>,
+    id: String,
+    shelved: bool,
+) -> Result<(), String> {
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.shelved = shelved;
     state.save(&data)
 }
 

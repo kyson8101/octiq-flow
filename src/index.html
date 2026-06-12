@@ -85,6 +85,19 @@
 
         <ul id="workspace-list" class="ws-list"></ul>
         <p id="workspace-empty" class="ws-empty">No projects yet. Press + to add one.</p>
+
+        <!-- Shelved ("off work") projects. Sits at the bottom of the sidebar.
+             Right-click a project above and choose "Shelve", or drag it here, to
+             move it down here. Double-click a shelved project (or drag it back up)
+             to return it to the active list. Always shown so it stays a drop
+             target even when empty. workspaces.js fills #workspace-shelf. -->
+        <section id="workspace-shelf-section" class="ws-shelf-section">
+          <div class="sidebar-head ws-shelf-head">
+            <span class="sidebar-title">Shelved</span>
+          </div>
+          <ul id="workspace-shelf" class="ws-list ws-shelf-list"></ul>
+          <p id="workspace-shelf-empty" class="ws-shelf-empty">Drag a project here, or right-click one and pick “Shelve”, to set it aside.</p>
+        </section>
       </aside>
 
       <!-- Center: per-project terminals on top, command drawer at the bottom -->

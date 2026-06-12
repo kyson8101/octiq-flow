@@ -134,6 +134,7 @@ pub fn run() {
             workspaces::set_terminal_command,
             workspaces::set_description,
             workspaces::set_color,
+            workspaces::set_workspace_shelved,
             workspaces::pick_folder,
             terminal_layout::save_terminal_layout,
             terminal_layout::load_terminal_layouts,

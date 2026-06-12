@@ -15,6 +15,9 @@ const { invoke } = window.__TAURI__.core;
 // --- DOM handles -----------------------------------------------------------
 const listEl = document.querySelector("#workspace-list");
 const emptyEl = document.querySelector("#workspace-empty");
+const shelfListEl = document.querySelector("#workspace-shelf");
+const shelfEmptyEl = document.querySelector("#workspace-shelf-empty");
+const shelfSectionEl = document.querySelector("#workspace-shelf-section");
 const newBtn = document.querySelector("#new-workspace");
 const newModalEl = document.querySelector("#new-modal");
 const newModalFolderEl = document.querySelector("#new-modal-folder");
@@ -148,10 +151,15 @@ function emitProjectSelected() {
  *  command — otherwise a later project switch re-emits stale actions. */
 export async function refresh() {
   workspaces = await invoke("list_workspaces");
-  if (!selectedId || !selected()) {
-    selectedId = workspaces.length > 0 ? workspaces[0].id : null;
+  // The selection only ever points at an active (non-shelved) project. If the
+  // current selection is gone or has just been shelved, fall back to the first
+  // active project (or nothing when every project is shelved / there are none).
+  const active = workspaces.filter((w) => !w.shelved);
+  if (!selectedId || !active.some((w) => w.id === selectedId)) {
+    selectedId = active.length > 0 ? active[0].id : null;
   }
   renderList();
+  renderShelf();
   renderFooter();
   if (modalOpen && selected()) {
     renderModal();
@@ -164,9 +172,18 @@ export async function refresh() {
 // --- Left list -------------------------------------------------------------
 function renderList() {
   listEl.innerHTML = "";
-  emptyEl.classList.toggle("hidden", workspaces.length > 0);
 
-  for (const ws of workspaces) {
+  // Only active (non-shelved) projects live in the top list; shelved ones are
+  // rendered separately by renderShelf().
+  const active = workspaces.filter((w) => !w.shelved);
+  emptyEl.classList.toggle("hidden", active.length > 0);
+  // The hint differs: "no projects at all" vs "all of them are shelved".
+  emptyEl.textContent =
+    workspaces.length === 0
+      ? "No projects yet. Press + to add one."
+      : "All projects are shelved. Bring one back below.";
+
+  for (const ws of active) {
     const li = document.createElement("li");
     li.className = "ws-item" + (ws.id === selectedId ? " selected" : "");
 
@@ -311,6 +328,81 @@ function syncGitWatcher(paths) {
   });
 }
 
+// --- Shelf ("off work") section --------------------------------------------
+// Shelved projects sit in their own list at the bottom of the sidebar. A
+// shelved project is fully intact (paths, startup, live terminals) — shelving
+// only hides it from the active list. Bring it back by double-click, by dragging
+// it onto the project list, or via its right-click menu.
+
+/** True when the project with this id is currently shelved. */
+function isShelved(id) {
+  return !!workspaces.find((w) => w.id === id)?.shelved;
+}
+
+/** Render the bottom Shelved list from the shelved projects. The section stays
+ *  visible even when empty so it is always a valid drop target; the empty hint
+ *  shows in that case instead of any rows. */
+function renderShelf() {
+  const shelved = workspaces.filter((w) => w.shelved);
+  shelfListEl.innerHTML = "";
+  shelfEmptyEl.classList.toggle("hidden", shelved.length > 0);
+
+  for (const ws of shelved) {
+    const li = document.createElement("li");
+    li.className = "ws-item ws-shelf-item";
+    li.title = "Double-click to bring back";
+
+    const bar = document.createElement("span");
+    bar.className = "ws-item-bar";
+    bar.style.setProperty("--ws-bar", barColor(ws));
+
+    const body = document.createElement("div");
+    body.className = "ws-item-body";
+    const name = document.createElement("span");
+    name.className = "ws-item-name";
+    name.textContent = ws.name;
+    body.append(name);
+
+    const total = (ws.primary_path ? 1 : 0) + ws.paths.length;
+    const count = document.createElement("span");
+    count.className = "ws-item-count";
+    count.textContent = total === 1 ? "1 path" : `${total} paths`;
+
+    li.append(bar, body, count);
+    li.dataset.id = ws.id;
+    li.draggable = true;
+    li.addEventListener("dblclick", () => setShelved(ws.id, false));
+    li.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openShelfMenu(e.clientX, e.clientY, ws, name);
+    });
+    wireShelfDrag(li);
+    shelfListEl.append(li);
+  }
+}
+
+/** Right-click menu for a shelved project: bring it back, rename, or delete. */
+function openShelfMenu(x, y, ws, nameEl) {
+  openCtxMenu(x, y, [
+    { label: "Bring back", onClick: () => setShelved(ws.id, false) },
+    { label: "Rename", onClick: () => startInlineRename(ws, nameEl) },
+    {
+      label: "Delete",
+      danger: true,
+      confirm: "Click again to delete",
+      onClick: () => deleteWorkspace(ws.id),
+    },
+  ]);
+}
+
+/** Set or clear a project's shelved flag, persist, and re-render. Bringing a
+ *  project back also selects it, so it becomes the active project right away. */
+async function setShelved(id, shelved) {
+  await invoke("set_workspace_shelved", { id, shelved });
+  await refresh();
+  if (!shelved) selectWorkspace(id);
+}
+
 // --- Drag-and-drop reorder of the project list -----------------------------
 let dragId = null;
 
@@ -318,6 +410,12 @@ function clearDropMarkers() {
   for (const el of listEl.querySelectorAll(".ws-item")) {
     el.classList.remove("drop-before", "drop-after");
   }
+}
+
+/** Remove the "a drop here will act" highlight from the list and the shelf. */
+function clearDropHighlights() {
+  listEl.classList.remove("drop-target");
+  shelfSectionEl.classList.remove("drop-target");
 }
 
 /** True when the cursor is in the top half of the row (drop before it). */
@@ -340,6 +438,7 @@ function wireDrag(li) {
   li.addEventListener("dragend", () => {
     li.classList.remove("dragging");
     clearDropMarkers();
+    clearDropHighlights();
     // WebKit may dispatch dragend before the target's drop handler. Keep the
     // id alive through the current event turn so that ordering cannot turn a
     // visually valid drop into a no-op.
@@ -351,6 +450,9 @@ function wireDrag(li) {
 
   li.addEventListener("dragover", (e) => {
     if (!dragId || li.dataset.id === dragId) return;
+    // A shelved project dragged onto a row is a "bring back", not a reorder:
+    // ignore it here and let the list-level handler unshelve it.
+    if (isShelved(dragId)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     clearDropMarkers();
@@ -362,6 +464,8 @@ function wireDrag(li) {
     // source-side drag state before dispatching drop.
     const movedId = e.dataTransfer?.getData("text/plain") || dragId;
     if (!movedId || li.dataset.id === movedId) return;
+    // Let the list-level unshelve handler deal with a shelved source.
+    if (isShelved(movedId)) return;
     e.preventDefault();
     const before = isBefore(li, e.clientY);
     clearDropMarkers();
@@ -369,6 +473,74 @@ function wireDrag(li) {
     reorderProject(movedId, li.dataset.id, before);
   });
 }
+
+/** Drag wiring for a shelved row: it only needs to start a drag (to be brought
+ *  back onto the project list) — shelf rows do not reorder among themselves. */
+function wireShelfDrag(li) {
+  li.addEventListener("dragstart", (e) => {
+    dragId = li.dataset.id;
+    li.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try {
+      e.dataTransfer.setData("text/plain", dragId);
+    } catch (_) {}
+  });
+
+  li.addEventListener("dragend", () => {
+    li.classList.remove("dragging");
+    clearDropMarkers();
+    clearDropHighlights();
+    const endedId = dragId;
+    setTimeout(() => {
+      if (dragId === endedId) dragId = null;
+    }, 0);
+  });
+}
+
+// The shelf section is a drop target: drop an active project on it to shelve it.
+// A shelved source dropped back here is a no-op (it is already shelved).
+shelfSectionEl.addEventListener("dragover", (e) => {
+  if (!dragId || isShelved(dragId)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  clearDropMarkers(); // drop the row insert-markers left from the list above
+  shelfSectionEl.classList.add("drop-target");
+});
+shelfSectionEl.addEventListener("dragleave", (e) => {
+  // Only clear when the cursor truly left the section, not on inner-child moves.
+  if (!shelfSectionEl.contains(e.relatedTarget)) {
+    shelfSectionEl.classList.remove("drop-target");
+  }
+});
+shelfSectionEl.addEventListener("drop", (e) => {
+  const movedId = e.dataTransfer?.getData("text/plain") || dragId;
+  if (!movedId || isShelved(movedId)) return;
+  e.preventDefault();
+  shelfSectionEl.classList.remove("drop-target");
+  dragId = null;
+  setShelved(movedId, true);
+});
+
+// The project list is a drop target for the reverse move: drop a shelved project
+// anywhere on it (not just on a row) to bring it back. Active sources are handled
+// by the per-row reorder handlers above, so this only acts on a shelved source.
+listEl.addEventListener("dragover", (e) => {
+  if (!dragId || !isShelved(dragId)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  listEl.classList.add("drop-target");
+});
+listEl.addEventListener("dragleave", (e) => {
+  if (!listEl.contains(e.relatedTarget)) listEl.classList.remove("drop-target");
+});
+listEl.addEventListener("drop", (e) => {
+  const movedId = e.dataTransfer?.getData("text/plain") || dragId;
+  if (!movedId || !isShelved(movedId)) return;
+  e.preventDefault();
+  listEl.classList.remove("drop-target");
+  dragId = null;
+  setShelved(movedId, false);
+});
 
 /** Move `movedId` to just before/after `targetId`, persist, and re-render. */
 async function reorderProject(movedId, targetId, before) {
@@ -433,6 +605,7 @@ function openProjectMenu(x, y, ws, nameEl) {
         openModal();
       },
     },
+    { label: "Shelve", onClick: () => setShelved(ws.id, true) },
     {
       label: "Delete",
       danger: true,
