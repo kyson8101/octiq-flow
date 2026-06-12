@@ -340,7 +340,13 @@ function wireDrag(li) {
   li.addEventListener("dragend", () => {
     li.classList.remove("dragging");
     clearDropMarkers();
-    dragId = null;
+    // WebKit may dispatch dragend before the target's drop handler. Keep the
+    // id alive through the current event turn so that ordering cannot turn a
+    // visually valid drop into a no-op.
+    const endedId = dragId;
+    setTimeout(() => {
+      if (dragId === endedId) dragId = null;
+    }, 0);
   });
 
   li.addEventListener("dragover", (e) => {
@@ -352,11 +358,14 @@ function wireDrag(li) {
   });
 
   li.addEventListener("drop", (e) => {
-    if (!dragId || li.dataset.id === dragId) return;
+    // Prefer the transfer payload because it survives WebKit clearing the
+    // source-side drag state before dispatching drop.
+    const movedId = e.dataTransfer?.getData("text/plain") || dragId;
+    if (!movedId || li.dataset.id === movedId) return;
     e.preventDefault();
     const before = isBefore(li, e.clientY);
-    const movedId = dragId;
     clearDropMarkers();
+    dragId = null;
     reorderProject(movedId, li.dataset.id, before);
   });
 }
