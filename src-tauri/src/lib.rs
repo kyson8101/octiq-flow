@@ -15,10 +15,12 @@ mod fsbrowse;
 mod git;
 mod git_watch;
 mod pty;
+mod schedules;
 mod terminal_layout;
 mod utilities;
 mod workspaces;
 use pty::PtyManager;
+use schedules::SchedulesState;
 use terminal_layout::TerminalLayoutState;
 use utilities::UtilitiesState;
 use workspaces::WorkspaceState;
@@ -60,6 +62,9 @@ pub fn run() {
             app.manage(PtyManager::default());
             // Utilities template store (labelled agent-launch prompts).
             app.manage(UtilitiesState::load(app.handle()));
+            // Schedule store (daily "cron job" terminal launches). The frontend
+            // checks the clock and fires; the backend just keeps the saved jobs.
+            app.manage(SchedulesState::load(app.handle()));
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load(app.handle()));
@@ -106,6 +111,12 @@ pub fn run() {
             utilities::add_template,
             utilities::update_template,
             utilities::delete_template,
+            schedules::list_schedules,
+            schedules::add_schedule,
+            schedules::update_schedule,
+            schedules::delete_schedule,
+            schedules::set_schedule_enabled,
+            schedules::mark_schedule_fired,
             workspaces::list_workspaces,
             workspaces::add_workspace,
             workspaces::set_primary_path,

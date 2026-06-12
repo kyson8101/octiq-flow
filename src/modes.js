@@ -6,7 +6,7 @@
 
 // The modes, in bar order. Each maps to a `#view-<mode>` section in index.html.
 // "settings" has no tab — it is opened by the gear button on the right.
-const MODES = ["project", "chat", "utilities", "dashboard", "settings"];
+const MODES = ["project", "chat", "utilities", "scheduler", "dashboard", "settings"];
 
 // Special views: full-screen pages opened programmatically (no mode tab, never
 // persisted/restored). "editproject" is opened from a project's right-click

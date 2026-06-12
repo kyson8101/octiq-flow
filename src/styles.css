@@ -1749,6 +1749,61 @@ body {
 }
 
 /* ===================================================================== */
+/* === Scheduler mode ================================================== */
+/* Reuses the Utilities list/form/terminal classes; only the bits unique to */
+/* a daily job (the time tag, the native time picker, the enabled toggle,   */
+/* the disabled-row dim, and the top note) are styled here.                 */
+/* ===================================================================== */
+
+/* The "runs only while the app is open" note above the job list. */
+.sched-note {
+  margin: 0 8px 8px;
+}
+
+/* The time badge on a job row — accent-tinted so the run time reads first. */
+.sched-time-tag {
+  color: var(--accent);
+  border-color: var(--accent-soft-border);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* The "off" badge and the dimmed look of a disabled job row. */
+.sched-off-tag {
+  color: var(--fg-3);
+}
+
+.sched-row-off {
+  opacity: 0.55;
+}
+
+/* Native time picker: keep it dark (color-scheme drives the spinner/clock UI)
+   and sized like a field rather than stretched full width. */
+.sched-time-input {
+  width: 140px;
+  margin-bottom: 6px;
+  color-scheme: dark;
+}
+
+/* Enabled checkbox + label as one aligned row in the form. */
+.sched-enabled-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  font-size: 13px;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+
+.sched-enabled-row input {
+  accent-color: var(--accent);
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+}
+
+/* ===================================================================== */
 /* === Card 10 — Dashboard mode ======================================== */
 /* ===================================================================== */
 /* ---- Dashboard mode (card 10): read-only widget block grid ----------- */

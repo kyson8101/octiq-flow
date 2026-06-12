@@ -32,6 +32,7 @@
     <script type="module" src="/modes.js" defer></script>
     <script type="module" src="/chat.js" defer></script>
     <script type="module" src="/utilities.js" defer></script>
+    <script type="module" src="/scheduler.js" defer></script>
     <script type="module" src="/dashboard.js" defer></script>
     <script type="module" src="/browser.js" defer></script>
     <script type="module" src="/gitdiff.js" defer></script>
@@ -61,6 +62,7 @@
           <button class="modebtn modebtn-active" data-mode="project">Project</button>
           <button class="modebtn" data-mode="chat">Chat</button>
           <button class="modebtn" data-mode="utilities">Utilities</button>
+          <button class="modebtn" data-mode="scheduler">Scheduler</button>
           <button class="modebtn" data-mode="dashboard">Dashboard</button>
         </div>
         <button class="modebtn modebtn-gear" data-mode="settings" data-tip="Settings">
@@ -311,6 +313,64 @@
   </div>
 
   <div id="util-terminals" class="util-terminals"></div>
+</div>
+      </section>
+
+      <!-- Scheduler mode: daily "cron job" terminal launches. A timer in
+           scheduler.js checks the clock and, at a job's time, opens a terminal,
+           runs its command, and optionally types one line into it. -->
+      <section id="view-scheduler" class="view hidden">
+        <div class="util-layout">
+  <div class="util-panel">
+    <div class="util-head">
+      <span class="util-head-title">Scheduled jobs</span>
+      <button id="sched-add" class="icon-btn" data-tip="New scheduled job">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </div>
+
+    <p class="util-hint sched-note">Jobs run only while OctiqFlow is open. Each enabled job runs once a day at its set time and opens a terminal here.</p>
+
+    <ul id="sched-list" class="util-list"></ul>
+    <div id="sched-empty" class="util-empty hidden">No scheduled jobs yet. Create one to auto-run a command at a set time.</div>
+
+    <div id="sched-form" class="util-form hidden">
+      <div id="sched-form-title" class="util-form-title">New scheduled job</div>
+
+      <label class="modal-label" for="sched-label">Label</label>
+      <input id="sched-label" class="inject-input" type="text" placeholder="e.g. Morning Claude" />
+
+      <label class="modal-label" for="sched-command">Command</label>
+      <input id="sched-command" class="inject-input" type="text" placeholder="e.g. claude" />
+      <div class="util-hint">The command run when the terminal opens.</div>
+
+      <label class="modal-label" for="sched-input">Then type (optional)</label>
+      <input id="sched-input" class="inject-input" type="text" placeholder="e.g. hi" />
+      <div class="util-hint">Typed into the terminal a few seconds after it starts, then Enter. Leave empty to type nothing.</div>
+
+      <label class="modal-label" for="sched-time">Time (runs daily)</label>
+      <input id="sched-time" class="inject-input sched-time-input" type="time" value="05:00" />
+
+      <label class="modal-label">Working folder (optional)</label>
+      <div id="sched-cwd" class="util-cwd-row">
+        <span id="sched-cwd-path" class="util-cwd-path unset">Not set — opens in the default folder</span>
+        <button id="sched-cwd-pick" class="btn btn-sm">Pick folder</button>
+        <button id="sched-cwd-clear" class="btn btn-sm util-danger hidden">Clear</button>
+      </div>
+
+      <label class="sched-enabled-row">
+        <input id="sched-enabled" type="checkbox" checked />
+        <span>Enabled</span>
+      </label>
+
+      <div class="util-form-foot">
+        <button id="sched-form-cancel" class="btn btn-sm">Cancel</button>
+        <button id="sched-form-save" class="btn btn-sm btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="sched-terminals" class="util-terminals"></div>
 </div>
       </section>
 
