@@ -1,10 +1,12 @@
 // Center file browser (right-click "Files" / "Documentation"). Shows the
-// contents of one folder inside #project-browser, sitting next to the project
-// terminals in <main class="center">. fs-only: it lists folders/files with the
-// `list_dir` backend command. Clicking a file splits the body into two panes
-// and shows a text preview (via the `read_file_preview` backend command) in the
-// right pane; binary files instead offer "Open externally" (the opener plugin).
-// It never touches a PTY.
+// contents of one folder as an EXPANDABLE TREE inside #project-browser, sitting
+// next to the project terminals in <main class="center">. fs-only: it lists
+// folders/files with the `list_dir` backend command. A folder row expands in
+// place (lazily listing its children the first time) so a folder's files are
+// visible without leaving the parent. Clicking a file splits the body into two
+// panes and shows a text preview (via the `read_file_preview` backend command)
+// in the right pane; binary files instead offer "Open externally" (the opener
+// plugin). It never touches a PTY.
 //
 // How it is driven:
 //   * workspaces.js dispatches `project-browse` { id, kind, root } when the user
@@ -21,7 +23,7 @@ const panelEl = document.querySelector("#project-browser");
 const headPathEl = document.querySelector("#pb-path");
 const bodyEl = document.querySelector(".pb-body");
 const listEl = document.querySelector("#pb-list");
-const upBtn = document.querySelector("#pb-up");
+const collapseBtn = document.querySelector("#pb-collapse");
 const backBtn = document.querySelector("#pb-back");
 const previewEl = document.querySelector("#pb-preview");
 const previewNameEl = document.querySelector("#pb-preview-name");
@@ -29,11 +31,15 @@ const previewBodyEl = document.querySelector("#pb-preview-body");
 const previewOpenBtn = document.querySelector("#pb-preview-open");
 const previewCloseBtn = document.querySelector("#pb-preview-close");
 
+// Each tree level indents its rows by this many pixels past the level above.
+const INDENT_STEP = 14;
+// The list row's own left padding at depth 0 (matches the .pb-row CSS padding).
+const BASE_INDENT = 10;
+
 // --- State -----------------------------------------------------------------
-// The chosen root for the current browse session. "Up" never goes above it.
+// The chosen root for the current browse session. The tree is rooted here and
+// never lists above it.
 let rootDir = "";
-// The folder currently shown. Always === rootDir or a descendant of it.
-let currentDir = "";
 // The project whose folder we are browsing, so a switch to a DIFFERENT project
 // closes the browser.
 let browsingProjectId = null;
@@ -43,37 +49,17 @@ let previewPath = null;
 // The list row whose file is previewed, so we can clear its highlight.
 let selectedRow = null;
 
-/** Last path segment of an absolute path, used as a short label. */
-function baseName(path) {
-  const trimmed = path.replace(/[/\\]+$/, "");
-  const parts = trimmed.split(/[/\\]/);
-  return parts[parts.length - 1] || path;
-}
-
-/** The parent of an absolute path, or "" when there is no parent. */
-function parentOf(path) {
-  const trimmed = path.replace(/[/\\]+$/, "");
-  const i = trimmed.lastIndexOf("/");
-  if (i <= 0) return ""; // root "/" or no separator: no usable parent
-  return trimmed.slice(0, i);
-}
-
-/** True when `path` is the same as, or inside, `rootDir`. Keeps "Up" from going
- *  above the chosen root. Compares with a trailing slash so "/a/bc" is not
- *  treated as inside "/a/b". */
-function withinRoot(path) {
-  if (!rootDir) return false;
-  if (path === rootDir) return true;
-  const r = rootDir.replace(/[/\\]+$/, "") + "/";
-  return path.startsWith(r);
-}
-
 /** Plain text -> safe text node. Keeps user folder/file names out of innerHTML. */
 function textEl(tag, className, text) {
   const el = document.createElement(tag);
   if (className) el.className = className;
   if (text != null) el.textContent = text;
   return el;
+}
+
+/** Left padding for a row at `depth`, so deeper rows sit further right. */
+function indentFor(depth) {
+  return `${BASE_INDENT + depth * INDENT_STEP}px`;
 }
 
 // --- Show / hide the panel --------------------------------------------------
@@ -90,7 +76,6 @@ function backToTerminals() {
   panelEl.classList.add("hidden");
   if (termsEl) termsEl.classList.remove("hidden");
   rootDir = "";
-  currentDir = "";
   browsingProjectId = null;
 }
 
@@ -100,71 +85,96 @@ function showMessage(text) {
   listEl.replaceChildren(textEl("div", "pb-message", text));
 }
 
-/** Update the header: the current path text and whether "Up" is usable. */
+/** Update the header: show the root path; enable "collapse all" when rooted. */
 function renderHead() {
-  headPathEl.textContent = currentDir || "";
-  headPathEl.title = currentDir || "";
-  // "Up" is disabled at the root (we never browse above it).
-  const canGoUp = currentDir && currentDir !== rootDir && withinRoot(parentOf(currentDir));
-  upBtn.disabled = !canGoUp;
+  headPathEl.textContent = rootDir || "";
+  headPathEl.title = rootDir || "";
+  collapseBtn.disabled = !rootDir;
 }
 
-/** Build one clickable row for a folder or file. */
-function entryRow(entry) {
+/** An inline status row (loading / empty / error) indented to a tree depth. */
+function treeMessage(text, depth) {
+  const el = textEl("div", "pb-tree-msg", text);
+  el.style.paddingLeft = indentFor(depth);
+  return el;
+}
+
+/** Build one tree item (a folder or file) at `depth`. A folder gets a disclosure
+ *  twisty and a (lazily filled) children container; a file previews on click. */
+function treeItem(entry, depth) {
+  const item = textEl("div", "pb-tree-item");
+
   const row = document.createElement("button");
   row.type = "button";
-  row.className = "pb-row" + (entry.is_dir ? " pb-row-dir" : " pb-row-file");
+  row.className = "pb-row " + (entry.is_dir ? "pb-row-dir" : "pb-row-file");
+  row.style.paddingLeft = indentFor(depth);
 
-  // A folder/file affordance glyph, then the name.
+  // Disclosure twisty (folders only). Files keep an invisible spacer so their
+  // name lines up with sibling folders' names.
+  const twisty = textEl(
+    "span",
+    "pb-twisty" + (entry.is_dir ? "" : " pb-twisty-empty"),
+    entry.is_dir ? "▸" : "",
+  );
+  row.append(twisty);
+
   row.append(textEl("span", "pb-icon", entry.is_dir ? "📁" : "📄"));
   const nameEl = textEl("span", "pb-name", entry.name);
   nameEl.title = entry.path;
   row.append(nameEl);
+  item.append(row);
 
-  row.addEventListener("click", () => {
-    if (entry.is_dir) {
-      navigateTo(entry.path);
-    } else {
-      previewFile(entry.path, entry.name, row);
-    }
-  });
-  return row;
+  if (entry.is_dir) {
+    const children = textEl("div", "pb-children");
+    children.hidden = true;
+    item.append(children);
+
+    // Lazy: list the folder the first time it opens, then just hide/show.
+    let loaded = false;
+    row.addEventListener("click", async () => {
+      const open = item.classList.toggle("expanded");
+      children.hidden = !open;
+      if (open && !loaded) {
+        loaded = true;
+        await loadChildren(entry.path, children, depth + 1);
+      }
+    });
+  } else {
+    row.addEventListener("click", () => previewFile(entry.path, entry.name, row));
+  }
+  return item;
 }
 
-// --- Navigate ---------------------------------------------------------------
-/** List `dir` via the backend and render the rows. On error, show the message
- *  in-panel. `dir` must be within the chosen root (callers guarantee this). */
-async function navigateTo(dir) {
-  currentDir = dir;
-  renderHead();
-  // The list is about to be rebuilt, so the highlighted row is detached. Drop
-  // the reference; the preview pane (if open) stays as a sticky preview.
-  selectedRow = null;
+/** List `dir` via the backend and render its entries into `container` as tree
+ *  items at `depth`. On error or an empty folder, show an inline message there.
+ *  `dir` is within the chosen root (callers guarantee this). */
+async function loadChildren(dir, container, depth) {
+  container.replaceChildren(treeMessage("Loading…", depth));
 
   let entries;
   try {
     entries = await invoke("list_dir", { path: dir });
   } catch (err) {
     // The backend returns a human string for missing / not-a-dir / permission.
-    showMessage(String(err));
+    container.replaceChildren(treeMessage(String(err), depth));
     return;
   }
 
   if (!entries || entries.length === 0) {
-    showMessage("This folder is empty.");
+    container.replaceChildren(treeMessage("This folder is empty.", depth));
     return;
   }
 
-  const rows = entries.map(entryRow);
-  listEl.replaceChildren(...rows);
+  container.replaceChildren(...entries.map((e) => treeItem(e, depth)));
 }
 
-/** Go to the parent folder, but never above the chosen root. */
-function goUp() {
-  if (!currentDir || currentDir === rootDir) return;
-  const parent = parentOf(currentDir);
-  if (!withinRoot(parent)) return; // would go above the root: ignore
-  navigateTo(parent);
+/** Collapse every expanded folder back to the root (hide their children). */
+function collapseAll() {
+  listEl.querySelectorAll(".pb-tree-item.expanded").forEach((item) => {
+    item.classList.remove("expanded");
+    const children = item.querySelector(":scope > .pb-children");
+    if (children) children.hidden = true;
+  });
 }
 
 // --- Preview pane -----------------------------------------------------------
@@ -293,7 +303,6 @@ function startBrowse(detail) {
   const { id, root } = detail;
   browsingProjectId = id;
   rootDir = (root || "").replace(/[/\\]+$/, "");
-  currentDir = rootDir;
 
   closePreview(); // start each browse session as a single full-width list
   showBrowser();
@@ -303,10 +312,10 @@ function startBrowse(detail) {
     // Documentation with no docs_path set (or Files with no primary_path).
     headPathEl.textContent = "";
     showMessage("No docs folder set for this project.");
-    upBtn.disabled = true;
     return;
   }
-  navigateTo(rootDir);
+  // Root entries fill the list directly at depth 0; folders expand from there.
+  loadChildren(rootDir, listEl, 0);
 }
 
 window.addEventListener("project-browse", (e) => startBrowse(e.detail));
@@ -321,7 +330,7 @@ window.addEventListener("project-selected", (e) => {
   }
 });
 
-upBtn.addEventListener("click", goUp);
+collapseBtn.addEventListener("click", collapseAll);
 backBtn.addEventListener("click", backToTerminals);
 previewCloseBtn.addEventListener("click", closePreview);
 previewOpenBtn.addEventListener("click", () => {

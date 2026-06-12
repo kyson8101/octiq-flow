@@ -2564,6 +2564,43 @@ body {
   color: var(--fg-1);
 }
 
+/* Expandable tree: a folder row discloses its children inline. Each level is
+   indented by the row's own left padding (set per-depth in browser.js); the
+   .pb-children wrapper carries no indent of its own. */
+.pb-tree-item {
+  display: block;
+}
+.pb-children[hidden] {
+  display: none;
+}
+
+/* Disclosure twisty before a folder row's icon. Rotates 90° when expanded.
+   Files reuse the same width via .pb-twisty-empty so their names line up. */
+.pb-twisty {
+  flex: 0 0 auto;
+  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--fg-2);
+  transition: transform 0.12s ease;
+}
+.pb-tree-item.expanded > .pb-row .pb-twisty {
+  transform: rotate(90deg);
+}
+.pb-twisty-empty {
+  visibility: hidden;
+}
+
+/* Inline loading / empty / error line shown inside an expanded folder. */
+.pb-tree-msg {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-2);
+}
+
 .pb-message {
   padding: 24px 14px;
   text-align: center;
