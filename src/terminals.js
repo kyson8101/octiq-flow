@@ -912,7 +912,27 @@ class TerminalGroup {
       rows = Math.max(rows, 1);
       cols = Math.max(cols, 2);
       if (entry.term.cols !== cols || entry.term.rows !== rows) {
+        // A real resize is the only path that force-syncs xterm's viewport
+        // scroll area (its internal _afterResize calls viewport.syncScrollArea).
         entry.term.resize(cols, rows);
+      } else {
+        // Dims unchanged, so xterm's resize path did NOT run — and its viewport
+        // scroll area can be stale. A terminal keeps receiving output while its
+        // pane is display:none (background tab / hidden group). Each hidden write
+        // makes xterm record the pane's offsetHeight as 0 and compute a scroll
+        // area that is one viewport too SHORT, so on re-show the bottom rows sit
+        // past the scrollable height: the view looks scrolled up and the bottom
+        // (e.g. an agent's input box) is unreachable until a window resize forces
+        // a real resize. Re-running fit here finds the same rows/cols, so resize
+        // is skipped and nothing fixes it. Force the same scroll-area resync a
+        // resize would do, so re-showing a tab self-heals. Guarded + best-effort:
+        // the internal shape is stable in the vendored, pinned xterm, and any
+        // miss must never break the terminal.
+        try {
+          entry.term._core?.viewport?.syncScrollArea?.(true);
+        } catch (_) {
+          // Internal API moved/absent — ignore; worst case is the old behaviour.
+        }
       }
       invoke("pty_resize", {
         id: ptyId,
