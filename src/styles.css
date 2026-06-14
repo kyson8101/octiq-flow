@@ -665,6 +665,15 @@ body {
   color: var(--danger);
 }
 
+/* Unpushed-commit count ("↑N"): commits ahead of the remote, not yet pushed.
+   Uses the brand accent so it reads as "outgoing work" and stays distinct from
+   the green/red line counts and the amber attention dot. Theme tokens keep it
+   correct in dark mode. */
+.ws-diff-ahead {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .ws-diff-slash,
 .ws-diff-sep {
   color: var(--fg-2);

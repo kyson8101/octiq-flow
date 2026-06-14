@@ -271,6 +271,29 @@ function fillDiffRow(diffEl, ws) {
 
   diffEl.innerHTML = "";
   let shown = 0;
+
+  // Unpushed commits: sum each repo's `ahead` (commits not pushed to upstream),
+  // de-duped by repo top-level so a project whose folders share one repo is not
+  // counted twice. Shown once for the whole project as "↑N" at the front of the
+  // line — even when the working tree is otherwise clean, so a clean-but-unpushed
+  // project still flags it.
+  const aheadByRepo = new Map();
+  for (const p of paths) {
+    const s = diffByPath.get(p);
+    if (!s || !s.is_repo || !s.ahead) continue;
+    aheadByRepo.set(s.repo_root || p, s.ahead);
+  }
+  let unpushed = 0;
+  for (const n of aheadByRepo.values()) unpushed += n;
+  if (unpushed > 0) {
+    const ahead = document.createElement("span");
+    ahead.className = "ws-diff-ahead";
+    ahead.textContent = `↑${unpushed}`;
+    ahead.title = `${unpushed} commit${unpushed === 1 ? "" : "s"} not pushed`;
+    diffEl.append(ahead);
+    shown++;
+  }
+
   for (const p of paths) {
     const s = diffByPath.get(p);
     if (!s || !s.is_repo || (!s.insertions && !s.deletions)) continue;

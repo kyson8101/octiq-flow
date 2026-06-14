@@ -70,6 +70,10 @@ pub struct ChangedFile {
 pub struct GitStatus {
     /// The folder path this summary is for (echoed back so the UI can match it).
     pub path: String,
+    /// This path's git repo top-level, or empty when not a repo. Two of a
+    /// project's folders inside the same repo share this, so the UI can collapse
+    /// them to one repo (e.g. to avoid counting the same unpushed commits twice).
+    pub repo_root: String,
     /// Current branch name, or empty when not a repo / detached with no name.
     pub branch: String,
     /// Number of changed entries (staged + unstaged + untracked).
@@ -94,6 +98,7 @@ impl GitStatus {
     fn not_repo(path: String) -> Self {
         Self {
             path,
+            repo_root: String::new(),
             branch: String::new(),
             changed: 0,
             insertions: 0,
@@ -564,6 +569,9 @@ fn status_for_path(path: String) -> GitStatus {
         return GitStatus::not_repo(path);
     };
     let mut status = parse_status(path.clone(), &text);
+    // Resolve the repo top-level so the UI can de-dupe a project's folders that
+    // live in the same repo (the porcelain status output does not carry it).
+    status.repo_root = repo_root(&path).unwrap_or_default();
     let (insertions, deletions) = diff_line_counts(&path);
     status.insertions = insertions;
     status.deletions = deletions;
@@ -637,6 +645,7 @@ fn parse_status(path: String, text: &str) -> GitStatus {
 
     GitStatus {
         path,
+        repo_root: String::new(), // filled by status_for_path via repo_root()
         branch,
         changed,
         insertions: 0, // filled by status_for_path via diff_line_counts
