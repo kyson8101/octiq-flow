@@ -19,6 +19,8 @@ const shelfListEl = document.querySelector("#workspace-shelf");
 const shelfEmptyEl = document.querySelector("#workspace-shelf-empty");
 const shelfSectionEl = document.querySelector("#workspace-shelf-section");
 const newBtn = document.querySelector("#new-workspace");
+const sidebarEl = document.querySelector(".sidebar");
+const sidebarToggleBtn = document.querySelector("#sidebar-toggle");
 const newModalEl = document.querySelector("#new-modal");
 const newModalFolderEl = document.querySelector("#new-modal-folder");
 const newModalPickBtn = document.querySelector("#new-modal-pick");
@@ -751,6 +753,28 @@ newBtn.addEventListener("click", () => {
   newModalNameEl.value = "";
   newModalEl.classList.remove("hidden");
   newModalNameEl.focus();
+});
+
+// --- Collapse / expand the project sidebar ---------------------------------
+// Mirrors the right command panel's collapse. State is remembered in
+// localStorage so the sidebar stays collapsed/expanded across restarts.
+const SIDEBAR_COLLAPSE_KEY = "octiq.sidebarCollapsed";
+
+function applySidebarCollapsed(collapsed) {
+  sidebarEl.classList.toggle("collapsed", collapsed);
+  sidebarToggleBtn.setAttribute("aria-expanded", String(!collapsed));
+  sidebarToggleBtn.setAttribute(
+    "data-tip",
+    collapsed ? "Expand projects" : "Collapse projects",
+  );
+}
+
+applySidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === "1");
+
+sidebarToggleBtn.addEventListener("click", () => {
+  const collapsed = !sidebarEl.classList.contains("collapsed");
+  applySidebarCollapsed(collapsed);
+  localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? "1" : "0");
 });
 
 newModalPickBtn.addEventListener("click", async () => {

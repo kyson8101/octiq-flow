@@ -431,6 +431,13 @@ body {
   background: var(--bg-sunken);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+  transition: width 0.15s ease;
+}
+
+/* Collapsed: only the head bar (with the toggle) stays visible. */
+.sidebar.collapsed {
+  width: 44px;
+  overflow: hidden;
 }
 
 .sidebar-head {
@@ -439,6 +446,37 @@ body {
   justify-content: space-between;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+}
+
+/* When collapsed, hide everything but the toggle and centre it. */
+.sidebar.collapsed .sidebar-head {
+  justify-content: center;
+  padding: 10px 6px;
+}
+
+.sidebar.collapsed .sidebar-title,
+.sidebar.collapsed #new-workspace,
+.sidebar.collapsed .ws-list,
+.sidebar.collapsed .ws-empty,
+.sidebar.collapsed .ws-shelf-section {
+  display: none;
+}
+
+/* New + collapse buttons sit together on the right of the head. */
+.sidebar-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Toggle chevrons point left (collapse) and flip when collapsed. */
+.sidebar-toggle svg {
+  display: block;
+  transition: transform 0.15s ease;
+}
+
+.sidebar.collapsed .sidebar-toggle svg {
+  transform: rotate(180deg);
 }
 
 .sidebar-title {
