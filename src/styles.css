@@ -581,6 +581,7 @@ body {
    collapsed rail, where it is the whole row. */
 .ws-item-initial {
   display: none;
+  position: relative; /* anchors the collapsed-rail attention dot */
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -1135,6 +1136,21 @@ body {
   border-radius: 50%;
   background: var(--warn);
   box-shadow: 0 0 0 2px var(--warn-ring);
+}
+
+/* On the collapsed rail the name (and its dot) is hidden, so show the attention
+   dot on the initial-letter avatar instead — a small amber dot at its top-right
+   corner. The 2px ring is the rail background so the dot reads as a cutout. */
+.sidebar.collapsed .ws-item-attention .ws-item-initial::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 2px var(--bg-0);
 }
 
 /* Settings gear: a mode button pushed to the right of the mode bar. It reuses

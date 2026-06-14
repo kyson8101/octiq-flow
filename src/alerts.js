@@ -15,7 +15,12 @@
 // lives here. The single source of the attention SET lives in terminals.js;
 // this file only reflects that set in the UI and reacts to its change event.
 //
-import { badgeTab, focusTerminal, attentionList } from "/terminals.js";
+import {
+  badgeTab,
+  focusTerminal,
+  attentionList,
+  isActiveVisible,
+} from "/terminals.js";
 
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
@@ -189,6 +194,12 @@ document.addEventListener("DOMContentLoaded", () => {
 listen("pty-attention", (event) => {
   const { id, title, body } = event.payload || {};
   if (!id) return;
+  // If the user is already looking at this exact terminal (it is the active tab
+  // of a visible group AND the window is focused), the agent's prompt is right
+  // in front of them — no badge needed. Any OTHER terminal (a background tab, a
+  // hidden group, another project, or a backgrounded window) still gets flagged,
+  // which is the cross-project "an agent is waiting for you" case.
+  if (document.hasFocus() && isActiveVisible(id)) return;
   badgeTab(id);
   // Only push an OS notification when the app window is NOT focused — if the
   // user is already in OctiqFlow, the in-app banner + tab badge are enough and a

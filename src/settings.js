@@ -279,10 +279,11 @@ document.addEventListener("DOMContentLoaded", () => {
   wireAgentHookSetup();
 });
 
-/** Wire the "Set up Claude resume hook" button: install the session-capture
- *  hook into ~/.claude/settings.json on click, and show the backend's status (or
- *  the error) next to the button. The button is disabled while it runs so a
- *  double-click cannot install twice. Bails quietly if the controls are absent. */
+/** Wire the "Set up agent resume & alert hooks" button: install the OctiqFlow
+ *  agent hook (resume capture + attention alert) into ~/.claude/settings.json and
+ *  ~/.codex/hooks.json on click, and show the backend's status (or the error)
+ *  next to the button. The button is disabled while it runs so a double-click
+ *  cannot install twice. Bails quietly if the controls are absent. */
 function wireAgentHookSetup() {
   const btn = document.getElementById("setup-agent-hooks");
   const status = document.getElementById("setup-agent-hooks-status");

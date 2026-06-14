@@ -15,6 +15,14 @@
 // PTY's foreground process). `setup_agent_hooks` installs the hook into each
 // agent's config; `refresh_hook_script` keeps the on-disk script current.
 //
+// The SAME hook has a second job: on the agent's Notification event it writes an
+// OSC attention sequence to the tab's PTY, so OctiqFlow flags the tab + its
+// project + its mode when the agent is waiting for the user — even while the user
+// works in another project (see pty.rs `scan_attention` and alerts.js). This
+// module registers that event too; `upgrade_agent_hooks_if_present` adds it to
+// configs that already opted into the resume hook, so the alert ships without the
+// user re-running setup from Settings.
+//
 // Store: ~/.octiqflow/agent-sessions.json, keyed by each tab's stable persistKey:
 //   { "<persistKey>": { "agent": "claude", "sessionId": "...", "cwd": "...", "updatedAt": "..." } }
 // A fixed ~/.octiqflow path (not the Tauri app-data dir) is used so the external
@@ -461,16 +469,117 @@ pub fn refresh_hook_script() {
     let _ = fs::write(hooks_dir.join(HOOK_SCRIPT_NAME), HOOK_SCRIPT);
 }
 
-/// Install the session-capture hook for every supported agent: write the shared
+/// Whether a hook config already carries one of OUR hook entries (some event's
+/// command mentions `marker`). Used to gate the startup upgrade so it only ever
+/// touches a config the user already opted into.
+fn config_has_marker(config: &Value, marker: &str) -> bool {
+    config
+        .get("hooks")
+        .and_then(|h| h.as_object())
+        .map(|events| {
+            events.values().any(|arr| {
+                arr.as_array()
+                    .map(|entries| entries.iter().any(|e| entry_mentions(e, marker)))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Upgrade an agent config that ALREADY has our hook: register `install_events`,
+/// retire `retire_events`, and write back — but ONLY when the config already
+/// carries our marker (so we never opt the user in behind their back), and only
+/// when the upgrade actually changes something (so a steady state never rewrites
+/// the file). Reads/parses/IO errors are silent no-ops (best-effort).
+fn upgrade_if_present(
+    config_path: &std::path::Path,
+    install_events: &[&str],
+    retire_events: &[&str],
+    command: &str,
+    marker: &str,
+) {
+    let Ok(raw) = fs::read_to_string(config_path) else {
+        return;
+    };
+    let Ok(mut config) = serde_json::from_str::<Value>(&raw) else {
+        return;
+    };
+    if !config.is_object() || !config_has_marker(&config, marker) {
+        return;
+    }
+    let before = config.clone();
+    for event in install_events {
+        upsert_event(&mut config, event, command, marker);
+    }
+    for event in retire_events {
+        remove_event_marker(&mut config, event, marker);
+    }
+    if config == before {
+        return; // already up to date; do not rewrite the file
+    }
+    if let Ok(out) = serde_json::to_string_pretty(&config) {
+        let _ = fs::write(config_path, out);
+    }
+}
+
+/// Startup upgrade of an existing opt-in. For each agent whose config ALREADY has
+/// our capture hook, make sure the Notification attention hook is registered too
+/// (and retire the old Claude SessionEnd entry an earlier build installed). This
+/// lets users who set up the resume hook before get cross-project "agent is
+/// waiting" alerts without re-running setup from Settings. It NEVER installs into
+/// a config that does not already carry our hook. Best-effort; safe every launch
+/// (it only writes when something actually changes). Touches the agents' config
+/// files, unlike [`refresh_hook_script`] which only rewrites the script.
+pub fn upgrade_agent_hooks_if_present() {
+    let Some(dir) = octiqflow_dir() else {
+        return;
+    };
+    let script_path = dir.join("hooks").join(HOOK_SCRIPT_NAME);
+    let script = quote_path(&script_path.to_string_lossy());
+    if let Some(claude) = claude_settings_path() {
+        let command = format!("node {script} claude");
+        upgrade_if_present(
+            &claude,
+            CLAUDE_INSTALL_EVENTS,
+            CLAUDE_RETIRE_EVENTS,
+            &command,
+            HOOK_MARKER,
+        );
+    }
+    if let Some(codex) = codex_hooks_path() {
+        let command = format!("node {script} codex");
+        upgrade_if_present(
+            &codex,
+            CODEX_INSTALL_EVENTS,
+            CODEX_RETIRE_EVENTS,
+            &command,
+            HOOK_MARKER,
+        );
+    }
+}
+
+/// The hook events we register, by agent. The shared script branches on the
+/// event: SessionStart records the resume mapping; Notification raises an
+/// attention alert when the agent waits for the user. We deliberately do NOT
+/// register SessionEnd: the app kills the agent on quit, so a SessionEnd delete
+/// would wipe the mapping we need to resume — finished-session cleanup is
+/// deterministic instead (`prune_exited_agent_sessions`). Codex has no SessionEnd
+/// event, so it carries nothing to retire.
+const CLAUDE_INSTALL_EVENTS: &[&str] = &["SessionStart", "Notification"];
+const CLAUDE_RETIRE_EVENTS: &[&str] = &["SessionEnd"];
+const CODEX_INSTALL_EVENTS: &[&str] = &["SessionStart", "Notification"];
+const CODEX_RETIRE_EVENTS: &[&str] = &[];
+
+/// Install the OctiqFlow agent hook for every supported agent: write the shared
 /// script to a stable ~/.octiqflow/hooks path, then register it on each agent's
-/// SessionStart (idempotent). We deliberately do NOT register SessionEnd: the app
-/// kills the agent on quit, so a SessionEnd delete would wipe the mapping we need
-/// to resume. Finished-session cleanup is deterministic instead
-/// (`prune_exited_agent_sessions`). Any SessionEnd entry an older build installed
-/// is retired here, so re-running setup tidies it up.
-///   - Claude: ~/.claude/settings.json — register SessionStart, retire SessionEnd.
-///   - Codex:  ~/.codex/hooks.json — register SessionStart (Codex has no
-///     SessionEnd event).
+/// SessionStart (resume capture) and Notification (attention alert) events
+/// (idempotent). Any SessionEnd entry an older build installed is retired here,
+/// so re-running setup tidies it up.
+///   - Claude: ~/.claude/settings.json — register SessionStart + Notification,
+///     retire SessionEnd.
+///   - Codex:  ~/.codex/hooks.json — register SessionStart + Notification (Codex
+///     has no SessionEnd event). Notification is best-effort: if Codex does not
+///     fire it, the entry is inert and harmless.
 /// Returns a short status line for the UI.
 #[tauri::command]
 pub fn setup_agent_hooks() -> Result<String, String> {
@@ -489,17 +598,22 @@ pub fn setup_agent_hooks() -> Result<String, String> {
 
     if let Some(claude) = claude_settings_path() {
         let command = format!("node {script} claude");
-        install_hook_into(&claude, &["SessionStart"], &["SessionEnd"], &command)?;
+        install_hook_into(
+            &claude,
+            CLAUDE_INSTALL_EVENTS,
+            CLAUDE_RETIRE_EVENTS,
+            &command,
+        )?;
         installed.push("Claude");
     }
     if let Some(codex) = codex_hooks_path() {
         let command = format!("node {script} codex");
-        install_hook_into(&codex, &["SessionStart"], &[], &command)?;
+        install_hook_into(&codex, CODEX_INSTALL_EVENTS, CODEX_RETIRE_EVENTS, &command)?;
         installed.push("Codex");
     }
 
     Ok(format!(
-        "Resume hook installed for {}. Restart any running session once to start capturing it.",
+        "Resume + attention hooks installed for {}. Restart any running session once to start capturing it.",
         installed.join(" and ")
     ))
 }
@@ -617,6 +731,79 @@ mod tests {
         let mut settings = json!({ "model": "x", "hooks": { "PreToolUse": [] } });
         remove_event_marker(&mut settings, "SessionEnd", HOOK_MARKER);
         assert_eq!(settings["model"], json!("x"));
+    }
+
+    #[test]
+    fn config_has_marker_detects_our_entry_and_ignores_others() {
+        let with = json!({
+            "hooks": {
+                "SessionStart": [ { "hooks": [ { "type": "command", "command": "node \"/h/agent-session-capture.cjs\" claude" } ] } ]
+            }
+        });
+        assert!(config_has_marker(&with, HOOK_MARKER));
+
+        // Only the user's own hooks -> not ours.
+        let without = json!({
+            "hooks": {
+                "SessionStart": [ { "hooks": [ { "type": "command", "command": "bash diary.sh" } ] } ]
+            }
+        });
+        assert!(!config_has_marker(&without, HOOK_MARKER));
+
+        // No hooks at all.
+        assert!(!config_has_marker(&json!({ "model": "x" }), HOOK_MARKER));
+    }
+
+    #[test]
+    fn upgrade_transform_adds_notification_and_retires_session_end() {
+        // Emulate upgrade_if_present's in-memory transform on a config that
+        // already has our SessionStart + a stale SessionEnd, alongside the
+        // user's own diary hook. The result must add Notification, drop the
+        // stale SessionEnd, and never duplicate or clobber the user's hook.
+        let mut config = json!({
+            "hooks": {
+                "SessionStart": [
+                    { "hooks": [ { "type": "command", "command": "bash diary.sh" } ] },
+                    { "hooks": [ { "type": "command", "command": "node \"/h/agent-session-capture.cjs\" claude" } ] }
+                ],
+                "SessionEnd": [
+                    { "hooks": [ { "type": "command", "command": "node \"/h/agent-session-capture.cjs\" claude" } ] }
+                ]
+            }
+        });
+        assert!(config_has_marker(&config, HOOK_MARKER));
+        let command = "node \"/h/agent-session-capture.cjs\" claude";
+        for event in CLAUDE_INSTALL_EVENTS {
+            upsert_event(&mut config, event, command, HOOK_MARKER);
+        }
+        for event in CLAUDE_RETIRE_EVENTS {
+            remove_event_marker(&mut config, event, HOOK_MARKER);
+        }
+
+        // SessionEnd held only our stale entry, so the whole event key is gone.
+        assert!(config["hooks"].get("SessionEnd").is_none());
+        // Notification now carries exactly one of our entries.
+        let notif = config["hooks"]["Notification"].as_array().unwrap();
+        assert_eq!(notif.len(), 1);
+        assert!(entry_mentions(&notif[0], HOOK_MARKER));
+        // SessionStart keeps the user's diary hook + exactly one of ours.
+        let start = config["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(start.len(), 2);
+        let ours = start
+            .iter()
+            .filter(|e| entry_mentions(e, HOOK_MARKER))
+            .count();
+        assert_eq!(ours, 1);
+
+        // Re-running the same transform is a no-op (idempotent: no growth).
+        let stable = config.clone();
+        for event in CLAUDE_INSTALL_EVENTS {
+            upsert_event(&mut config, event, command, HOOK_MARKER);
+        }
+        for event in CLAUDE_RETIRE_EVENTS {
+            remove_event_marker(&mut config, event, HOOK_MARKER);
+        }
+        assert_eq!(config, stable);
     }
 
     #[test]

@@ -487,15 +487,17 @@
             </section>
 
             <section class="settings-section">
-              <div class="settings-section-title">Agent session resume</div>
+              <div class="settings-section-title">Agent session resume &amp; alerts</div>
               <p class="settings-help">
                 Let a terminal that runs Claude or Codex re-open its session after
-                OctiqFlow restarts. This installs a small hook for each agent that
-                records the tab's session id, so a restored tab runs
-                <code>claude --resume</code> or <code>codex resume</code> on its own
-                instead of starting a fresh prompt. Set it up once.
+                OctiqFlow restarts, and flag the tab when the agent is waiting for
+                you. This installs a small hook for each agent that records the
+                tab's session id (so a restored tab runs <code>claude --resume</code>
+                or <code>codex resume</code> on its own) and raises an attention
+                alert when the agent needs your input — so you notice even when you
+                are working in another project. Set it up once.
               </p>
-              <button id="setup-agent-hooks" class="btn btn-sm" title="Install the session-capture hooks for Claude (~/.claude/settings.json) and Codex (~/.codex/hooks.json)">↺ Set up agent resume hooks</button>
+              <button id="setup-agent-hooks" class="btn btn-sm" title="Install the resume + attention hooks for Claude (~/.claude/settings.json) and Codex (~/.codex/hooks.json)">↺ Set up agent resume &amp; alert hooks</button>
               <span id="setup-agent-hooks-status" class="settings-status"></span>
             </section>
           </div>

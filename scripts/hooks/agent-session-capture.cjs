@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 /*
- * OctiqFlow — agent session-capture hook (Claude Code, Codex, …).
+ * OctiqFlow — agent hook (Claude Code, Codex, …).
  *
- * Installed into an agent's hook config by OctiqFlow (`setup_agent_hooks`) on its
- * SessionStart event (and, for agents that have one, SessionEnd). Its only job is
- * to record which agent session id belongs to which OctiqFlow terminal tab, so
- * the app can resume that session in the same tab after a restart:
- *   - Claude:  claude --resume <id>
- *   - Codex:   codex resume <id>
+ * Installed into an agent's hook config by OctiqFlow (`setup_agent_hooks`). It has
+ * two cohesive jobs, both glue between an agent and OctiqFlow, split by event:
+ *
+ *   1. SessionStart -> RECORD which agent session id belongs to which OctiqFlow
+ *      terminal tab, so the app can resume that session in the same tab after a
+ *      restart (claude --resume <id> / codex resume <id>).
+ *   2. Notification -> RAISE an attention alert for the tab, so OctiqFlow flags
+ *      the tab + its project + its mode when the agent is waiting for the user
+ *      (it needs a decision, or the prompt has gone idle) — even while the user
+ *      is working in another project.
  *
  * The agent name is passed as the first CLI argument (e.g. `node <script> codex`),
  * defaulting to "claude". The resume command SHAPE is built by the app, not here,
@@ -16,7 +20,9 @@
  *
  * How the tab is known: OctiqFlow sets OCTIQ_TERM_KEY in the shell it spawns for
  * each tab (its stable persistKey). The agent inherits that env var, and so does
- * this hook (a child of the agent process). We key the mapping by it.
+ * this hook (a child of the agent process). The capture path keys the mapping by
+ * it; the attention path only needs it to confirm we are inside an OctiqFlow tab
+ * (the alert is routed by which PTY the sequence lands in, not by the key).
  *
  * Store (one JSON file at ~/.octiqflow/agent-sessions.json):
  *   { "<persistKey>": { "agent": "claude|codex", "sessionId": "...", "cwd": "...", "transcriptPath": "...", "updatedAt": "..." } }
@@ -24,12 +30,12 @@
  * generated title without re-deriving the transcript location from the cwd.
  *
  * Both Claude and Codex pass the same stdin shape (session_id, hook_event_name,
- * cwd), so one script serves both.
+ * cwd, message), so one script serves both.
  *
  * Design rules:
  *   - Never break the agent. Any error -> exit 0 with no output.
- *   - Best effort. A missing env var, empty stdin, or unwritable store is a
- *     silent no-op, not a failure.
+ *   - Best effort. A missing env var, empty stdin, an unwritable store, or no
+ *     controlling terminal is a silent no-op, not a failure.
  *   - RECORD ONLY, never delete. SessionStart upserts the mapping; we do NOT act
  *     on SessionEnd. The app kills the agent on every quit, so deleting on
  *     SessionEnd would wipe the very mapping we need to resume on the next
@@ -52,8 +58,54 @@ const KNOWN_AGENTS = new Set(["claude", "codex"]);
 // stored value to a plain token so nothing odd can ride along into the app.
 const SAFE_ID = /^[A-Za-z0-9._-]{1,128}$/;
 
+// Control bytes to strip from an alert field, written as escapes (never raw, so
+// this stays a plain-text source file). Covers C0 controls (incl. ESC and BEL)
+// and DEL, so a value can never terminate or inject an OSC escape sequence.
+// eslint-disable-next-line no-control-regex
+const CONTROL_BYTES = /[\x00-\x1f\x7f]/g;
+
+// Longest alert text we write, so a runaway message cannot bloat the sequence.
+const MAX_ALERT_LEN = 200;
+
 function storeFile() {
   return path.join(os.homedir(), ".octiqflow", "agent-sessions.json");
+}
+
+/**
+ * Make one OSC-777 field safe: drop control bytes (so a value cannot terminate
+ * or inject an escape sequence) and turn ';' into ',' (the scanner splits the
+ * payload on ';', so a ';' in the title would leak into the body). Mirrors
+ * octiq-notify's `sanitize`. See src-tauri/src/pty.rs `scan_attention`.
+ */
+function sanitizeField(value) {
+  return String(value)
+    .replace(CONTROL_BYTES, "")
+    .replace(/;/g, ",")
+    .slice(0, MAX_ALERT_LEN);
+}
+
+/**
+ * Raise an OctiqFlow attention alert for the current tab by writing an OSC 777
+ * notify sequence to the controlling terminal (/dev/tty) — which IS this tab's
+ * PTY. OctiqFlow's output scanner sees the sequence and flags the tab, the same
+ * path octiq-notify uses, so the alert is routed to the right tab without
+ * needing the persist key. Best-effort: no controlling tty (or Windows, which
+ * has no /dev/tty) just means no alert, never a thrown error.
+ *
+ * Sequence (terminator BEL): ESC ] 777 ; notify ; <title> ; <body> BEL.
+ */
+function emitAttention(agent, input) {
+  const title = agent === "codex" ? "Codex" : "Claude";
+  const raw =
+    typeof input.message === "string" && input.message.trim()
+      ? input.message
+      : "is waiting for your input";
+  const seq = `\x1b]777;notify;${sanitizeField(title)};${sanitizeField(raw)}\x07`;
+  try {
+    fs.writeFileSync("/dev/tty", seq);
+  } catch {
+    // No controlling terminal reachable (e.g. Windows): skip silently.
+  }
 }
 
 /** Read the store, or {} if it is missing / unreadable / not an object. */
@@ -92,30 +144,39 @@ function main() {
     return;
   }
   const event = input.hook_event_name;
+
+  // Notification: the agent is waiting for the user (it needs a decision, or the
+  // prompt has gone idle). Raise an attention alert for this tab. This is the
+  // ONLY event that writes to the terminal; it never touches the session store.
+  if (event === "Notification") {
+    emitAttention(agent, input);
+    return;
+  }
+
+  // SessionStart (startup | resume | clear | compact): record / refresh the map.
+  // This is the ONLY event that writes the session store. Any other event —
+  // including a SessionEnd left over from an earlier registration — is a
+  // deliberate no-op, so the app killing the agent on quit can never erase a
+  // mapping we still need to resume.
+  if (event !== "SessionStart") return;
+
   const sessionId = input.session_id;
   if (typeof sessionId !== "string" || !SAFE_ID.test(sessionId)) return;
 
   const file = storeFile();
   const store = readStore(file);
-
-  // SessionStart (startup | resume | clear | compact): record / refresh the map.
-  // This is the ONLY event we act on. Any other event — including a SessionEnd
-  // left over from an earlier registration — is a deliberate no-op, so the app
-  // killing the agent on quit can never erase a mapping we still need to resume.
-  if (event === "SessionStart") {
-    store[key] = {
-      agent,
-      sessionId,
-      cwd: typeof input.cwd === "string" ? input.cwd : "",
-      // The agent passes the absolute path of its transcript file (Claude:
-      // transcript_path). The app reads the session title from it. Best effort —
-      // an absent path just means the app derives the location from cwd instead.
-      transcriptPath:
-        typeof input.transcript_path === "string" ? input.transcript_path : "",
-      updatedAt: new Date().toISOString(),
-    };
-    writeStore(file, store);
-  }
+  store[key] = {
+    agent,
+    sessionId,
+    cwd: typeof input.cwd === "string" ? input.cwd : "",
+    // The agent passes the absolute path of its transcript file (Claude:
+    // transcript_path). The app reads the session title from it. Best effort —
+    // an absent path just means the app derives the location from cwd instead.
+    transcriptPath:
+      typeof input.transcript_path === "string" ? input.transcript_path : "",
+    updatedAt: new Date().toISOString(),
+  };
+  writeStore(file, store);
 }
 
 try {

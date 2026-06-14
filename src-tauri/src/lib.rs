@@ -76,6 +76,13 @@ pub fn run() {
             // Settings. Writes only the script file (never an agent's settings);
             // best-effort, so a failure here never blocks startup.
             agent_resume::refresh_hook_script();
+            // Upgrade an existing opt-in: if the user already installed our agent
+            // hook, also register the Notification attention hook (and retire the
+            // old SessionEnd entry), so cross-project "an agent is waiting for
+            // you" alerts work without re-running setup from Settings. Only
+            // touches configs that already carry our hook; best-effort, so a
+            // failure here never blocks startup.
+            agent_resume::upgrade_agent_hooks_if_present();
 
             Ok(())
         })

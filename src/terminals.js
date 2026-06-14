@@ -248,6 +248,15 @@ export function attentionList() {
   return [...attention];
 }
 
+/** Whether a pty id is the ACTIVE tab of a currently-VISIBLE group — i.e. the
+ *  terminal the user is looking at right now. alerts.js uses this to skip
+ *  badging a terminal that is already in front of the user (the agent's prompt
+ *  is right there), while still badging every other / hidden terminal. */
+export function isActiveVisible(id) {
+  const entry = idToEntry.get(id);
+  return !!entry && entry.group.activeId === id && entry.group.visible();
+}
+
 /** Find the { term, group } entry for a pty id, or undefined. */
 function entryFor(id) {
   return idToEntry.get(id);
