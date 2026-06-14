@@ -115,32 +115,78 @@ function stripAnsi(s) {
 // string keeps the saved layout small and the tab readable.
 const MAX_CMD_TITLE_LEN = 60;
 
+// Longest "last sent" line we keep for the bottom bar. Longer than a tab title
+// because a prompt to an agent is usually a sentence, not one word; the bar
+// ellipsizes anything past what fits, but the captured string is bounded.
+const MAX_SENT_LEN = 200;
+
 /**
  * Feed raw terminal INPUT (the bytes the user types, as xterm reports them via
- * onData) into a small line buffer and return the first completed command line,
- * or null until one is entered. `state` is `{ buf, esc }`, carried across calls.
+ * onData) into a small line buffer and return the next completed line, or null
+ * until one is entered (Enter). `state` is `{ buf, mode }`, carried across
+ * calls; `maxLen` caps the returned string.
  *
- * This reconstructs the typed line well enough to name a tab — it handles the
- * common edits (printable chars, Backspace, Ctrl-U/Ctrl-C clear, Enter commits)
- * and skips escape sequences (arrow keys, bracketed-paste markers). It is a
- * heuristic, not a shell parser: tab-completion rewrites and in-line cursor
- * edits may yield an imperfect name, which the user can always fix by hand.
+ * Two callers use this: tab auto-naming keeps the FIRST line (capped to a short
+ * title) and the bottom "last sent" bar keeps the LATEST line. Both rebuild the
+ * typed line the same way — it handles the common edits (printable chars,
+ * Backspace, Ctrl-U/Ctrl-C clear, Enter commits) and SKIPS escape sequences.
+ *
+ * The escape skip is the subtle part: onData carries not just keystrokes but
+ * the terminal's own REPLIES (focus in/out `ESC[I`/`ESC[O`, device-attributes
+ * `ESC[?1;2c`, cursor-position reports, bracketed-paste markers `ESC[200~`).
+ * These must be dropped whole or their tail leaks into the captured line. So we
+ * track the sequence kind: after `ESC`, a `[` opens a CSI run that ends only on
+ * a final byte `@`–`~` (NOT the `[` itself); a `]`/`P`/`X`/`^`/`_` opens an
+ * OSC/string run that ends on BEL or ST (`ESC \`); any other byte is a short
+ * two-byte escape that ends immediately.
+ *
+ * It is still a heuristic, not a full TUI parser: tab-completion rewrites,
+ * in-line cursor edits, and multi-line prompts may yield an imperfect line —
+ * good enough to label a tab or remind the user what they just sent, never
+ * treated as the exact submitted prompt.
  */
-function nextTypedCommand(state, data) {
+function nextTypedLine(state, data, maxLen = MAX_CMD_TITLE_LEN) {
   for (let i = 0; i < data.length; i++) {
     const code = data.charCodeAt(i);
-    if (state.esc) {
-      // Inside an escape sequence (CSI etc.); a final byte in @-~ ends it.
-      if (code >= 0x40 && code <= 0x7e) state.esc = false;
-      continue;
+    switch (state.mode) {
+      case "esc":
+        // The byte right after ESC decides the sequence kind.
+        if (code === 0x5b) {
+          state.mode = "csi"; // ESC [  -> CSI (arrows, focus, DA, paste markers)
+        } else if (
+          code === 0x5d || // ESC ]  OSC
+          code === 0x50 || // ESC P  DCS
+          code === 0x58 || // ESC X  SOS
+          code === 0x5e || // ESC ^  PM
+          code === 0x5f // ESC _  APC
+        ) {
+          state.mode = "str";
+        } else {
+          state.mode = null; // a short two-byte escape (e.g. ESC O x): done.
+        }
+        continue;
+      case "csi":
+        // Parameter (0x30–0x3f) and intermediate (0x20–0x2f) bytes continue the
+        // run; a final byte @–~ (0x40–0x7e) ends it. The introducer `[` is
+        // never the final byte, so its tail no longer leaks.
+        if (code >= 0x40 && code <= 0x7e) state.mode = null;
+        continue;
+      case "str":
+        // OSC/DCS/SOS/PM/APC end on BEL or ST (ESC \). On ESC, hop to "esc" so
+        // the following `\` resolves the ST and ends the run.
+        if (code === 0x07) state.mode = null;
+        else if (code === 0x1b) state.mode = "esc";
+        continue;
+      default:
+        break; // mode === null: normal text handling below.
     }
     if (code === 0x1b) {
-      state.esc = true; // ESC: start skipping the sequence that follows.
+      state.mode = "esc"; // ESC: start classifying the sequence that follows.
     } else if (code === 0x0d || code === 0x0a) {
-      // Enter: a non-empty line is the command we were waiting for.
-      const cmd = state.buf.trim();
+      // Enter: a non-empty line is the one we were waiting for.
+      const line = state.buf.trim();
       state.buf = "";
-      if (cmd) return cmd.slice(0, MAX_CMD_TITLE_LEN);
+      if (line) return line.slice(0, maxLen);
     } else if (code === 0x7f || code === 0x08) {
       state.buf = state.buf.slice(0, -1); // Backspace.
     } else if (code === 0x15 || code === 0x03) {
@@ -372,7 +418,23 @@ class TerminalGroup {
     this.panesEl = document.createElement("div");
     this.panesEl.className = "tg-panes";
 
-    this.root.append(this.stripEl, this.panesEl);
+    // Thin bottom bar showing the last line the user typed and sent (Enter) in
+    // the ACTIVE terminal — a reminder of "what did I just send to Claude/Codex".
+    // A sibling of the panes (not a child of any pane), so it never affects the
+    // xterm fit math, which measures the pane box. Always present so its height
+    // is baked into the first fit and no refit churns on every Enter.
+    this.lastSentEl = document.createElement("div");
+    this.lastSentEl.className = "tg-lastsent";
+    this.lastSentEl.title = "The last line you typed and sent (Enter) in this terminal";
+    this.lastSentLabelEl = document.createElement("span");
+    this.lastSentLabelEl.className = "tg-lastsent-label";
+    this.lastSentLabelEl.textContent = "sent";
+    this.lastSentTextEl = document.createElement("span");
+    this.lastSentTextEl.className = "tg-lastsent-text";
+    this.lastSentEl.append(this.lastSentLabelEl, this.lastSentTextEl);
+    this._renderLastSent(null);
+
+    this.root.append(this.stripEl, this.panesEl, this.lastSentEl);
     mountEl.append(this.root);
   }
 
@@ -534,15 +596,18 @@ class TerminalGroup {
     // changes the grid and the observer goes quiet.
     const screenEl = term.element?.querySelector(".xterm-screen");
     if (screenEl) ro.observe(screenEl);
-    // Reconstruct the first command typed in this tab, so a plain (non-agent)
-    // terminal can auto-name itself from it. State is carried across onData
-    // calls; once a command is captured we stop tracking. `entry` is assigned
-    // just below and always exists by the time the user types.
-    const cmdState = { buf: "", esc: false };
+    // Reconstruct the lines the user types in this tab. The FIRST line names a
+    // plain (non-agent) terminal; the LATEST line feeds the bottom "last sent"
+    // bar. Both read the same rebuilt line, so one tracker serves both. State is
+    // carried across onData calls. `entry` is assigned just below and always
+    // exists by the time the user types.
+    const inputState = { buf: "", mode: null };
     term.onData((data) => {
-      if (entry && !entry.firstCmd) {
-        const cmd = nextTypedCommand(cmdState, data);
-        if (cmd) entry.firstCmd = cmd;
+      const line = nextTypedLine(inputState, data, MAX_SENT_LEN);
+      if (line && entry) {
+        if (!entry.firstCmd) entry.firstCmd = line.slice(0, MAX_CMD_TITLE_LEN);
+        entry.lastSent = line;
+        this._paintLastSent(ptyId);
       }
       invoke("pty_write", { id: ptyId, data }).catch((err) => {
         reportTermError(term, `write failed: ${err}`);
@@ -590,6 +655,10 @@ class TerminalGroup {
       // The first command typed in this tab (null until one is entered). Used to
       // auto-name a plain terminal that never launched an agent.
       firstCmd: null,
+      // The latest line the user typed and sent (Enter) in this tab (null until
+      // one is sent). Shown in the bottom "last sent" bar when this tab is
+      // active. In memory only — not persisted across restart.
+      lastSent: null,
       cwd,
       startCmd,
       persistKey,
@@ -646,6 +715,9 @@ class TerminalGroup {
       e.tabEl.classList.toggle("tg-tab-active", on);
       e.paneEl.classList.toggle("tg-pane-active", on);
     }
+    // The bottom bar always tracks the visible terminal: repaint it for the
+    // now-active tab's last sent line (or the placeholder if it has none).
+    this._paintLastSent(ptyId);
     // Becoming the active tab counts as the user attending to this terminal, so
     // clear any attention flag on it (card 13). clearAttention is a no-op when
     // the id is not flagged, so this is cheap on normal tab switches.
@@ -725,6 +797,24 @@ class TerminalGroup {
     entry.tabEl.classList.toggle("tg-tab-attention", on);
   }
 
+  // ---- Last-sent bar ------------------------------------------------------
+  // Write `text` into the bottom bar, or show the dim placeholder when it is
+  // null/empty (no line sent yet in the active terminal). Kept tiny: one text
+  // node + a class toggle, so paint-on-every-Enter is cheap.
+  _renderLastSent(text) {
+    const has = !!(text && text.trim());
+    this.lastSentTextEl.textContent = has ? text : "nothing sent yet";
+    this.lastSentEl.classList.toggle("tg-lastsent-empty", !has);
+  }
+
+  // Repaint the bar to reflect a terminal's last sent line, but only when that
+  // terminal is the active one — the bar always shows the visible terminal.
+  // No-op for a background tab, so typing never leaks across tabs.
+  _paintLastSent(ptyId) {
+    if (ptyId !== this.activeId) return;
+    this._renderLastSent(this.tabs.get(ptyId)?.lastSent ?? null);
+  }
+
   // Which top-level mode this group lives in ("project" | "chat" | "utilities"
   // | "dashboard"), read from the enclosing #view-<mode> section. Returns null
   // if the group is not (yet) inside a view. Used by focusTerminal to switch
@@ -755,6 +845,9 @@ class TerminalGroup {
       const next = this.tabs.keys().next();
       this.activeId = next.done ? null : next.value;
       if (this.activeId) this.activate(this.activeId);
+      // No terminals left: clear the bar so it does not keep the closed tab's
+      // last sent line.
+      else this._renderLastSent(null);
     }
     // A tab was removed: let the owner persist the shrunken layout. The backend
     // reconciles and deletes the closed terminal's saved scrollback file.

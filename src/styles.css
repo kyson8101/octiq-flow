@@ -1555,6 +1555,52 @@ body {
   display: block;
 }
 
+/* Bottom "last sent" bar: a thin one-line strip under the panes showing the
+   last line the user typed and sent in the active terminal. flex-shrink:0 so it
+   keeps its height; the panes area (flex:1) gives up the space, so the xterm
+   fit — which measures the pane box — is unaffected. */
+.tg-lastsent {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* The dim "sent" prefix chip. */
+.tg-lastsent-label {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+}
+
+/* The message text; ellipsizes when it does not fit. */
+.tg-lastsent-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+}
+
+/* Placeholder state (no line sent yet): dim the whole bar. */
+.tg-lastsent-empty .tg-lastsent-text {
+  color: var(--fg-3);
+  font-style: italic;
+}
+
 /* ===================================================================== */
 /* === Card 07 — Chat mode ============================================= */
 /* ===================================================================== */
