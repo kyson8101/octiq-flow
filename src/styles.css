@@ -456,10 +456,35 @@ body {
 
 .sidebar.collapsed .sidebar-title,
 .sidebar.collapsed #new-workspace,
-.sidebar.collapsed .ws-list,
 .sidebar.collapsed .ws-empty,
 .sidebar.collapsed .ws-shelf-section {
   display: none;
+}
+
+/* Collapsed rail: the active project list stays, but each row shrinks to just
+   its initial-letter avatar. Hide the parts that need the full width. */
+.sidebar.collapsed .ws-list {
+  padding: 6px 0;
+}
+
+.sidebar.collapsed .ws-item {
+  justify-content: center;
+  padding: 4px 0;
+  gap: 0;
+}
+
+.sidebar.collapsed .ws-item-bar,
+.sidebar.collapsed .ws-item-body,
+.sidebar.collapsed .ws-item-count {
+  display: none;
+}
+
+/* The collapsed rail has no per-row hover/selected wash — the avatar carries
+   the selected state instead, so the row background stays flat. */
+.sidebar.collapsed .ws-item:hover,
+.sidebar.collapsed .ws-item.selected,
+.sidebar.collapsed .ws-item.selected:hover {
+  background: transparent;
 }
 
 /* New + collapse buttons sit together on the right of the head. */
@@ -549,6 +574,40 @@ body {
   min-height: 18px;
   border-radius: 2px;
   background: var(--ws-bar, var(--fg-3));
+}
+
+/* Initial-letter avatar: the project's first letter in a rounded square, tinted
+   with its accent color. Hidden in the expanded sidebar; shown only on the
+   collapsed rail, where it is the whole row. */
+.ws-item-initial {
+  display: none;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-0);
+  background: color-mix(in srgb, var(--ws-bar, var(--fg-3)) 26%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ws-bar, var(--fg-3)) 50%, transparent);
+}
+
+.sidebar.collapsed .ws-item-initial {
+  display: flex;
+}
+
+/* Selected project on the collapsed rail: the avatar fills with its accent
+   color so it reads as current at a glance. */
+.sidebar.collapsed .ws-item.selected .ws-item-initial {
+  background: var(--ws-bar, var(--fg-3));
+  border-color: var(--ws-bar, var(--fg-3));
+  color: var(--bg-0);
+}
+
+.sidebar.collapsed .ws-item:hover .ws-item-initial {
+  border-color: var(--ws-bar, var(--fg-3));
 }
 
 .ws-item-body {
@@ -1187,6 +1246,13 @@ body {
   font-size: 12px;
   font-weight: 600;
   color: var(--fg-1);
+}
+
+/* Helper line under a settings field input. */
+.settings-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-2);
 }
 
 .settings-select {

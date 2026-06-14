@@ -42,6 +42,7 @@ const modalCloseBtn = document.querySelector("#modal-close");
 const modalDoneBtn = document.querySelector("#modal-done");
 const modalNameEl = document.querySelector("#modal-name");
 const modalDescriptionEl = document.querySelector("#modal-description");
+const modalInitialEl = document.querySelector("#modal-initial");
 const modalColorSwatchesEl = document.querySelector("#modal-color-swatches");
 const modalPrimaryEl = document.querySelector("#modal-primary-path");
 const modalChangePrimaryBtn = document.querySelector("#modal-change-primary");
@@ -194,6 +195,19 @@ function renderList() {
     bar.className = "ws-item-bar";
     bar.style.setProperty("--ws-bar", barColor(ws));
 
+    // Initial-letter avatar. Hidden in the expanded sidebar; it stands in for
+    // the whole row when the sidebar is collapsed (icon-only rail).
+    const initial = document.createElement("span");
+    initial.className = "ws-item-initial";
+    initial.style.setProperty("--ws-bar", barColor(ws));
+    // Prefer the user's custom initial; otherwise the name's first letter.
+    // Either way it shows uppercase.
+    const customInitial = (ws.initial || "").trim();
+    initial.textContent = (
+      customInitial || (ws.name || "").trim()[0] || "?"
+    ).toUpperCase();
+    initial.setAttribute("aria-hidden", "true");
+
     // Title + optional description, stacked.
     const body = document.createElement("div");
     body.className = "ws-item-body";
@@ -226,8 +240,11 @@ function renderList() {
     count.className = "ws-item-count";
     count.textContent = total === 1 ? "1 path" : `${total} paths`;
 
-    li.append(bar, body, count);
+    li.append(bar, initial, body, count);
     li.dataset.id = ws.id;
+    // Full name as a native tooltip — the only label visible when collapsed, and
+    // a help for long names that ellipsis-truncate when expanded.
+    li.title = ws.name || "";
     li.draggable = true;
     li.addEventListener("click", () => selectWorkspace(ws.id));
     li.addEventListener("contextmenu", (e) => {
@@ -843,6 +860,7 @@ function renderModal() {
 
   modalNameEl.value = ws.name;
   modalDescriptionEl.value = ws.description || "";
+  modalInitialEl.value = ws.initial || "";
   renderColorSwatches(ws);
   resetDeleteButton();
 
@@ -1050,6 +1068,26 @@ modalDescriptionEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
     modalDescriptionEl.blur(); // triggers change -> commitDescription
+  }
+});
+
+/** Save the custom avatar initial when it changes (on blur or Enter). The value
+ *  is trimmed and capped at two characters; an empty value clears it, so the
+ *  avatar falls back to the first letter of the name. */
+async function commitInitial() {
+  const ws = selected();
+  if (!ws) return;
+  const initial = modalInitialEl.value.trim().slice(0, 2);
+  if (initial === (ws.initial || "")) return; // unchanged
+  await invoke("set_initial", { id: ws.id, initial });
+  await refresh();
+}
+
+modalInitialEl.addEventListener("change", commitInitial);
+modalInitialEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    modalInitialEl.blur(); // triggers change -> commitInitial
   }
 });
 

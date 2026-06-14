@@ -82,6 +82,11 @@ pub struct Workspace {
     /// every project shows a distinct bar even before the user picks one.
     #[serde(default)]
     pub color: String,
+    /// A custom short label for the project's avatar and the collapsed sidebar
+    /// rail. At most two characters. Empty means "use the first letter of the
+    /// name" (the frontend derives it), so the rail always shows something.
+    #[serde(default)]
+    pub initial: String,
     /// True when the user has set this project "off work": it is moved to the
     /// Shelved section of the sidebar and hidden from the active project list
     /// until the user brings it back. Fully reversible — no data (paths,
@@ -182,6 +187,7 @@ pub fn add_workspace(
         terminal_command: String::new(),
         description: String::new(),
         color: String::new(),
+        initial: String::new(),
         shelved: false,
     };
     data.workspaces.push(workspace.clone());
@@ -500,6 +506,31 @@ pub fn set_color(state: State<WorkspaceState>, id: String, color: String) -> Res
     state.save(&data)
 }
 
+/// Set (or clear) the project's custom initial — the short label shown as its
+/// avatar and on the collapsed sidebar rail. The text is trimmed; an empty
+/// string clears it, so the avatar falls back to the first letter of the name.
+/// Capped at two characters so it always fits the square avatar; a longer value
+/// is rejected so a label that would overflow can never reach the store.
+#[tauri::command]
+pub fn set_initial(
+    state: State<WorkspaceState>,
+    id: String,
+    initial: String,
+) -> Result<(), String> {
+    let initial = initial.trim().to_string();
+    if !is_valid_initial(&initial) {
+        return Err("initial must be at most 2 characters".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.initial = initial;
+    state.save(&data)
+}
+
 /// Set or clear a workspace's "shelved" (off-work) flag. A shelved workspace is
 /// moved to the Shelved section of the sidebar and hidden from the active project
 /// list until the user brings it back. The workspace and all of its data are kept
@@ -527,6 +558,13 @@ fn is_hex_color(s: &str) -> bool {
     bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(u8::is_ascii_hexdigit)
 }
 
+/// True when `s` is an acceptable custom initial: at most two characters,
+/// counted by Unicode scalar value so a multi-byte glyph (e.g. an emoji) counts
+/// as one. An empty string is allowed too — it clears the custom initial.
+fn is_valid_initial(s: &str) -> bool {
+    s.chars().count() <= 2
+}
+
 /// Open the native folder picker and return the chosen path, or `None` if the
 /// user cancelled. Done in Rust so the web view needs no bundler or plugin JS.
 /// `blocking_pick_folder` is safe here: the command runs off the main thread,
@@ -542,7 +580,7 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_hex_color;
+    use super::{is_hex_color, is_valid_initial};
 
     #[test]
     fn accepts_valid_six_digit_hex() {
@@ -559,5 +597,19 @@ mod tests {
         assert!(!is_hex_color("#1f6feb0"), "too long");
         assert!(!is_hex_color("#12345g"), "non-hex digit");
         assert!(!is_hex_color("#12 456"), "whitespace inside");
+    }
+
+    #[test]
+    fn accepts_initial_of_zero_to_two_chars() {
+        assert!(is_valid_initial(""), "empty clears the custom initial");
+        assert!(is_valid_initial("A"));
+        assert!(is_valid_initial("AB"));
+        assert!(is_valid_initial("🦀"), "one multi-byte glyph counts as one");
+    }
+
+    #[test]
+    fn rejects_initial_longer_than_two_chars() {
+        assert!(!is_valid_initial("ABC"));
+        assert!(!is_valid_initial("hello"));
     }
 }
