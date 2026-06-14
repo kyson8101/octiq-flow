@@ -272,6 +272,10 @@ export function badgeTab(id) {
   if (!entry) return;
   attention.add(id);
   entry.group._paintAttention(id, true);
+  // A tab waiting for input is, by definition, not "working" — drop its working
+  // dot at once so the two indicators never show together (the poll would
+  // otherwise leave the working dot up until its next tick).
+  if (setWorking(id, false)) emitWorkingChange();
   emitAttentionChange();
 }
 
@@ -289,6 +293,75 @@ export function clearAttention(id) {
   invoke("pty_clear_attention", { id }).catch(() => {});
   emitAttentionChange();
 }
+
+// ---- Working flags --------------------------------------------------------
+// Set of pty ids whose agent is currently WORKING: a non-shell process is the
+// PTY's foreground (backend `pty_agent_running`) AND the tab is NOT flagged
+// "waiting for you" (not in the attention set). A tab in here shows a sage dot
+// on its tab; working.js counts them per project for the sidebar. The set is
+// refreshed by a poll (the foreground check is not event-driven, unlike
+// attention) and trimmed the instant a tab flips to waiting or closes, so a
+// stale dot never lingers.
+const working = new Set();
+
+// How often to poll the backend for the per-tab foreground state. ~1.5s is
+// snappy without being heavy — one cheap foreground-pgid read per live PTY.
+const WORKING_POLL_MS = 1500;
+
+/** The pty ids whose agent is currently working, in insertion order. */
+export function workingList() {
+  return [...working];
+}
+
+// Fire a DOM event so working.js (and anything else) can rebuild its UI when
+// the working set changes. Detail carries a fresh snapshot of the ids.
+function emitWorkingChange() {
+  window.dispatchEvent(
+    new CustomEvent("tg-working-change", { detail: [...working] }),
+  );
+}
+
+/** Set or clear a tab's working flag and repaint its tab, returning whether the
+ *  set actually changed. A no-op when the value is unchanged or the id is
+ *  unknown (its terminal was closed). Does NOT emit — the caller batches one
+ *  emit per change so a poll that moves many tabs fires a single event. */
+function setWorking(id, on) {
+  if (on === working.has(id)) return false;
+  if (on) working.add(id);
+  else working.delete(id);
+  entryFor(id)?.group._paintWorking(id, on);
+  return true;
+}
+
+// Poll the backend for which tabs have a foreground agent, then derive the
+// working set: working = foreground-agent AND NOT waiting-for-input. Only ids
+// we still know about (idToEntry) are considered; a closed session the backend
+// no longer reports falls out below. Repaints only the tabs that changed and
+// emits one change event per poll that moved anything.
+async function pollWorking() {
+  let running;
+  try {
+    running = await invoke("pty_agent_running");
+  } catch {
+    return; // backend hiccup: keep the current dots, try again next tick
+  }
+  let changed = false;
+  for (const id of idToEntry.keys()) {
+    const isWorking = running[id] === true && !attention.has(id);
+    if (setWorking(id, isWorking)) changed = true;
+  }
+  // Backstop: drop any working id whose terminal vanished between polls. The
+  // loop above only visits live ids, so a just-closed one would otherwise stick
+  // (closeTerminal also clears it, so this only matters for an odd race).
+  for (const id of [...working]) {
+    if (!idToEntry.has(id)) {
+      working.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) emitWorkingChange();
+}
+setInterval(pollWorking, WORKING_POLL_MS);
 
 // modes.js owns the top-level view router but does not export a setMode. We
 // switch views by clicking the matching mode button, exactly as a user would.
@@ -806,6 +879,14 @@ class TerminalGroup {
     entry.tabEl.classList.toggle("tg-tab-attention", on);
   }
 
+  // Paint or un-paint a tab's "working" badge (a sage dot before the label).
+  // Called by the module-level setWorking so the Set and the DOM stay in step.
+  _paintWorking(ptyId, on) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    entry.tabEl.classList.toggle("tg-tab-working", on);
+  }
+
   // ---- Last-sent bar ------------------------------------------------------
   // Write `text` into the bottom bar, or show the dim placeholder when it is
   // null/empty (no line sent yet in the active terminal). Kept tiny: one text
@@ -842,6 +923,13 @@ class TerminalGroup {
     if (attention.has(ptyId)) {
       attention.delete(ptyId);
       emitAttentionChange();
+    }
+    // Likewise drop the working flag so the per-project count never includes a
+    // closed terminal (the poll backstop would catch it, but not before the
+    // next tick).
+    if (working.has(ptyId)) {
+      working.delete(ptyId);
+      emitWorkingChange();
     }
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();

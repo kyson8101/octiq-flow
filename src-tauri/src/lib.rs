@@ -114,6 +114,7 @@ pub fn run() {
             pty::pty_close,
             pty::pty_list_active,
             pty::pty_clear_attention,
+            pty::pty_agent_running,
             utilities::list_templates,
             utilities::add_template,
             utilities::update_template,

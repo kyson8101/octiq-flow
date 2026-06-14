@@ -1162,6 +1162,59 @@ body {
   box-shadow: 0 0 0 2px var(--bg-0);
 }
 
+/* Per-project "agents working" badge: a small sage pill ("● N") at a row's right
+   end, counting that project's terminals whose agent is busy (a foreground job
+   running and NOT waiting for input). Sage, so it reads apart from the amber
+   attention dot — a project can show both at once. Managed by working.js. */
+.ws-working-badge {
+  align-self: center;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-soft-border);
+}
+
+.ws-working-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: tg-working-pulse 1.2s ease-in-out infinite;
+}
+
+/* On the collapsed rail the pill (like the name + count) is hidden; show the
+   working state as a sage dot at the avatar's BOTTOM-right corner, so it never
+   collides with the amber attention dot at the top-right. The 2px ring is the
+   rail background, so the dot reads as a cutout. */
+.sidebar.collapsed .ws-working-badge {
+  display: none;
+}
+
+.sidebar.collapsed .ws-item-working .ws-item-initial::before {
+  content: "";
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-working-dot {
+    animation: none;
+  }
+}
+
 /* Settings gear: a mode button pushed to the right of the mode bar. It reuses
    the .modebtn base (wiring + the active highlight) and only changes position. */
 /* Use a doubled-class selector (.modebtn.modebtn-gear) so this beats the base
@@ -2439,6 +2492,34 @@ body {
 /* Respect users who prefer no motion: keep the dot, drop the pulse. */
 @media (prefers-reduced-motion: reduce) {
   .tg-tab-attention .tg-tab-label::before {
+    animation: none;
+  }
+}
+
+/* Tab badge: a terminal whose agent is WORKING (a foreground job running and
+   NOT waiting for input) gets a sage dot before its label, so the user can spot
+   a busy tab even in another project/mode. Sage distinguishes it from the amber
+   attention dot; a tab is never both at once (a waiting tab is not "working"). */
+.tg-tab-working .tg-tab-label::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-tint-strong);
+  animation: tg-working-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tg-working-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tg-tab-working .tg-tab-label::before {
     animation: none;
   }
 }

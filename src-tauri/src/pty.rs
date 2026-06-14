@@ -88,6 +88,23 @@ impl PtyManager {
             .filter_map(|s| s.persist_key.clone().map(|k| (k, s.agent_running())))
             .collect()
     }
+
+    /// For every live session, whether an agent (a non-shell process) is the
+    /// PTY's current foreground process. Keyed by the session id the frontend
+    /// assigned at spawn, so the frontend can map each result straight to its
+    /// terminal/tab and show a "working" indicator. A poisoned lock yields an
+    /// empty map. On non-Unix every value is `true` (there is no
+    /// foreground-process query — see `Session::agent_running`), so the
+    /// indicator degrades to "an agent is open".
+    pub fn agent_running_by_id(&self) -> HashMap<String, bool> {
+        let Ok(sessions) = self.sessions.lock() else {
+            return HashMap::new();
+        };
+        sessions
+            .iter()
+            .map(|(id, s)| (id.clone(), s.agent_running()))
+            .collect()
+    }
 }
 
 /// Payload for the `pty-output` event. The frontend matches `id` to the right
@@ -653,6 +670,16 @@ pub fn pty_close(manager: State<PtyManager>, id: String) -> Result<(), String> {
 pub fn pty_list_active(manager: State<PtyManager>) -> Result<Vec<String>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions.keys().cloned().collect())
+}
+
+/// Report, per live session id, whether an agent (a non-shell foreground
+/// process) is currently running in that PTY. The frontend polls this to show a
+/// "working" badge on each terminal tab and a per-project count in the sidebar.
+/// See `Session::agent_running` for the signal and its limits (it stays true
+/// while an agent sits idle at its own prompt; non-Unix always reports true).
+#[tauri::command]
+pub fn pty_agent_running(manager: State<PtyManager>) -> HashMap<String, bool> {
+    manager.agent_running_by_id()
 }
 
 /// Lower one session's attention flag, called when the user focuses that
