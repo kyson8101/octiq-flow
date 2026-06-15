@@ -220,6 +220,11 @@ listen("pty-output", (event) => {
     // persists scrollback (project.js) uses this to mark the terminal dirty so
     // the next save captures the new output.
     entry.group.onOutput?.(id);
+    // Output activity drives the "working" dot (tmux monitor-activity style):
+    // stamp the time, and if this is an agent tab that is not waiting for input,
+    // light the dot at once. refreshWorking() (a timer) turns it back off once
+    // output goes silent for WORKING_IDLE_MS. See the Working flags section.
+    noteOutput(id);
   }
   if (lineSubscribers.size && entry) {
     const line = lastLine(chunk);
@@ -295,18 +300,42 @@ export function clearAttention(id) {
 }
 
 // ---- Working flags --------------------------------------------------------
-// Set of pty ids whose agent is currently WORKING: a non-shell process is the
-// PTY's foreground (backend `pty_agent_running`) AND the tab is NOT flagged
-// "waiting for you" (not in the attention set). A tab in here shows a sage dot
-// on its tab; working.js counts them per project for the sidebar. The set is
-// refreshed by a poll (the foreground check is not event-driven, unlike
-// attention) and trimmed the instant a tab flips to waiting or closes, so a
-// stale dot never lingers.
+// Set of pty ids whose AGENT IS WORKING right now. "Working" is driven by the
+// OUTPUT STREAM, tmux monitor-activity style: a thinking agent streams output
+// (spinner frames, tokens) many times a second, while an agent sitting at its
+// prompt is silent. A tab is working when ALL of these hold:
+//   - a non-shell process is the PTY's foreground (backend `pty_agent_running`)
+//     — i.e. it is an agent tab, not the bare shell prompt;
+//   - it produced output within the last WORKING_IDLE_MS (still streaming);
+//   - it is NOT flagged "waiting for you" (not in the attention set).
+// This replaces the old foreground-only check, which stayed true for the WHOLE
+// agent session (a TUI agent holds the foreground even while idle at its prompt)
+// and so pulsed forever, telling the user nothing. A tab in here shows a sage
+// dot; working.js counts them per project for the sidebar.
 const working = new Set();
 
-// How often to poll the backend for the per-tab foreground state. ~1.5s is
-// snappy without being heavy — one cheap foreground-pgid read per live PTY.
-const WORKING_POLL_MS = 1500;
+// A tab counts as working only while output keeps flowing: the dot drops this
+// many ms after the last output chunk. ~700ms keeps a thinking agent lit (its
+// spinner updates several times a second) and clears an idle prompt fast.
+const WORKING_IDLE_MS = 700;
+
+// How often to re-check for silence (turn the dot OFF once output stops) and to
+// settle a waiting/closed flip. Output turns the dot ON instantly (noteOutput),
+// so this tick only ever needs to handle turn-OFFs.
+const WORKING_TICK_MS = 300;
+
+// How often to poll the backend for the per-tab foreground state — the "is this
+// an agent tab" gate. Not event-driven (unlike output), so it is polled; ~1.5s
+// is snappy without being heavy (one cheap foreground-pgid read per live PTY).
+const FOREGROUND_POLL_MS = 1500;
+
+// Latest backend foreground snapshot: ids whose foreground is a non-shell
+// process (an agent tab). Set by pollForeground; read by isWorkingNow.
+let foregroundAgents = new Set();
+
+// id -> performance.now() of its last output chunk. Stamped by noteOutput; read
+// by isWorkingNow to tell streaming apart from silence.
+const lastOutputAt = new Map();
 
 /** The pty ids whose agent is currently working, in insertion order. */
 export function workingList() {
@@ -321,10 +350,19 @@ function emitWorkingChange() {
   );
 }
 
+/** Whether a tab is working RIGHT NOW: an agent tab (non-shell foreground), not
+ *  waiting for input, and still streaming output (a chunk within the last
+ *  WORKING_IDLE_MS). */
+function isWorkingNow(id) {
+  if (!foregroundAgents.has(id) || attention.has(id)) return false;
+  const last = lastOutputAt.get(id);
+  return last !== undefined && performance.now() - last < WORKING_IDLE_MS;
+}
+
 /** Set or clear a tab's working flag and repaint its tab, returning whether the
  *  set actually changed. A no-op when the value is unchanged or the id is
  *  unknown (its terminal was closed). Does NOT emit — the caller batches one
- *  emit per change so a poll that moves many tabs fires a single event. */
+ *  emit per change so a sweep that moves many tabs fires a single event. */
 function setWorking(id, on) {
   if (on === working.has(id)) return false;
   if (on) working.add(id);
@@ -333,35 +371,47 @@ function setWorking(id, on) {
   return true;
 }
 
-// Poll the backend for which tabs have a foreground agent, then derive the
-// working set: working = foreground-agent AND NOT waiting-for-input. Only ids
-// we still know about (idToEntry) are considered; a closed session the backend
-// no longer reports falls out below. Repaints only the tabs that changed and
-// emits one change event per poll that moved anything.
-async function pollWorking() {
+/** A tab just produced output: stamp the time and, if it is an agent tab not
+ *  waiting for input, light its working dot immediately. Called from the single
+ *  pty-output listener, so the dot reacts the instant an agent starts thinking;
+ *  refreshWorking() handles the turn-off once it goes quiet. */
+function noteOutput(id) {
+  lastOutputAt.set(id, performance.now());
+  if (foregroundAgents.has(id) && !attention.has(id)) {
+    if (setWorking(id, true)) emitWorkingChange();
+  }
+}
+
+/** Recompute the working flag for the ids that could change — those already
+ *  working plus the current foreground agents — and emit once if anything moved.
+ *  This is what turns a dot OFF after its tab goes silent (WORKING_IDLE_MS),
+ *  flips to waiting, or closes; noteOutput turns dots ON. */
+function refreshWorking() {
+  let changed = false;
+  for (const id of new Set([...foregroundAgents, ...working])) {
+    if (setWorking(id, idToEntry.has(id) && isWorkingNow(id))) changed = true;
+  }
+  if (changed) emitWorkingChange();
+}
+
+// Poll the backend for which tabs have a non-shell foreground process (the
+// "agent tab" gate), refresh the snapshot, then recompute. A backend hiccup
+// keeps the last snapshot and tries again next tick.
+async function pollForeground() {
   let running;
   try {
     running = await invoke("pty_agent_running");
   } catch {
-    return; // backend hiccup: keep the current dots, try again next tick
+    return; // backend hiccup: keep the current snapshot, try again next tick
   }
-  let changed = false;
-  for (const id of idToEntry.keys()) {
-    const isWorking = running[id] === true && !attention.has(id);
-    if (setWorking(id, isWorking)) changed = true;
-  }
-  // Backstop: drop any working id whose terminal vanished between polls. The
-  // loop above only visits live ids, so a just-closed one would otherwise stick
-  // (closeTerminal also clears it, so this only matters for an odd race).
-  for (const id of [...working]) {
-    if (!idToEntry.has(id)) {
-      working.delete(id);
-      changed = true;
-    }
-  }
-  if (changed) emitWorkingChange();
+  foregroundAgents = new Set(
+    Object.keys(running).filter((id) => running[id] === true),
+  );
+  refreshWorking();
 }
-setInterval(pollWorking, WORKING_POLL_MS);
+
+setInterval(pollForeground, FOREGROUND_POLL_MS);
+setInterval(refreshWorking, WORKING_TICK_MS);
 
 // modes.js owns the top-level view router but does not export a setMode. We
 // switch views by clicking the matching mode button, exactly as a user would.
@@ -925,12 +975,13 @@ class TerminalGroup {
       emitAttentionChange();
     }
     // Likewise drop the working flag so the per-project count never includes a
-    // closed terminal (the poll backstop would catch it, but not before the
-    // next tick).
+    // closed terminal (refreshWorking would catch it, but not before the next
+    // tick). Also drop its output timestamp so the map never holds dead ids.
     if (working.has(ptyId)) {
       working.delete(ptyId);
       emitWorkingChange();
     }
+    lastOutputAt.delete(ptyId);
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();
     entry.term.dispose();
