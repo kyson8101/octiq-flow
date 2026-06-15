@@ -186,15 +186,12 @@
         </div>
       </main>
 
-      <!-- Right: collapsible panel with two tabs — Commands (registered
-           project commands, commands.js) and Git (common git actions for the
-           project's primary repo, gitactions.js). -->
+      <!-- Right: collapsible panel that stacks two sections top→bottom —
+           Commands (registered project commands, commands.js) on top and Git
+           (common git actions for the project's primary repo, gitactions.js)
+           at the bottom. Both are visible at once; no tab switching. -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
-          <div class="cmd-tabs" role="tablist">
-            <button id="cmd-tab-btn-commands" class="cmd-tab cmd-tab-active" role="tab" aria-selected="true">Commands</button>
-            <button id="cmd-tab-btn-git" class="cmd-tab" role="tab" aria-selected="false">Git</button>
-          </div>
           <button id="cmd-panel-toggle" class="icon-btn cmd-panel-toggle" title="Collapse panel" aria-expanded="true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="m6 17 5-5-5-5" />
@@ -204,9 +201,10 @@
         </div>
 
         <div class="cmd-panel-body">
-          <!-- Commands tab -->
-          <div id="cmd-tab-commands" class="cmd-tabpane">
-            <div class="cmd-panel-bar">
+          <!-- Commands section (top) -->
+          <div id="cmd-tab-commands" class="cmd-tabpane cmd-section cmd-section-commands">
+            <div class="cmd-section-head">
+              <span class="cmd-section-title">Commands</span>
               <button id="cmd-add" class="icon-btn" data-tip="Add command">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
               </button>
@@ -225,8 +223,11 @@
             <p id="cmd-empty" class="ws-empty">No commands yet. Press + to add one.</p>
           </div>
 
-          <!-- Git tab: common git actions for the project's primary repo. -->
-          <div id="cmd-tab-git" class="cmd-tabpane hidden">
+          <!-- Git section (bottom): common git actions for the project's primary repo. -->
+          <div id="cmd-tab-git" class="cmd-tabpane cmd-section cmd-section-git">
+            <div class="cmd-section-head">
+              <span class="cmd-section-title">Git</span>
+            </div>
             <p id="git-hint" class="ws-empty">Select a project to use git.</p>
 
             <div id="git-actions" class="git-actions hidden">

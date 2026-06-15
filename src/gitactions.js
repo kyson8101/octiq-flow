@@ -19,11 +19,6 @@ import { runManagedCommand } from "/commands.js";
 const { invoke } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
-const tabBtnCommands = document.querySelector("#cmd-tab-btn-commands");
-const tabBtnGit = document.querySelector("#cmd-tab-btn-git");
-const paneCommands = document.querySelector("#cmd-tab-commands");
-const paneGit = document.querySelector("#cmd-tab-git");
-
 const hintEl = document.querySelector("#git-hint");
 const actionsEl = document.querySelector("#git-actions");
 const branchNameEl = document.querySelector("#git-current-branch");
@@ -38,10 +33,6 @@ const pushBtn = document.querySelector("#git-push-btn");
 // --- State -----------------------------------------------------------------
 // The selected project, mirrored from the project-selected event.
 let project = null; // { id, name, primaryPath, paths } or null
-// "commands" | "git" — which tab is showing. Branches load lazily, only while
-// the Git tab is the active one, so switching projects costs no git call until
-// the user actually looks at the Git tab.
-let activeTab = "commands";
 // The repo's current branch, kept so a no-op "switch to same branch" is skipped.
 let currentBranch = "";
 // True only when the primary folder is a git repo (switch/commit/push enabled).
@@ -55,30 +46,14 @@ function shQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 
-// --- Tab switching ----------------------------------------------------------
-function showTab(tab) {
-  activeTab = tab;
-  const onGit = tab === "git";
-  paneCommands.classList.toggle("hidden", onGit);
-  paneGit.classList.toggle("hidden", !onGit);
-  tabBtnCommands.classList.toggle("cmd-tab-active", !onGit);
-  tabBtnGit.classList.toggle("cmd-tab-active", onGit);
-  tabBtnCommands.setAttribute("aria-selected", String(!onGit));
-  tabBtnGit.setAttribute("aria-selected", String(onGit));
-  if (onGit) loadBranches(); // refresh whenever the Git tab is opened
-}
-
-tabBtnCommands.addEventListener("click", () => showTab("commands"));
-tabBtnGit.addEventListener("click", () => showTab("git"));
-
 // --- Project selection ------------------------------------------------------
 window.addEventListener("project-selected", (e) => {
   project = e.detail || null;
   // Reset until the next branch load resolves the repo state.
   currentBranch = "";
   repoReady = false;
-  if (activeTab === "git") loadBranches();
-  else renderState();
+  // The Git section is always visible now, so load branches on every selection.
+  loadBranches();
 });
 
 // --- Branch loading + state -------------------------------------------------

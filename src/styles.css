@@ -157,42 +157,30 @@ body {
 .cmd-panel-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   flex-shrink: 0;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 
-/* Tab bar in the panel head: Commands | Git. */
-.cmd-tabs {
+/* Each stacked section's header: a small uppercase title (and, for Commands,
+   the add button) sitting above the section body. */
+.cmd-section-head {
   display: flex;
-  gap: 4px;
-  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 22px;
 }
 
-.cmd-tab {
-  padding: 4px 10px;
-  font-size: 12px;
+.cmd-section-title {
   font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
   color: var(--fg-2);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  cursor: pointer;
 }
 
-.cmd-tab:hover {
-  color: var(--fg-0);
-}
-
-.cmd-tab-active {
-  color: var(--fg-0);
-  background: var(--bg-1);
-  border-color: var(--border);
-}
-
-/* Hide the tabs and the body when collapsed; keep the toggle. */
-.cmd-panel.collapsed .cmd-tabs,
+/* Hide the body when collapsed; keep the head with the toggle. */
 .cmd-panel.collapsed .cmd-panel-body {
   display: none;
 }
@@ -222,12 +210,11 @@ body {
 .cmd-panel-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
 
-/* One tab's content. Only the active pane shows (the other has .hidden). */
+/* One section's content. Both sections show now (stacked top→bottom). */
 .cmd-tabpane {
   display: flex;
   flex-direction: column;
@@ -235,9 +222,23 @@ body {
   padding: 10px;
 }
 
-.cmd-panel-bar {
-  display: flex;
-  justify-content: flex-end;
+/* Stacked layout: Commands grows and scrolls at the top; Git sits below it,
+   pinned to the bottom with a divider and a capped height so a long command
+   list never pushes the git actions off-screen. */
+.cmd-section {
+  min-height: 0;
+}
+
+.cmd-section-commands {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.cmd-section-git {
+  flex: 0 0 auto;
+  overflow-y: auto;
+  max-height: 55%;
+  border-top: 1px solid var(--border);
 }
 
 /* Inline add/edit form, same dark styling as other forms. */
