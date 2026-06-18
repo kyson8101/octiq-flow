@@ -31,6 +31,10 @@ jobs:
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
+        with:
+          # Bootstrap Pages on first run using the workflow's pages:write token,
+          # so no manual "enable Pages" admin step is needed.
+          enablement: true
 
       - name: Upload site/ artifact
         uses: actions/upload-pages-artifact@v3
