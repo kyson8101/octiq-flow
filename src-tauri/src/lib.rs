@@ -10,19 +10,17 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
 mod agent_usage;
+mod canvas;
 mod dashboard;
 mod fsbrowse;
 mod git;
 mod git_watch;
 mod pty;
-mod schedules;
 mod terminal_layout;
-mod utilities;
+mod usage_limits;
 mod workspaces;
 use pty::PtyManager;
-use schedules::SchedulesState;
 use terminal_layout::TerminalLayoutState;
-use utilities::UtilitiesState;
 use workspaces::WorkspaceState;
 
 /// One-shot flag for the quit handshake. The first window close is intercepted
@@ -60,17 +58,16 @@ pub fn run() {
             // Multi-PTY manager: terminals are spawned by id on demand from the
             // frontend (including the boot terminal), not at setup time.
             app.manage(PtyManager::default());
-            // Utilities template store (labelled agent-launch prompts).
-            app.manage(UtilitiesState::load(app.handle()));
-            // Schedule store (daily "cron job" terminal launches). The frontend
-            // checks the clock and fires; the backend just keeps the saved jobs.
-            app.manage(SchedulesState::load(app.handle()));
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load(app.handle()));
             // Fs watcher behind the sidebar's live git counts; the frontend
             // installs the watched paths via git_watch_paths after each render.
             app.manage(git_watch::GitWatchState::default());
+            // Fs watcher behind the canvas pane; the frontend points it at the
+            // selected project's ~/.octiqflow/canvas/<key> folder via canvas_watch
+            // so an agent's document writes re-render the pane live.
+            app.manage(canvas::CanvasWatchState::default());
             // Keep the agent session-capture hook script on disk current with this
             // build, so resume fixes ship without the user re-running setup from
             // Settings. Writes only the script file (never an agent's settings);
@@ -115,16 +112,6 @@ pub fn run() {
             pty::pty_list_active,
             pty::pty_clear_attention,
             pty::pty_agent_running,
-            utilities::list_templates,
-            utilities::add_template,
-            utilities::update_template,
-            utilities::delete_template,
-            schedules::list_schedules,
-            schedules::add_schedule,
-            schedules::update_schedule,
-            schedules::delete_schedule,
-            schedules::set_schedule_enabled,
-            schedules::mark_schedule_fired,
             workspaces::list_workspaces,
             workspaces::add_workspace,
             workspaces::set_primary_path,
@@ -153,6 +140,7 @@ pub fn run() {
             agent_resume::agent_resume_cmd,
             agent_resume::agent_tab_info,
             agent_usage::agent_usage_all,
+            usage_limits::usage_summary,
             agent_resume::setup_agent_hooks,
             agent_resume::prune_exited_agent_sessions,
             confirm_close,
@@ -164,6 +152,12 @@ pub fn run() {
             git::git_local_branches,
             fsbrowse::list_dir,
             fsbrowse::read_file_preview,
+            canvas::canvas_dir,
+            canvas::canvas_list,
+            canvas::canvas_read,
+            canvas::canvas_watch,
+            canvas::install_canvas_skill,
+            canvas::install_canvas_codex_guide,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,6 +1,6 @@
 // Shared terminal-tab-group primitive. This file is the SINGLE source of
 // terminal management for the whole app. Project (card 04), Chat (card 07),
-// and Utilities (card 09) all create groups through createTerminalGroup().
+// and command terminals create groups through createTerminalGroup().
 //
 // One xterm per PTY. One global pty-output listener routes { id, chunk } to the
 // right xterm across ALL groups. Terminals stay alive when their group is
@@ -342,6 +342,33 @@ export function workingList() {
   return [...working];
 }
 
+/**
+ * Snapshot of EVERY live terminal across the whole app, for the Agent World
+ * view. One plain object per terminal so a consumer never touches a group's
+ * internals:
+ *   - id         the pty id (also the key alerts/working use)
+ *   - prefix     the group id prefix ("<projectId>", "cmd:<projectId>",
+ *                "chat", "util", "sched") — Agent World maps this to a room
+ *   - title      the tab's current title (agent name / first command / "term N")
+ *   - lastSent   the latest line the user typed + sent in the tab, or null
+ *   - working    true while the agent streams output (sage "working" dot)
+ *   - attention  true while the tab is flagged waiting-for-you
+ * Order follows idToEntry insertion (terminals appear as they were opened).
+ */
+export function terminalSnapshot() {
+  return [...idToEntry.entries()].map(([id, { group }]) => {
+    const tab = group.tabs.get(id);
+    return {
+      id,
+      prefix: group.idPrefix,
+      title: tab?.title || id,
+      lastSent: tab?.lastSent || null,
+      working: working.has(id),
+      attention: attention.has(id),
+    };
+  });
+}
+
 // Fire a DOM event so working.js (and anything else) can rebuild its UI when
 // the working set changes. Detail carries a fresh snapshot of the ids.
 function emitWorkingChange() {
@@ -435,6 +462,27 @@ export function focusTerminal(id) {
   entry.group.activate(id);
   // Focusing a terminal is the user acknowledging the alert: clear it.
   clearAttention(id);
+}
+
+/**
+ * Write `text` into the ACTIVE terminal of the project group whose id prefix is
+ * `prefix` (the project id), exactly as if the user typed it (the app's core
+ * pty_write trick). With `submit` true, also send Enter ("\r") so an agent runs
+ * it. Brings that terminal to the front so the user sees the reply. Returns true
+ * if a terminal received the text, or false if the project has no open terminal.
+ * Used by the canvas "ask about this" composer (canvas.js).
+ */
+export function sendToProjectTerminal(prefix, text, submit = false) {
+  for (const { group } of idToEntry.values()) {
+    if (group.idPrefix === prefix && group.activeId) {
+      const id = group.activeId;
+      invoke("pty_write", { id, data: submit ? `${text}\r` : text }).catch(() => {});
+      group.show();
+      group.activate(id);
+      return true;
+    }
+  }
+  return false;
 }
 
 // Sizing: every pane has its own ResizeObserver (see newTerminal), so window
@@ -686,6 +734,7 @@ class TerminalGroup {
     titleManual = false,
     persistKey = null,
     restoreScrollback = "",
+    canvasKey = null,
   } = {}) {
     // No explicit title -> auto-number from the monotonic counter (P4). An
     // explicit title (command label, chat label) is used verbatim.
@@ -828,7 +877,7 @@ class TerminalGroup {
     // stays so the user sees what happened.
     const { shell } = getTerminalSettings();
     try {
-      await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell });
+      await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
     } catch (err) {
       reportTermError(term, `failed to start terminal: ${err}`);
     }
@@ -955,8 +1004,8 @@ class TerminalGroup {
     this._renderLastSent(this.tabs.get(ptyId)?.lastSent ?? null);
   }
 
-  // Which top-level mode this group lives in ("project" | "chat" | "utilities"
-  // | "dashboard"), read from the enclosing #view-<mode> section. Returns null
+  // Which top-level mode this group lives in, read from the enclosing
+  // #view-<mode> section. Returns null
   // if the group is not (yet) inside a view. Used by focusTerminal to switch
   // modes before activating a tab in another mode.
   _mode() {

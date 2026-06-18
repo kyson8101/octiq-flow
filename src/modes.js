@@ -1,12 +1,12 @@
 // Frontend: top-level mode router (card 03).
-// Four modes — Project, Chat, Utilities, Dashboard — share the shell.
+// Project, Chat, Agents, Dashboard, and Settings share the shell.
 // Only one view shows at a time; the others are hidden. The chosen mode is
 // remembered in localStorage so it comes back on restart. Plain DOM only —
 // no Tauri import needed here.
 
 // The modes, in bar order. Each maps to a `#view-<mode>` section in index.html.
 // "settings" has no tab — it is opened by the gear button on the right.
-const MODES = ["project", "chat", "utilities", "scheduler", "dashboard", "settings"];
+const MODES = ["project", "chat", "agents", "dashboard", "settings"];
 
 // Special views: full-screen pages opened programmatically (no mode tab, never
 // persisted/restored). "editproject" is opened from a project's right-click
@@ -49,7 +49,7 @@ function setMode(mode) {
   // Remember the choice for next launch.
   localStorage.setItem(KEY, mode);
 
-  // Several views hold xterm terminals (Project, Chat, Utilities). xterm cannot
+  // Several views hold xterm terminals (Project, Chat). xterm cannot
   // measure size while its container is hidden, so on EVERY mode switch we nudge
   // a resize on the next frame. terminals.js listens for window resize and
   // refits the active terminal of every visible group, so whichever mode just

@@ -119,6 +119,7 @@ async function spawnInProject(id) {
   await rec.group.newTerminal({
     cwd: rec.primaryPath,
     startCmd: rec.terminalCommand || null,
+    canvasKey: id,
   });
 }
 
@@ -140,6 +141,7 @@ async function spawnAgentInProject(id, agent) {
     cwd: rec.primaryPath,
     startCmd,
     title,
+    canvasKey: id,
   });
 }
 
@@ -163,6 +165,7 @@ async function spawnStartup(id) {
       cwd: rec.primaryPath,
       startCmd: entry.cmd || rec.terminalCommand || null,
       title: entry.title || undefined,
+      canvasKey: id,
     });
   }
 }
@@ -210,6 +213,7 @@ async function restoreProject(id, saved) {
         cwd,
         startCmd,
         restoreScrollback,
+        canvasKey: id,
       });
     }
   } finally {

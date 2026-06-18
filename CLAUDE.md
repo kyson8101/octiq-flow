@@ -52,7 +52,7 @@ PTY output ──► reader thread ──► "pty-output" {id, chunk} event ─�
   app does not inherit the interactive shell `PATH`, so `claude` would not be
   found otherwise).
 - **`src/terminals.js`** is the **single** source of terminal management on the
-  frontend (`createTerminalGroup`). Project, Chat, and Utilities modes all create
+  frontend (`createTerminalGroup`). Project, Chat, and command terminals create
   groups through it. One global `pty-output` listener lives here and fans chunks
   out to every group's terminals. Terminals stay alive (scrollback in memory)
   when their group is hidden.
@@ -73,7 +73,6 @@ cause. Modules, by responsibility:
   terminals rebuild after restart (a fresh shell per tab, old scrollback written
   in above the new prompt).
 - `workspaces.rs` — the "project" store (a project groups several folder paths).
-- `utilities.rs` — labelled agent-launch prompt templates (not project-bound).
 - `git.rs` — the **single** git-read backend (status summary, changed files,
   file diff). Read-only; shells out to `git`. Resolves each project path to its
   repo top-level and de-dups so one repo shows once. The sidebar counts, the
@@ -96,7 +95,7 @@ not an npm import).
   imports use absolute paths (`import { x } from "/settings.js"`).
 - **Modules talk via window CustomEvents**, not direct imports — e.g. `workspaces.js`
   emits `project-selected`, and `project.js` / `commands.js` / `gitdiff.js`
-  react. `modes.js` is the top-level view router (Project / Chat / Utilities /
+  react. `modes.js` is the top-level view router (Project / Chat / Agents /
   Dashboard / Settings; one view visible at a time, choice in localStorage).
 - **xterm.js is vendored** in `src/vendor/` (no CDN, works offline). Terminals
   render with the **WebGL** addon, not the DOM renderer — the DOM renderer leaves
@@ -108,7 +107,7 @@ not an npm import).
 
 | Store | Path | Owner |
 | --- | --- | --- |
-| workspaces / utilities / terminal layout + scrollback | Tauri app-data dir (JSON) | `workspaces.rs`, `utilities.rs`, `terminal_layout.rs` |
+| workspaces / terminal layout + scrollback | Tauri app-data dir (JSON) | `workspaces.rs`, `terminal_layout.rs` |
 | agent session map | **fixed** `~/.octiqflow/agent-sessions.json` | written by the external hook, read/pruned by `agent_resume.rs` |
 | terminal appearance (font, size, line height) + last mode | browser `localStorage` | `settings.js`, `modes.js` |
 

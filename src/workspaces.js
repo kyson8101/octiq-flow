@@ -118,6 +118,17 @@ function barColor(ws) {
   return c || autoColor(ws);
 }
 
+/** Lightweight project metadata for other views (Agent World): one entry per
+ *  loaded workspace with its id, display name, and resolved accent color. Reads
+ *  the in-memory list this module already keeps fresh via refresh(). */
+export function workspaceMeta() {
+  return workspaces.map((w) => ({
+    id: w.id,
+    name: w.name || "Untitled",
+    color: barColor(w),
+  }));
+}
+
 /** The currently selected workspace, or undefined. */
 function selected() {
   return workspaces.find((w) => w.id === selectedId);

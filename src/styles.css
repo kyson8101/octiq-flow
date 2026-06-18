@@ -158,6 +158,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 4px;
   flex-shrink: 0;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
@@ -185,6 +186,17 @@ body {
   display: none;
 }
 
+/* Collapsed (44px) panel: stack the head's buttons vertically so the canvas
+   toggle and the expand chevron both fit in the narrow rail instead of
+   overflowing onto the canvas pane / terminals to their left. */
+.cmd-panel.collapsed .cmd-panel-head {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 4px;
+}
+
 /* Panel toggle: chevrons point right (collapse) and flip when collapsed. */
 .cmd-panel-toggle {
   display: inline-flex;
@@ -205,6 +217,255 @@ body {
 
 .cmd-panel.collapsed .cmd-panel-toggle svg {
   transform: rotate(180deg);
+}
+
+/* Canvas toggle in the command-panel head: lights up while the canvas is open. */
+.cmd-panel-canvas-toggle.active {
+  color: var(--accent);
+}
+
+/* ===================================================================== */
+/* === Canvas pane ===================================================== */
+/* A togglable split between .center and the command panel. Shows a live   */
+/* HTML/MD document an agent writes; canvas.js owns it. Hidden by default. */
+
+/* Thin drag handle to the LEFT of the pane (between terminals and canvas). */
+.canvas-resizer {
+  flex-shrink: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: var(--bg-sunken);
+  border-left: 1px solid var(--border);
+  transition: background 0.12s ease;
+}
+
+.canvas-resizer:hover,
+.canvas-resizer.dragging {
+  background: var(--accent);
+}
+
+.canvas-pane {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 460px;
+  min-width: 0;
+  height: 100%;
+  background: var(--bg-0);
+  border-left: 1px solid var(--border);
+}
+
+.canvas-pane.hidden,
+.canvas-resizer.hidden {
+  display: none;
+}
+
+.canvas-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.canvas-title {
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+
+/* Document picker grows to fill the head; long names ellipsize via the select. */
+.canvas-doc-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.canvas-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.canvas-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* The sandboxed render frame fills the body. White default keeps a flash of
+   light from appearing before the document's own dark theme paints. */
+.canvas-frame {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg-0);
+}
+
+.canvas-frame.hidden {
+  display: none;
+}
+
+.canvas-empty {
+  margin: auto;
+  max-width: 280px;
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-2);
+}
+
+.canvas-empty.hidden {
+  display: none;
+}
+
+.canvas-empty-title {
+  margin: 0 0 8px;
+  font-weight: 600;
+  color: var(--fg-1);
+}
+
+.canvas-empty-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.canvas-empty-status {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.canvas-empty-path {
+  margin: 12px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--fg-2);
+  word-break: break-all;
+}
+
+.canvas-empty-path:empty {
+  display: none;
+}
+
+/* Short flash when the canvas changes: an inner sage ring that fades out. Used
+   on the header while the pane is open, and on the toggle button while closed,
+   so a watcher-driven update is noticed without staring at the pane. */
+@keyframes canvasPulse {
+  0% {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  100% {
+    box-shadow: inset 0 0 0 2px transparent;
+  }
+}
+
+.canvas-pulse {
+  animation: canvasPulse 0.9s ease-out;
+}
+
+/* Highlight-to-ask: floating button by the selection + a docked composer. Both
+   are absolute children of .canvas-body (position:relative), layered over the
+   sandboxed frame. */
+.canvas-ask-btn {
+  position: absolute;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bg-0);
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+
+.canvas-ask-btn:hover {
+  filter: brightness(1.08);
+}
+
+.canvas-ask-btn.hidden {
+  display: none;
+}
+
+.canvas-ask {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.canvas-ask.hidden {
+  display: none;
+}
+
+/* The quoted selection above the input. */
+.canvas-ask-quote {
+  max-height: 64px;
+  overflow: auto;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-2);
+  background: var(--bg-0);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+}
+
+.canvas-ask-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 8px 10px;
+  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.canvas-ask-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.canvas-ask-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.canvas-ask-status {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg-2);
 }
 
 .cmd-panel-body {
@@ -982,6 +1243,103 @@ body {
   font: inherit;
 }
 
+/* ===================================================================== */
+/* === Usage footer (5-hour + weekly limits, Claude & Codex) =========== */
+/* Slim always-visible bar at the bottom of the shell, across every mode. */
+.usage-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 12px;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  color: var(--fg-2);
+  font-size: 11px;
+  line-height: 1;
+  user-select: none;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+/* Empty bar (no data yet / both providers down): collapse the border so it does
+   not show as a stray line before the first render. */
+.usage-bar:empty {
+  border-top-color: transparent;
+}
+
+.usage-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.usage-agent {
+  font-weight: 600;
+  color: var(--fg-1);
+  letter-spacing: 0.02em;
+}
+
+/* The thin divider between the two providers. */
+.usage-sep {
+  width: 1px;
+  height: 13px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+
+.usage-meter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.usage-meter-label {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-meter-track {
+  position: relative;
+  width: 46px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.usage-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+/* Severity tints the fill: calm sage, amber warning, red when nearly spent. */
+.usage-meter-track.is-ok .usage-meter-fill {
+  background: var(--accent);
+}
+.usage-meter-track.is-warn .usage-meter-fill {
+  background: var(--warn);
+}
+.usage-meter-track.is-danger .usage-meter-fill {
+  background: var(--danger);
+}
+
+.usage-meter-val {
+  color: var(--fg-1);
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+}
+
+/* The dash shown for an unavailable provider (not signed in, no session yet). */
+.usage-note {
+  color: var(--fg-3);
+}
+
 .pf-name {
   font-weight: 600;
   font-size: 12px;
@@ -1530,11 +1888,16 @@ body {
   overflow-x: auto;
 }
 
+/* Do NOT let the tabs box shrink: a tab's min-content width (padding + close
+   button) cannot fall below ~40px, so when many tabs pile up a shrinkable box
+   would clip narrower than its children and the tabs would spill out over the
+   "+" and "Claude | Codex" controls. Keeping it at content width makes the
+   whole .tg-strip scroll (overflow-x:auto) instead, so nothing overlaps. */
 .tg-tabs {
   display: flex;
   align-items: stretch;
   gap: 2px;
-  min-width: 0;
+  flex-shrink: 0;
 }
 
 .tg-tab {
@@ -1763,328 +2126,6 @@ body {
 }
 
 /* ===================================================================== */
-/* === Card 09 — Utilities mode ======================================== */
-/* ===================================================================== */
-/* ---- Utilities mode (card 09) ---------------------------------------- */
-/* Left = template list + editor; right = run-terminal area. Fills the view. */
-.util-layout {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  background: var(--bg-0);
-}
-
-/* Left panel: scrollable list + inline form. Fixed-ish width, dark themed. */
-.util-panel {
-  display: flex;
-  flex-direction: column;
-  width: 380px;
-  min-width: 320px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--border);
-  background: var(--bg-1);
-  overflow-y: auto;
-}
-
-.util-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.util-head-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-2);
-}
-
-/* Template list */
-.util-list {
-  list-style: none;
-  margin: 0;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.util-empty {
-  padding: 24px 16px;
-  text-align: center;
-  font-size: 13px;
-  color: var(--fg-3);
-}
-
-.util-row {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-}
-
-.util-row-main {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.util-row-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.util-row-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-0);
-}
-
-.util-tag {
-  font-size: 11px;
-  color: var(--fg-1);
-  background: var(--bg-1);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 1px 8px;
-}
-
-.util-tag-agent {
-  color: var(--accent);
-  border-color: var(--accent-soft-border);
-}
-
-.util-tag-hotkey {
-  color: var(--accent);
-  border-color: var(--accent-soft-border);
-}
-
-.util-row-prompt {
-  font-size: 12px;
-  color: var(--fg-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-.util-row-cwd {
-  font-size: 11px;
-  color: var(--fg-3);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.util-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* Run keeps a tiny label next to its play icon — it is the row's primary
-   action; edit/delete stay icon-only. */
-.util-run {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.util-run svg {
-  display: block;
-}
-
-.util-danger {
-  color: var(--danger);
-  border-color: var(--danger-soft-border);
-}
-
-.util-danger:hover {
-  background: var(--danger-tint);
-  border-color: var(--danger);
-  color: var(--danger);
-}
-
-/* Inline add/edit form */
-.util-form {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 8px;
-  padding: 12px;
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-}
-
-.util-form-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-0);
-  margin-bottom: 6px;
-}
-
-.util-select {
-  width: 100%;
-  padding: 7px 8px;
-  margin-bottom: 4px;
-  font-size: 13px;
-  color: var(--fg-0);
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  outline: none;
-}
-
-.util-select:focus {
-  border-color: var(--accent);
-}
-
-.util-textarea {
-  width: 100%;
-  padding: 7px 8px;
-  margin-bottom: 4px;
-  font-family: inherit;
-  font-size: 13px;
-  color: var(--fg-0);
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  outline: none;
-  resize: vertical;
-}
-
-.util-textarea:focus {
-  border-color: var(--accent);
-}
-
-/* Discoverability hint under the prompt textarea: how {{name}} fields work. */
-.util-hint {
-  margin-bottom: 8px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: var(--fg-2);
-}
-
-.util-hint code {
-  padding: 1px 4px;
-  font-size: 11px;
-  color: var(--fg-1);
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-.util-cwd-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.util-cwd-path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  color: var(--fg-1);
-}
-
-.util-cwd-path.unset {
-  color: var(--fg-3);
-}
-
-.util-form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.util-form-foot {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  margin-top: 10px;
-}
-
-/* Right area: holds the shared terminal group for template runs. */
-.util-terminals {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg-0);
-}
-
-/* ===================================================================== */
-/* === Scheduler mode ================================================== */
-/* Reuses the Utilities list/form/terminal classes; only the bits unique to */
-/* a daily job (the time tag, the native time picker, the enabled toggle,   */
-/* the disabled-row dim, and the top note) are styled here.                 */
-/* ===================================================================== */
-
-/* The "runs only while the app is open" note above the job list. */
-.sched-note {
-  margin: 0 8px 8px;
-}
-
-/* The time badge on a job row — accent-tinted so the run time reads first. */
-.sched-time-tag {
-  color: var(--accent);
-  border-color: var(--accent-soft-border);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-/* The "off" badge and the dimmed look of a disabled job row. */
-.sched-off-tag {
-  color: var(--fg-3);
-}
-
-.sched-row-off {
-  opacity: 0.55;
-}
-
-/* Native time picker: keep it dark (color-scheme drives the spinner/clock UI)
-   and sized like a field rather than stretched full width. */
-.sched-time-input {
-  width: 140px;
-  margin-bottom: 6px;
-  color-scheme: dark;
-}
-
-/* Enabled checkbox + label as one aligned row in the form. */
-.sched-enabled-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 4px 0 2px;
-  font-size: 13px;
-  color: var(--fg-1);
-  cursor: pointer;
-}
-
-.sched-enabled-row input {
-  accent-color: var(--accent);
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-}
-
-/* ===================================================================== */
 /* === Card 10 — Dashboard mode ======================================== */
 /* ===================================================================== */
 /* ---- Dashboard mode (card 10): read-only widget block grid ----------- */
@@ -2282,7 +2323,7 @@ body {
   color: var(--fg-1);
 }
 
-/* A project row is clickable (jump to that project); Chat/Utilities are not. */
+/* A project row is clickable (jump to that project); Chat is not. */
 .dash-term-jump {
   cursor: pointer;
   margin: 0 -6px;
@@ -3396,8 +3437,6 @@ body {
 .inline-input:focus,
 .inject-input:focus,
 .git-select:focus,
-.util-select:focus,
-.util-textarea:focus,
 .settings-select:focus {
   box-shadow: 0 0 0 3px var(--accent-tint-faint);
 }
@@ -3435,4 +3474,1012 @@ body {
   #app-tooltip {
     transition: none;
   }
+}
+
+/* ===================================================================== */
+/* === Agent World mode ================================================ */
+/* A playful "virtual office": every live terminal is a little agent at a */
+/* desk, grouped into per-project rooms. A speech bubble shows what it is  */
+/* doing; a bouncing emoji flags an agent waiting for you. agentworld.js   */
+/* fills #aw-floor. Mirrors the Dashboard header for a consistent look.    */
+
+.aw-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.aw-head-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.aw-head-sub {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+/* The view body: hosts the three.js office canvas + the HTML label overlay. */
+.aw-floor {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+
+.aw-floor.hidden {
+  display: none;
+}
+
+/* The three.js canvas fills the floor; the office art is drawn inside it. */
+.aw-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* HTML layer above the canvas: one label per agent (name + speech bubble).
+   Clicks fall through to the canvas (the sprite raycast handles them), so the
+   overlay never eats pointer events. */
+.aw-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* One agent label. JS sets `transform` each frame to sit it over the sprite's
+   head; the trailing translate(-50%, -100%) lifts the box above that point. It
+   carries `aw-agent-<state>` so the per-state bubble colors below still apply. */
+.aw-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 132px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  will-change: transform;
+  animation: aw-label-in 220ms ease;
+}
+
+.aw-label.aw-hidden {
+  display: none;
+}
+
+/* The role chip sits under the bubble. */
+.aw-label-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+/* In the office overlay the bubble is compact: 2 lines max, and it disappears
+   entirely when an agent has nothing to say (done / idle), so a crowd of
+   finished agents shows just their role chips, not stacked text. */
+.aw-label .aw-bubble {
+  max-width: 132px;
+  -webkit-line-clamp: 2;
+}
+
+.aw-label .aw-bubble:empty {
+  display: none;
+}
+
+@keyframes aw-label-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.aw-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 24px;
+  margin: 0;
+  color: var(--fg-3);
+  font-size: 14px;
+}
+
+/* The old DOM office (zones, per-project rooms, agent cards) is gone — the floor
+   is now the three.js scene in world3d.js. The bubble + role chip + name + state
+   colors below are REUSED by the HTML overlay: each `.aw-label` carries the same
+   `aw-agent-<state>` classes, so these rules still drive its look. */
+
+/* Speech bubble. Clamps to 3 lines so a chatty agent never grows the desk. */
+.aw-bubble {
+  position: relative;
+  max-width: 100%;
+  min-height: 18px;
+  font-size: 10.5px;
+  line-height: 1.3;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 5px 8px;
+  text-align: center;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Little tail under the bubble, pointing at the avatar. */
+.aw-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  transform: translateX(-50%);
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 5px solid var(--bg-2);
+}
+
+/* Role chip: a colored dot + the role label (Senior Dev, QA, Security …). */
+.aw-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 7px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.aw-role-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--role-color, var(--accent));
+  flex-shrink: 0;
+}
+
+.aw-role-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aw-name {
+  max-width: 100%;
+  font-size: 10.5px;
+  color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+/* Overhead "needs you" emoji, sitting just above the bubble in the label. */
+.aw-alert {
+  font-size: 18px;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* ---- Agent states ---- */
+/* Idle: calm and dimmed. */
+.aw-agent-idle {
+  opacity: 0.62;
+}
+
+.aw-agent-idle .aw-bubble {
+  color: var(--fg-3);
+}
+
+/* Working: sage-tinted bubble, gently bobbing avatar. */
+.aw-agent-working .aw-bubble {
+  border-color: var(--accent-soft-border);
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.aw-agent-working .aw-bubble::after {
+  border-top-color: var(--accent-tint);
+}
+
+/* Attention: warm amber bubble + a bouncing overhead emoji. */
+.aw-agent-attention .aw-bubble {
+  border-color: var(--warn-soft-border);
+  background: var(--warn-tint);
+  color: var(--warn-bright);
+  font-weight: 600;
+}
+
+.aw-agent-attention .aw-bubble::after {
+  border-top-color: var(--warn-tint);
+}
+
+.aw-agent-attention .aw-alert {
+  animation: aw-bounce 0.7s ease-in-out infinite;
+}
+
+.aw-agent-attention .aw-name {
+  color: var(--warn);
+}
+
+@keyframes aw-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+/* Honor reduced-motion: keep the colors, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .aw-label,
+  .aw-agent-attention .aw-alert {
+    animation: none;
+  }
+}
+
+/* ---- Agent World: orchestrator dispatch panel + run states ----------- */
+
+.aw-dispatch-toggle {
+  margin-left: auto;
+}
+
+/* The orchestrator/executor terminals run here, off-screen but sized, so xterm
+   fits while the World shows only their avatars. */
+#aw-stage {
+  position: absolute;
+  left: -100000px;
+  top: 0;
+  width: 900px;
+  height: 600px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.aw-dispatch {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.aw-tasks {
+  width: 100%;
+  resize: vertical;
+  min-height: 52px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+
+.aw-tasks:focus {
+  outline: none;
+  border-color: var(--accent-soft-border);
+}
+
+.aw-dispatch-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.aw-dispatch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.aw-select,
+.aw-num {
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+
+.aw-num {
+  width: 64px;
+}
+
+.aw-dispatch-spacer {
+  flex: 1;
+}
+
+.aw-dispatch-status {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* Done: calm green — the agent finished its task and reported back. */
+.aw-agent-done .aw-bubble {
+  border-color: var(--ok);
+  background: var(--ok-tint);
+  color: var(--fg-0);
+}
+
+.aw-agent-done .aw-bubble::after {
+  border-top-color: var(--ok-tint);
+}
+
+/* Failed: soft red. */
+.aw-agent-failed .aw-bubble {
+  border-color: var(--danger-soft-border);
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+
+.aw-agent-failed .aw-bubble::after {
+  border-top-color: var(--danger-tint);
+}
+
+/* Ask toggle in the dispatch row. */
+.aw-dispatch-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+.aw-dispatch-check input {
+  margin: 0;
+}
+
+/* Peek drawer: clicking an orchestrated agent reveals its REAL terminal at the
+   bottom so you can read it and type an answer. The terminals normally run in
+   the off-screen #aw-stage; adding .aw-peeking brings that stage on-screen as a
+   bottom drawer (with a header + close button). */
+.aw-peek-bar {
+  display: none;
+}
+
+#aw-stage.aw-peeking {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  width: auto;
+  height: 46vh;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+  border-top: 1px solid var(--border-strong);
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.42);
+  pointer-events: auto;
+}
+
+#aw-stage.aw-peeking .aw-peek-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.aw-peek-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aw-peek-close {
+  margin-left: auto;
+}
+
+#aw-stage.aw-peeking .tg {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Activity log: a scrollable event timeline below the head (debug the flow). */
+.aw-log {
+  flex-shrink: 0;
+  max-height: 32vh;
+  overflow-y: auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.aw-log-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.aw-log-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.aw-log-spacer {
+  flex: 1;
+}
+
+.aw-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 16px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.aw-log-row {
+  display: flex;
+  gap: 8px;
+  color: var(--fg-1);
+}
+
+.aw-log-time {
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+
+.aw-log-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.aw-log-ask .aw-log-text {
+  color: var(--warn-bright);
+}
+
+.aw-log-done .aw-log-text {
+  color: var(--ok);
+}
+
+.aw-log-ok .aw-log-text {
+  color: var(--accent);
+}
+
+.aw-log-warn .aw-log-text {
+  color: var(--danger);
+}
+
+/* ===================================================================== */
+/* === Agent Roster (the AI team) ====================================== */
+/* A single screen of persistent specialist agents. Each card shows the    */
+/* agent's portrait, skill, level/XP, status, and current task. roster.js   */
+/* fills #roster-grid; the peek drawer reuses the #aw-stage styles above.   */
+
+.roster-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.roster-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.roster-sub {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.roster-task {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.roster-task-input {
+  flex: 1;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+
+.roster-task-input:focus {
+  outline: none;
+  border-color: var(--accent-soft-border);
+}
+
+.roster-select {
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+
+.roster-status {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 8px 16px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.roster-hire-btn {
+  margin-left: auto;
+}
+
+.roster-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+
+.roster-check input {
+  margin: 0;
+}
+
+/* Hire panel: a row below the task bar to create a new specialist. */
+.roster-hire {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.roster-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 14px;
+  padding: 16px;
+  background: var(--bg-0);
+  align-content: start;
+}
+
+/* One agent card. */
+.agent-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
+}
+
+.agent-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+.agent-card.agent-working {
+  border-color: var(--accent-soft-border);
+  box-shadow: 0 0 0 1px var(--accent-tint), var(--shadow-1);
+}
+
+.agent-card.agent-done {
+  border-color: var(--ok);
+}
+
+.agent-card.agent-needs {
+  border-color: var(--warn-soft-border);
+}
+
+.agent-portrait {
+  width: 84px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.agent-portrait img {
+  width: 84px;
+  height: 112px;
+  object-fit: contain;
+  object-position: bottom center;
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.4));
+}
+
+.agent-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.agent-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.agent-backend {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.agent-backend-claude {
+  color: #d8a878;
+  background: rgba(216, 168, 120, 0.16);
+}
+
+.agent-backend-codex {
+  color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.agent-skill {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-1);
+  padding: 1px 8px 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--role-color, var(--accent));
+}
+
+.agent-level {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-level-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--warn-bright);
+  flex-shrink: 0;
+}
+
+.agent-xp {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.agent-xp-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.agent-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+.agent-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  flex-shrink: 0;
+}
+
+.agent-working .agent-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: agent-pulse 1.2s ease-in-out infinite;
+}
+
+.agent-done .agent-dot {
+  background: var(--ok);
+}
+
+.agent-needs .agent-dot {
+  background: var(--warn);
+}
+
+@keyframes agent-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.agent-task {
+  font-size: 10.5px;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-mem {
+  font-size: 10.5px;
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-peek {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-working .agent-dot {
+    animation: none;
+  }
+}
+
+/* ===================================================================== */
+/* === Task sheet (right drawer in the Agents view) ==================== */
+
+#view-agents {
+  position: relative;
+}
+
+.tasksheet-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1a1a1e;
+  background: var(--warn);
+  border-radius: 999px;
+}
+
+.tasksheet-badge.hidden {
+  display: none;
+}
+
+.tasksheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 380px;
+  max-width: 92%;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+}
+
+.tasksheet.hidden {
+  display: none;
+}
+
+.tasksheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 10px 14px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.tasksheet-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.tasksheet-spacer {
+  flex: 1;
+}
+
+.tasksheet-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tasksheet-empty {
+  margin: 16px 8px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.tasksheet-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tasksheet-row:hover {
+  border-color: var(--border-strong);
+}
+
+.tasksheet-who {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--fg-0);
+  white-space: nowrap;
+}
+
+.tasksheet-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-2);
+}
+
+.tasksheet-pill {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-0);
+  color: var(--fg-3);
+}
+
+.tasksheet-done .tasksheet-pill {
+  color: var(--ok);
+}
+
+.tasksheet-working .tasksheet-pill {
+  color: var(--accent);
+}
+
+.tasksheet-needs-input {
+  border-color: var(--warn-soft-border);
+  background: var(--warn-tint);
+}
+
+.tasksheet-needs-input .tasksheet-pill {
+  color: var(--warn-bright);
+}
+
+.tasksheet-detail {
+  flex-shrink: 0;
+  max-height: 52%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--bg-0);
+  border-top: 1px solid var(--border-strong);
+}
+
+.tasksheet-detail.hidden {
+  display: none;
+}
+
+.tasksheet-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.tasksheet-detail-task {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.tasksheet-detail-dir {
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.tasksheet-detail-body {
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tasksheet-respond {
+  align-self: flex-start;
 }

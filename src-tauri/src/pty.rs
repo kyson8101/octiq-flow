@@ -436,6 +436,10 @@ fn resolve_home(home: Option<String>, userprofile: Option<String>, is_windows: b
 ///   agent. See agent_resume.rs.
 /// - `shell`: the Windows shell pick from Settings (`"powershell"` or `"cmd"`).
 ///   Ignored on Unix, where the login shell is always used. See resolve_shell.
+/// - `canvas_key`: if Some, exported into the shell as `OCTIQ_CANVAS_DIR` (the
+///   project's `~/.octiqflow/canvas/<key>` folder) so an agent here can write
+///   HTML/MD documents the canvas pane renders. Only project terminals pass it;
+///   chat terminals get no canvas. See canvas.rs.
 #[tauri::command]
 pub fn pty_spawn(
     app: AppHandle,
@@ -445,6 +449,7 @@ pub fn pty_spawn(
     start_cmd: Option<String>,
     persist_key: Option<String>,
     shell: Option<String>,
+    canvas_key: Option<String>,
 ) -> Result<(), String> {
     {
         // Fast path: do not respawn an id that already exists.
@@ -480,6 +485,22 @@ pub fn pty_spawn(
     if let Some(key) = persist_key.as_deref() {
         if !key.is_empty() {
             cmd.env("OCTIQ_TERM_KEY", key);
+        }
+    }
+    // Project terminals carry a canvas key: export OCTIQ_CANVAS_DIR so an agent
+    // running here can write HTML/MD documents into the project's canvas folder,
+    // which OctiqFlow renders in the pane beside the terminal. The folder is
+    // created up front so the watcher always has a real directory to watch. A
+    // bad/empty key just leaves the var unset — the agent then knows this is not
+    // a canvas-enabled terminal. Chat terminals pass no key.
+    if let Some(key) = canvas_key.as_deref() {
+        if !key.is_empty() {
+            if let Some(dir) = crate::canvas::canvas_dir_for(key) {
+                if std::fs::create_dir_all(&dir).is_ok() {
+                    cmd.env("OCTIQ_CANVAS_DIR", &dir);
+                    cmd.env("OCTIQ_CANVAS_KEY", key);
+                }
+            }
         }
     }
 

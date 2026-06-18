@@ -277,6 +277,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   wireShellPicker();
   wireAgentHookSetup();
+  wireInstallButton("install-canvas-skill", "install-canvas-skill-status", "install_canvas_skill");
+  wireInstallButton("install-canvas-codex", "install-canvas-codex-status", "install_canvas_codex_guide");
 });
 
 /** Wire the "Set up agent resume & alert hooks" button: install the OctiqFlow
@@ -303,6 +305,37 @@ function wireAgentHookSetup() {
     } catch (err) {
       if (status) {
         status.textContent = `Could not set up the hook: ${err}`;
+        status.classList.add("settings-status-error");
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+/** Wire a one-shot "install" button to a backend command that returns the path
+ *  it wrote. Shows the path (or an error) in `statusId`, and disables the button
+ *  while it runs so a double-click cannot install twice. Bails quietly if the
+ *  controls are absent. Used by the canvas skill (Claude) + guide (Codex). */
+function wireInstallButton(btnId, statusId, command) {
+  const btn = document.getElementById(btnId);
+  const status = document.getElementById(statusId);
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    if (status) {
+      status.textContent = "Installing…";
+      status.classList.remove("settings-status-error", "settings-status-ok");
+    }
+    try {
+      const path = await invoke(command);
+      if (status) {
+        status.textContent = path ? `Installed at ${path}` : "Done.";
+        status.classList.add("settings-status-ok");
+      }
+    } catch (err) {
+      if (status) {
+        status.textContent = `Could not install: ${err}`;
         status.classList.add("settings-status-error");
       }
     } finally {

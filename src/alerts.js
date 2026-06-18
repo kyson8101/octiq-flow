@@ -218,16 +218,14 @@ window.addEventListener("tg-attention-change", renderBanner);
 // Beyond the tab badge, show an amber dot on the MODE BAR (the mode that holds a
 // waiting terminal) and on the PROJECT LIST row (the project that holds one), so
 // the alert is visible even when that terminal is in another mode / project.
-// PTY ids are namespaced: "chat:N", "util:N", "cmd:<projectId>:N" (a command
-// terminal), or "<projectId>:N" (a project terminal).
+// PTY ids are namespaced: "chat:N", "cmd:<projectId>:N" (a command terminal),
+// or "<projectId>:N" (a project terminal).
 function deriveAttention() {
   const modes = new Set();
   const projects = new Set();
   for (const id of attentionList()) {
     if (id.startsWith("chat:")) {
       modes.add("chat");
-    } else if (id.startsWith("util:")) {
-      modes.add("utilities");
     } else if (id.startsWith("cmd:")) {
       modes.add("project");
       const pid = id.split(":")[1];

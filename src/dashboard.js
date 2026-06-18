@@ -5,9 +5,9 @@
 //
 // Card 11 adds two more block kinds:
 //   * Active terminals — a single block that counts every live PTY app-wide and
-//     groups the counts by owner (a project, the Chat area, or Utilities). PTY
+//     groups the counts by owner (a project or the Chat area). PTY
 //     ids are namespaced "<prefix>:<seq>" by terminals.js: the prefix is the
-//     workspace id for project terminals, or the literal "chat" / "util". A
+//     workspace id for project terminals, or the literal "chat". A
 //     project row jumps to that project on click.
 //   * Docs — one block per workspace that set a docs root, listing the file
 //     names found directly under that folder.
@@ -52,9 +52,6 @@ function collectPaths(workspaces) {
 
 // The PTY id prefix for the Chat area's terminal group (see chat.js).
 const CHAT_PREFIX = "chat";
-// The PTY id prefix for the Utilities run terminals (see utilities.js).
-const UTIL_PREFIX = "util";
-
 // A PTY id is "<prefix>:<seq>"; the prefix is everything before the first ":".
 function prefixOf(ptyId) {
   const i = ptyId.indexOf(":");
@@ -156,7 +153,7 @@ function jumpToProject(workspaceId, workspaces) {
 
 // --- Active-terminals block -------------------------------------------------
 // Build a single block that counts every live PTY, grouped by owner. Each group
-// is one row: a project (named, clickable to jump), the Chat area, or Utilities.
+// is one row: a project (named, clickable to jump), or the Chat area.
 function activeTerminalsBlock(activeIds, workspaces) {
   const block = document.createElement("div");
   block.className = "dash-block dash-block-terminals";
@@ -166,7 +163,7 @@ function activeTerminalsBlock(activeIds, workspaces) {
   head.append(textEl("span", "dash-block-kind", "live"));
   block.append(head);
 
-  // Count ids per prefix. The prefix is the workspace id, "chat", or "util".
+  // Count ids per prefix. The prefix is the workspace id or "chat".
   const counts = new Map();
   for (const id of activeIds ?? []) {
     const prefix = prefixOf(id);
@@ -191,17 +188,14 @@ function activeTerminalsBlock(activeIds, workspaces) {
   // A quick lookup from workspace id to its name.
   const nameById = new Map((workspaces ?? []).map((w) => [w.id, w.name]));
 
-  // Render the well-known groups first (Chat, Utilities) in a fixed order, then
+  // Render the well-known group first (Chat) in a fixed order, then
   // every project group, so the list reads consistently.
   const rows = [];
   if (counts.has(CHAT_PREFIX)) {
     rows.push(termRow("Chat", counts.get(CHAT_PREFIX), null, workspaces));
   }
-  if (counts.has(UTIL_PREFIX)) {
-    rows.push(termRow("Utilities", counts.get(UTIL_PREFIX), null, workspaces));
-  }
   for (const [prefix, n] of counts) {
-    if (prefix === CHAT_PREFIX || prefix === UTIL_PREFIX) continue;
+    if (prefix === CHAT_PREFIX) continue;
     // A project group: the prefix is a workspace id. Use its name, or fall back
     // to the raw id for a workspace that no longer exists.
     const label = nameById.get(prefix) ?? prefix;
@@ -223,7 +217,7 @@ function termRow(label, count, workspaceId, workspaces) {
     textEl("span", "dash-badge dash-badge-term", String(count)),
   );
 
-  // Project rows are clickable; Chat / Utilities rows are not.
+  // Project rows are clickable; Chat rows are not.
   if (workspaceId) {
     row.classList.add("dash-term-jump");
     row.title = "Open this project";

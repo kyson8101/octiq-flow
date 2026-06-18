@@ -22,6 +22,9 @@
     <script src="vendor/addon-fit.min.js"></script>
     <script src="vendor/addon-webgl.min.js"></script>
     <script src="vendor/addon-serialize.min.js"></script>
+    <!-- Markdown renderer for the canvas pane, vendored locally (no CDN, works
+         offline). UMD build: exposes window.marked for canvas.js to use. -->
+    <script src="vendor/marked.min.js"></script>
 
     <link rel="stylesheet" href="styles.css" />
     <script type="module" src="/workspaces.js" defer></script>
@@ -31,13 +34,14 @@
     <script type="module" src="/gitactions.js" defer></script>
     <script type="module" src="/modes.js" defer></script>
     <script type="module" src="/chat.js" defer></script>
-    <script type="module" src="/utilities.js" defer></script>
-    <script type="module" src="/scheduler.js" defer></script>
+    <script type="module" src="/roster.js" defer></script>
     <script type="module" src="/dashboard.js" defer></script>
     <script type="module" src="/browser.js" defer></script>
     <script type="module" src="/gitdiff.js" defer></script>
+    <script type="module" src="/canvas.js" defer></script>
     <script type="module" src="/alerts.js" defer></script>
     <script type="module" src="/working.js" defer></script>
+    <script type="module" src="/usage.js" defer></script>
     <script type="module" src="/settings.js" defer></script>
   </head>
 
@@ -62,8 +66,7 @@
         <div class="modebar-tabs">
           <button class="modebtn modebtn-active" data-mode="project">Project</button>
           <button class="modebtn" data-mode="chat">Chat</button>
-          <button class="modebtn" data-mode="utilities">Utilities</button>
-          <button class="modebtn" data-mode="scheduler">Scheduler</button>
+          <button class="modebtn" data-mode="agents">Agents</button>
           <button class="modebtn" data-mode="dashboard">Dashboard</button>
         </div>
         <button class="modebtn modebtn-gear" data-mode="settings" data-tip="Settings">
@@ -186,12 +189,78 @@
         </div>
       </main>
 
+      <!-- Canvas pane: a togglable split beside the terminals. An agent writes
+           HTML/MD documents into the project's ~/.octiqflow/canvas/<key> folder
+           (via the OCTIQ_CANVAS_DIR env var); canvas.js watches that folder and
+           renders the live document here. Hidden by default — the user turns it
+           on with the toggle in the command-panel head. The drag handle to its
+           left resizes it. Rendered content lives in a SANDBOXED iframe so agent
+           HTML cannot reach the app or Tauri. -->
+      <div id="canvas-resizer" class="canvas-resizer hidden" role="separator" aria-orientation="vertical" title="Drag to resize the canvas"></div>
+      <aside id="canvas-pane" class="canvas-pane hidden" aria-label="Canvas">
+        <div class="canvas-head">
+          <span class="canvas-title">Canvas</span>
+          <select id="canvas-doc" class="canvas-doc-select" title="Canvas document" aria-label="Canvas document"></select>
+          <span class="canvas-head-actions">
+            <button id="canvas-open" class="icon-btn" type="button" data-tip="Open with the default app">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+            </button>
+            <button id="canvas-refresh" class="icon-btn" type="button" data-tip="Reload the canvas">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+            </button>
+            <button id="canvas-close" class="icon-btn" type="button" data-tip="Hide the canvas">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </span>
+        </div>
+        <div id="canvas-body" class="canvas-body">
+          <!-- Empty state: shown until the agent writes a document. Carries a
+               one-click skill install + the folder path so the user can set up
+               the canvas without leaving the pane. -->
+          <div id="canvas-empty" class="canvas-empty">
+            <p class="canvas-empty-title">No canvas yet</p>
+            <p class="canvas-empty-hint">
+              Ask Claude in this project to draw something on the canvas. It writes
+              HTML or Markdown into this project's canvas folder and it appears here.
+            </p>
+            <button id="canvas-empty-install" class="btn btn-sm" type="button" title="Install the canvas skill into ~/.claude/skills so Claude knows how to use the canvas">Install canvas skill for Claude</button>
+            <span id="canvas-empty-status" class="settings-status canvas-empty-status"></span>
+            <p id="canvas-empty-path" class="canvas-empty-path"></p>
+          </div>
+          <!-- Sandboxed frame: agent HTML/MD renders here in an isolated origin,
+               so it can draw and animate but cannot reach the app or your machine. -->
+          <iframe id="canvas-frame" class="canvas-frame hidden" title="Canvas document" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+
+          <!-- Highlight-to-ask: select text in the frame and this button floats
+               by it. Clicking opens the composer below to ask the agent about it.
+               The frame is sandboxed, so an injected script posts the selection
+               out to canvas.js (it cannot be read across the origin directly). -->
+          <button id="canvas-ask-btn" class="canvas-ask-btn hidden" type="button">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            Ask about this
+          </button>
+
+          <div id="canvas-ask" class="canvas-ask hidden">
+            <div class="canvas-ask-quote" id="canvas-ask-quote"></div>
+            <textarea id="canvas-ask-input" class="canvas-ask-input" rows="2" placeholder="Ask the agent about the highlighted text… (Enter to send, Shift+Enter for a new line)"></textarea>
+            <div class="canvas-ask-actions">
+              <span id="canvas-ask-status" class="canvas-ask-status"></span>
+              <button id="canvas-ask-cancel" class="btn btn-sm" type="button">Cancel</button>
+              <button id="canvas-ask-send" class="btn btn-sm btn-primary" type="button">Send to terminal</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
       <!-- Right: collapsible panel that stacks two sections top→bottom —
            Commands (registered project commands, commands.js) on top and Git
            (common git actions for the project's primary repo, gitactions.js)
            at the bottom. Both are visible at once; no tab switching. -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
+          <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 9h11"/><path d="M3 15h11"/></svg>
+          </button>
           <button id="cmd-panel-toggle" class="icon-btn cmd-panel-toggle" title="Collapse panel" aria-expanded="true">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="m6 17 5-5-5-5" />
@@ -280,121 +349,64 @@
       <div id="chat-terminals" class="chat-terminals"></div>
       </section>
 
-      <!-- Utilities mode (card 09): prompt templates + run terminals -->
-      <section id="view-utilities" class="view hidden">
-        <div class="util-layout">
-  <div class="util-panel">
-    <div class="util-head">
-      <span class="util-head-title">Templates</span>
-      <button id="util-add" class="icon-btn" data-tip="New template">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      </button>
-    </div>
-
-    <ul id="util-list" class="util-list"></ul>
-    <div id="util-empty" class="util-empty hidden">No templates yet. Create one to run an agent.</div>
-
-    <div id="util-form" class="util-form hidden">
-      <div id="util-form-title" class="util-form-title">New template</div>
-
-      <label class="modal-label" for="util-label">Label</label>
-      <input id="util-label" class="inject-input" type="text" placeholder="e.g. generate random avatar" />
-
-      <label class="modal-label" for="util-agent">Agent</label>
-      <select id="util-agent" class="util-select">
-        <option value="claude">claude</option>
-        <option value="codex">codex</option>
-      </select>
-
-      <label class="modal-label" for="util-prompt">Prompt</label>
-      <textarea id="util-prompt" class="util-textarea" rows="4" placeholder="What should the agent do?"></textarea>
-      <div class="util-hint">Use <code>{{name}}</code> for a fill-in field — you will be asked for each one when you Run (e.g. <code>Fix ticket {{ticket}} on {{branch}}</code>).</div>
-
-      <label class="modal-label">Working folder (optional)</label>
-      <div id="util-cwd" class="util-cwd-row">
-        <span id="util-cwd-path" class="util-cwd-path unset">Not set — you will pick a folder when you Run</span>
-        <button id="util-cwd-pick" class="btn btn-sm">Pick folder</button>
-        <button id="util-cwd-clear" class="btn btn-sm util-danger hidden">Clear</button>
-      </div>
-
-      <div class="util-form-grid">
-        <div>
-          <label class="modal-label" for="util-group">Group (optional)</label>
-          <input id="util-group" class="inject-input" type="text" placeholder="e.g. avatars" />
+      <!-- Agent World mode: a playful "virtual office" view. Every live
+           terminal across all projects shows up as a little agent at a desk,
+           grouped into per-project rooms. A speech bubble shows what each agent
+           is working on; a bouncing emoji flags an agent that needs you. Click
+           an agent to jump to its terminal. agentworld.js fills #aw-floor. -->
+      <!-- Agents mode: a single-screen team of persistent specialist agents.
+           Each agent works alone, reading/writing only its own task + memory in
+           docspace; OctiqFlow routes each task to the matching idle agent and
+           awards XP/levels from the docspace done-count. roster.js fills it. -->
+      <section id="view-agents" class="view hidden">
+        <div class="roster-head">
+          <span class="roster-title">Agents</span>
+          <span id="roster-sub" class="roster-sub">Your AI team</span>
+          <button id="tasksheet-toggle" class="btn btn-sm roster-hire-btn" type="button">📋 Tasks <span id="tasksheet-badge" class="tasksheet-badge hidden"></span></button>
+          <button id="roster-hire" class="btn btn-sm" type="button">+ Hire</button>
         </div>
-        <div>
-          <label class="modal-label" for="util-hotkey">Hotkey (optional)</label>
-          <input id="util-hotkey" class="inject-input" type="text" placeholder="e.g. cmd+1" />
+        <div class="roster-task">
+          <input id="roster-input" class="roster-task-input" type="text" placeholder="Give your team a task… OctiqFlow routes it to the matching specialist" />
+          <select id="roster-cwd" class="roster-select" title="Working directory for the task. Auto = OctiqFlow picks the matching project from your project list.">
+            <option value="auto">📂 Auto (pick project)</option>
+            <option value="">🏠 Home</option>
+          </select>
+          <select id="roster-mode" class="roster-select" title="Demo runs a short scripted task (memory is still written to docspace). Real runs Claude/Codex.">
+            <option value="demo">Demo</option>
+            <option value="real">Real — interactive TUI</option>
+          </select>
+          <label class="roster-check" title="When an agent finishes, OctiqFlow queues the next specialist (build → security → verify). Agents still never talk to each other.">
+            <input id="roster-followup" type="checkbox" />
+            <span>Auto follow-up</span>
+          </label>
+          <button id="roster-assign" class="btn btn-sm btn-primary" type="button">Assign</button>
         </div>
-      </div>
 
-      <div class="util-form-foot">
-        <button id="util-form-cancel" class="btn btn-sm">Cancel</button>
-        <button id="util-form-save" class="btn btn-sm btn-primary">Save</button>
-      </div>
-    </div>
-  </div>
+        <!-- Hire panel: create a new specialist agent + its docspace folder. -->
+        <div id="roster-hire-form" class="roster-hire hidden">
+          <input id="hire-name" class="roster-task-input" type="text" placeholder="New agent name (e.g. Atlas)" />
+          <select id="hire-role" class="roster-select"></select>
+          <select id="hire-backend" class="roster-select">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+          </select>
+          <button id="hire-create" class="btn btn-sm btn-primary" type="button">Create</button>
+          <button id="hire-cancel" class="btn btn-sm" type="button">Cancel</button>
+        </div>
+        <p id="roster-status" class="roster-status">Agents work alone and pass everything through docspace; OctiqFlow does the assignment.</p>
+        <div id="roster-grid" class="roster-grid"></div>
 
-  <div id="util-terminals" class="util-terminals"></div>
-</div>
-      </section>
-
-      <!-- Scheduler mode: daily "cron job" terminal launches. A timer in
-           scheduler.js checks the clock and, at a job's time, opens a terminal,
-           runs its command, and optionally types one line into it. -->
-      <section id="view-scheduler" class="view hidden">
-        <div class="util-layout">
-  <div class="util-panel">
-    <div class="util-head">
-      <span class="util-head-title">Scheduled jobs</span>
-      <button id="sched-add" class="icon-btn" data-tip="New scheduled job">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      </button>
-    </div>
-
-    <p class="util-hint sched-note">Jobs run only while OctiqFlow is open. Each enabled job runs once a day at its set time and opens a terminal here.</p>
-
-    <ul id="sched-list" class="util-list"></ul>
-    <div id="sched-empty" class="util-empty hidden">No scheduled jobs yet. Create one to auto-run a command at a set time.</div>
-
-    <div id="sched-form" class="util-form hidden">
-      <div id="sched-form-title" class="util-form-title">New scheduled job</div>
-
-      <label class="modal-label" for="sched-label">Label</label>
-      <input id="sched-label" class="inject-input" type="text" placeholder="e.g. Morning Claude" />
-
-      <label class="modal-label" for="sched-command">Command</label>
-      <input id="sched-command" class="inject-input" type="text" placeholder="e.g. claude" />
-      <div class="util-hint">The command run when the terminal opens.</div>
-
-      <label class="modal-label" for="sched-input">Then type (optional)</label>
-      <input id="sched-input" class="inject-input" type="text" placeholder="e.g. hi" />
-      <div class="util-hint">Typed into the terminal a few seconds after it starts, then Enter. Leave empty to type nothing.</div>
-
-      <label class="modal-label" for="sched-time">Time (runs daily)</label>
-      <input id="sched-time" class="inject-input sched-time-input" type="time" value="05:00" />
-
-      <label class="modal-label">Working folder (optional)</label>
-      <div id="sched-cwd" class="util-cwd-row">
-        <span id="sched-cwd-path" class="util-cwd-path unset">Not set — opens in the default folder</span>
-        <button id="sched-cwd-pick" class="btn btn-sm">Pick folder</button>
-        <button id="sched-cwd-clear" class="btn btn-sm util-danger hidden">Clear</button>
-      </div>
-
-      <label class="sched-enabled-row">
-        <input id="sched-enabled" type="checkbox" checked />
-        <span>Enabled</span>
-      </label>
-
-      <div class="util-form-foot">
-        <button id="sched-form-cancel" class="btn btn-sm">Cancel</button>
-        <button id="sched-form-save" class="btn btn-sm btn-primary">Save</button>
-      </div>
-    </div>
-  </div>
-
-  <div id="sched-terminals" class="util-terminals"></div>
-</div>
+        <!-- Task sheet: every assigned task; click a done one to read the result
+             (from docspace board/done), and see anything waiting for your input. -->
+        <div id="tasksheet" class="tasksheet hidden">
+          <div class="tasksheet-head">
+            <span class="tasksheet-title">Task sheet</span>
+            <span class="tasksheet-spacer"></span>
+            <button id="tasksheet-close" class="btn btn-sm" type="button">Close ✕</button>
+          </div>
+          <div id="tasksheet-list" class="tasksheet-list"></div>
+          <div id="tasksheet-detail" class="tasksheet-detail hidden"></div>
+        </div>
       </section>
 
       <!-- Dashboard mode (card 10): read-only widget block grid -->
@@ -501,6 +513,30 @@
               </p>
               <button id="setup-agent-hooks" class="btn btn-sm" title="Install the resume + attention hooks for Claude (~/.claude/settings.json) and Codex (~/.codex/hooks.json)">↺ Set up agent resume &amp; alert hooks</button>
               <span id="setup-agent-hooks-status" class="settings-status"></span>
+            </section>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Canvas</div>
+              <p class="settings-help">
+                The canvas shows a live HTML or Markdown document in a pane beside
+                the terminal. Turn it on with the canvas button in the project's
+                right panel. To let Claude draw and update the canvas during a
+                chat, install the canvas skill — it teaches Claude to write
+                documents into each project's canvas folder
+                (<code>$OCTIQ_CANVAS_DIR</code>). This writes one file to
+                <code>~/.claude/skills/octiq-canvas/</code> and changes nothing
+                else. Run it once.
+              </p>
+              <button id="install-canvas-skill" class="btn btn-sm" title="Install the OctiqFlow canvas skill into ~/.claude/skills/octiq-canvas/SKILL.md">↺ Install canvas skill for Claude</button>
+              <span id="install-canvas-skill-status" class="settings-status"></span>
+              <p class="settings-help" style="margin-top: 14px;">
+                Codex can drive the canvas too — the channel is just files. This
+                adds a short canvas guide to <code>~/.codex/AGENTS.md</code> (in a
+                marked block, keeping the rest of the file), so Codex knows to
+                write documents into <code>$OCTIQ_CANVAS_DIR</code>.
+              </p>
+              <button id="install-canvas-codex" class="btn btn-sm" title="Add the canvas guide to ~/.codex/AGENTS.md">↺ Install canvas guide for Codex</button>
+              <span id="install-canvas-codex-status" class="settings-status"></span>
             </section>
           </div>
         </div>
@@ -677,6 +713,10 @@
         </div>
       </div>
     </div>
+
+    <!-- Usage footer: a slim, always-visible bar showing each agent's 5-hour and
+         weekly limit usage. usage.js fills it from the `usage_summary` command. -->
+    <footer id="usage-bar" class="usage-bar"></footer>
     </div>
     <!-- end .shell -->
   </body>

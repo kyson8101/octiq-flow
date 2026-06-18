@@ -66,7 +66,7 @@ function setFooterCmd(text) {
 }
 
 // Show the latest output line of a command terminal on the footer. Ignores
-// non-command terminals (project / chat / utilities) AND command terminals that
+// non-command terminals (project / chat) AND command terminals that
 // belong to a DIFFERENT project (their ids are namespaced `cmd:<projectId>:N`),
 // so a command still running in a background project never overwrites the footer
 // of the project the user is currently viewing.
