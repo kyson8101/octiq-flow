@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OctiqFlow — Drive your CLI agents from buttons</title>
+<meta name="description" content="OctiqFlow is a desktop app that runs real terminals inside its window and lets you drive interactive CLI agents — Claude Code, Codex — from UI buttons. Projects, a live canvas, git diffs, attention alerts, and agent-session resume, all offline." />
+
+<!-- Open Graph / social -->
+<meta property="og:type" content="website" />
+<meta property="og:title" content="OctiqFlow — Drive your CLI agents from buttons" />
+<meta property="og:description" content="A Tauri desktop app that runs real terminals inside its window and drives interactive CLI agents from UI buttons. Projects, a live canvas, git, alerts, and session resume." />
+<meta property="og:image" content="assets/icon-512.png" />
+<meta name="twitter:card" content="summary_large_image" />
+
+<link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png" />
+<link rel="apple-touch-icon" href="assets/icon-512.png" />
+
+<style>
+  /* ---------- Brand tokens (from src/assets/brand/README.md) ---------- */
+  :root {
+    --cyan:  #2CC5D9;
+    --blue:  #58A6FF;
+    --amber: #FFBE3D;
+    --navy:  #0B1F3A;
+
+    --bg-0:  #0D1117;   /* app background */
+    --bg-1:  #11161f;
+    --bg-2:  #161c27;
+    --bg-3:  #1c2433;
+    --border: #232a36;
+    --border-strong: #313a4a;
+
+    --fg-0: #f3f6fb;
+    --fg-1: #c4ccd8;
+    --fg-2: #8b95a6;
+    --fg-3: #5d6675;
+
+    --grad: linear-gradient(120deg, var(--cyan), var(--blue) 55%, var(--amber));
+    --grad-soft: linear-gradient(120deg, rgba(44,197,217,.14), rgba(88,166,255,.10) 55%, rgba(255,190,61,.12));
+
+    --r-sm: 10px;
+    --r-md: 16px;
+    --r-lg: 22px;
+    --shadow: 0 24px 60px -24px rgba(0,0,0,.7);
+    --maxw: 1120px;
+
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--bg-0);
+    color: var(--fg-1);
+    font-family: var(--sans);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* Ambient background glow */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(900px 520px at 78% -8%, rgba(44,197,217,.14), transparent 60%),
+      radial-gradient(820px 520px at 8% 4%, rgba(88,166,255,.12), transparent 58%),
+      radial-gradient(700px 480px at 60% 22%, rgba(255,190,61,.06), transparent 60%);
+  }
+
+  a { color: inherit; text-decoration: none; }
+  h1, h2, h3 { color: var(--fg-0); line-height: 1.14; letter-spacing: -.02em; margin: 0; }
+  p { margin: 0; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+  .grad-text {
+    background: var(--grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--cyan);
+    padding: 6px 12px; border: 1px solid var(--border-strong);
+    border-radius: 999px; background: rgba(44,197,217,.06);
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 10px var(--cyan); }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-weight: 600; font-size: 15px;
+    padding: 12px 20px; border-radius: 12px;
+    border: 1px solid transparent; cursor: pointer;
+    transition: transform .15s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease;
+    white-space: nowrap;
+  }
+  .btn svg { width: 18px; height: 18px; }
+  .btn-primary { background: var(--grad); color: #06121f; box-shadow: 0 12px 30px -10px rgba(44,197,217,.5); }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 18px 38px -10px rgba(44,197,217,.6); }
+  .btn-ghost { background: var(--bg-2); color: var(--fg-0); border-color: var(--border-strong); }
+  .btn-ghost:hover { transform: translateY(-2px); border-color: var(--blue); background: var(--bg-3); }
+
+  /* ---------- Nav ---------- */
+  header.nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(14px);
+    background: rgba(13,17,23,.72);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 700; color: var(--fg-0); font-size: 17px; }
+  .brand img { width: 30px; height: 30px; }
+  .nav-links { display: flex; align-items: center; gap: 28px; }
+  .nav-links a { color: var(--fg-2); font-size: 14.5px; font-weight: 500; transition: color .15s ease; }
+  .nav-links a:hover { color: var(--fg-0); }
+  .nav-cta { display: flex; align-items: center; gap: 12px; }
+  @media (max-width: 860px) { .nav-links { display: none; } }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 88px 0 56px; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 56px; align-items: center; }
+  @media (max-width: 940px) { .hero-grid { grid-template-columns: 1fr; gap: 40px; } }
+
+  .hero h1 { font-size: clamp(38px, 6vw, 62px); margin: 22px 0 0; font-weight: 800; }
+  .hero .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--fg-1); margin-top: 22px; max-width: 33ch; }
+  .hero-cta { display: flex; gap: 14px; margin-top: 32px; flex-wrap: wrap; }
+  .hero-note { margin-top: 18px; font-size: 13.5px; color: var(--fg-3); display: flex; gap: 16px; flex-wrap: wrap; }
+  .hero-note span { display: inline-flex; align-items: center; gap: 7px; }
+  .hero-note svg { width: 15px; height: 15px; color: var(--cyan); }
+
+  /* Terminal mock */
+  .mock {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    position: relative;
+  }
+  .mock::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    border-radius: var(--r-md);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+  }
+  .mock-bar { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bg-1); }
+  .mock-bar .lights { display: flex; gap: 7px; }
+  .mock-bar .lights i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+  .mock-bar .lights i:nth-child(1){ background:#ec6a5e;} .mock-bar .lights i:nth-child(2){ background:#f3be4f;} .mock-bar .lights i:nth-child(3){ background:#61c554;}
+  .mock-tabs { display: flex; gap: 6px; margin-left: 10px; }
+  .mock-tab { font-family: var(--mono); font-size: 11.5px; color: var(--fg-2); padding: 4px 10px; border-radius: 7px; background: var(--bg-2); border: 1px solid var(--border); }
+  .mock-tab.active { color: var(--fg-0); border-color: var(--blue); background: rgba(88,166,255,.1); }
+  .mock-tab .badge { color: var(--amber); }
+
+  .mock-body { display: grid; grid-template-columns: 1fr; }
+  .term { font-family: var(--mono); font-size: 13px; line-height: 1.75; padding: 18px; min-height: 234px; color: var(--fg-1); }
+  .term .pl { color: var(--cyan); } .term .ag { color: var(--blue); } .term .ok { color: #61c554; } .term .mut { color: var(--fg-3); }
+  .term .cursor { display: inline-block; width: 8px; height: 15px; background: var(--cyan); vertical-align: -2px; animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .term .cursor { animation: none; } }
+
+  .mock-actions { display: flex; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border); background: var(--bg-1); flex-wrap: wrap; }
+  .pill { font-size: 12px; font-weight: 600; color: var(--fg-0); padding: 7px 12px; border-radius: 9px; border: 1px solid var(--border-strong); background: var(--bg-2); display: inline-flex; align-items: center; gap: 6px; }
+  .pill.accent { border-color: var(--accent-soft, rgba(44,197,217,.45)); background: rgba(44,197,217,.1); color: var(--cyan); }
+  .pill .k { color: var(--fg-3); font-family: var(--mono); font-size: 10.5px; }
+
+  /* Logo strip */
+  .runs-on { margin-top: 44px; display: flex; align-items: center; gap: 26px; flex-wrap: wrap; color: var(--fg-3); font-size: 13px; }
+  .runs-on .label { font-family: var(--mono); letter-spacing: .1em; text-transform: uppercase; font-size: 11px; }
+  .runs-on b { color: var(--fg-1); font-weight: 600; }
+
+  /* ---------- Section scaffolding ---------- */
+  section { padding: 74px 0; position: relative; }
+  .sec-head { max-width: 640px; margin-bottom: 44px; }
+  .sec-head h2 { font-size: clamp(28px, 4vw, 40px); margin-top: 16px; font-weight: 800; }
+  .sec-head p { color: var(--fg-2); font-size: 17px; margin-top: 14px; }
+  .sec-divider { border: 0; border-top: 1px solid var(--border); }
+
+  /* ---------- The trick / bridge diagram ---------- */
+  .bridge {
+    border: 1px solid var(--border); border-radius: var(--r-lg);
+    background: linear-gradient(180deg, var(--bg-1), var(--bg-0));
+    padding: 36px; overflow: hidden;
+  }
+  .bridge-row { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; align-items: stretch; gap: 14px; }
+  @media (max-width: 820px) { .bridge-row { grid-template-columns: 1fr; } .bridge-arrow { transform: rotate(90deg); justify-self: center; } }
+  .bnode { border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-2); padding: 18px; }
+  .bnode .tag { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--cyan); }
+  .bnode h4 { color: var(--fg-0); font-size: 15.5px; margin: 8px 0 6px; }
+  .bnode p { font-size: 13.5px; color: var(--fg-2); }
+  .bnode code { font-family: var(--mono); color: var(--amber); font-size: 12.5px; background: rgba(255,190,61,.08); padding: 1px 6px; border-radius: 5px; }
+  .bridge-arrow { display: flex; align-items: center; color: var(--blue); }
+  .bridge-arrow svg { width: 26px; height: 26px; }
+  .bridge-foot { margin-top: 22px; font-size: 14px; color: var(--fg-2); text-align: center; }
+  .bridge-foot b { color: var(--fg-0); }
+
+  /* ---------- Feature grid ---------- */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  @media (max-width: 900px) { .features { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
+  .fcard {
+    border: 1px solid var(--border); border-radius: var(--r-md);
+    background: var(--bg-1); padding: 24px;
+    transition: transform .18s ease, border-color .18s ease, background .18s ease;
+  }
+  .fcard:hover { transform: translateY(-4px); border-color: var(--border-strong); background: var(--bg-2); }
+  .ficon {
+    width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
+    background: var(--grad-soft); border: 1px solid var(--border-strong); margin-bottom: 16px;
+  }
+  .ficon svg { width: 22px; height: 22px; color: var(--cyan); }
+  .fcard h3 { font-size: 17px; margin-bottom: 8px; }
+  .fcard p { font-size: 14px; color: var(--fg-2); }
+  .fcard .tagline { display: inline-block; margin-top: 12px; font-family: var(--mono); font-size: 11.5px; color: var(--fg-3); }
+
+  /* ---------- Canvas / split spotlight ---------- */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  @media (max-width: 880px) { .split { grid-template-columns: 1fr; gap: 32px; } }
+  .split.rev .split-media { order: 2; }
+  @media (max-width: 880px) { .split.rev .split-media { order: 0; } }
+  .split h3 { font-size: clamp(24px, 3vw, 32px); font-weight: 800; }
+  .split p { color: var(--fg-2); font-size: 16px; margin-top: 14px; }
+  .checklist { list-style: none; padding: 0; margin: 22px 0 0; display: grid; gap: 12px; }
+  .checklist li { display: flex; gap: 11px; font-size: 15px; color: var(--fg-1); }
+  .checklist svg { width: 20px; height: 20px; color: var(--cyan); flex-shrink: 0; margin-top: 2px; }
+
+  /* canvas mock */
+  .canvas-mock { border: 1px solid var(--border-strong); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--shadow); background: var(--bg-1); }
+  .canvas-split { display: grid; grid-template-columns: 1fr 1fr; min-height: 290px; }
+  .canvas-split .term { border-right: 1px solid var(--border); min-height: 0; }
+  .canvas-pane { padding: 18px; background: var(--bg-0); }
+  .canvas-pane .doc-h { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--fg-3); margin-bottom: 14px; display: flex; align-items: center; gap: 7px; }
+  .canvas-pane .doc-h .live { width: 6px; height: 6px; border-radius: 50%; background: #61c554; box-shadow: 0 0 8px #61c554; }
+  .canvas-pane h5 { color: var(--fg-0); font-size: 16px; margin: 0 0 10px; }
+  .canvas-pane .bar { height: 8px; border-radius: 5px; background: var(--bg-2); margin: 8px 0; overflow: hidden; }
+  .canvas-pane .bar i { display: block; height: 100%; background: var(--grad); }
+  .canvas-pane ul { padding-left: 18px; margin: 12px 0 0; font-size: 13px; color: var(--fg-2); }
+  .canvas-pane .sel { background: rgba(255,190,61,.22); border-radius: 3px; padding: 0 2px; }
+
+  /* ---------- Agent roster ---------- */
+  .roster { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; }
+  @media (max-width: 900px) { .roster { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 560px) { .roster { grid-template-columns: repeat(3, 1fr); } }
+  .agent {
+    border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1);
+    padding: 16px 10px; text-align: center; transition: transform .18s ease, border-color .18s ease;
+  }
+  .agent:hover { transform: translateY(-4px); border-color: var(--blue); }
+  .agent img { width: 72px; height: 72px; object-fit: contain; border-radius: 12px; }
+  .agent .name { margin-top: 8px; font-size: 13px; font-weight: 600; color: var(--fg-0); }
+  .agent .role { font-size: 11px; color: var(--fg-3); font-family: var(--mono); }
+
+  /* ---------- Stack strip ---------- */
+  .stack { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  @media (max-width: 760px) { .stack { grid-template-columns: repeat(2, 1fr); } }
+  .scard { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); padding: 22px; }
+  .scard .k { font-family: var(--mono); font-size: 11px; color: var(--cyan); letter-spacing: .08em; text-transform: uppercase; }
+  .scard h4 { color: var(--fg-0); font-size: 16px; margin: 9px 0 6px; }
+  .scard p { font-size: 13px; color: var(--fg-2); }
+
+  /* ---------- Install ---------- */
+  .install-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
+  @media (max-width: 860px) { .install-grid { grid-template-columns: 1fr; } }
+  .code-block { border: 1px solid var(--border-strong); border-radius: var(--r-md); overflow: hidden; background: var(--bg-1); box-shadow: var(--shadow); }
+  .code-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--bg-0); }
+  .code-head span { font-family: var(--mono); font-size: 12px; color: var(--fg-3); }
+  .copy-btn { background: var(--bg-2); border: 1px solid var(--border-strong); color: var(--fg-1); font-size: 12px; padding: 5px 11px; border-radius: 8px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; transition: all .15s ease; }
+  .copy-btn:hover { border-color: var(--cyan); color: var(--cyan); }
+  .copy-btn svg { width: 14px; height: 14px; }
+  pre { margin: 0; padding: 18px; font-family: var(--mono); font-size: 13.5px; line-height: 1.9; color: var(--fg-1); overflow-x: auto; }
+  pre .c { color: var(--fg-3); } pre .cmd { color: var(--cyan); } pre .arg { color: var(--amber); }
+  .req-list { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 14px; }
+  .req-list li { display: flex; gap: 12px; }
+  .req-list .n { width: 26px; height: 26px; flex-shrink: 0; border-radius: 8px; background: var(--grad-soft); border: 1px solid var(--border-strong); display: grid; place-items: center; font-family: var(--mono); font-size: 13px; color: var(--cyan); font-weight: 700; }
+  .req-list b { color: var(--fg-0); }
+  .req-list p { font-size: 13.5px; color: var(--fg-2); }
+
+  /* ---------- Final CTA ---------- */
+  .cta-band { text-align: center; border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: 56px 32px; background: var(--grad-soft); position: relative; overflow: hidden; }
+  .cta-band img { width: 76px; height: 76px; margin-bottom: 18px; }
+  .cta-band h2 { font-size: clamp(28px, 4vw, 42px); font-weight: 800; }
+  .cta-band p { color: var(--fg-1); margin: 14px auto 28px; max-width: 52ch; font-size: 17px; }
+  .cta-band .hero-cta { justify-content: center; }
+
+  /* ---------- Footer ---------- */
+  footer { border-top: 1px solid var(--border); padding: 44px 0 56px; margin-top: 40px; }
+  .foot-grid { display: flex; justify-content: space-between; align-items: flex-start; gap: 30px; flex-wrap: wrap; }
+  .foot-brand { max-width: 320px; }
+  .foot-brand img { width: 30px; height: 30px; }
+  .foot-brand .brand { margin-bottom: 12px; }
+  .foot-brand p { font-size: 13px; color: var(--fg-3); }
+  .foot-cols { display: flex; gap: 56px; flex-wrap: wrap; }
+  .foot-col h5 { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--fg-3); margin: 0 0 14px; }
+  .foot-col a { display: block; color: var(--fg-2); font-size: 14px; margin-bottom: 9px; transition: color .15s ease; }
+  .foot-col a:hover { color: var(--cyan); }
+  .foot-bottom { margin-top: 36px; padding-top: 22px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--fg-3); }
+
+  /* reveal-on-scroll */
+  .reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s ease, transform .6s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<!-- ===================== NAV ===================== -->
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top">
+      <img src="assets/mark-color.png" alt="OctiqFlow mark" />
+      OctiqFlow
+    </a>
+    <nav class="nav-links">
+      <a href="#trick">The trick</a>
+      <a href="#features">Features</a>
+      <a href="#canvas">Canvas</a>
+      <a href="#agents">Agents</a>
+      <a href="#start">Get started</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="https://github.com/kyson8101/octiq-flow" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+</header>
+
+<span id="top"></span>
+
+<!-- ===================== HERO ===================== -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="reveal in">
+      <span class="eyebrow"><span class="dot"></span>Agent workflow orchestrator</span>
+      <h1>Drive your CLI agents <span class="grad-text">from buttons.</span></h1>
+      <p class="lede">OctiqFlow runs real terminals inside its window and turns one-click UI actions into keystrokes your agent reads as if you typed them.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#start">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 21h16"/></svg>
+          Get started
+        </a>
+        <a class="btn btn-ghost" href="#trick">See how it works</a>
+      </div>
+      <div class="hero-note">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Works fully offline</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> macOS · Windows · Linux</span>
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Open source</span>
+      </div>
+    </div>
+
+    <!-- Terminal mock -->
+    <div class="mock reveal in" aria-hidden="true">
+      <div class="mock-bar">
+        <div class="lights"><i></i><i></i><i></i></div>
+        <div class="mock-tabs">
+          <div class="mock-tab active">claude</div>
+          <div class="mock-tab">codex <span class="badge">●</span></div>
+          <div class="mock-tab">build</div>
+        </div>
+      </div>
+      <div class="mock-body">
+        <div class="term">
+          <div><span class="pl">~/project</span> <span class="mut">$</span> <span class="ag">claude</span></div>
+          <div class="mut">› Claude Code — ready</div>
+          <div style="margin-top:8px"><span class="ag">●</span> Reading <span class="ok">src/pty.rs</span>, <span class="ok">terminals.js</span>…</div>
+          <div><span class="ag">●</span> The PTY bridge writes your button text</div>
+          <div>&nbsp;&nbsp;straight to stdin — no copy, no paste.</div>
+          <div style="margin-top:8px"><span class="pl">~/project</span> <span class="mut">$</span> <span class="cursor"></span></div>
+        </div>
+      </div>
+      <div class="mock-actions">
+        <span class="pill accent">Launch agent</span>
+        <span class="pill">Inject <span class="k">no enter</span></span>
+        <span class="pill">Inject + Enter</span>
+        <span class="pill">Canvas</span>
+        <span class="pill">Git diff</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="runs-on reveal">
+      <span class="label">Built for</span>
+      <span><b>Claude Code</b></span>
+      <span>·</span>
+      <span><b>Codex</b></span>
+      <span>·</span>
+      <span>any interactive CLI agent that lives in a terminal</span>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== THE TRICK ===================== -->
+<section id="trick">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow"><span class="dot"></span>The core trick</span>
+      <h2>A button press becomes a keystroke.</h2>
+      <p>There is no fragile automation layer. A UI action writes raw bytes to a real pseudo-terminal (PTY). The shell and the agent read those bytes as if they came from your keyboard.</p>
+    </div>
+
+    <div class="bridge reveal">
+      <div class="bridge-row">
+        <div class="bnode">
+          <div class="tag">1 · You click</div>
+          <h4>UI action fires</h4>
+          <p>A button calls <code>invoke("pty_write", { id, data })</code> in the web UI.</p>
+        </div>
+        <div class="bridge-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m0 0l-6-6m6 6l-6 6"/></svg></div>
+        <div class="bnode">
+          <div class="tag">2 · Rust writes</div>
+          <h4>Bytes hit the PTY</h4>
+          <p>The Rust backend writes those bytes to the PTY's <code>stdin</code> — real input.</p>
+        </div>
+        <div class="bridge-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m0 0l-6-6m6 6l-6 6"/></svg></div>
+        <div class="bnode">
+          <div class="tag">3 · Agent reads</div>
+          <h4>Renders back in xterm</h4>
+          <p>Output streams as <code>pty-output</code> events and paints in the terminal.</p>
+        </div>
+      </div>
+      <div class="bridge-foot">Same bridge powers everything: <b>real keystrokes</b>, button injection, agent launches, and one-line questions from the canvas all travel the one path.</div>
+    </div>
+  </div>
+</section>
+
+<hr class="sec-divider wrap" style="border:0;border-top:1px solid var(--border);" />
+
+<!-- ===================== FEATURES ===================== -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow"><span class="dot"></span>Everything in one window</span>
+      <h2>Not a single terminal. A workspace.</h2>
+      <p>Many terminals per project, a file browser, a git diff viewer, attention alerts, a live canvas, and agent-session resume — all native, all offline.</p>
+    </div>
+
+    <div class="features">
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></div>
+        <h3>Multi-terminal projects</h3>
+        <p>Group folders into a project, then open as many live terminals as you need. Each keeps its scrollback in memory when hidden.</p>
+        <span class="tagline">project sidebar · tabs</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg></div>
+        <h3>Button-driven injection</h3>
+        <p>Launch an agent, inject a prompt onto the line, or inject and submit — from labelled buttons instead of retyping commands.</p>
+        <span class="tagline">launch · inject · inject + enter</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 9v6M18 6a3 3 0 0 1-3 3H9"/><circle cx="18" cy="6" r="3"/></svg></div>
+        <h3>Live git diff viewer</h3>
+        <p>Status counts, changed files, and full file diffs read from one git backend, so the sidebar, dashboard, and diff panel always agree. Unpushed commits show <code style="color:var(--amber)">↑N</code>.</p>
+        <span class="tagline">read-only · repo-deduped</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg></div>
+        <h3>Attention alerts</h3>
+        <p>OctiqFlow scans terminal output for notify escape codes. When an agent needs you, its tab badges and a banner appears. Click to jump straight there.</p>
+        <span class="tagline">OSC 9 / 777 / Kitty · octiq-notify</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.4 2.6L3 8"/><path d="M3 3v5h5"/></svg></div>
+        <h3>Agent-session resume</h3>
+        <p>Restart the app and re-attach a tab to its prior agent session — <code>claude --resume</code> / <code>codex resume</code>. A best-effort hook captures the session id while it runs.</p>
+        <span class="tagline">survives restart</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div>
+        <h3>The living canvas</h3>
+        <p>A pane beside the terminal renders HTML or Markdown the agent writes — a plan, a diagram, a decision log — and updates it live as you talk.</p>
+        <span class="tagline">sandboxed iframe · highlight to ask</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+        <h3>Working indicator</h3>
+        <p>A dot lights on a tab only while its agent is actively streaming output, so you can see at a glance which terminal is busy.</p>
+        <span class="tagline">per-tab busy state</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h16M4 19h10"/></svg></div>
+        <h3>Layout + scrollback persist</h3>
+        <p>Each project's tab list and scrollback are saved, so terminals rebuild after a restart with your old output written in above a fresh prompt.</p>
+        <span class="tagline">per-project · on disk</span>
+      </div>
+
+      <div class="fcard reveal">
+        <div class="ficon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-3 3 3 4-5"/></svg></div>
+        <h3>Dashboard &amp; utilities</h3>
+        <p>A dashboard with project widgets, plus reusable agent-launch prompt templates that are not tied to any one project.</p>
+        <span class="tagline">prompt templates · widgets</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== CANVAS SPOTLIGHT ===================== -->
+<section id="canvas">
+  <div class="wrap split">
+    <div class="reveal">
+      <span class="eyebrow"><span class="dot"></span>Spotlight · Canvas</span>
+      <h3>Watch the plan grow next to the chat.</h3>
+      <p>While you talk with the agent in a terminal, it draws a plan, a spec, or a diagram onto a pane beside it — and keeps rewriting the same document as decisions land. No IPC socket; just a file on disk and a watcher.</p>
+      <ul class="checklist">
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Renders Markdown or raw HTML in a <b>sandboxed iframe</b> — agent code can animate but never reaches your machine.</li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> <b>Highlight to ask:</b> select text on the canvas and send a one-line question straight to the live terminal.</li>
+        <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg> Lives under your home folder, so it never dirties the repo and survives a restart.</li>
+      </ul>
+    </div>
+
+    <div class="split-media reveal">
+      <div class="canvas-mock" aria-hidden="true">
+        <div class="mock-bar">
+          <div class="lights"><i></i><i></i><i></i></div>
+          <div class="mock-tabs"><div class="mock-tab active">terminal + canvas</div></div>
+        </div>
+        <div class="canvas-split">
+          <div class="term" style="font-size:11.5px; padding:14px;">
+            <div><span class="ag">●</span> Drafting the rollout plan…</div>
+            <div class="mut">writing canvas.md</div>
+            <div style="margin-top:8px"><span class="pl">you</span> <span class="mut">›</span> ship phase 2 first?</div>
+            <div><span class="cursor"></span></div>
+          </div>
+          <div class="canvas-pane">
+            <div class="doc-h"><span class="live"></span> canvas.md · live</div>
+            <h5>Rollout plan</h5>
+            <div class="bar"><i style="width:72%"></i></div>
+            <ul>
+              <li>Phase 1 — PTY bridge ✓</li>
+              <li><span class="sel">Phase 2 — canvas pane</span></li>
+              <li>Phase 3 — alerts + resume</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="sec-divider wrap" style="border:0;border-top:1px solid var(--border);" />
+
+<!-- ===================== AGENTS ===================== -->
+<section id="agents">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow"><span class="dot"></span>A roster of roles</span>
+      <h2>One orchestrator. Many specialists.</h2>
+      <p>OctiqFlow ships role art for the agents you coordinate — an architect, a frontend dev, a QA, a DBA, a security reviewer, and more — so each terminal has a face.</p>
+    </div>
+    <div class="roster">
+      <div class="agent reveal"><img src="assets/agents/orchestrator.png" alt="Orchestrator" /><div class="name">Orchestrator</div><div class="role">lead</div></div>
+      <div class="agent reveal"><img src="assets/agents/architect.png" alt="Architect" /><div class="name">Architect</div><div class="role">design</div></div>
+      <div class="agent reveal"><img src="assets/agents/senior-dev.png" alt="Senior dev" /><div class="name">Senior Dev</div><div class="role">build</div></div>
+      <div class="agent reveal"><img src="assets/agents/frontend.png" alt="Frontend" /><div class="name">Frontend</div><div class="role">ui</div></div>
+      <div class="agent reveal"><img src="assets/agents/qa.png" alt="QA" /><div class="name">QA</div><div class="role">test</div></div>
+      <div class="agent reveal"><img src="assets/agents/devops.png" alt="DevOps" /><div class="name">DevOps</div><div class="role">ship</div></div>
+      <div class="agent reveal"><img src="assets/agents/dba.png" alt="DBA" /><div class="name">DBA</div><div class="role">data</div></div>
+      <div class="agent reveal"><img src="assets/agents/security.png" alt="Security" /><div class="name">Security</div><div class="role">audit</div></div>
+      <div class="agent reveal"><img src="assets/agents/researcher.png" alt="Researcher" /><div class="name">Researcher</div><div class="role">scout</div></div>
+      <div class="agent reveal"><img src="assets/agents/reviewer.png" alt="Reviewer" /><div class="name">Reviewer</div><div class="role">review</div></div>
+      <div class="agent reveal"><img src="assets/agents/support.png" alt="Support" /><div class="name">Support</div><div class="role">help</div></div>
+      <div class="agent reveal"><img src="assets/agents/intern.png" alt="Intern" /><div class="name">Intern</div><div class="role">grunt</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== STACK ===================== -->
+<section>
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow"><span class="dot"></span>Under the hood</span>
+      <h2>Native where it counts.</h2>
+      <p>A Tauri shell, a Rust backend, and a no-bundler web UI rendering terminals on the GPU.</p>
+    </div>
+    <div class="stack">
+      <div class="scard reveal">
+        <div class="k">Shell</div>
+        <h4>Tauri 2</h4>
+        <p>One cross-platform desktop app for macOS, Windows, and Linux — small, native, no Electron.</p>
+      </div>
+      <div class="scard reveal">
+        <div class="k">Backend</div>
+        <h4>Rust + portable-pty</h4>
+        <p>Multi-PTY manager, git reads, file browser, layout store, and the OSC attention scanner.</p>
+      </div>
+      <div class="scard reveal">
+        <div class="k">Terminal</div>
+        <h4>xterm.js · WebGL</h4>
+        <p>Vendored, no CDN. WebGL rendering avoids the ghosted glyphs the DOM renderer leaves after reflow.</p>
+      </div>
+      <div class="scard reveal">
+        <div class="k">UI</div>
+        <h4>Vanilla ES modules</h4>
+        <p>No bundler, no framework. Modules talk through window events; the whole UI runs straight from disk.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== GET STARTED ===================== -->
+<section id="start">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow"><span class="dot"></span>Get started</span>
+      <h2>Clone, install, run.</h2>
+      <p>OctiqFlow builds from source with the Tauri toolchain. Rust, Node, and pnpm are the only requirements.</p>
+    </div>
+
+    <div class="install-grid">
+      <div class="code-block reveal">
+        <div class="code-head">
+          <span>terminal</span>
+          <button class="copy-btn" id="copyBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            <span id="copyLabel">Copy</span>
+          </button>
+        </div>
+<pre id="codeSnippet"><span class="c"># 1 — clone the repo</span>
+<span class="cmd">git</span> clone https://github.com/kyson8101/octiq-flow.git
+<span class="cmd">cd</span> octiq-flow
+
+<span class="c"># 2 — install the Tauri CLI (the only JS dependency)</span>
+<span class="cmd">pnpm</span> install
+
+<span class="c"># 3 — run the dev window with hot reload</span>
+<span class="cmd">pnpm</span> tauri <span class="arg">dev</span>
+
+<span class="c"># …or build the release .app / installer</span>
+<span class="cmd">pnpm</span> tauri <span class="arg">build</span></pre>
+      </div>
+
+      <div class="reveal">
+        <ul class="req-list">
+          <li>
+            <span class="n">R</span>
+            <div><b>Rust</b><p>Powers the PTY bridge and every backend command. Install via rustup or Homebrew.</p></div>
+          </li>
+          <li>
+            <span class="n">N</span>
+            <div><b>Node + pnpm</b><p>Only used to fetch and run the Tauri CLI — the web UI itself ships with no build step.</p></div>
+          </li>
+          <li>
+            <span class="n">A</span>
+            <div><b>A CLI agent</b><p>Have <code style="color:var(--amber);font-family:var(--mono)">claude</code> or <code style="color:var(--amber);font-family:var(--mono)">codex</code> on your <code style="color:var(--amber);font-family:var(--mono)">PATH</code> — OctiqFlow launches them in a login shell.</p></div>
+          </li>
+        </ul>
+        <div style="margin-top:26px">
+          <a class="btn btn-primary" href="https://github.com/kyson8101/octiq-flow" target="_blank" rel="noopener">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.3 4.7 18.3 5 18.3 5c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z"/></svg>
+            View the source
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FINAL CTA ===================== -->
+<section>
+  <div class="wrap">
+    <div class="cta-band reveal">
+      <img src="assets/mark-color.png" alt="OctiqFlow" />
+      <h2>Stop retyping. Start orchestrating.</h2>
+      <p>Three coordinated agent paths around one hub — that is the mark, and that is the workflow. Bring your CLI agents into one calm window.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/kyson8101/octiq-flow" target="_blank" rel="noopener">Open on GitHub</a>
+        <a class="btn btn-ghost" href="#start">Build it locally</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== FOOTER ===================== -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <div class="brand"><img src="assets/mark-color.png" alt="OctiqFlow mark" /> OctiqFlow</div>
+        <p>An agent workflow orchestrator. Run real terminals and drive interactive CLI agents from UI buttons — projects, a live canvas, git, alerts, and session resume, all offline.</p>
+      </div>
+      <div class="foot-cols">
+        <div class="foot-col">
+          <h5>Product</h5>
+          <a href="#trick">The trick</a>
+          <a href="#features">Features</a>
+          <a href="#canvas">Canvas</a>
+          <a href="#agents">Agents</a>
+        </div>
+        <div class="foot-col">
+          <h5>Build</h5>
+          <a href="#start">Get started</a>
+          <a href="https://github.com/kyson8101/octiq-flow" target="_blank" rel="noopener">Source</a>
+          <a href="https://tauri.app/" target="_blank" rel="noopener">Tauri</a>
+          <a href="https://xtermjs.org/" target="_blank" rel="noopener">xterm.js</a>
+        </div>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 OctiqFlow. Built with Tauri, Rust, and xterm.js.</span>
+      <span>Unsigned dev builds — macOS Gatekeeper warns on first open.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Reveal-on-scroll
+  (function () {
+    const els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) { els.forEach(e => e.classList.add('in')); return; }
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+    }, { threshold: 0.12 });
+    els.forEach(e => io.observe(e));
+  })();
+
+  // Copy install snippet
+  (function () {
+    const btn = document.getElementById('copyBtn');
+    const label = document.getElementById('copyLabel');
+    if (!btn) return;
+    const text = [
+      'git clone https://github.com/kyson8101/octiq-flow.git',
+      'cd octiq-flow',
+      'pnpm install',
+      'pnpm tauri dev'
+    ].join('\n');
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        label.textContent = 'Copied';
+        setTimeout(() => { label.textContent = 'Copy'; }, 1800);
+      } catch (_) {
+        label.textContent = 'Copy failed';
+        setTimeout(() => { label.textContent = 'Copy'; }, 1800);
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>
