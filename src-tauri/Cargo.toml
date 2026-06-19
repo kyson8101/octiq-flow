@@ -33,4 +33,18 @@ portable-pty = "0.8"
 uuid = { version = "1", features = ["v4"] }
 # Fs watcher behind the sidebar's live git status (git_watch.rs).
 notify = "8"
+# Cross-platform low-level key listener behind the screenshot-vault hotkey
+# (vault.rs). Distinguishes left/right modifiers, so "both Command keys" works;
+# a normal global shortcut cannot. macOS uses a CGEventTap (needs Input
+# Monitoring permission); Windows uses a low-level keyboard hook (no extra perm).
+rdev = "0.5"
+# Decode the cropped PNG the frontend sends back when saving a crop (vault.rs).
+base64 = "0.22"
+
+# macOS-only: read the frontmost window's CoreGraphics id so the screenshot
+# hotkey captures the active window (vault.rs). CoreGraphics itself is linked
+# directly; these crates give the CoreFoundation array/dictionary wrappers.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
 

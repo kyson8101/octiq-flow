@@ -485,6 +485,26 @@ export function sendToProjectTerminal(prefix, text, submit = false) {
   return false;
 }
 
+/**
+ * Write `text` into the terminal the user is looking at right now — the active
+ * tab of whichever group is currently VISIBLE (one view shows at a time, so at
+ * most one group qualifies). With `submit` true, also send Enter ("\r"). Brings
+ * that tab to the front and focuses it. Returns true if a terminal received the
+ * text, or false if no terminal is visible (e.g. the user is on Settings or has
+ * no terminal open). Used by the screenshot vault to paste image paths into the
+ * terminal the user just left.
+ */
+export function sendToActiveTerminal(text, submit = false) {
+  for (const [id, { group }] of idToEntry) {
+    if (group.activeId === id && group.visible()) {
+      invoke("pty_write", { id, data: submit ? `${text}\r` : text }).catch(() => {});
+      group.activate(id);
+      return true;
+    }
+  }
+  return false;
+}
+
 // Sizing: every pane has its own ResizeObserver (see newTerminal), so window
 // resizes AND in-page layout shifts (alert banner, paths footer, panel
 // collapse) all trigger a refit. There is no window "resize" listener — it

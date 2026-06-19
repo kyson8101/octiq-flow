@@ -19,6 +19,7 @@ mod proc;
 mod pty;
 mod terminal_layout;
 mod usage_limits;
+mod vault;
 mod workspaces;
 use pty::PtyManager;
 use terminal_layout::TerminalLayoutState;
@@ -69,6 +70,10 @@ pub fn run() {
             // selected project's ~/.octiqflow/canvas/<key> folder via canvas_watch
             // so an agent's document writes re-render the pane live.
             app.manage(canvas::CanvasWatchState::default());
+            // Screenshot-vault hotkey monitor. Holds the chord config; the global
+            // key listener starts only when the frontend opts in (vault_start_monitor),
+            // so the Input Monitoring permission prompt never fires unasked.
+            app.manage(vault::VaultMonitor::default());
             // Keep the agent session-capture hook script on disk current with this
             // build, so resume fixes ship without the user re-running setup from
             // Settings. Writes only the script file (never an agent's settings);
@@ -159,6 +164,15 @@ pub fn run() {
             canvas::canvas_watch,
             canvas::install_canvas_skill,
             canvas::install_canvas_codex_guide,
+            vault::vault_start_monitor,
+            vault::vault_set_keys,
+            vault::vault_capture_now,
+            vault::vault_permissions,
+            vault::vault_request_permissions,
+            vault::vault_list,
+            vault::vault_remove,
+            vault::vault_clear,
+            vault::vault_write_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

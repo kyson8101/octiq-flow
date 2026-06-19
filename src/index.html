@@ -42,6 +42,7 @@
     <script type="module" src="/alerts.js" defer></script>
     <script type="module" src="/working.js" defer></script>
     <script type="module" src="/usage.js" defer></script>
+    <script type="module" src="/vault.js" defer></script>
     <script type="module" src="/settings.js" defer></script>
   </head>
 
@@ -69,6 +70,10 @@
           <button class="modebtn" data-mode="agents">Agents</button>
           <button class="modebtn" data-mode="dashboard">Dashboard</button>
         </div>
+        <button id="vault-btn" class="modebtn modebtn-vault" data-tip="Screenshot vault — capture a window with the hotkey, then paste it into a terminal">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+          <span id="vault-badge" class="vault-badge hidden">0</span>
+        </button>
         <button class="modebtn modebtn-gear" data-mode="settings" data-tip="Settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
         </button>
@@ -327,6 +332,36 @@
               <button id="git-push-btn" class="btn btn-accent git-action-btn">Push</button>
             </div>
           </div>
+
+          <!-- Screenshots section (bottom): the screenshot vault, here in the
+               right panel. Lists every shot; the user multi-picks some and
+               inserts their paths into the terminal. vault.js fills #shots-grid
+               (the same vault as the top-bar overlay). -->
+          <div id="cmd-tab-shots" class="cmd-tabpane cmd-section cmd-section-shots">
+            <div class="cmd-section-head">
+              <span class="cmd-section-title">Screenshots</span>
+              <span class="cmd-section-head-actions">
+                <button id="shots-capture" class="icon-btn" type="button" data-tip="Capture the active window now">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+                </button>
+                <button id="shots-refresh" class="icon-btn" type="button" data-tip="Reload screenshots">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+                </button>
+              </span>
+            </div>
+            <div id="shots-grid" class="shots-grid"></div>
+            <p id="shots-empty" class="ws-empty">No screenshots yet. Use the capture hotkey or the camera button.</p>
+            <div id="shots-foot" class="shots-foot hidden">
+              <label class="shots-selectall">
+                <input type="checkbox" id="shots-selectall" />
+                <span>Select all</span>
+              </label>
+              <span class="shots-foot-actions">
+                <button id="shots-clear" class="btn btn-sm" type="button">Delete all</button>
+                <button id="shots-insert" class="btn btn-primary btn-sm" type="button" disabled>Insert (0)</button>
+              </span>
+            </div>
+          </div>
         </div>
       </aside>
       </div>
@@ -538,6 +573,48 @@
               <button id="install-canvas-codex" class="btn btn-sm" title="Add the canvas guide to ~/.codex/AGENTS.md">↺ Install canvas guide for Codex</button>
               <span id="install-canvas-codex-status" class="settings-status"></span>
             </section>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Screenshot vault</div>
+              <p class="settings-help">
+                Capture the window you are testing with a global hotkey, even when
+                OctiqFlow is in the background. Each shot goes into a temporary
+                vault. Open the vault from the camera button in the top bar, then
+                paste a screenshot's file path into a terminal so Claude or Codex
+                can read it. You can crop a shot before pasting.
+              </p>
+              <p class="settings-help">
+                The hotkey is OFF until you turn it on here. On macOS it needs
+                <strong>Input Monitoring</strong> permission (for the key listener)
+                and <strong>Screen Recording</strong> permission (to grab the
+                window). macOS asks for each the first time; grant them in System
+                Settings, then restart OctiqFlow once if the capture comes out
+                blank. On Windows no extra permission is needed.
+              </p>
+
+              <div class="settings-field">
+                <label class="settings-label">Capture hotkey</label>
+                <div class="vault-recorder">
+                  <span id="vault-keys-display" class="vault-keys-display">—</span>
+                  <button id="vault-record" class="btn btn-sm" type="button">Record</button>
+                  <button id="vault-keys-reset" class="btn btn-sm" type="button">Reset to default</button>
+                </div>
+                <p class="settings-help">
+                  Click <strong>Record</strong>, then press your key combination — at
+                  least two keys held together (for example both Command keys, or
+                  Cmd + Shift + 2). Release the keys to save. Left and right
+                  modifier keys are told apart, so "both Command keys" works.
+                </p>
+              </div>
+
+              <p id="vault-perms-status" class="settings-help"></p>
+              <div class="settings-vault-actions">
+                <button id="vault-perms" class="btn btn-sm" type="button">Grant macOS permissions</button>
+                <button id="vault-enable" class="btn btn-sm" type="button">Turn on capture hotkey</button>
+                <button id="vault-test" class="btn btn-sm" type="button">Test capture</button>
+              </div>
+              <span id="vault-settings-status" class="settings-status"></span>
+            </section>
           </div>
         </div>
       </section>
@@ -710,6 +787,66 @@
         <div id="cmd-drawer-mount" class="cmd-modal-body"></div>
         <div class="modal-foot">
           <button id="cmd-modal-end" class="btn btn-sm cmd-end">End command</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screenshot vault overlay: opened by the camera button in the mode bar.
+         Lists the screenshots captured by the global hotkey (thumbnails read
+         straight from disk via the asset protocol); each can be pasted into the
+         terminal, cropped, or removed. vault.js fills #vault-grid. -->
+    <div id="vault-overlay" class="vault-overlay hidden">
+      <div class="vault-panel" role="dialog" aria-modal="true" aria-label="Screenshot vault">
+        <div class="vault-head">
+          <span class="vault-title">Screenshot vault</span>
+          <span class="vault-head-actions">
+            <button id="vault-capture" class="icon-btn" type="button" data-tip="Capture the active window now">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+            </button>
+            <button id="vault-refresh" class="icon-btn" type="button" data-tip="Reload the vault">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+            </button>
+            <button id="vault-close" class="icon-btn" type="button" data-tip="Close">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </span>
+        </div>
+
+        <p id="vault-hint" class="vault-hint hidden"></p>
+
+        <div id="vault-grid" class="vault-grid"></div>
+        <p id="vault-empty" class="vault-empty">
+          No screenshots yet. Press the capture hotkey while testing your app, or
+          use the camera button above. Turn the hotkey on in Settings →
+          Screenshot vault.
+        </p>
+
+        <div class="vault-foot">
+          <span id="vault-foot-status" class="vault-foot-status"></span>
+          <span class="vault-foot-actions">
+            <button id="vault-clear" class="btn btn-sm" type="button">Clear all</button>
+            <button id="vault-paste-all" class="btn btn-sm btn-primary" type="button">Paste all to terminal</button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Crop tool: opens over a single screenshot. Drag a box on the image to
+         pick a region; Save crop draws that region to a canvas and writes the
+         PNG back to the vault (vault_write_image). -->
+    <div id="vault-crop" class="vault-crop-backdrop hidden">
+      <div class="vault-crop-box" role="dialog" aria-modal="true" aria-label="Crop screenshot">
+        <div class="vault-crop-head">
+          <span class="vault-crop-title">Crop — drag a box on the image</span>
+          <span class="vault-crop-actions">
+            <button id="vault-crop-reset" class="btn btn-sm" type="button">Reset</button>
+            <button id="vault-crop-cancel" class="btn btn-sm" type="button">Cancel</button>
+            <button id="vault-crop-save" class="btn btn-sm btn-primary" type="button" disabled>Save crop</button>
+          </span>
+        </div>
+        <div id="vault-crop-stage" class="vault-crop-stage">
+          <img id="vault-crop-img" class="vault-crop-img" alt="Screenshot to crop" draggable="false" />
+          <div id="vault-crop-sel" class="vault-crop-sel hidden"></div>
         </div>
       </div>
     </div>

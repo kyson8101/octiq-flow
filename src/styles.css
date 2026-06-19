@@ -4517,3 +4517,344 @@ body {
 .tasksheet-respond {
   align-self: flex-start;
 }
+
+/* ---- Screenshot vault (vault.js) -------------------------------------- */
+/* Mode-bar camera button + its pending-count badge, the drawer overlay with
+   thumbnail grid, and the crop tool. Reuses the shared tokens so it sits in the
+   same warm-graphite, sage-accent theme as the rest of the app. */
+.modebtn-vault {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  color: var(--fg-2);
+}
+.modebtn-vault:hover {
+  color: var(--fg-0);
+  background: var(--bg-2);
+}
+.modebtn-vault svg {
+  display: block;
+}
+/* The pending-screenshot count, a small sage pill on the camera button. */
+.vault-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  color: var(--bg-0);
+  background: var(--accent);
+  border-radius: 999px;
+}
+/* A brief pulse when a capture lands while the drawer is closed. */
+@keyframes vault-pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent-bg-hover); }
+  100% { box-shadow: 0 0 0 10px rgba(143, 191, 168, 0); }
+}
+.vault-btn-pulse {
+  animation: vault-pulse 0.7s ease-out;
+  border-radius: 999px;
+}
+
+/* Drawer overlay: a dimmed full-screen layer with a right-aligned panel. */
+.vault-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 60;
+}
+.vault-panel {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-1);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+}
+.vault-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.vault-title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--fg-0);
+}
+.vault-head-actions {
+  display: flex;
+  gap: 4px;
+}
+.vault-hint {
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--fg-1);
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.vault-hint-error {
+  color: var(--danger);
+  background: var(--danger-tint);
+}
+.vault-hint-ok {
+  color: var(--accent);
+  background: var(--accent-tint);
+}
+
+/* Thumbnail grid fills the middle and scrolls. */
+.vault-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 12px 14px;
+}
+.vault-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.vault-thumb {
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: zoom-in;
+}
+.vault-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.vault-card-meta {
+  font-size: 11px;
+  color: var(--fg-2);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.vault-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.vault-card-actions .btn {
+  flex: 0 0 auto;
+}
+.vault-card-actions .icon-btn {
+  margin-left: auto;
+}
+.vault-empty {
+  padding: 24px 18px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-2);
+  text-align: center;
+}
+.vault-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+.vault-foot-status {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.vault-foot-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* Crop tool: a centered modal with the image and a drag-to-select box. */
+.vault-crop-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 70;
+}
+.vault-crop-box {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 12px;
+  box-shadow: var(--shadow-2);
+}
+.vault-crop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.vault-crop-title {
+  font-size: 13px;
+  color: var(--fg-1);
+}
+.vault-crop-actions {
+  display: flex;
+  gap: 6px;
+}
+.vault-crop-stage {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  overflow: hidden;
+  border-radius: var(--r-sm);
+  cursor: crosshair;
+  user-select: none;
+}
+.vault-crop-img {
+  display: block;
+  max-width: calc(100vw - 80px);
+  max-height: calc(100vh - 140px);
+  user-select: none;
+}
+/* The selection rectangle: a sage outline with a dimmed surround via a huge
+   shadow so the area outside the box reads as excluded. */
+.vault-crop-sel {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: var(--accent-tint-faint);
+  box-shadow: 0 0 0 9999px rgba(10, 10, 12, 0.55);
+  pointer-events: none;
+}
+
+/* Settings card action row. */
+.settings-vault-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+/* Custom-key recorder row in Settings. */
+.vault-recorder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.vault-keys-display {
+  flex: 1 1 160px;
+  min-width: 120px;
+  padding: 6px 10px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+/* The Record button while it is listening for the chord. */
+.btn.vault-recording {
+  color: var(--accent);
+  border-color: var(--accent-soft-border);
+  background: var(--accent-tint);
+}
+
+/* Right-panel "Screenshots" section: a third stacked section under Git, with a
+   capped height and its own scroll so a long shot list never pushes the others
+   off-screen (same pattern as the Git section). */
+.cmd-section-shots {
+  flex: 0 0 auto;
+  overflow-y: auto;
+  max-height: 42%;
+  border-top: 1px solid var(--border);
+}
+.cmd-section-head-actions {
+  display: flex;
+  gap: 2px;
+}
+.shots-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+}
+.shots-card {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.shots-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.shots-card-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+/* The check badge shows only on a selected card. */
+.shots-check {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg-0);
+  background: var(--accent);
+  border-radius: 999px;
+}
+.shots-card-selected .shots-check {
+  display: flex;
+}
+.shots-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.shots-selectall {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.shots-selectall input {
+  cursor: pointer;
+}
+.shots-foot-actions {
+  display: flex;
+  gap: 6px;
+}
