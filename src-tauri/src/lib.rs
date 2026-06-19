@@ -16,6 +16,7 @@ mod fsbrowse;
 mod git;
 mod git_watch;
 mod proc;
+mod profile;
 mod pty;
 mod terminal_layout;
 mod usage_limits;
@@ -55,14 +56,21 @@ pub fn run() {
         .plugin(tauri_plugin_macos_fps::init())
         .manage(CloseGuard(AtomicBool::new(false)))
         .setup(|app| {
+            // Seed the active profile from the old fixed `app_data_dir` locations
+            // on first launch, BEFORE the stores below load — they now read from
+            // the profile's data root, so the migrated files must be in place.
+            profile::migrate_app_data_stores(app.path().app_data_dir().ok());
+            // Move the legacy fixed-path canvas + vault folders into the profile,
+            // so screenshots and canvas docs taken before profiles still show.
+            profile::migrate_canvas_vault();
             // Load the persisted workspace store (folders the user works in).
-            app.manage(WorkspaceState::load(app.handle()));
+            app.manage(WorkspaceState::load());
             // Multi-PTY manager: terminals are spawned by id on demand from the
             // frontend (including the boot terminal), not at setup time.
             app.manage(PtyManager::default());
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
-            app.manage(TerminalLayoutState::load(app.handle()));
+            app.manage(TerminalLayoutState::load());
             // Fs watcher behind the sidebar's live git counts; the frontend
             // installs the watched paths via git_watch_paths after each render.
             app.manage(git_watch::GitWatchState::default());

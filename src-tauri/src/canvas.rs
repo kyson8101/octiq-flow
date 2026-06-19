@@ -11,8 +11,9 @@
 // Channel shape mirrors the rest of the app: no IPC socket, just files on disk
 // (like the agent-session store in agent_resume.rs) plus a `notify` watcher
 // (like git_watch.rs) that emits a debounced `canvas-changed` event the frontend
-// listens for. A fixed `~/.octiqflow` path is used (not the Tauri app-data dir)
-// so an agent process started outside the app can still find the folder.
+// listens for. The folder lives in the active profile's data root (see
+// profile.rs); the agent learns the exact path from the `OCTIQ_CANVAS_DIR` env
+// var pty.rs exports, so it never needs to know where the profile keeps it.
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -42,9 +43,12 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Root of every project's canvas folder: `~/.octiqflow/canvas`.
+/// Root of every project's canvas folder: `<profile>/canvas`. The agent still
+/// finds its folder through the `OCTIQ_CANVAS_DIR` env var that pty.rs exports
+/// (built via `canvas_dir_for`), so re-rooting per profile flows to the agent
+/// without it knowing the path.
 fn canvas_root() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".octiqflow").join("canvas"))
+    Some(crate::profile::profile_dir().join("canvas"))
 }
 
 /// Resolve a project's canvas folder: `~/.octiqflow/canvas/<safeKey>`. The key

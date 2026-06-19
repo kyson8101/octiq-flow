@@ -13,9 +13,9 @@
 //      CoreGraphics window id, falling back to the full screen), and a
 //      PowerShell + System.Drawing grab of the foreground window on Windows.
 //      macOS capture needs Screen Recording permission.
-//   3. A flat vault folder at a fixed `~/.octiqflow/vault` (same `~/.octiqflow`
-//      pattern as the canvas store) so the shots survive a restart and are still
-//      there when the user comes back to OctiqFlow.
+//   3. A flat vault folder in the active profile's data root (`<profile>/vault`,
+//      see profile.rs) so the shots survive a restart and are still there when
+//      the user comes back to OctiqFlow.
 //
 // The monitor is OPT-IN: nothing starts at boot. The frontend calls
 // `vault_start_monitor` (from a Settings button, or silently on later launches
@@ -33,17 +33,11 @@ use tauri::{AppHandle, Emitter};
 /// lets a hand-dropped image in the folder appear.
 const IMAGE_EXTS: [&str; 4] = ["png", "jpg", "jpeg", "gif"];
 
-/// Home dir from the platform env: $HOME on Unix, %USERPROFILE% on Windows.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .map(PathBuf::from)
-}
-
-/// The vault folder: `~/.octiqflow/vault`. `None` when the home dir is unknown.
+/// The vault folder: `<profile>/vault`, in the active profile's data root (see
+/// profile.rs). `Option` is kept so callers stay unchanged; `profile_dir` always
+/// resolves a path (falling back if the configured base is unreachable).
 fn vault_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".octiqflow").join("vault"))
+    Some(crate::profile::profile_dir().join("vault"))
 }
 
 /// Ensure the vault folder exists and return it.
@@ -406,7 +400,10 @@ pub struct VaultMonitor {
 
 impl Default for VaultMonitor {
     fn default() -> Self {
-        let keys = default_codes().into_iter().filter_map(code_to_rdev).collect();
+        let keys = default_codes()
+            .into_iter()
+            .filter_map(code_to_rdev)
+            .collect();
         Self {
             running: Arc::new(AtomicBool::new(false)),
             keys: Arc::new(Mutex::new(keys)),
@@ -522,7 +519,7 @@ mod mac_listen {
     const HID_TAP: u32 = 0; // kCGHIDEventTap
     const HEAD_INSERT: u32 = 0; // kCGHeadInsertEventTap
     const LISTEN_ONLY: u32 = 1; // kCGEventTapOptionListenOnly
-    // Event types we listen to.
+                                // Event types we listen to.
     const KEY_DOWN: u32 = 10;
     const KEY_UP: u32 = 11;
     const FLAGS_CHANGED: u32 = 12;
@@ -1029,7 +1026,10 @@ mod tests {
     #[test]
     fn default_codes_map_to_two_keys() {
         // The per-OS default chord must always resolve to a valid 2-key chord.
-        let mapped: Vec<_> = default_codes().into_iter().filter_map(code_to_rdev).collect();
+        let mapped: Vec<_> = default_codes()
+            .into_iter()
+            .filter_map(code_to_rdev)
+            .collect();
         assert_eq!(mapped.len(), 2);
     }
 }

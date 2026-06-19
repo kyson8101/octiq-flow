@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
 /// Hard upper bound on a saved scrollback blob. Only the most recent
 /// `SCROLLBACK_CAP` bytes are kept (the tail), so a long-running terminal can
@@ -67,12 +67,8 @@ impl TerminalLayoutState {
     /// Load the layout index from disk and ensure the scrollback dir exists. A
     /// missing or unreadable file starts an empty store rather than failing the
     /// whole app, matching `WorkspaceState::load`.
-    pub fn load(app: &AppHandle) -> Self {
-        let dir = app
-            .path()
-            .app_data_dir()
-            .expect("app data dir should resolve");
-        let _ = fs::create_dir_all(&dir);
+    pub fn load() -> Self {
+        let dir = crate::profile::profile_dir();
         let scrollback_dir = dir.join("scrollback");
         let _ = fs::create_dir_all(&scrollback_dir);
         let file = dir.join("terminal_layout.json");

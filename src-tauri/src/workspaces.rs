@@ -112,13 +112,10 @@ pub struct WorkspaceState {
 
 impl WorkspaceState {
     /// Load the store from disk. A missing or unreadable file starts an empty
-    /// store rather than failing the whole app.
-    pub fn load(app: &AppHandle) -> Self {
-        let dir = app
-            .path()
-            .app_data_dir()
-            .expect("app data dir should resolve");
-        let _ = fs::create_dir_all(&dir);
+    /// store rather than failing the whole app. The store lives in the active
+    /// profile's data root (`profile_dir`), which is created if needed.
+    pub fn load() -> Self {
+        let dir = crate::profile::profile_dir();
         let file = dir.join("workspaces.json");
         let data = fs::read_to_string(&file)
             .ok()
