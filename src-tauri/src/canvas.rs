@@ -210,13 +210,28 @@ const CODEX_GUIDE_BODY: &str = "## OctiqFlow canvas
 
 When the environment variable `OCTIQ_CANVAS_DIR` is set, you are in an OctiqFlow \
 project terminal that has a live canvas pane beside you. To show or update a \
-visual document, write an HTML or Markdown file into `$OCTIQ_CANVAS_DIR` (use \
-`canvas.md` by default). OctiqFlow renders the most recently changed file and \
+visual document, write a single file named `canvas.html` into `$OCTIQ_CANVAS_DIR` \
+and keep updating it. OctiqFlow renders the most recently changed file and \
 refreshes it whenever you save, so keep one living document and update it as \
-decisions are made. Use a dark-friendly palette (light text on a dark or \
-transparent background) and inline all CSS/JS — the render frame is sandboxed and \
-cannot load external resources or reach the network. If `OCTIQ_CANVAS_DIR` is \
-empty or unset, there is no canvas in this terminal.";
+decisions are made.
+
+Write only the BODY content — headings, tables, and the ready-made components. \
+Do NOT write `<!doctype>`, `<html>`, `<head>`, `<style>`, or pick colors: \
+OctiqFlow wraps your fragment in a fixed OctiqFlow template (dark theme, sage \
+accent) that is the same in every session. Components you can use as classes: \
+`.card` (raised panel), `.grid` (auto-fit columns), `.stat` with `.num`/`.label` \
+(a metric block), `.badge` (a pill; add `.accent`/`.ok`/`.warn`/`.danger`), \
+`.callout` (a highlighted note; add `.ok`/`.warn`/`.danger`), `.eyebrow` (a small \
+uppercase label), `.meta`/`.muted` (secondary text), and `<kbd>`. Plain HTML \
+(h1–h4, tables, lists, pre/code, blockquote) is themed for you too. Keep it \
+scannable — favour tables, cards, and short lists over long prose.
+
+If you need full control, write a COMPLETE HTML document starting with \
+`<!doctype html>`; OctiqFlow detects that and renders it as-is, skipping the \
+template. Then you own all styling — use a dark-friendly palette and inline all \
+CSS/JS, because the render frame is sandboxed and cannot load external resources \
+or reach the network. If `OCTIQ_CANVAS_DIR` is empty or unset, there is no canvas \
+in this terminal.";
 
 /// Install the Codex canvas guide into `~/.codex/AGENTS.md`. OPT-IN only, like
 /// the Claude skill. The guide is written inside a marked block so re-installing

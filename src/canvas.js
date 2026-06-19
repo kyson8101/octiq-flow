@@ -119,36 +119,95 @@ const FRAME_SCRIPT = `
 })();
 `;
 
-/** Dark theme wrapped around rendered Markdown (and plain-text fallbacks). Kept
- *  close to the app's zen tokens so the canvas reads as part of OctiqFlow. The
- *  agent's own HTML files bring their own styles; this only themes MD/text. */
-function wrapHtml(inner) {
-  return `<!doctype html><html><head><meta charset="utf-8">
-<style>
-  :root { color-scheme: dark; }
+/** The ONE fixed canvas template. Every Markdown render and every HTML *fragment*
+ *  is wrapped in this, so canvases look the same across sessions without the
+ *  agent re-writing CSS each time. It is a small component system built from the
+ *  app's zen tokens (styles.css :root) — keep the token values in sync with that
+ *  sheet. A full HTML document (one with its own <!doctype>/<html>) bypasses this
+ *  and styles itself; see buildSrcdoc.
+ *
+ *  Classes the agent can use in a fragment (documented in the canvas skill):
+ *    .card .grid .stat(.num/.label) .badge(.accent/.ok/.warn/.danger)
+ *    .callout(.ok/.warn/.danger) .eyebrow .meta .muted .row .spread kbd
+ *  plus all plain HTML (h1–h4, p, ul/ol, table, pre/code, blockquote, hr, img). */
+const CANVAS_CSS = `
+  :root {
+    color-scheme: dark;
+    --bg-0:#141417; --bg-1:#1b1b1f; --bg-2:#232329; --bg-sunken:#0f0f12;
+    --border:#28282e; --border-strong:#36363e;
+    --fg-0:#ececea; --fg-1:#c9c9c5; --fg-2:#8f8f8a; --fg-3:#67675f;
+    --accent:#8fbfa8; --accent-tint:rgba(143,191,168,.13); --accent-border:rgba(143,191,168,.35);
+    --ok:#85c79a; --ok-tint:rgba(133,199,154,.14);
+    --danger:#de8d85; --danger-tint:rgba(222,141,133,.12);
+    --warn:#d4b06a; --warn-tint:rgba(212,176,106,.12);
+    --r-sm:8px; --r-md:10px; --r-lg:14px;
+  }
   html, body { margin: 0; }
   body {
-    padding: 16px 18px;
-    color: #c9c9c5;
-    background: #141417;
-    font: 14px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 18px 20px 44px;
+    color: var(--fg-1);
+    background: var(--bg-0);
+    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", system-ui, sans-serif;
     word-wrap: break-word;
   }
-  h1, h2, h3, h4 { line-height: 1.25; color: #e6e6e2; margin: 1.2em 0 0.5em; }
-  h1 { font-size: 1.5em; } h2 { font-size: 1.25em; } h3 { font-size: 1.1em; }
-  a { color: #8fbfa8; }
-  p, ul, ol, table, pre, blockquote { margin: 0.6em 0; }
-  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em;
-         background: #1c1c20; padding: 1px 5px; border-radius: 4px; }
-  pre { background: #1c1c20; padding: 12px 14px; border-radius: 8px; overflow: auto; }
-  pre code { background: none; padding: 0; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { border: 1px solid #2a2a30; padding: 6px 10px; text-align: left; }
-  th { background: #1c1c20; }
-  blockquote { border-left: 3px solid #8fbfa8; margin-left: 0; padding-left: 12px; color: #a8a8a3; }
-  hr { border: none; border-top: 1px solid #2a2a30; }
-  img { max-width: 100%; height: auto; }
-</style></head><body>${inner}
+  /* Typography */
+  h1, h2, h3, h4 { line-height: 1.25; color: var(--fg-0); margin: 1.4em 0 .5em; font-weight: 600; }
+  h1 { font-size: 1.55em; margin-top: 0; }
+  h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
+  h3 { font-size: 1.08em; }
+  h4 { font-size: .9em; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; }
+  p, ul, ol, table, pre, blockquote { margin: .6em 0; }
+  ul, ol { padding-left: 1.3em; } li { margin: .25em 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: var(--fg-0); }
+  hr { border: none; border-top: 1px solid var(--border); margin: 1.4em 0; }
+  img { max-width: 100%; height: auto; border-radius: var(--r-sm); }
+  /* Code */
+  code { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: .88em;
+         background: var(--bg-2); color: #d7d7d2; padding: 1px 5px; border-radius: 5px; }
+  pre { background: var(--bg-sunken); border: 1px solid var(--border); padding: 12px 14px;
+        border-radius: var(--r-md); overflow: auto; }
+  pre code { background: none; padding: 0; font-size: .86em; }
+  /* Tables */
+  table { border-collapse: collapse; width: 100%; font-size: .92em; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg-1); color: var(--fg-0); font-weight: 600; }
+  tr:nth-child(even) td { background: rgba(255,255,255,.015); }
+  blockquote { border-left: 3px solid var(--accent); margin-left: 0; padding: .2em 0 .2em 12px; color: var(--fg-2); }
+  /* Components */
+  .card { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; margin: .7em 0; }
+  .card > :first-child, .callout > :first-child { margin-top: 0; }
+  .card > :last-child, .callout > :last-child { margin-bottom: 0; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: .7em 0; }
+  .stat { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px 14px; }
+  .stat .num { font-size: 1.6em; color: var(--fg-0); font-weight: 600; line-height: 1.1; }
+  .stat .label { font-size: .78em; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
+  .badge, .pill { display: inline-block; font-size: .78em; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+                  background: var(--bg-2); color: var(--fg-1); border: 1px solid var(--border-strong); }
+  .badge.accent { background: var(--accent-tint); color: var(--accent); border-color: var(--accent-border); }
+  .badge.ok { background: var(--ok-tint); color: var(--ok); border-color: rgba(133,199,154,.4); }
+  .badge.warn { background: var(--warn-tint); color: var(--warn); border-color: rgba(212,176,106,.45); }
+  .badge.danger { background: var(--danger-tint); color: var(--danger); border-color: rgba(222,141,133,.4); }
+  .callout { border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--accent-tint);
+             border-radius: var(--r-sm); padding: 10px 14px; margin: .7em 0; }
+  .callout.ok { border-left-color: var(--ok); background: var(--ok-tint); }
+  .callout.warn { border-left-color: var(--warn); background: var(--warn-tint); }
+  .callout.danger { border-left-color: var(--danger); background: var(--danger-tint); }
+  kbd, .kbd { font-family: ui-monospace, monospace; font-size: .8em; background: var(--bg-2);
+              border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; color: var(--fg-0); }
+  .eyebrow { font-size: .75em; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); font-weight: 600; margin-bottom: .2em; }
+  .meta, .muted, small { color: var(--fg-2); } .meta { font-size: .85em; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .spread { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .right { text-align: right; } .center { text-align: center; }
+`;
+
+/** Wrap inner HTML (rendered Markdown, a plain-text fallback, or an agent HTML
+ *  fragment) in the fixed canvas template so it reads as part of OctiqFlow. */
+function wrapHtml(inner) {
+  return `<!doctype html><html><head><meta charset="utf-8">
+<style>${CANVAS_CSS}</style></head><body>${inner}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }
@@ -162,13 +221,26 @@ function escapeHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
+/** Whether `content` is a COMPLETE HTML document (starts with a doctype or an
+ *  <html> root) rather than a body fragment. A full document brings its own
+ *  styles, so it renders as-is; a fragment is wrapped in the fixed OctiqFlow
+ *  template so every canvas shares one look. Tolerates leading whitespace. */
+function isFullHtmlDoc(content) {
+  return /^\s*<(!doctype\b|html[\s>])/i.test(content);
+}
+
 /** Build the iframe `srcdoc` for a document of the given kind + raw content.
- *  HTML is shown as-is; Markdown is rendered with marked; anything else falls
- *  back to escaped preformatted text. */
+ *  A full HTML document is shown as-is (the escape hatch for custom styling);
+ *  an HTML *fragment* and rendered Markdown both go through the fixed template;
+ *  anything else falls back to escaped preformatted text. */
 function buildSrcdoc(kind, content) {
-  // Append the helper script to raw HTML too, so scroll-keep + highlight-to-ask
-  // work there as well (the agent's own HTML is otherwise untouched).
-  if (kind === "html") return `${content}\n<script>${FRAME_SCRIPT}</script>`;
+  if (kind === "html") {
+    // Full doc → as-is (append the helper script so scroll-keep + highlight-to-ask
+    // still work). Fragment → wrap in the shared template.
+    return isFullHtmlDoc(content)
+      ? `${content}\n<script>${FRAME_SCRIPT}</script>`
+      : wrapHtml(content);
+  }
   if (kind === "md") {
     const html = window.marked?.parse ? window.marked.parse(content) : escapeHtml(content);
     return wrapHtml(html);
