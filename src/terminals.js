@@ -525,9 +525,10 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
  *   refitActive()     // refit the active terminal if the group is visible
  *   dispose()         // close all terminals + remove from registries
  *
- * With `quickSpawn: true` the strip also renders a right-aligned "Claude | Codex"
- * control; clicking a side calls the owner's `onQuickSpawn(agent)` hook so the
- * owner can open a new terminal and launch that agent (project mode uses this).
+ * With `quickSpawn: true` the "+" add button becomes a dropdown with Terminal /
+ * Claude / Codex rows; the agent rows call the owner's `onQuickSpawn(agent)` hook
+ * so the owner can open a new terminal and launch that agent (project mode uses
+ * this). Without it, "+" just opens a plain terminal via `onAdd`.
  *
  * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn } = {})
  */
@@ -564,8 +565,8 @@ class TerminalGroup {
     // primitive does not assume any cwd/startCmd policy.
     this.onAdd = null;
     // Quick-spawn callback (quickSpawn groups only): onQuickSpawn(agent) fires
-    // with "claude" | "codex" when the user clicks that side of the strip's
-    // agents control. The owner decides cwd + launch command.
+    // with "claude" | "codex" when the user picks that row of the add menu.
+    // The owner decides cwd + launch command.
     this.onQuickSpawn = null;
     // Optional owner hooks for persistence. onLayoutChange fires after a
     // structural change (new/close/rename); onOutput(ptyId) fires when a
@@ -573,27 +574,47 @@ class TerminalGroup {
     // group whose owner persists state (project.js) sets them.
     this.onLayoutChange = null;
     this.onOutput = null;
+    // The open add menu's popup element (quickSpawn groups only), or null when
+    // closed. It is mounted on <body>, so hide()/dispose() must close it.
+    this.addMenuEl = null;
     if (showAdd) {
       this.addBtn = document.createElement("button");
       this.addBtn.className = "tg-add";
-      this.addBtn.title = "New terminal";
-      this.addBtn.textContent = "+";
-      this.addBtn.addEventListener("click", () => this.onAdd?.());
+      if (quickSpawn) {
+        // A "+" with a caret that opens a Terminal / Claude / Codex dropdown.
+        // The agent rows replace the old right-aligned "Claude | Codex" control,
+        // so everything that opens a tab in this group lives in one menu.
+        this.addBtn.classList.add("tg-add--menu");
+        this.addBtn.title = "New terminal or agent";
+        this.addBtn.setAttribute("aria-haspopup", "menu");
+        this.addBtn.setAttribute("aria-expanded", "false");
+        const plus = document.createElement("span");
+        plus.className = "tg-add-plus";
+        plus.textContent = "+";
+        const caret = document.createElement("span");
+        caret.className = "tg-add-caret";
+        caret.setAttribute("aria-hidden", "true");
+        caret.textContent = "▾";
+        this.addBtn.append(plus, caret);
+        this.addBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this._toggleAddMenu();
+        });
+      } else {
+        // Plain groups (chat): "+" opens a new terminal directly, no menu.
+        this.addBtn.title = "New terminal";
+        this.addBtn.textContent = "+";
+        this.addBtn.addEventListener("click", () => this.onAdd?.());
+      }
       this.stripEl.append(this.tabsEl, this.addBtn);
     } else {
       // Drawer groups (P5) have no add behavior; do not render the button.
       this.addBtn = null;
       this.stripEl.append(this.tabsEl);
     }
-
-    // Right-aligned "Claude | Codex" quick-spawn control. Only rendered when the
-    // owner opts in; its margin-left:auto pushes it to the strip's right end.
-    if (quickSpawn) {
-      this.agentsEl = this._buildQuickSpawn();
-      this.stripEl.append(this.agentsEl);
-    } else {
-      this.agentsEl = null;
-    }
+    // The old right-aligned "Claude | Codex" strip control is gone; its actions
+    // are now rows in the add menu (quickSpawn groups only).
+    this.agentsEl = null;
 
     this.panesEl = document.createElement("div");
     this.panesEl.className = "tg-panes";
@@ -627,32 +648,98 @@ class TerminalGroup {
   }
 
   /**
-   * Build the right-aligned "Claude | Codex" agents control. Each side is a
-   * button whose click forwards a fixed agent name to onQuickSpawn — the names
-   * are hard-coded here (never user-supplied), so nothing is interpolated into a
-   * shell command downstream. A thin divider span sits between the two sides.
+   * Build the add-menu popup: Terminal / Claude / Codex rows. "Terminal" opens a
+   * plain shell via onAdd; the agent rows forward a fixed name to onQuickSpawn —
+   * the names are hard-coded here (never user-supplied), so nothing is
+   * interpolated into a shell command downstream. The popup is appended to
+   * <body> (not the strip) so the strip's overflow can never clip it.
    */
-  _buildQuickSpawn() {
-    const wrap = document.createElement("div");
-    wrap.className = "tg-agents";
-    wrap.title = "Open a new terminal and start an agent";
+  _buildAddMenu() {
+    const menu = document.createElement("div");
+    menu.className = "tg-add-menu";
+    menu.setAttribute("role", "menu");
 
-    const makeBtn = (agent, text) => {
-      const btn = document.createElement("button");
-      btn.className = "tg-agent";
-      btn.dataset.agent = agent;
-      btn.textContent = text;
-      btn.title = `New ${text} terminal`;
-      btn.addEventListener("click", () => this.onQuickSpawn?.(agent));
-      return btn;
+    const rows = [
+      { label: "Terminal", hint: "Plain shell", run: () => this.onAdd?.() },
+      { label: "Claude", hint: "Claude Code agent", run: () => this.onQuickSpawn?.("claude") },
+      { label: "Codex", hint: "Codex agent", run: () => this.onQuickSpawn?.("codex") },
+    ];
+    for (const r of rows) {
+      const item = document.createElement("button");
+      item.className = "tg-add-item";
+      item.setAttribute("role", "menuitem");
+      const label = document.createElement("span");
+      label.className = "tg-add-item-label";
+      label.textContent = r.label;
+      const hint = document.createElement("span");
+      hint.className = "tg-add-item-hint";
+      hint.textContent = r.hint;
+      item.append(label, hint);
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._closeAddMenu();
+        r.run();
+      });
+      menu.append(item);
+    }
+    return menu;
+  }
+
+  /** Toggle the add menu open/closed (quickSpawn groups only). */
+  _toggleAddMenu() {
+    if (this.addMenuEl) this._closeAddMenu();
+    else this._openAddMenu();
+  }
+
+  /** Open the add menu, fixed-positioned just under the "+" button. */
+  _openAddMenu() {
+    if (this.addMenuEl || !this.addBtn) return;
+    const menu = this._buildAddMenu();
+    document.body.append(menu);
+    this.addMenuEl = menu;
+    this.addBtn.setAttribute("aria-expanded", "true");
+
+    // Place under the button; clamp to the viewport's right edge so a button
+    // near the window edge never pushes the menu off-screen.
+    const rect = this.addBtn.getBoundingClientRect();
+    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+    const left = Math.min(rect.left, window.innerWidth - 8 - menu.offsetWidth);
+    menu.style.left = `${Math.round(Math.max(8, left))}px`;
+
+    // Dismiss on outside mousedown or Escape. Ignore mousedown on the button —
+    // its own click handler toggles the menu shut — and inside the menu.
+    this._addMenuDismiss = (ev) => {
+      if (ev.type === "keydown") {
+        if (ev.key === "Escape") this._closeAddMenu();
+        return;
+      }
+      if (menu.contains(ev.target) || this.addBtn.contains(ev.target)) return;
+      this._closeAddMenu();
     };
+    document.addEventListener("mousedown", this._addMenuDismiss, true);
+    document.addEventListener("keydown", this._addMenuDismiss, true);
+    // A scroll/resize underneath would strand the fixed menu; just close it.
+    this._addMenuReposition = () => this._closeAddMenu();
+    window.addEventListener("resize", this._addMenuReposition, true);
+    window.addEventListener("scroll", this._addMenuReposition, true);
+  }
 
-    const sep = document.createElement("span");
-    sep.className = "tg-agent-sep";
-    sep.setAttribute("aria-hidden", "true");
-
-    wrap.append(makeBtn("claude", "Claude"), sep, makeBtn("codex", "Codex"));
-    return wrap;
+  /** Close the add menu and remove its global listeners (idempotent). */
+  _closeAddMenu() {
+    if (!this.addMenuEl) return;
+    if (this._addMenuDismiss) {
+      document.removeEventListener("mousedown", this._addMenuDismiss, true);
+      document.removeEventListener("keydown", this._addMenuDismiss, true);
+      this._addMenuDismiss = null;
+    }
+    if (this._addMenuReposition) {
+      window.removeEventListener("resize", this._addMenuReposition, true);
+      window.removeEventListener("scroll", this._addMenuReposition, true);
+      this._addMenuReposition = null;
+    }
+    this.addMenuEl.remove();
+    this.addMenuEl = null;
+    this.addBtn?.setAttribute("aria-expanded", "false");
   }
 
   // ---- Persistence (session restore) --------------------------------------
@@ -1058,7 +1145,9 @@ class TerminalGroup {
   }
 
   hide() {
-    // Keep terminals alive; just hide the DOM subtree.
+    // Keep terminals alive; just hide the DOM subtree. Close the add menu too —
+    // it lives on <body>, so it would otherwise float over the next view.
+    this._closeAddMenu();
     this.root.style.display = "none";
   }
 
@@ -1133,6 +1222,7 @@ class TerminalGroup {
   }
 
   dispose() {
+    this._closeAddMenu();
     for (const id of [...this.tabs.keys()]) this.closeTerminal(id);
     this.root.remove();
   }

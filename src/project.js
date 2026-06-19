@@ -78,9 +78,10 @@ function groupFor(id, primaryPath, paths, startup, terminalCommand) {
   let rec = projects.get(id);
   if (!rec) {
     const group = createTerminalGroup(mountEl, id, { quickSpawn: true });
-    // "+" spawns another terminal in THIS project, at its primary path.
+    // Add-menu "Terminal" row: spawn a plain terminal in THIS project, at its
+    // primary path.
     group.onAdd = () => spawnInProject(id);
-    // "Claude | Codex" quick-spawn: open a new terminal and launch that agent.
+    // Add-menu "Claude" / "Codex" rows: open a new terminal and launch that agent.
     group.onQuickSpawn = (agent) => spawnAgentInProject(id, agent);
     rec = {
       group,
