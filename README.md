@@ -47,14 +47,53 @@ same `pty_write` command, so you can type in it directly.
 
 ## Run it
 
-Rust is required (installed via Homebrew: `brew install rust`). Node + pnpm are
-required for the Tauri CLI.
+octiq-flow is cross-platform (macOS, Windows, Linux). All platforms need three
+things: **Rust**, **Node + pnpm** (for the Tauri CLI), and the platform's
+**webview**. The build commands are the same everywhere:
 
 ```bash
 pnpm install
 pnpm tauri dev      # dev window with hot reload
-pnpm tauri build    # production .app / installer
+pnpm tauri build    # production app / installer
 ```
+
+### macOS
+
+Rust via Homebrew (`brew install rust`). The WKWebView is part of the OS, so no
+extra runtime is needed. `pnpm tauri build` produces a `.app` / `.dmg`.
+
+### Windows
+
+Prerequisites:
+
+- **Rust (MSVC toolchain)** — `winget install Rustlang.Rustup`. This installs
+  the `x86_64-pc-windows-msvc` toolchain, which links with the MSVC C++ tools.
+- **Visual Studio 2022** (Community is fine) or **Build Tools for Visual
+  Studio** with the **"Desktop development with C++"** workload. This provides
+  the MSVC linker (`link.exe`) and the Windows SDK that Rust links against.
+  Without it, `cargo build` fails with a "linker not found" error.
+- **WebView2 Runtime** — preinstalled on Windows 11 and shipped with Edge /
+  Brave / Chrome. If missing, install the Evergreen runtime from Microsoft.
+- **Node + pnpm** — `winget install OpenJS.NodeJS` then `npm i -g pnpm`.
+
+Then, from a normal PowerShell (Rust auto-detects the MSVC tools — no need for a
+Developer prompt):
+
+```powershell
+pnpm install
+pnpm tauri dev      # dev window with hot reload
+pnpm tauri build    # production .exe + MSI/NSIS installer
+```
+
+`pnpm tauri build` produces an `.exe` plus MSI / NSIS installers under
+`src-tauri/target/release/bundle/`.
+
+### Linux
+
+Rust via [rustup](https://rustup.rs/). Install the Tauri system dependencies
+(WebKitGTK and friends) per the
+[Tauri Linux prerequisites](https://tauri.app/start/prerequisites/), then run
+the same `pnpm` commands.
 
 ## Roadmap
 
