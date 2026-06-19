@@ -292,16 +292,17 @@ fn changes_for_repo(root: String) -> RepoChanges {
 /// Run `git -C dir <args>`; `Some(stdout)` on a clean exit, `None` otherwise
 /// (git missing, folder gone, not a repo, non-zero exit).
 fn run_git(dir: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(dir)
         // Never take optional locks: keeps `git status` from rewriting
         // `.git/index`, which would re-trigger the git_watch.rs fs watcher in a
         // feedback loop (watcher → status → index write → watcher → …).
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(args)
-        .output()
-        .ok()?;
+        .args(args);
+    // No console window flash on Windows; this runs often (live sidebar counts).
+    crate::proc::no_console(&mut cmd);
+    let out = cmd.output().ok()?;
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {

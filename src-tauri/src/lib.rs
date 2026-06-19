@@ -15,6 +15,7 @@ mod dashboard;
 mod fsbrowse;
 mod git;
 mod git_watch;
+mod proc;
 mod pty;
 mod terminal_layout;
 mod usage_limits;

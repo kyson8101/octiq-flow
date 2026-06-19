@@ -232,24 +232,25 @@ fn fetch_claude_usage() -> ProviderUsage {
     let Some(token) = claude_access_token() else {
         return ProviderUsage::unavailable("not signed in to Claude");
     };
-    let mut child = match Command::new("curl")
-        .args([
-            "-sS",
-            "--max-time",
-            "10",
-            "-H",
-            "anthropic-beta: oauth-2025-04-20",
-            "-H",
-            "anthropic-version: 2023-06-01",
-            "--config",
-            "-", // read the rest of the config (the auth header) from stdin
-            "https://api.anthropic.com/api/oauth/usage",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    let mut cmd = Command::new("curl");
+    cmd.args([
+        "-sS",
+        "--max-time",
+        "10",
+        "-H",
+        "anthropic-beta: oauth-2025-04-20",
+        "-H",
+        "anthropic-version: 2023-06-01",
+        "--config",
+        "-", // read the rest of the config (the auth header) from stdin
+        "https://api.anthropic.com/api/oauth/usage",
+    ])
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    // No console window flash on Windows when polling usage.
+    crate::proc::no_console(&mut cmd);
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => return ProviderUsage::unavailable("curl not available"),
     };
