@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
 /// Default profile name when none is configured.
 const DEFAULT_PROFILE: &str = "default";
@@ -179,6 +180,111 @@ pub fn migrate_agent_sessions() {
     migrate_once(&dir, ".migrated-agentsessions", &items);
 }
 
+/// Reduce a profile name to a safe single folder segment: keep ASCII letters,
+/// digits, dash, underscore; turn spaces into dashes; drop everything else
+/// (path separators, dots). `None` when nothing usable is left, so a crafted
+/// name can never traverse out of the base (`..`) or nest into a subfolder.
+fn sanitize_profile_name(name: &str) -> Option<String> {
+    let kept: String = name
+        .trim()
+        .chars()
+        .map(|c| if c == ' ' { '-' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        .collect();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept)
+    }
+}
+
+// --- Frontend commands ------------------------------------------------------
+
+/// Raw JSON of the active profile's `settings.json` (terminal appearance), or
+/// `None` when it does not exist yet. The frontend parses it; the backend only
+/// stores the blob.
+#[tauri::command]
+pub fn read_profile_settings() -> Option<String> {
+    fs::read_to_string(profile_dir().join("settings.json")).ok()
+}
+
+/// Write the active profile's `settings.json`. Validates the payload is JSON
+/// (trust boundary: this is a frontend-callable command) before writing.
+#[tauri::command]
+pub fn write_profile_settings(json: String) -> Result<(), String> {
+    serde_json::from_str::<serde_json::Value>(&json).map_err(|_| "settings must be valid JSON")?;
+    fs::write(profile_dir().join("settings.json"), json).map_err(|e| e.to_string())
+}
+
+/// Absolute path of the active profile's data root, for frontend stores that
+/// keep their own files under it (e.g. the agent roster's `agents/` folder).
+#[tauri::command]
+pub fn profile_dir_path() -> String {
+    profile_dir().to_string_lossy().into_owned()
+}
+
+/// The bootstrap config: where profiles live (`base`) and which is active.
+#[tauri::command]
+pub fn get_profile_config() -> ProfileConfig {
+    load_config()
+}
+
+/// Names of every profile (subfolders of `base`). The active profile is always
+/// included even if the base listing fails, so the switcher never hides it.
+#[tauri::command]
+pub fn list_profiles() -> Vec<String> {
+    let cfg = load_config();
+    let _ = profile_dir(); // make sure the active profile's folder exists
+    let mut names: Vec<String> = fs::read_dir(&cfg.base)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    if !names.iter().any(|n| n == &cfg.active) {
+        names.push(cfg.active.clone());
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Create a new (empty) profile folder under `base`. Returns the sanitized name
+/// actually used. Does not switch to it.
+#[tauri::command]
+pub fn create_profile(name: String) -> Result<String, String> {
+    let safe = sanitize_profile_name(&name).ok_or("give the profile a name")?;
+    let cfg = load_config();
+    fs::create_dir_all(PathBuf::from(&cfg.base).join(&safe)).map_err(|e| e.to_string())?;
+    Ok(safe)
+}
+
+/// Switch the active profile and restart so every store reloads from the new
+/// data root. The write is validated first; `restart()` never returns.
+#[tauri::command]
+pub fn switch_profile(app: AppHandle, name: String) -> Result<(), String> {
+    let safe = sanitize_profile_name(&name).ok_or("invalid profile name")?;
+    let mut cfg = load_config();
+    cfg.active = safe;
+    save_config(&cfg)?;
+    app.restart();
+}
+
+/// Point the base (where profiles live) at a new folder and restart. Existing
+/// profiles stay in the old folder — this only changes where OctiqFlow looks.
+#[tauri::command]
+pub fn set_profile_base(app: AppHandle, path: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("choose a folder".into());
+    }
+    let mut cfg = load_config();
+    cfg.base = trimmed.to_string();
+    save_config(&cfg)?;
+    app.restart();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +325,20 @@ mod tests {
         let items2 = [(old.join("workspaces.json"), dir.join("workspaces.json"))];
         migrate_once(&dir, ".migrated-appdata", &items2);
         assert!(old.join("workspaces.json").exists()); // left untouched
+    }
+
+    #[test]
+    fn sanitize_profile_name_blocks_traversal_and_separators() {
+        assert_eq!(sanitize_profile_name("Work"), Some("Work".into()));
+        assert_eq!(
+            sanitize_profile_name("my profile"),
+            Some("my-profile".into())
+        );
+        // Path separators and dots are dropped, so the result is always a single
+        // safe segment — never `..` or a nested path.
+        assert_eq!(sanitize_profile_name("../etc"), Some("etc".into()));
+        assert_eq!(sanitize_profile_name("a/b\\c"), Some("abc".into()));
+        assert_eq!(sanitize_profile_name(".."), None);
+        assert_eq!(sanitize_profile_name("   "), None);
     }
 }
