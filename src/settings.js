@@ -112,16 +112,29 @@ export function fontById(id) {
   );
 }
 
+// In-memory cache of the raw saved settings, populated by initTerminalSettings()
+// from the active profile's settings.json. getTerminalSettings() reads it
+// synchronously so the existing sync callers (terminals.js) need no change; until
+// init resolves it falls back to the legacy localStorage value, which is also the
+// one-time import source the first time a profile has no settings file.
+let savedCache = null;
+
+/** The raw saved settings object: the per-profile cache once loaded, else the
+ *  legacy localStorage value. */
+function readSaved() {
+  if (savedCache) return savedCache;
+  try {
+    return JSON.parse(localStorage.getItem(KEY)) || {};
+  } catch {
+    return {};
+  }
+}
+
 /** Current terminal settings, merged over the defaults and clamped to the safe
  *  ranges. A missing or corrupt store returns the defaults. Includes the
  *  resolved `fontFamily` stack so callers do not have to look it up. */
 export function getTerminalSettings() {
-  let saved = {};
-  try {
-    saved = JSON.parse(localStorage.getItem(KEY)) || {};
-  } catch {
-    saved = {};
-  }
+  const saved = readSaved();
   const font = fontById(saved.fontId);
   return {
     fontId: font.id,
@@ -141,21 +154,52 @@ export function getTerminalSettings() {
  *  (re-read, so clamping/normalisation is reflected). */
 export function saveTerminalSettings(partial) {
   const next = { ...getTerminalSettings(), ...partial };
-  localStorage.setItem(
-    KEY,
-    JSON.stringify({
-      fontId: next.fontId,
-      fontSize: next.fontSize,
-      fontWeight: next.fontWeight,
-      lineHeight: next.lineHeight,
-      letterSpacing: next.letterSpacing,
-      shell: next.shell,
-    }),
-  );
+  const raw = {
+    fontId: next.fontId,
+    fontSize: next.fontSize,
+    fontWeight: next.fontWeight,
+    lineHeight: next.lineHeight,
+    letterSpacing: next.letterSpacing,
+    shell: next.shell,
+  };
+  savedCache = raw;
+  // localStorage stays as a fast cache/fallback; the durable per-profile store is
+  // the settings.json written by the backend. The file write is fire-and-forget —
+  // a write error must never block the live font update.
+  localStorage.setItem(KEY, JSON.stringify(raw));
+  invoke("write_profile_settings", { json: JSON.stringify(raw) }).catch(() => {});
   const settings = getTerminalSettings();
   window.dispatchEvent(new CustomEvent(TERMINAL_SETTINGS_CHANGED, { detail: settings }));
   return settings;
 }
+
+/** Load the active profile's settings.json into the cache, then fire the change
+ *  event so open terminals and the Settings page apply the per-profile values.
+ *  When the profile has no file yet, seed it once from the legacy localStorage
+ *  value (so the default profile keeps the user's current font). Best-effort:
+ *  any backend error falls back to localStorage, so settings never block boot. */
+export async function initTerminalSettings() {
+  try {
+    const raw = await invoke("read_profile_settings");
+    if (raw) {
+      savedCache = JSON.parse(raw) || {};
+    } else {
+      savedCache = readSaved();
+      invoke("write_profile_settings", { json: JSON.stringify(savedCache) }).catch(() => {});
+    }
+  } catch {
+    savedCache = readSaved();
+  }
+  localStorage.setItem(KEY, JSON.stringify(savedCache));
+  window.dispatchEvent(
+    new CustomEvent(TERMINAL_SETTINGS_CHANGED, { detail: getTerminalSettings() }),
+  );
+}
+
+// Kick off the per-profile load as the module evaluates. Terminals that open
+// before it resolves render with the localStorage/default font and are corrected
+// by the change event init fires.
+initTerminalSettings();
 
 // ---- DOM wiring (Settings page) -------------------------------------------
 
@@ -265,6 +309,11 @@ document.addEventListener("DOMContentLoaded", () => {
     paintPreview(preview, s);
   };
   reflect(getTerminalSettings());
+
+  // Re-reflect when settings change from elsewhere — the per-profile file load at
+  // boot (initTerminalSettings), or another tab/control — so the page always
+  // matches the stored values. reflect() does not save, so this cannot loop.
+  window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => reflect(e.detail));
 
   // Each control saves its slice; saveTerminalSettings fires the change event
   // that updates open terminals. We reflect the returned (clamped) value so the
