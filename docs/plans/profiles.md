@@ -71,17 +71,17 @@ routes it**, so the app never reads a moved-away file (see Migration above).
 - Migrate legacy `~/.octiqflow/agent-sessions.json` into the profile, guarded by `.migrated-agentsessions`.
 - **Acceptance:** after restart, agent resume re-attaches within the same profile; hook never breaks the agent (exit 0 on any error).
 
-### Card 4 — Font/appearance settings to profile file (Rust + FE)
+### Card 4 — Font/appearance settings to profile file (Rust + FE) — ✅ done 2026-06-20 (commit skipped — blast mode)
 - Small Rust get/set commands for `<profile>/settings.json`.
 - `settings.js`: read/write via `invoke` instead of `localStorage`; one-time import of the existing `localStorage` value into the file.
 - **Acceptance:** font/size/line-height persist per profile and survive restart.
 
-### Card 5 — Agents re-root to profile (FE)
+### Card 5 — Agents re-root to profile (FE) — ✅ done 2026-06-20 (commit skipped — blast mode)
 - `roster.js`: set `rootPath = <profile>/agents` (expose `profile_dir` via a command) instead of the iCloud docspace path. Empty profile → `DEFAULT_ROSTER`.
 - No migration (default profile starts with the built-in roster, per the locked decision).
 - **Acceptance:** agents created in profile A do not appear in profile B.
 
-### Card 6 — Profile switch UI (FE, Settings)
+### Card 6 — Profile switch UI (FE, Settings) — ✅ done 2026-06-20 (commit skipped — blast mode)
 - List profiles, create profile, switch (write `active` → `app.restart()`), pick `base` folder (native dialog).
 - **Acceptance:** user switches profile and the window reloads into the other profile's projects/settings/agents.
 
@@ -89,3 +89,23 @@ routes it**, so the app never reads a moved-away file (see Migration above).
 Card 1 lands first (bootstrap + the app_data stores). Cards 2–5 each route +
 migrate their own store on top of it, independently. Card 6 is the last slice —
 the visible switch UI — once the data layer reads per profile.
+
+## Blast run 2026-06-20
+
+Ran cards 4, 5, 6 back to back in blast mode (no stop-gates, no commit).
+
+**Cards done (commit skipped — blast mode):**
+- Card 4 — settings → `<profile>/settings.json`. Rust `read/write_profile_settings`; `settings.js` now keeps a sync cache backed by the profile file, loads it at boot (`initTerminalSettings`), and fires the change event so terminals self-correct. localStorage kept as legacy import source.
+- Card 5 — agents re-rooted. Rust `profile_dir_path`; `roster.js resolveRoot()` → `<profile>/agents` (dropped the hardcoded iCloud docspace path). Empty profile → built-in `DEFAULT_ROSTER`.
+- Card 6 — switch UI. Rust `get_profile_config`, `list_profiles`, `create_profile`, `switch_profile` (writes active → `app.restart()`), `set_profile_base` (reuses `pick_folder`). New `profiles.js` + a Profiles panel in the Settings page (reuses themed classes → dark mode handled).
+
+**Cards blocked:** none.
+
+**Decisions made:**
+- Card 4 store: keep the sync settings API backed by an in-memory cache + the profile file (async boot load self-corrects via the existing change event), rather than making every caller async.
+- FE verification: no JS test runner in the repo, so cards 4–6 frontend is verified by Rust build + code reading only.
+- `set_profile_base`: only re-points where OctiqFlow looks; existing profiles stay in the old folder (no copy/move). Surfaced in the panel help text.
+
+**Verify:** PASS — 137 Rust tests, clean build, formatted (project-scoped; FE not test-covered).
+
+**Nothing was committed.** All of cards 4–6 sit uncommitted in the working tree on `feat/profiles` (cards 1–3 already committed). Next: review the working tree, then `/commit` or `/pr` to ship.
