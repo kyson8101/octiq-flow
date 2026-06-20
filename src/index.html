@@ -44,6 +44,7 @@
     <script type="module" src="/usage.js" defer></script>
     <script type="module" src="/vault.js" defer></script>
     <script type="module" src="/settings.js" defer></script>
+    <script type="module" src="/profiles.js" defer></script>
   </head>
 
   <body>
@@ -461,6 +462,39 @@
         <div class="settings-page">
           <div class="settings-inner">
             <h1 class="settings-title">Settings</h1>
+
+            <section class="settings-section">
+              <div class="settings-section-title">Profiles</div>
+              <p class="settings-help">
+                A profile is a separate workspace: its own projects, commands,
+                terminal settings, agents, canvas files and screenshots.
+                Switching profiles restarts the app.
+              </p>
+
+              <div class="settings-field">
+                <label class="settings-label" for="profile-active">Active profile</label>
+                <select id="profile-active" class="settings-select"></select>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="profile-new-name">New profile</label>
+                <div class="settings-range-row">
+                  <input id="profile-new-name" class="inline-input" type="text" autocomplete="off" placeholder="e.g. Work" />
+                  <button id="profile-create" class="btn btn-sm">+ Create</button>
+                </div>
+                <span id="profile-status" class="settings-status"></span>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label">Profiles folder</label>
+                <p class="settings-help" id="profile-base-path"></p>
+                <button id="profile-pick-base" class="btn btn-sm">Choose folder…</button>
+                <p class="settings-help">
+                  Existing profiles stay in the old folder; this only changes
+                  where OctiqFlow looks for them. The app restarts after you pick.
+                </p>
+              </div>
+            </section>
 
             <section class="settings-section">
               <div class="settings-section-title">Terminal</div>
