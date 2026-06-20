@@ -22,9 +22,6 @@ import { ROLES, ROLE_BY_ID, roleForAgent, roleSvgDataUri } from "/roles.js";
 
 const { invoke } = window.__TAURI__.core;
 
-// docspace agents folder, relative to the OS home dir (iCloud vault).
-const VAULT_REL =
-  "Library/Mobile Documents/com~apple~CloudDocs/Documents/obsidian/docspace/agent-zone/agents";
 const LEVEL_STEP = 3; // tasks per level
 
 // Strict shapes for fields that end up in a docspace path or a shell command.
@@ -66,7 +63,7 @@ const FOLLOWUP = {
 const pendingFollowups = [];
 
 // --- State -----------------------------------------------------------------
-let rootPath = null; // absolute docspace agents folder
+let rootPath = null; // absolute path of the active profile's agents folder
 let agents = []; // runtime records
 const cardEls = new Map(); // id -> card element refs
 const taskToAgent = new Map(); // taskId -> agentId
@@ -115,8 +112,8 @@ function setStatus(msg) {
 
 async function resolveRoot() {
   try {
-    const home = await window.__TAURI__.path.homeDir();
-    return `${String(home).replace(/\/+$/, "")}/${VAULT_REL}`;
+    const dir = await invoke("profile_dir_path");
+    return `${String(dir).replace(/\/+$/, "")}/agents`;
   } catch {
     return null;
   }
