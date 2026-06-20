@@ -24,7 +24,9 @@
  * it; the attention path only needs it to confirm we are inside an OctiqFlow tab
  * (the alert is routed by which PTY the sequence lands in, not by the key).
  *
- * Store (one JSON file at ~/.octiqflow/agent-sessions.json):
+ * Store (one JSON file at $OCTIQ_ROOT/agent-sessions.json, the active profile's
+ * data root; falls back to ~/.octiqflow/agent-sessions.json when OCTIQ_ROOT is
+ * unset, e.g. run outside OctiqFlow):
  *   { "<persistKey>": { "agent": "claude|codex", "sessionId": "...", "cwd": "...", "transcriptPath": "...", "updatedAt": "..." } }
  * `transcriptPath` (when the agent passes it) lets the app read the session's
  * generated title without re-deriving the transcript location from the cwd.
@@ -68,6 +70,11 @@ const CONTROL_BYTES = /[\x00-\x1f\x7f]/g;
 const MAX_ALERT_LEN = 200;
 
 function storeFile() {
+  // OctiqFlow exports OCTIQ_ROOT (the active profile's data root) into the shell;
+  // write the store there so each profile keeps its own sessions. Fall back to
+  // the legacy fixed path when the var is missing (run outside OctiqFlow).
+  const root = (process.env.OCTIQ_ROOT || "").trim();
+  if (root) return path.join(root, "agent-sessions.json");
   return path.join(os.homedir(), ".octiqflow", "agent-sessions.json");
 }
 

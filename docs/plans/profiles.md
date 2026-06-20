@@ -63,7 +63,7 @@ routes it**, so the app never reads a moved-away file (see Migration above).
 - Move legacy `~/.octiqflow/{canvas,vault}` into the profile, guarded by `.migrated-canvas`.
 - **Acceptance:** existing screenshots/canvas still show; new ones land under `<profile>/canvas|vault`.
 
-### Card 3 — Per-profile agent-sessions + hook OCTIQ_ROOT (Rust + hook)
+### Card 3 — Per-profile agent-sessions + hook OCTIQ_ROOT (Rust + hook) — ✅ done 2026-06-19
 - `agent_resume.rs`: read/prune `<profile>/agent-sessions.json`.
 - Inject `OCTIQ_ROOT=<base>/<active>` into every spawned shell (next to existing `OCTIQ_TERM_KEY`).
 - Embedded hook (`agent-session-capture.cjs`): write `${OCTIQ_ROOT}/agent-sessions.json`,

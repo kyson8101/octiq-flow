@@ -23,10 +23,11 @@
 // configs that already opted into the resume hook, so the alert ships without the
 // user re-running setup from Settings.
 //
-// Store: ~/.octiqflow/agent-sessions.json, keyed by each tab's stable persistKey:
+// Store: <profile>/agent-sessions.json, keyed by each tab's stable persistKey:
 //   { "<persistKey>": { "agent": "claude", "sessionId": "...", "cwd": "...", "updatedAt": "..." } }
-// A fixed ~/.octiqflow path (not the Tauri app-data dir) is used so the external
-// hook can find the same file without knowing the app's bundle id.
+// The store lives in the active profile's data root (see profile.rs). The
+// external hook finds the same file via the OCTIQ_ROOT env var pty.rs exports,
+// and falls back to the legacy ~/.octiqflow path when run outside OctiqFlow.
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -103,9 +104,11 @@ fn octiqflow_dir() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".octiqflow"))
 }
 
-/// Path of the tab -> session store the hook writes and we read.
+/// Path of the tab -> session store the hook writes and we read. It lives in the
+/// active profile's data root (see profile.rs); the hook learns the same path
+/// from the `OCTIQ_ROOT` env var pty.rs exports, so both sides agree per profile.
 fn store_path() -> Option<PathBuf> {
-    octiqflow_dir().map(|d| d.join("agent-sessions.json"))
+    Some(crate::profile::profile_dir().join("agent-sessions.json"))
 }
 
 /// Path of Claude Code's user settings file, where the hook is installed.

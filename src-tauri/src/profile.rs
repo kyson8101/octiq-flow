@@ -167,6 +167,18 @@ pub fn migrate_canvas_vault() {
     migrate_once(&dir, ".migrated-canvas", &items);
 }
 
+/// Card 3 migration: move the legacy `~/.octiqflow/agent-sessions.json` into the
+/// active profile. Call before agent-resume reads the store.
+pub fn migrate_agent_sessions() {
+    let Some(old) = octiqflow_dir() else { return };
+    let dir = profile_dir();
+    let items = [(
+        old.join("agent-sessions.json"),
+        dir.join("agent-sessions.json"),
+    )];
+    migrate_once(&dir, ".migrated-agentsessions", &items);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

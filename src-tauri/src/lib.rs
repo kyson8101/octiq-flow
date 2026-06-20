@@ -63,6 +63,9 @@ pub fn run() {
             // Move the legacy fixed-path canvas + vault folders into the profile,
             // so screenshots and canvas docs taken before profiles still show.
             profile::migrate_canvas_vault();
+            // Move the legacy agent-session store into the profile, so agent
+            // resume keeps working across the move to per-profile roots.
+            profile::migrate_agent_sessions();
             // Load the persisted workspace store (folders the user works in).
             app.manage(WorkspaceState::load());
             // Multi-PTY manager: terminals are spawned by id on demand from the

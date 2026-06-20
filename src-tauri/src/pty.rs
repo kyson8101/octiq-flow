@@ -479,6 +479,10 @@ pub fn pty_spawn(
         cmd.arg(arg);
     }
     cmd.env("TERM", "xterm-256color");
+    // Point any agent-capture hook running under this shell at the active
+    // profile's data root, so it writes agent-sessions.json into the same profile
+    // OctiqFlow reads from. The hook falls back to ~/.octiqflow if this is unset.
+    cmd.env("OCTIQ_ROOT", crate::profile::profile_dir());
     // Tag the shell with the tab's stable persist key, so an agent capture hook
     // running under it (e.g. Claude's SessionStart hook) can record which tab
     // owns its session. Read back on restore to build the resume command.
