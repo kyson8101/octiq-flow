@@ -83,6 +83,11 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.38);
 
+  /* Shared height for the top header bar across the three columns (Projects /
+     terminal tabs / Canvas, plus the file-browser and git-diff heads that swap
+     into the center slot) so their bottom borders and content line up. */
+  --head-h: 43px;
+
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter,
     "Segoe UI", Helvetica, Arial, sans-serif;
   color-scheme: dark;
@@ -265,7 +270,8 @@ body {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  padding: 8px 10px;
+  height: var(--head-h);
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-sunken);
 }
@@ -706,14 +712,15 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  height: var(--head-h);
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
 }
 
 /* When collapsed, hide everything but the toggle and centre it. */
 .sidebar.collapsed .sidebar-head {
   justify-content: center;
-  padding: 10px 6px;
+  padding: 0 6px;
 }
 
 .sidebar.collapsed .sidebar-title,
@@ -1019,6 +1026,7 @@ body {
 
 /* Quieter than the main "Projects" header. */
 .ws-shelf-head {
+  height: auto;
   padding: 8px 12px;
   border-bottom: none;
 }
@@ -1882,6 +1890,7 @@ body {
   align-items: stretch;
   gap: 2px;
   flex-shrink: 0;
+  height: var(--head-h);
   padding: 4px 6px 0;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
@@ -2755,7 +2764,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  height: var(--head-h);
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
 }
@@ -3107,7 +3117,8 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
+  height: var(--head-h);
+  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
 }
