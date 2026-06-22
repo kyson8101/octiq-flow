@@ -385,11 +385,6 @@
       <div id="chat-terminals" class="chat-terminals"></div>
       </section>
 
-      <!-- Agent World mode: a playful "virtual office" view. Every live
-           terminal across all projects shows up as a little agent at a desk,
-           grouped into per-project rooms. A speech bubble shows what each agent
-           is working on; a bouncing emoji flags an agent that needs you. Click
-           an agent to jump to its terminal. agentworld.js fills #aw-floor. -->
       <!-- Agents mode: a single-screen team of persistent specialist agents.
            Each agent works alone, reading/writing only its own task + memory in
            docspace; OctiqFlow routes each task to the matching idle agent and
@@ -707,7 +702,18 @@
             <div class="settings-field">
               <label class="settings-label" for="modal-initial">Initial</label>
               <input id="modal-initial" class="inline-input" autocomplete="off" maxlength="2" placeholder="Auto (first letter of name)" />
-              <span class="settings-hint">Shown on the collapsed sidebar. Up to 2 characters. Leave empty to use the name's first letter.</span>
+              <span class="settings-hint">Fallback avatar when no icon is set. Up to 2 characters. Leave empty to use the name's first letter.</span>
+            </div>
+
+            <div class="settings-field">
+              <span class="settings-label">Icon</span>
+              <div class="modal-icon-row">
+                <span id="modal-icon-preview" class="modal-icon-preview ws-item-initial" aria-hidden="true"></span>
+                <button type="button" id="modal-icon-choose" class="btn btn-sm">Choose image…</button>
+                <button type="button" id="modal-icon-remove" class="btn btn-sm">Remove</button>
+                <input type="file" id="modal-icon-file" accept="image/*" hidden />
+              </div>
+              <span class="settings-hint">Shown as the project's avatar in the sidebar, in place of the initial.</span>
             </div>
 
             <div class="settings-field">

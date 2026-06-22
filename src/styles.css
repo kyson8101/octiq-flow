@@ -742,9 +742,7 @@ body {
   gap: 0;
 }
 
-.sidebar.collapsed .ws-item-bar,
-.sidebar.collapsed .ws-item-body,
-.sidebar.collapsed .ws-item-count {
+.sidebar.collapsed .ws-item-body {
   display: none;
 }
 
@@ -837,19 +835,11 @@ body {
 /* cmux-style accent bar: a thin colored strip down the left of each tab.
    Its color is set inline via the --ws-bar custom property (stored color, or
    a hue derived from the project name when none is picked). */
-.ws-item-bar {
-  flex: 0 0 3px;
-  align-self: stretch;
-  min-height: 18px;
-  border-radius: 2px;
-  background: var(--ws-bar, var(--fg-3));
-}
-
-/* Initial-letter avatar: the project's first letter in a rounded square, tinted
-   with its accent color. Hidden in the expanded sidebar; shown only on the
-   collapsed rail, where it is the whole row. */
+/* Project avatar: the project's icon/logo when set, otherwise its first letter
+   in a rounded square tinted with the accent color. Always shown (expanded and
+   collapsed) — it replaces the old accent bar. */
 .ws-item-initial {
-  display: none;
+  display: flex;
   position: relative; /* anchors the collapsed-rail attention dot */
   flex: 0 0 auto;
   align-items: center;
@@ -857,6 +847,7 @@ body {
   width: 28px;
   height: 28px;
   border-radius: var(--r-sm);
+  overflow: hidden; /* clip the icon image to the rounded square */
   font-size: 13px;
   font-weight: 600;
   color: var(--fg-0);
@@ -864,8 +855,30 @@ body {
   border: 1px solid color-mix(in srgb, var(--ws-bar, var(--fg-3)) 50%, transparent);
 }
 
-.sidebar.collapsed .ws-item-initial {
+/* With an icon, drop the tint/border so the image fills the square cleanly. */
+.ws-item-initial.has-icon {
+  background: none;
+  border-color: transparent;
+}
+
+.ws-item-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Edit-modal icon picker: the preview avatar next to its Choose/Remove buttons. */
+.modal-icon-row {
   display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Smaller project avatar for a Dashboard row. */
+.dash-row-avatar {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
 }
 
 /* Selected project on the collapsed rail: the avatar fills with its accent
@@ -903,13 +916,6 @@ body {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.ws-item-count {
-  align-self: center;
-  font-size: 11px;
-  color: var(--fg-2);
-  flex-shrink: 0;
 }
 
 /* Per-path git line changes on a sidebar row: "+added/-removed" tokens, one per

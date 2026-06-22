@@ -43,6 +43,10 @@ const modalDoneBtn = document.querySelector("#modal-done");
 const modalNameEl = document.querySelector("#modal-name");
 const modalDescriptionEl = document.querySelector("#modal-description");
 const modalInitialEl = document.querySelector("#modal-initial");
+const modalIconPreviewEl = document.querySelector("#modal-icon-preview");
+const modalIconChooseBtn = document.querySelector("#modal-icon-choose");
+const modalIconRemoveBtn = document.querySelector("#modal-icon-remove");
+const modalIconFileEl = document.querySelector("#modal-icon-file");
 const modalColorSwatchesEl = document.querySelector("#modal-color-swatches");
 const modalPrimaryEl = document.querySelector("#modal-primary-path");
 const modalChangePrimaryBtn = document.querySelector("#modal-change-primary");
@@ -83,10 +87,11 @@ function baseName(path) {
 }
 
 // --- Project accent color --------------------------------------------------
-// Each project tab shows a thin colored bar (cmux-style). The color is either
-// the one the user picked (stored on the workspace as a #rrggbb hex) or, when
-// none is set, one derived from the project name so every tab still looks
-// distinct. The picker in the Edit modal offers this same fixed palette.
+// Each project's avatar (the fallback letter square) is tinted with an accent
+// color. The color is either the one the user picked (stored on the workspace
+// as a #rrggbb hex) or, when none is set, one derived from the project name so
+// every tab still looks distinct. The picker in the Edit modal offers this same
+// fixed palette.
 const COLOR_PALETTE = [
   "#f87171", // red
   "#fb923c", // orange
@@ -118,14 +123,47 @@ function barColor(ws) {
   return c || autoColor(ws);
 }
 
-/** Lightweight project metadata for other views (Agent World): one entry per
- *  loaded workspace with its id, display name, and resolved accent color. Reads
- *  the in-memory list this module already keeps fresh via refresh(). */
+/** Build a project's avatar: its icon/logo image when one is set, else the
+ *  letter initial tinted with the accent color. Used in the sidebar (replacing
+ *  the old accent bar) and exported so other views (Dashboard) show the same
+ *  project identity. `extraClass` lets a caller resize/tweak it. Keeps the
+ *  `ws-item-initial` class so the attention/working badges still anchor to it.
+ *  Accepts either a full workspace or a `workspaceMeta()` entry. */
+export function projectAvatar(ws, extraClass = "") {
+  const avatar = document.createElement("span");
+  avatar.className = "ws-item-initial" + (extraClass ? " " + extraClass : "");
+  avatar.style.setProperty("--ws-bar", barColor(ws));
+  avatar.setAttribute("aria-hidden", "true");
+  const icon = (ws.icon || "").trim();
+  if (icon) {
+    avatar.classList.add("has-icon");
+    const img = document.createElement("img");
+    img.className = "ws-item-icon";
+    img.src = icon;
+    img.alt = "";
+    avatar.append(img);
+  } else {
+    // Prefer the user's custom initial; otherwise the name's first letter.
+    const customInitial = (ws.initial || "").trim();
+    avatar.textContent = (
+      customInitial || (ws.name || "").trim()[0] || "?"
+    ).toUpperCase();
+  }
+  return avatar;
+}
+
+/** Lightweight project metadata for other views (Agent World, Dashboard): one
+ *  entry per loaded workspace with its id, display name, resolved accent color,
+ *  custom initial, and icon. Reads the in-memory list this module already keeps
+ *  fresh via refresh(). The `initial`/`icon` fields let a view build the same
+ *  project avatar via projectAvatar(). */
 export function workspaceMeta() {
   return workspaces.map((w) => ({
     id: w.id,
     name: w.name || "Untitled",
     color: barColor(w),
+    initial: w.initial || "",
+    icon: w.icon || "",
   }));
 }
 
@@ -201,23 +239,8 @@ function renderList() {
     const li = document.createElement("li");
     li.className = "ws-item" + (ws.id === selectedId ? " selected" : "");
 
-    // cmux-style accent bar down the left of the tab.
-    const bar = document.createElement("span");
-    bar.className = "ws-item-bar";
-    bar.style.setProperty("--ws-bar", barColor(ws));
-
-    // Initial-letter avatar. Hidden in the expanded sidebar; it stands in for
-    // the whole row when the sidebar is collapsed (icon-only rail).
-    const initial = document.createElement("span");
-    initial.className = "ws-item-initial";
-    initial.style.setProperty("--ws-bar", barColor(ws));
-    // Prefer the user's custom initial; otherwise the name's first letter.
-    // Either way it shows uppercase.
-    const customInitial = (ws.initial || "").trim();
-    initial.textContent = (
-      customInitial || (ws.name || "").trim()[0] || "?"
-    ).toUpperCase();
-    initial.setAttribute("aria-hidden", "true");
+    // Left avatar: the project's icon/logo, or its letter initial as a fallback.
+    const avatar = projectAvatar(ws);
 
     // Title + optional description, stacked.
     const body = document.createElement("div");
@@ -246,12 +269,7 @@ function renderList() {
     fillDiffRow(diffEl, ws);
     body.append(diffEl);
 
-    const total = (ws.primary_path ? 1 : 0) + ws.paths.length;
-    const count = document.createElement("span");
-    count.className = "ws-item-count";
-    count.textContent = total === 1 ? "1 path" : `${total} paths`;
-
-    li.append(bar, initial, body, count);
+    li.append(avatar, body);
     li.dataset.id = ws.id;
     // Full name as a native tooltip — the only label visible when collapsed, and
     // a help for long names that ellipsis-truncate when expanded.
@@ -405,9 +423,7 @@ function renderShelf() {
     li.className = "ws-item ws-shelf-item";
     li.title = "Double-click to bring back";
 
-    const bar = document.createElement("span");
-    bar.className = "ws-item-bar";
-    bar.style.setProperty("--ws-bar", barColor(ws));
+    const avatar = projectAvatar(ws);
 
     const body = document.createElement("div");
     body.className = "ws-item-body";
@@ -416,12 +432,7 @@ function renderShelf() {
     name.textContent = ws.name;
     body.append(name);
 
-    const total = (ws.primary_path ? 1 : 0) + ws.paths.length;
-    const count = document.createElement("span");
-    count.className = "ws-item-count";
-    count.textContent = total === 1 ? "1 path" : `${total} paths`;
-
-    li.append(bar, body, count);
+    li.append(avatar, body);
     li.dataset.id = ws.id;
     li.draggable = true;
     li.addEventListener("dblclick", () => setShelved(ws.id, false));
@@ -895,6 +906,7 @@ function renderModal() {
   modalNameEl.value = ws.name;
   modalDescriptionEl.value = ws.description || "";
   modalInitialEl.value = ws.initial || "";
+  renderIconPreview(ws);
   renderColorSwatches(ws);
   resetDeleteButton();
 
@@ -1123,6 +1135,64 @@ modalInitialEl.addEventListener("keydown", (e) => {
     e.preventDefault();
     modalInitialEl.blur(); // triggers change -> commitInitial
   }
+});
+
+// Icons over this size are rejected — a logo/icon is small, and the image is
+// stored inline (base64) in workspaces.json, so a large one would bloat it.
+const MAX_ICON_BYTES = 512 * 1024;
+
+/** Paint the modal's icon preview from the project: the image when set, else the
+ *  letter avatar. The Remove button is disabled when there is no icon. */
+function renderIconPreview(ws) {
+  if (!modalIconPreviewEl) return;
+  const icon = (ws.icon || "").trim();
+  modalIconPreviewEl.style.setProperty("--ws-bar", barColor(ws));
+  modalIconPreviewEl.classList.toggle("has-icon", !!icon);
+  if (icon) {
+    const img = document.createElement("img");
+    img.className = "ws-item-icon";
+    img.src = icon;
+    img.alt = "";
+    modalIconPreviewEl.replaceChildren(img);
+  } else {
+    const customInitial = (ws.initial || "").trim();
+    const letter = (customInitial || (ws.name || "").trim()[0] || "?").toUpperCase();
+    modalIconPreviewEl.replaceChildren(document.createTextNode(letter));
+  }
+  if (modalIconRemoveBtn) modalIconRemoveBtn.disabled = !icon;
+}
+
+/** Read an image File as a `data:` URL using the browser's FileReader. */
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+modalIconChooseBtn?.addEventListener("click", () => modalIconFileEl?.click());
+
+modalIconFileEl?.addEventListener("change", async () => {
+  const file = modalIconFileEl.files && modalIconFileEl.files[0];
+  modalIconFileEl.value = ""; // let the same file be picked again later
+  const ws = selected();
+  if (!file || !ws) return;
+  if (file.size > MAX_ICON_BYTES) {
+    alert(`That image is too large. Please pick one under ${MAX_ICON_BYTES / 1024}KB.`);
+    return;
+  }
+  const dataUrl = await readFileAsDataUrl(file);
+  await invoke("set_icon", { id: ws.id, icon: dataUrl });
+  await refresh();
+});
+
+modalIconRemoveBtn?.addEventListener("click", async () => {
+  const ws = selected();
+  if (!ws) return;
+  await invoke("set_icon", { id: ws.id, icon: "" });
+  await refresh();
 });
 
 /** Render the color-swatch picker for a project. The first swatch is the

@@ -53,7 +53,7 @@ function setRowBadge(row, n) {
     const num = document.createElement("span");
     num.className = "ws-working-n";
     badge.append(dot, num);
-    // Sit at the row's right end, after the "N paths" count.
+    // Sit at the row's right end.
     row.append(badge);
   }
   row.classList.add("ws-item-working");

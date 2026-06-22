@@ -21,6 +21,7 @@
 // classes on #view-dashboard but fires no custom event, so we watch its class
 // attribute with a MutationObserver and refresh when it turns visible.
 const { invoke } = window.__TAURI__.core;
+import { projectAvatar } from "/workspaces.js";
 
 // Grab the mount points placed in index.html by this card.
 const view = document.querySelector("#view-dashboard");
@@ -211,6 +212,13 @@ function activeTerminalsBlock(activeIds, workspaces) {
 function termRow(label, count, workspaceId, workspaces) {
   const row = document.createElement("div");
   row.className = "dash-row dash-term-row";
+
+  // A project row leads with the project's avatar (icon/logo, else its letter),
+  // matching the sidebar; the Chat row has no project, so no avatar.
+  const ws = workspaceId
+    ? (workspaces ?? []).find((w) => w.id === workspaceId)
+    : null;
+  if (ws) row.append(projectAvatar(ws, "dash-row-avatar"));
 
   row.append(textEl("span", "dash-row-label", label));
   row.append(

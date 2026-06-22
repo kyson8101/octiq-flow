@@ -87,6 +87,12 @@ pub struct Workspace {
     /// name" (the frontend derives it), so the rail always shows something.
     #[serde(default)]
     pub initial: String,
+    /// The project's icon/logo as a `data:image/...;base64,...` URL, shown in
+    /// the sidebar avatar in place of the letter initial. Stored inline (not a
+    /// file path) so it survives the source image moving or being deleted.
+    /// Empty means none — the avatar falls back to the letter initial.
+    #[serde(default)]
+    pub icon: String,
     /// True when the user has set this project "off work": it is moved to the
     /// Shelved section of the sidebar and hidden from the active project list
     /// until the user brings it back. Fully reversible — no data (paths,
@@ -185,6 +191,7 @@ pub fn add_workspace(
         description: String::new(),
         color: String::new(),
         initial: String::new(),
+        icon: String::new(),
         shelved: false,
     };
     data.workspaces.push(workspace.clone());
@@ -525,6 +532,25 @@ pub fn set_initial(
         .find(|w| w.id == id)
         .ok_or("workspace not found")?;
     ws.initial = initial;
+    state.save(&data)
+}
+
+/// Set (or clear) the project's icon/logo. Accepts an empty string (clears the
+/// icon, falling back to the letter avatar) or a `data:image/...` URL. Any other
+/// value is rejected so only an inline image can reach the store.
+#[tauri::command]
+pub fn set_icon(state: State<WorkspaceState>, id: String, icon: String) -> Result<(), String> {
+    let icon = icon.trim().to_string();
+    if !icon.is_empty() && !icon.starts_with("data:image/") {
+        return Err("icon must be a data:image/... URL".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.icon = icon;
     state.save(&data)
 }
 
