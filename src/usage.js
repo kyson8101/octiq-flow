@@ -13,12 +13,21 @@
 const { invoke } = window.__TAURI__.core;
 
 const REFRESH_MS = 60_000;
+// Event-driven refreshes (focus, tab-visible) get coalesced: a burst within
+// DEBOUNCE_MS collapses to one call, and no event-driven call fires within
+// MIN_INTERVAL_MS of the last refresh. This stops alt-tab spam from hammering the
+// Claude usage endpoint (which 429s per account). The 60s timer and an explicit
+// click bypass the guard — those are intentional, spaced calls.
+const DEBOUNCE_MS = 300;
+const MIN_INTERVAL_MS = 15_000;
 // Severity thresholds (percent used). Below WARN is calm; at/above DANGER is hot.
 const WARN_AT = 60;
 const DANGER_AT = 85;
 
 let bar = null;
 let timer = null;
+let lastRefreshAt = 0;
+let debounceTimer = null;
 
 // Map a percent to a severity class so the meter colours itself.
 function severity(percent) {
@@ -127,14 +136,26 @@ function render(summary) {
 }
 
 // Pull a fresh summary and render it. Any failure renders an empty (dashed) bar
-// rather than throwing — the footer must never break the app.
+// rather than throwing — the footer must never break the app. Stamps the call
+// time up front so concurrent triggers within the await window are also guarded.
 async function refresh() {
+  lastRefreshAt = Date.now();
   try {
     const summary = await invoke("usage_summary");
     render(summary);
   } catch {
     render(null);
   }
+}
+
+// Event-driven refresh: debounced (a focus + visibilitychange double-fire becomes
+// one call) and rate-limited (skips if we refreshed under MIN_INTERVAL_MS ago).
+function softRefresh() {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    if (Date.now() - lastRefreshAt >= MIN_INTERVAL_MS) refresh();
+  }, DEBOUNCE_MS);
 }
 
 function start() {
@@ -149,9 +170,10 @@ function start() {
   timer = setInterval(refresh, REFRESH_MS);
 
   // Re-pull when the user returns to the window — the numbers may have moved.
-  window.addEventListener("focus", refresh);
+  // Goes through softRefresh so a focus + visibilitychange burst is one call.
+  window.addEventListener("focus", softRefresh);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh();
+    if (!document.hidden) softRefresh();
   });
 }
 
