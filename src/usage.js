@@ -29,6 +29,45 @@ let timer = null;
 let lastRefreshAt = 0;
 let debounceTimer = null;
 
+// Last value PER PROVIDER that actually came back available, kept so a failed or
+// rate-limited (429) refresh can fall back to it instead of dashing the bar out.
+// Persisted to localStorage so the cached value also survives an app restart.
+const CACHE_KEY = "octiqflow.usageCache.v1";
+let cache = loadCache();
+
+function loadCache() {
+  try {
+    const v = JSON.parse(localStorage.getItem(CACHE_KEY) || "null");
+    return v && typeof v === "object"
+      ? { claude: v.claude || null, codex: v.codex || null }
+      : { claude: null, codex: null };
+  } catch {
+    return { claude: null, codex: null };
+  }
+}
+
+function saveCache() {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    /* localStorage full/blocked — caching is best-effort, ignore. */
+  }
+}
+
+// Decide what to show for one provider. Prefer fresh-and-available data (and cache
+// it); otherwise fall back to the last cached available value, marked stale; only
+// dash out when there is nothing cached either. `fresh` may be null (the whole
+// fetch threw) or an unavailable provider object (e.g. a 429 reason).
+function resolve(name, fresh) {
+  if (fresh && fresh.available) {
+    cache[name] = fresh;
+    saveCache();
+    return { data: fresh, stale: false };
+  }
+  if (cache[name]) return { data: cache[name], stale: true };
+  return { data: fresh || null, stale: false };
+}
+
 // Map a percent to a severity class so the meter colours itself.
 function severity(percent) {
   if (percent >= DANGER_AT) return "is-danger";
@@ -98,14 +137,18 @@ function meter(label, win) {
 }
 
 // Build one provider group: name + two meters, or name + reason when unavailable.
-function group(name, data) {
+// `stale` true means `data` is a cached value shown because the live fetch failed,
+// so we dim it and note "cached" in the tooltip.
+function group(name, data, stale) {
   const g = document.createElement("div");
-  g.className = "usage-group";
+  g.className = "usage-group" + (stale ? " is-stale" : "");
 
   const tag = document.createElement("span");
   tag.className = "usage-agent";
   tag.textContent = name;
-  if (data && data.plan) tag.title = `${name} · ${data.plan} plan`;
+  const cachedNote = stale ? " · cached (live fetch failed)" : "";
+  if (data && data.plan) tag.title = `${name} · ${data.plan} plan${cachedNote}`;
+  else if (stale) tag.title = `${name}${cachedNote}`;
   g.append(tag);
 
   if (!data || !data.available) {
@@ -121,18 +164,22 @@ function group(name, data) {
   return g;
 }
 
-// Render the whole bar from a summary `{ claude, codex }`.
+// Render the whole bar from a summary `{ claude, codex }`. Each provider goes
+// through the cache: a missing/unavailable one falls back to its last good value
+// (shown dimmed) so a failed refresh keeps the numbers instead of dashing out.
 function render(summary) {
   if (!bar) return;
+  const claude = resolve("claude", summary && summary.claude);
+  const codex = resolve("codex", summary && summary.codex);
   bar.replaceChildren();
 
-  bar.append(group("Claude", summary && summary.claude));
+  bar.append(group("Claude", claude.data, claude.stale));
 
   const sep = document.createElement("span");
   sep.className = "usage-sep";
   bar.append(sep);
 
-  bar.append(group("Codex", summary && summary.codex));
+  bar.append(group("Codex", codex.data, codex.stale));
 }
 
 // Pull a fresh summary and render it. Any failure renders an empty (dashed) bar
@@ -166,6 +213,9 @@ function start() {
   bar.addEventListener("click", refresh);
   bar.title = "Click to refresh usage";
 
+  // Show the last cached value at once (dimmed) so the bar is not empty while the
+  // first live fetch is in flight; refresh() replaces it when the numbers arrive.
+  if (cache.claude || cache.codex) render(null);
   refresh();
   timer = setInterval(refresh, REFRESH_MS);
 

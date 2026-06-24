@@ -180,3 +180,16 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
         size,
     })
 }
+
+/// Overwrite `path` with `content` from the in-app preview editor (Save). Returns
+/// `Err(message)` when the path is a directory or the write fails. The frontend
+/// only enables Save for text files it read in full (never a truncated one), so a
+/// large file can't be saved back as just its first chunk and lose the tail.
+#[tauri::command]
+pub fn write_file(path: String, content: String) -> Result<(), String> {
+    let file_path = Path::new(&path);
+    if file_path.is_dir() {
+        return Err(format!("Not a file: {path}"));
+    }
+    fs::write(file_path, content).map_err(|e| format!("Cannot save file: {e}"))
+}

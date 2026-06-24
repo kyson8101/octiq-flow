@@ -178,6 +178,7 @@ pub fn run() {
             git::git_local_branches,
             fsbrowse::list_dir,
             fsbrowse::read_file_preview,
+            fsbrowse::write_file,
             canvas::canvas_dir,
             canvas::canvas_list,
             canvas::canvas_read,

@@ -1289,6 +1289,10 @@ body {
   gap: 8px;
   min-width: 0;
 }
+/* Cached fallback (live fetch failed): dim it so a stale value reads as stale. */
+.usage-group.is-stale {
+  opacity: 0.5;
+}
 
 .usage-agent {
   font-weight: 600;
@@ -2866,21 +2870,20 @@ body {
   display: flex;
   gap: 6px;
 }
+/* Transient save feedback ("Saved" / an error), shown beside the file name. */
+.pb-preview-status {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--accent);
+}
+.pb-preview-status.err {
+  color: var(--warn);
+}
 
 .pb-preview-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-}
-.pb-preview-text {
-  margin: 0;
-  padding: 12px 14px;
-  font-family: Menlo, Monaco, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--fg-1);
-  white-space: pre;
-  tab-size: 4;
 }
 .pb-preview-note {
   position: sticky;
@@ -2890,6 +2893,37 @@ body {
   color: var(--warn);
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
+}
+
+/* Editable, syntax-highlighted code view (CodeJar + highlight.js).
+   contentEditable so the user can type. The highlight theme only colors tokens —
+   drop its own background so the app's --bg-0 shows. */
+.pb-preview-code {
+  margin: 0;
+  padding: 12px 14px;
+  min-height: 100%;
+  box-sizing: border-box;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+  outline: none;
+  caret-color: var(--accent);
+}
+.pb-preview-code.hljs {
+  background: transparent;
+  color: var(--fg-1);
+}
+/* Read-only highlighted view (truncated files): no caret, not editable. */
+.pb-preview-code[contenteditable="false"] {
+  caret-color: transparent;
+}
+
+/* Save button: tinted when there are unsaved edits, hidden otherwise. */
+.pb-preview-save.dirty {
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 .pb-preview-msg {
   padding: 24px 14px;

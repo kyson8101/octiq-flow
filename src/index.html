@@ -25,6 +25,11 @@
     <!-- Markdown renderer for the canvas pane, vendored locally (no CDN, works
          offline). UMD build: exposes window.marked for canvas.js to use. -->
     <script src="vendor/marked.min.js"></script>
+    <!-- Syntax highlighting for the file-preview editor, vendored locally (no CDN,
+         works offline). highlight.min.js exposes window.hljs; the theme colors the
+         tokens (background is overridden to the app's --bg-0 in styles.css). -->
+    <link rel="stylesheet" href="vendor/highlight-theme.css" />
+    <script src="vendor/highlight.min.js"></script>
 
     <link rel="stylesheet" href="styles.css" />
     <script type="module" src="/workspaces.js" defer></script>
@@ -147,7 +152,11 @@
             <div id="pb-preview" class="pb-preview hidden">
               <div class="pb-preview-head">
                 <span id="pb-preview-name" class="pb-preview-name"></span>
+                <span id="pb-preview-status" class="pb-preview-status"></span>
                 <span class="pb-preview-actions">
+                  <button id="pb-preview-save" class="icon-btn pb-preview-save hidden" type="button" data-tip="Save (⌘S)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+                  </button>
                   <button id="pb-preview-open" class="icon-btn" type="button" data-tip="Open with the default app">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
                   </button>
