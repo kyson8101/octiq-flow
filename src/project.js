@@ -180,23 +180,23 @@ async function restoreProject(id, saved) {
   if (!rec) return;
   rec.restoring = true;
   try {
-    for (const t of saved) {
-      let restoreScrollback = "";
-      try {
-        restoreScrollback = (await invoke("load_scrollback", { key: t.persistKey })) || "";
-      } catch {
-        restoreScrollback = "";
-      }
-      // If this tab was running an AI agent (captured by its hook), re-launch the
-      // agent's native resume command so the conversation continues — e.g.
-      // `claude --resume <session-id>`. Plain shells get no startCmd. The backend
-      // validates and builds the command, so we just pass it through.
-      let startCmd = null;
-      try {
-        startCmd = (await invoke("agent_resume_cmd", { key: t.persistKey })) || null;
-      } catch {
-        startCmd = null;
-      }
+    // Prefetch every tab's saved scrollback + agent-resume command IN PARALLEL.
+    // These are independent backend reads; doing them one tab at a time (two
+    // awaits per tab, in series) was the bulk of the project-switch wait. The
+    // resume command re-launches an AI agent whose session the hook captured
+    // (e.g. `claude --resume <id>`); a plain shell gets none. Terminals are still
+    // created in saved order below so the tab order is preserved.
+    const prepared = await Promise.all(
+      saved.map(async (t) => {
+        const [scrollback, resume] = await Promise.all([
+          invoke("load_scrollback", { key: t.persistKey }).catch(() => ""),
+          invoke("agent_resume_cmd", { key: t.persistKey }).catch(() => null),
+        ]);
+        return { t, restoreScrollback: scrollback || "", startCmd: resume || null };
+      }),
+    );
+    for (const { t, restoreScrollback, startCmd: resumeCmd } of prepared) {
+      let startCmd = resumeCmd;
       // The terminal reopens in its saved cwd (the folder the agent ran in).
       const cwd = t.cwd || rec.primaryPath;
       // A resumed Claude tab should get the same whole-project tool access as a
@@ -313,7 +313,10 @@ function flushDirty() {
     for (const ptyId of ptyIds) {
       const key = rec.group.persistKeyFor(ptyId);
       if (!key) continue; // terminal was closed
-      invoke("save_scrollback", { key, data: rec.group.scrollbackFor(ptyId) }).catch(() => {});
+      // Periodic flush is crash-recovery only and runs every few seconds, so cap
+      // the (synchronous) serialize at fewer lines to keep the hitch small. A
+      // clean quit still saves the full buffer via flushAll/scrollbackEntries.
+      invoke("save_scrollback", { key, data: rec.group.scrollbackFor(ptyId, 1000) }).catch(() => {});
     }
   }
   // Clear resume mappings for tabs whose agent has exited (shell back at the
@@ -332,28 +335,34 @@ setInterval(flushDirty, SCROLLBACK_FLUSH_MS);
  *  left alone (setAutoTitle checks the manual flag). Backend reads are cheap
  *  (mtime-cached), so polling every tab on the flush timer is fine. */
 async function refreshTitles() {
+  // Collect every live tab first, then query the backend for all of them IN
+  // PARALLEL. Querying one tab at a time (await per tab) made this loop's cost
+  // grow with the total number of open terminals across all projects — a steady
+  // drag that got worse the longer the app ran. One backend hiccup drops just
+  // that tab's result (null); the name is kept and retried next tick.
+  const jobs = [];
   for (const [, rec] of projects) {
     if (rec.restoring) continue;
     for (const ptyId of rec.group.ids()) {
       const key = rec.group.persistKeyFor(ptyId);
-      if (!key) continue;
-      let info;
-      try {
-        info = await invoke("agent_tab_info", { key });
-      } catch {
-        continue; // backend hiccup: keep the current name, try again next tick
-      }
-      if (info?.isAgent) {
-        // Agent tab: use the session title once the agent has generated one.
-        // Until then leave the current name — do NOT fall back to a command.
-        if (info.title) rec.group.setAutoTitle(ptyId, info.title, true);
-      } else {
-        // Plain tab: name it after the first command the user ran.
-        const cmd = rec.group.firstCmdFor(ptyId);
-        if (cmd) rec.group.setAutoTitle(ptyId, cmd, false);
-      }
+      if (key) jobs.push({ rec, ptyId, key });
     }
   }
+  const infos = await Promise.all(
+    jobs.map((j) => invoke("agent_tab_info", { key: j.key }).catch(() => null)),
+  );
+  jobs.forEach(({ rec, ptyId }, i) => {
+    const info = infos[i];
+    if (info?.isAgent) {
+      // Agent tab: use the session title once the agent has generated one.
+      // Until then leave the current name — do NOT fall back to a command.
+      if (info.title) rec.group.setAutoTitle(ptyId, info.title, true);
+    } else {
+      // Plain tab: name it after the first command the user ran.
+      const cmd = rec.group.firstCmdFor(ptyId);
+      if (cmd) rec.group.setAutoTitle(ptyId, cmd, false);
+    }
+  });
 }
 
 /** Flush every visited project's layout + every terminal's scrollback. Used by

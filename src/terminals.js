@@ -787,10 +787,14 @@ class TerminalGroup {
     }));
   }
 
-  /** One terminal's scrollback snapshot, by pty id (or "" if unknown). */
-  scrollbackFor(ptyId) {
+  /** One terminal's scrollback snapshot, by pty id (or "" if unknown).
+   *  `lines` caps how much buffer is serialized. serialize() is synchronous on
+   *  the main thread and its cost scales with the line count, so the frequent
+   *  periodic flush passes a smaller cap (crash-recovery only) than the one-shot
+   *  full save on quit. */
+  scrollbackFor(ptyId, lines = 2000) {
     const e = this.tabs.get(ptyId);
-    return e?.serializeAddon ? e.serializeAddon.serialize({ scrollback: 2000 }) : "";
+    return e?.serializeAddon ? e.serializeAddon.serialize({ scrollback: lines }) : "";
   }
 
   /** Stable persist key for a pty id, or null. */

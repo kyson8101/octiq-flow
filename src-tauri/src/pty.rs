@@ -11,8 +11,9 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -542,8 +543,51 @@ pub fn pty_spawn(
     let needs_attention = Arc::new(AtomicBool::new(false));
     let attention_flag = needs_attention.clone();
 
-    // Per-session reader thread: stream PTY output to the frontend, tagged with
-    // this session's id. Ends on EOF (shell exited) or read error.
+    // Output coalescing. The reader thread sends each decoded chunk down this
+    // channel; a dedicated emitter thread batches everything that arrives within
+    // a short window into ONE `pty-output` event. Emitting per 4096-byte read
+    // floods the webview's main thread under heavy output (an agent streaming, a
+    // build, a big `cat`), starving keystroke echo and repaint — the "I type and
+    // nothing shows, then it all appears at once" freeze. Batching collapses
+    // thousands of tiny events per second into roughly one per frame.
+    let (out_tx, out_rx) = mpsc::channel::<String>();
+    let emit_app = app.clone();
+    let emit_id_out = id.clone();
+    thread::spawn(move || {
+        // ~8ms ≈ one 120Hz frame: short enough that a lone keystroke echo is
+        // imperceptible, long enough to swallow a burst. CAP bounds one event's
+        // size so a huge burst becomes several events, not one giant payload.
+        const COALESCE: Duration = Duration::from_millis(8);
+        const CAP: usize = 64 * 1024;
+        // Block for the first chunk, then drain whatever else arrives until the
+        // window closes or the cap is hit, and emit the batch once.
+        while let Ok(first) = out_rx.recv() {
+            let mut batch = first;
+            let deadline = Instant::now() + COALESCE;
+            while batch.len() < CAP {
+                let now = Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                match out_rx.recv_timeout(deadline - now) {
+                    Ok(more) => batch.push_str(&more),
+                    Err(_) => break, // window elapsed, or sender gone
+                }
+            }
+            let _ = emit_app.emit(
+                "pty-output",
+                OutputEvent {
+                    id: emit_id_out.clone(),
+                    chunk: batch,
+                },
+            );
+        }
+    });
+
+    // Per-session reader thread: decode + scan PTY output, raise attention
+    // alerts immediately, and hand each chunk to the emitter thread above. Ends
+    // on EOF (shell exited) or read error; the channel then closes and the
+    // emitter thread ends with it.
     let app_handle = app.clone();
     let emit_id = id.clone();
     let mut reader = reader;
@@ -602,15 +646,15 @@ pub fn pty_spawn(
                         scan_buf.drain(..cut);
                     }
 
-                    // pty-output ALWAYS streams the raw per-read chunk
-                    // unchanged — the scan buffer never affects what is shown.
-                    let _ = app_handle.emit(
-                        "pty-output",
-                        OutputEvent {
-                            id: emit_id.clone(),
-                            chunk,
-                        },
-                    );
+                    // Hand the decoded chunk to the emitter thread, which batches
+                    // it with any other output in the same short window. The scan
+                    // buffer never affects what is shown. Skip an empty chunk (a
+                    // read that was only an incomplete UTF-8 tail carries no
+                    // displayable text). A send error means the emitter is gone
+                    // (shutdown) — nothing left to do.
+                    if !chunk.is_empty() {
+                        let _ = out_tx.send(chunk);
+                    }
                 }
                 Err(_) => break,
             }
