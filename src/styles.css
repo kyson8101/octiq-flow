@@ -1964,6 +1964,21 @@ body {
   white-space: nowrap;
 }
 
+/* Status-dot slot: always reserve the space before the label so a working /
+   attention dot turning on or off never shifts the label (the old jumpy tabs).
+   Transparent until a state below paints it. */
+.tg-tab-label::before {
+  content: "";
+  display: inline-block;
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: transparent;
+}
+
 /* Inline rename input shown while a tab label is being edited (double-click).
    Sized to sit in place of the label without resizing the tab. */
 .tg-tab-rename {
@@ -2576,15 +2591,9 @@ body {
   border-bottom-color: var(--bg-0);
 }
 
-/* The attention dot sits before the tab label. Pulses gently to draw the eye. */
+/* The attention dot sits in the reserved slot before the label. Pulses gently
+   to draw the eye. (Box/size comes from the base .tg-tab-label::before.) */
 .tg-tab-attention .tg-tab-label::before {
-  content: "";
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin-right: 6px;
-  vertical-align: middle;
-  border-radius: 50%;
   background: var(--warn);
   box-shadow: 0 0 0 2px var(--warn-ring);
   animation: tg-attention-pulse 1.4s ease-in-out infinite;
