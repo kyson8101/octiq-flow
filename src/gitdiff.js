@@ -21,6 +21,7 @@ const { invoke } = window.__TAURI__.core;
 // --- DOM handles -----------------------------------------------------------
 const termsEl = document.querySelector(".center-terms");
 const browserEl = document.querySelector("#project-browser");
+const browserResizerEl = document.querySelector("#browser-resizer");
 const panelEl = document.querySelector("#project-gitdiff");
 const titleEl = document.querySelector("#gd-title");
 const listEl = document.querySelector("#gd-list");
@@ -80,6 +81,7 @@ function splitPath(path) {
 function showPanel() {
   termsEl?.classList.add("hidden");
   browserEl?.classList.add("hidden");
+  browserResizerEl?.classList.add("hidden");
   panelEl.classList.remove("hidden");
 }
 

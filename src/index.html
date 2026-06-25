@@ -129,16 +129,21 @@
           <div id="project-terminals" class="project-terminals"></div>
         </div>
 
+        <!-- Drag handle between the terminals and the file browser. Hidden until
+             the browser opens side-by-side; browser.js shows it and wires the
+             drag (same pattern as #canvas-resizer). -->
+        <div id="browser-resizer" class="browser-resizer hidden" role="separator" aria-orientation="vertical" title="Drag to resize the file explorer"></div>
+
         <!-- File browser (right-click "Files" / "Documentation"). Hidden until a
-             browse action fires; browser.js fills the header + list and toggles
-             this against .center-terms. fs-only — no PTY here. -->
+             browse action fires; opens side-by-side WITH the terminals (browser.js
+             reveals it + the resizer, both panes stay live). fs-only — no PTY here. -->
         <div id="project-browser" class="project-browser hidden">
           <div class="pb-head">
             <button id="pb-collapse" class="icon-btn" type="button" data-tip="Collapse all folders">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 11-5-5-5 5"/><path d="m17 18-5-5-5 5"/></svg>
             </button>
             <span id="pb-path" class="pb-path"></span>
-            <button id="pb-back" class="icon-btn pb-back" type="button" data-tip="Back to terminals">
+            <button id="pb-back" class="icon-btn pb-back" type="button" data-tip="Close file explorer">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
             </button>
           </div>

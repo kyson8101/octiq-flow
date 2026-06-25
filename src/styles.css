@@ -123,19 +123,22 @@ body {
 /* === Project mode layout (cards 05/06) =============================== */
 /* sidebar | center (terminals + command drawer) | right command panel.  */
 
-/* ---- Center: per-project terminals on top, command drawer below ----- */
+/* ---- Center: terminals | (optional) file browser, laid out left→right. ---- */
+/* Row so the file browser can open SIDE-BY-SIDE with the terminals (with a drag
+   handle between). The git-diff panel still takes over the whole row. */
 .center {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   flex: 1;
   min-width: 0;
   height: 100%;
   background: var(--bg-0);
 }
 
-/* Terminals fill the center above the drawer. */
+/* Terminals fill the space left of the browser (or all of it when closed). */
 .center-terms {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -234,8 +237,10 @@ body {
 /* A togglable split between .center and the command panel. Shows a live   */
 /* HTML/MD document an agent writes; canvas.js owns it. Hidden by default. */
 
-/* Thin drag handle to the LEFT of the pane (between terminals and canvas). */
-.canvas-resizer {
+/* Thin drag handle to the LEFT of the pane (between terminals and canvas, and
+   between terminals and the file browser). */
+.canvas-resizer,
+.browser-resizer {
   flex-shrink: 0;
   width: 6px;
   cursor: col-resize;
@@ -245,8 +250,14 @@ body {
 }
 
 .canvas-resizer:hover,
-.canvas-resizer.dragging {
+.canvas-resizer.dragging,
+.browser-resizer:hover,
+.browser-resizer.dragging {
   background: var(--accent);
+}
+
+.browser-resizer.hidden {
+  display: none;
 }
 
 .canvas-pane {
@@ -2758,13 +2769,19 @@ body {
    against the other. Uses the same dark hex palette as the rest of the app
    (var(--bg-0) base, var(--bg-1) raised, var(--border) borders) — this project has no :root
    custom properties, so the spec's var(--x) tokens are inlined as hex here. */
+/* Side pane: fixed (resizable) width, sits right of the terminals. JS sets the
+   px width on open and on drag; clamped in browser.js. */
 .project-browser {
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
+  width: 420px;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   background: var(--bg-0);
   color: var(--fg-1);
+  border-left: 1px solid var(--border);
 }
 .project-browser.hidden {
   display: none;
@@ -3143,6 +3160,8 @@ body {
 .project-gitdiff {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   background: var(--bg-0);

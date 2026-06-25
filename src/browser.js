@@ -23,6 +23,7 @@ import { CodeJar } from "/vendor/codejar.js";
 // --- DOM handles -----------------------------------------------------------
 const termsEl = document.querySelector(".center-terms");
 const panelEl = document.querySelector("#project-browser");
+const resizerEl = document.querySelector("#browser-resizer");
 const headPathEl = document.querySelector("#pb-path");
 const bodyEl = document.querySelector(".pb-body");
 const listEl = document.querySelector("#pb-list");
@@ -84,6 +85,18 @@ const LANG_BY_EXT = {
 // keystroke is sluggish, and a truncated read must never be saved back.
 // ponytail: char cap, lift if someone needs to edit very large files in-app.
 const EDIT_MAX_CHARS = 200 * 1024;
+
+// Side-pane width: persisted in px, clamped on open and drag (mirrors canvas.js).
+const WIDTH_KEY = "octiq.browser.width";
+const DEFAULT_WIDTH = 420;
+const MIN_WIDTH = 240;
+
+/** Saved pane width, clamped to something sane. */
+function loadWidth() {
+  const n = Number(localStorage.getItem(WIDTH_KEY));
+  if (!Number.isFinite(n) || n < MIN_WIDTH) return DEFAULT_WIDTH;
+  return Math.min(n, Math.floor(window.innerWidth * 0.72));
+}
 
 /** File extension (lower-case, no dot) of `name`, or "" when it has none. */
 function extOf(name) {
@@ -165,18 +178,21 @@ function indentFor(depth) {
 }
 
 // --- Show / hide the panel --------------------------------------------------
+/** Open the browser as a side pane to the RIGHT of the terminals (both stay
+ *  live). The git-diff panel takes over the whole row, so hide it. */
 function showBrowser() {
-  if (termsEl) termsEl.classList.add("hidden");
-  // The git-diff panel shares the center area; hide it so only one shows.
   document.querySelector("#project-gitdiff")?.classList.add("hidden");
+  if (termsEl) termsEl.classList.remove("hidden"); // keep terminals visible
+  panelEl.style.width = `${loadWidth()}px`;
   panelEl.classList.remove("hidden");
+  resizerEl?.classList.remove("hidden");
 }
 
-/** Back to terminals: hide the browser, show the terminals, clear state. */
+/** Close the browser: hide it and the drag handle, leave terminals as they are. */
 function backToTerminals() {
   closePreview();
   panelEl.classList.add("hidden");
-  if (termsEl) termsEl.classList.remove("hidden");
+  resizerEl?.classList.add("hidden");
   rootDir = "";
   browsingProjectId = null;
 }
@@ -449,6 +465,34 @@ window.addEventListener("project-selected", (e) => {
     backToTerminals();
   }
 });
+
+// Drag the handle to resize the side pane. The pane's right edge is fixed (it
+// sits at the right of .center), so width = that edge minus the pointer x.
+// Clamped, and saved on release. (Mirrors canvas.js's wireResizer.)
+function wireResizer() {
+  if (!resizerEl) return;
+  resizerEl.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const rightEdge = panelEl.getBoundingClientRect().right;
+    resizerEl.setPointerCapture(e.pointerId);
+    resizerEl.classList.add("dragging");
+    let width = loadWidth();
+    const onMove = (ev) => {
+      const max = Math.floor(window.innerWidth * 0.72);
+      width = Math.max(MIN_WIDTH, Math.min(rightEdge - ev.clientX, max));
+      panelEl.style.width = `${width}px`;
+    };
+    const onUp = () => {
+      resizerEl.classList.remove("dragging");
+      resizerEl.removeEventListener("pointermove", onMove);
+      resizerEl.removeEventListener("pointerup", onUp);
+      localStorage.setItem(WIDTH_KEY, String(width));
+    };
+    resizerEl.addEventListener("pointermove", onMove);
+    resizerEl.addEventListener("pointerup", onUp);
+  });
+}
+wireResizer();
 
 collapseBtn.addEventListener("click", collapseAll);
 backBtn.addEventListener("click", () => {
