@@ -337,6 +337,25 @@ let foregroundAgents = new Set();
 // by isWorkingNow to tell streaming apart from silence.
 const lastOutputAt = new Map();
 
+// id -> Set<fn> of one-shot callbacks fired when a terminal produces its FIRST
+// PTY output. Restored scrollback is written straight into the term (not via the
+// pty-output event), so the first event is the live shell/agent coming alive —
+// project.js uses this to mark an agent tab "resumed" once claude/codex prints
+// after a `--resume`.
+const firstOutputWaiters = new Map();
+
+/** Run `fn` once when terminal `id` next emits output; if it already has, run it
+ *  now. One-shot — the waiter is dropped after firing. */
+export function onceTerminalOutput(id, fn) {
+  if (lastOutputAt.has(id)) {
+    fn();
+    return;
+  }
+  let s = firstOutputWaiters.get(id);
+  if (!s) firstOutputWaiters.set(id, (s = new Set()));
+  s.add(fn);
+}
+
 /** The pty ids whose agent is currently working, in insertion order. */
 export function workingList() {
   return [...working];
@@ -403,7 +422,21 @@ function setWorking(id, on) {
  *  pty-output listener, so the dot reacts the instant an agent starts thinking;
  *  refreshWorking() handles the turn-off once it goes quiet. */
 function noteOutput(id) {
+  const first = !lastOutputAt.has(id);
   lastOutputAt.set(id, performance.now());
+  if (first) {
+    const waiters = firstOutputWaiters.get(id);
+    if (waiters) {
+      firstOutputWaiters.delete(id);
+      for (const fn of waiters) {
+        try {
+          fn();
+        } catch (_) {
+          /* a progress callback must never break output routing */
+        }
+      }
+    }
+  }
   if (foregroundAgents.has(id) && !attention.has(id)) {
     if (setWorking(id, true)) emitWorkingChange();
   }
@@ -1165,6 +1198,7 @@ class TerminalGroup {
       emitWorkingChange();
     }
     lastOutputAt.delete(ptyId);
+    firstOutputWaiters.delete(ptyId);
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();
     entry.term.dispose();

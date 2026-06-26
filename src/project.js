@@ -16,7 +16,7 @@
 //
 // project.js learns of selection from a `project-selected` window event that
 // workspaces.js dispatches: detail = { id, primaryPath } or null.
-import { createTerminalGroup } from "/terminals.js";
+import { createTerminalGroup, onceTerminalOutput } from "/terminals.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -171,6 +171,88 @@ async function spawnStartup(id) {
   }
 }
 
+// ---- Resume progress overlay ----------------------------------------------
+// A small, non-blocking panel shown over the project terminal area while a
+// project's saved tabs are rebuilt on first open. It lists each terminal and
+// its state and highlights agent tabs (claude/codex `--resume`), which take the
+// longest to come back. pointer-events:none, so it never blocks the terminals
+// underneath. Only one restore runs at a time, so a single shared overlay is
+// enough; a new restore replaces any leftover one.
+
+let resumeOverlay = null;
+
+/** Force the overlay down if some agent never prints (so it can't stay pinned).
+ *  Generous — a real resume prints within a second or two. */
+const RESUME_FALLBACK_MS = 12000;
+
+/** Build the overlay for `items` ([{ persistKey, title, isAgent }]) inside the
+ *  shared project mount, or skip it for a trivial restore (a single plain
+ *  shell — nothing worth tracking). Returns the overlay handle or null. */
+function beginResumeOverlay(items) {
+  resumeOverlay?.el.remove();
+  resumeOverlay = null;
+  const worthShowing = items.some((i) => i.isAgent) || items.length > 1;
+  if (!worthShowing) return null;
+
+  const el = document.createElement("div");
+  el.className = "resume-overlay";
+  const head = document.createElement("div");
+  head.className = "resume-overlay-head";
+  head.textContent = "Resuming session";
+  const list = document.createElement("div");
+  list.className = "resume-list";
+
+  const rows = new Map();
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = it.isAgent ? "resume-row resume-row-agent" : "resume-row";
+    row.dataset.state = "queued";
+    const icon = document.createElement("span");
+    icon.className = "resume-icon";
+    const name = document.createElement("span");
+    name.className = "resume-name";
+    name.textContent = it.title;
+    const status = document.createElement("span");
+    status.className = "resume-status";
+    status.textContent = "queued";
+    row.append(icon, name, status);
+    list.append(row);
+    rows.set(it.persistKey, { row, status, isAgent: it.isAgent });
+  }
+  el.append(head, list);
+  mountEl.append(el);
+
+  const ov = { el, rows, timer: null };
+  ov.timer = setTimeout(() => finishResumeOverlay(ov, true), RESUME_FALLBACK_MS);
+  resumeOverlay = ov;
+  return ov;
+}
+
+/** Move one row to a state: "active" (spinner) or "done" (check). Agent rows say
+ *  "resuming session…" until their PTY first prints, then "resumed". */
+function setResumeState(ov, key, state) {
+  const r = ov?.rows.get(key);
+  if (!r) return;
+  r.row.dataset.state = state;
+  if (state === "active") r.status.textContent = r.isAgent ? "resuming session…" : "starting…";
+  else if (state === "done") r.status.textContent = r.isAgent ? "resumed" : "restored";
+}
+
+/** Fade the overlay out once every row is done (or `force` on the fallback). */
+function finishResumeOverlay(ov, force = false) {
+  if (!ov || ov !== resumeOverlay) return;
+  if (!force) {
+    const pending = [...ov.rows.values()].some((r) => r.row.dataset.state !== "done");
+    if (pending) return;
+  }
+  clearTimeout(ov.timer);
+  ov.el.classList.add("resume-overlay-hide");
+  setTimeout(() => {
+    ov.el.remove();
+    if (resumeOverlay === ov) resumeOverlay = null;
+  }, 400);
+}
+
 /** Rebuild a project's saved terminals: one tab per saved entry, in order, with
  *  its old scrollback written back. Layout saves are suppressed during the loop
  *  (`restoring`) so a half-built layout is never written — which would make the
@@ -195,6 +277,16 @@ async function restoreProject(id, saved) {
         return { t, restoreScrollback: scrollback || "", startCmd: resume || null };
       }),
     );
+    // Show the resume progress: each saved tab, with agent tabs (those with a
+    // resume command) flagged so the user sees their claude/codex sessions
+    // coming back.
+    const ov = beginResumeOverlay(
+      prepared.map(({ t, startCmd }) => ({
+        persistKey: t.persistKey,
+        title: t.title || "terminal",
+        isAgent: !!startCmd,
+      })),
+    );
     for (const { t, restoreScrollback, startCmd: resumeCmd } of prepared) {
       let startCmd = resumeCmd;
       // The terminal reopens in its saved cwd (the folder the agent ran in).
@@ -205,7 +297,8 @@ async function restoreProject(id, saved) {
       if (startCmd && /^claude(\s|$)/.test(startCmd)) {
         startCmd += claudeAddDirSuffix(rec, cwd);
       }
-      await rec.group.newTerminal({
+      setResumeState(ov, t.persistKey, "active");
+      const ptyId = await rec.group.newTerminal({
         persistKey: t.persistKey,
         title: t.title || undefined,
         // Carry the manual-rename flag so a hand-named tab is not re-titled by
@@ -216,7 +309,19 @@ async function restoreProject(id, saved) {
         restoreScrollback,
         canvasKey: id,
       });
+      // A plain shell is back the moment its PTY spawns. An agent tab is only
+      // "resumed" once claude/codex actually prints after the `--resume`, so wait
+      // for its first output — non-blocking, the loop keeps creating the rest.
+      if (resumeCmd) {
+        onceTerminalOutput(ptyId, () => {
+          setResumeState(ov, t.persistKey, "done");
+          finishResumeOverlay(ov);
+        });
+      } else {
+        setResumeState(ov, t.persistKey, "done");
+      }
     }
+    finishResumeOverlay(ov);
   } finally {
     rec.restoring = false;
   }

@@ -1893,6 +1893,118 @@ body {
   min-height: 0;
   height: 100%;
   background: var(--bg-0);
+  position: relative; /* anchors the resume-progress overlay */
+}
+
+/* ---- Resume progress overlay (project.js) ---------------------------- */
+/* A small floating panel shown while a project's saved tabs rebuild on first
+   open. pointer-events:none so it never blocks the terminals underneath. */
+.resume-overlay {
+  position: absolute;
+  top: calc(var(--head-h) + 12px);
+  right: 12px;
+  z-index: 20;
+  width: 260px;
+  max-width: calc(100% - 24px);
+  padding: 10px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.35s ease;
+}
+
+.resume-overlay-hide {
+  opacity: 0;
+}
+
+.resume-overlay-head {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  margin-bottom: 8px;
+}
+
+.resume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.resume-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-1);
+}
+
+.resume-row[data-state="queued"] {
+  opacity: 0.5;
+}
+
+.resume-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resume-row-agent .resume-name {
+  color: var(--accent);
+}
+
+.resume-status {
+  font-size: 11px;
+  color: var(--fg-2);
+  flex-shrink: 0;
+}
+
+/* The status icon: a dim dot while queued, a spinning ring while active, a
+   check once done. All CSS — no icon wiring needed. */
+.resume-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.resume-row[data-state="queued"] .resume-icon::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--fg-2);
+}
+
+.resume-row[data-state="active"] .resume-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid var(--accent-tint-strong);
+  border-top-color: var(--accent);
+  animation: resumeSpin 0.7s linear infinite;
+}
+
+.resume-row[data-state="done"] .resume-icon::after {
+  content: "✓";
+  position: absolute;
+  inset: 0;
+  font-size: 12px;
+  line-height: 13px;
+  text-align: center;
+  color: var(--accent);
+}
+
+@keyframes resumeSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ---- Terminal-tab-group primitive (terminals.js) --------------------- */
