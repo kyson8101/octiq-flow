@@ -636,6 +636,15 @@ class TerminalGroup {
 
     this.tabsEl = document.createElement("div");
     this.tabsEl.className = "tg-tabs";
+    // Live tab reorder while dragging: slide the dragged tab to wherever the
+    // pointer sits. The Map is rebuilt from this DOM order on dragend.
+    this.tabsEl.addEventListener("dragover", (e) => {
+      if (!this._dragEl) return;
+      e.preventDefault();
+      const after = this._tabAfterX(e.clientX);
+      if (after == null) this.tabsEl.append(this._dragEl);
+      else if (after !== this._dragEl) this.tabsEl.insertBefore(this._dragEl, after);
+    });
 
     // The "+" callback is set by the owner via onAdd; default is a no-op so the
     // primitive does not assume any cwd/startCmd policy.
@@ -717,6 +726,30 @@ class TerminalGroup {
 
   ids() {
     return [...this.tabs.keys()];
+  }
+
+  /** First non-dragged tab whose horizontal midpoint sits right of `x`, or null
+   *  to drop at the end. Drives the live reorder during a drag. */
+  _tabAfterX(x) {
+    for (const el of this.tabsEl.querySelectorAll(".tg-tab:not(.tg-tab-dragging)")) {
+      const r = el.getBoundingClientRect();
+      if (x < r.left + r.width / 2) return el;
+    }
+    return null;
+  }
+
+  /** Rebuild the tabs Map from the current DOM order after a drag, then persist.
+   *  serialize() and ids() read Map insertion order, so this is what makes the
+   *  new tab order stick (and survive a restart via onLayoutChange). */
+  _syncTabOrder() {
+    const reordered = new Map();
+    for (const el of this.tabsEl.children) {
+      const id = el.dataset.ptyId;
+      if (this.tabs.has(id)) reordered.set(id, this.tabs.get(id));
+    }
+    if (reordered.size !== this.tabs.size) return; // DOM/Map mismatch — leave as is.
+    this.tabs = reordered;
+    this.onLayoutChange?.();
   }
 
   count() {
@@ -983,6 +1016,21 @@ class TerminalGroup {
     });
     tabEl.append(label, closeBtn);
     tabEl.addEventListener("click", () => this.activate(ptyId));
+    // Drag to reorder. The id lives on the element so _syncTabOrder can rebuild
+    // the tabs Map (= tab + serialize order) straight from the DOM after a drop.
+    tabEl.draggable = true;
+    tabEl.dataset.ptyId = ptyId;
+    tabEl.addEventListener("dragstart", (e) => {
+      this._dragEl = tabEl;
+      tabEl.classList.add("tg-tab-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", ptyId); // Firefox won't drag without data.
+    });
+    tabEl.addEventListener("dragend", () => {
+      tabEl.classList.remove("tg-tab-dragging");
+      this._dragEl = null;
+      this._syncTabOrder();
+    });
     this.tabsEl.append(tabEl);
 
     const entry = {
@@ -1092,6 +1140,9 @@ class TerminalGroup {
     if (!entry || entry.renaming) return;
     entry.renaming = true;
     const { labelEl } = entry;
+    // A draggable tab steals mouse-drag from the input (drags the tab instead of
+    // selecting text). Turn it off while editing; finish() turns it back on.
+    entry.tabEl.draggable = false;
 
     const input = document.createElement("input");
     input.className = "tg-tab-rename";
@@ -1116,6 +1167,7 @@ class TerminalGroup {
       }
       input.replaceWith(labelEl);
       entry.renaming = false;
+      entry.tabEl.draggable = true;
       // Persist the renamed tab so the title survives a restart.
       if (changed) this.onLayoutChange?.();
     };
