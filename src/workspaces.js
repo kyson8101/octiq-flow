@@ -665,10 +665,18 @@ function openProjectMenu(x, y, ws, nameEl) {
     window.dispatchEvent(new CustomEvent("project-web", { detail: { id: ws.id } }));
   };
 
+  // Launch this project's saved web-preview URL in the system browser. If none is
+  // saved yet, webpreview.js opens the pane so the user can set one.
+  const openInBrowser = () => {
+    selectWorkspace(ws.id);
+    window.dispatchEvent(new CustomEvent("project-web-launch", { detail: { id: ws.id } }));
+  };
+
   openCtxMenu(x, y, [
     { label: "Files", onClick: () => browse("files", ws.primary_path || "") },
     { label: "Documentation", onClick: () => browse("docs", ws.docs_path || "") },
     { label: "Web preview", onClick: webPreview },
+    { label: "Open in browser", onClick: openInBrowser },
     { label: "Git changes", onClick: gitChanges },
     { label: "Rename", onClick: () => startInlineRename(ws, nameEl) },
     {

@@ -32,6 +32,7 @@ const backBtn = document.querySelector("#web-back");
 const fwdBtn = document.querySelector("#web-fwd");
 const reloadBtn = document.querySelector("#web-reload");
 const dockBtn = document.querySelector("#web-dock");
+const externalBtn = document.querySelector("#web-open-external");
 const closeBtn = document.querySelector("#web-close");
 const zonesEl = document.querySelector("#web-zones");
 
@@ -93,6 +94,19 @@ function normalizeUrl(raw) {
   const s = (raw || "").trim();
   if (!s) return "";
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`;
+}
+
+/** Open a URL in the system browser via the opener plugin. Returns false on an
+ *  empty URL or a launch error, so callers can fall back. */
+async function openInBrowser(raw) {
+  const url = normalizeUrl(raw);
+  if (!url) return false;
+  try {
+    await invoke("plugin:opener|open_url", { url });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // --- Dock + size -----------------------------------------------------------
@@ -177,6 +191,7 @@ function close() {
 function updateNavButtons() {
   backBtn.disabled = histIdx <= 0;
   fwdBtn.disabled = histIdx >= history.length - 1;
+  externalBtn.disabled = !currentUrl; // nothing to launch until a URL is set
 }
 
 /** Load a URL into the frame. `push` records it in history (a fresh navigation);
@@ -306,6 +321,7 @@ urlInput.addEventListener("keydown", (e) => {
 backBtn.addEventListener("click", () => go(-1));
 fwdBtn.addEventListener("click", () => go(1));
 reloadBtn.addEventListener("click", reload);
+externalBtn.addEventListener("click", () => openInBrowser(currentUrl));
 closeBtn.addEventListener("click", close);
 dockBtn.addEventListener("click", () => {
   applyDock(DOCKS[(DOCKS.indexOf(dock) + 1) % DOCKS.length]);
@@ -315,6 +331,14 @@ wireResizer();
 wireHeadDrag();
 
 window.addEventListener("project-web", (e) => open(e.detail?.id));
+// "Open in browser" from the project menu: launch the project's saved URL in the
+// system browser without opening the pane. No saved URL (or launch failed) → open
+// the pane so the user can set one.
+window.addEventListener("project-web-launch", async (e) => {
+  const id = e.detail?.id;
+  if (!id) return;
+  if (!(await openInBrowser(loadState(id).url))) open(id);
+});
 // The file browser or git diff opening means we yield the center.
 window.addEventListener("project-browse", () => {
   if (projId) close();
