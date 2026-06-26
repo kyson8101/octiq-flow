@@ -657,9 +657,18 @@ function openProjectMenu(x, y, ws, nameEl) {
     );
   };
 
+  // Open a live web preview of this project's dev URL (e.g. localhost:5173) in
+  // the center, side-by-side with the terminals. webpreview.js owns it; the URL
+  // is typed in the pane and saved per project.
+  const webPreview = () => {
+    selectWorkspace(ws.id);
+    window.dispatchEvent(new CustomEvent("project-web", { detail: { id: ws.id } }));
+  };
+
   openCtxMenu(x, y, [
     { label: "Files", onClick: () => browse("files", ws.primary_path || "") },
     { label: "Documentation", onClick: () => browse("docs", ws.docs_path || "") },
+    { label: "Web preview", onClick: webPreview },
     { label: "Git changes", onClick: gitChanges },
     { label: "Rename", onClick: () => startInlineRename(ws, nameEl) },
     {

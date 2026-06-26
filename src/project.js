@@ -319,6 +319,13 @@ function flushDirty() {
       invoke("save_scrollback", { key, data: rec.group.scrollbackFor(ptyId, 1000) }).catch(() => {});
     }
   }
+  // Prune + auto-title are pure bookkeeping/UI and cost one IPC PER open tab
+  // (refreshTitles queries agent_tab_info for every live terminal). Skip them
+  // while the window is fully hidden — nobody sees the titles, and an exited
+  // agent is still pruned on the next visible tick (or at clean quit). The
+  // scrollback flush above keeps running when hidden: it is crash-recovery and
+  // already no-ops for any project with nothing dirty.
+  if (document.hidden) return;
   // Clear resume mappings for tabs whose agent has exited (shell back at the
   // prompt). Doing it on this timer means an exited agent stops being a resume
   // candidate within seconds, so even a crash leaves the store correct.
@@ -328,6 +335,13 @@ function flushDirty() {
   refreshTitles();
 }
 setInterval(flushDirty, SCROLLBACK_FLUSH_MS);
+// On re-show, catch up the bookkeeping the hidden ticks skipped so titles and
+// resume state are current the moment the window comes back.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  invoke("prune_exited_agent_sessions").catch(() => {});
+  refreshTitles();
+});
 
 /** Auto-name each project tab. A tab that launched an agent follows that agent's
  *  session title (e.g. Claude's generated title); a plain terminal that never

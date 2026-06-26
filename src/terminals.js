@@ -414,6 +414,10 @@ function noteOutput(id) {
  *  This is what turns a dot OFF after its tab goes silent (WORKING_IDLE_MS),
  *  flips to waiting, or closes; noteOutput turns dots ON. */
 function refreshWorking() {
+  // Nothing can be working when there are no agent tabs and no lit dots, so skip
+  // the per-tick Set build entirely. This is the common idle case (a 300ms timer
+  // that would otherwise wake forever doing nothing).
+  if (foregroundAgents.size === 0 && working.size === 0) return;
   let changed = false;
   for (const id of new Set([...foregroundAgents, ...working])) {
     if (setWorking(id, idToEntry.has(id) && isWorkingNow(id))) changed = true;
@@ -425,6 +429,12 @@ function refreshWorking() {
 // "agent tab" gate), refresh the snapshot, then recompute. A backend hiccup
 // keeps the last snapshot and tries again next tick.
 async function pollForeground() {
+  // No live terminals: drop any stale snapshot and skip the IPC entirely (e.g.
+  // while the user sits on Dashboard/Settings with no project terminals open).
+  if (idToEntry.size === 0) {
+    foregroundAgents = new Set();
+    return;
+  }
   let running;
   try {
     running = await invoke("pty_agent_running");
@@ -437,8 +447,21 @@ async function pollForeground() {
   refreshWorking();
 }
 
-setInterval(pollForeground, FOREGROUND_POLL_MS);
-setInterval(refreshWorking, WORKING_TICK_MS);
+// Pause both polls while the window is fully hidden (minimized / occluded / on
+// another Space). Nobody can see the working dots then, so a frozen poll costs
+// nothing and saves a CPU wakeup plus an IPC + foreground syscall-per-PTY every
+// tick. Gate on document.hidden, NOT focus: a visible-but-unfocused window (e.g.
+// on a second monitor) must keep its dots live so the at-a-glance status works.
+setInterval(() => {
+  if (!document.hidden) pollForeground();
+}, FOREGROUND_POLL_MS);
+setInterval(() => {
+  if (!document.hidden) refreshWorking();
+}, WORKING_TICK_MS);
+// On re-show, poll once right away so the dots are fresh without waiting a tick.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) pollForeground();
+});
 
 // modes.js owns the top-level view router but does not export a setMode. We
 // switch views by clicking the matching mode button, exactly as a user would.
