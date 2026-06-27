@@ -673,6 +673,16 @@ body {
   gap: 6px;
 }
 
+.openfolder-row {
+  display: flex;
+  gap: 6px;
+}
+
+.openfolder-row .inline-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .git-select {
   flex: 1;
   min-width: 0;

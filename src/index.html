@@ -342,6 +342,18 @@
         </div>
 
         <div class="cmd-panel-body">
+          <!-- Open folder: paste any path, open it in the OS file manager
+               (Finder on macOS, Explorer on Windows) via the opener plugin. -->
+          <div class="cmd-section cmd-section-openfolder">
+            <div class="cmd-section-head">
+              <span class="cmd-section-title">Open folder</span>
+            </div>
+            <div class="openfolder-row">
+              <input id="openfolder-path" class="inline-input" placeholder="Paste a folder path" autocomplete="off" spellcheck="false" />
+              <button id="openfolder-btn" class="btn btn-sm" type="button">Open</button>
+            </div>
+          </div>
+
           <!-- Commands section (top) -->
           <div id="cmd-tab-commands" class="cmd-tabpane cmd-section cmd-section-commands">
             <div class="cmd-section-head">
