@@ -14,7 +14,7 @@
 // listens for. The folder lives in the active profile's data root (see
 // profile.rs); the agent learns the exact path from the `OCTIQ_CANVAS_DIR` env
 // var pty.rs exports, so it never needs to know where the profile keeps it.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -108,17 +108,13 @@ pub fn canvas_dir(key: String) -> Result<String, String> {
     Ok(dir.to_string_lossy().into_owned())
 }
 
-/// List a project's canvas documents, newest first. Flat — only files directly
-/// in the canvas folder (hidden/dot files skipped). A missing folder yields an
-/// empty list, never an error, so the pane can render before the agent writes.
-#[tauri::command]
-pub fn canvas_list(key: String) -> Result<Vec<CanvasDoc>, String> {
-    let Some(dir) = canvas_dir_for(&key) else {
-        return Ok(vec![]);
-    };
+/// List the canvas documents directly in `dir`, newest first. Flat — only files
+/// in the folder (hidden/dot files skipped). A missing/unreadable folder yields
+/// an empty list. Shared by `canvas_list` (one project) and `canvas_list_all`.
+fn list_docs_in(dir: &Path) -> Vec<CanvasDoc> {
     let mut docs: Vec<CanvasDoc> = vec![];
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Ok(docs); // folder not created yet
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return docs; // folder not created yet
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -159,7 +155,59 @@ pub fn canvas_list(key: String) -> Result<Vec<CanvasDoc>, String> {
     }
     // Newest first so the frontend can default to the most recently updated doc.
     docs.sort_by(|a, b| b.modified.cmp(&a.modified));
-    Ok(docs)
+    docs
+}
+
+/// List a project's canvas documents, newest first. A missing folder yields an
+/// empty list, never an error, so the pane can render before the agent writes.
+#[tauri::command]
+pub fn canvas_list(key: String) -> Result<Vec<CanvasDoc>, String> {
+    let Some(dir) = canvas_dir_for(&key) else {
+        return Ok(vec![]);
+    };
+    Ok(list_docs_in(&dir))
+}
+
+/// One project's canvas folder, as the "all canvases" manager lists it.
+#[derive(Serialize)]
+pub struct CanvasProject {
+    /// Folder name under the canvas root — the sanitized project key, which for a
+    /// live project equals its workspace id. The frontend maps it to a name.
+    key: String,
+    /// The folder's documents, newest first (same shape as `canvas_list`).
+    docs: Vec<CanvasDoc>,
+}
+
+/// List every project's canvas documents, grouped by project key (one entry per
+/// canvas subfolder that holds at least one document). Empty folders are omitted.
+/// The frontend maps each key to a project name via the workspace store; a key
+/// that matches no workspace is an orphan folder from a deleted project.
+#[tauri::command]
+pub fn canvas_list_all() -> Result<Vec<CanvasProject>, String> {
+    let Some(root) = canvas_root() else {
+        return Ok(vec![]);
+    };
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Ok(vec![]); // canvas root not created yet
+    };
+    let mut projects: Vec<CanvasProject> = vec![];
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(key) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let docs = list_docs_in(&path);
+        if docs.is_empty() {
+            continue;
+        }
+        projects.push(CanvasProject { key, docs });
+    }
+    // Most-recently-touched project first (by its newest doc, which is docs[0]).
+    projects.sort_by(|a, b| b.docs[0].modified.cmp(&a.docs[0].modified));
+    Ok(projects)
 }
 
 /// Read one canvas document's raw text. `name` must be a plain file name inside
@@ -185,6 +233,58 @@ pub fn canvas_read(key: String, name: String) -> Result<String, String> {
         return Err("canvas document is too large to render (over 5 MB)".into());
     }
     std::fs::read_to_string(&canon).map_err(|e| e.to_string())
+}
+
+/// Delete one canvas document from a project's folder. Same path-traversal guard
+/// as `canvas_read`: `name` must be a plain file name and its canonical path must
+/// resolve inside the canvas dir, so a crafted name can never delete an arbitrary
+/// file. A file that is already gone is treated as success (idempotent delete).
+#[tauri::command]
+pub fn canvas_delete(key: String, name: String) -> Result<(), String> {
+    let dir = canvas_dir_for(&key).ok_or("invalid canvas key")?;
+    if !is_safe_doc_name(&name) {
+        return Err("invalid canvas document name".into());
+    }
+    let path = dir.join(&name);
+    let Ok(canon) = path.canonicalize() else {
+        return Ok(()); // already gone
+    };
+    let root = dir.canonicalize().map_err(|e| e.to_string())?;
+    if !canon.starts_with(&root) {
+        return Err("canvas document escapes the canvas folder".into());
+    }
+    std::fs::remove_file(&canon).map_err(|e| e.to_string())
+}
+
+/// Delete every document in a project's canvas folder — the flat files
+/// `canvas_list` shows. Directories and hidden/dot files are left alone (same
+/// filter as the listing). A missing folder is not an error (nothing to delete).
+/// Returns how many files were removed.
+#[tauri::command]
+pub fn canvas_delete_all(key: String) -> Result<usize, String> {
+    let dir = canvas_dir_for(&key).ok_or("invalid canvas key")?;
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(0); // folder not created yet
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let hidden = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with('.'))
+            .unwrap_or(true);
+        if hidden {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 /// Install the OctiqFlow canvas skill into `~/.claude/skills/octiq-canvas/SKILL.md`

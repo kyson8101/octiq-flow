@@ -31,8 +31,10 @@ const DEFAULT_WIDTH = 460;
 const MIN_WIDTH = 280;
 
 // DOM handles (all inside #view-project). Resolved once at init.
-let pane, resizer, toggleBtn, docSelect, openBtn, refreshBtn, closeBtn, frame, emptyEl, headEl, bodyEl;
+let pane, resizer, toggleBtn, docSelect, openBtn, refreshBtn, deleteBtn, deleteAllBtn, closeBtn, frame, emptyEl, headEl, bodyEl;
 let emptyInstallBtn, emptyStatusEl, emptyPathEl;
+// All-canvases manager (modal listing every project's canvas docs).
+let allBtn, allModal, allListEl, allEmptyEl, allCloseBtn, allDoneBtn, allDeleteAllBtn;
 // Highlight-to-ask controls.
 let askBtn, askPanel, askQuote, askInput, askSend, askCancel, askStatus;
 // The text the user last selected inside the frame (kept while they click out to
@@ -133,72 +135,71 @@ const FRAME_SCRIPT = `
 const CANVAS_CSS = `
   :root {
     color-scheme: dark;
-    --bg-0:#141417; --bg-1:#1b1b1f; --bg-2:#232329; --bg-sunken:#0f0f12;
-    --border:#28282e; --border-strong:#36363e;
-    --fg-0:#ececea; --fg-1:#c9c9c5; --fg-2:#8f8f8a; --fg-3:#67675f;
-    --accent:#8fbfa8; --accent-tint:rgba(143,191,168,.13); --accent-border:rgba(143,191,168,.35);
-    --ok:#85c79a; --ok-tint:rgba(133,199,154,.14);
-    --danger:#de8d85; --danger-tint:rgba(222,141,133,.12);
-    --warn:#d4b06a; --warn-tint:rgba(212,176,106,.12);
-    --r-sm:8px; --r-md:10px; --r-lg:14px;
+    --bg-0:#141417; --bg-2:#232329; --bg-sunken:#0f0f12;
+    --border:#26262b; --border-strong:#34343c;
+    --fg-0:#f0f0ee; --fg-1:#cfcfca; --fg-2:#8f8f8a;
+    --accent:#8fbfa8; --ok:#85c79a; --danger:#de8d85; --warn:#d4b06a;
+    --r-sm:6px;
   }
   html, body { margin: 0; }
   body {
-    padding: 18px 20px 44px;
+    padding: 26px 28px 60px;
+    max-width: 760px;
     color: var(--fg-1);
     background: var(--bg-0);
-    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", system-ui, sans-serif;
+    font: 14.5px/1.75 -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", system-ui, sans-serif;
     word-wrap: break-word;
   }
-  /* Typography */
-  h1, h2, h3, h4 { line-height: 1.25; color: var(--fg-0); margin: 1.4em 0 .5em; font-weight: 600; }
-  h1 { font-size: 1.55em; margin-top: 0; }
-  h2 { font-size: 1.25em; border-bottom: 1px solid var(--border); padding-bottom: .3em; }
-  h3 { font-size: 1.08em; }
-  h4 { font-size: .9em; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; }
-  p, ul, ol, table, pre, blockquote { margin: .6em 0; }
-  ul, ol { padding-left: 1.3em; } li { margin: .25em 0; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  strong { color: var(--fg-0); }
-  hr { border: none; border-top: 1px solid var(--border); margin: 1.4em 0; }
-  img { max-width: 100%; height: auto; border-radius: var(--r-sm); }
-  /* Code */
-  code { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: .88em;
-         background: var(--bg-2); color: #d7d7d2; padding: 1px 5px; border-radius: 5px; }
-  pre { background: var(--bg-sunken); border: 1px solid var(--border); padding: 12px 14px;
-        border-radius: var(--r-md); overflow: auto; }
-  pre code { background: none; padding: 0; font-size: .86em; }
-  /* Tables */
-  table { border-collapse: collapse; width: 100%; font-size: .92em; }
-  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
-  th { background: var(--bg-1); color: var(--fg-0); font-weight: 600; }
-  tr:nth-child(even) td { background: rgba(255,255,255,.015); }
-  blockquote { border-left: 3px solid var(--accent); margin-left: 0; padding: .2em 0 .2em 12px; color: var(--fg-2); }
-  /* Components */
-  .card { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; margin: .7em 0; }
+  /* Typography — plain and airy, no chrome */
+  h1, h2, h3, h4 { line-height: 1.3; color: var(--fg-0); font-weight: 600; }
+  h1 { font-size: 1.6em; margin: 0 0 .6em; letter-spacing: -.01em; }
+  h2 { font-size: 1.24em; margin: 1.9em 0 .5em; }
+  h3 { font-size: 1.05em; margin: 1.5em 0 .4em; }
+  h4 { font-size: .82em; color: var(--fg-2); text-transform: uppercase; letter-spacing: .06em; margin: 1.4em 0 .3em; }
+  p, ul, ol, table, pre, blockquote { margin: .9em 0; }
+  ul, ol { padding-left: 1.25em; } li { margin: .35em 0; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid transparent; }
+  a:hover { border-bottom-color: currentColor; }
+  strong { color: var(--fg-0); font-weight: 600; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.2em 0; }
+  img { max-width: 100%; height: auto; }
+  /* Code — minimal, no boxed block border */
+  code { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace; font-size: .88em; color: var(--fg-0); }
+  :not(pre) > code { background: var(--bg-2); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--bg-sunken); padding: 14px 16px; border-radius: var(--r-sm); overflow: auto; }
+  pre code { font-size: .86em; }
+  /* Tables — horizontal rules only, no surrounding box */
+  table { border-collapse: collapse; width: 100%; font-size: .94em; }
+  th, td { padding: 8px 14px 8px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+  th { color: var(--fg-0); font-weight: 600; }
+  /* Blockquote — a single hairline rule, never a colored bar */
+  blockquote { border-left: 1px solid var(--border-strong); margin-left: 0; padding: .1em 0 .1em 14px; color: var(--fg-2); }
+  /* Components — flattened: no panels, no tinted boxes, no colored bars. The
+     classes are kept so canvases written for the old template still render. */
+  .card { margin: 1.2em 0; }
   .card > :first-child, .callout > :first-child { margin-top: 0; }
   .card > :last-child, .callout > :last-child { margin-bottom: 0; }
-  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: .7em 0; }
-  .stat { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--r-md); padding: 12px 14px; }
-  .stat .num { font-size: 1.6em; color: var(--fg-0); font-weight: 600; line-height: 1.1; }
-  .stat .label { font-size: .78em; color: var(--fg-2); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
-  .badge, .pill { display: inline-block; font-size: .78em; font-weight: 600; padding: 2px 9px; border-radius: 999px;
-                  background: var(--bg-2); color: var(--fg-1); border: 1px solid var(--border-strong); }
-  .badge.accent { background: var(--accent-tint); color: var(--accent); border-color: var(--accent-border); }
-  .badge.ok { background: var(--ok-tint); color: var(--ok); border-color: rgba(133,199,154,.4); }
-  .badge.warn { background: var(--warn-tint); color: var(--warn); border-color: rgba(212,176,106,.45); }
-  .badge.danger { background: var(--danger-tint); color: var(--danger); border-color: rgba(222,141,133,.4); }
-  .callout { border: 1px solid var(--border); border-left: 3px solid var(--accent); background: var(--accent-tint);
-             border-radius: var(--r-sm); padding: 10px 14px; margin: .7em 0; }
-  .callout.ok { border-left-color: var(--ok); background: var(--ok-tint); }
-  .callout.warn { border-left-color: var(--warn); background: var(--warn-tint); }
-  .callout.danger { border-left-color: var(--danger); background: var(--danger-tint); }
+  .grid { display: grid; gap: 18px 28px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); margin: 1.2em 0; }
+  .stat { padding: 0; }
+  .stat .num { font-size: 1.7em; color: var(--fg-0); font-weight: 600; line-height: 1.15; }
+  .stat .label { font-size: .76em; color: var(--fg-2); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+  /* Callout — a plain block; status variants only tint its lead text, no bar/box. */
+  .callout { margin: 1.2em 0; color: var(--fg-1); }
+  .callout.ok strong, .callout.ok b { color: var(--ok); }
+  .callout.warn strong, .callout.warn b { color: var(--warn); }
+  .callout.danger strong, .callout.danger b { color: var(--danger); }
+  /* Badge — a flat hairline pill (no fill); variants recolor text + outline only. */
+  .badge, .pill { display: inline-block; font-size: .75em; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+                  background: none; color: var(--fg-2); border: 1px solid var(--border-strong); }
+  .badge.accent { color: var(--accent); border-color: rgba(143,191,168,.5); }
+  .badge.ok { color: var(--ok); border-color: rgba(133,199,154,.5); }
+  .badge.warn { color: var(--warn); border-color: rgba(212,176,106,.5); }
+  .badge.danger { color: var(--danger); border-color: rgba(222,141,133,.5); }
   kbd, .kbd { font-family: ui-monospace, monospace; font-size: .8em; background: var(--bg-2);
-              border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px; padding: 1px 6px; color: var(--fg-0); }
-  .eyebrow { font-size: .75em; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); font-weight: 600; margin-bottom: .2em; }
-  .meta, .muted, small { color: var(--fg-2); } .meta { font-size: .85em; }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+              border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 6px; color: var(--fg-0); }
+  .eyebrow { font-size: .74em; text-transform: uppercase; letter-spacing: .08em; color: var(--fg-2); font-weight: 600; margin-bottom: .2em; }
+  .meta, .muted, small { color: var(--fg-2); } .meta { font-size: .88em; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .spread { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
   .right { text-align: right; } .center { text-align: center; }
 `;
@@ -299,6 +300,9 @@ function populateSelect() {
     docSelect.append(opt);
   }
   docSelect.value = autoFollow ? "" : pinnedName && currentDocs.some((d) => d.name === pinnedName) ? pinnedName : "";
+  const none = !currentDocs.length;
+  if (deleteBtn) deleteBtn.disabled = none;
+  if (deleteAllBtn) deleteAllBtn.disabled = none;
 }
 
 /** Flash a short sage pulse so a change is noticed: the header while the pane is
@@ -341,6 +345,8 @@ async function reload({ pulse: doPulse = false } = {}) {
     shownName = null;
     showFrame(false);
     if (docSelect) docSelect.replaceChildren();
+    if (deleteBtn) deleteBtn.disabled = true;
+    if (deleteAllBtn) deleteAllBtn.disabled = true;
     updateEmptyMeta();
     return;
   }
@@ -368,17 +374,212 @@ async function reload({ pulse: doPulse = false } = {}) {
   if (doPulse) pulse(headEl);
 }
 
-/** Open the shown document with the OS default app (e.g. a browser for HTML). */
-async function openExternally() {
-  const name = docSelect.value || currentDocs[0]?.name;
+/** Delete the currently shown canvas document (after a confirm). The watcher
+ *  also fires on the removal, but we reload right away so the pane updates even
+ *  if the watcher event is missed. */
+async function deleteCurrent() {
+  const name = shownName || docSelect.value || currentDocs[0]?.name;
   if (!currentKey || !name) return;
+  if (!confirm(`Delete the canvas “${name}”? This removes the file from disk.`)) return;
   try {
-    const dir = await invoke("canvas_dir", { key: currentKey });
+    await invoke("canvas_delete", { key: currentKey, name });
+  } catch (err) {
+    console.error("canvas_delete failed", err);
+  }
+  // Stop pinning a doc we just removed; fall back to following the latest.
+  if (pinnedName === name) {
+    autoFollow = true;
+    pinnedName = null;
+  }
+  reload();
+}
+
+/** Delete every canvas document in the current project (after a confirm). */
+async function deleteAll() {
+  if (!currentKey || !currentDocs.length) return;
+  if (!confirm(`Delete all ${currentDocs.length} canvas documents in this project? This removes the files from disk.`)) return;
+  try {
+    await invoke("canvas_delete_all", { key: currentKey });
+  } catch (err) {
+    console.error("canvas_delete_all failed", err);
+  }
+  autoFollow = true;
+  pinnedName = null;
+  reload();
+}
+
+/** Open one project's canvas document with the OS default app (e.g. a browser
+ *  for HTML). Best-effort — opening externally is a convenience, never critical. */
+async function openDocExternally(key, name) {
+  if (!key || !name) return;
+  try {
+    const dir = await invoke("canvas_dir", { key });
     const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
     await invoke("plugin:opener|open_path", { path: `${dir}${sep}${name}`, with: null });
   } catch {
-    // Best-effort: opening externally is a convenience, never critical.
+    // Best-effort.
   }
+}
+
+/** Open the shown document with the OS default app. */
+function openExternally() {
+  openDocExternally(currentKey, docSelect.value || currentDocs[0]?.name);
+}
+
+/** Short "x ago" from an epoch-ms timestamp (0/unknown → empty). */
+function timeAgo(ms) {
+  if (!ms) return "";
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+/** Human file size. */
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.round(kb)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/** Fetch every project's canvases + the workspace list, then render the manager.
+ *  Keys map to project names via the workspace store; an unmatched key is an
+ *  orphan folder from a deleted project (shown as such so it can be cleaned up). */
+async function renderAllList() {
+  if (!allListEl) return;
+  let projects = [];
+  let names = new Map();
+  try {
+    projects = (await invoke("canvas_list_all")) || [];
+  } catch (err) {
+    console.error("canvas_list_all failed", err);
+  }
+  try {
+    for (const w of (await invoke("list_workspaces")) || []) names.set(w.id, w.name);
+  } catch {
+    // No names → fall back to keys; the list still works.
+  }
+  allListEl.replaceChildren();
+  const empty = !projects.length;
+  allEmptyEl?.classList.toggle("hidden", !empty);
+  if (allDeleteAllBtn) allDeleteAllBtn.disabled = empty;
+  for (const proj of projects) {
+    allListEl.append(buildProjectGroup(proj, names.get(proj.key)));
+  }
+}
+
+/** Build one project's group: a header (name + count + delete-all) and a row per
+ *  document (name/meta + open + delete). `name` is undefined for an orphan key. */
+function buildProjectGroup(proj, name) {
+  const group = document.createElement("div");
+  group.className = "canvas-all-group";
+
+  const head = document.createElement("div");
+  head.className = "canvas-all-group-head";
+  const title = document.createElement("span");
+  title.className = "canvas-all-project";
+  title.textContent = name || "Unknown project";
+  if (!name) title.classList.add("orphan");
+  const count = document.createElement("span");
+  count.className = "canvas-all-count";
+  count.textContent = `${proj.docs.length} doc${proj.docs.length === 1 ? "" : "s"}`;
+  const delAll = document.createElement("button");
+  delAll.className = "btn btn-sm btn-danger";
+  delAll.type = "button";
+  delAll.textContent = "Delete all";
+  delAll.addEventListener("click", () => deleteProjectAll(proj.key, name || proj.key));
+  head.append(title, count, delAll);
+  group.append(head);
+
+  for (const doc of proj.docs) {
+    group.append(buildDocRow(proj.key, doc));
+  }
+  return group;
+}
+
+/** Build one document row inside a project group. */
+function buildDocRow(key, doc) {
+  const row = document.createElement("div");
+  row.className = "canvas-all-row";
+  const info = document.createElement("div");
+  info.className = "canvas-all-info";
+  const nameEl = document.createElement("span");
+  nameEl.className = "canvas-all-name";
+  nameEl.textContent = doc.name;
+  const meta = document.createElement("span");
+  meta.className = "canvas-all-meta";
+  meta.textContent = [timeAgo(doc.modified), fmtSize(doc.size)].filter(Boolean).join(" · ");
+  info.append(nameEl, meta);
+
+  const open = document.createElement("button");
+  open.className = "icon-btn";
+  open.type = "button";
+  open.dataset.tip = "Open with the default app";
+  open.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>';
+  open.addEventListener("click", () => openDocExternally(key, doc.name));
+
+  const del = document.createElement("button");
+  del.className = "icon-btn";
+  del.type = "button";
+  del.dataset.tip = "Delete this canvas";
+  del.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
+  del.addEventListener("click", async () => {
+    if (!confirm(`Delete the canvas “${doc.name}”? This removes the file from disk.`)) return;
+    try {
+      await invoke("canvas_delete", { key, name: doc.name });
+    } catch (err) {
+      console.error("canvas_delete failed", err);
+    }
+    if (key === currentKey) reload();
+    renderAllList();
+  });
+
+  row.append(info, open, del);
+  return row;
+}
+
+/** Delete every canvas in one project from the manager, then re-render. */
+async function deleteProjectAll(key, label) {
+  if (!confirm(`Delete all canvases in “${label}”? This removes the files from disk.`)) return;
+  try {
+    await invoke("canvas_delete_all", { key });
+  } catch (err) {
+    console.error("canvas_delete_all failed", err);
+  }
+  if (key === currentKey) reload();
+  renderAllList();
+}
+
+/** Delete every canvas in every project (after a confirm), then re-render. */
+async function deleteAllEverywhere() {
+  let projects = [];
+  try {
+    projects = (await invoke("canvas_list_all")) || [];
+  } catch {
+    return;
+  }
+  if (!projects.length) return;
+  if (!confirm(`Delete ALL canvases in all ${projects.length} projects? This removes the files from disk.`)) return;
+  for (const proj of projects) {
+    try {
+      await invoke("canvas_delete_all", { key: proj.key });
+    } catch (err) {
+      console.error("canvas_delete_all failed", err);
+    }
+  }
+  reload();
+  renderAllList();
+}
+
+/** Show / hide the all-canvases manager. Opening renders the current list. */
+function setAllOpen(open) {
+  if (!allModal) return;
+  allModal.classList.toggle("hidden", !open);
+  if (open) renderAllList();
 }
 
 /** A text selection inside the frame changed. Float the ask button by it, or
@@ -478,6 +679,15 @@ function init() {
   docSelect = document.getElementById("canvas-doc");
   openBtn = document.getElementById("canvas-open");
   refreshBtn = document.getElementById("canvas-refresh");
+  deleteBtn = document.getElementById("canvas-delete");
+  deleteAllBtn = document.getElementById("canvas-delete-all");
+  allBtn = document.getElementById("canvas-all");
+  allModal = document.getElementById("canvas-all-modal");
+  allListEl = document.getElementById("canvas-all-list");
+  allEmptyEl = document.getElementById("canvas-all-empty");
+  allCloseBtn = document.getElementById("canvas-all-close");
+  allDoneBtn = document.getElementById("canvas-all-done");
+  allDeleteAllBtn = document.getElementById("canvas-all-delete-all");
   closeBtn = document.getElementById("canvas-close");
   frame = document.getElementById("canvas-frame");
   emptyEl = document.getElementById("canvas-empty");
@@ -515,6 +725,16 @@ function init() {
   toggleBtn.addEventListener("click", () => setOpen(!canvasOpen));
   closeBtn?.addEventListener("click", () => setOpen(false));
   refreshBtn?.addEventListener("click", () => reload());
+  deleteBtn?.addEventListener("click", () => deleteCurrent());
+  deleteAllBtn?.addEventListener("click", () => deleteAll());
+  allBtn?.addEventListener("click", () => setAllOpen(true));
+  allCloseBtn?.addEventListener("click", () => setAllOpen(false));
+  allDoneBtn?.addEventListener("click", () => setAllOpen(false));
+  allDeleteAllBtn?.addEventListener("click", () => deleteAllEverywhere());
+  // Click the dim backdrop (outside the dialog) to close.
+  allModal?.addEventListener("click", (e) => {
+    if (e.target === allModal) setAllOpen(false);
+  });
   openBtn?.addEventListener("click", () => openExternally());
   // Empty-state shortcut: install the Claude skill without leaving the pane.
   emptyInstallBtn?.addEventListener("click", async () => {
