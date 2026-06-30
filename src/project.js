@@ -484,6 +484,24 @@ async function refreshTitles() {
   });
 }
 
+/** Save ONE project's tab layout + every terminal's scrollback to disk. Like
+ *  flushAll but scoped to a single project — used before a project is shelved so
+ *  its terminals can be disposed yet fully restored when it is brought back. */
+async function flushProject(id) {
+  const rec = projects.get(id);
+  if (!rec) return;
+  const tasks = [
+    invoke("save_terminal_layout", {
+      projectId: id,
+      terminals: rec.group.serialize(),
+    }).catch(() => {}),
+  ];
+  for (const { persistKey, data } of rec.group.scrollbackEntries()) {
+    tasks.push(invoke("save_scrollback", { key: persistKey, data }).catch(() => {}));
+  }
+  await Promise.all(tasks);
+}
+
 /** Flush every visited project's layout + every terminal's scrollback. Used by
  *  the quit handshake so a clean quit never loses the most recent output. */
 async function flushAll() {
@@ -533,6 +551,34 @@ window.addEventListener("project-deleted", (e) => {
   delete layouts[id];
   if (currentId === id) currentId = null;
   invoke("clear_project_layout", { projectId: id }).catch(() => {});
+});
+
+// When a project is shelved (workspaces.js "off work"), free its terminals: save
+// the layout + scrollback FIRST, then dispose the group so its PTYs close. Unlike
+// delete, the persisted layout is KEPT, so bringing the project back restores
+// every tab — scrollback and resumable agents included — via the normal
+// project-selected restore path. Disposed PTYs leave the manager, so their
+// agent-resume mappings are not pruned (prune only drops keys still live as a
+// bare shell).
+window.addEventListener("project-shelved", async (e) => {
+  const id = e.detail?.id;
+  if (!id) return;
+  const rec = projects.get(id);
+  if (!rec) return; // never opened this session — its on-disk layout already stands
+  // Persist the current tabs + scrollback and refresh the in-memory cache, so a
+  // same-session bring-back restores exactly these tabs.
+  layouts[id] = rec.group.serialize();
+  await flushProject(id);
+  // Suppress the per-close layout saves dispose() would otherwise schedule —
+  // they would reconcile away the scrollback we just saved.
+  rec.restoring = true;
+  clearTimeout(rec.saveTimer);
+  rec.group.dispose();
+  projects.delete(id);
+  // Forget "already opened this session" so bring-back restores the saved layout
+  // instead of opening a single plain terminal.
+  startedUp.delete(id);
+  if (currentId === id) currentId = null;
 });
 
 // If workspaces.js already fired `project-selected` before this listener was

@@ -400,10 +400,12 @@ function syncGitWatcher(paths) {
 }
 
 // --- Shelf ("off work") section --------------------------------------------
-// Shelved projects sit in their own list at the bottom of the sidebar. A
-// shelved project is fully intact (paths, startup, live terminals) — shelving
-// only hides it from the active list. Bring it back by double-click, by dragging
-// it onto the project list, or via its right-click menu.
+// Shelved projects sit in their own list at the bottom of the sidebar. Shelving
+// keeps the project's config intact (paths, startup) but DISPOSES its terminals
+// to free the PTYs; their layout + scrollback are saved first, so bringing the
+// project back rebuilds every tab (scrollback and resumable agents included).
+// Bring it back by double-click, by dragging it onto the project list, or via
+// its right-click menu.
 
 /** True when the project with this id is currently shelved. */
 function isShelved(id) {
@@ -463,6 +465,14 @@ function openShelfMenu(x, y, ws, nameEl) {
  *  project back also selects it, so it becomes the active project right away. */
 async function setShelved(id, shelved) {
   await invoke("set_workspace_shelved", { id, shelved });
+  // Shelving frees the project's terminals: tell the per-project modules to flush
+  // + dispose its groups. Fire BEFORE refresh so they tear down as the selection
+  // moves to another active project. Bringing a project back (shelved=false)
+  // restores its terminals through the normal selectWorkspace -> project-selected
+  // path below.
+  if (shelved) {
+    window.dispatchEvent(new CustomEvent("project-shelved", { detail: { id } }));
+  }
   await refresh();
   if (!shelved) selectWorkspace(id);
 }

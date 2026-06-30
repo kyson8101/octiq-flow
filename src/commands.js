@@ -148,6 +148,27 @@ window.addEventListener("project-deleted", (e) => {
   }
 });
 
+// When a project is shelved (workspaces.js "off work"), dispose its drawer
+// terminal group so its command PTYs are freed. The drawer is ephemeral (no
+// scrollback restore), so bringing the project back re-creates it on demand.
+// startupCmdsRan is KEPT so the project's startup commands do not auto-run again.
+window.addEventListener("project-shelved", (e) => {
+  const id = e.detail?.id;
+  if (!id) return;
+  const rec = drawers.get(id);
+  if (rec) {
+    rec.group.dispose();
+    drawers.delete(id);
+  }
+  if (currentId === id) {
+    currentId = null;
+    currentPath = "";
+    currentActions = [];
+    setFooterCmd("");
+    closeCmdModal();
+  }
+});
+
 // --- Command list (right panel) --------------------------------------------
 function renderList() {
   listEl.innerHTML = "";
