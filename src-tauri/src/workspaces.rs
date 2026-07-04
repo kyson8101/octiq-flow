@@ -100,6 +100,14 @@ pub struct Workspace {
     /// before this field existed loads with every project active.
     #[serde(default)]
     pub shelved: bool,
+    /// Per-project terminal font override, stored verbatim from the frontend
+    /// (which owns the font catalog and clamps every value on read). `null` —
+    /// the default — means no override: this project uses the global app font.
+    /// When set it is an object `{ enabled, fontId, fontSize, fontWeight,
+    /// lineHeight, letterSpacing }`; the frontend overlays it on the global
+    /// settings for this project's terminals only.
+    #[serde(default)]
+    pub font_override: serde_json::Value,
 }
 
 /// The full on-disk shape. Wrapped in a struct so the file format can grow
@@ -193,6 +201,7 @@ pub fn add_workspace(
         initial: String::new(),
         icon: String::new(),
         shelved: false,
+        font_override: serde_json::Value::Null,
     };
     data.workspaces.push(workspace.clone());
     state.save(&data)?;
@@ -571,6 +580,28 @@ pub fn set_workspace_shelved(
         .find(|w| w.id == id)
         .ok_or("workspace not found")?;
     ws.shelved = shelved;
+    state.save(&data)
+}
+
+/// Set (or clear) this project's terminal font override. The value is stored
+/// verbatim: `null` clears it (the project falls back to the global app font),
+/// and an object overrides the global font for this project's terminals only.
+/// The frontend owns the font catalog and clamps every value on read, so this
+/// is a straight passthrough — the same trust model as `set_icon`'s inline
+/// image.
+#[tauri::command]
+pub fn set_font_override(
+    state: State<WorkspaceState>,
+    id: String,
+    font_override: serde_json::Value,
+) -> Result<(), String> {
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.font_override = font_override;
     state.save(&data)
 }
 

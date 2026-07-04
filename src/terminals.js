@@ -14,7 +14,11 @@
 // whole grid every frame, so that breakage cannot build up. If the GPU context
 // is lost (driver reset, tab backgrounded on some GPUs) we dispose the addon and
 // fall back to the DOM renderer so the terminal keeps working.
-import { getTerminalSettings, TERMINAL_SETTINGS_CHANGED } from "/settings.js";
+import {
+  getTerminalSettings,
+  resolveTerminalSettings,
+  TERMINAL_SETTINGS_CHANGED,
+} from "/settings.js";
 import { ICONS } from "/icons.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -39,8 +43,7 @@ const TERM_THEME = {
 const SESSION_BREAK_TEXT = "session restored · shell restarted";
 const SESSION_BREAK_LINE = `\r\n\x1b[2m──────── ${SESSION_BREAK_TEXT} ────────\x1b[0m\r\n`;
 
-function makeTerminal() {
-  const s = getTerminalSettings();
+function makeTerminal(s) {
   return new Terminal({
     fontFamily: s.fontFamily,
     fontSize: s.fontSize,
@@ -566,23 +569,14 @@ export function sendToActiveTerminal(text, submit = false) {
 // collapse) all trigger a refit. There is no window "resize" listener — it
 // would miss the in-page shifts anyway.
 
-// Apply a font setting change (family / size / line height) to every OPEN
-// terminal live, then refit so each group's rows/cols and PTY size track the
-// new glyph metrics. xterm 5 applies option writes immediately and the WebGL
-// renderer rebuilds its glyph atlas on a char-size change, so no reopen is
-// needed. Non-active tabs and hidden groups re-fit themselves when next
-// activated/shown, so refitting the active visible terminal here is enough.
-window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
-  const s = e.detail || getTerminalSettings();
-  for (const { term } of idToEntry.values()) {
-    term.options.fontFamily = s.fontFamily;
-    term.options.fontSize = s.fontSize;
-    term.options.fontWeight = s.fontWeight;
-    term.options.lineHeight = s.lineHeight;
-    term.options.letterSpacing = s.letterSpacing;
-  }
+// Apply a GLOBAL font setting change to every OPEN terminal live. Each group
+// re-resolves its own effective font (its per-project override overlaid on the
+// new global settings), so a global change updates non-overriding groups and
+// leaves an overriding group on its own font. applyFontSettings writes the
+// options and refits the active tab; hidden groups re-fit when next shown.
+window.addEventListener(TERMINAL_SETTINGS_CHANGED, () => {
   const liveGroups = new Set([...idToEntry.values()].map((e) => e.group));
-  for (const g of liveGroups) g.refitActive();
+  for (const g of liveGroups) g.applyFontSettings();
 });
 
 /**
@@ -606,19 +600,27 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => {
  * so the owner can open a new terminal and launch that agent (project mode uses
  * this). Without it, "+" just opens a plain terminal via `onAdd`.
  *
- * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn } = {})
+ * `fontOverride` is the owning project's per-project font override (the raw
+ * workspace `font_override`), or null to use the global app font. It is resolved
+ * per group so a project can carry its own terminal font (see setFontOverride).
+ *
+ * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride } = {})
  */
 export function createTerminalGroup(
   mountEl,
   idPrefix,
-  { showAdd = true, quickSpawn = false } = {},
+  { showAdd = true, quickSpawn = false, fontOverride = null } = {},
 ) {
-  return new TerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn });
+  return new TerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride });
 }
 
 class TerminalGroup {
-  constructor(mountEl, idPrefix, { showAdd = true, quickSpawn = false } = {}) {
+  constructor(mountEl, idPrefix, { showAdd = true, quickSpawn = false, fontOverride = null } = {}) {
     this.idPrefix = idPrefix;
+    // This group's per-project font override (raw workspace font_override), or
+    // null for the global app font. resolveTerminalSettings overlays it on the
+    // global settings when building each terminal's font.
+    this.fontOverride = fontOverride;
     this.seq = 0;
     // Monotonic counter for DEFAULT tab titles ("term N"). Never decremented,
     // so closing a tab and opening a new one cannot reuse a number (P4).
@@ -949,7 +951,7 @@ class TerminalGroup {
     pane.className = "tg-pane";
     this.panesEl.append(pane);
 
-    const term = makeTerminal();
+    const term = makeTerminal(resolveTerminalSettings(this.fontOverride));
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(pane);
@@ -1286,6 +1288,30 @@ class TerminalGroup {
 
   refitActive() {
     if (this.activeId && this.visible()) this._fit(this.activeId);
+  }
+
+  /** Resolve this group's effective font (its per-project override overlaid on
+   *  the global settings) and apply it to every open terminal, then refit the
+   *  active tab so rows/cols and the PTY size track the new glyph metrics. Called
+   *  on a global font change and whenever the project's override changes. */
+  applyFontSettings() {
+    const s = resolveTerminalSettings(this.fontOverride);
+    for (const e of this.tabs.values()) {
+      e.term.options.fontFamily = s.fontFamily;
+      e.term.options.fontSize = s.fontSize;
+      e.term.options.fontWeight = s.fontWeight;
+      e.term.options.lineHeight = s.lineHeight;
+      e.term.options.letterSpacing = s.letterSpacing;
+    }
+    this.refitActive();
+  }
+
+  /** Set this group's per-project font override (raw workspace font_override, or
+   *  null for the global font) and apply it live to every open terminal. New
+   *  terminals read the override at spawn time via resolveTerminalSettings. */
+  setFontOverride(fontOverride) {
+    this.fontOverride = fontOverride || null;
+    this.applyFontSettings();
   }
 
   _fit(ptyId) {

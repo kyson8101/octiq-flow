@@ -3367,6 +3367,20 @@ body {
   margin: 0;
 }
 
+/* Per-project font-override toggle on the Edit page. */
+.modal-font-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.modal-font-toggle input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
 .startup-foot {
   display: flex;
   align-items: center;

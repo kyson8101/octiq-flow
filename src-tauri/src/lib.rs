@@ -149,6 +149,7 @@ pub fn run() {
             workspaces::set_initial,
             workspaces::set_icon,
             workspaces::set_workspace_shelved,
+            workspaces::set_font_override,
             workspaces::pick_folder,
             terminal_layout::save_terminal_layout,
             terminal_layout::load_terminal_layouts,

@@ -149,6 +149,32 @@ export function getTerminalSettings() {
   };
 }
 
+/** Resolve terminal font settings for one project, overlaying its per-project
+ *  override on the global settings. `override` is the raw object saved on a
+ *  workspace (its `font_override`), or null/undefined. When it is missing or its
+ *  `enabled` flag is false, the global settings are returned unchanged. When it
+ *  is enabled, each field it carries overrides the global one, clamped to the
+ *  same safe ranges (a corrupt/partial override degrades to the global value).
+ *  Always returns a full, resolved settings object (including the fontFamily
+ *  stack), so callers can hand it straight to xterm. */
+export function resolveTerminalSettings(override) {
+  const base = getTerminalSettings();
+  if (!override || typeof override !== "object" || !override.enabled) return base;
+  const font = fontById(override.fontId || base.fontId);
+  return {
+    fontId: font.id,
+    fontFamily: font.stack,
+    fontSize: clamp(override.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, base.fontSize),
+    fontWeight:
+      override.fontWeight != null ? fontWeightOf(override.fontWeight) : base.fontWeight,
+    lineHeight: clamp(override.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, base.lineHeight),
+    letterSpacing: Math.round(
+      clamp(override.letterSpacing, LETTER_SPACING_MIN, LETTER_SPACING_MAX, base.letterSpacing),
+    ),
+    shell: base.shell,
+  };
+}
+
 /** Merge a partial change into the current settings, persist it, and fire the
  *  change event so open terminals update live. Returns the new full settings
  *  (re-read, so clamping/normalisation is reflected). */
@@ -204,8 +230,9 @@ initTerminalSettings();
 // ---- DOM wiring (Settings page) -------------------------------------------
 
 /** Fill the font <select> with the catalog, grouped into bundled vs system so
- *  the user can tell which fonts are guaranteed to render. */
-function buildFontOptions(select) {
+ *  the user can tell which fonts are guaranteed to render. Exported so the
+ *  per-project font-override editor (workspaces.js) reuses the same catalog. */
+export function buildFontOptions(select) {
   const groups = [
     { label: "Bundled with app", kind: "bundled" },
     { label: "Installed on this Mac", kind: "system" },
@@ -223,8 +250,9 @@ function buildFontOptions(select) {
   }
 }
 
-/** Fill the font-weight <select> with the weight catalog. */
-function buildWeightOptions(select) {
+/** Fill the font-weight <select> with the weight catalog. Exported so the
+ *  per-project font-override editor (workspaces.js) reuses it. */
+export function buildWeightOptions(select) {
   for (const w of FONT_WEIGHTS) {
     const opt = document.createElement("option");
     opt.value = String(w.value);
@@ -233,8 +261,9 @@ function buildWeightOptions(select) {
   }
 }
 
-/** Paint the preview box with the given settings so it always matches the pick. */
-function paintPreview(preview, settings) {
+/** Paint the preview box with the given settings so it always matches the pick.
+ *  Exported so the per-project font-override editor (workspaces.js) reuses it. */
+export function paintPreview(preview, settings) {
   if (!preview) return;
   preview.style.fontFamily = settings.fontFamily;
   preview.style.fontSize = `${settings.fontSize}px`;

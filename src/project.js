@@ -74,10 +74,10 @@ const SCROLLBACK_FLUSH_MS = 5000;
 /** Get or create the terminal group for a project id. `paths` is every folder
  *  the project groups (primary first), used to give a launched agent tool access
  *  to the whole project. */
-function groupFor(id, primaryPath, paths, startup, terminalCommand) {
+function groupFor(id, primaryPath, paths, startup, terminalCommand, fontOverride) {
   let rec = projects.get(id);
   if (!rec) {
-    const group = createTerminalGroup(mountEl, id, { quickSpawn: true });
+    const group = createTerminalGroup(mountEl, id, { quickSpawn: true, fontOverride });
     // Add-menu "Terminal" row: spawn a plain terminal in THIS project, at its
     // primary path.
     group.onAdd = () => spawnInProject(id);
@@ -105,6 +105,9 @@ function groupFor(id, primaryPath, paths, startup, terminalCommand) {
     rec.paths = paths;
     rec.startup = startup;
     rec.terminalCommand = terminalCommand;
+    // The font override may have changed too (edited on the project's Edit page):
+    // apply it live to the group's terminals and future spawns.
+    rec.group.setFontOverride(fontOverride);
   }
   return rec;
 }
@@ -336,7 +339,7 @@ async function onProjectSelected(detail) {
     return;
   }
 
-  const { id, primaryPath, paths, startup, terminalCommand } = detail;
+  const { id, primaryPath, paths, startup, terminalCommand, fontOverride } = detail;
   if (id === currentId) {
     // Re-selecting the same project (e.g. a refresh after an edit): keep the
     // latest primary path / all paths / startup / terminal command on the live
@@ -347,6 +350,8 @@ async function onProjectSelected(detail) {
       rec.paths = paths;
       rec.startup = startup;
       rec.terminalCommand = terminalCommand;
+      // Apply any font-override change (edited on the Edit page) live.
+      rec.group.setFontOverride(fontOverride);
       rec.group.show();
     }
     return;
@@ -355,7 +360,7 @@ async function onProjectSelected(detail) {
   // Hide the previous project's group (terminals stay alive).
   if (currentId) projects.get(currentId)?.group.hide();
 
-  const rec = groupFor(id, primaryPath, paths, startup, terminalCommand);
+  const rec = groupFor(id, primaryPath, paths, startup, terminalCommand, fontOverride);
   currentId = id;
 
   // Show first so the panes have a real size before we fit/spawn.
@@ -535,6 +540,16 @@ listen("app-closing", async () => {
 });
 
 window.addEventListener("project-selected", (e) => onProjectSelected(e.detail));
+
+// Live font-override preview from the project's Edit page (workspaces.js): apply
+// the in-progress override to the project's terminals as the user drags a slider,
+// without a backend save or a full refresh. detail = { id, fontOverride }. The
+// save + project-selected round-trip still runs when the control commits.
+window.addEventListener("project-font-override", (e) => {
+  const { id, fontOverride } = e.detail || {};
+  const rec = id && projects.get(id);
+  if (rec) rec.group.setFontOverride(fontOverride);
+});
 
 // When a project is deleted (workspaces.js), tear down its terminal group so
 // its PTYs are closed and the group leaves the global registries (P1), then

@@ -9,6 +9,13 @@
 // (commands.js) react to the `project-selected` event this module emits.
 import { ICONS } from "/icons.js";
 import { openCtxMenu } from "/ctxmenu.js";
+import {
+  buildFontOptions,
+  buildWeightOptions,
+  paintPreview,
+  getTerminalSettings,
+  resolveTerminalSettings,
+} from "/settings.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -55,6 +62,19 @@ const modalPathsEl = document.querySelector("#modal-paths");
 const modalPathsEmptyEl = document.querySelector("#modal-paths-empty");
 const modalTerminalCmdEl = document.querySelector("#modal-terminal-command");
 const modalDeleteBtn = document.querySelector("#modal-delete");
+
+// Per-project terminal font override (Edit page).
+const fontOverrideEnabledEl = document.querySelector("#modal-font-override-enabled");
+const fontOverrideControlsEl = document.querySelector("#modal-font-override-controls");
+const fontFamilyEl = document.querySelector("#modal-font-family");
+const fontWeightEl = document.querySelector("#modal-font-weight");
+const fontSizeEl = document.querySelector("#modal-font-size");
+const fontSizeValEl = document.querySelector("#modal-font-size-val");
+const fontLineHeightEl = document.querySelector("#modal-line-height");
+const fontLineHeightValEl = document.querySelector("#modal-line-height-val");
+const fontLetterSpacingEl = document.querySelector("#modal-letter-spacing");
+const fontLetterSpacingValEl = document.querySelector("#modal-letter-spacing-val");
+const fontPreviewEl = document.querySelector("#modal-font-preview");
 
 // Startup-layout section (Edit modal).
 const modalStartupTerminalsEl = document.querySelector("#modal-startup-terminals");
@@ -192,6 +212,12 @@ function emitProjectSelected() {
             actions: ws.actions || [],
             startup: ws.startup || { terminals: [], command_ids: [] },
             terminalCommand: ws.terminal_command || "",
+            // Per-project terminal font override (raw workspace field), or null
+            // for the global app font. project.js resolves it per group.
+            fontOverride:
+              ws.font_override && typeof ws.font_override === "object"
+                ? ws.font_override
+                : null,
           }
         : null,
     }),
@@ -980,6 +1006,8 @@ function renderModal() {
 
   modalTerminalCmdEl.value = ws.terminal_command || "";
 
+  renderFontOverride(ws);
+
   seedStartupDraft(ws);
   renderStartup();
   if (modalStartupStatusEl) modalStartupStatusEl.textContent = "";
@@ -1275,6 +1303,103 @@ modalTerminalCmdEl.addEventListener("keydown", (e) => {
     modalTerminalCmdEl.blur(); // triggers change -> commitTerminalCommand
   }
 });
+
+// --- Per-project terminal font override (Edit page) ------------------------
+// This project can pin its own terminal font on top of the global app font. The
+// override is stored on the workspace (font_override); project.js resolves it
+// per terminal group. The controls reuse the global font catalog (settings.js).
+
+let fontOptionsBuilt = false;
+/** Fill the family/weight selects once from the shared catalog. */
+function ensureFontOptions() {
+  if (fontOptionsBuilt || !fontFamilyEl) return;
+  buildFontOptions(fontFamilyEl);
+  buildWeightOptions(fontWeightEl);
+  fontOptionsBuilt = true;
+}
+
+/** Read the current override controls into the stored shape. */
+function currentFontOverride() {
+  return {
+    enabled: fontOverrideEnabledEl.checked,
+    fontId: fontFamilyEl.value,
+    fontSize: Number(fontSizeEl.value),
+    fontWeight: Number(fontWeightEl.value),
+    lineHeight: Number(fontLineHeightEl.value),
+    letterSpacing: Number(fontLetterSpacingEl.value),
+  };
+}
+
+/** Update the range read-outs and the preview from the current controls. The
+ *  preview shows the effective font (override overlaid on the global settings),
+ *  so a disabled override previews the global font. */
+function paintFontOverridePreview() {
+  fontSizeValEl.textContent = `${fontSizeEl.value}px`;
+  fontLineHeightValEl.textContent = Number(fontLineHeightEl.value).toFixed(2);
+  fontLetterSpacingValEl.textContent = `${fontLetterSpacingEl.value}px`;
+  paintPreview(fontPreviewEl, resolveTerminalSettings(currentFontOverride()));
+}
+
+/** Seed the override controls for a project: from its saved override when set,
+ *  else from the global settings so the user starts at the app font and tweaks
+ *  from there. */
+function renderFontOverride(ws) {
+  if (!fontOverrideEnabledEl) return;
+  ensureFontOptions();
+  const ov =
+    ws.font_override && typeof ws.font_override === "object" ? ws.font_override : null;
+  const base = getTerminalSettings();
+  const seed = ov ? { ...base, ...ov } : base;
+  fontOverrideEnabledEl.checked = !!(ov && ov.enabled);
+  fontFamilyEl.value = seed.fontId;
+  fontWeightEl.value = String(seed.fontWeight);
+  fontSizeEl.value = String(seed.fontSize);
+  fontLineHeightEl.value = String(seed.lineHeight);
+  fontLetterSpacingEl.value = String(seed.letterSpacing);
+  fontOverrideControlsEl.classList.toggle("hidden", !fontOverrideEnabledEl.checked);
+  paintFontOverridePreview();
+}
+
+/** Apply the in-progress override to the selected project's terminals live (no
+ *  save), so dragging a slider updates the real terminals right away. */
+function liveFontOverride() {
+  const ws = selected();
+  if (!ws) return;
+  paintFontOverridePreview();
+  window.dispatchEvent(
+    new CustomEvent("project-font-override", {
+      detail: { id: ws.id, fontOverride: currentFontOverride() },
+    }),
+  );
+}
+
+/** Persist the current override to the workspace and update the in-memory cache
+ *  (no full refresh — project.js already applied it live). */
+async function persistFontOverride() {
+  const ws = selected();
+  if (!ws) return;
+  const override = currentFontOverride();
+  ws.font_override = override; // keep the cached model in step with the store
+  await invoke("set_font_override", { id: ws.id, fontOverride: override });
+}
+
+fontOverrideEnabledEl?.addEventListener("change", () => {
+  fontOverrideControlsEl.classList.toggle("hidden", !fontOverrideEnabledEl.checked);
+  liveFontOverride();
+  persistFontOverride();
+});
+// Selects commit on change: apply live + persist.
+for (const el of [fontFamilyEl, fontWeightEl]) {
+  el?.addEventListener("change", () => {
+    liveFontOverride();
+    persistFontOverride();
+  });
+}
+// Ranges apply live while dragging (input) and persist on release (change).
+for (const el of [fontSizeEl, fontLineHeightEl, fontLetterSpacingEl]) {
+  el?.addEventListener("input", liveFontOverride);
+  el?.addEventListener("change", persistFontOverride);
+}
 
 modalChangePrimaryBtn.addEventListener("click", async () => {
   const ws = selected();

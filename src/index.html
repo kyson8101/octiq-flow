@@ -870,6 +870,59 @@
             </p>
           </section>
 
+          <section class="settings-section">
+            <div class="settings-section-title">Terminal font</div>
+            <p class="settings-help">
+              This project uses the app font from Settings by default. Turn on
+              the override to give just this project its own terminal font.
+            </p>
+            <label class="modal-font-toggle">
+              <input type="checkbox" id="modal-font-override-enabled" />
+              <span>Use a custom terminal font for this project</span>
+            </label>
+
+            <div id="modal-font-override-controls" class="hidden">
+              <div class="settings-field">
+                <label class="settings-label" for="modal-font-family">Font family</label>
+                <select id="modal-font-family" class="settings-select"></select>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-font-weight">Font weight</label>
+                <select id="modal-font-weight" class="settings-select"></select>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-font-size">Font size</label>
+                <div class="settings-range-row">
+                  <input id="modal-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
+                  <span id="modal-font-size-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-line-height">Line height</label>
+                <div class="settings-range-row">
+                  <input id="modal-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
+                  <span id="modal-line-height-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-letter-spacing">Letter spacing</label>
+                <div class="settings-range-row">
+                  <input id="modal-letter-spacing" class="settings-range" type="range" min="0" max="8" step="1" />
+                  <span id="modal-letter-spacing-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <span class="settings-label">Preview</span>
+                <pre id="modal-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
+              </div>
+            </div>
+          </section>
+
           <section class="settings-section" id="modal-startup-section">
             <div class="settings-section-title">Startup layout</div>
             <p class="settings-help">
