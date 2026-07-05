@@ -99,8 +99,11 @@ not an npm import).
   Dashboard / Settings; one view visible at a time, choice in localStorage).
 - **xterm.js is vendored** in `src/vendor/` (no CDN, works offline). Terminals
   render with the **WebGL** addon, not the DOM renderer — the DOM renderer leaves
-  ghosted/overlapping glyphs after reflow. On GPU context loss the addon disposes
-  itself and xterm falls back to the DOM renderer, so it keeps working.
+  ghosted/overlapping glyphs after reflow. Only the **active tab of a visible
+  group** holds a WebGL context (attached on activate/show, disposed on
+  deactivate/hide): each context costs GPU memory and WebKit caps live contexts
+  (~16), silently killing the oldest past the cap. On GPU context loss the addon
+  disposes itself; the next activation attaches a fresh one.
 - `main.js` is intentionally empty (kept only so its `<script>` tag stays valid).
 
 ### Persistence locations

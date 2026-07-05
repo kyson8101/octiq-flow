@@ -5,7 +5,7 @@
 // permission error comes back as `Err(message)` so the browser panel can show
 // it to the user. The frontend opens a file with the opener plugin, not here.
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -179,6 +179,81 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
         truncated,
         size,
     })
+}
+
+/// The user's home dir, from HOME (Unix) or USERPROFILE (Windows). Same helper
+/// as agent_resume.rs / canvas.rs keep privately.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Resolve every path-looking string a terminal printed into an absolute path
+/// that EXISTS on disk (`None` per miss), in one call. Backs the terminal's
+/// file-link provider, which checks a whole hovered line's candidates at once —
+/// one IPC per line instead of a round-trip per candidate.
+#[tauri::command]
+pub fn resolve_paths(paths: Vec<String>, cwd: String) -> Vec<Option<String>> {
+    paths.into_iter().map(|p| resolve_path(p, &cwd)).collect()
+}
+
+/// Resolve ONE path-looking string into an absolute path that EXISTS on disk,
+/// or `None`. `~`/`~/…` expand to the user's home; a relative path resolves
+/// against `cwd` (the tab's spawn directory; empty cwd resolves absolute paths
+/// only). A candidate only becomes a clickable link when this confirms it is
+/// real, so prose that merely looks like a path never underlines.
+fn resolve_path(path: String, cwd: &str) -> Option<String> {
+    let expanded = if path == "~" {
+        home_dir()?
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        home_dir()?.join(rest)
+    } else {
+        PathBuf::from(&path)
+    };
+    let abs = if expanded.is_absolute() {
+        expanded
+    } else if cwd.is_empty() {
+        return None;
+    } else {
+        Path::new(cwd).join(expanded)
+    };
+    if abs.exists() {
+        Some(abs.to_string_lossy().into_owned())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_path;
+
+    #[test]
+    fn resolve_path_handles_absolute_relative_tilde_and_missing() {
+        let dir = std::env::temp_dir().join("octiq-resolve-path-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hit.txt");
+        std::fs::write(&file, "x").unwrap();
+        let dir_s = dir.to_string_lossy().into_owned();
+        let file_s = file.to_string_lossy().into_owned();
+
+        // Absolute path found regardless of cwd.
+        assert_eq!(resolve_path(file_s.clone(), ""), Some(file_s.clone()));
+        // Relative path resolves against cwd; without a cwd it cannot.
+        assert!(resolve_path("hit.txt".into(), &dir_s).is_some());
+        assert_eq!(resolve_path("hit.txt".into(), ""), None);
+        // Missing file is None, not a link.
+        assert_eq!(resolve_path("nope.txt".into(), &dir_s), None);
+        // Tilde expands to home (home itself always exists).
+        assert!(resolve_path("~".into(), "").is_some());
+        // The batched command maps each candidate independently.
+        assert_eq!(
+            super::resolve_paths(vec![file_s.clone(), "nope.txt".into()], dir_s),
+            vec![Some(file_s), None]
+        );
+    }
 }
 
 /// Overwrite `path` with `content` from the in-app preview editor (Save). Returns

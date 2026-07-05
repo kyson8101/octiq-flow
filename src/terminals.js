@@ -64,19 +64,122 @@ function makeTerminal(s) {
   });
 }
 
-// Attach the WebGL renderer to an already-opened terminal. On GPU context loss
-// the addon disposes itself; xterm then transparently falls back to the DOM
-// renderer, so the terminal keeps working — no crash, just the slower path.
-// If the addon throws (no WebGL2 at all), we swallow it and stay on DOM.
-function attachWebgl(term) {
+// Attach the WebGL renderer to an already-opened terminal and return the addon
+// (or null when WebGL is unavailable — xterm then stays on the DOM renderer).
+// On GPU context loss the addon disposes itself and `onLost` clears the owner's
+// handle, so the NEXT activation attaches a fresh context instead of leaving
+// the terminal on the slow DOM renderer forever.
+function attachWebgl(term, onLost) {
   try {
     const addon = new WebglAddon.WebglAddon();
-    addon.onContextLoss(() => addon.dispose());
+    addon.onContextLoss(() => {
+      addon.dispose();
+      onLost?.();
+    });
     term.loadAddon(addon);
+    return addon;
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn("[octiq] WebGL renderer unavailable, using DOM renderer:", err);
+    return null;
   }
+}
+
+// ---- File-path links --------------------------------------------------------
+// Paths printed in terminal output (by agents, builds, anything) become
+// Cmd+click links (Ctrl+click off macOS) that open the file with the OS default
+// app — Preview for an image, the editor for code, Finder for a folder. A
+// candidate only becomes a link when the backend confirms it exists on disk
+// (resolve_path), so prose that merely looks like a path ("and/or", URL tails)
+// never underlines. Relative paths resolve against the tab's SPAWN cwd.
+// ponytail: spawn cwd, not the shell's live cwd after a `cd` — read the
+// foreground process cwd if that ever matters.
+
+// Rooted (/, ~/, ./, ../) or bare path shapes; segments stop at whitespace,
+// quotes, brackets and `:`, so `src/foo.js:12` links just the file part.
+const PATH_RE = /(?:~\/|\.{1,2}\/|\/)?[\w.@+%~-]+(?:\/[\w.@+%-]+)*/g;
+
+// PATH_RE matches every bare word; only these shapes earn an existence check:
+// rooted, contains a slash, or a lone filename with an extension.
+function isPathCandidate(s) {
+  return s.includes("/") || s === "~" || /\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(s);
+}
+
+// Cap the existence-check IPCs per hovered line so a pathological line (e.g. a
+// minified dump full of slashes) cannot queue dozens of round-trips.
+const MAX_LINKS_PER_LINE = 8;
+
+/** Stitch the wrapped-line group containing 1-based buffer row `y` into one
+ *  string. Rows before the last are kept UNTRIMMED so char index i maps back to
+ *  cell (i % cols, i / cols) — exact for ASCII paths (wide CJK glyphs would
+ *  shift the underline a little, never the opened path). */
+function wrappedLineText(term, y) {
+  const buf = term.buffer.active;
+  let start = y - 1;
+  while (start > 0 && buf.getLine(start)?.isWrapped) start--;
+  let end = y - 1;
+  while (end + 1 < buf.length && buf.getLine(end + 1)?.isWrapped) end++;
+  let text = "";
+  for (let i = start; i <= end; i++) {
+    text += buf.getLine(i)?.translateToString(i === end) ?? "";
+  }
+  return { text, startLine: start };
+}
+
+/** Find the real file paths in the wrapped-line group at row `y` and return
+ *  them as xterm link objects, or undefined when the line has none. */
+async function detectFileLinks(term, cwd, y) {
+  const { text, startLine } = wrappedLineText(term, y);
+  const cols = term.cols;
+  const cell = (idx) => ({
+    x: (idx % cols) + 1,
+    y: startLine + Math.floor(idx / cols) + 1,
+  });
+  // Collect the candidates first, then existence-check them all in ONE IPC
+  // (resolve_paths). Awaiting a round-trip per candidate serialized up to
+  // MAX_LINKS_PER_LINE invokes on every hovered line.
+  const candidates = [];
+  PATH_RE.lastIndex = 0;
+  let m;
+  while ((m = PATH_RE.exec(text)) !== null && candidates.length < MAX_LINKS_PER_LINE) {
+    // Drop sentence punctuation stuck to the tail ("saved to /tmp/x.png.").
+    const raw = m[0].replace(/[.,;:!?'")\]]+$/, "");
+    if (raw.length < 3 || !isPathCandidate(raw)) continue;
+    candidates.push({ raw, index: m.index });
+  }
+  if (!candidates.length) return undefined;
+  const resolved = await invoke("resolve_paths", {
+    paths: candidates.map((c) => c.raw),
+    cwd,
+  }).catch(() => null);
+  if (!resolved) return undefined;
+  const links = [];
+  candidates.forEach(({ raw, index }, i) => {
+    const target = resolved[i];
+    if (!target) return;
+    links.push({
+      text: raw,
+      range: { start: cell(index), end: cell(index + raw.length - 1) },
+      decorations: { underline: true, pointerCursor: true },
+      activate(ev) {
+        // Cmd (mac) / Ctrl (elsewhere) + click — the terminal-link convention.
+        // A plain click stays a click (focus, TUI mouse) and never opens files.
+        if (!ev.metaKey && !ev.ctrlKey) return;
+        invoke("plugin:opener|open_path", { path: target, with: null }).catch(() => {});
+      },
+    });
+  });
+  return links.length ? links : undefined;
+}
+
+/** Register the file-path link provider on a terminal. `cwd` (the tab's spawn
+ *  dir, possibly "") anchors relative paths. Disposed with the terminal. */
+function attachFileLinks(term, cwd) {
+  term.registerLinkProvider({
+    provideLinks(y, callback) {
+      detectFileLinks(term, cwd, y).then(callback, () => callback(undefined));
+    },
+  });
 }
 
 // Surface a PTY error into the terminal pane itself (red ANSI line) and the
@@ -955,8 +1058,11 @@ class TerminalGroup {
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(pane);
-    // WebGL renderer must load AFTER open() — it needs the live DOM element.
-    attachWebgl(term);
+    // No WebGL here: activate() attaches it once this tab is the visible one.
+    // Only the ACTIVE tab of a VISIBLE group keeps a WebGL context (see
+    // _setWebgl) — a hidden pane is display:none and never painted anyway.
+    // Cmd/Ctrl+click a printed file path to open it with the OS default app.
+    attachFileLinks(term, cwd);
     // Serialize addon snapshots the buffer (text + styles) to a string we save
     // to disk and write back on the next launch (session persistence).
     const serializeAddon = new SerializeAddon.SerializeAddon();
@@ -1061,6 +1167,9 @@ class TerminalGroup {
       startCmd,
       persistKey,
       ro,
+      // The tab's live WebGL addon, or null. Held only while this tab is the
+      // active one of a visible group (see _setWebgl).
+      webgl: null,
     };
     this.tabs.set(ptyId, entry);
 
@@ -1105,13 +1214,33 @@ class TerminalGroup {
     return ptyId;
   }
 
+  /**
+   * Attach or drop one tab's WebGL renderer. Only the ACTIVE tab of a VISIBLE
+   * group keeps one: each addon holds a whole GPU context + glyph atlas, and
+   * WebKit caps live WebGL contexts (~16) — past the cap it silently kills the
+   * oldest, permanently downgrading that terminal to the slow DOM renderer.
+   * A deactivated tab's pane is display:none (never painted), so it loses
+   * nothing; re-attaching does a full repaint, which also erases any stale
+   * DOM-rendered glyphs from the time without WebGL.
+   */
+  _setWebgl(entry, on) {
+    if (on && !entry.webgl) {
+      entry.webgl = attachWebgl(entry.term, () => (entry.webgl = null));
+    } else if (!on && entry.webgl) {
+      entry.webgl.dispose();
+      entry.webgl = null;
+    }
+  }
+
   activate(ptyId) {
     if (!this.tabs.has(ptyId)) return;
     this.activeId = ptyId;
+    const groupVisible = this.visible();
     for (const [id, e] of this.tabs) {
       const on = id === ptyId;
       e.tabEl.classList.toggle("tg-tab-active", on);
       e.paneEl.classList.toggle("tg-pane-active", on);
+      this._setWebgl(e, on && groupVisible);
     }
     // The bottom bar always tracks the visible terminal: repaint it for the
     // now-active tab's last sent line (or the placeholder if it has none).
@@ -1275,6 +1404,10 @@ class TerminalGroup {
 
   show() {
     this.root.style.display = "";
+    // Visible again: give the active tab its WebGL renderer back (hide()
+    // released it). Attach after display flips so the canvas has a real size.
+    const active = this.activeId && this.tabs.get(this.activeId);
+    if (active) this._setWebgl(active, true);
     // Refit the active terminal after the element is laid out and measurable.
     requestAnimationFrame(() => this.refitActive());
   }
@@ -1283,6 +1416,9 @@ class TerminalGroup {
     // Keep terminals alive; just hide the DOM subtree. Close the add menu too —
     // it lives on <body>, so it would otherwise float over the next view.
     this._closeAddMenu();
+    // Nothing in this group can be seen: release every GPU context it holds
+    // (normally just the active tab's). show()/activate() re-attach.
+    for (const e of this.tabs.values()) this._setWebgl(e, false);
     this.root.style.display = "none";
   }
 
