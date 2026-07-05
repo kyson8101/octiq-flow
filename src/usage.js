@@ -217,7 +217,12 @@ function start() {
   // first live fetch is in flight; refresh() replaces it when the numbers arrive.
   if (cache.claude || cache.codex) render(null);
   refresh();
-  timer = setInterval(refresh, REFRESH_MS);
+  // Skip the tick while the window is fully hidden — nobody can see the bar,
+  // and the Claude endpoint 429s per account. The visibilitychange handler
+  // below re-pulls on re-show, so the bar is never stale when visible.
+  timer = setInterval(() => {
+    if (!document.hidden) refresh();
+  }, REFRESH_MS);
 
   // Re-pull when the user returns to the window — the numbers may have moved.
   // Goes through softRefresh so a focus + visibilitychange burst is one call.
