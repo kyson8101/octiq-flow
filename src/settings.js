@@ -9,11 +9,13 @@
 // window event (TERMINAL_SETTINGS_CHANGED) so terminals.js can apply the new
 // font to every OPEN terminal live — no need to reopen anything.
 //
-// The font catalog mixes two kinds of family:
+// The font catalog mixes three kinds of family:
 //   - bundled — shipped with the app as woff2 + @font-face (styles.css), so it
 //     always renders regardless of what is installed (Fira Code, JetBrains Mono).
 //   - system — only renders if the font is installed on this machine; its CSS
 //     stack falls back to a generic monospace otherwise.
+//   - cjk — a monospace Latin face + a Chinese (CJK) face, so 中文 renders in a
+//     real Chinese font instead of the OS generic monospace. macOS-installed.
 
 const { invoke } = window.__TAURI__.core;
 
@@ -30,6 +32,15 @@ export const TERMINAL_FONTS = [
   { id: "monaco", label: "Monaco", kind: "system", stack: `Monaco, Menlo, monospace` },
   { id: "fira-mono", label: "Fira Mono", kind: "system", stack: `"Fira Mono", Menlo, monospace` },
   { id: "courier-new", label: "Courier New", kind: "system", stack: `"Courier New", Courier, monospace` },
+  // Chinese (CJK) faces. Each keeps a crisp bundled monospace for Latin (so
+  // commands and code stay aligned) and renders 中文 from a real Chinese family
+  // via per-glyph CSS fallback — the OS generic monospace has no proper Chinese
+  // face. These four are shipped with macOS (PingFang/Hiragino/Heiti sans,
+  // Songti serif), so `kind: "cjk"` degrades to monospace if one is missing.
+  { id: "cjk-pingfang", label: "PingFang SC 苹方", kind: "cjk", stack: `"JetBrains Mono", "PingFang SC", Menlo, monospace` },
+  { id: "cjk-hiragino", label: "Hiragino Sans GB 冬青黑体", kind: "cjk", stack: `"JetBrains Mono", "Hiragino Sans GB", Menlo, monospace` },
+  { id: "cjk-heiti", label: "Heiti SC 黑体", kind: "cjk", stack: `"JetBrains Mono", "Heiti SC", "STHeiti", Menlo, monospace` },
+  { id: "cjk-songti", label: "Songti SC 宋体 (serif)", kind: "cjk", stack: `"JetBrains Mono", "Songti SC", "STSong", Menlo, monospace` },
 ];
 
 /** The shell choices shown in the Windows-only picker. `id` is the value sent
@@ -236,6 +247,7 @@ export function buildFontOptions(select) {
   const groups = [
     { label: "Bundled with app", kind: "bundled" },
     { label: "Installed on this Mac", kind: "system" },
+    { label: "Chinese (CJK) — mono Latin + Chinese face", kind: "cjk" },
   ];
   for (const g of groups) {
     const optgroup = document.createElement("optgroup");
