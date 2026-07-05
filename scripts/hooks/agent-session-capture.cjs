@@ -56,6 +56,16 @@ const path = require("path");
 // "claude" so a mis-wired hook still records something the app can validate.
 const KNOWN_AGENTS = new Set(["claude", "codex"]);
 
+// Env var each agent exports into the processes it spawns. Used to detect that
+// THIS agent is running *nested* inside another (a host) agent — e.g. the Codex
+// rescue subagent, or the Codex plugin, both launched by Claude. The nested
+// agent inherits the host's marker, so we can tell it apart from a top-level
+// agent that owns the tab.
+// ponytail: relies on Claude Code exporting CLAUDECODE (verified set); if that
+// var is renamed the guard silently no-ops back to last-writer-wins. Add
+// Codex's own marker here if a Codex-hosting-Claude nesting ever needs it too.
+const HOST_AGENT_ENV = { claude: "CLAUDECODE" };
+
 // A session id we are willing to store. Agent ids are uuid-like; this keeps the
 // stored value to a plain token so nothing odd can ride along into the app.
 const SAFE_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -136,6 +146,24 @@ function writeStore(file, data) {
   fs.renameSync(tmp, file);
 }
 
+/** The known agent whose marker env var is present, i.e. the agent we are
+ *  running nested inside, or "" when none is (we are top-level in the tab). */
+function hostAgent(env) {
+  for (const [name, envVar] of Object.entries(HOST_AGENT_ENV)) {
+    if ((env[envVar] || "").trim()) return name;
+  }
+  return "";
+}
+
+/** Whether to skip recording this SessionStart because we are a nested agent of
+ *  a DIFFERENT type. Recording would clobber the host agent's tab -> session
+ *  mapping, making the tab resume as us (the nested agent) on the next launch —
+ *  the Codex-inside-Claude bug. The host's own hook still records the host. */
+function shouldSkipNestedWrite(agent, env) {
+  const host = hostAgent(env);
+  return host !== "" && host !== agent;
+}
+
 function main() {
   const argAgent = (process.argv[2] || "claude").trim();
   const agent = KNOWN_AGENTS.has(argAgent) ? argAgent : "claude";
@@ -167,6 +195,12 @@ function main() {
   // mapping we still need to resume.
   if (event !== "SessionStart") return;
 
+  // Do not record when we are a nested agent of a different type (e.g. Codex
+  // launched by Claude via the rescue subagent or the plugin). The host agent
+  // owns this tab's resume mapping; overwriting it here would make the tab
+  // resume as us instead of the host. See agent_resume.rs for the resume side.
+  if (shouldSkipNestedWrite(agent, process.env)) return;
+
   const sessionId = input.session_id;
   if (typeof sessionId !== "string" || !SAFE_ID.test(sessionId)) return;
 
@@ -186,9 +220,15 @@ function main() {
   writeStore(file, store);
 }
 
-try {
-  main();
-} catch {
-  // Swallow everything: a hook must never disrupt the agent.
+// Run only when invoked as the hook (`node <script> <agent>`); staying inert
+// when `require`d lets the sibling test exercise the pure helpers.
+if (require.main === module) {
+  try {
+    main();
+  } catch {
+    // Swallow everything: a hook must never disrupt the agent.
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+module.exports = { hostAgent, shouldSkipNestedWrite };
