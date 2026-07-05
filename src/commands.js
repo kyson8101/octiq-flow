@@ -337,6 +337,46 @@ toggleBtn.addEventListener("click", () => {
   toggleBtn.title = collapsed ? "Expand panel" : "Collapse panel";
 });
 
+// --- Accordion: only one section open at a time ----------------------------
+// Each .cmd-section (Open folder, Terminal font, Commands, Git, Screenshots) is
+// a clickable head + body. Opening one collapses the rest; the open section's
+// key is remembered so it reopens next launch. Default (no stored value): all
+// collapsed. Clicking an action button in a head (e.g. "+" or the camera) opens
+// that section so its result is visible, but never toggles it shut.
+const SECTION_OPEN_KEY = "octiq.cmdpanel.open";
+const sectionKey = (sec) =>
+  [...sec.classList].find((c) => c.startsWith("cmd-section-"))?.slice("cmd-section-".length) || "";
+
+function applyAccordion(openKey) {
+  for (const sec of panelEl.querySelectorAll(".cmd-section")) {
+    sec.classList.toggle("collapsed", sectionKey(sec) !== openKey);
+  }
+}
+
+{
+  let openKey = localStorage.getItem(SECTION_OPEN_KEY) || "";
+  applyAccordion(openKey);
+  const setOpen = (key) => {
+    openKey = key;
+    localStorage.setItem(SECTION_OPEN_KEY, key);
+    applyAccordion(key);
+  };
+  for (const sec of panelEl.querySelectorAll(".cmd-section")) {
+    const head = sec.querySelector(".cmd-section-head");
+    if (!head) continue;
+    head.addEventListener("click", (e) => {
+      const key = sectionKey(sec);
+      // A control in the head (add / capture / refresh): let it run, and make
+      // sure its section is open so the result shows — but don't toggle shut.
+      if (e.target.closest("button, input, select, a, textarea")) {
+        if (sec.classList.contains("collapsed")) setOpen(key);
+        return;
+      }
+      setOpen(openKey === key ? "" : key); // clicking the open head closes it
+    });
+  }
+}
+
 // --- Command terminals: run in the background, view in a modal -------------
 /** Get or create the TerminalGroup for a project's command terminals. They all
  *  mount into the modal body; show()/hide() picks which project's group shows. */

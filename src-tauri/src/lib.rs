@@ -9,9 +9,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
-mod agent_usage;
 mod canvas;
-mod dashboard;
 mod fsbrowse;
 mod git;
 mod git_watch;
@@ -158,7 +156,6 @@ pub fn run() {
             terminal_layout::clear_project_layout,
             agent_resume::agent_resume_cmd,
             agent_resume::agent_tab_info,
-            agent_usage::agent_usage_all,
             usage_limits::usage_summary,
             agent_resume::setup_agent_hooks,
             agent_resume::prune_exited_agent_sessions,
@@ -171,7 +168,6 @@ pub fn run() {
             profile::create_profile,
             profile::switch_profile,
             profile::set_profile_base,
-            dashboard::list_docs,
             git::git_status_summary,
             git_watch::git_watch_paths,
             git::git_changed_files,

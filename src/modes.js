@@ -1,12 +1,12 @@
 // Frontend: top-level mode router (card 03).
-// Project, Chat, Agents, Dashboard, and Settings share the shell.
+// Project, Chat, and Settings share the shell.
 // Only one view shows at a time; the others are hidden. The chosen mode is
 // remembered in localStorage so it comes back on restart. Plain DOM only —
 // no Tauri import needed here.
 
 // The modes, in bar order. Each maps to a `#view-<mode>` section in index.html.
 // "settings" has no tab — it is opened by the gear button on the right.
-const MODES = ["project", "chat", "agents", "dashboard", "settings"];
+const MODES = ["project", "chat", "settings"];
 
 // Special views: full-screen pages opened programmatically (no mode tab, never
 // persisted/restored). "editproject" is opened from a project's right-click
@@ -53,8 +53,8 @@ function setMode(mode) {
   // measure size while its container is hidden, so on EVERY mode switch we nudge
   // a resize on the next frame. terminals.js listens for window resize and
   // refits the active terminal of every visible group, so whichever mode just
-  // became visible gets refit. Dashboard has no terminal; the extra event is a
-  // harmless no-op there.
+  // became visible gets refit. A mode with no terminal makes the event a
+  // harmless no-op.
   requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
 }
 

@@ -1,7 +1,6 @@
 // Rate-limit "usage" readout for the global footer bar: the 5-hour rolling
 // window and the weekly window, for both Claude Code and Codex.
 //
-// This is NOT the per-session token/cost readout (that lives in agent_usage.rs).
 // Here we surface the plan limits the user cares about at a glance — "how much of
 // my 5-hour / weekly allowance is gone".
 //

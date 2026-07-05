@@ -39,8 +39,6 @@
     <script type="module" src="/gitactions.js" defer></script>
     <script type="module" src="/modes.js" defer></script>
     <script type="module" src="/chat.js" defer></script>
-    <script type="module" src="/roster.js" defer></script>
-    <script type="module" src="/dashboard.js" defer></script>
     <script type="module" src="/browser.js" defer></script>
     <script type="module" src="/webpreview.js" defer></script>
     <script type="module" src="/gitdiff.js" defer></script>
@@ -74,8 +72,6 @@
         <div class="modebar-tabs">
           <button class="modebtn modebtn-active" data-mode="project">Project</button>
           <button class="modebtn" data-mode="chat">Chat</button>
-          <button class="modebtn" data-mode="agents">Agents</button>
-          <button class="modebtn" data-mode="dashboard">Dashboard</button>
         </div>
         <button id="vault-btn" class="modebtn modebtn-vault" data-tip="Screenshot vault — capture a window with the hotkey, then paste it into a terminal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
@@ -333,10 +329,10 @@
         </div>
       </aside>
 
-      <!-- Right: collapsible panel that stacks two sections top→bottom —
-           Commands (registered project commands, commands.js) on top and Git
-           (common git actions for the project's primary repo, gitactions.js)
-           at the bottom. Both are visible at once; no tab switching. -->
+      <!-- Right: collapsible panel that stacks accordion sections top→bottom
+           (Open folder, Terminal font, Commands, Git, Screenshots). Only one is
+           open at a time; commands.js wires the accordion and remembers which
+           one is open. -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
           <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
@@ -360,6 +356,65 @@
             <div class="openfolder-row">
               <input id="openfolder-path" class="inline-input" placeholder="Paste a folder path" autocomplete="off" spellcheck="false" />
               <button id="openfolder-btn" class="btn btn-sm" type="button">Open</button>
+            </div>
+          </div>
+
+          <!-- Terminal font: this project's per-project font override. Moved out
+               of the Edit page into the panel so a change previews live on the
+               project's terminals to the left. workspaces.js keeps these #modal-font-*
+               controls (same ids) in step with the selected project. -->
+          <div class="cmd-section cmd-section-font">
+            <div class="cmd-section-head">
+              <span class="cmd-section-title">Terminal font</span>
+            </div>
+            <p class="settings-help">
+              This project uses the app font from Settings by default. Turn on
+              the override to give just this project its own terminal font.
+            </p>
+            <label class="modal-font-toggle">
+              <input type="checkbox" id="modal-font-override-enabled" />
+              <span>Use a custom terminal font for this project</span>
+            </label>
+
+            <div id="modal-font-override-controls" class="hidden">
+              <div class="settings-field">
+                <label class="settings-label" for="modal-font-family">Font family</label>
+                <select id="modal-font-family" class="settings-select"></select>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-font-weight">Font weight</label>
+                <select id="modal-font-weight" class="settings-select"></select>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-font-size">Font size</label>
+                <div class="settings-range-row">
+                  <input id="modal-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
+                  <span id="modal-font-size-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-line-height">Line height</label>
+                <div class="settings-range-row">
+                  <input id="modal-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
+                  <span id="modal-line-height-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <label class="settings-label" for="modal-letter-spacing">Letter spacing</label>
+                <div class="settings-range-row">
+                  <input id="modal-letter-spacing" class="settings-range" type="range" min="0" max="8" step="1" />
+                  <span id="modal-letter-spacing-val" class="settings-range-val"></span>
+                </div>
+              </div>
+
+              <div class="settings-field">
+                <span class="settings-label">Preview</span>
+                <pre id="modal-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
+              </div>
             </div>
           </div>
 
@@ -470,73 +525,6 @@
            project. chat.js mounts a single TerminalGroup here; each tab is its
            own real terminal (claude / codex / shell) at HOME. -->
       <div id="chat-terminals" class="chat-terminals"></div>
-      </section>
-
-      <!-- Agents mode: a single-screen team of persistent specialist agents.
-           Each agent works alone, reading/writing only its own task + memory in
-           docspace; OctiqFlow routes each task to the matching idle agent and
-           awards XP/levels from the docspace done-count. roster.js fills it. -->
-      <section id="view-agents" class="view hidden">
-        <div class="roster-head">
-          <span class="roster-title">Agents</span>
-          <span id="roster-sub" class="roster-sub">Your AI team</span>
-          <button id="tasksheet-toggle" class="btn btn-sm roster-hire-btn" type="button">📋 Tasks <span id="tasksheet-badge" class="tasksheet-badge hidden"></span></button>
-          <button id="roster-hire" class="btn btn-sm" type="button">+ Hire</button>
-        </div>
-        <div class="roster-task">
-          <input id="roster-input" class="roster-task-input" type="text" placeholder="Give your team a task… OctiqFlow routes it to the matching specialist" />
-          <select id="roster-cwd" class="roster-select" title="Working directory for the task. Auto = OctiqFlow picks the matching project from your project list.">
-            <option value="auto">📂 Auto (pick project)</option>
-            <option value="">🏠 Home</option>
-          </select>
-          <select id="roster-mode" class="roster-select" title="Demo runs a short scripted task (memory is still written to docspace). Real runs Claude/Codex.">
-            <option value="demo">Demo</option>
-            <option value="real">Real — interactive TUI</option>
-          </select>
-          <label class="roster-check" title="When an agent finishes, OctiqFlow queues the next specialist (build → security → verify). Agents still never talk to each other.">
-            <input id="roster-followup" type="checkbox" />
-            <span>Auto follow-up</span>
-          </label>
-          <button id="roster-assign" class="btn btn-sm btn-primary" type="button">Assign</button>
-        </div>
-
-        <!-- Hire panel: create a new specialist agent + its docspace folder. -->
-        <div id="roster-hire-form" class="roster-hire hidden">
-          <input id="hire-name" class="roster-task-input" type="text" placeholder="New agent name (e.g. Atlas)" />
-          <select id="hire-role" class="roster-select"></select>
-          <select id="hire-backend" class="roster-select">
-            <option value="claude">claude</option>
-            <option value="codex">codex</option>
-          </select>
-          <button id="hire-create" class="btn btn-sm btn-primary" type="button">Create</button>
-          <button id="hire-cancel" class="btn btn-sm" type="button">Cancel</button>
-        </div>
-        <p id="roster-status" class="roster-status">Agents work alone and pass everything through docspace; OctiqFlow does the assignment.</p>
-        <div id="roster-grid" class="roster-grid"></div>
-
-        <!-- Task sheet: every assigned task; click a done one to read the result
-             (from docspace board/done), and see anything waiting for your input. -->
-        <div id="tasksheet" class="tasksheet hidden">
-          <div class="tasksheet-head">
-            <span class="tasksheet-title">Task sheet</span>
-            <span class="tasksheet-spacer"></span>
-            <button id="tasksheet-close" class="btn btn-sm" type="button">Close ✕</button>
-          </div>
-          <div id="tasksheet-list" class="tasksheet-list"></div>
-          <div id="tasksheet-detail" class="tasksheet-detail hidden"></div>
-        </div>
-      </section>
-
-      <!-- Dashboard mode (card 10): read-only widget block grid -->
-      <section id="view-dashboard" class="view hidden">
-        <div class="dash-head">
-        <span class="dash-head-title">Dashboard</span>
-        <span class="dash-head-sub">Git status across your workspace folders</span>
-        <button id="dashboard-refresh" class="icon-btn dash-refresh" type="button" data-tip="Refresh">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-        </button>
-      </div>
-      <div id="dashboard-grid" class="dash-grid"></div>
       </section>
 
       <!-- Settings mode: opened by the gear button in the mode bar. -->
@@ -868,59 +856,6 @@
               Runs in each new terminal opened in this project. A startup terminal's
               own command takes precedence. Restored terminals do not re-run it.
             </p>
-          </section>
-
-          <section class="settings-section">
-            <div class="settings-section-title">Terminal font</div>
-            <p class="settings-help">
-              This project uses the app font from Settings by default. Turn on
-              the override to give just this project its own terminal font.
-            </p>
-            <label class="modal-font-toggle">
-              <input type="checkbox" id="modal-font-override-enabled" />
-              <span>Use a custom terminal font for this project</span>
-            </label>
-
-            <div id="modal-font-override-controls" class="hidden">
-              <div class="settings-field">
-                <label class="settings-label" for="modal-font-family">Font family</label>
-                <select id="modal-font-family" class="settings-select"></select>
-              </div>
-
-              <div class="settings-field">
-                <label class="settings-label" for="modal-font-weight">Font weight</label>
-                <select id="modal-font-weight" class="settings-select"></select>
-              </div>
-
-              <div class="settings-field">
-                <label class="settings-label" for="modal-font-size">Font size</label>
-                <div class="settings-range-row">
-                  <input id="modal-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
-                  <span id="modal-font-size-val" class="settings-range-val"></span>
-                </div>
-              </div>
-
-              <div class="settings-field">
-                <label class="settings-label" for="modal-line-height">Line height</label>
-                <div class="settings-range-row">
-                  <input id="modal-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
-                  <span id="modal-line-height-val" class="settings-range-val"></span>
-                </div>
-              </div>
-
-              <div class="settings-field">
-                <label class="settings-label" for="modal-letter-spacing">Letter spacing</label>
-                <div class="settings-range-row">
-                  <input id="modal-letter-spacing" class="settings-range" type="range" min="0" max="8" step="1" />
-                  <span id="modal-letter-spacing-val" class="settings-range-val"></span>
-                </div>
-              </div>
-
-              <div class="settings-field">
-                <span class="settings-label">Preview</span>
-                <pre id="modal-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
-              </div>
-            </div>
           </section>
 
           <section class="settings-section" id="modal-startup-section">

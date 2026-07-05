@@ -477,6 +477,7 @@ function renderShelf() {
 function openShelfMenu(x, y, ws, nameEl) {
   openCtxMenu(x, y, [
     { label: "Bring back", onClick: () => setShelved(ws.id, false) },
+    { label: REVEAL_LABEL, onClick: () => revealProjectFolder(ws) },
     { label: "Rename", onClick: () => startInlineRename(ws, nameEl) },
     {
       label: "Delete",
@@ -666,6 +667,20 @@ function selectWorkspace(id) {
 // --- Project context menu (right-click: Rename / Edit / Delete) -------------
 // Built on the shared ctxmenu.js helper; this only declares the items.
 
+// Reveal a project's folder in the OS file manager. open_path on a directory
+// opens it in Finder (macOS) / Explorer (Windows) — the same opener command the
+// file browser uses. Falls back to the first extra path if there is no primary.
+function revealProjectFolder(ws) {
+  const path = ws.primary_path || (ws.paths || []).find((p) => (p || "").trim());
+  if (!path) return;
+  invoke("plugin:opener|open_path", { path, with: null }).catch(() => {});
+}
+const REVEAL_LABEL = navigator.userAgent.includes("Win")
+  ? "Open in Explorer"
+  : navigator.userAgent.includes("Mac")
+    ? "Open in Finder"
+    : "Open in file manager";
+
 /** Show the right-click menu for one project at the cursor. `nameEl` is that
  *  row's name span, reused by the inline rename. */
 function openProjectMenu(x, y, ws, nameEl) {
@@ -710,6 +725,7 @@ function openProjectMenu(x, y, ws, nameEl) {
 
   openCtxMenu(x, y, [
     { label: "Files", onClick: () => browse("files", ws.primary_path || "") },
+    { label: REVEAL_LABEL, onClick: () => revealProjectFolder(ws) },
     { label: "Documentation", onClick: () => browse("docs", ws.docs_path || "") },
     { label: "Web preview", onClick: webPreview },
     { label: "Open in browser", onClick: openInBrowser },
@@ -792,7 +808,7 @@ function renderFooter() {
     footerPathsEl.append(makeChip(path, false));
   }
 
-  // Fill in the git branch for each path (async; reuses the dashboard command).
+  // Fill in the git branch for each path (async; via git_status_summary).
   annotateFooterBranches(ws);
 }
 
@@ -1304,10 +1320,12 @@ modalTerminalCmdEl.addEventListener("keydown", (e) => {
   }
 });
 
-// --- Per-project terminal font override (Edit page) ------------------------
+// --- Per-project terminal font override (right panel) ----------------------
 // This project can pin its own terminal font on top of the global app font. The
 // override is stored on the workspace (font_override); project.js resolves it
-// per terminal group. The controls reuse the global font catalog (settings.js).
+// per terminal group. The controls live in the right panel (cmd-section-font)
+// so a change previews live on this project's terminals; they reuse the global
+// font catalog (settings.js).
 
 let fontOptionsBuilt = false;
 /** Fill the family/weight selects once from the shared catalog. */
@@ -1400,6 +1418,17 @@ for (const el of [fontSizeEl, fontLineHeightEl, fontLetterSpacingEl]) {
   el?.addEventListener("input", liveFontOverride);
   el?.addEventListener("change", persistFontOverride);
 }
+
+// Keep the panel's font controls in step with the selected project. Guard by id
+// so a background refresh (same project) never resets a slider mid-drag; a real
+// project switch re-seeds from the new project's saved override.
+let fontSeededId = null;
+window.addEventListener("project-selected", () => {
+  const ws = selected();
+  if (!ws || ws.id === fontSeededId) return;
+  fontSeededId = ws.id;
+  renderFontOverride(ws);
+});
 
 modalChangePrimaryBtn.addEventListener("click", async () => {
   const ws = selected();

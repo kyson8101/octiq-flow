@@ -1,9 +1,8 @@
 // File-browser backend (Files / Documentation right-click actions). Lists the
-// direct children of one folder for the center file browser. Unlike the
-// dashboard's `list_docs` (which swallows errors so the grid always renders),
-// this command MUST surface failures: a missing path, a non-directory, or a
-// permission error comes back as `Err(message)` so the browser panel can show
-// it to the user. The frontend opens a file with the opener plugin, not here.
+// direct children of one folder for the center file browser. This command MUST
+// surface failures: a missing path, a non-directory, or a permission error
+// comes back as `Err(message)` so the browser panel can show it to the user.
+// The frontend opens a file with the opener plugin, not here.
 use std::fs;
 use std::path::{Path, PathBuf};
 
