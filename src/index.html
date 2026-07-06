@@ -112,9 +112,11 @@
              to return it to the active list. Always shown so it stays a drop
              target even when empty. workspaces.js fills #workspace-shelf. -->
         <section id="workspace-shelf-section" class="ws-shelf-section">
-          <div class="sidebar-head ws-shelf-head">
+          <button id="workspace-shelf-toggle" class="sidebar-head ws-shelf-head" aria-expanded="true" data-tip="Collapse shelved">
+            <svg class="ws-shelf-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
             <span class="sidebar-title">Shelved</span>
-          </div>
+            <span id="workspace-shelf-count" class="ws-shelf-count"></span>
+          </button>
           <ul id="workspace-shelf" class="ws-list ws-shelf-list"></ul>
           <p id="workspace-shelf-empty" class="ws-shelf-empty">Drag a project here, or right-click one and pick “Shelve”, to set it aside.</p>
         </section>

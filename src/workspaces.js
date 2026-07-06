@@ -30,6 +30,8 @@ const emptyEl = document.querySelector("#workspace-empty");
 const shelfListEl = document.querySelector("#workspace-shelf");
 const shelfEmptyEl = document.querySelector("#workspace-shelf-empty");
 const shelfSectionEl = document.querySelector("#workspace-shelf-section");
+const shelfToggleBtn = document.querySelector("#workspace-shelf-toggle");
+const shelfCountEl = document.querySelector("#workspace-shelf-count");
 const newBtn = document.querySelector("#new-workspace");
 const sidebarEl = document.querySelector(".sidebar");
 const sidebarToggleBtn = document.querySelector("#sidebar-toggle");
@@ -457,6 +459,8 @@ function renderShelf() {
   const shelved = workspaces.filter((w) => w.shelved);
   shelfListEl.innerHTML = "";
   shelfEmptyEl.classList.toggle("hidden", shelved.length > 0);
+  // Count badge on the header — the only shelf detail visible when collapsed.
+  shelfCountEl.textContent = shelved.length || "";
 
   for (const ws of shelved) {
     const li = document.createElement("li");
@@ -617,6 +621,8 @@ shelfSectionEl.addEventListener("dragover", (e) => {
   e.preventDefault();
   e.dataTransfer.dropEffect = "move";
   clearDropMarkers(); // drop the row insert-markers left from the list above
+  // Dragging a project onto a folded shelf opens it, so the drop lands in view.
+  if (shelfSectionEl.classList.contains("collapsed")) applyShelfCollapsed(false);
   shelfSectionEl.classList.add("drop-target");
 });
 shelfSectionEl.addEventListener("dragleave", (e) => {
@@ -918,6 +924,28 @@ sidebarToggleBtn.addEventListener("click", () => {
   const collapsed = !sidebarEl.classList.contains("collapsed");
   applySidebarCollapsed(collapsed);
   localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? "1" : "0");
+});
+
+// --- Collapse / expand the Shelved section ---------------------------------
+// The shelf can be folded down to just its header (rows + hint hidden) so the
+// active project list gets the whole sidebar. State persists in localStorage.
+const SHELF_COLLAPSE_KEY = "octiq.shelfCollapsed";
+
+function applyShelfCollapsed(collapsed) {
+  shelfSectionEl.classList.toggle("collapsed", collapsed);
+  shelfToggleBtn.setAttribute("aria-expanded", String(!collapsed));
+  shelfToggleBtn.setAttribute(
+    "data-tip",
+    collapsed ? "Expand shelved" : "Collapse shelved",
+  );
+}
+
+applyShelfCollapsed(localStorage.getItem(SHELF_COLLAPSE_KEY) === "1");
+
+shelfToggleBtn.addEventListener("click", () => {
+  const collapsed = !shelfSectionEl.classList.contains("collapsed");
+  applyShelfCollapsed(collapsed);
+  localStorage.setItem(SHELF_COLLAPSE_KEY, collapsed ? "1" : "0");
 });
 
 newModalPickBtn.addEventListener("click", async () => {

@@ -875,23 +875,30 @@ body {
 }
 
 .ws-item {
+  position: relative;
   display: flex;
   align-items: stretch;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   font-size: 13px;
   color: var(--fg-1);
   cursor: pointer;
+  transition:
+    background 0.12s ease,
+    box-shadow 0.12s ease;
 }
 
 .ws-item:hover {
   background: var(--bg-1);
 }
 
-/* Selected project: a subtle blue-tinted wash instead of a loud solid fill, so
-   the row reads as "current" without shouting. The per-project accent bar on the
-   left still marks identity. */
+.ws-item:active {
+  transform: translateY(0.5px);
+}
+
+/* Selected project: a subtle blue-tinted wash so the row reads as "current"
+   without shouting. No left-edge accent strip — that pattern is forbidden. */
 .ws-item.selected {
   background: var(--accent-tint);
   color: var(--fg-0);
@@ -1092,11 +1099,72 @@ body {
   border-top: 1px solid var(--border);
 }
 
-/* Quieter than the main "Projects" header. */
+/* Quieter than the main "Projects" header, and it is a button (click to
+   collapse/expand the shelf). Reset the native button chrome and pack the
+   chevron + title + count to the left. */
 .ws-shelf-head {
   height: auto;
   padding: 8px 12px;
   border-bottom: none;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.ws-shelf-head:hover .sidebar-title,
+.ws-shelf-head:hover .ws-shelf-chevron {
+  color: var(--fg-1);
+}
+
+/* Disclosure chevron: points down when open, rotates to point right when the
+   section is folded. */
+.ws-shelf-chevron {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  transition: transform 0.15s ease;
+}
+
+.ws-shelf-section.collapsed .ws-shelf-chevron {
+  transform: rotate(-90deg);
+}
+
+/* Count of shelved projects — the only shelf detail visible when folded.
+   Hidden when zero (renderShelf writes "" then). */
+.ws-shelf-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+  background: var(--bg-1);
+  border-radius: 999px;
+}
+
+.ws-shelf-count:empty {
+  display: none;
+}
+
+/* Folded: shrink to just the header and hide the rows + empty hint. */
+.ws-shelf-section.collapsed {
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.ws-shelf-section.collapsed .ws-shelf-list,
+.ws-shelf-section.collapsed .ws-shelf-empty {
+  display: none;
 }
 
 .ws-shelf-empty {
