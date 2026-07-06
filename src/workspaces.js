@@ -11,11 +11,10 @@ import { ICONS } from "/icons.js";
 import { openCtxMenu } from "/ctxmenu.js";
 import {
   buildFontOptions,
-  buildWeightOptions,
   buildThemeInputs,
   readThemeInputs,
   fillThemeInputs,
-  fillFontDatalist,
+  appendSystemFontOptions,
   paintPreview,
   getTerminalSettings,
   resolveTerminalSettings,
@@ -77,11 +76,8 @@ const customFontFieldEl = document.querySelector("#modal-custom-font-field");
 const customFontEl = document.querySelector("#modal-custom-font");
 const fontWeightEl = document.querySelector("#modal-font-weight");
 const fontSizeEl = document.querySelector("#modal-font-size");
-const fontSizeValEl = document.querySelector("#modal-font-size-val");
 const fontLineHeightEl = document.querySelector("#modal-line-height");
-const fontLineHeightValEl = document.querySelector("#modal-line-height-val");
 const fontLetterSpacingEl = document.querySelector("#modal-letter-spacing");
-const fontLetterSpacingValEl = document.querySelector("#modal-letter-spacing-val");
 const fontPreviewEl = document.querySelector("#modal-font-preview");
 const fontMakeGlobalEl = document.querySelector("#modal-font-make-global");
 // Per-project terminal color override (right panel). Stored in the SAME
@@ -1349,18 +1345,19 @@ let fontOptionsBuilt = false;
 function ensureFontOptions() {
   if (fontOptionsBuilt || !fontFamilyEl) return;
   buildFontOptions(fontFamilyEl);
-  buildWeightOptions(fontWeightEl);
   buildThemeInputs(themeGridEl, "modal-theme");
   fontOptionsBuilt = true;
+  // Add the installed system fonts to the family <select>, then re-seed so a
+  // saved "sys:<Family>" pick selects its option once the group exists.
+  appendSystemFontOptions(fontFamilyEl).then(() => {
+    const ws = selected();
+    if (ws) renderFontOverride(ws);
+  });
 }
 
-/** Show the custom-font text box only when the family select is "Custom", and
- *  fill its font-name suggestions the first time it appears. */
+/** Show the custom-font text box only when the family select is "Custom". */
 function syncCustomFontField() {
-  if (!customFontFieldEl) return;
-  const isCustom = fontFamilyEl.value === "custom";
-  customFontFieldEl.hidden = !isCustom;
-  if (isCustom) fillFontDatalist(document.querySelector("#modal-custom-font-list"));
+  if (customFontFieldEl) customFontFieldEl.hidden = fontFamilyEl.value !== "custom";
 }
 
 /** Read the current override controls into the stored shape. Carries both the
@@ -1380,13 +1377,10 @@ function currentFontOverride() {
   };
 }
 
-/** Update the range read-outs and the preview from the current controls. The
- *  preview shows the effective font (override overlaid on the global settings),
- *  so a disabled override previews the global font. */
+/** Update the preview from the current controls. The preview shows the effective
+ *  font (override overlaid on the global settings), so a disabled override
+ *  previews the global font. */
 function paintFontOverridePreview() {
-  fontSizeValEl.textContent = `${fontSizeEl.value}px`;
-  fontLineHeightValEl.textContent = Number(fontLineHeightEl.value).toFixed(2);
-  fontLetterSpacingValEl.textContent = `${fontLetterSpacingEl.value}px`;
   paintPreview(fontPreviewEl, resolveTerminalSettings(currentFontOverride()));
 }
 
@@ -1454,17 +1448,17 @@ fontFamilyEl?.addEventListener("change", () => {
   persistFontOverride();
 });
 // Weight select commits on change: apply live + persist.
-fontWeightEl?.addEventListener("change", () => {
-  liveFontOverride();
-  persistFontOverride();
-});
 // Custom-font text: apply live per keystroke, persist on blur/commit.
 customFontEl?.addEventListener("input", liveFontOverride);
 customFontEl?.addEventListener("change", persistFontOverride);
-// Ranges apply live while dragging (input) and persist on release (change).
-for (const el of [fontSizeEl, fontLineHeightEl, fontLetterSpacingEl]) {
-  el?.addEventListener("input", liveFontOverride);
-  el?.addEventListener("change", persistFontOverride);
+// Numeric fields (weight/size/line-height/letter-spacing) commit on "change"
+// — blur / Enter / spinner — not per keystroke, so an intermediate value is not
+// clamped and pushed to the terminals mid-entry (e.g. "1" → 8 while typing "13").
+for (const el of [fontWeightEl, fontSizeEl, fontLineHeightEl, fontLetterSpacingEl]) {
+  el?.addEventListener("change", () => {
+    liveFontOverride();
+    persistFontOverride();
+  });
 }
 
 // --- Per-project color override -------------------------------------------

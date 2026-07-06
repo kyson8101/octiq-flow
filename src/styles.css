@@ -557,10 +557,9 @@ body {
   display: none;
 }
 
-/* Font controls sit in the narrow panel now: let selects/ranges fill the width
-   and drop the page-sized help margins. */
-.cmd-section-font .settings-select,
-.cmd-section-font .settings-range {
+/* Font controls sit in the narrow panel now: let selects fill the width and drop
+   the page-sized help margins. */
+.cmd-section-font .settings-select {
   max-width: none;
 }
 
@@ -1868,6 +1867,8 @@ body {
   border-color: var(--accent);
 }
 
+/* Generic inline row: an input plus a trailing control (used by the Profiles
+   section). */
 .settings-range-row {
   display: flex;
   align-items: center;
@@ -1875,17 +1876,19 @@ body {
   width: 100%;
 }
 
-.settings-range {
-  flex: 1;
-  max-width: 280px;
-  accent-color: var(--accent);
+/* Numeric fields (font weight, size, line height, letter spacing). */
+.settings-number {
+  width: 90px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--fg-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: none;
 }
-
-.settings-range-val {
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  color: var(--fg-2);
-  min-width: 34px;
+.settings-number:focus {
+  border-color: var(--accent);
 }
 
 /* Free-text font name (shown when Font family = Custom). */

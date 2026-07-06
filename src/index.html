@@ -385,37 +385,27 @@
               <!-- Shown by workspaces.js only when Font family = Custom. -->
               <div class="settings-field" id="modal-custom-font-field" hidden>
                 <label class="settings-label" for="modal-custom-font">Custom font name</label>
-                <input id="modal-custom-font" class="settings-input" type="text" list="modal-custom-font-list" autocomplete="off" spellcheck="false" placeholder="e.g. Cascadia Code" />
-                <datalist id="modal-custom-font-list"></datalist>
+                <input id="modal-custom-font" class="settings-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Cascadia Code" />
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="modal-font-weight">Font weight</label>
-                <select id="modal-font-weight" class="settings-select"></select>
+                <input id="modal-font-weight" class="settings-number" type="number" min="100" max="900" step="100" />
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="modal-font-size">Font size</label>
-                <div class="settings-range-row">
-                  <input id="modal-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
-                  <span id="modal-font-size-val" class="settings-range-val"></span>
-                </div>
+                <input id="modal-font-size" class="settings-number" type="number" min="8" max="28" step="1" />
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="modal-line-height">Line height</label>
-                <div class="settings-range-row">
-                  <input id="modal-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
-                  <span id="modal-line-height-val" class="settings-range-val"></span>
-                </div>
+                <input id="modal-line-height" class="settings-number" type="number" min="1" max="2.5" step="0.05" />
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="modal-letter-spacing">Letter spacing</label>
-                <div class="settings-range-row">
-                  <input id="modal-letter-spacing" class="settings-range" type="range" min="0" max="8" step="1" />
-                  <span id="modal-letter-spacing-val" class="settings-range-val"></span>
-                </div>
+                <input id="modal-letter-spacing" class="settings-number" type="number" min="0" max="8" step="1" />
               </div>
 
               <div class="settings-field">
@@ -626,14 +616,13 @@
                    monospace font installed on this Mac. -->
               <div class="settings-field" id="term-custom-font-field" hidden>
                 <label class="settings-label" for="term-custom-font">Custom font name</label>
-                <input id="term-custom-font" class="settings-input" type="text" list="term-custom-font-list" autocomplete="off" spellcheck="false" placeholder="e.g. Cascadia Code, IBM Plex Mono" />
-                <datalist id="term-custom-font-list"></datalist>
-                <p class="settings-help">Type or pick a font installed on this Mac. Falls back to a generic monospace if it is not found.</p>
+                <input id="term-custom-font" class="settings-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. Cascadia Code, IBM Plex Mono" />
+                <p class="settings-help">Any font family name. Or pick one from "All installed fonts" in the list above. Falls back to a generic monospace if it is not found.</p>
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="term-font-weight">Font weight</label>
-                <select id="term-font-weight" class="settings-select"></select>
+                <input id="term-font-weight" class="settings-number" type="number" min="100" max="900" step="100" />
                 <p class="settings-help">
                   Bundled fonts ship regular and bold faces, so Light/Medium
                   render as Regular and Semi-bold as Bold. System fonts use
@@ -643,26 +632,17 @@
 
               <div class="settings-field">
                 <label class="settings-label" for="term-font-size">Font size</label>
-                <div class="settings-range-row">
-                  <input id="term-font-size" class="settings-range" type="range" min="8" max="28" step="1" />
-                  <span id="term-font-size-val" class="settings-range-val"></span>
-                </div>
+                <input id="term-font-size" class="settings-number" type="number" min="8" max="28" step="1" />
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="term-line-height">Line height</label>
-                <div class="settings-range-row">
-                  <input id="term-line-height" class="settings-range" type="range" min="1" max="2.5" step="0.05" />
-                  <span id="term-line-height-val" class="settings-range-val"></span>
-                </div>
+                <input id="term-line-height" class="settings-number" type="number" min="1" max="2.5" step="0.05" />
               </div>
 
               <div class="settings-field">
                 <label class="settings-label" for="term-letter-spacing">Letter spacing</label>
-                <div class="settings-range-row">
-                  <input id="term-letter-spacing" class="settings-range" type="range" min="0" max="8" step="1" />
-                  <span id="term-letter-spacing-val" class="settings-range-val"></span>
-                </div>
+                <input id="term-letter-spacing" class="settings-number" type="number" min="0" max="8" step="1" />
               </div>
 
               <div class="settings-field">

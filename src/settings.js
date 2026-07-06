@@ -95,17 +95,12 @@ export const WINDOWS_SHELLS = [
   { id: "cmd", label: "Command Prompt (cmd.exe)" },
 ];
 
-/** Font weight choices for terminal text. The bundled fonts ship 400 and 700
- *  faces only, so for them 300/500 render with the regular face and 600 with
- *  the bold face (CSS nearest-face matching); system fonts use whichever
- *  weights are installed. Bold ANSI text keeps xterm's own fontWeightBold. */
-export const FONT_WEIGHTS = [
-  { value: 300, label: "Light (300)" },
-  { value: 400, label: "Regular (400)" },
-  { value: 500, label: "Medium (500)" },
-  { value: 600, label: "Semi-bold (600)" },
-  { value: 700, label: "Bold (700)" },
-];
+// Terminal font weight range. Any CSS weight 100–900 is allowed (variable and
+// multi-face fonts use the in-between values); the bundled fonts ship 400 + 700
+// only and snap the rest to the nearest available face. Bold ANSI text keeps
+// xterm's own fontWeightBold.
+export const FONT_WEIGHT_MIN = 100;
+export const FONT_WEIGHT_MAX = 900;
 
 export const DEFAULT_TERMINAL_SETTINGS = {
   fontId: "fira-code",
@@ -135,13 +130,13 @@ export const LINE_HEIGHT_MAX = 2.5;
 export const LETTER_SPACING_MIN = 0;
 export const LETTER_SPACING_MAX = 8;
 
-/** The font weight if it is a known choice, else the default. Keeps a corrupt
- *  saved value from reaching xterm as a nonsense weight. */
+/** A safe font weight: the value rounded and clamped to [100, 900]. A corrupt or
+ *  non-numeric saved value falls back to the default, so xterm never gets a
+ *  nonsense weight. */
 export function fontWeightOf(value) {
   const n = Number(value);
-  return FONT_WEIGHTS.some((w) => w.value === n)
-    ? n
-    : DEFAULT_TERMINAL_SETTINGS.fontWeight;
+  if (!Number.isFinite(n)) return DEFAULT_TERMINAL_SETTINGS.fontWeight;
+  return Math.min(FONT_WEIGHT_MAX, Math.max(FONT_WEIGHT_MIN, Math.round(n)));
 }
 
 const KEY = "octiq.terminal.settings";
@@ -178,6 +173,13 @@ export function resolveTheme(saved) {
 /** The catalog entry for a font id, or the default font when the id is unknown
  *  (e.g. a renamed/removed font in an old saved value). Never returns null. */
 export function fontById(id) {
+  // A "sys:<Family>" id is a system font picked from the auto-listed group
+  // (fonts.rs list_fonts). It has no fixed catalog entry, so synthesize one with
+  // a stack built from the family name.
+  if (typeof id === "string" && id.startsWith("sys:")) {
+    const name = id.slice(4);
+    return { id, label: name, kind: "system", stack: customFontStack(name) };
+  }
   return (
     TERMINAL_FONTS.find((f) => f.id === id) ||
     TERMINAL_FONTS.find((f) => f.id === DEFAULT_TERMINAL_SETTINGS.fontId)
@@ -359,38 +361,42 @@ export function buildFontOptions(select) {
 let fontListPromise = null;
 
 /** The installed system fonts, loaded once and reused. Resolves to [] on any
- *  backend error, so a caller can always iterate the result. */
+ *  backend error (and clears the cache so a later call can retry — e.g. after a
+ *  rebuild that adds the command). Always resolves to an array. */
 export function loadSystemFonts() {
   if (!fontListPromise) {
-    fontListPromise = invoke("list_fonts").catch(() => []);
+    fontListPromise = invoke("list_fonts")
+      .then((list) => (Array.isArray(list) ? list : []))
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn("[octiq] list_fonts failed (is the app rebuilt with the fonts command?):", err);
+        fontListPromise = null; // allow a retry on the next call
+        return [];
+      });
   }
   return fontListPromise;
 }
 
-/** Fill a <datalist> with the installed system fonts, once. Called lazily when
- *  the custom-font box is first shown, so the OS font scan only runs if the user
- *  actually reaches the custom option. Safe to call repeatedly (guarded). */
-export async function fillFontDatalist(datalist) {
-  if (!datalist || datalist.dataset.filled) return;
-  datalist.dataset.filled = "1"; // set first so concurrent calls don't double-fill
+/** Append the installed system fonts as an <optgroup> to a font-family <select>,
+ *  once. Each option's value is `sys:<Family>` (fontById turns that into a real
+ *  font stack). Used instead of a <datalist> because WKWebView renders <select>
+ *  reliably but <datalist> dropdowns barely at all. Called lazily so the OS font
+ *  scan only runs when a font picker is actually shown; a failed/empty load
+ *  leaves the group unfilled so a later call retries. */
+export async function appendSystemFontOptions(select) {
+  if (!select || select.dataset.sysFilled) return;
   const fonts = await loadSystemFonts();
-  const opts = fonts.map((name) => {
+  if (!fonts.length) return;
+  select.dataset.sysFilled = "1";
+  const optgroup = document.createElement("optgroup");
+  optgroup.label = "All installed fonts";
+  for (const name of fonts) {
     const opt = document.createElement("option");
-    opt.value = name;
-    return opt;
-  });
-  datalist.replaceChildren(...opts);
-}
-
-/** Fill the font-weight <select> with the weight catalog. Exported so the
- *  per-project font-override editor (workspaces.js) reuses it. */
-export function buildWeightOptions(select) {
-  for (const w of FONT_WEIGHTS) {
-    const opt = document.createElement("option");
-    opt.value = String(w.value);
-    opt.textContent = w.label;
-    select.append(opt);
+    opt.value = `sys:${name}`;
+    opt.textContent = name;
+    optgroup.append(opt);
   }
+  select.append(optgroup);
 }
 
 /** Paint the preview box with the given settings so it always matches the pick.
@@ -492,11 +498,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const fontSel = document.getElementById("term-font-family");
   const weightSel = document.getElementById("term-font-weight");
   const sizeInput = document.getElementById("term-font-size");
-  const sizeVal = document.getElementById("term-font-size-val");
   const lineInput = document.getElementById("term-line-height");
-  const lineVal = document.getElementById("term-line-height-val");
   const spacingInput = document.getElementById("term-letter-spacing");
-  const spacingVal = document.getElementById("term-letter-spacing-val");
   const preview = document.getElementById("term-font-preview");
   const customField = document.getElementById("term-custom-font-field");
   const customInput = document.getElementById("term-custom-font");
@@ -506,28 +509,24 @@ document.addEventListener("DOMContentLoaded", () => {
   if (!fontSel || !sizeInput || !lineInput) return;
 
   buildFontOptions(fontSel);
-  if (weightSel) buildWeightOptions(weightSel);
   if (themeGrid) buildThemeInputs(themeGrid, "term-theme");
 
   // Seed every control from the saved settings.
   const reflect = (s) => {
     fontSel.value = s.fontId;
     if (customInput) customInput.value = s.customFont;
-    if (customField) {
-      customField.hidden = s.fontId !== "custom";
-      if (s.fontId === "custom") fillFontDatalist(document.getElementById("term-custom-font-list"));
-    }
+    if (customField) customField.hidden = s.fontId !== "custom";
     if (weightSel) weightSel.value = String(s.fontWeight);
     sizeInput.value = String(s.fontSize);
-    if (sizeVal) sizeVal.textContent = `${s.fontSize}px`;
     lineInput.value = String(s.lineHeight);
-    if (lineVal) lineVal.textContent = s.lineHeight.toFixed(2);
     if (spacingInput) spacingInput.value = String(s.letterSpacing);
-    if (spacingVal) spacingVal.textContent = `${s.letterSpacing}px`;
     if (themeGrid) fillThemeInputs(themeGrid, s.theme);
     paintPreview(preview, s);
   };
   reflect(getTerminalSettings());
+  // Add every installed system font to the family <select>, then re-reflect so a
+  // saved "sys:<Family>" pick selects its option once the group exists.
+  appendSystemFontOptions(fontSel).then(() => reflect(getTerminalSettings()));
 
   // Re-reflect when settings change from elsewhere — the per-profile file load at
   // boot (initTerminalSettings), or another tab/control — so the page always
@@ -536,13 +535,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Each control saves its slice; saveTerminalSettings fires the change event
   // that updates open terminals. We reflect the returned (clamped) value so the
-  // readouts and preview always show what was actually stored.
+  // controls and preview always show what was actually stored. The numeric
+  // fields commit on "change" (blur / Enter / spinner), not per keystroke, so
+  // clamping never rewrites the box mid-typing (e.g. "1" → 8 while typing "13").
   fontSel.addEventListener("change", () => reflect(saveTerminalSettings({ fontId: fontSel.value })));
   customInput?.addEventListener("input", () => reflect(saveTerminalSettings({ customFont: customInput.value })));
   weightSel?.addEventListener("change", () => reflect(saveTerminalSettings({ fontWeight: Number(weightSel.value) })));
-  sizeInput.addEventListener("input", () => reflect(saveTerminalSettings({ fontSize: Number(sizeInput.value) })));
-  lineInput.addEventListener("input", () => reflect(saveTerminalSettings({ lineHeight: Number(lineInput.value) })));
-  spacingInput?.addEventListener("input", () => reflect(saveTerminalSettings({ letterSpacing: Number(spacingInput.value) })));
+  sizeInput.addEventListener("change", () => reflect(saveTerminalSettings({ fontSize: Number(sizeInput.value) })));
+  lineInput.addEventListener("change", () => reflect(saveTerminalSettings({ lineHeight: Number(lineInput.value) })));
+  spacingInput?.addEventListener("change", () => reflect(saveTerminalSettings({ letterSpacing: Number(spacingInput.value) })));
   // Color inputs: save the whole grid on any change (native color inputs fire
   // 'input' live while dragging in the picker).
   themeGrid?.addEventListener("input", () => reflect(saveTerminalSettings({ theme: readThemeInputs(themeGrid) })));
