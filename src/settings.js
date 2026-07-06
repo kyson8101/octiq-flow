@@ -41,6 +41,48 @@ export const TERMINAL_FONTS = [
   { id: "cjk-hiragino", label: "Hiragino Sans GB 冬青黑体", kind: "cjk", stack: `"JetBrains Mono", "Hiragino Sans GB", Menlo, monospace` },
   { id: "cjk-heiti", label: "Heiti SC 黑体", kind: "cjk", stack: `"JetBrains Mono", "Heiti SC", "STHeiti", Menlo, monospace` },
   { id: "cjk-songti", label: "Songti SC 宋体 (serif)", kind: "cjk", stack: `"JetBrains Mono", "Songti SC", "STSong", Menlo, monospace` },
+  // Custom: the user types any font family name installed on their machine. The
+  // stack is not fixed here — getTerminalSettings/resolveTerminalSettings build
+  // it from the saved `customFont` string via customFontStack(). The stack below
+  // is only the fallback used when the custom name is empty.
+  { id: "custom", label: "Custom (type a font name)…", kind: "custom", stack: `Menlo, monospace` },
+];
+
+/** CSS font-family value for a user-typed custom font name. Quotes the name and
+ *  always appends a monospace fallback, so an empty or bad name degrades to
+ *  monospace instead of breaking xterm. Strips quotes/backslash/semicolon so the
+ *  name can never break out of the CSS value. */
+export function customFontStack(name) {
+  const clean = String(name || "").trim().replace(/["\\;]/g, "");
+  return clean ? `"${clean}", Menlo, monospace` : `Menlo, monospace`;
+}
+
+/** The terminal color theme. Each entry maps an xterm ITheme key to a label and
+ *  a default `#rrggbb` (the app's dark palette + a One-Dark-ish ANSI set). The
+ *  four non-ANSI keys come first (they matter most), then the 8 ANSI + 8 bright
+ *  colors. Exported so the global Settings page and the per-project override
+ *  editor build the same set of color inputs. */
+export const THEME_COLORS = [
+  { key: "background", label: "Background", def: "#141417" },
+  { key: "foreground", label: "Text", def: "#c9c9c5" },
+  { key: "cursor", label: "Cursor", def: "#8fbfa8" },
+  { key: "selectionBackground", label: "Selection", def: "#31443c" },
+  { key: "black", label: "Black", def: "#1c1c1c" },
+  { key: "red", label: "Red", def: "#e06c75" },
+  { key: "green", label: "Green", def: "#98c379" },
+  { key: "yellow", label: "Yellow", def: "#e5c07b" },
+  { key: "blue", label: "Blue", def: "#61afef" },
+  { key: "magenta", label: "Magenta", def: "#c678dd" },
+  { key: "cyan", label: "Cyan", def: "#56b6c2" },
+  { key: "white", label: "White", def: "#abb2bf" },
+  { key: "brightBlack", label: "Bright black", def: "#5c6370" },
+  { key: "brightRed", label: "Bright red", def: "#e06c75" },
+  { key: "brightGreen", label: "Bright green", def: "#98c379" },
+  { key: "brightYellow", label: "Bright yellow", def: "#e5c07b" },
+  { key: "brightBlue", label: "Bright blue", def: "#61afef" },
+  { key: "brightMagenta", label: "Bright magenta", def: "#c678dd" },
+  { key: "brightCyan", label: "Bright cyan", def: "#56b6c2" },
+  { key: "brightWhite", label: "Bright white", def: "#ffffff" },
 ];
 
 /** The shell choices shown in the Windows-only picker. `id` is the value sent
@@ -67,6 +109,7 @@ export const FONT_WEIGHTS = [
 
 export const DEFAULT_TERMINAL_SETTINGS = {
   fontId: "fira-code",
+  customFont: "",
   fontSize: 13,
   fontWeight: 400,
   lineHeight: 1.0,
@@ -114,6 +157,24 @@ function clamp(value, lo, hi, fallback) {
   return Math.min(hi, Math.max(lo, n));
 }
 
+/** `v` when it is a `#rgb` or `#rrggbb` hex color, else `fallback`. Keeps a
+ *  hand-edited or corrupt saved color from reaching xterm as a bad value. */
+function validHex(v, fallback) {
+  const s = String(v || "").trim();
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s) ? s : fallback;
+}
+
+/** A full xterm theme object: every THEME_COLORS key, taken from `saved` when it
+ *  holds a valid hex there, else the catalog default. Always returns all keys,
+ *  so callers can hand it straight to xterm. `saved` may be a partial object,
+ *  null, or corrupt — each missing/bad key degrades to its default. */
+export function resolveTheme(saved) {
+  const src = saved && typeof saved === "object" ? saved : {};
+  const theme = {};
+  for (const c of THEME_COLORS) theme[c.key] = validHex(src[c.key], c.def);
+  return theme;
+}
+
 /** The catalog entry for a font id, or the default font when the id is unknown
  *  (e.g. a renamed/removed font in an old saved value). Never returns null. */
 export function fontById(id) {
@@ -147,41 +208,69 @@ function readSaved() {
 export function getTerminalSettings() {
   const saved = readSaved();
   const font = fontById(saved.fontId);
+  const customFont = String(saved.customFont || "");
   return {
     fontId: font.id,
-    fontFamily: font.stack,
+    customFont,
+    fontFamily: font.id === "custom" ? customFontStack(customFont) : font.stack,
     fontSize: clamp(saved.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, DEFAULT_TERMINAL_SETTINGS.fontSize),
     fontWeight: fontWeightOf(saved.fontWeight),
     lineHeight: clamp(saved.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, DEFAULT_TERMINAL_SETTINGS.lineHeight),
     letterSpacing: Math.round(
       clamp(saved.letterSpacing, LETTER_SPACING_MIN, LETTER_SPACING_MAX, DEFAULT_TERMINAL_SETTINGS.letterSpacing),
     ),
+    theme: resolveTheme(saved.theme),
     shell: shellById(saved.shell),
   };
 }
 
-/** Resolve terminal font settings for one project, overlaying its per-project
+/** Resolve terminal appearance for one project, overlaying its per-project
  *  override on the global settings. `override` is the raw object saved on a
- *  workspace (its `font_override`), or null/undefined. When it is missing or its
- *  `enabled` flag is false, the global settings are returned unchanged. When it
- *  is enabled, each field it carries overrides the global one, clamped to the
- *  same safe ranges (a corrupt/partial override degrades to the global value).
- *  Always returns a full, resolved settings object (including the fontFamily
- *  stack), so callers can hand it straight to xterm. */
+ *  workspace (its `font_override` — the field name is historical; the object now
+ *  carries BOTH the font override, gated by `enabled`, AND the color-theme
+ *  override, gated by `themeEnabled`), or null/undefined. The two gates are
+ *  independent: a project can override just the font, just the colors, both, or
+ *  neither. Each overridden field is clamped/validated to the same safe ranges,
+ *  so a corrupt/partial override degrades to the global value. Always returns a
+ *  full, resolved settings object, so callers can hand it straight to xterm. */
 export function resolveTerminalSettings(override) {
   const base = getTerminalSettings();
-  if (!override || typeof override !== "object" || !override.enabled) return base;
-  const font = fontById(override.fontId || base.fontId);
+  const ov = override && typeof override === "object" ? override : {};
+
+  let font = base;
+  if (ov.enabled) {
+    const f = fontById(ov.fontId || base.fontId);
+    const customFont = ov.customFont != null ? String(ov.customFont) : base.customFont;
+    font = {
+      fontId: f.id,
+      customFont,
+      fontFamily: f.id === "custom" ? customFontStack(customFont) : f.stack,
+      fontSize: clamp(ov.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, base.fontSize),
+      fontWeight: ov.fontWeight != null ? fontWeightOf(ov.fontWeight) : base.fontWeight,
+      lineHeight: clamp(ov.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, base.lineHeight),
+      letterSpacing: Math.round(
+        clamp(ov.letterSpacing, LETTER_SPACING_MIN, LETTER_SPACING_MAX, base.letterSpacing),
+      ),
+    };
+  }
+
+  // Theme override overlays per key on the global theme (each valid override
+  // color wins; missing/bad ones keep the global value).
+  let theme = base.theme;
+  if (ov.themeEnabled) {
+    theme = { ...base.theme };
+    for (const c of THEME_COLORS) theme[c.key] = validHex(ov.theme?.[c.key], theme[c.key]);
+  }
+
   return {
-    fontId: font.id,
-    fontFamily: font.stack,
-    fontSize: clamp(override.fontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, base.fontSize),
-    fontWeight:
-      override.fontWeight != null ? fontWeightOf(override.fontWeight) : base.fontWeight,
-    lineHeight: clamp(override.lineHeight, LINE_HEIGHT_MIN, LINE_HEIGHT_MAX, base.lineHeight),
-    letterSpacing: Math.round(
-      clamp(override.letterSpacing, LETTER_SPACING_MIN, LETTER_SPACING_MAX, base.letterSpacing),
-    ),
+    fontId: font.fontId,
+    customFont: font.customFont,
+    fontFamily: font.fontFamily,
+    fontSize: font.fontSize,
+    fontWeight: font.fontWeight,
+    lineHeight: font.lineHeight,
+    letterSpacing: font.letterSpacing,
+    theme,
     shell: base.shell,
   };
 }
@@ -193,10 +282,12 @@ export function saveTerminalSettings(partial) {
   const next = { ...getTerminalSettings(), ...partial };
   const raw = {
     fontId: next.fontId,
+    customFont: next.customFont,
     fontSize: next.fontSize,
     fontWeight: next.fontWeight,
     lineHeight: next.lineHeight,
     letterSpacing: next.letterSpacing,
+    theme: resolveTheme(next.theme),
     shell: next.shell,
   };
   savedCache = raw;
@@ -262,6 +353,35 @@ export function buildFontOptions(select) {
   }
 }
 
+// All installed system font family names, fetched from the backend (fonts.rs
+// `list_fonts`) once per session. The backend caches the OS scan too, so this is
+// doubly cheap; the promise cache here just avoids a second IPC round-trip.
+let fontListPromise = null;
+
+/** The installed system fonts, loaded once and reused. Resolves to [] on any
+ *  backend error, so a caller can always iterate the result. */
+export function loadSystemFonts() {
+  if (!fontListPromise) {
+    fontListPromise = invoke("list_fonts").catch(() => []);
+  }
+  return fontListPromise;
+}
+
+/** Fill a <datalist> with the installed system fonts, once. Called lazily when
+ *  the custom-font box is first shown, so the OS font scan only runs if the user
+ *  actually reaches the custom option. Safe to call repeatedly (guarded). */
+export async function fillFontDatalist(datalist) {
+  if (!datalist || datalist.dataset.filled) return;
+  datalist.dataset.filled = "1"; // set first so concurrent calls don't double-fill
+  const fonts = await loadSystemFonts();
+  const opts = fonts.map((name) => {
+    const opt = document.createElement("option");
+    opt.value = name;
+    return opt;
+  });
+  datalist.replaceChildren(...opts);
+}
+
 /** Fill the font-weight <select> with the weight catalog. Exported so the
  *  per-project font-override editor (workspaces.js) reuses it. */
 export function buildWeightOptions(select) {
@@ -274,7 +394,9 @@ export function buildWeightOptions(select) {
 }
 
 /** Paint the preview box with the given settings so it always matches the pick.
- *  Exported so the per-project font-override editor (workspaces.js) reuses it. */
+ *  Colors (background + text) come from the resolved theme so the preview shows
+ *  the terminal colors too. Exported so the per-project override editor
+ *  (workspaces.js) reuses it. */
 export function paintPreview(preview, settings) {
   if (!preview) return;
   preview.style.fontFamily = settings.fontFamily;
@@ -282,6 +404,51 @@ export function paintPreview(preview, settings) {
   preview.style.fontWeight = String(settings.fontWeight);
   preview.style.lineHeight = String(settings.lineHeight);
   preview.style.letterSpacing = `${settings.letterSpacing}px`;
+  if (settings.theme) {
+    preview.style.background = settings.theme.background;
+    preview.style.color = settings.theme.foreground;
+  }
+}
+
+/** Fill `container` with one native `<input type="color">` per THEME_COLORS
+ *  entry, each labelled and tagged `data-theme-key` so readThemeInputs can pull
+ *  the values back out. `idPrefix` namespaces the input ids (the global Settings
+ *  page and the per-project editor use different prefixes). Native color inputs
+ *  give a picker for free and can only ever hold a valid `#rrggbb`. */
+export function buildThemeInputs(container, idPrefix) {
+  if (!container) return;
+  container.replaceChildren();
+  for (const c of THEME_COLORS) {
+    const field = document.createElement("label");
+    field.className = "theme-color-field";
+    const input = document.createElement("input");
+    input.type = "color";
+    input.className = "theme-color-input";
+    input.id = `${idPrefix}-${c.key}`;
+    input.dataset.themeKey = c.key;
+    const span = document.createElement("span");
+    span.className = "theme-color-label";
+    span.textContent = c.label;
+    field.append(input, span);
+    container.append(field);
+  }
+}
+
+/** Read the color inputs in `container` back into a full, validated theme. */
+export function readThemeInputs(container) {
+  const raw = {};
+  for (const input of container.querySelectorAll("input[data-theme-key]")) {
+    raw[input.dataset.themeKey] = input.value;
+  }
+  return resolveTheme(raw);
+}
+
+/** Set the color inputs in `container` from a theme (defaults fill any gaps). */
+export function fillThemeInputs(container, theme) {
+  const full = resolveTheme(theme);
+  for (const input of container.querySelectorAll("input[data-theme-key]")) {
+    input.value = full[input.dataset.themeKey];
+  }
 }
 
 /** True when the app runs on Windows. The shell picker only makes sense there;
@@ -331,15 +498,25 @@ document.addEventListener("DOMContentLoaded", () => {
   const spacingInput = document.getElementById("term-letter-spacing");
   const spacingVal = document.getElementById("term-letter-spacing-val");
   const preview = document.getElementById("term-font-preview");
+  const customField = document.getElementById("term-custom-font-field");
+  const customInput = document.getElementById("term-custom-font");
+  const themeGrid = document.getElementById("term-theme-grid");
+  const themeReset = document.getElementById("term-theme-reset");
   // The settings page may not exist in every build; bail quietly if so.
   if (!fontSel || !sizeInput || !lineInput) return;
 
   buildFontOptions(fontSel);
   if (weightSel) buildWeightOptions(weightSel);
+  if (themeGrid) buildThemeInputs(themeGrid, "term-theme");
 
   // Seed every control from the saved settings.
   const reflect = (s) => {
     fontSel.value = s.fontId;
+    if (customInput) customInput.value = s.customFont;
+    if (customField) {
+      customField.hidden = s.fontId !== "custom";
+      if (s.fontId === "custom") fillFontDatalist(document.getElementById("term-custom-font-list"));
+    }
     if (weightSel) weightSel.value = String(s.fontWeight);
     sizeInput.value = String(s.fontSize);
     if (sizeVal) sizeVal.textContent = `${s.fontSize}px`;
@@ -347,6 +524,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (lineVal) lineVal.textContent = s.lineHeight.toFixed(2);
     if (spacingInput) spacingInput.value = String(s.letterSpacing);
     if (spacingVal) spacingVal.textContent = `${s.letterSpacing}px`;
+    if (themeGrid) fillThemeInputs(themeGrid, s.theme);
     paintPreview(preview, s);
   };
   reflect(getTerminalSettings());
@@ -360,10 +538,15 @@ document.addEventListener("DOMContentLoaded", () => {
   // that updates open terminals. We reflect the returned (clamped) value so the
   // readouts and preview always show what was actually stored.
   fontSel.addEventListener("change", () => reflect(saveTerminalSettings({ fontId: fontSel.value })));
+  customInput?.addEventListener("input", () => reflect(saveTerminalSettings({ customFont: customInput.value })));
   weightSel?.addEventListener("change", () => reflect(saveTerminalSettings({ fontWeight: Number(weightSel.value) })));
   sizeInput.addEventListener("input", () => reflect(saveTerminalSettings({ fontSize: Number(sizeInput.value) })));
   lineInput.addEventListener("input", () => reflect(saveTerminalSettings({ lineHeight: Number(lineInput.value) })));
   spacingInput?.addEventListener("input", () => reflect(saveTerminalSettings({ letterSpacing: Number(spacingInput.value) })));
+  // Color inputs: save the whole grid on any change (native color inputs fire
+  // 'input' live while dragging in the picker).
+  themeGrid?.addEventListener("input", () => reflect(saveTerminalSettings({ theme: readThemeInputs(themeGrid) })));
+  themeReset?.addEventListener("click", () => reflect(saveTerminalSettings({ theme: resolveTheme(null) })));
 
   wireShellPicker();
   wireAgentHookSetup();

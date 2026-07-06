@@ -24,17 +24,11 @@ import { ICONS } from "/icons.js";
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Shared dark theme for every terminal in the app. The font (family, size, line
-// height) is NOT fixed here — it comes from the user's Settings (settings.js).
-// MUST stay in sync with the CSS tokens in styles.css (:root): background =
-// --bg-0, foreground = --fg-1, cursor = --accent. The pane background blends
-// with the terminal only while these match.
-const TERM_THEME = {
-  background: "#141417",
-  foreground: "#c9c9c5",
-  cursor: "#8fbfa8",
-  selectionBackground: "#31443c",
-};
+// The terminal color theme is NOT fixed here — like the font it comes from the
+// user's Settings (settings.js `theme`), resolved per group so a project can
+// override it. The default theme's background/foreground/cursor mirror the CSS
+// tokens in styles.css (:root) so the pane background blends with the terminal
+// until the user recolors it.
 
 // Visible text of the break banner drawn between a restored session and the
 // fresh shell. Kept as a constant because we both WRITE it (on restore) and
@@ -51,7 +45,7 @@ function makeTerminal(s) {
     lineHeight: s.lineHeight,
     letterSpacing: s.letterSpacing,
     cursorBlink: true,
-    theme: TERM_THEME,
+    theme: s.theme,
     // Scrolling feel. smoothScrollDuration animates each wheel scroll over N ms
     // instead of jumping line-by-line, so the viewport glides. scrollSensitivity
     // sets how many lines one wheel notch moves; fastScroll* is the Alt-held
@@ -1426,10 +1420,11 @@ class TerminalGroup {
     if (this.activeId && this.visible()) this._fit(this.activeId);
   }
 
-  /** Resolve this group's effective font (its per-project override overlaid on
-   *  the global settings) and apply it to every open terminal, then refit the
-   *  active tab so rows/cols and the PTY size track the new glyph metrics. Called
-   *  on a global font change and whenever the project's override changes. */
+  /** Resolve this group's effective appearance (its per-project font/color
+   *  override overlaid on the global settings) and apply it to every open
+   *  terminal, then refit the active tab so rows/cols and the PTY size track the
+   *  new glyph metrics. Called on a global settings change and whenever the
+   *  project's override changes. */
   applyFontSettings() {
     const s = resolveTerminalSettings(this.fontOverride);
     for (const e of this.tabs.values()) {
@@ -1438,13 +1433,15 @@ class TerminalGroup {
       e.term.options.fontWeight = s.fontWeight;
       e.term.options.lineHeight = s.lineHeight;
       e.term.options.letterSpacing = s.letterSpacing;
+      e.term.options.theme = s.theme;
     }
     this.refitActive();
   }
 
-  /** Set this group's per-project font override (raw workspace font_override, or
-   *  null for the global font) and apply it live to every open terminal. New
-   *  terminals read the override at spawn time via resolveTerminalSettings. */
+  /** Set this group's per-project override (raw workspace font_override — the
+   *  field name is historical; it now carries the font AND color-theme override)
+   *  and apply it live to every open terminal. New terminals read it at spawn
+   *  time via resolveTerminalSettings. */
   setFontOverride(fontOverride) {
     this.fontOverride = fontOverride || null;
     this.applyFontSettings();

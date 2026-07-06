@@ -382,6 +382,13 @@
                 <select id="modal-font-family" class="settings-select"></select>
               </div>
 
+              <!-- Shown by workspaces.js only when Font family = Custom. -->
+              <div class="settings-field" id="modal-custom-font-field" hidden>
+                <label class="settings-label" for="modal-custom-font">Custom font name</label>
+                <input id="modal-custom-font" class="settings-input" type="text" list="modal-custom-font-list" autocomplete="off" spellcheck="false" placeholder="e.g. Cascadia Code" />
+                <datalist id="modal-custom-font-list"></datalist>
+              </div>
+
               <div class="settings-field">
                 <label class="settings-label" for="modal-font-weight">Font weight</label>
                 <select id="modal-font-weight" class="settings-select"></select>
@@ -414,6 +421,43 @@
               <div class="settings-field">
                 <span class="settings-label">Preview</span>
                 <pre id="modal-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
+              </div>
+
+              <div class="settings-field">
+                <button id="modal-font-make-global" class="settings-make-global-btn" type="button">Make this the global font</button>
+                <p class="settings-help">Copies this project's font into the app font in Settings, applied to every project that has no override.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Terminal colors: this project's per-project color override. Same
+               font_override object as above (themeEnabled/theme keys), gated by
+               its own toggle so a project can recolor without changing its font. -->
+          <div class="cmd-section cmd-section-font">
+            <div class="cmd-section-head">
+              <span class="cmd-section-title">Terminal colors</span>
+            </div>
+            <p class="settings-help">
+              This project uses the app colors from Settings by default. Turn on
+              the override to give just this project its own terminal colors.
+            </p>
+            <label class="modal-font-toggle">
+              <input type="checkbox" id="modal-theme-override-enabled" />
+              <span>Use custom terminal colors for this project</span>
+            </label>
+
+            <div id="modal-theme-override-controls" class="hidden">
+              <div class="settings-field">
+                <div class="settings-label-row">
+                  <span class="settings-label">Colors</span>
+                  <button id="modal-theme-reset" class="settings-reset-btn" type="button">Reset to default</button>
+                </div>
+                <div id="modal-theme-grid" class="theme-color-grid"></div>
+              </div>
+
+              <div class="settings-field">
+                <button id="modal-theme-make-global" class="settings-make-global-btn" type="button">Make these the global colors</button>
+                <p class="settings-help">Copies this project's colors into the app colors in Settings.</p>
               </div>
             </div>
           </div>
@@ -578,6 +622,15 @@
                 <select id="term-font-family" class="settings-select"></select>
               </div>
 
+              <!-- Shown by settings.js only when Font family = Custom. Type any
+                   monospace font installed on this Mac. -->
+              <div class="settings-field" id="term-custom-font-field" hidden>
+                <label class="settings-label" for="term-custom-font">Custom font name</label>
+                <input id="term-custom-font" class="settings-input" type="text" list="term-custom-font-list" autocomplete="off" spellcheck="false" placeholder="e.g. Cascadia Code, IBM Plex Mono" />
+                <datalist id="term-custom-font-list"></datalist>
+                <p class="settings-help">Type or pick a font installed on this Mac. Falls back to a generic monospace if it is not found.</p>
+              </div>
+
               <div class="settings-field">
                 <label class="settings-label" for="term-font-weight">Font weight</label>
                 <select id="term-font-weight" class="settings-select"></select>
@@ -615,6 +668,16 @@
               <div class="settings-field">
                 <span class="settings-label">Preview</span>
                 <pre id="term-font-preview" class="term-font-preview">const arrow = (a) =&gt; a !== 0 &amp;&amp; a &gt;= 1;  // =&gt; != &gt;= 0123</pre>
+              </div>
+
+              <!-- Terminal colors: background, text, cursor, selection + the 16
+                   ANSI colors. settings.js fills the grid from THEME_COLORS. -->
+              <div class="settings-field">
+                <div class="settings-label-row">
+                  <span class="settings-label">Terminal colors</span>
+                  <button id="term-theme-reset" class="settings-reset-btn" type="button">Reset to default</button>
+                </div>
+                <div id="term-theme-grid" class="theme-color-grid"></div>
               </div>
 
               <!-- Windows-only: pick the shell new terminals start with. Hidden

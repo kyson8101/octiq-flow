@@ -33,8 +33,9 @@
 
 /* ---- Design tokens — warm "zen" dark theme ---------------------------- */
 /* One calm sage accent; warm graphite surfaces. Every color in this sheet
-   reads from these tokens. The terminal theme (terminals.js TERM_THEME) must
-   stay in sync with --bg-0 / --fg-1 / --accent. */
+   reads from these tokens. The terminal theme now comes from user Settings
+   (settings.js THEME_COLORS); its defaults mirror --bg-0 / --fg-1 / --accent so
+   the pane background blends with a terminal the user has not recolored. */
 :root {
   /* Surfaces, from deepest to most raised. */
   --bg-0: #141417; /* app base — matches the xterm background */
@@ -1885,6 +1886,104 @@ body {
   font-size: 12px;
   color: var(--fg-2);
   min-width: 34px;
+}
+
+/* Free-text font name (shown when Font family = Custom). */
+.settings-input {
+  max-width: 280px;
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: none;
+}
+.settings-input:focus {
+  border-color: var(--accent);
+}
+
+/* Label with a trailing action (e.g. "Reset to default"). */
+.settings-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  max-width: 320px;
+}
+
+.settings-reset-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.settings-reset-btn:hover {
+  color: var(--fg-0);
+}
+
+.settings-make-global-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--fg-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.settings-make-global-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--fg-0);
+}
+.settings-make-global-btn:disabled {
+  cursor: default;
+  color: var(--accent);
+}
+
+/* Terminal color pickers: a compact grid of native color swatches, one per
+   xterm theme key (settings.js buildThemeInputs). Used on both the global
+   Settings page and the per-project override panel. */
+.theme-color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px 12px;
+  max-width: 320px;
+}
+
+.theme-color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-1);
+}
+
+.theme-color-input {
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: none;
+  cursor: pointer;
+  flex: none;
+}
+/* Trim the native swatch chrome so it reads as a clean color chip. */
+.theme-color-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+.theme-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.theme-color-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Live preview of the chosen terminal font. JS sets its font-family/size/

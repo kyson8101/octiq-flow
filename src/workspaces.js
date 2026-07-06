@@ -12,9 +12,15 @@ import { openCtxMenu } from "/ctxmenu.js";
 import {
   buildFontOptions,
   buildWeightOptions,
+  buildThemeInputs,
+  readThemeInputs,
+  fillThemeInputs,
+  fillFontDatalist,
   paintPreview,
   getTerminalSettings,
   resolveTerminalSettings,
+  resolveTheme,
+  saveTerminalSettings,
 } from "/settings.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -63,10 +69,12 @@ const modalPathsEmptyEl = document.querySelector("#modal-paths-empty");
 const modalTerminalCmdEl = document.querySelector("#modal-terminal-command");
 const modalDeleteBtn = document.querySelector("#modal-delete");
 
-// Per-project terminal font override (Edit page).
+// Per-project terminal font override (right panel).
 const fontOverrideEnabledEl = document.querySelector("#modal-font-override-enabled");
 const fontOverrideControlsEl = document.querySelector("#modal-font-override-controls");
 const fontFamilyEl = document.querySelector("#modal-font-family");
+const customFontFieldEl = document.querySelector("#modal-custom-font-field");
+const customFontEl = document.querySelector("#modal-custom-font");
 const fontWeightEl = document.querySelector("#modal-font-weight");
 const fontSizeEl = document.querySelector("#modal-font-size");
 const fontSizeValEl = document.querySelector("#modal-font-size-val");
@@ -75,6 +83,14 @@ const fontLineHeightValEl = document.querySelector("#modal-line-height-val");
 const fontLetterSpacingEl = document.querySelector("#modal-letter-spacing");
 const fontLetterSpacingValEl = document.querySelector("#modal-letter-spacing-val");
 const fontPreviewEl = document.querySelector("#modal-font-preview");
+const fontMakeGlobalEl = document.querySelector("#modal-font-make-global");
+// Per-project terminal color override (right panel). Stored in the SAME
+// font_override object (themeEnabled/theme keys), gated by its own toggle.
+const themeOverrideEnabledEl = document.querySelector("#modal-theme-override-enabled");
+const themeOverrideControlsEl = document.querySelector("#modal-theme-override-controls");
+const themeGridEl = document.querySelector("#modal-theme-grid");
+const themeResetEl = document.querySelector("#modal-theme-reset");
+const themeMakeGlobalEl = document.querySelector("#modal-theme-make-global");
 
 // Startup-layout section (Edit modal).
 const modalStartupTerminalsEl = document.querySelector("#modal-startup-terminals");
@@ -1328,23 +1344,39 @@ modalTerminalCmdEl.addEventListener("keydown", (e) => {
 // font catalog (settings.js).
 
 let fontOptionsBuilt = false;
-/** Fill the family/weight selects once from the shared catalog. */
+/** Fill the family/weight selects and the color grid once from the shared
+ *  catalogs. */
 function ensureFontOptions() {
   if (fontOptionsBuilt || !fontFamilyEl) return;
   buildFontOptions(fontFamilyEl);
   buildWeightOptions(fontWeightEl);
+  buildThemeInputs(themeGridEl, "modal-theme");
   fontOptionsBuilt = true;
 }
 
-/** Read the current override controls into the stored shape. */
+/** Show the custom-font text box only when the family select is "Custom", and
+ *  fill its font-name suggestions the first time it appears. */
+function syncCustomFontField() {
+  if (!customFontFieldEl) return;
+  const isCustom = fontFamilyEl.value === "custom";
+  customFontFieldEl.hidden = !isCustom;
+  if (isCustom) fillFontDatalist(document.querySelector("#modal-custom-font-list"));
+}
+
+/** Read the current override controls into the stored shape. Carries both the
+ *  font override (gated by `enabled`) and the color override (gated by
+ *  `themeEnabled`) in one object — resolveTerminalSettings applies each gate. */
 function currentFontOverride() {
   return {
     enabled: fontOverrideEnabledEl.checked,
     fontId: fontFamilyEl.value,
+    customFont: customFontEl?.value || "",
     fontSize: Number(fontSizeEl.value),
     fontWeight: Number(fontWeightEl.value),
     lineHeight: Number(fontLineHeightEl.value),
     letterSpacing: Number(fontLetterSpacingEl.value),
+    themeEnabled: themeOverrideEnabledEl?.checked || false,
+    theme: themeGridEl ? readThemeInputs(themeGridEl) : undefined,
   };
 }
 
@@ -1370,11 +1402,20 @@ function renderFontOverride(ws) {
   const seed = ov ? { ...base, ...ov } : base;
   fontOverrideEnabledEl.checked = !!(ov && ov.enabled);
   fontFamilyEl.value = seed.fontId;
+  if (customFontEl) customFontEl.value = seed.customFont || "";
   fontWeightEl.value = String(seed.fontWeight);
   fontSizeEl.value = String(seed.fontSize);
   fontLineHeightEl.value = String(seed.lineHeight);
   fontLetterSpacingEl.value = String(seed.letterSpacing);
   fontOverrideControlsEl.classList.toggle("hidden", !fontOverrideEnabledEl.checked);
+  syncCustomFontField();
+  // Color override: seed the grid from the project's theme override when set,
+  // else from the global theme so the user starts at the app colors.
+  if (themeOverrideEnabledEl) {
+    themeOverrideEnabledEl.checked = !!(ov && ov.themeEnabled);
+    fillThemeInputs(themeGridEl, ov?.theme ? { ...base.theme, ...ov.theme } : base.theme);
+    themeOverrideControlsEl.classList.toggle("hidden", !themeOverrideEnabledEl.checked);
+  }
   paintFontOverridePreview();
 }
 
@@ -1406,17 +1447,69 @@ fontOverrideEnabledEl?.addEventListener("change", () => {
   liveFontOverride();
   persistFontOverride();
 });
-// Selects commit on change: apply live + persist.
-for (const el of [fontFamilyEl, fontWeightEl]) {
-  el?.addEventListener("change", () => {
-    liveFontOverride();
-    persistFontOverride();
-  });
-}
+// Family select: show/hide the custom-font box, then apply live + persist.
+fontFamilyEl?.addEventListener("change", () => {
+  syncCustomFontField();
+  liveFontOverride();
+  persistFontOverride();
+});
+// Weight select commits on change: apply live + persist.
+fontWeightEl?.addEventListener("change", () => {
+  liveFontOverride();
+  persistFontOverride();
+});
+// Custom-font text: apply live per keystroke, persist on blur/commit.
+customFontEl?.addEventListener("input", liveFontOverride);
+customFontEl?.addEventListener("change", persistFontOverride);
 // Ranges apply live while dragging (input) and persist on release (change).
 for (const el of [fontSizeEl, fontLineHeightEl, fontLetterSpacingEl]) {
   el?.addEventListener("input", liveFontOverride);
   el?.addEventListener("change", persistFontOverride);
+}
+
+// --- Per-project color override -------------------------------------------
+themeOverrideEnabledEl?.addEventListener("change", () => {
+  themeOverrideControlsEl.classList.toggle("hidden", !themeOverrideEnabledEl.checked);
+  liveFontOverride();
+  persistFontOverride();
+});
+// Color inputs apply live while picking (input) and persist on commit (change).
+themeGridEl?.addEventListener("input", liveFontOverride);
+themeGridEl?.addEventListener("change", persistFontOverride);
+themeResetEl?.addEventListener("click", () => {
+  fillThemeInputs(themeGridEl, resolveTheme(null));
+  liveFontOverride();
+  persistFontOverride();
+});
+
+// "Make global" buttons: copy this project's override slice into the global app
+// settings (settings.js), so every project without its own override picks it up.
+fontMakeGlobalEl?.addEventListener("click", () => {
+  const ov = currentFontOverride();
+  saveTerminalSettings({
+    fontId: ov.fontId,
+    customFont: ov.customFont,
+    fontSize: ov.fontSize,
+    fontWeight: ov.fontWeight,
+    lineHeight: ov.lineHeight,
+    letterSpacing: ov.letterSpacing,
+  });
+  flashButton(fontMakeGlobalEl, "Saved as global font");
+});
+themeMakeGlobalEl?.addEventListener("click", () => {
+  saveTerminalSettings({ theme: readThemeInputs(themeGridEl) });
+  flashButton(themeMakeGlobalEl, "Saved as global colors");
+});
+
+/** Briefly swap a button's label to confirm the click, then restore it. */
+function flashButton(btn, msg) {
+  const original = btn.textContent;
+  btn.textContent = msg;
+  btn.disabled = true;
+  setTimeout(() => {
+    btn.textContent = original;
+    btn.disabled = false;
+  }, 1400);
 }
 
 // Keep the panel's font controls in step with the selected project. Guard by id

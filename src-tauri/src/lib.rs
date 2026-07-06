@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
 mod canvas;
+mod fonts;
 mod fsbrowse;
 mod git;
 mod git_watch;
@@ -160,6 +161,7 @@ pub fn run() {
             agent_resume::setup_agent_hooks,
             agent_resume::prune_exited_agent_sessions,
             confirm_close,
+            fonts::list_fonts,
             profile::read_profile_settings,
             profile::write_profile_settings,
             profile::profile_dir_path,
