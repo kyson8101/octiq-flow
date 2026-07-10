@@ -767,7 +767,7 @@ body {
   flex-shrink: 0;
   background: var(--bg-sunken);
   border-right: 1px solid var(--border);
-  overflow-y: auto;
+  overflow: hidden;
   transition: width 0.15s ease;
 }
 
@@ -779,6 +779,7 @@ body {
 
 .sidebar-head {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   height: var(--head-h);
@@ -1085,6 +1086,21 @@ body {
   min-height: 24px;
 }
 
+/* Only the active list scrolls — the head and the shelf stay put no matter how
+   many projects there are. It keeps its content height while there is room
+   (flex-basis auto, no grow), then shrinks and scrolls once the shelf's
+   min-height claims the rest. */
+#workspace-list {
+  flex: 0 1 auto;
+  overflow-y: auto;
+}
+
+/* Same for a long shelf: its rows scroll inside the section. */
+.ws-shelf-list {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* === Shelved ("off work") section ====================================== */
 /* The shelf owns the whole sidebar area below the project list, so the entire
    lower region is one big, easy drop target (dropping a project anywhere in
@@ -1103,6 +1119,7 @@ body {
    collapse/expand the shelf). Reset the native button chrome and pack the
    chevron + title + count to the left. */
 .ws-shelf-head {
+  flex: 0 0 auto;
   height: auto;
   padding: 8px 12px;
   border-bottom: none;
