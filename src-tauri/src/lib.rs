@@ -14,6 +14,8 @@ mod fonts;
 mod fsbrowse;
 mod git;
 mod git_watch;
+mod notify_hook;
+mod paths;
 mod proc;
 mod profile;
 mod pty;
@@ -126,8 +128,9 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_close,
             pty::pty_list_active,
-            pty::pty_clear_attention,
             pty::pty_agent_running,
+            pty::pty_set_visible,
+            notify_hook::notify_hook_filter,
             workspaces::list_workspaces,
             workspaces::add_workspace,
             workspaces::set_primary_path,
@@ -156,7 +159,7 @@ pub fn run() {
             terminal_layout::load_scrollback,
             terminal_layout::clear_project_layout,
             agent_resume::agent_resume_cmd,
-            agent_resume::agent_tab_info,
+            agent_resume::agent_tab_infos,
             usage_limits::usage_summary,
             agent_resume::setup_agent_hooks,
             agent_resume::prune_exited_agent_sessions,

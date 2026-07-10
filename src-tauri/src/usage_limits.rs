@@ -81,16 +81,6 @@ pub struct UsageSummary {
     pub codex: ProviderUsage,
 }
 
-/// The user's home dir, from HOME (Unix) or USERPROFILE (Windows). Mirrors the
-/// helper in agent_resume so the two modules resolve `~` the same way.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
 // ===================================================================== //
 // === Time parsing ==================================================== //
 
@@ -185,7 +175,9 @@ fn keychain_credentials() -> Option<String> {
 /// Read `~/.claude/.credentials.json` (the non-macOS credential store, same JSON
 /// shape as the keychain blob).
 fn file_credentials() -> Option<String> {
-    let path = home_dir()?.join(".claude").join(".credentials.json");
+    let path = crate::paths::home_dir()?
+        .join(".claude")
+        .join(".credentials.json");
     std::fs::read_to_string(path).ok()
 }
 
@@ -277,7 +269,7 @@ fn fetch_claude_usage() -> ProviderUsage {
 
 /// The `~/.codex/sessions` root where rollout JSONL files live.
 fn codex_sessions_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".codex").join("sessions"))
+    crate::paths::home_dir().map(|h| h.join(".codex").join("sessions"))
 }
 
 /// Collect rollout file paths with their mtimes, newest first. Walks the

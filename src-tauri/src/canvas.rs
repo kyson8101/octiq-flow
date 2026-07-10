@@ -35,14 +35,6 @@ const MAX_DOC_BYTES: u64 = 5 * 1024 * 1024;
 /// write it to the user's Claude skills folder. Kept in sync with this build.
 const CANVAS_SKILL: &str = include_str!("../../scripts/skills/octiq-canvas/SKILL.md");
 
-/// Home dir from the platform env: $HOME on Unix, %USERPROFILE% on Windows.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .map(PathBuf::from)
-}
-
 /// Root of every project's canvas folder: `<profile>/canvas`. The agent still
 /// finds its folder through the `OCTIQ_CANVAS_DIR` env var that pty.rs exports
 /// (built via `canvas_dir_for`), so re-rooting per profile flows to the agent
@@ -294,7 +286,7 @@ pub fn canvas_delete_all(key: String) -> Result<usize, String> {
 /// written, for the Settings status line.
 #[tauri::command]
 pub fn install_canvas_skill() -> Result<String, String> {
-    let home = home_dir().ok_or("could not find your home folder")?;
+    let home = crate::paths::home_dir().ok_or("could not find your home folder")?;
     let dir = home.join(".claude").join("skills").join("octiq-canvas");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("SKILL.md");
@@ -343,7 +335,7 @@ in this terminal.";
 /// Returns the path written, for the Settings status line.
 #[tauri::command]
 pub fn install_canvas_codex_guide() -> Result<String, String> {
-    let home = home_dir().ok_or("could not find your home folder")?;
+    let home = crate::paths::home_dir().ok_or("could not find your home folder")?;
     let dir = home.join(".codex");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join("AGENTS.md");

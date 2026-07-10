@@ -77,7 +77,13 @@ struct Current {
 // ---- Paths (pure) ---------------------------------------------------------
 
 /// The user's home dir from HOME (Unix) or USERPROFILE (Windows).
-fn home_dir() -> Option<PathBuf> {
+///
+/// A deliberate copy of `paths::home_dir` rather than a call to it (card 26).
+/// This is a STANDALONE binary: `use octiq_flow_lib::paths` would link the whole
+/// Tauri app — webview, PTY manager, git backend — into a tiny bus CLI. Six
+/// lines duplicated is the cheaper trade. Named `bus_home_dir` so the app's
+/// "exactly one `fn home_dir`" rule still holds.
+fn bus_home_dir() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
         .or_else(|| std::env::var("USERPROFILE").ok())
@@ -92,7 +98,7 @@ fn bus_root() -> Result<PathBuf, String> {
             return Ok(PathBuf::from(dir));
         }
     }
-    home_dir()
+    bus_home_dir()
         .map(|h| h.join(".octiqflow").join("bus"))
         .ok_or_else(|| "could not resolve home directory (set OCTIQ_BUS_DIR)".to_string())
 }

@@ -62,6 +62,9 @@ mod tests {
 
         let mut sorted = fonts.clone();
         sorted.sort_by_key(|s| s.to_lowercase());
-        assert_eq!(sorted, fonts, "family list is not case-insensitively sorted");
+        assert_eq!(
+            sorted, fonts,
+            "family list is not case-insensitively sorted"
+        );
     }
 }

@@ -30,7 +30,7 @@
 // and falls back to the legacy ~/.octiqflow path when run outside OctiqFlow.
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -89,19 +89,9 @@ pub struct AgentTabInfo {
 
 // ---- Paths ----------------------------------------------------------------
 
-/// The user's home dir, from HOME (Unix) or USERPROFILE (Windows). `None` when
-/// neither is set, in which case every operation here is a safe no-op.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
 /// ~/.octiqflow — the shared dir for the session store and the installed hook.
 fn octiqflow_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".octiqflow"))
+    crate::paths::home_dir().map(|h| h.join(".octiqflow"))
 }
 
 /// Path of the tab -> session store the hook writes and we read. It lives in the
@@ -113,13 +103,13 @@ fn store_path() -> Option<PathBuf> {
 
 /// Path of Claude Code's user settings file, where the hook is installed.
 fn claude_settings_path() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".claude").join("settings.json"))
+    crate::paths::home_dir().map(|h| h.join(".claude").join("settings.json"))
 }
 
 /// Path of Codex CLI's user hooks file, where the hook is installed. Codex reads
 /// hooks from ~/.codex/hooks.json (same JSON shape as Claude's settings `hooks`).
 fn codex_hooks_path() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".codex").join("hooks.json"))
+    crate::paths::home_dir().map(|h| h.join(".codex").join("hooks.json"))
 }
 
 // ---- Pure helpers (unit-tested) -------------------------------------------
@@ -176,7 +166,7 @@ pub(crate) fn transcript_path_for(entry: &SessionEntry) -> Option<PathBuf> {
     if entry.cwd.is_empty() || entry.session_id.is_empty() {
         return None;
     }
-    home_dir().map(|h| {
+    crate::paths::home_dir().map(|h| {
         h.join(".claude")
             .join("projects")
             .join(encode_project_dir(&entry.cwd))
@@ -272,12 +262,16 @@ fn drop_exited(
 /// Insert (or replace) our hook command under one settings event. Any existing
 /// entry whose command mentions `marker` is dropped first, so calling this twice
 /// yields exactly one entry — install stays idempotent and self-updating.
+///
+/// A settings root that is not a JSON object (a hand-corrupted `[]`, `null`, or
+/// a bare string) is left alone. This used to `.expect()`, held safe only by its
+/// callers' guards — one careless new caller away from panicking the app over a
+/// malformed file the user could fix in a text editor.
 fn upsert_event(settings: &mut Value, event: &str, command: &str, marker: &str) {
-    let hooks = settings
-        .as_object_mut()
-        .expect("settings root must be an object")
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
+    let Some(root) = settings.as_object_mut() else {
+        return;
+    };
+    let hooks = root.entry("hooks").or_insert_with(|| json!({}));
     let hooks_obj = match hooks.as_object_mut() {
         Some(o) => o,
         None => {
@@ -347,14 +341,140 @@ fn quote_path(path: &str) -> String {
 }
 
 // ---- Store I/O ------------------------------------------------------------
+//
+// `agent-sessions.json` has TWO kinds of writer:
+//   * this process, from several threads (Tauri commands run on a thread pool):
+//     `prune` via `save_terminal_layout`, and `prune_exited_agent_sessions` on
+//     the frontend's 5s timer;
+//   * the external capture hook, a separate process, whenever an agent starts.
+//
+// Every write is a read-modify-write of the whole file. Two of them interleaving
+// lose an update, and a lost update silently drops a resume mapping — the agent
+// then does not re-attach after a restart, with nothing to show why.
+//
+// So: `store_lock()` serializes this process's writers against each other, and
+// every write goes through a temp file + atomic rename (the discipline the hook
+// already follows), which shrinks the cross-process window to nothing a reader
+// can observe. Rust and the hook can still race each other's read-modify-write,
+// but the loser now overwrites with a complete, valid file rather than a torn
+// one. Full cross-process safety would need a lock file; the hook is
+// best-effort by design and re-records on the next agent start.
 
-/// Load the whole tab -> session map, or an empty map on any error. `pub(crate)`
-/// so the usage reader can enumerate the same captured sessions this module owns.
-pub(crate) fn load_store() -> std::collections::HashMap<String, SessionEntry> {
-    store_path()
-        .and_then(|p| fs::read_to_string(p).ok())
+/// Serializes every in-process read-modify-write of the store.
+///
+/// A process-wide static rather than Tauri-managed state, because `prune()` is
+/// called from `terminal_layout.rs` which has no `State` to hand it — and both
+/// would be process-wide singletons anyway.
+fn store_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// The parsed store per file, keyed by that file's mtime. Serves the READ-ONLY
+/// paths (`agent_resume_cmd`, `agent_tab_info(s)`) so N tabs polling every 5s do
+/// not each read and JSON-parse the same file. Same shape as `title_cache`.
+///
+/// Deliberately NOT used by the read-modify-write paths: mtime has finite
+/// resolution, and serving a stale map to a writer is how updates get lost.
+#[allow(clippy::type_complexity)]
+fn store_cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, HashMap<String, SessionEntry>)>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, HashMap<String, SessionEntry>)>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Lock a static mutex, taking the value back out of a poisoned lock. These
+/// guard plain data with no invariant a panic could break, so a poisoned lock
+/// must not disable the feature for the rest of the run.
+fn lock_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Load the whole tab -> session map FRESH from disk, or an empty map on any
+/// error (missing file, unreadable, not JSON).
+///
+/// The read-modify-write paths take this, never the mtime cache: mtime has
+/// finite resolution, and serving a stale map to a writer is how updates get
+/// lost. Read-only callers want `load_store_cached_at`.
+fn load_store_at(path: &Path) -> HashMap<String, SessionEntry> {
+    fs::read_to_string(path)
+        .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default()
+}
+
+/// Load the store, reusing the last parse while the file's mtime is unchanged.
+/// Read-only callers only — see `store_cache`.
+fn load_store_cached() -> HashMap<String, SessionEntry> {
+    store_path()
+        .map(|p| load_store_cached_at(&p))
+        .unwrap_or_default()
+}
+
+/// `load_store_cached` for one explicit path.
+fn load_store_cached_at(path: &Path) -> HashMap<String, SessionEntry> {
+    // No file (no agent has ever run) or no mtime: nothing to cache.
+    let Ok(mtime) = fs::metadata(path).and_then(|m| m.modified()) else {
+        return HashMap::new();
+    };
+    let mut cache = lock_recover(store_cache());
+    if let Some((cached_mtime, cached_store)) = cache.get(path) {
+        if *cached_mtime == mtime {
+            return cached_store.clone();
+        }
+    }
+    let store = load_store_at(path);
+    cache.insert(path.to_path_buf(), (mtime, store.clone()));
+    store
+}
+
+/// Write the store atomically: serialize to a per-process temp file next to the
+/// target, then `rename` over it. A reader (ours or the hook's) therefore sees
+/// either the whole old file or the whole new one, never a truncated one.
+///
+/// The caller must already hold `store_lock()`.
+fn write_store_at(path: &Path, store: &HashMap<String, SessionEntry>) -> bool {
+    let Ok(raw) = serde_json::to_string_pretty(store) else {
+        return false;
+    };
+    // The pid keeps this from colliding with the hook's own
+    // `.agent-sessions.<pid>.tmp`, and with a second OctiqFlow instance.
+    let tmp = path.with_file_name(format!(".agent-sessions.{}.tmp", std::process::id()));
+    if fs::write(&tmp, raw).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    if fs::rename(&tmp, path).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return false;
+    }
+    // The file moved under the cache; drop its entry so the next read re-parses.
+    lock_recover(store_cache()).remove(path);
+    true
+}
+
+/// Read the store, let `edit` change it, and write it back only if it said so.
+/// The whole cycle holds `store_lock()`, so two in-process writers can never
+/// interleave and lose each other's update.
+fn update_store(edit: impl FnOnce(&mut HashMap<String, SessionEntry>) -> bool) -> bool {
+    let Some(path) = store_path() else {
+        return false;
+    };
+    update_store_at(&path, edit)
+}
+
+/// `update_store` for one explicit path. Takes the SAME process-wide lock, so a
+/// test driving this against a temp file exercises the real serialization.
+fn update_store_at(
+    path: &Path,
+    edit: impl FnOnce(&mut HashMap<String, SessionEntry>) -> bool,
+) -> bool {
+    let _guard = lock_recover(store_lock());
+    let mut store = load_store_at(path); // fresh: never the mtime cache
+    if !edit(&mut store) {
+        return false; // nothing changed; skip the write entirely
+    }
+    write_store_at(path, &store)
 }
 
 // ---- Commands -------------------------------------------------------------
@@ -364,7 +484,7 @@ pub(crate) fn load_store() -> std::collections::HashMap<String, SessionEntry> {
 /// terminal's `startCmd`, so a Claude tab re-attaches to its old conversation.
 #[tauri::command]
 pub fn agent_resume_cmd(key: String) -> Option<String> {
-    load_store().get(&key).and_then(build_resume_cmd)
+    load_store_cached().get(&key).and_then(build_resume_cmd)
 }
 
 /// What a tab is running, so the frontend can auto-name the tab: whether an agent
@@ -372,15 +492,31 @@ pub fn agent_resume_cmd(key: String) -> Option<String> {
 /// exists. The frontend uses the title for an agent tab and falls back to the
 /// tab's first shell command when `is_agent` is false. Polled per agent tab on a
 /// timer; the title read is mtime-cached so a quiet tab costs only a stat.
+/// (The single-key `agent_tab_info` command was removed in card 23. It fanned
+/// out one full store read per tab; `agent_tab_infos` replaced every caller.)
+///
+/// What each tab is running, so the frontend can auto-name it: whether an agent
+/// session was captured for it, and that agent's current session title when one
+/// exists. Loads the store ONCE for all `keys`; results come back in their order.
+///
+/// `refreshTitles` polls every open tab every 5 seconds. Called per tab, each
+/// call read and JSON-parsed the entire store file: ten tabs meant ten full
+/// reads of one file, every five seconds, forever.
 #[tauri::command]
-pub fn agent_tab_info(key: String) -> AgentTabInfo {
-    let Some(entry) = load_store().get(&key).cloned() else {
+pub fn agent_tab_infos(keys: Vec<String>) -> Vec<AgentTabInfo> {
+    let store = load_store_cached();
+    keys.iter().map(|key| tab_info_from(&store, key)).collect()
+}
+
+/// One tab's info, read out of an already-loaded store.
+fn tab_info_from(store: &HashMap<String, SessionEntry>, key: &str) -> AgentTabInfo {
+    let Some(entry) = store.get(key) else {
         return AgentTabInfo {
             is_agent: false,
             title: None,
         };
     };
-    let title = transcript_path_for(&entry).and_then(|p| read_title_cached(&p));
+    let title = transcript_path_for(entry).and_then(|p| read_title_cached(&p));
     AgentTabInfo {
         is_agent: true,
         title,
@@ -391,17 +527,11 @@ pub fn agent_tab_info(key: String) -> AgentTabInfo {
 /// reconcile so the store can never outgrow the set of live tabs (e.g. a tab was
 /// closed while its agent was still running, so the hook never removed it).
 pub fn prune(live: &HashSet<String>) {
-    let mut store = load_store();
-    let before = store.len();
-    store.retain(|k, _| live.contains(k));
-    if store.len() == before {
-        return; // nothing orphaned; skip the write
-    }
-    if let Some(path) = store_path() {
-        if let Ok(raw) = serde_json::to_string_pretty(&store) {
-            let _ = fs::write(path, raw);
-        }
-    }
+    update_store(|store| {
+        let before = store.len();
+        store.retain(|k, _| live.contains(k));
+        store.len() != before // false => nothing orphaned, skip the write
+    });
 }
 
 /// Clear the resume mapping of every tab whose agent has exited (its PTY's
@@ -413,15 +543,10 @@ pub fn prune(live: &HashSet<String>) {
 /// the agent on quit), so this foreground check is what retires exited sessions.
 #[tauri::command]
 pub fn prune_exited_agent_sessions(manager: State<PtyManager>) {
+    // Query the PTYs BEFORE taking the store lock: this walks every session and
+    // makes a syscall each, and it needs nothing from the store.
     let running_by_key = manager.agent_foreground_by_key();
-    let mut store = load_store();
-    if drop_exited(&mut store, &running_by_key) {
-        if let Some(path) = store_path() {
-            if let Ok(raw) = serde_json::to_string_pretty(&store) {
-                let _ = fs::write(path, raw);
-            }
-        }
-    }
+    update_store(|store| drop_exited(store, &running_by_key));
 }
 
 /// Read a JSON hook-config file (or start empty), register `command` on each of
@@ -949,5 +1074,164 @@ mod tests {
         let long: String = "あ".repeat(MAX_TITLE_LEN + 10);
         let capped = cap_title(&long);
         assert_eq!(capped.chars().count(), MAX_TITLE_LEN);
+    }
+
+    // ---- upsert_event no longer panics on a corrupt root (card 23) ----------
+
+    #[test]
+    fn upsert_event_ignores_a_non_object_settings_root() {
+        // A hand-corrupted settings.json. This used to `.expect()` and panic.
+        for mut root in [json!([]), json!(null), json!("nonsense"), json!(7)] {
+            let before = root.clone();
+            upsert_event(&mut root, "SessionStart", "cmd", "marker");
+            assert_eq!(root, before, "a non-object root must be left untouched");
+        }
+    }
+
+    #[test]
+    fn upsert_event_still_installs_into_an_object_root() {
+        let mut root = json!({});
+        upsert_event(&mut root, "SessionStart", "run-me", "marker");
+        let arr = root["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert!(entry_mentions(&arr[0], "run-me"));
+    }
+
+    // ---- store I/O: locking, atomic write, mtime cache (card 23) ------------
+
+    /// A throwaway store file path. Each test gets its own, so the shared
+    /// `store_cache` (keyed by path) cannot leak between them.
+    fn temp_store(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("octiq-store-test-{name}"));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join("agent-sessions.json")
+    }
+
+    fn seed(path: &Path, keys: &[&str]) {
+        let store: HashMap<String, SessionEntry> = keys
+            .iter()
+            .map(|k| ((*k).to_string(), entry("claude", "abc")))
+            .collect();
+        fs::write(path, serde_json::to_string_pretty(&store).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn update_store_writes_atomically_and_leaves_no_temp_file() {
+        let path = temp_store("atomic");
+        seed(&path, &["a"]);
+        assert!(update_store_at(&path, |s| {
+            s.insert("b".into(), entry("codex", "xyz"));
+            true
+        }));
+        let back = load_store_at(&path);
+        assert_eq!(back.len(), 2);
+        assert!(back.contains_key("a") && back.contains_key("b"));
+        // The rename consumed the temp file; nothing is left beside the store.
+        let leftovers: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+    }
+
+    #[test]
+    fn update_store_skips_the_write_when_nothing_changed() {
+        let path = temp_store("noop");
+        seed(&path, &["a"]);
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        assert!(!update_store_at(&path, |_| false));
+        let after = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(before, after, "an unchanged store must not be rewritten");
+    }
+
+    #[test]
+    fn concurrent_read_modify_writes_never_lose_an_update() {
+        // THE bug this card exists for. Twelve threads each remove one distinct
+        // key. Unlocked, each reads the store before the others have written, so
+        // the last writer resurrects every key the others removed. Under
+        // `store_lock` every removal survives.
+        let path = temp_store("concurrent");
+        let keys: Vec<String> = (0..12).map(|i| format!("k{i}")).collect();
+        seed(&path, &keys.iter().map(String::as_str).collect::<Vec<_>>());
+        // One key nobody touches, so we can tell "all removed" from "file lost".
+        update_store_at(&path, |s| {
+            s.insert("keep".into(), entry("claude", "keep"));
+            true
+        });
+
+        std::thread::scope(|scope| {
+            for key in &keys {
+                let path = path.clone();
+                scope.spawn(move || {
+                    update_store_at(&path, |store| store.remove(key).is_some());
+                });
+            }
+        });
+
+        let back = load_store_at(&path);
+        assert_eq!(
+            back.len(),
+            1,
+            "every concurrent removal must survive; store still holds {:?}",
+            back.keys().collect::<Vec<_>>()
+        );
+        assert!(back.contains_key("keep"));
+    }
+
+    #[test]
+    fn the_store_cache_serves_a_second_read_without_touching_the_file() {
+        let path = temp_store("cache-hit");
+        seed(&path, &["a"]);
+        assert_eq!(load_store_cached_at(&path).len(), 1);
+
+        // Swap a sentinel into the cache under the CURRENT mtime. A cached read
+        // must return it, which is only possible if the file was not re-read.
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        let mut sentinel = HashMap::new();
+        sentinel.insert("sentinel".to_string(), entry("codex", "s"));
+        lock_recover(store_cache()).insert(path.clone(), (mtime, sentinel));
+
+        let got = load_store_cached_at(&path);
+        assert!(got.contains_key("sentinel"), "the cache was not consulted");
+    }
+
+    #[test]
+    fn the_store_cache_invalidates_when_the_file_changes() {
+        let path = temp_store("cache-miss");
+        seed(&path, &["a"]);
+        assert!(load_store_cached_at(&path).contains_key("a"));
+
+        // Ensure the new write lands on a different mtime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        seed(&path, &["b"]);
+
+        let got = load_store_cached_at(&path);
+        assert!(got.contains_key("b"), "stale cache served after a change");
+        assert!(!got.contains_key("a"));
+    }
+
+    #[test]
+    fn a_write_invalidates_the_cache_for_that_file() {
+        let path = temp_store("write-invalidates");
+        seed(&path, &["a"]);
+        assert!(load_store_cached_at(&path).contains_key("a")); // populate
+
+        update_store_at(&path, |s| {
+            s.insert("b".into(), entry("codex", "x"));
+            true
+        });
+        // Without the invalidation in write_store_at, an mtime with coarse
+        // resolution could serve the pre-write map right back.
+        assert!(load_store_cached_at(&path).contains_key("b"));
+    }
+
+    #[test]
+    fn a_missing_store_file_reads_as_empty_and_is_not_cached() {
+        let path = temp_store("missing").with_file_name("nope.json");
+        assert!(load_store_cached_at(&path).is_empty());
+        assert!(!lock_recover(store_cache()).contains_key(&path));
     }
 }

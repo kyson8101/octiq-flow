@@ -10,7 +10,6 @@
 // session the frontend spawns by id at startup.
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,17 +23,117 @@ use tauri::{AppHandle, Emitter, State};
 /// dropped, so the reader never holds unbounded scrollback.
 const SCAN_TAIL_CAP: usize = 8 * 1024;
 
-/// One live PTY session: the master (for resize), the writer (for input), and
-/// the child process handle (so close can kill the whole shell + its children).
+/// Upper bound on the per-session ring that buffers output while a terminal is
+/// HIDDEN (card 16). Output past this is dropped from the FRONT and the session
+/// is marked `trimmed`, so a `cat` of a huge file in a background tab cannot
+/// grow memory without bound.
 ///
-/// `needs_attention` is a shared flag the reader thread raises when it sees an
-/// OSC 9 / OSC 777 sequence in the output. The same Arc lives here so
-/// `pty_clear_attention` can lower it. SeqCst is plenty for a single bool.
+/// 1 MiB is chosen so the drop is very nearly invisible: xterm keeps a bounded
+/// scrollback (1000 lines by default), and 1 MiB of output is far more than
+/// 1000 lines of any realistic width — so what the ring drops is output xterm
+/// would have scrolled out of its own buffer anyway.
+const HIDDEN_RING_CAP: usize = 1024 * 1024;
+
+/// Longest alert title / body we keep from an OSC sequence, in CHARACTERS
+/// (card 25). Any program that can print to a terminal can forge an attention
+/// alert with a title and body of its choosing; without a bound, a megabyte of
+/// text would ride into the banner and the OS notification.
+///
+/// 200 matches the cap the external capture hook already applies, so both paths
+/// into an alert agree.
+const MAX_ALERT_TEXT_CHARS: usize = 200;
+
+/// Make one field of a forged-able OSC alert safe to hand to the UI: drop control
+/// characters and bound the length.
+///
+/// Rendering is already safe (`textContent` and the notification plugin, never
+/// `innerHTML`), so this is not an injection fix — it stops an unbounded or
+/// line-breaking string from mangling the banner. Truncation is by CHARACTER, so
+/// a multi-byte glyph is never cut in half.
+fn sanitize_alert_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_ALERT_TEXT_CHARS)
+        .collect()
+}
+
+/// One session's output gate: is its terminal on screen, and if not, what has
+/// it printed since it went off screen (card 16).
+///
+/// While `visible` is false the emitter thread appends to `ring` instead of
+/// emitting a `pty-output` event, so the frontend does no xterm parse and no
+/// payload crosses the IPC boundary for a terminal nobody can see. Revealing
+/// the terminal drains the ring into one `pty-restore` event.
+struct OutBuf {
+    visible: bool,
+    ring: String,
+    /// True once the ring has overflowed and dropped output. The frontend draws
+    /// a "[octiq: output trimmed]" marker above the restored tail.
+    trimmed: bool,
+}
+
+impl OutBuf {
+    fn new() -> Self {
+        // A terminal is visible until the frontend says otherwise: a freshly
+        // spawned terminal is always the tab being activated.
+        Self {
+            visible: true,
+            ring: String::new(),
+            trimmed: false,
+        }
+    }
+
+    /// Append hidden output, dropping the oldest bytes once the cap is passed.
+    /// The cut is moved to the next char boundary so `drain` can never split a
+    /// multi-byte glyph (`ring` must stay valid UTF-8).
+    fn push_hidden(&mut self, chunk: &str) {
+        self.ring.push_str(chunk);
+        if self.ring.len() <= HIDDEN_RING_CAP {
+            return;
+        }
+        let cut = self.ring.len() - HIDDEN_RING_CAP;
+        let cut = (cut..=self.ring.len())
+            .find(|&k| self.ring.is_char_boundary(k))
+            .unwrap_or(self.ring.len());
+        self.ring.drain(..cut);
+        self.trimmed = true;
+    }
+
+    /// Take everything buffered while hidden, resetting the ring.
+    fn take(&mut self) -> (String, bool) {
+        (
+            std::mem::take(&mut self.ring),
+            std::mem::replace(&mut self.trimmed, false),
+        )
+    }
+}
+
+/// A PTY master, shared so a foreground-process query can run WITHOUT holding
+/// the sessions map (card 22). The `Mutex` is per session, so a slow syscall on
+/// one terminal never blocks another.
+type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
+
+/// A PTY's input side, likewise per-session. `write_all` on a full slave input
+/// buffer BLOCKS, so this must never be reached while the map lock is held.
+type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// One live PTY session: the master (for resize + foreground queries), the
+/// writer (for input), and the child process handle (so close can kill the whole
+/// shell + its children).
+///
+/// Every field a command needs while doing something SLOW — writing, resizing,
+/// querying the foreground process group — lives behind its own `Arc<Mutex<_>>`.
+/// A caller clones the handle out under the global map lock, releases the map,
+/// and only then blocks. That is what keeps one wedged terminal (a Ctrl-S'd
+/// shell, a huge paste into a slow consumer) from freezing PTY commands
+/// app-wide, which is exactly what the old `pty_write` did.
 struct Session {
-    master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    master: SharedMaster,
+    writer: SharedWriter,
     child: Box<dyn Child + Send + Sync>,
-    needs_attention: Arc<AtomicBool>,
+    /// Shared with this session's emitter thread: whether the terminal is on
+    /// screen, plus the ring that buffers its output while it is not (card 16).
+    out: Arc<Mutex<OutBuf>>,
     /// The tab's stable persist key, if it carries one. Used to map a live
     /// session back to its saved resume mapping (agent_resume.rs).
     persist_key: Option<String>,
@@ -45,26 +144,30 @@ struct Session {
     shell_pid: Option<i32>,
 }
 
-impl Session {
-    /// Whether an agent is currently the foreground process of this PTY (vs the
-    /// shell sitting at its prompt). At the prompt the foreground process group
-    /// equals the shell's own pid; an agent runs in its own group, a different
-    /// pid. An unknown foreground or missing shell pid reports `true`, so we
-    /// never treat a session we cannot positively disprove as exited.
-    #[cfg(unix)]
-    fn agent_running(&self) -> bool {
-        match (self.master.process_group_leader(), self.shell_pid) {
-            (Some(foreground), Some(shell)) => foreground != shell,
-            _ => true,
-        }
+/// Whether an agent is currently the foreground process of a PTY (vs the shell
+/// sitting at its prompt). At the prompt the foreground process group equals the
+/// shell's own pid; an agent runs in its own group, a different pid. An unknown
+/// foreground, a missing shell pid, or a poisoned master lock all report `true`,
+/// so we never treat a session we cannot positively disprove as exited.
+///
+/// This performs a `tcgetpgrp` syscall. It takes the per-session master lock and
+/// must be called with the sessions map UNLOCKED.
+#[cfg(unix)]
+fn agent_running(master: &SharedMaster, shell_pid: Option<i32>) -> bool {
+    let Ok(master) = master.lock() else {
+        return true;
+    };
+    match (master.process_group_leader(), shell_pid) {
+        (Some(foreground), Some(shell)) => foreground != shell,
+        _ => true,
     }
+}
 
-    /// Non-Unix has no foreground-process-group query here, so we cannot tell an
-    /// agent exited; report running so a mapping is never wrongly dropped.
-    #[cfg(not(unix))]
-    fn agent_running(&self) -> bool {
-        true
-    }
+/// Non-Unix has no foreground-process-group query here, so we cannot tell an
+/// agent exited; report running so a mapping is never wrongly dropped.
+#[cfg(not(unix))]
+fn agent_running(_master: &SharedMaster, _shell_pid: Option<i32>) -> bool {
+    true
 }
 
 /// Holds every live PTY session, keyed by the id the frontend gave at spawn.
@@ -74,19 +177,46 @@ pub struct PtyManager {
     sessions: Mutex<HashMap<String, Session>>,
 }
 
+/// One session's identity plus the handles needed to query it, cloned out of the
+/// map so the query can run with the map unlocked (card 22).
+struct ForegroundProbe {
+    id: String,
+    persist_key: Option<String>,
+    master: SharedMaster,
+    shell_pid: Option<i32>,
+}
+
 impl PtyManager {
+    /// Clone the handles needed for a foreground sweep out of the map. Held for
+    /// as long as it takes to clone a few `Arc`s — no syscalls, no blocking.
+    /// A poisoned lock yields nothing.
+    fn foreground_probes(&self) -> Vec<ForegroundProbe> {
+        let Ok(sessions) = self.sessions.lock() else {
+            return Vec::new();
+        };
+        sessions
+            .iter()
+            .map(|(id, s)| ForegroundProbe {
+                id: id.clone(),
+                persist_key: s.persist_key.clone(),
+                master: s.master.clone(),
+                shell_pid: s.shell_pid,
+            })
+            .collect()
+    }
+
     /// For every live session that carries a persist key, report whether an
     /// agent is currently its PTY's foreground process. Keyed by persist key so
     /// agent_resume.rs can clear the resume mapping of any tab whose agent has
     /// exited — the deterministic signal Codex gives no SessionEnd hook for.
     /// A poisoned lock yields an empty map (clear nothing).
     pub fn agent_foreground_by_key(&self) -> HashMap<String, bool> {
-        let Ok(sessions) = self.sessions.lock() else {
-            return HashMap::new();
-        };
-        sessions
-            .values()
-            .filter_map(|s| s.persist_key.clone().map(|k| (k, s.agent_running())))
+        self.foreground_probes()
+            .into_iter()
+            .filter_map(|p| {
+                let key = p.persist_key.clone()?;
+                Some((key, agent_running(&p.master, p.shell_pid)))
+            })
             .collect()
     }
 
@@ -95,15 +225,12 @@ impl PtyManager {
     /// assigned at spawn, so the frontend can map each result straight to its
     /// terminal/tab and show a "working" indicator. A poisoned lock yields an
     /// empty map. On non-Unix every value is `true` (there is no
-    /// foreground-process query — see `Session::agent_running`), so the
-    /// indicator degrades to "an agent is open".
+    /// foreground-process query — see `agent_running`), so the indicator
+    /// degrades to "an agent is open".
     pub fn agent_running_by_id(&self) -> HashMap<String, bool> {
-        let Ok(sessions) = self.sessions.lock() else {
-            return HashMap::new();
-        };
-        sessions
-            .iter()
-            .map(|(id, s)| (id.clone(), s.agent_running()))
+        self.foreground_probes()
+            .into_iter()
+            .map(|p| (p.id, agent_running(&p.master, p.shell_pid)))
             .collect()
     }
 }
@@ -114,6 +241,30 @@ impl PtyManager {
 struct OutputEvent {
     id: String,
     chunk: String,
+}
+
+/// Payload for the `pty-restore` event, emitted once when a hidden terminal is
+/// revealed: everything it printed while off screen, plus whether the ring
+/// overflowed and dropped older output (card 16).
+#[derive(Clone, Serialize)]
+struct RestoreEvent {
+    id: String,
+    data: String,
+    trimmed: bool,
+}
+
+/// Payload for the `pty-hidden-output` event: a hidden terminal printed
+/// something, but the bytes are being buffered rather than sent (card 16).
+///
+/// This ping exists so the frontend's output-driven state — the "working" dot,
+/// the per-project busy count, and card 15's silence monitor — keeps tracking
+/// terminals the user cannot see. Dropping it would make an agent in a
+/// background project look idle the moment you switched away, which is the one
+/// thing those indicators exist to tell you. It carries no payload and rides
+/// the same coalescing window as `pty-output`, so it costs almost nothing.
+#[derive(Clone, Serialize)]
+struct HiddenOutputEvent {
+    id: String,
 }
 
 /// Payload for the `pty-attention` event, raised when the reader spots an
@@ -138,10 +289,13 @@ struct AttentionEvent {
 /// `keep_from` is, in priority order:
 ///   - the start of the last UNTERMINATED `ESC ]` introducer (a possible
 ///     split sequence whose terminator may arrive next read), else
-///   - the end of the last COMPLETED terminator (all settled, drop it all),
-///     else
-///   - 0 (nothing matched and no trailing introducer — but the caller caps
-///     the retained tail anyway, see the reader loop).
+///   - the end of the buffer, minus a lone trailing `ESC` (which may be the
+///     first byte of an `ESC ]` split across the read boundary).
+///
+/// That second case is the COMMON one — plain output with no OSC at all — and
+/// it must drain the buffer completely. It used to return 0, so nothing was
+/// ever drained: `scan_buf` grew to `SCAN_TAIL_CAP` and every subsequent read
+/// re-scanned up to 8 KiB of bytes already known to hold no sequence.
 ///
 /// Shapes handled (terminator BEL 0x07 or ST = ESC `\`):
 /// - OSC 9:   ESC ] 9 ; <body>                         -> ("", body)
@@ -153,7 +307,6 @@ fn scan_attention(buf: &str) -> (Vec<(String, String)>, usize) {
     let mut hits = Vec::new();
     let bytes = buf.as_bytes();
     let mut i = 0;
-    let mut consumed = 0; // end (exclusive) of the last completed terminator
     let mut last_introducer = None; // start of a trailing unterminated ESC ]
     while i < bytes.len() {
         // Find the next OSC introducer: ESC (0x1B) followed by ']'.
@@ -189,23 +342,35 @@ fn scan_attention(buf: &str) -> (Vec<(String, String)>, usize) {
         // (Kitty). OSC 9: "9;<body>". Check 99 before 9 — "9;" never matches a
         // "99;" payload (the char after the first '9' is '9', not ';'), but the
         // explicit order documents intent.
+        // Every title/body reaching a hit is sanitized: this text comes from
+        // whatever program printed the sequence (card 25).
         if let Some(rest) = payload.strip_prefix("777;notify;") {
             let mut parts = rest.splitn(2, ';');
-            let title = parts.next().unwrap_or("").to_string();
-            let body = parts.next().unwrap_or("").to_string();
+            let title = sanitize_alert_text(parts.next().unwrap_or(""));
+            let body = sanitize_alert_text(parts.next().unwrap_or(""));
             hits.push((title, body));
         } else if let Some(rest) = payload.strip_prefix("99;") {
-            if let Some(hit) = parse_osc99(rest) {
-                hits.push(hit);
+            if let Some((title, body)) = parse_osc99(rest) {
+                hits.push((sanitize_alert_text(&title), sanitize_alert_text(&body)));
             }
         } else if let Some(body) = payload.strip_prefix("9;") {
-            hits.push((String::new(), body.to_string()));
+            hits.push((String::new(), sanitize_alert_text(body)));
         }
 
-        consumed = end;
         i = end;
     }
-    let keep_from = last_introducer.unwrap_or(consumed);
+    let keep_from = match last_introducer {
+        // A sequence started but never terminated: keep it, its terminator may
+        // arrive in the next read.
+        Some(start) => start,
+        // Everything before `i` is settled — either an emitted hit, or plain
+        // output that provably cannot begin a sequence. Drop all of it. The one
+        // byte worth keeping is a trailing lone `ESC`: the `]` that would make
+        // it an introducer may be the first byte of the next read. `ESC` is
+        // ASCII, so `len - 1` is always a char boundary.
+        None if bytes.last() == Some(&0x1b) => bytes.len() - 1,
+        None => bytes.len(),
+    };
     (hits, keep_from)
 }
 
@@ -538,11 +703,6 @@ pub fn pty_spawn(
         }
     }
 
-    // Shared attention flag. Lives in the Session (so the clear command can
-    // lower it) and is cloned into the reader thread (so it can raise it).
-    let needs_attention = Arc::new(AtomicBool::new(false));
-    let attention_flag = needs_attention.clone();
-
     // Output coalescing. The reader thread sends each decoded chunk down this
     // channel; a dedicated emitter thread batches everything that arrives within
     // a short window into ONE `pty-output` event. Emitting per 4096-byte read
@@ -553,6 +713,10 @@ pub fn pty_spawn(
     let (out_tx, out_rx) = mpsc::channel::<String>();
     let emit_app = app.clone();
     let emit_id_out = id.clone();
+    // The visibility gate + hidden-output ring (card 16), shared with the
+    // session so `pty_set_visible` can flip it and drain the ring.
+    let out_state = Arc::new(Mutex::new(OutBuf::new()));
+    let emit_out_state = out_state.clone();
     thread::spawn(move || {
         // ~8ms ≈ one 120Hz frame: short enough that a lone keystroke echo is
         // imperceptible, long enough to swallow a burst. CAP bounds one event's
@@ -574,13 +738,34 @@ pub fn pty_spawn(
                     Err(_) => break, // window elapsed, or sender gone
                 }
             }
-            let _ = emit_app.emit(
-                "pty-output",
-                OutputEvent {
-                    id: emit_id_out.clone(),
-                    chunk: batch,
-                },
-            );
+            // Decide under the visibility lock, and — when visible — EMIT under
+            // it too. `pty_set_visible` drains the ring and emits `pty-restore`
+            // while holding the same lock, so holding it here is what guarantees
+            // no `pty-output` can slip between a reveal's restore event and the
+            // stream resuming. A poisoned lock means the session is being torn
+            // down; stop the thread rather than spin.
+            let Ok(mut out) = emit_out_state.lock() else {
+                break;
+            };
+            if out.visible {
+                let _ = emit_app.emit(
+                    "pty-output",
+                    OutputEvent {
+                        id: emit_id_out.clone(),
+                        chunk: batch,
+                    },
+                );
+            } else {
+                out.push_hidden(&batch);
+                // Tell the frontend this terminal is alive without shipping the
+                // bytes: the working dot and the silence monitor need the beat.
+                let _ = emit_app.emit(
+                    "pty-hidden-output",
+                    HiddenOutputEvent {
+                        id: emit_id_out.clone(),
+                    },
+                );
+            }
         }
     });
 
@@ -620,15 +805,30 @@ pub fn pty_spawn(
                     scan_buf.push_str(&chunk);
                     let (hits, keep_from) = scan_attention(&scan_buf);
                     for (title, body) in hits {
-                        attention_flag.store(true, Ordering::SeqCst);
-                        let _ = app_handle.emit(
-                            "pty-attention",
-                            AttentionEvent {
-                                id: emit_id.clone(),
-                                title,
-                                body,
-                            },
-                        );
+                        // The user's optional notify-hook (card 19) may rewrite
+                        // or suppress this alert, and it is allowed to take up to
+                        // two seconds. Hand it a thread of its own: blocking here
+                        // would stall this terminal's entire output stream behind
+                        // a slow hook. Alerts are human-paced, so a thread per
+                        // alert is cheaper than any machinery to avoid one.
+                        // ponytail: thread per alert; pool it if alerts ever
+                        // arrive faster than a person can read them.
+                        let hook_app = app_handle.clone();
+                        let hook_id = emit_id.clone();
+                        thread::spawn(move || {
+                            let alert = crate::notify_hook::alert_for(hook_id, "osc", title, body);
+                            let Some(alert) = crate::notify_hook::filter(alert) else {
+                                return; // the hook suppressed it
+                            };
+                            let _ = hook_app.emit(
+                                "pty-attention",
+                                AttentionEvent {
+                                    id: alert.id,
+                                    title: alert.title,
+                                    body: alert.body,
+                                },
+                            );
+                        });
                     }
                     // Drop the settled prefix; retain the tail. Then cap the
                     // tail so a stream of bare `ESC ]` with no terminator can
@@ -661,13 +861,28 @@ pub fn pty_spawn(
         }
     });
 
-    manager.sessions.lock().map_err(|e| e.to_string())?.insert(
+    // Registration is the LAST step, but the shell and its two threads already
+    // exist. If the map lock is poisoned we must not just return: an untracked
+    // shell would keep running with no way to reach or close it. Kill it first,
+    // then report the failure. (Narrow — a poisoned lock means another thread
+    // panicked holding it — but the side effects precede registration, so the
+    // cleanup has to be explicit.)
+    let mut sessions = match manager.sessions.lock() {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e.to_string());
+        }
+    };
+    sessions.insert(
         id,
         Session {
-            master: pair.master,
-            writer,
+            master: Arc::new(Mutex::new(pair.master)),
+            writer: Arc::new(Mutex::new(writer)),
             child,
-            needs_attention,
+            out: out_state,
             persist_key: persist_key.filter(|k| !k.is_empty()),
             shell_pid,
         },
@@ -676,24 +891,83 @@ pub fn pty_spawn(
     Ok(())
 }
 
+/// Tell the backend whether a terminal is on screen (card 16).
+///
+/// A terminal is "visible" only when it is the active tab of a shown group —
+/// exactly when the frontend also holds its WebGL context. While it is hidden
+/// the emitter thread buffers its output in a capped ring instead of emitting
+/// `pty-output`, so no payload crosses the IPC boundary and xterm parses
+/// nothing for a terminal nobody can see. Revealing it drains the ring into a
+/// single `pty-restore` event.
+///
+/// OSC attention scanning is unaffected: it runs on the reader thread, which
+/// never consults visibility, so a hidden agent can still raise an alert.
+///
+/// Unknown id is a no-op success (the terminal may have just closed), and
+/// setting the value it already holds does nothing.
+#[tauri::command]
+pub fn pty_set_visible(
+    app: AppHandle,
+    manager: State<PtyManager>,
+    id: String,
+    visible: bool,
+) -> Result<(), String> {
+    // Clone the Arc out from under the sessions map, then release the map lock
+    // before touching the per-session gate — a reveal emits an event while
+    // holding that gate, and doing so under the global map lock would block
+    // every other terminal's commands.
+    let out = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        match sessions.get(&id) {
+            Some(session) => session.out.clone(),
+            None => return Ok(()),
+        }
+    };
+    let mut guard = out.lock().map_err(|e| e.to_string())?;
+    if guard.visible == visible {
+        return Ok(());
+    }
+    guard.visible = visible;
+    if visible {
+        let (data, trimmed) = guard.take();
+        if !data.is_empty() || trimmed {
+            // Emitted while `guard` is still held: the emitter thread cannot
+            // send a `pty-output` for this session until it can take the same
+            // lock, so the restored block always lands before the stream
+            // resumes. See the emitter thread in `pty_spawn`.
+            let _ = app.emit("pty-restore", RestoreEvent { id, data, trimmed });
+        }
+    }
+    Ok(())
+}
+
 /// Write raw text into one session's PTY input. The shell cannot tell this from
 /// real typing. Append "\r" to submit a line. Unknown id is an error.
+///
+/// The sessions map is released BEFORE the write (card 22). `write_all` into a
+/// PTY blocks whenever the slave's input buffer is full — a Ctrl-S'd shell, or a
+/// big paste into a program that is not reading. Holding the global map across
+/// that stalled every other terminal's commands app-wide.
 #[tauri::command]
 pub fn pty_write(manager: State<PtyManager>, id: String, data: String) -> Result<(), String> {
-    let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-    let session = sessions
-        .get_mut(&id)
-        .ok_or_else(|| format!("no pty session: {id}"))?;
-    session
-        .writer
+    let writer = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        sessions
+            .get(&id)
+            .ok_or_else(|| format!("no pty session: {id}"))?
+            .writer
+            .clone()
+    };
+    let mut writer = writer.lock().map_err(|e| e.to_string())?;
+    writer
         .write_all(data.as_bytes())
         .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())?;
     Ok(())
 }
 
 /// Resize one session's PTY so the program inside knows the new size. Unknown
-/// id is an error.
+/// id is an error. Like `pty_write`, the map lock is released before the ioctl.
 #[tauri::command]
 pub fn pty_resize(
     manager: State<PtyManager>,
@@ -701,12 +975,16 @@ pub fn pty_resize(
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
-    let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-    let session = sessions
-        .get(&id)
-        .ok_or_else(|| format!("no pty session: {id}"))?;
-    session
-        .master
+    let master = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        sessions
+            .get(&id)
+            .ok_or_else(|| format!("no pty session: {id}"))?
+            .master
+            .clone()
+    };
+    let master = master.lock().map_err(|e| e.to_string())?;
+    master
         .resize(PtySize {
             rows,
             cols,
@@ -751,22 +1029,17 @@ pub fn pty_agent_running(manager: State<PtyManager>) -> HashMap<String, bool> {
     manager.agent_running_by_id()
 }
 
-/// Lower one session's attention flag, called when the user focuses that
-/// terminal. Unknown id is a no-op success (the flag may have been cleared by a
-/// just-closed session).
-#[tauri::command]
-pub fn pty_clear_attention(manager: State<PtyManager>, id: String) -> Result<(), String> {
-    let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = sessions.get(&id) {
-        session.needs_attention.store(false, Ordering::SeqCst);
-    }
-    Ok(())
-}
+// `pty_clear_attention` used to live here (card 22 removed it). It lowered a
+// per-session `needs_attention: AtomicBool` that nothing ever read: attention
+// state lives entirely in the frontend, where `terminals.js` owns the set and
+// `alerts.js` renders it. The backend's only job is to EMIT `pty-attention`.
+// The command and the flag are both gone, along with the invoke that called it.
 
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_base64, decode_utf8_stream, parse_osc99, resolve_home, resolve_shell, scan_attention,
+        decode_base64, decode_utf8_stream, parse_osc99, resolve_home, resolve_shell,
+        sanitize_alert_text, scan_attention, OutBuf, HIDDEN_RING_CAP, MAX_ALERT_TEXT_CHARS,
     };
 
     /// Convenience: scan a string and return just the hits (drop `keep_from`).
@@ -1042,5 +1315,246 @@ mod tests {
     #[test]
     fn base64_ignores_embedded_whitespace() {
         assert_eq!(decode_base64("aGVs bG8=").as_deref(), Some("hello"));
+    }
+
+    // ---- OutBuf: hidden-terminal ring (card 16) -----------------------------
+
+    #[test]
+    fn hidden_ring_replays_short_output_byte_identical() {
+        // Under the cap, nothing is dropped: a reveal must give back exactly
+        // what the terminal printed while it was hidden.
+        let mut out = OutBuf::new();
+        out.push_hidden("hello ");
+        out.push_hidden("world");
+        let (data, trimmed) = out.take();
+        assert_eq!(data, "hello world");
+        assert!(!trimmed);
+    }
+
+    #[test]
+    fn hidden_ring_take_resets_the_buffer() {
+        let mut out = OutBuf::new();
+        out.push_hidden("first");
+        assert_eq!(out.take().0, "first");
+        // A second reveal with no output in between yields nothing, not a repeat.
+        let (data, trimmed) = out.take();
+        assert!(data.is_empty());
+        assert!(!trimmed);
+    }
+
+    #[test]
+    fn hidden_ring_drops_oldest_output_and_flags_trimmed() {
+        // Overflow the cap: the ring keeps the TAIL (what the user will want to
+        // see on reveal) and reports that it dropped something.
+        let mut out = OutBuf::new();
+        out.push_hidden(&"a".repeat(HIDDEN_RING_CAP));
+        assert!(!out.trimmed, "exactly at the cap must not trim");
+        out.push_hidden("TAIL");
+        let (data, trimmed) = out.take();
+        assert!(trimmed);
+        assert_eq!(data.len(), HIDDEN_RING_CAP);
+        assert!(data.ends_with("TAIL"));
+    }
+
+    #[test]
+    fn hidden_ring_trim_never_splits_a_multibyte_glyph() {
+        // The ring is a String, so an overflow cut on a byte index inside a
+        // multi-byte char would panic. Fill it with 3-byte glyphs and force a
+        // cut that lands mid-glyph.
+        let mut out = OutBuf::new();
+        let glyph = "│"; // U+2502, 3 bytes
+                         // CAP is not a multiple of 3, so this stops just SHORT of the cap.
+        out.push_hidden(&glyph.repeat(HIDDEN_RING_CAP / 3));
+        // Two more bytes push it past. The naive cut then lands inside the very
+        // first glyph, which is the case that would panic without the boundary
+        // search in push_hidden.
+        out.push_hidden("xx");
+        let (data, trimmed) = out.take();
+        assert!(trimmed);
+        // Still valid UTF-8 (it is a String), and it kept the newest bytes.
+        assert!(data.ends_with("xx"));
+        assert!(data.len() <= HIDDEN_RING_CAP);
+        assert!(data.starts_with(glyph), "cut must land on a glyph boundary");
+    }
+
+    #[test]
+    fn a_new_session_starts_visible() {
+        // A freshly spawned terminal is the tab being activated, so it must
+        // stream immediately — never buffer until someone calls set_visible.
+        assert!(OutBuf::new().visible);
+    }
+
+    // ---- scan_attention: the buffer must DRAIN (card 22) --------------------
+    // The reader keeps `scan_buf` across reads so a sequence split at a 4096-byte
+    // boundary is still found. `keep_from` is what it retains. If that never
+    // reaches the buffer end, plain output piles up to SCAN_TAIL_CAP and every
+    // read re-scans 8 KiB it has already proven contains nothing.
+
+    /// Model the reader loop: append a chunk, scan, drain to `keep_from`.
+    fn feed(scan_buf: &mut String, chunk: &str) -> Vec<(String, String)> {
+        scan_buf.push_str(chunk);
+        let (hits, keep_from) = scan_attention(scan_buf);
+        scan_buf.drain(..keep_from);
+        hits
+    }
+
+    #[test]
+    fn plain_output_drains_the_scan_buffer_completely() {
+        let text = "no escape sequences here at all\r\n";
+        let (hits, keep_from) = scan_attention(text);
+        assert!(hits.is_empty());
+        assert_eq!(keep_from, text.len(), "the whole buffer is settled");
+    }
+
+    #[test]
+    fn a_stream_of_plain_reads_never_grows_the_scan_buffer() {
+        // The regression this card exists for.
+        let mut scan_buf = String::new();
+        for _ in 0..500 {
+            assert!(feed(&mut scan_buf, "some ordinary build output line\n").is_empty());
+            assert!(
+                scan_buf.is_empty(),
+                "scan_buf must be empty between plain reads, held {} bytes",
+                scan_buf.len()
+            );
+        }
+    }
+
+    #[test]
+    fn csi_sequences_do_not_hold_the_buffer() {
+        // A colour code is `ESC [`, not `ESC ]`. It can never start an OSC, so
+        // it must not be retained either.
+        let text = "\x1b[31mred\x1b[0m normal";
+        let (hits, keep_from) = scan_attention(text);
+        assert!(hits.is_empty());
+        assert_eq!(keep_from, text.len());
+    }
+
+    #[test]
+    fn a_lone_trailing_esc_is_kept_for_the_next_read() {
+        // `ESC` alone could become `ESC ]` once the next read arrives, so it is
+        // the ONE byte worth holding.
+        let text = "output\x1b";
+        let (hits, keep_from) = scan_attention(text);
+        assert!(hits.is_empty());
+        assert_eq!(keep_from, text.len() - 1);
+    }
+
+    #[test]
+    fn an_unterminated_introducer_is_kept_from_its_start() {
+        let text = "output\x1b]777;notify;Claude;still typing";
+        let (hits, keep_from) = scan_attention(text);
+        assert!(hits.is_empty(), "no terminator yet, so no hit");
+        assert_eq!(keep_from, "output".len());
+    }
+
+    #[test]
+    fn a_settled_hit_followed_by_plain_output_drains_everything() {
+        let text = "\x1b]9;done\x07and then some more output";
+        let (hits, keep_from) = scan_attention(text);
+        assert_eq!(hits, vec![(String::new(), "done".into())]);
+        assert_eq!(keep_from, text.len());
+    }
+
+    #[test]
+    fn a_sequence_split_across_reads_is_still_found_after_draining() {
+        // Draining must not break the split-sequence case the buffer exists for.
+        let mut scan_buf = String::new();
+        assert!(feed(&mut scan_buf, "boot output\n").is_empty());
+        assert!(scan_buf.is_empty());
+        // First half: introducer with no terminator. It must be retained.
+        assert!(feed(&mut scan_buf, "\x1b]777;notify;Claude;needs").is_empty());
+        assert_eq!(scan_buf, "\x1b]777;notify;Claude;needs");
+        // Second half completes it.
+        let hits = feed(&mut scan_buf, " input\x07");
+        assert_eq!(hits, vec![("Claude".into(), "needs input".into())]);
+        assert!(scan_buf.is_empty(), "settled hit is drained");
+    }
+
+    #[test]
+    fn a_sequence_split_exactly_at_the_esc_is_still_found() {
+        // The read boundary falls between `ESC` and `]`.
+        let mut scan_buf = String::new();
+        assert!(feed(&mut scan_buf, "text\x1b").is_empty());
+        assert_eq!(scan_buf, "\x1b", "the lone ESC is held");
+        let hits = feed(&mut scan_buf, "]9;ping\x07");
+        assert_eq!(hits, vec![(String::new(), "ping".into())]);
+        assert!(scan_buf.is_empty());
+    }
+
+    #[test]
+    fn a_hit_is_emitted_exactly_once_across_reads() {
+        let mut scan_buf = String::new();
+        let hits = feed(&mut scan_buf, "\x1b]9;once\x07");
+        assert_eq!(hits.len(), 1);
+        // More output arrives; the settled hit must not re-fire.
+        assert!(feed(&mut scan_buf, "more output\n").is_empty());
+        assert!(feed(&mut scan_buf, "even more\n").is_empty());
+    }
+
+    // ---- alert text is bounded and control-free (card 25) -------------------
+
+    #[test]
+    fn an_oversized_osc_title_is_truncated() {
+        let huge = "A".repeat(1_000_000);
+        let seq = format!("\x1b]777;notify;{huge};body\x07");
+        let (title, body) = hits(&seq).into_iter().next().expect("one hit");
+        assert_eq!(title.chars().count(), MAX_ALERT_TEXT_CHARS);
+        assert_eq!(body, "body");
+    }
+
+    #[test]
+    fn an_oversized_osc9_body_is_truncated() {
+        let seq = format!("\x1b]9;{}\x07", "B".repeat(5_000));
+        let (_, body) = hits(&seq).into_iter().next().expect("one hit");
+        assert_eq!(body.chars().count(), MAX_ALERT_TEXT_CHARS);
+    }
+
+    #[test]
+    fn control_characters_are_stripped_from_alert_text() {
+        // A forged alert must not be able to break the banner across lines.
+        let seq = "\x1b]777;notify;Cla\rude\x08\x7f;needs\ninput\x07";
+        assert_eq!(
+            hits(seq),
+            vec![("Claude".into(), "needsinput".into())],
+            "CR, backspace, DEL and LF must all be dropped"
+        );
+    }
+
+    #[test]
+    fn truncation_counts_characters_not_bytes() {
+        // 300 three-byte glyphs: a byte-based cut would split one in half.
+        let glyphs = "字".repeat(300);
+        let out = sanitize_alert_text(&glyphs);
+        assert_eq!(out.chars().count(), MAX_ALERT_TEXT_CHARS);
+        assert!(out.chars().all(|c| c == '字'));
+    }
+
+    #[test]
+    fn short_clean_alert_text_passes_through_unchanged() {
+        assert_eq!(
+            sanitize_alert_text("Claude needs input"),
+            "Claude needs input"
+        );
+        assert_eq!(sanitize_alert_text(""), "");
+    }
+
+    #[test]
+    fn an_osc99_alert_is_sanitized_too() {
+        let seq = format!("\x1b]99;p=body;{}\x07", "x".repeat(1000));
+        let (_, body) = hits(&seq).into_iter().next().expect("one hit");
+        assert_eq!(body.chars().count(), MAX_ALERT_TEXT_CHARS);
+    }
+
+    #[test]
+    fn keep_from_is_always_a_char_boundary() {
+        // `drain(..keep_from)` panics otherwise. Multi-byte glyphs, then an ESC.
+        for text in ["日本語", "│⠋│", "日本語\x1b", "⠋\x1b]9;x\x07⠋"] {
+            let (_, keep_from) = scan_attention(text);
+            assert!(
+                text.is_char_boundary(keep_from),
+                "keep_from {keep_from} splits a glyph in {text:?}"
+            );
+        }
     }
 }

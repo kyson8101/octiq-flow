@@ -180,15 +180,6 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
     })
 }
 
-/// The user's home dir, from HOME (Unix) or USERPROFILE (Windows). Same helper
-/// as agent_resume.rs / canvas.rs keep privately.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .ok()
-        .map(PathBuf::from)
-}
-
 /// Resolve every path-looking string a terminal printed into an absolute path
 /// that EXISTS on disk (`None` per miss), in one call. Backs the terminal's
 /// file-link provider, which checks a whole hovered line's candidates at once —
@@ -205,9 +196,9 @@ pub fn resolve_paths(paths: Vec<String>, cwd: String) -> Vec<Option<String>> {
 /// real, so prose that merely looks like a path never underlines.
 fn resolve_path(path: String, cwd: &str) -> Option<String> {
     let expanded = if path == "~" {
-        home_dir()?
+        crate::paths::home_dir()?
     } else if let Some(rest) = path.strip_prefix("~/") {
-        home_dir()?.join(rest)
+        crate::paths::home_dir()?.join(rest)
     } else {
         PathBuf::from(&path)
     };
@@ -255,15 +246,28 @@ mod tests {
     }
 }
 
-/// Overwrite `path` with `content` from the in-app preview editor (Save). Returns
-/// `Err(message)` when the path is a directory or the write fails. The frontend
-/// only enables Save for text files it read in full (never a truncated one), so a
-/// large file can't be saved back as just its first chunk and lose the tail.
+/// Overwrite `path` with `content` from the in-app preview editor (Save).
+///
+/// The path is resolved against the allowed write roots — `$HOME`, the
+/// configured workspace folders, and the profile data dir — BEFORE anything is
+/// opened or written (card 25). Resolving first is the whole point: a symlink
+/// whose NAME sits inside a project but whose TARGET does not would otherwise
+/// pass a name-only check and then be written through.
+///
+/// Returns `Err(message)` when the path escapes those roots, is a directory, or
+/// the write fails. The frontend only enables Save for text files it read in
+/// full (never a truncated one), so a large file can't be saved back as just its
+/// first chunk and lose the tail.
 #[tauri::command]
-pub fn write_file(path: String, content: String) -> Result<(), String> {
-    let file_path = Path::new(&path);
-    if file_path.is_dir() {
+pub fn write_file(
+    state: tauri::State<crate::workspaces::WorkspaceState>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    let roots = crate::paths::write_roots(state.all_paths());
+    let target = crate::paths::resolve_writable(Path::new(&path), &roots)?;
+    if target.is_dir() {
         return Err(format!("Not a file: {path}"));
     }
-    fs::write(file_path, content).map_err(|e| format!("Cannot save file: {e}"))
+    fs::write(&target, content).map_err(|e| format!("Cannot save file: {e}"))
 }

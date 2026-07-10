@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window. opener:allow-open-path was `**` (card 25): it asks the OS to open a path with its DEFAULT HANDLER, so an unscoped grant let the webview launch any .app or executable on disk. Now scoped to $HOME, the profile dir, and the temp dirs where agents drop files they print as clickable links. NOTE: `**` never matches a dot-directory (Tauri sets require_literal_leading_dot on unix), which is why $HOME/.octiqflow needs its own entry. A project on a volume outside $HOME loses 'open externally'; add its root here if you keep one.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -9,7 +9,13 @@
     "notification:default",
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$HOME/.octiqflow/**" },
+        { "path": "$TEMP/**" },
+        { "path": "/tmp/**" },
+        { "path": "/private/tmp/**" }
+      ]
     }
   ]
 }

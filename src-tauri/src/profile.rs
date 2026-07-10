@@ -16,20 +16,9 @@ use tauri::AppHandle;
 /// Default profile name when none is configured.
 const DEFAULT_PROFILE: &str = "default";
 
-/// The user's home dir, from HOME (Unix) or USERPROFILE (Windows). `None` when
-/// neither is set, in which case every path here is unresolved and callers fall
-/// back to a relative dir.
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME")
-        .ok()
-        .or_else(|| std::env::var("USERPROFILE").ok())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-}
-
 /// `~/.octiqflow` — holds the fixed bootstrap config and global scratch.
 fn octiqflow_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".octiqflow"))
+    crate::paths::home_dir().map(|h| h.join(".octiqflow"))
 }
 
 /// Path of the fixed bootstrap pointer.

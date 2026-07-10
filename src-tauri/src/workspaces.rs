@@ -148,6 +148,29 @@ impl WorkspaceState {
     }
 }
 
+impl WorkspaceState {
+    /// Every folder any project points at: primary paths, extra paths, and docs
+    /// roots. These are the folders the user has deliberately opened to the app,
+    /// so they form part of the write allowlist (see `paths::write_roots`).
+    ///
+    /// A poisoned lock yields nothing — a closed door. `write_file` then falls
+    /// back to `$HOME` + the profile dir, which is the safe direction to fail.
+    pub fn all_paths(&self) -> Vec<String> {
+        let Ok(data) = self.data.lock() else {
+            return Vec::new();
+        };
+        data.workspaces
+            .iter()
+            .flat_map(|w| {
+                std::iter::once(w.primary_path.clone())
+                    .chain(std::iter::once(w.docs_path.clone()))
+                    .chain(w.paths.iter().cloned())
+            })
+            .filter(|p| !p.trim().is_empty())
+            .collect()
+    }
+}
+
 /// Return all workspaces in their stored order.
 #[tauri::command]
 pub fn list_workspaces(state: State<WorkspaceState>) -> Result<Vec<Workspace>, String> {
@@ -155,14 +178,18 @@ pub fn list_workspaces(state: State<WorkspaceState>) -> Result<Vec<Workspace>, S
     Ok(data.workspaces.clone())
 }
 
-/// Resolve the user's home folder. Used as the default primary path when a
-/// project is created without one. Falls back to $HOME, then "/".
-fn home_dir(app: &AppHandle) -> String {
+/// The folder a project gets when it is created without one: the user's home.
+///
+/// NOT named `home_dir` — that name belongs to `paths::home_dir`, the single
+/// definition (card 26). This one has a different contract: it prefers Tauri's
+/// platform home lookup, returns a `String` rather than an `Option<PathBuf>`,
+/// and falls back to `"/"` so a project always has SOME primary path.
+fn default_primary_path(app: &AppHandle) -> String {
     app.path()
         .home_dir()
         .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .or_else(|| std::env::var("HOME").ok())
+        .or_else(crate::paths::home_dir)
+        .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "/".to_string())
 }
 
@@ -182,7 +209,7 @@ pub fn add_workspace(
     }
     let primary_path = primary_path.trim().to_string();
     let primary_path = if primary_path.is_empty() {
-        home_dir(&app)
+        default_primary_path(&app)
     } else {
         primary_path
     };
