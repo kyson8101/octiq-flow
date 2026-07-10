@@ -13,7 +13,7 @@
 //     `.git/index` and re-triggers the watcher in a feedback loop.
 //   * Events are debounced: one emit after a quiet period, with an upper bound
 //     so a long busy burst (a build writing files) still reports periodically.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -48,25 +48,48 @@ pub fn git_watch_paths(
         return Ok(());
     }
 
-    let (tx, rx) = mpsc::channel::<()>();
+    // The watched roots, needed to make each event path relative before the
+    // ignore rules are applied (see `under_root`).
+    let mut seen = std::collections::HashSet::new();
+    let roots: Vec<PathBuf> = paths
+        .into_iter()
+        .filter(|p| seen.insert(p.clone())) // two projects sharing a folder: watch it once
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .collect();
+    if roots.is_empty() {
+        return Ok(());
+    }
+
+    // Each send carries the watched ROOT the change happened under, so the
+    // frontend can re-annotate only the affected projects instead of rescanning
+    // every path of every project.
+    let (tx, rx) = mpsc::channel::<String>();
+    let event_roots = roots.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(event) = res {
-            if event.paths.is_empty() || event.paths.iter().any(|p| is_relevant(p)) {
-                let _ = tx.send(());
+        let Ok(event) = res else { return };
+        if event.paths.is_empty() {
+            // A dropped/overflowed event batch: we no longer know what changed,
+            // so ask the frontend for a full rescan (an empty payload).
+            let _ = tx.send(String::new());
+            return;
+        }
+        for p in &event.paths {
+            if !is_relevant(under_root(p, &event_roots)) {
+                continue;
             }
+            let root = event_roots
+                .iter()
+                .find(|r| p.starts_with(r))
+                .map(|r| r.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let _ = tx.send(root);
         }
     })
     .map_err(|e| e.to_string())?;
 
-    let mut seen = std::collections::HashSet::new();
-    for p in paths {
-        if !seen.insert(p.clone()) {
-            continue; // two projects sharing a folder: watch it once
-        }
-        let path = Path::new(&p);
-        if path.is_dir() {
-            let _ = watcher.watch(path, RecursiveMode::Recursive);
-        }
+    for root in &roots {
+        let _ = watcher.watch(root, RecursiveMode::Recursive);
     }
 
     std::thread::spawn(move || debounce_loop(app, rx));
@@ -76,40 +99,107 @@ pub fn git_watch_paths(
 
 /// Collapse bursts of raw fs events into sparse `git-status-changed` emits:
 /// wait for the first event, then keep absorbing until QUIET passes with no
-/// event (or MAX_COALESCE total), then emit once. Ends when the watcher is
-/// dropped and the channel disconnects.
-fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<()>) {
-    while rx.recv().is_ok() {
+/// event (or MAX_COALESCE total), then emit once with the set of watched roots
+/// that changed. Ends when the watcher is dropped and the channel disconnects.
+///
+/// The payload is the union of roots seen during the window. An EMPTY payload
+/// means "something changed but we do not know where" — the frontend must then
+/// fall back to a full rescan. That happens when the watcher drops an event
+/// batch, and it is also what a boot-time render does.
+fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
+    /// Collect a root into the window's set. An empty root poisons the set into
+    /// "unknown", because one unattributable change means we cannot claim the
+    /// other roots are clean.
+    fn absorb(roots: &mut std::collections::BTreeSet<String>, unknown: &mut bool, root: String) {
+        if root.is_empty() {
+            *unknown = true;
+        } else {
+            roots.insert(root);
+        }
+    }
+
+    while let Ok(first_root) = rx.recv() {
+        let mut roots = std::collections::BTreeSet::new();
+        let mut unknown = false;
+        absorb(&mut roots, &mut unknown, first_root);
+
         let first = Instant::now();
+        let mut disconnected = false;
         loop {
             if first.elapsed() >= MAX_COALESCE {
                 break;
             }
             match rx.recv_timeout(QUIET) {
-                Ok(_) => continue,
+                Ok(root) => absorb(&mut roots, &mut unknown, root),
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = app.emit("git-status-changed", ());
-                    return;
+                    disconnected = true;
+                    break;
                 }
             }
         }
-        let _ = app.emit("git-status-changed", ());
+        // An unknown change means we cannot name the affected roots, so send
+        // none and let the frontend rescan everything.
+        let payload: Vec<String> = if unknown {
+            Vec::new()
+        } else {
+            roots.into_iter().collect()
+        };
+        let _ = app.emit("git-status-changed", payload);
+        if disconnected {
+            return;
+        }
     }
 }
 
-/// Can a change to this path affect `git status`? Everything outside `.git`
-/// counts (working-tree edits, new files, deletes). Inside `.git` only the
-/// files rewritten by a commit, stage, checkout, or merge count: HEAD, index,
-/// ORIG_HEAD / MERGE_HEAD, and anything under refs/ or logs/. The object store
-/// (`.git/objects/…`) and `*.lock` temp files are churn with no status impact.
+/// Directories whose contents never belong in `git status`: they are build
+/// output or installed dependencies, and every real project gitignores them.
+/// A `cargo build` or `npm install` writes thousands of files under these, and
+/// each one used to open the 2s coalesce window for the whole build.
+///
+/// Matched as a whole PATH COMPONENT, never as a substring — a source file at
+/// `src/target_resolver.rs` or a folder named `my-dist-tools` must still count.
+const IGNORED_DIRS: [&str; 5] = ["node_modules", "target", "dist", "build", ".venv"];
+
+/// `path` with the first watched root that contains it stripped off, or `path`
+/// itself when no root matches.
+///
+/// The ignore rules below MUST be applied to this relative remainder, never to
+/// the absolute path. A user whose project lives at `~/build/my-app` or
+/// `~/dist/site` would otherwise have every one of its files ignored, and their
+/// sidebar counts would simply stop updating.
+fn under_root<'a>(path: &'a Path, roots: &[PathBuf]) -> &'a Path {
+    for root in roots {
+        if let Ok(rel) = path.strip_prefix(root) {
+            return rel;
+        }
+    }
+    path
+}
+
+/// Can a change to this path affect `git status`? `path` is relative to the
+/// watched project folder (see `under_root`).
+///
+/// Working-tree paths count, with two exceptions:
+///   * anything under a build/dependency directory (see `IGNORED_DIRS`);
+///   * inside `.git`, only the files rewritten by a commit, stage, checkout or
+///     merge — HEAD, index, ORIG_HEAD / MERGE_HEAD, and anything under refs/ or
+///     logs/. The object store (`.git/objects/…`) and `*.lock` temp files are
+///     churn with no status impact.
+///
+/// The build-dir rule is a heuristic on the WATCHER side, not a substitute for
+/// gitignore: a TRACKED file that happens to live under `build/` would be
+/// missed until the next event elsewhere in the repo. That trade is worth it —
+/// the alternative is re-running three git subprocesses per project path every
+/// two seconds for the whole length of every build.
 fn is_relevant(path: &Path) -> bool {
     let comps: Vec<String> = path
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
     let Some(pos) = comps.iter().position(|c| c == ".git") else {
-        return true; // a working-tree path
+        // A working-tree path: relevant unless it sits under a build dir.
+        return !comps.iter().any(|c| IGNORED_DIRS.contains(&c.as_str()));
     };
     let inner = &comps[pos + 1..];
     let Some(file) = inner.last() else {
@@ -159,5 +249,77 @@ mod tests {
     fn bare_git_dir_event_is_relevant() {
         // The .git dir itself appearing/disappearing changes repo-ness.
         assert!(is_relevant(Path::new("/repo/.git")));
+    }
+
+    // ---- build / dependency directories are ignored (card 21) --------------
+
+    #[test]
+    fn build_and_dependency_dirs_are_ignored() {
+        assert!(!is_relevant(Path::new("node_modules/react/index.js")));
+        assert!(!is_relevant(Path::new("target/debug/build/foo/out")));
+        assert!(!is_relevant(Path::new("dist/bundle.js")));
+        assert!(!is_relevant(Path::new("build/output.o")));
+        assert!(!is_relevant(Path::new(".venv/lib/python3.12/site.py")));
+        // Nested deeper than the first component.
+        assert!(!is_relevant(Path::new("packages/web/node_modules/x/a.js")));
+        assert!(!is_relevant(Path::new(
+            "src-tauri/target/debug/deps/x.rlib"
+        )));
+    }
+
+    #[test]
+    fn ignored_names_match_whole_components_not_substrings() {
+        // The rule must not swallow real source files whose name merely CONTAINS
+        // an ignored word. This is the bug a naive `path.contains("target")` has.
+        assert!(is_relevant(Path::new("src/target_resolver.rs")));
+        assert!(is_relevant(Path::new("src/build_script.rs")));
+        assert!(is_relevant(Path::new("my-dist-tools/main.js")));
+        assert!(is_relevant(Path::new("distribution/notes.md")));
+        assert!(is_relevant(Path::new("src/node_modules_shim.ts")));
+    }
+
+    // ---- under_root: the ignore rules apply BELOW the watched folder --------
+
+    #[test]
+    fn under_root_strips_the_matching_watched_root() {
+        let roots = vec![PathBuf::from("/Users/k/proj")];
+        assert_eq!(
+            under_root(Path::new("/Users/k/proj/src/main.rs"), &roots),
+            Path::new("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn under_root_returns_the_path_when_no_root_matches() {
+        let roots = vec![PathBuf::from("/Users/k/other")];
+        let p = Path::new("/Users/k/proj/src/main.rs");
+        assert_eq!(under_root(p, &roots), p);
+    }
+
+    #[test]
+    fn a_project_living_under_a_build_named_folder_is_not_ignored() {
+        // The whole point of under_root. Watching `~/build/my-app`, a change to
+        // `~/build/my-app/src/main.rs` is relevant — the `build` component
+        // belongs to the ROOT, not to the path inside the project.
+        let roots = vec![PathBuf::from("/Users/k/build/my-app")];
+        let changed = Path::new("/Users/k/build/my-app/src/main.rs");
+        assert!(is_relevant(under_root(changed, &roots)));
+
+        // …while a build dir INSIDE that project is still ignored.
+        let ignored = Path::new("/Users/k/build/my-app/node_modules/react/index.js");
+        assert!(!is_relevant(under_root(ignored, &roots)));
+    }
+
+    #[test]
+    fn dot_git_rules_still_apply_below_a_root() {
+        let roots = vec![PathBuf::from("/Users/k/proj")];
+        assert!(is_relevant(under_root(
+            Path::new("/Users/k/proj/.git/HEAD"),
+            &roots
+        )));
+        assert!(!is_relevant(under_root(
+            Path::new("/Users/k/proj/.git/index.lock"),
+            &roots
+        )));
     }
 }

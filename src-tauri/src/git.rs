@@ -21,7 +21,7 @@
 // UTF-8 instead of octal-escaped. The only unsupported case is a filename that
 // contains a literal newline (git would still quote those); such paths are rare
 // and treated as best-effort.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -556,27 +556,95 @@ fn parse_branch_lines(text: &str) -> Vec<String> {
 
 /// Run a git summary for every path. One `GitStatus` per input path, in the same
 /// order. Failures fall back to a `not_repo` entry so the grid always renders.
+///
+/// Paths are deduplicated twice before any real work happens:
+///   1. by the path STRING — a project listed twice, or the same folder in two
+///      projects, resolves its repo root once;
+///   2. by the resolved repo TOP-LEVEL — `git status` and `git diff` report on
+///      the whole repo no matter which subdirectory you run them from, so two
+///      folders of one repo produce identical numbers. Computing them twice is
+///      pure waste, and this command is re-run on every `git-status-changed`.
+///
+/// A project with four folders in one repo used to cost ~16 git subprocesses;
+/// it now costs 4 (one `rev-parse` each) plus ~3 for the single repo.
 #[tauri::command]
 pub fn git_status_summary(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
-    Ok(paths.into_iter().map(status_for_path).collect())
+    // 1. Resolve each DISTINCT path to its repo root, once.
+    let mut root_of: HashMap<&str, Option<String>> = HashMap::new();
+    for path in &paths {
+        root_of
+            .entry(path.as_str())
+            .or_insert_with(|| repo_root(path));
+    }
+
+    // 2. Summarize each DISTINCT repo, once, from its top-level.
+    let mut summary_of: HashMap<&str, RepoSummary> = HashMap::new();
+    for root in root_of.values().flatten() {
+        if !summary_of.contains_key(root.as_str()) {
+            summary_of.insert(root.as_str(), summarize_repo(root));
+        }
+    }
+
+    // 3. Fan the per-repo numbers back out, in the caller's original order.
+    Ok(paths
+        .iter()
+        .map(
+            |path| match root_of.get(path.as_str()).and_then(Option::as_ref) {
+                Some(root) => match summary_of.get(root.as_str()) {
+                    Some(summary) => summary.to_status(path.clone(), root.clone()),
+                    None => GitStatus::not_repo(path.clone()),
+                },
+                None => GitStatus::not_repo(path.clone()),
+            },
+        )
+        .collect())
 }
 
-/// Summarize one path: branch + ahead/behind + changed-entry count from
-/// `git status --porcelain=v2 --branch`, then the +/- line totals from the shared
-/// numstat (the same source the diff panel uses). Any error yields a `not_repo`
-/// entry rather than propagating.
-fn status_for_path(path: String) -> GitStatus {
-    let Some(text) = run_git(&path, &["status", "--porcelain=v2", "--branch"]) else {
-        return GitStatus::not_repo(path);
+/// Everything `git_status_summary` needs about ONE repo, independent of which
+/// of its folders was asked about.
+struct RepoSummary {
+    /// None when `git status` failed (a path inside a repo we cannot read).
+    status: Option<GitStatus>,
+    insertions: u32,
+    deletions: u32,
+}
+
+impl RepoSummary {
+    /// Stamp this repo's numbers onto one of its folder paths.
+    fn to_status(&self, path: String, root: String) -> GitStatus {
+        let Some(status) = &self.status else {
+            return GitStatus::not_repo(path);
+        };
+        GitStatus {
+            path,
+            repo_root: root,
+            insertions: self.insertions,
+            deletions: self.deletions,
+            ..status.clone()
+        }
+    }
+}
+
+/// Summarize one repo from its top-level: branch + ahead/behind + changed-entry
+/// count from `git status --porcelain=v2 --branch`, then the +/- line totals
+/// from the shared numstat (the same source the diff panel uses). Any error
+/// yields an empty summary rather than propagating.
+fn summarize_repo(root: &str) -> RepoSummary {
+    let Some(text) = run_git(root, &["status", "--porcelain=v2", "--branch"]) else {
+        return RepoSummary {
+            status: None,
+            insertions: 0,
+            deletions: 0,
+        };
     };
-    let mut status = parse_status(path.clone(), &text);
-    // Resolve the repo top-level so the UI can de-dupe a project's folders that
-    // live in the same repo (the porcelain status output does not carry it).
-    status.repo_root = repo_root(&path).unwrap_or_default();
-    let (insertions, deletions) = diff_line_counts(&path);
-    status.insertions = insertions;
-    status.deletions = deletions;
-    status
+    let (insertions, deletions) = diff_line_counts(root);
+    RepoSummary {
+        // `path` and `repo_root` are placeholders: `to_status` overwrites both
+        // with the folder the caller actually asked about.
+        status: Some(parse_status(String::new(), &text)),
+        insertions,
+        deletions,
+    }
 }
 
 /// Sum a repo's working-tree-vs-HEAD line changes using the SAME
@@ -773,5 +841,124 @@ mod tests {
         assert_eq!(status.changed, 1);
         // Line counts are filled later, not by parse_status.
         assert_eq!((status.insertions, status.deletions), (0, 0));
+    }
+
+    // ---- repo dedupe (card 21) ---------------------------------------------
+
+    #[test]
+    fn repo_summary_stamps_the_asked_for_path_onto_shared_numbers() {
+        let summary = RepoSummary {
+            status: Some(GitStatus {
+                path: String::new(),
+                repo_root: String::new(),
+                branch: "main".into(),
+                changed: 3,
+                insertions: 0,
+                deletions: 0,
+                ahead: 1,
+                behind: 2,
+                is_repo: true,
+            }),
+            insertions: 40,
+            deletions: 5,
+        };
+        let a = summary.to_status("/repo/sub-a".into(), "/repo".into());
+        let b = summary.to_status("/repo/sub-b".into(), "/repo".into());
+        // Each folder echoes back its own path…
+        assert_eq!(a.path, "/repo/sub-a");
+        assert_eq!(b.path, "/repo/sub-b");
+        // …but shares the repo's root and every one of its numbers.
+        assert_eq!(a.repo_root, "/repo");
+        assert_eq!(b.repo_root, "/repo");
+        assert_eq!((a.changed, a.insertions, a.deletions), (3, 40, 5));
+        assert_eq!((b.changed, b.insertions, b.deletions), (3, 40, 5));
+        assert_eq!((a.ahead, a.behind), (1, 2));
+        assert!(a.is_repo && b.is_repo);
+    }
+
+    #[test]
+    fn repo_summary_without_status_is_not_a_repo() {
+        let summary = RepoSummary {
+            status: None,
+            insertions: 0,
+            deletions: 0,
+        };
+        let s = summary.to_status("/x".into(), "/x".into());
+        assert!(!s.is_repo);
+        assert_eq!(s.path, "/x");
+    }
+
+    /// A throwaway git repo with two subfolders and one changed file.
+    /// Returns None when `git` is unavailable, so the test simply skips.
+    fn temp_repo(name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::env::temp_dir().join(format!("octiq-git-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub-a")).ok()?;
+        std::fs::create_dir_all(dir.join("sub-b")).ok()?;
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .status()
+            .ok()?
+            .success();
+        if !ok {
+            return None;
+        }
+        std::fs::write(dir.join("sub-a").join("f.txt"), "hello\n").ok()?;
+        Some(dir)
+    }
+
+    #[test]
+    fn two_folders_of_one_repo_get_the_same_root_and_numbers() {
+        let Some(dir) = temp_repo("dedupe") else {
+            return; // no git on this machine
+        };
+        let a = dir.join("sub-a").to_string_lossy().into_owned();
+        let b = dir.join("sub-b").to_string_lossy().into_owned();
+
+        // The same path listed twice must not be resolved twice, and the two
+        // sibling folders must collapse to one repo summary.
+        let out = git_status_summary(vec![a.clone(), b.clone(), a.clone()]).unwrap();
+
+        // One result per INPUT path, in the caller's order.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].path, a);
+        assert_eq!(out[1].path, b);
+        assert_eq!(out[2].path, a);
+
+        assert!(out.iter().all(|s| s.is_repo), "all three are in a git repo");
+        // The whole point: one repo, one root, one set of numbers.
+        assert_eq!(out[0].repo_root, out[1].repo_root);
+        assert_eq!(out[1].repo_root, out[2].repo_root);
+        assert_eq!(out[0].changed, out[1].changed);
+        assert_eq!(out[0].insertions, out[1].insertions);
+        assert_eq!(out[0].deletions, out[1].deletions);
+        // The untracked file under sub-a is a change for the WHOLE repo, so the
+        // sub-b entry reports it too — that is what "one repo" means.
+        assert_eq!(out[1].changed, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_non_repo_path_still_yields_an_entry_in_order() {
+        let Some(dir) = temp_repo("mixed") else {
+            return;
+        };
+        let a = dir.join("sub-a").to_string_lossy().into_owned();
+        let outside = std::env::temp_dir()
+            .join("octiq-git-test-not-a-repo-at-all")
+            .to_string_lossy()
+            .into_owned();
+
+        let out = git_status_summary(vec![outside.clone(), a.clone()]).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].path, outside);
+        assert!(!out[0].is_repo);
+        assert_eq!(out[1].path, a);
+        assert!(out[1].is_repo);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
