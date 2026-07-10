@@ -125,6 +125,30 @@ function emitAttention(agent, input) {
   }
 }
 
+/**
+ * Read the whole hook payload from stdin (fd 0). `fs.readFileSync(0)` throws an
+ * EOF error on Windows when stdin is a pipe — which is exactly how every agent
+ * feeds a hook — so the payload never parsed there and no session was ever
+ * captured (nodejs/node#35997). Read in a loop instead and treat that EOF as the
+ * normal end of input. Any other error propagates to main's catch (silent no-op).
+ */
+function readStdin() {
+  const chunks = [];
+  const buf = Buffer.alloc(1 << 16);
+  for (;;) {
+    let n;
+    try {
+      n = fs.readSync(0, buf, 0, buf.length, null);
+    } catch (err) {
+      if (err.code !== "EOF") throw err;
+      break;
+    }
+    if (n === 0) break;
+    chunks.push(Buffer.from(buf.subarray(0, n)));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 /** Read the store, or {} if it is missing / unreadable / not an object. */
 function readStore(file) {
   try {
@@ -174,7 +198,7 @@ function main() {
   // The hook payload arrives as JSON on stdin (fd 0).
   let input;
   try {
-    input = JSON.parse(fs.readFileSync(0, "utf8"));
+    input = JSON.parse(readStdin());
   } catch {
     return;
   }
