@@ -40,7 +40,7 @@ notify = "8"
 rdev = "0.5"
 # Decode the cropped PNG the frontend sends back when saving a crop (vault.rs).
 base64 = "0.22"
-fontdb = "0.23.0"
+fontdb = "0.23"
 
 # macOS-only: read the frontmost window's CoreGraphics id so the screenshot
 # hotkey captures the active window (vault.rs). CoreGraphics itself is linked
@@ -48,4 +48,29 @@ fontdb = "0.23.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+
+# Release builds ship as an unsigned .dmg, so the only things that matter here
+# are size and speed — not incremental rebuild time (card 20).
+[profile.release]
+# Cross-crate inlining and dead-code elimination across the whole dependency
+# graph. This is where most of the size win comes from, and it is why
+# codegen-units drops to 1: more units means less for LTO to see at once.
+lto = true
+codegen-units = 1
+# ~27k symbols shipped in the binary and none of them are read at runtime.
+strip = "symbols"
+
+# NOT set, deliberately:
+#
+#   panic = "abort"  — the card asked for it; it is wrong for this app. Each PTY
+#     runs its own reader and emitter thread, and a panic in one of them
+#     currently kills only that terminal. Under `abort` a single decode bug in
+#     one background terminal takes the whole app down with it, skipping the
+#     quit handshake that flushes every terminal's scrollback to disk. Trading
+#     the user's unsaved output for a few hundred KB is a bad deal.
+#
+#   opt-level = "s"  — the card suggested trying it, with "keep 3 if terminal
+#     throughput regresses". The PTY read/decode/scan path is the app's hot
+#     loop, and there is no benchmark here to prove it does not regress, so the
+#     default (3) stands. Revisit with a measurement, not a guess.
 

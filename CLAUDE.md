@@ -156,5 +156,10 @@ forces the close so a hung terminal can never make the app unclosable.
   roadmap notes re-enabling a strict CSP as future work.
 - The macOS signing identity is hardcoded in `tauri.conf.json` (a personal Apple
   Development cert); the `/ship` build is unsigned regardless.
-- `scripts/generate_brand_assets.py` regenerates the brand/icon assets under
-  `src/assets/brand/` — not part of the app build.
+- **Everything under `src/` is embedded in the app binary** (`frontendDist:
+  "../src"`). Keep art and other non-runtime files out of it. The full brand set
+  lives in top-level `brand/`, the (currently unused) agent artwork in
+  `assets/agents/`; only the three app-icons `index.html` actually loads are
+  mirrored into `src/assets/brand/app-icons/`.
+- `scripts/generate_brand_assets.py` regenerates the brand/icon assets into
+  `brand/` and mirrors those three icons into `src/` — not part of the app build.

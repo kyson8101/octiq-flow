@@ -6,8 +6,18 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BRAND = ROOT / "src" / "assets" / "brand"
+# The full brand set lives OUTSIDE src/. Everything under src/ is `frontendDist`
+# and gets embedded verbatim into the app binary, so shipping the logo lockups,
+# previews and every icon size cost ~1.4MB of binary for files the app never
+# loads (card 20).
+BRAND = ROOT / "brand"
 SOURCE = BRAND / "source" / "octiq-flow-generated-source.png"
+
+# The only brand files the running app loads (index.html: favicon, apple-touch
+# icon, and the in-app header mark). These are copied into src/ so the binary
+# carries just these three.
+APP_ICONS = ROOT / "src" / "assets" / "brand" / "app-icons"
+APP_ICON_SIZES = (32, 64, 256)
 
 CYAN = (44, 197, 217)
 BLUE = (88, 166, 255)
@@ -167,6 +177,13 @@ def main():
     )
     preview(horizontal_dark, DARK_BG, BRAND / "previews" / "logo-on-dark.jpg")
     preview(horizontal_light, LIGHT_BG, BRAND / "previews" / "logo-on-light.jpg")
+
+    # Mirror only the icons index.html actually references into the frontend dir,
+    # so a regenerated logo reaches the app without dragging the rest of the
+    # brand set into the binary.
+    APP_ICONS.mkdir(parents=True, exist_ok=True)
+    for size in APP_ICON_SIZES:
+        save_scaled(master, APP_ICONS / f"octiq-flow-{size}.png", (size, size))
 
 
 if __name__ == "__main__":
