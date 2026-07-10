@@ -9,6 +9,7 @@
 // (commands.js) react to the `project-selected` event this module emits.
 import { ICONS } from "/icons.js";
 import { openCtxMenu } from "/ctxmenu.js";
+import { baseName } from "/util.js";
 import {
   buildFontOptions,
   buildThemeInputs,
@@ -114,12 +115,6 @@ let deleteArmed = false; // true after the first click on "Delete workspace"
 // guards against re-seeding (and discarding edits) on an unrelated refresh.
 let startupDraft = { ownerId: null, terminals: [], commandIds: [] };
 
-/** The last segment of a path, used as a short label. */
-function baseName(path) {
-  const parts = path.replace(/\/+$/, "").split("/");
-  return parts[parts.length - 1] || path;
-}
-
 // --- Project accent color --------------------------------------------------
 // Each project's avatar (the fallback letter square) is tinted with an accent
 // color. The color is either the one the user picked (stored on the workspace
@@ -162,8 +157,8 @@ function barColor(ws) {
  *  the old accent bar) and exported so other views (Dashboard) show the same
  *  project identity. `extraClass` lets a caller resize/tweak it. Keeps the
  *  `ws-item-initial` class so the attention/working badges still anchor to it.
- *  Accepts either a full workspace or a `workspaceMeta()` entry. */
-export function projectAvatar(ws, extraClass = "") {
+ *  Takes any object with `{ name, color, initial, icon }`. */
+function projectAvatar(ws, extraClass = "") {
   const avatar = document.createElement("span");
   avatar.className = "ws-item-initial" + (extraClass ? " " + extraClass : "");
   avatar.style.setProperty("--ws-bar", barColor(ws));
@@ -186,20 +181,9 @@ export function projectAvatar(ws, extraClass = "") {
   return avatar;
 }
 
-/** Lightweight project metadata for other views (Agent World, Dashboard): one
- *  entry per loaded workspace with its id, display name, resolved accent color,
- *  custom initial, and icon. Reads the in-memory list this module already keeps
- *  fresh via refresh(). The `initial`/`icon` fields let a view build the same
- *  project avatar via projectAvatar(). */
-export function workspaceMeta() {
-  return workspaces.map((w) => ({
-    id: w.id,
-    name: w.name || "Untitled",
-    color: barColor(w),
-    initial: w.initial || "",
-    icon: w.icon || "",
-  }));
-}
+// `workspaceMeta()` used to live here: lightweight per-project metadata for an
+// "Agent World" view that was never built. Nothing imported it. Removed in
+// card 26, alongside `terminalSnapshot()` in terminals.js.
 
 /** The currently selected workspace, or undefined. */
 function selected() {
@@ -387,15 +371,48 @@ function fillDiffRow(diffEl, ws) {
   diffEl.title = diffEl.textContent;
 }
 
-/** Refresh the cached git line changes for every project, then repaint each
- *  sidebar row's counts from the cache. One git_status_summary call covers the
- *  whole list. A render epoch guards against a stale async result writing over a
- *  list that was rebuilt while we waited. */
+/** The project paths that a set of changed watch-roots can affect.
+ *
+ *  Starts with the paths at or below a changed root, then widens to every path
+ *  sharing a repo with one of them: two projects can live in the same git repo,
+ *  and a change under one moves the other's counts just as much. `git status`
+ *  reports on the whole repo, not on a subdirectory.
+ *
+ *  Paths whose repo is not cached yet are simply not widened — the next full
+ *  scan fills the cache. */
+function pathsAffectedBy(allPaths, changedRoots) {
+  const direct = allPaths.filter((p) =>
+    changedRoots.some((root) => p === root || p.startsWith(`${root}/`)),
+  );
+  const repos = new Set(
+    direct.map((p) => diffByPath.get(p)?.repo_root).filter(Boolean),
+  );
+  if (!repos.size) return direct;
+  const affected = new Set(direct);
+  for (const p of allPaths) {
+    const root = diffByPath.get(p)?.repo_root;
+    if (root && repos.has(root)) affected.add(p);
+  }
+  return [...affected];
+}
+
+/** Refresh the cached git line changes and repaint each sidebar row's counts
+ *  from the cache. One git_status_summary call covers whatever is queried.
+ *
+ *  `changedRoots` is the payload of a `git-status-changed` event: the watched
+ *  folders that actually changed. Given those, only the projects they can
+ *  affect are re-queried and the rest keep their cached counts — a build in one
+ *  repo no longer re-runs git across every project. An empty/absent list means
+ *  "rescan everything" (boot, a list render, or an event batch the watcher
+ *  dropped and could not attribute).
+ *
+ *  A render epoch guards against a stale async result writing over a list that
+ *  was rebuilt while we waited. */
 let listDiffEpoch = 0;
-async function annotateListDiffs() {
+async function annotateListDiffs(changedRoots = null) {
   const epoch = ++listDiffEpoch;
 
-  // Union of every path across all projects: one call covers the whole list.
+  // Union of every path across all projects.
   const allPaths = [];
   for (const ws of workspaces) {
     if (ws.primary_path) allPaths.push(ws.primary_path);
@@ -407,16 +424,23 @@ async function annotateListDiffs() {
   syncGitWatcher(allPaths);
   if (!allPaths.length) return;
 
+  const scoped = !!changedRoots?.length;
+  const paths = scoped ? pathsAffectedBy(allPaths, changedRoots) : allPaths;
+  if (!paths.length) return; // the change touched no project we show
+
   let statuses;
   try {
-    statuses = await invoke("git_status_summary", { paths: allPaths });
+    statuses = await invoke("git_status_summary", { paths });
   } catch (_) {
     return; // keep the last cached counts on error
   }
   if (epoch !== listDiffEpoch) return; // the list re-rendered while we waited
 
-  // Update the cache, then repaint every row from it.
-  diffByPath = new Map(statuses.map((s) => [s.path, s]));
+  // A full scan rebuilds the cache; a scoped one MERGES, so the projects it did
+  // not query keep the counts they already had.
+  if (!scoped) diffByPath = new Map();
+  for (const s of statuses) diffByPath.set(s.path, s);
+
   // Match rows by dataset id (avoids building a CSS selector from a project id).
   const rows = new Map();
   for (const li of listEl.querySelectorAll(".ws-item")) rows.set(li.dataset.id, li);
@@ -857,19 +881,25 @@ async function annotateFooterBranches(ws) {
   paths.push(...ws.paths);
   if (!paths.length) return;
 
-  let statuses;
-  try {
-    statuses = await invoke("git_status_summary", { paths });
-  } catch (_) {
-    return; // leave chips without a branch on error
+  // annotateListDiffs has almost always just filled the cache for these exact
+  // paths. Re-running git_status_summary here would spawn a second set of
+  // subprocesses per path for numbers we are already holding. Only ask the
+  // backend about paths we have never seen (a freshly added project folder).
+  const missing = paths.filter((p) => !diffByPath.has(p));
+  if (missing.length) {
+    try {
+      const statuses = await invoke("git_status_summary", { paths: missing });
+      if (selectedId !== ws.id) return; // project changed while we waited
+      for (const s of statuses) diffByPath.set(s.path, s);
+    } catch (_) {
+      // Leave the chips without a branch; the next event retries.
+    }
   }
-  if (selectedId !== ws.id) return; // project changed while we waited
 
-  const byPath = new Map(statuses.map((s) => [s.path, s]));
   for (const chip of footerPathsEl.querySelectorAll(".pf-chip")) {
     const branchEl = chip.querySelector(".pf-chip-branch");
     if (!branchEl) continue;
-    const s = byPath.get(chip.dataset.path);
+    const s = diffByPath.get(chip.dataset.path);
     branchEl.textContent = s && s.is_repo && s.branch ? `⎇ ${s.branch}` : "";
   }
 }
@@ -1652,8 +1682,17 @@ window.addEventListener("DOMContentLoaded", refresh);
 // `git status` — an edit, a new file, or a commit. Re-pull the sidebar's +/-
 // counts and the selected project's footer branch chips; both repaint in place
 // (no list rebuild), so this never disturbs an open menu or drag.
-window.__TAURI__.event.listen("git-status-changed", () => {
-  annotateListDiffs();
+//
+// The payload names the watched folders that changed, so only those projects
+// (and any sharing their repo) are re-queried. An empty payload means the
+// watcher could not attribute the change: rescan everything.
+//
+// The list annotation is AWAITED before the footer runs, so the footer finds
+// its branches in the cache the list just filled instead of spawning its own
+// second round of git subprocesses for the same paths.
+window.__TAURI__.event.listen("git-status-changed", async (event) => {
+  const changedRoots = Array.isArray(event.payload) ? event.payload : [];
+  await annotateListDiffs(changedRoots);
   const ws = selected();
   if (ws) annotateFooterBranches(ws);
 });

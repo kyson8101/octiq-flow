@@ -65,17 +65,21 @@ function setFooterCmd(text) {
   if (footerCmdEl) footerCmdEl.textContent = text || "";
 }
 
-// Show the latest output line of a command terminal on the footer. Ignores
-// non-command terminals (project / chat) AND command terminals that
-// belong to a DIFFERENT project (their ids are namespaced `cmd:<projectId>:N`),
-// so a command still running in a background project never overwrites the footer
-// of the project the user is currently viewing.
+// Show the latest output line of a command terminal on the footer. The "cmd:"
+// prefix keeps terminals.js from even extracting a line for project / chat
+// terminals — this is the app's ONLY line subscriber, and without the prefix
+// every chunk of every terminal was being stripped of ANSI codes on its behalf
+// and then discarded (card 24).
+//
+// The check below narrows further, to command terminals of the CURRENT project
+// (ids are `cmd:<projectId>:N`), so a command still running in a background
+// project never overwrites the footer of the project the user is looking at.
 onTerminalLine((id, line) => {
   const label = cmdLabelById.get(id);
   if (label && currentId && id.startsWith(`cmd:${currentId}:`)) {
     setFooterCmd(`▶ ${label} · ${line}`);
   }
-});
+}, "cmd:");
 
 // --- Project selection -----------------------------------------------------
 function onProjectSelected(detail) {
@@ -384,8 +388,13 @@ function groupFor(id) {
   let rec = drawers.get(id);
   if (!rec) {
     // No "+" button — command terminals are only started from the panel.
+    // floodControl is OFF here (card 16): these terminals normally sit in a
+    // CLOSED modal, and the footer's live "last line" is the only view of them.
+    // Buffering their output in the backend would freeze that line until the
+    // user opened the modal, which is the opposite of what it is for.
     const group = createTerminalGroup(drawerMount, `cmd:${id}`, {
       showAdd: false,
+      floodControl: false,
     });
     // actionPty maps an action id -> the ptyId of the terminal that command is
     // currently running in, so re-running the SAME command replaces (kills) its

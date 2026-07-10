@@ -16,6 +16,8 @@
 // It shares the center area (<main class="center">) with the terminals and the
 // file browser, so opening it hides both; the "✕ Terminals" button brings the
 // terminals back. fs/git read-only — it never touches a PTY.
+import { baseName, textEl } from "/util.js";
+
 const { invoke } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
@@ -52,21 +54,6 @@ let loadedHunks = null;
 let viewMode = "unified";
 
 // --- Small DOM helpers ------------------------------------------------------
-/** Plain text -> safe text node. Keeps user paths/code out of innerHTML. */
-function textEl(tag, className, text) {
-  const el = document.createElement(tag);
-  if (className) el.className = className;
-  if (text != null) el.textContent = text;
-  return el;
-}
-
-/** Last path segment of a path, used as a repo / file label. */
-function baseName(path) {
-  const trimmed = (path || "").replace(/[/\\]+$/, "");
-  const parts = trimmed.split(/[/\\]/);
-  return parts[parts.length - 1] || path || "";
-}
-
 /** Split a repo-relative path into { dir, name } so the list can dim the folder
  *  and bold the filename, like GitHub. */
 function splitPath(path) {

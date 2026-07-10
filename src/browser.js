@@ -19,6 +19,7 @@ const { invoke, convertFileSrc } = window.__TAURI__.core;
 // CodeJar turns the highlighted code element into a tiny editor; highlight.js
 // (window.hljs, loaded as a global in index.html) colors the tokens.
 import { CodeJar } from "/vendor/codejar.js";
+import { formatBytes, loadPaneWidth, makeResizer, textEl } from "/util.js";
 
 // --- DOM handles -----------------------------------------------------------
 const termsEl = document.querySelector(".center-terms");
@@ -91,13 +92,6 @@ const WIDTH_KEY = "octiq.browser.width";
 const DEFAULT_WIDTH = 420;
 const MIN_WIDTH = 240;
 
-/** Saved pane width, clamped to something sane. */
-function loadWidth() {
-  const n = Number(localStorage.getItem(WIDTH_KEY));
-  if (!Number.isFinite(n) || n < MIN_WIDTH) return DEFAULT_WIDTH;
-  return Math.min(n, Math.floor(window.innerWidth * 0.72));
-}
-
 /** File extension (lower-case, no dot) of `name`, or "" when it has none. */
 function extOf(name) {
   const i = name.lastIndexOf(".");
@@ -164,14 +158,6 @@ function okToDiscard() {
   return !dirty || confirm("You have unsaved changes. Discard them?");
 }
 
-/** Plain text -> safe text node. Keeps user folder/file names out of innerHTML. */
-function textEl(tag, className, text) {
-  const el = document.createElement(tag);
-  if (className) el.className = className;
-  if (text != null) el.textContent = text;
-  return el;
-}
-
 /** Left padding for a row at `depth`, so deeper rows sit further right. */
 function indentFor(depth) {
   return `${BASE_INDENT + depth * INDENT_STEP}px`;
@@ -183,7 +169,7 @@ function indentFor(depth) {
 function showBrowser() {
   document.querySelector("#project-gitdiff")?.classList.add("hidden");
   if (termsEl) termsEl.classList.remove("hidden"); // keep terminals visible
-  panelEl.style.width = `${loadWidth()}px`;
+  panelEl.style.width = `${loadPaneWidth(WIDTH_KEY, MIN_WIDTH, DEFAULT_WIDTH)}px`;
   panelEl.classList.remove("hidden");
   resizerEl?.classList.remove("hidden");
 }
@@ -296,14 +282,6 @@ function collapseAll() {
 }
 
 // --- Preview pane -----------------------------------------------------------
-/** Human-readable file size, e.g. "812 B", "1.2 KB", "3.4 MB". */
-function humanSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
 /** Highlight `row` as the previewed file, clearing any previous highlight. */
 function selectRow(row) {
   if (selectedRow) selectedRow.classList.remove("pb-row-selected");
@@ -387,7 +365,7 @@ async function previewFile(fullPath, name, row) {
   if (preview.kind === "binary") {
     previewBodyEl.replaceChildren(
       previewMessage(
-        `This file is not text (${humanSize(preview.size)}). Use “Open externally” to view it.`,
+        `This file is not text (${formatBytes(preview.size)}). Use “Open externally” to view it.`,
       ),
     );
     return;
@@ -414,8 +392,8 @@ async function previewFile(fullPath, name, row) {
   } else {
     editor.setAttribute("contenteditable", "false");
     const why = preview.truncated
-      ? `Large file (${humanSize(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`
-      : `Large file (${humanSize(preview.size)}) — read-only to keep editing smooth. Open externally to edit.`;
+      ? `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`
+      : `Large file (${formatBytes(preview.size)}) — read-only to keep editing smooth. Open externally to edit.`;
     previewBodyEl.replaceChildren(textEl("div", "pb-preview-note", why), editor);
   }
 }
@@ -466,33 +444,13 @@ window.addEventListener("project-selected", (e) => {
   }
 });
 
-// Drag the handle to resize the side pane. The pane's right edge is fixed (it
-// sits at the right of .center), so width = that edge minus the pointer x.
-// Clamped, and saved on release. (Mirrors canvas.js's wireResizer.)
-function wireResizer() {
-  if (!resizerEl) return;
-  resizerEl.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    const rightEdge = panelEl.getBoundingClientRect().right;
-    resizerEl.setPointerCapture(e.pointerId);
-    resizerEl.classList.add("dragging");
-    let width = loadWidth();
-    const onMove = (ev) => {
-      const max = Math.floor(window.innerWidth * 0.72);
-      width = Math.max(MIN_WIDTH, Math.min(rightEdge - ev.clientX, max));
-      panelEl.style.width = `${width}px`;
-    };
-    const onUp = () => {
-      resizerEl.classList.remove("dragging");
-      resizerEl.removeEventListener("pointermove", onMove);
-      resizerEl.removeEventListener("pointerup", onUp);
-      localStorage.setItem(WIDTH_KEY, String(width));
-    };
-    resizerEl.addEventListener("pointermove", onMove);
-    resizerEl.addEventListener("pointerup", onUp);
-  });
-}
-wireResizer();
+// Drag the handle to resize the side pane (shared helper, card 26).
+makeResizer({
+  paneEl: panelEl,
+  resizerEl,
+  storageKey: WIDTH_KEY,
+  minWidth: MIN_WIDTH,
+});
 
 collapseBtn.addEventListener("click", collapseAll);
 backBtn.addEventListener("click", () => {

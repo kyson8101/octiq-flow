@@ -193,15 +193,35 @@ function reportTermError(term, message) {
 // chunk into the matching xterm, no matter which group owns it.
 const idToEntry = new Map();
 
-// Subscribers that want the latest non-empty OUTPUT line of any terminal, by id
-// (e.g. commands.js shows it on the footer). Each is called fn(id, line).
+// Subscribers that want the latest non-empty OUTPUT line of a terminal (e.g.
+// commands.js shows it on the footer). Each is `{ fn, idPrefix }` and is called
+// fn(id, line) only for terminals whose id starts with its prefix.
 const lineSubscribers = new Set();
 
-/** Subscribe to the latest output line of any terminal. Returns an unsubscribe
- *  function. Used by the footer command-status line. */
-export function onTerminalLine(fn) {
-  lineSubscribers.add(fn);
-  return () => lineSubscribers.delete(fn);
+/**
+ * Subscribe to the latest output line of a terminal. Returns an unsubscribe
+ * function. Used by the footer command-status line.
+ *
+ * `idPrefix` narrows the subscription to one namespace of terminal ids (e.g.
+ * "cmd:"). It is not a convenience — extracting a line means `stripAnsi()` over
+ * the whole chunk, two regex passes across up to 64KB. The single subscriber
+ * this app has only ever wanted `cmd:` terminals, yet that cost was being paid
+ * for EVERY chunk of EVERY terminal, then thrown away. An empty prefix means
+ * "every terminal", and pays accordingly.
+ */
+export function onTerminalLine(fn, idPrefix = "") {
+  const sub = { fn, idPrefix };
+  lineSubscribers.add(sub);
+  return () => lineSubscribers.delete(sub);
+}
+
+/** Whether any subscriber wants lines from this terminal. Checked BEFORE the
+ *  chunk is stripped, so an unwatched terminal costs one string compare. */
+function anyLineSubscriberWants(id) {
+  for (const sub of lineSubscribers) {
+    if (!sub.idPrefix || id.startsWith(sub.idPrefix)) return true;
+  }
+  return false;
 }
 
 /** Strip ANSI escape sequences so a chunk can be reduced to plain text. */
@@ -214,6 +234,15 @@ function stripAnsi(s) {
 // Longest first-command title we keep. The tab strip ellipsizes, but a bounded
 // string keeps the saved layout small and the tab readable.
 const MAX_CMD_TITLE_LEN = 60;
+
+// Longest typed line the input tracker reconstructs before it stops appending.
+// A bound, not a limit on what reaches the shell: every byte is still written to
+// the PTY. This only caps the string we keep for the tab title / "last sent" bar.
+const MAX_INPUT_LINE_LEN = 256;
+
+// Scrollback lines serialized on a CLEAN QUIT (flushAll). Generous — this runs
+// once, and it is what the user gets back when the app reopens.
+const FULL_SCROLLBACK_LINES = 2000;
 
 // Longest "last sent" line we keep for the bottom bar. Longer than a tab title
 // because a prompt to an agent is usually a sentence, not one word; the bar
@@ -292,7 +321,7 @@ function nextTypedLine(state, data, maxLen = MAX_CMD_TITLE_LEN) {
     } else if (code === 0x15 || code === 0x03) {
       state.buf = ""; // Ctrl-U (kill line) / Ctrl-C (abandon).
     } else if (code >= 0x20) {
-      if (state.buf.length < 256) state.buf += data[i]; // Printable.
+      if (state.buf.length < MAX_INPUT_LINE_LEN) state.buf += data[i]; // Printable.
     }
     // Other control bytes (Tab, etc.) are ignored.
   }
@@ -325,11 +354,52 @@ listen("pty-output", (event) => {
     // light the dot at once. refreshWorking() (a timer) turns it back off once
     // output goes silent for WORKING_IDLE_MS. See the Working flags section.
     noteOutput(id);
+    // The two opt-in monitors (card 15): mark a tab the user is not looking at,
+    // and re-arm its silence timer. Both no-op when their setting is off.
+    noteActivity(id);
   }
-  if (lineSubscribers.size && entry) {
+  // Only strip + split the chunk when a subscriber actually wants this
+  // terminal's lines. See onTerminalLine.
+  if (entry && anyLineSubscriberWants(id)) {
     const line = lastLine(chunk);
-    if (line) for (const fn of lineSubscribers) fn(id, line);
+    if (line) {
+      for (const sub of lineSubscribers) {
+        if (!sub.idPrefix || id.startsWith(sub.idPrefix)) sub.fn(id, line);
+      }
+    }
   }
+});
+
+// A HIDDEN terminal printed something (card 16). The bytes stay in the
+// backend's ring — nothing is written to xterm and nothing is parsed. All that
+// crosses is this ping, so the output-driven UI state still advances: the
+// working dot, the per-project busy count, the activity mark, and the silence
+// monitor's timer. Without it, every agent in a background project would look
+// idle the instant you switched away.
+listen("pty-hidden-output", (event) => {
+  const { id } = event.payload;
+  if (!idToEntry.has(id)) return;
+  noteOutput(id);
+  noteActivity(id);
+});
+
+// A hidden terminal was revealed (card 16): write back everything it printed
+// while off screen, in one go. `trimmed` means the ring overflowed and the
+// oldest output was dropped — say so, rather than silently showing a gap.
+//
+// The terminal is NOT marked as having produced output here: this is old text
+// being replayed, not the shell speaking now, and `pty-hidden-output` already
+// advanced the timers while it was buffering.
+listen("pty-restore", (event) => {
+  const { id, data, trimmed } = event.payload;
+  const entry = idToEntry.get(id);
+  if (!entry) return;
+  if (trimmed) {
+    entry.term.write("\r\n\x1b[2m[octiq: output trimmed]\x1b[0m\r\n");
+  }
+  if (data) entry.term.write(data);
+  // The xterm buffer changed, so the next scrollback flush must save it.
+  entry.group.onOutput?.(id);
 });
 
 // ---- Attention flags ------------------------------------------------------
@@ -385,17 +455,17 @@ export function badgeTab(id) {
 }
 
 /**
- * Clear a terminal's attention badge. Removes it from the set, un-paints the
- * tab, and tells the backend to clear its OSC attention state (card 12) so the
- * same alert does not re-fire. Safe to call when the id is already clear.
+ * Clear a terminal's attention badge. Removes it from the set and un-paints the
+ * tab. Safe to call when the id is already clear.
+ *
+ * There is nothing to tell the backend: attention lives entirely here. This used
+ * to invoke `pty_clear_attention`, which lowered a per-session flag no code ever
+ * read. Both are gone (card 22).
  */
-export function clearAttention(id) {
+function clearAttention(id) {
   if (!attention.has(id)) return;
   attention.delete(id);
   entryFor(id)?.group._paintAttention(id, false);
-  // Tell the backend this terminal no longer needs attention. Ignore errors
-  // (the PTY may already be gone); this must never throw into the UI.
-  invoke("pty_clear_attention", { id }).catch(() => {});
   emitAttentionChange();
 }
 
@@ -461,32 +531,9 @@ export function workingList() {
   return [...working];
 }
 
-/**
- * Snapshot of EVERY live terminal across the whole app, for the Agent World
- * view. One plain object per terminal so a consumer never touches a group's
- * internals:
- *   - id         the pty id (also the key alerts/working use)
- *   - prefix     the group id prefix ("<projectId>", "cmd:<projectId>",
- *                "chat", "util", "sched") — Agent World maps this to a room
- *   - title      the tab's current title (agent name / first command / "term N")
- *   - lastSent   the latest line the user typed + sent in the tab, or null
- *   - working    true while the agent streams output (sage "working" dot)
- *   - attention  true while the tab is flagged waiting-for-you
- * Order follows idToEntry insertion (terminals appear as they were opened).
- */
-export function terminalSnapshot() {
-  return [...idToEntry.entries()].map(([id, { group }]) => {
-    const tab = group.tabs.get(id);
-    return {
-      id,
-      prefix: group.idPrefix,
-      title: tab?.title || id,
-      lastSent: tab?.lastSent || null,
-      working: working.has(id),
-      attention: attention.has(id),
-    };
-  });
-}
+// `terminalSnapshot()` used to live here: a full snapshot of every live terminal
+// for an "Agent World" view that was never built. Nothing imported it. Removed
+// in card 26 — the shape is in git history if the view ever lands.
 
 // Fire a DOM event so working.js (and anything else) can rebuild its UI when
 // the working set changes. Detail carries a fresh snapshot of the ids.
@@ -590,11 +637,133 @@ setInterval(() => {
 }, FOREGROUND_POLL_MS);
 setInterval(() => {
   if (!document.hidden) refreshWorking();
+  // The silence monitor keeps running while the window is hidden — that is
+  // exactly when the user is away and most wants to hear that their agent
+  // finished. It costs a Map lookup per armed tab, no IPC and no syscall.
+  refreshSilence();
 }, WORKING_TICK_MS);
 // On re-show, poll once right away so the dots are fresh without waiting a tick.
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) pollForeground();
 });
+
+// ---- Terminal monitors (card 15) ------------------------------------------
+// tmux's two window flags, rebuilt here because an agent that emits no escape
+// sequence can otherwise only reach the user through the manual octiq-notify
+// hook:
+//
+//   ACTIVITY — a tab printed while the user was not looking at it. A subtle
+//     per-tab dot, no banner and no OS notification: it answers "did anything
+//     happen over there", not "come here now". Cleared by looking at the tab.
+//   SILENCE  — an AGENT tab (Claude/Codex, confirmed by the backend session
+//     map, not merely a non-shell foreground) printed and then went quiet for
+//     `silenceSeconds`. That is almost always the agent finishing its turn and
+//     waiting, so this one raises a real attention alert through alerts.js.
+//
+// Detection is frontend-side on purpose: this file already owns tab visibility
+// and sees every chunk in the single pty-output listener, while the backend
+// knows nothing about which tab is focused.
+//
+// Both are OFF by default (see DEFAULT_TERMINAL_SETTINGS) — a long build or a
+// slow agent tool call would otherwise flag tabs that do not need the user.
+
+// The three monitor settings, cached so the pty-output hot path never rebuilds
+// the whole settings object per chunk. Refreshed on the settings-change event.
+let monitors = { activity: false, silence: false, silenceMs: 15000 };
+
+function readMonitorSettings(s) {
+  monitors = {
+    activity: !!s.monitorActivity,
+    silence: !!s.monitorSilence,
+    silenceMs: s.silenceSeconds * 1000,
+  };
+}
+readMonitorSettings(getTerminalSettings());
+window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => readMonitorSettings(e.detail));
+
+// Custom event carrying a monitor-raised alert to alerts.js, which owns every
+// badge + OS notification in the app. detail = { id, source, title, body }.
+export const MONITOR_ALERT = "tg-monitor-alert";
+
+// Tabs currently flagged with the activity dot.
+const activityTabs = new Set();
+
+// Tabs the BACKEND confirmed are running an agent session (project.js pushes
+// this from its agent_tab_info poll). The silence monitor arms only for these,
+// so an idle `vim` or a paused build never looks like an agent waiting for you.
+const agentTabs = new Set();
+
+// Tabs whose next quiet stretch should fire exactly one silence alert. Output
+// arms an id; firing (or the user attending to the tab) disarms it. Without
+// this the alert would re-fire on every tick for as long as the tab stayed
+// quiet — the tmux rule: one alert per silent stretch, not one per tick.
+const silenceArmed = new Set();
+
+/** True when the user is demonstrably looking at this exact terminal: it is the
+ *  active tab of a visible group AND the window has focus. Matches the same
+ *  test alerts.js applies to OSC attention. */
+function userIsWatching(id) {
+  return document.hasFocus() && isActiveVisible(id);
+}
+
+/** Record that a terminal produced output, for both monitors: mark it with the
+ *  activity dot when it is not the tab on screen, and (re-)arm its silence
+ *  timer. Called for both live output and the hidden-output ping.
+ *
+ *  Activity keys off the TAB only, never window focus — tmux's flag means "this
+ *  window printed while it was not the current window". Bringing the app
+ *  forward does not re-activate the tab, so a focus-sensitive test would leave
+ *  a dot on the tab the user is already reading with nothing to clear it. */
+function noteActivity(id) {
+  silenceArmed.add(id);
+  if (!monitors.activity || activityTabs.has(id) || isActiveVisible(id)) return;
+  activityTabs.add(id);
+  entryFor(id)?.group._paintActivity(id, true);
+}
+
+/** Drop a terminal's activity dot. No-op when it carries none. Called when the
+ *  user activates/reveals the tab, and on close. */
+function clearActivity(id) {
+  if (!activityTabs.delete(id)) return;
+  entryFor(id)?.group._paintActivity(id, false);
+}
+
+/** Fire the silence alert for any armed AGENT tab that has now been quiet for
+ *  `silenceMs`. Runs on the working tick. A tab the user is already watching is
+ *  disarmed silently — its prompt is right in front of them. */
+function refreshSilence() {
+  if (!monitors.silence || silenceArmed.size === 0) return;
+  const now = performance.now();
+  for (const id of [...silenceArmed]) {
+    if (!idToEntry.has(id)) {
+      silenceArmed.delete(id); // terminal closed
+      continue;
+    }
+    if (!agentTabs.has(id)) continue; // only a confirmed agent tab can go "quiet"
+    const last = lastOutputAt.get(id);
+    if (last === undefined || now - last < monitors.silenceMs) continue;
+    silenceArmed.delete(id);
+    if (userIsWatching(id)) continue;
+    window.dispatchEvent(
+      new CustomEvent(MONITOR_ALERT, {
+        detail: {
+          id,
+          source: "quiet",
+          title: entryFor(id)?.group.tabs.get(id)?.title || "Agent",
+          body: "went quiet — it is probably waiting for you.",
+        },
+      }),
+    );
+  }
+}
+
+/** Tell the monitors whether a terminal is running an agent session. project.js
+ *  already polls `agent_tab_infos` for auto-titling; this rides that result
+ *  instead of adding a second backend query. */
+export function setAgentTab(id, isAgent) {
+  if (isAgent) agentTabs.add(id);
+  else agentTabs.delete(id);
+}
 
 // modes.js owns the top-level view router but does not export a setMode. We
 // switch views by clicking the matching mode button, exactly as a user would.
@@ -701,19 +870,33 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, () => {
  * workspace `font_override`), or null to use the global app font. It is resolved
  * per group so a project can carry its own terminal font (see setFontOverride).
  *
- * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride } = {})
+ * `floodControl` (card 16) lets the backend buffer a terminal's output while it
+ * is off screen instead of streaming it. Leave it on for any group whose
+ * terminals are only ever read by looking at them. Turn it OFF for a group whose
+ * output is consumed while hidden — the command drawer is the one such case: its
+ * terminals normally sit in a CLOSED modal and the footer's live "last line" is
+ * the only view of them, so their text must keep arriving.
+ *
+ * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride, floodControl } = {})
  */
 export function createTerminalGroup(
   mountEl,
   idPrefix,
-  { showAdd = true, quickSpawn = false, fontOverride = null } = {},
+  { showAdd = true, quickSpawn = false, fontOverride = null, floodControl = true } = {},
 ) {
-  return new TerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride });
+  return new TerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride, floodControl });
 }
 
 class TerminalGroup {
-  constructor(mountEl, idPrefix, { showAdd = true, quickSpawn = false, fontOverride = null } = {}) {
+  constructor(
+    mountEl,
+    idPrefix,
+    { showAdd = true, quickSpawn = false, fontOverride = null, floodControl = true } = {},
+  ) {
     this.idPrefix = idPrefix;
+    // Whether this group's hidden terminals buffer their output in the backend
+    // rather than streaming it (card 16). See createTerminalGroup.
+    this.floodControl = floodControl;
     // This group's per-project font override (raw workspace font_override), or
     // null for the global app font. resolveTerminalSettings overlays it on the
     // global settings when building each terminal's font.
@@ -758,6 +941,11 @@ class TerminalGroup {
     // group whose owner persists state (project.js) sets them.
     this.onLayoutChange = null;
     this.onOutput = null;
+    // Optional owner hook: given the agent resume command this tab would run and
+    // its cwd, return the command to actually run. project.js uses it to re-add
+    // Claude's per-folder --add-dir flags when a hibernated tab resumes (card 18).
+    // Unset means "run it verbatim".
+    this.onResumeCmd = null;
     // The open add menu's popup element (quickSpawn groups only), or null when
     // closed. It is mounted on <body>, so hide()/dispose() must close it.
     this.addMenuEl = null;
@@ -955,13 +1143,15 @@ class TerminalGroup {
   // via newTerminal({ persistKey, restoreScrollback }) on the next launch.
 
   /** Ordered layout of this group: each terminal's stable key, current title,
-   *  and the cwd it was spawned in. Tab order = insertion order of `tabs`. */
+   *  the cwd it was spawned in, and whether it is hibernated. Tab order =
+   *  insertion order of `tabs`. */
   serialize() {
     return [...this.tabs.values()].map((e) => ({
       persistKey: e.persistKey,
       title: e.title,
       titleManual: !!e.titleManual,
       cwd: e.cwd || "",
+      hibernated: !!e.hibernated,
     }));
   }
 
@@ -971,7 +1161,9 @@ class TerminalGroup {
   scrollbackEntries() {
     return [...this.tabs.values()].map((e) => ({
       persistKey: e.persistKey,
-      data: e.serializeAddon ? e.serializeAddon.serialize({ scrollback: 2000 }) : "",
+      data: e.serializeAddon
+        ? e.serializeAddon.serialize({ scrollback: FULL_SCROLLBACK_LINES })
+        : "",
     }));
   }
 
@@ -980,7 +1172,7 @@ class TerminalGroup {
    *  the main thread and its cost scales with the line count, so the frequent
    *  periodic flush passes a smaller cap (crash-recovery only) than the one-shot
    *  full save on quit. */
-  scrollbackFor(ptyId, lines = 2000) {
+  scrollbackFor(ptyId, lines = FULL_SCROLLBACK_LINES) {
     const e = this.tabs.get(ptyId);
     return e?.serializeAddon ? e.serializeAddon.serialize({ scrollback: lines }) : "";
   }
@@ -1034,6 +1226,7 @@ class TerminalGroup {
     persistKey = null,
     restoreScrollback = "",
     canvasKey = null,
+    hibernated = false,
   } = {}) {
     // No explicit title -> auto-number from the monotonic counter (P4). An
     // explicit title (command label, chat label) is used verbatim.
@@ -1086,6 +1279,10 @@ class TerminalGroup {
     // exists by the time the user types.
     const inputState = { buf: "", mode: null };
     term.onData((data) => {
+      // A hibernated tab has no process to type into (card 18). Swallow the
+      // keystroke rather than letting pty_write fail and paint a red error line
+      // over the scrollback the user hibernated in order to keep.
+      if (entry?.hibernated) return;
       const line = nextTypedLine(inputState, data, MAX_SENT_LEN);
       if (line && entry) {
         if (!entry.firstCmd) entry.firstCmd = line.slice(0, MAX_CMD_TITLE_LEN);
@@ -1108,6 +1305,15 @@ class TerminalGroup {
       e.stopPropagation();
       this._beginRename(ptyId);
     });
+    // Hibernate (card 18): free the process, keep the tab and its output.
+    const hibernateBtn = document.createElement("button");
+    hibernateBtn.className = "tg-tab-hibernate";
+    hibernateBtn.innerHTML = ICONS.moon(11);
+    hibernateBtn.title = "Hibernate — stop the agent, keep this tab and its output";
+    hibernateBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.hibernateTerminal(ptyId);
+    });
     const closeBtn = document.createElement("button");
     closeBtn.className = "tg-tab-close";
     closeBtn.innerHTML = ICONS.x(11);
@@ -1116,7 +1322,7 @@ class TerminalGroup {
       e.stopPropagation();
       this.closeTerminal(ptyId);
     });
-    tabEl.append(label, closeBtn);
+    tabEl.append(label, hibernateBtn, closeBtn);
     tabEl.addEventListener("click", () => this.activate(ptyId));
     // Drag to reorder. The id lives on the element so _syncTabOrder can rebuild
     // the tabs Map (= tab + serialize order) straight from the DOM after a drop.
@@ -1160,10 +1366,21 @@ class TerminalGroup {
       cwd,
       startCmd,
       persistKey,
+      // The project's canvas folder key, kept so a resume (card 18) re-exports
+      // OCTIQ_CANVAS_DIR into the new shell exactly as the first spawn did.
+      canvasKey,
+      // True while this tab has no PTY: hibernated by the user, or restored
+      // hibernated after a restart. Its resume bar lives in `resumeBarEl`.
+      hibernated: false,
+      resumeBarEl: null,
       ro,
       // The tab's live WebGL addon, or null. Held only while this tab is the
       // active one of a visible group (see _setWebgl).
       webgl: null,
+      // Whether the backend is currently streaming this terminal's output to us
+      // (card 16). A fresh PTY starts visible on both sides, so this starts true
+      // and _setLive only calls the backend when it actually flips.
+      live: true,
     };
     this.tabs.set(ptyId, entry);
 
@@ -1195,11 +1412,18 @@ class TerminalGroup {
     // always uses the current choice. If the spawn fails, the pane + tab already
     // exist, so show the error there (P3) rather than swallowing it; the tab
     // stays so the user sees what happened.
-    const { shell } = getTerminalSettings();
-    try {
-      await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
-    } catch (err) {
-      reportTermError(term, `failed to start terminal: ${err}`);
+    if (hibernated) {
+      // Restored from a layout the user hibernated (card 18): rebuild the tab
+      // and its scrollback, but spawn NOTHING. The resume bar offers the shell.
+      entry.hibernated = true;
+      this._setHibernatedUI(ptyId, true);
+    } else {
+      const { shell } = getTerminalSettings();
+      try {
+        await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
+      } catch (err) {
+        reportTermError(term, `failed to start terminal: ${err}`);
+      }
     }
 
     this.activate(ptyId);
@@ -1226,6 +1450,22 @@ class TerminalGroup {
     }
   }
 
+  /**
+   * Put one tab fully on or off screen: its WebGL context AND the backend's
+   * output gate (card 16) move together, because "on screen" means the same
+   * thing to both — the active tab of a shown group.
+   *
+   * The backend call is skipped when the value has not changed, so activating a
+   * tab costs one IPC, not one per tab in the group.
+   */
+  _setLive(ptyId, entry, on) {
+    this._setWebgl(entry, on);
+    if (!this.floodControl || entry.live === on) return;
+    entry.live = on;
+    // A closed/failed PTY has no session; the backend no-ops and so do we.
+    invoke("pty_set_visible", { id: ptyId, visible: on }).catch(() => {});
+  }
+
   activate(ptyId) {
     if (!this.tabs.has(ptyId)) return;
     this.activeId = ptyId;
@@ -1234,7 +1474,7 @@ class TerminalGroup {
       const on = id === ptyId;
       e.tabEl.classList.toggle("tg-tab-active", on);
       e.paneEl.classList.toggle("tg-pane-active", on);
-      this._setWebgl(e, on && groupVisible);
+      this._setLive(id, e, on && groupVisible);
     }
     // The bottom bar always tracks the visible terminal: repaint it for the
     // now-active tab's last sent line (or the placeholder if it has none).
@@ -1243,6 +1483,8 @@ class TerminalGroup {
     // clear any attention flag on it (card 13). clearAttention is a no-op when
     // the id is not flagged, so this is cheap on normal tab switches.
     if (attention.has(ptyId)) clearAttention(ptyId);
+    // Same for the quieter activity mark (card 15).
+    clearActivity(ptyId);
     // Fit + focus on the next frame so the now-shown pane has a real size.
     // Skip focusing the terminal while the tab is being renamed, or the rAF
     // would steal focus from the inline rename input.
@@ -1313,6 +1555,122 @@ class TerminalGroup {
     input.select();
   }
 
+  // ---- Hibernation (card 18) ----------------------------------------------
+  // A hibernated tab has NO process: its PTY (and the agent inside it) was
+  // killed. Everything the user can see stays — the tab, its title, its whole
+  // scrollback in the xterm buffer — plus a slim bar offering to bring it back.
+  //
+  // Resume re-spawns into the SAME pty id, so the xterm, the routing entry and
+  // the persist key never move. It takes the same road a restart-restore takes:
+  // ask `agent_resume_cmd` for this tab's `claude --resume <id>` / `codex resume
+  // <id>`, and run it in a fresh shell above the old output.
+  //
+  // The captured agent session survives because the resume map is only pruned
+  // for keys whose PTY is alive and back at a bare shell prompt. A hibernated
+  // tab has no PTY at all, so nothing prunes it.
+
+  /** Paint (or clear) a tab's hibernated look: a dimmed tab, and a resume bar
+   *  laid over the bottom of its pane. Idempotent. */
+  _setHibernatedUI(ptyId, on) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    entry.tabEl.classList.toggle("tg-tab-hibernated", on);
+    if (!on) {
+      entry.resumeBarEl?.remove();
+      entry.resumeBarEl = null;
+      return;
+    }
+    if (entry.resumeBarEl) return;
+
+    const bar = document.createElement("div");
+    bar.className = "tg-resume-bar";
+    const text = document.createElement("span");
+    text.className = "tg-resume-text";
+    // Filled in once the backend says whether this tab has a resumable agent.
+    text.textContent = "Hibernated";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tg-resume-btn";
+    btn.innerHTML = `${ICONS.play(11)}<span>Resume</span>`;
+    btn.addEventListener("click", () => this.resumeTerminal(ptyId));
+    bar.append(text, btn);
+    entry.paneEl.append(bar);
+    entry.resumeBarEl = bar;
+
+    // A tab with no captured agent session still hibernates; say plainly that
+    // resuming it starts a fresh shell rather than re-attaching an agent.
+    invoke("agent_resume_cmd", { key: entry.persistKey })
+      .then((cmd) => {
+        if (entry.resumeBarEl !== bar) return; // resumed while we waited
+        text.textContent = cmd
+          ? "Agent hibernated — its session can be resumed"
+          : "Terminal hibernated — resuming starts a fresh shell";
+      })
+      .catch(() => {});
+  }
+
+  /**
+   * Hibernate a tab: kill its PTY (and the agent running in it), keep the tab,
+   * its scrollback and its place in the layout. No-op if already hibernated.
+   */
+  async hibernateTerminal(ptyId) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry || entry.hibernated) return;
+    entry.hibernated = true;
+    await invoke("pty_close", { id: ptyId }).catch(() => {});
+    // A tab with no process is neither working, nor waiting for you, nor newly
+    // active. Drop every output-driven flag so nothing dangles.
+    if (attention.has(ptyId)) clearAttention(ptyId);
+    if (setWorking(ptyId, false)) emitWorkingChange();
+    clearActivity(ptyId);
+    silenceArmed.delete(ptyId);
+    lastOutputAt.delete(ptyId);
+    this._setHibernatedUI(ptyId, true);
+    // Persist it: a hibernated tab must come back hibernated, not spawn a shell.
+    this.onLayoutChange?.();
+  }
+
+  /**
+   * Bring a hibernated tab back: re-spawn its PTY under the same id, running the
+   * agent's resume command when one was captured. The old scrollback stays above
+   * the new prompt, separated by the same banner a restart-restore draws.
+   */
+  async resumeTerminal(ptyId) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry || !entry.hibernated || entry.resuming) return;
+    entry.resuming = true;
+    try {
+      let startCmd = await invoke("agent_resume_cmd", { key: entry.persistKey }).catch(() => null);
+      // The owner may need to decorate the command (project.js re-adds Claude's
+      // `--add-dir` flags for the project's other folders).
+      if (startCmd && this.onResumeCmd) startCmd = this.onResumeCmd(startCmd, entry.cwd);
+      entry.term.write(SESSION_BREAK_LINE);
+      const { shell } = getTerminalSettings();
+      await invoke("pty_spawn", {
+        id: ptyId,
+        cwd: entry.cwd,
+        startCmd: startCmd || null,
+        persistKey: entry.persistKey,
+        shell,
+        canvasKey: entry.canvasKey,
+      });
+      entry.hibernated = false;
+      this._setHibernatedUI(ptyId, false);
+      // A fresh session starts visible on the backend. Re-assert what this tab
+      // actually is right now, so a tab resumed while hidden re-closes its gate.
+      entry.live = true;
+      this._setLive(ptyId, entry, this.activeId === ptyId && this.visible());
+      this.onLayoutChange?.();
+      if (this.activeId === ptyId) entry.term.focus();
+    } catch (err) {
+      // Leave it hibernated so the user can try again; the bar is still there.
+      entry.hibernated = true;
+      reportTermError(entry.term, `failed to resume terminal: ${err}`);
+    } finally {
+      entry.resuming = false;
+    }
+  }
+
   // ---- Attention helpers (card 13) ----------------------------------------
   // Paint or un-paint a tab's attention badge. Called by the module-level
   // badgeTab / clearAttention so the Set and the DOM stay in lock-step.
@@ -1328,6 +1686,14 @@ class TerminalGroup {
     const entry = this.tabs.get(ptyId);
     if (!entry) return;
     entry.tabEl.classList.toggle("tg-tab-working", on);
+  }
+
+  // Paint or un-paint a tab's "activity" mark (card 15) — the quietest of the
+  // three tab states: this tab printed while you were elsewhere.
+  _paintActivity(ptyId, on) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    entry.tabEl.classList.toggle("tg-tab-activity", on);
   }
 
   // ---- Last-sent bar ------------------------------------------------------
@@ -1376,9 +1742,15 @@ class TerminalGroup {
     }
     lastOutputAt.delete(ptyId);
     firstOutputWaiters.delete(ptyId);
+    // Monitor state for a dead terminal (card 15). The DOM is about to go, so
+    // drop the flags straight from the sets rather than repainting.
+    activityTabs.delete(ptyId);
+    agentTabs.delete(ptyId);
+    silenceArmed.delete(ptyId);
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();
     entry.term.dispose();
+    entry.resumeBarEl?.remove();
     entry.tabEl.remove();
     entry.paneEl.remove();
     this.tabs.delete(ptyId);
@@ -1398,10 +1770,15 @@ class TerminalGroup {
 
   show() {
     this.root.style.display = "";
-    // Visible again: give the active tab its WebGL renderer back (hide()
-    // released it). Attach after display flips so the canvas has a real size.
+    // Visible again: give the active tab its WebGL renderer back and re-open its
+    // backend output gate (hide() released both). Attach after display flips so
+    // the canvas has a real size.
     const active = this.activeId && this.tabs.get(this.activeId);
-    if (active) this._setWebgl(active, true);
+    if (active) this._setLive(this.activeId, active, true);
+    // The now-revealed tab is being looked at: drop its activity mark (card 15).
+    // activate() covers a tab CLICK; this covers a mode/project switch that
+    // reveals the group without re-activating its tab.
+    if (this.activeId) clearActivity(this.activeId);
     // Refit the active terminal after the element is laid out and measurable.
     requestAnimationFrame(() => this.refitActive());
   }
@@ -1411,8 +1788,10 @@ class TerminalGroup {
     // it lives on <body>, so it would otherwise float over the next view.
     this._closeAddMenu();
     // Nothing in this group can be seen: release every GPU context it holds
-    // (normally just the active tab's). show()/activate() re-attach.
-    for (const e of this.tabs.values()) this._setWebgl(e, false);
+    // (normally just the active tab's) and close every backend output gate, so
+    // an agent or build in here streams into the ring instead of the webview.
+    // show()/activate() re-attach and replay.
+    for (const [id, e] of this.tabs) this._setLive(id, e, false);
     this.root.style.display = "none";
   }
 

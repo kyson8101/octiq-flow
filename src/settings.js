@@ -110,7 +110,20 @@ export const DEFAULT_TERMINAL_SETTINGS = {
   lineHeight: 1.0,
   letterSpacing: 0,
   shell: "powershell",
+  // Terminal monitors (card 15), both OFF by default — same stance as tmux,
+  // whose monitor-activity / monitor-silence are opt-in per window. Left on,
+  // activity would light up for every streaming background tab and silence
+  // would fire whenever an agent pauses on a slow tool call; a false "needs
+  // you" is worse than no alert, so the user turns these on deliberately.
+  monitorActivity: false,
+  monitorSilence: false,
+  silenceSeconds: 15,
 };
+
+// How long an agent tab may stay quiet before the silence monitor flags it.
+// The floor keeps a jittery agent from self-flagging between output bursts.
+export const SILENCE_SECONDS_MIN = 3;
+export const SILENCE_SECONDS_MAX = 600;
 
 /** The shell id if it is a known choice, else the default. Never returns an
  *  unknown value, so a corrupt or renamed saved pick can never reach the
@@ -223,6 +236,11 @@ export function getTerminalSettings() {
     ),
     theme: resolveTheme(saved.theme),
     shell: shellById(saved.shell),
+    monitorActivity: !!saved.monitorActivity,
+    monitorSilence: !!saved.monitorSilence,
+    silenceSeconds: Math.round(
+      clamp(saved.silenceSeconds, SILENCE_SECONDS_MIN, SILENCE_SECONDS_MAX, DEFAULT_TERMINAL_SETTINGS.silenceSeconds),
+    ),
   };
 }
 
@@ -291,6 +309,9 @@ export function saveTerminalSettings(partial) {
     letterSpacing: next.letterSpacing,
     theme: resolveTheme(next.theme),
     shell: next.shell,
+    monitorActivity: next.monitorActivity,
+    monitorSilence: next.monitorSilence,
+    silenceSeconds: next.silenceSeconds,
   };
   savedCache = raw;
   // localStorage stays as a fast cache/fallback; the durable per-profile store is
@@ -550,10 +571,41 @@ document.addEventListener("DOMContentLoaded", () => {
   themeReset?.addEventListener("click", () => reflect(saveTerminalSettings({ theme: resolveTheme(null) })));
 
   wireShellPicker();
+  wireMonitorControls();
   wireAgentHookSetup();
   wireInstallButton("install-canvas-skill", "install-canvas-skill-status", "install_canvas_skill");
   wireInstallButton("install-canvas-codex", "install-canvas-codex-status", "install_canvas_codex_guide");
 });
+
+/** Wire the two terminal monitors (card 15): the activity checkbox, the silence
+ *  checkbox, and the silence-seconds number box. The seconds box is disabled
+ *  while the silence monitor is off, so the control reads as what it is — a
+ *  setting for a monitor that is not running. Bails quietly if absent. */
+function wireMonitorControls() {
+  const activity = document.getElementById("term-monitor-activity");
+  const silence = document.getElementById("term-monitor-silence");
+  const seconds = document.getElementById("term-silence-seconds");
+  if (!activity || !silence || !seconds) return;
+
+  const reflect = (s) => {
+    activity.checked = s.monitorActivity;
+    silence.checked = s.monitorSilence;
+    seconds.value = String(s.silenceSeconds);
+    seconds.disabled = !s.monitorSilence;
+  };
+  reflect(getTerminalSettings());
+  window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => reflect(e.detail));
+
+  activity.addEventListener("change", () =>
+    reflect(saveTerminalSettings({ monitorActivity: activity.checked })),
+  );
+  silence.addEventListener("change", () =>
+    reflect(saveTerminalSettings({ monitorSilence: silence.checked })),
+  );
+  seconds.addEventListener("change", () =>
+    reflect(saveTerminalSettings({ silenceSeconds: Number(seconds.value) })),
+  );
+}
 
 /** Wire the "Set up agent resume & alert hooks" button: install the OctiqFlow
  *  agent hook (resume capture + attention alert) into ~/.claude/settings.json and

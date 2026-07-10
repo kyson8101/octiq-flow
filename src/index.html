@@ -675,6 +675,31 @@
             </section>
 
             <section class="settings-section">
+              <div class="settings-section-title">Terminal monitors</div>
+              <p class="settings-help">
+                Flag a tab that needs you without any help from the program inside
+                it. <strong>Activity</strong> marks any tab that prints while you are
+                not looking at it. <strong>Silence</strong> waits for an agent tab
+                (Claude or Codex) to stop printing for a while, which usually means
+                the agent finished and is waiting for you. Both are off by default:
+                left on, a long build or a slow tool call can flag a tab that does
+                not really need you.
+              </p>
+              <label class="settings-check">
+                <input id="term-monitor-activity" type="checkbox" />
+                <span>Mark a background tab when it prints (activity)</span>
+              </label>
+              <label class="settings-check">
+                <input id="term-monitor-silence" type="checkbox" />
+                <span>Alert when an agent tab goes quiet (silence)</span>
+              </label>
+              <div class="settings-field">
+                <label class="settings-label" for="term-silence-seconds">Quiet for (seconds)</label>
+                <input id="term-silence-seconds" class="settings-number" type="number" min="3" max="600" step="1" />
+              </div>
+            </section>
+
+            <section class="settings-section">
               <div class="settings-section-title">Notifications</div>
               <p class="settings-help">
                 OctiqFlow shows an OS notification with sound when an agent stops

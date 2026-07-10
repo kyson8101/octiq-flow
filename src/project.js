@@ -16,22 +16,13 @@
 //
 // project.js learns of selection from a `project-selected` window event that
 // workspaces.js dispatches: detail = { id, primaryPath } or null.
-import { createTerminalGroup, onceTerminalOutput } from "/terminals.js";
+import { createTerminalGroup, onceTerminalOutput, setAgentTab } from "/terminals.js";
+import { shQuote } from "/util.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const mountEl = document.querySelector("#project-terminals");
-
-/** Single-quote a string for a POSIX login shell (the shell every project
- *  terminal runs). Inside single quotes everything is literal, so the only
- *  escape needed is for an embedded single quote: end the quote, add an escaped
- *  quote, reopen. This makes a folder path with spaces or shell metacharacters
- *  safe to splice into a start command — it can never break out of its argument
- *  and run extra shell commands. */
-function shQuote(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
-}
 
 /** The ` --add-dir '<path>'` suffix that gives Claude tool access to a project's
  *  other folders. A project can group several folders; the terminal starts in
@@ -47,7 +38,17 @@ function claudeAddDirSuffix(rec, cwd) {
     : "";
 }
 
-// projectId -> { group, primaryPath, paths, startup, terminalCommand, restoring, dirty:Set<ptyId>, saveTimer }
+/** A resume command with Claude's `--add-dir` flags re-appended when it is a
+ *  Claude command. A resumed Claude tab should see the whole project, exactly as
+ *  a freshly launched one does; Codex takes no such flag, so its command is
+ *  returned untouched. Shared by the restart-restore path and the hibernate
+ *  resume path (card 18). */
+function withClaudeAddDirs(rec, startCmd, cwd) {
+  if (!startCmd || !/^claude(\s|$)/.test(startCmd)) return startCmd;
+  return startCmd + claudeAddDirSuffix(rec, cwd);
+}
+
+// projectId -> { group, primaryPath, paths, startup, terminalCommand, restoring, saveTimer }
 const projects = new Map();
 // Project ids whose startup terminals / restore have already opened this
 // session, so neither runs twice — re-opening an emptied project later gives
@@ -71,6 +72,37 @@ const LAYOUT_SAVE_MS = 500;
 // How often to flush scrollback of terminals that produced output.
 const SCROLLBACK_FLUSH_MS = 5000;
 
+// How many terminals may be serialized in ONE flush tick (card 24).
+//
+// SerializeAddon.serialize() is synchronous and its cost scales with the line
+// count. Flushing every dirty terminal in one tick meant N back-to-back
+// serializations on the main thread — a periodic UI hitch that grew with the
+// number of busy terminals. Now each tick takes a couple and leaves the rest
+// for later ticks, so the work is spread instead of stampeding.
+//
+// The cost is crash-recovery freshness: with 8 busy terminals a given one is
+// saved every ~20s rather than every 5s. A clean quit still saves all of them
+// (flushAll), and this only ever protects output from a hard crash.
+const MAX_FLUSH_PER_TICK = 2;
+
+// Scrollback lines serialized by the PERIODIC flush. Smaller than the clean-quit
+// cap (terminals.js FULL_SCROLLBACK_LINES) because serialize() is synchronous and
+// this runs every few seconds: it exists for crash recovery, not for a full
+// restore. A clean quit still saves the whole buffer.
+const FLUSH_SCROLLBACK_LINES = 1000;
+
+// The terminals with output not yet written to disk: ptyId -> its project rec.
+//
+// ONE queue across all projects, not a Set per project. Insertion-ordered, and
+// flushDirty DELETES an id before saving it — so a terminal that keeps printing
+// is re-added at the BACK by the next chunk. That is what makes the per-tick
+// budget rotate fairly instead of letting the first project's busy terminals
+// starve every other project's forever.
+//
+// Membership IS the "buffer changed since last flush" signal: a terminal only
+// enters when it produces output, so an idle one is never re-serialized.
+const dirtyTerminals = new Map();
+
 /** Get or create the terminal group for a project id. `paths` is every folder
  *  the project groups (primary first), used to give a launched agent tool access
  *  to the whole project. */
@@ -90,13 +122,16 @@ function groupFor(id, primaryPath, paths, startup, terminalCommand, fontOverride
       startup,
       terminalCommand,
       restoring: false,
-      dirty: new Set(),
       saveTimer: null,
     };
     // Persist the tab layout when it changes (new/close/rename), and mark a
     // terminal dirty when it produces output so the next flush saves it.
     group.onLayoutChange = () => scheduleLayoutSave(id);
-    group.onOutput = (ptyId) => rec.dirty.add(ptyId);
+    group.onOutput = (ptyId) => dirtyTerminals.set(ptyId, rec);
+    // Resuming a hibernated tab (card 18) rebuilds its agent start command. A
+    // resumed Claude needs the same whole-project tool access a fresh launch or a
+    // restart-restore gives it, so re-append the other folders' --add-dir flags.
+    group.onResumeCmd = (startCmd, cwd) => withClaudeAddDirs(rec, startCmd, cwd);
     projects.set(id, rec);
   } else {
     // Primary path / all paths / startup layout / terminal command may have
@@ -273,9 +308,13 @@ async function restoreProject(id, saved) {
     // created in saved order below so the tab order is preserved.
     const prepared = await Promise.all(
       saved.map(async (t) => {
+        // A hibernated tab spawns nothing, so it needs no resume command — only
+        // its scrollback, to paint behind the resume bar (card 18).
         const [scrollback, resume] = await Promise.all([
           invoke("load_scrollback", { key: t.persistKey }).catch(() => ""),
-          invoke("agent_resume_cmd", { key: t.persistKey }).catch(() => null),
+          t.hibernated
+            ? Promise.resolve(null)
+            : invoke("agent_resume_cmd", { key: t.persistKey }).catch(() => null),
         ]);
         return { t, restoreScrollback: scrollback || "", startCmd: resume || null };
       }),
@@ -291,15 +330,9 @@ async function restoreProject(id, saved) {
       })),
     );
     for (const { t, restoreScrollback, startCmd: resumeCmd } of prepared) {
-      let startCmd = resumeCmd;
       // The terminal reopens in its saved cwd (the folder the agent ran in).
       const cwd = t.cwd || rec.primaryPath;
-      // A resumed Claude tab should get the same whole-project tool access as a
-      // fresh launch: append --add-dir for the project's other folders. Only for
-      // a Claude resume (`claude …`) — a Codex resume takes no such flag.
-      if (startCmd && /^claude(\s|$)/.test(startCmd)) {
-        startCmd += claudeAddDirSuffix(rec, cwd);
-      }
+      const startCmd = withClaudeAddDirs(rec, resumeCmd, cwd);
       setResumeState(ov, t.persistKey, "active");
       const ptyId = await rec.group.newTerminal({
         persistKey: t.persistKey,
@@ -311,10 +344,14 @@ async function restoreProject(id, saved) {
         startCmd,
         restoreScrollback,
         canvasKey: id,
+        // A tab the user hibernated comes back hibernated: no shell, no agent,
+        // just the tab, its output and the resume bar (card 18).
+        hibernated: !!t.hibernated,
       });
-      // A plain shell is back the moment its PTY spawns. An agent tab is only
-      // "resumed" once claude/codex actually prints after the `--resume`, so wait
-      // for its first output — non-blocking, the loop keeps creating the rest.
+      // A plain shell is back the moment its PTY spawns, and a hibernated tab is
+      // "back" the moment its bar is painted. An agent tab is only "resumed" once
+      // claude/codex actually prints after the `--resume`, so wait for its first
+      // output — non-blocking, the loop keeps creating the rest.
       if (resumeCmd) {
         onceTerminalOutput(ptyId, () => {
           setResumeState(ov, t.persistKey, "done");
@@ -404,6 +441,15 @@ function saveLayout(id) {
   }).catch(() => {});
 }
 
+/** Drop every queued scrollback flush belonging to a project that is going away
+ *  (deleted or shelved). Its group is about to be disposed, so the entries would
+ *  otherwise sit in the queue being skipped on every tick. */
+function forgetDirty(rec) {
+  for (const [ptyId, owner] of dirtyTerminals) {
+    if (owner === rec) dirtyTerminals.delete(ptyId);
+  }
+}
+
 /** Debounce a layout save after a structural change. Suppressed while the
  *  project is restoring (the saved layout is already correct). */
 function scheduleLayoutSave(id) {
@@ -413,26 +459,35 @@ function scheduleLayoutSave(id) {
   rec.saveTimer = setTimeout(() => saveLayout(id), LAYOUT_SAVE_MS);
 }
 
-/** Periodically save the scrollback of any terminal that produced output since
- *  the last flush, so a crash loses at most a few seconds of output. */
+/** Periodically save the scrollback of terminals that produced output since the
+ *  last flush, so a crash loses at most a few seconds of output.
+ *
+ *  At most MAX_FLUSH_PER_TICK terminals are serialized per tick; the rest keep
+ *  their place in the queue and are picked up by later ticks. Each id is removed
+ *  before it is saved, so any further output re-queues it at the back and the
+ *  budget rotates through every busy terminal in turn. */
 function flushDirty() {
-  for (const [, rec] of projects) {
-    if (rec.restoring || rec.dirty.size === 0) continue;
-    const ptyIds = [...rec.dirty];
-    rec.dirty.clear();
-    for (const ptyId of ptyIds) {
-      const key = rec.group.persistKeyFor(ptyId);
-      if (!key) continue; // terminal was closed
-      // Periodic flush is crash-recovery only and runs every few seconds, so cap
-      // the (synchronous) serialize at fewer lines to keep the hitch small. A
-      // clean quit still saves the full buffer via flushAll/scrollbackEntries.
-      invoke("save_scrollback", { key, data: rec.group.scrollbackFor(ptyId, 1000) }).catch(() => {});
-    }
+  let budget = MAX_FLUSH_PER_TICK;
+  for (const [ptyId, rec] of dirtyTerminals) {
+    if (budget <= 0) break;
+    // A project mid-restore must not have a half-built buffer written over its
+    // saved scrollback. Leave it queued; the next tick will find it settled.
+    if (rec.restoring) continue;
+    dirtyTerminals.delete(ptyId);
+    const key = rec.group.persistKeyFor(ptyId);
+    if (!key) continue; // terminal was closed; it cost no budget
+    budget--;
+    // Periodic flush is crash-recovery only and runs every few seconds, so cap
+    // the (synchronous) serialize at fewer lines to keep the hitch small. A
+    // clean quit still saves the full buffer via flushAll/scrollbackEntries.
+    invoke("save_scrollback", {
+      key,
+      data: rec.group.scrollbackFor(ptyId, FLUSH_SCROLLBACK_LINES),
+    }).catch(() => {});
   }
-  // Prune + auto-title are pure bookkeeping/UI and cost one IPC PER open tab
-  // (refreshTitles queries agent_tab_info for every live terminal). Skip them
-  // while the window is fully hidden — nobody sees the titles, and an exited
-  // agent is still pruned on the next visible tick (or at clean quit). The
+  // Prune + auto-title are pure bookkeeping/UI. Skip them while the window is
+  // fully hidden — nobody sees the titles, and an exited agent is still pruned
+  // on the next visible tick (or at clean quit). The
   // scrollback flush above keeps running when hidden: it is crash-recovery and
   // already no-ops for any project with nothing dirty.
   if (document.hidden) return;
@@ -456,14 +511,14 @@ document.addEventListener("visibilitychange", () => {
 /** Auto-name each project tab. A tab that launched an agent follows that agent's
  *  session title (e.g. Claude's generated title); a plain terminal that never
  *  launched an agent follows the first command typed in it. A hand-renamed tab is
- *  left alone (setAutoTitle checks the manual flag). Backend reads are cheap
- *  (mtime-cached), so polling every tab on the flush timer is fine. */
+ *  left alone (setAutoTitle checks the manual flag). */
 async function refreshTitles() {
-  // Collect every live tab first, then query the backend for all of them IN
-  // PARALLEL. Querying one tab at a time (await per tab) made this loop's cost
-  // grow with the total number of open terminals across all projects — a steady
-  // drag that got worse the longer the app ran. One backend hiccup drops just
-  // that tab's result (null); the name is kept and retried next tick.
+  // Collect every live tab, then ask the backend about all of them in ONE call.
+  // This used to fan out one `agent_tab_info` per tab; each of those read and
+  // JSON-parsed the whole agent-session store, so ten tabs meant ten full reads
+  // of the same file every five seconds. `agent_tab_infos` loads it once (and
+  // that load is itself mtime-cached). A backend hiccup drops every name this
+  // tick; they are kept and retried on the next one.
   const jobs = [];
   for (const [, rec] of projects) {
     if (rec.restoring) continue;
@@ -472,11 +527,16 @@ async function refreshTitles() {
       if (key) jobs.push({ rec, ptyId, key });
     }
   }
-  const infos = await Promise.all(
-    jobs.map((j) => invoke("agent_tab_info", { key: j.key }).catch(() => null)),
-  );
+  if (!jobs.length) return;
+  const infos = await invoke("agent_tab_infos", {
+    keys: jobs.map((j) => j.key),
+  }).catch(() => jobs.map(() => null));
   jobs.forEach(({ rec, ptyId }, i) => {
     const info = infos[i];
+    // Tell the silence monitor (card 15) which tabs really run an agent, so it
+    // never mistakes an idle `vim` or a paused build for an agent awaiting you.
+    // A dropped backend read (info === null) leaves the last known value alone.
+    if (info) setAgentTab(ptyId, !!info.isAgent);
     if (info?.isAgent) {
       // Agent tab: use the session title once the agent has generated one.
       // Until then leave the current name — do NOT fall back to a command.
@@ -561,6 +621,7 @@ window.addEventListener("project-deleted", (e) => {
   if (!rec) return;
   rec.group.dispose();
   clearTimeout(rec.saveTimer); // dispose scheduled a save; cancel it
+  forgetDirty(rec);
   projects.delete(id);
   startedUp.delete(id);
   delete layouts[id];
@@ -589,6 +650,7 @@ window.addEventListener("project-shelved", async (e) => {
   rec.restoring = true;
   clearTimeout(rec.saveTimer);
   rec.group.dispose();
+  forgetDirty(rec);
   projects.delete(id);
   // Forget "already opened this session" so bring-back restores the saved layout
   // instead of opening a single plain terminal.

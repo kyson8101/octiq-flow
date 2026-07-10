@@ -20,6 +20,7 @@ import {
   focusTerminal,
   attentionList,
   isActiveVisible,
+  MONITOR_ALERT,
 } from "/terminals.js";
 
 const { listen } = window.__TAURI__.event;
@@ -208,6 +209,28 @@ listen("pty-attention", (event) => {
   // banner covers that case). When backgrounded, the OS banner + sound is how an
   // agent that needs input reaches the user.
   if (!document.hasFocus()) osNotify(title, body);
+});
+
+// The silence monitor (card 15) raises its alert through this event instead of
+// a backend `pty-attention`, because only the frontend knows a tab went quiet.
+// From here on it is the SAME alert: run it past the user's notify-hook
+// (card 19), badge the tab, and notify the OS when the window is not focused.
+// terminals.js has already checked the user is not looking at this terminal, so
+// there is no isActiveVisible guard to repeat.
+//
+// The OSC path does NOT call the hook here — pty.rs already ran it before
+// emitting `pty-attention`, on a thread of its own. Running it in both places
+// would filter those alerts twice.
+window.addEventListener(MONITOR_ALERT, async (e) => {
+  const { id, source, title, body } = e.detail || {};
+  if (!id) return;
+  const alert = await invoke("notify_hook_filter", { id, source, title, body }).catch(
+    // A backend hiccup must never swallow an alert: show the original.
+    () => ({ title, body, suppress: false }),
+  );
+  if (alert.suppress) return;
+  badgeTab(id);
+  if (!document.hasFocus()) osNotify(alert.title, alert.body);
 });
 
 // Rebuild the banner whenever the attention set changes — from a new alert, a

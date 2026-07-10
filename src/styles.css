@@ -1333,21 +1333,6 @@ body {
   display: none !important;
 }
 
-.inject-input {
-  flex: 1;
-  padding: 8px 10px;
-  font-size: 13px;
-  color: var(--fg-0);
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  outline: none;
-}
-
-.inject-input:focus {
-  border-color: var(--accent);
-}
-
 /* Buttons. Quiet by default; the primary/accent variants use a soft accent
    tint instead of a solid loud fill. */
 .btn {
@@ -1930,6 +1915,20 @@ body {
   color: var(--fg-1);
 }
 
+/* A checkbox + its wording on one row (terminal monitors, card 15). */
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-1);
+  cursor: pointer;
+}
+
+.settings-check input {
+  cursor: pointer;
+}
+
 /* Helper line under a settings field input. */
 .settings-hint {
   font-size: 11px;
@@ -2191,17 +2190,6 @@ body {
   display: none;
 }
 
-/* Placeholder for the not-yet-built modes: centered muted text, dark themed */
-.view-placeholder {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
-  color: var(--fg-3);
-  background: var(--bg-0);
-}
-
 /* ---- Per-project terminal group mount (card 04) ----------------------- */
 /* Fills the termdock; the group renders its own strip + panes inside. */
 .project-terminals {
@@ -2451,6 +2439,94 @@ body {
 .tg-tab-close:hover {
   color: var(--danger);
   background: var(--danger-tint);
+}
+
+/* Hibernate button (card 18). Shares the close button's box, but stays hidden
+   until the tab is hovered or active — killing an agent is a deliberate act, so
+   the control should not sit under the pointer on every tab all the time. */
+.tg-tab-hibernate {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  line-height: 1;
+  color: var(--fg-3);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  visibility: hidden;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.tg-tab-hibernate svg {
+  display: block;
+}
+
+.tg-tab:hover .tg-tab-hibernate,
+.tg-tab-active .tg-tab-hibernate {
+  visibility: visible;
+}
+
+.tg-tab-hibernate:hover {
+  color: var(--accent);
+  background: var(--accent-tint);
+}
+
+/* A hibernated tab has no process behind it: mute it, and hide its own
+   hibernate button (there is nothing left to stop). */
+.tg-tab-hibernated {
+  opacity: 0.6;
+}
+
+.tg-tab-hibernated .tg-tab-hibernate {
+  display: none;
+}
+
+/* The resume bar laid over the bottom of a hibernated tab's pane. The terminal's
+   scrollback stays readable behind and above it — that is the point of
+   hibernating rather than closing. */
+.tg-resume-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border-top: 1px solid var(--border);
+}
+
+.tg-resume-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.tg-resume-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.tg-resume-btn svg {
+  display: block;
 }
 
 /* "+" new-terminal button */
@@ -2712,6 +2788,15 @@ body {
   white-space: nowrap;
 }
 
+/* Tab badge: ACTIVITY (card 15) — this tab printed while you were looking
+   somewhere else. The faintest of the three states: a still, muted dot, no ring
+   and no pulse. It must lose to both the working and the attention dot when a
+   tab carries more than one state, so it is declared FIRST — all three rules
+   have equal specificity, and the last one wins. */
+.tg-tab-activity .tg-tab-label::before {
+  background: var(--fg-2);
+}
+
 /* Tab badge: a terminal tab that needs attention gets an amber ring + a dot
    before its label, so the user can spot it even in another project/mode.
    Works on top of the existing .tg-tab and .tg-tab-active styles. */
@@ -2951,23 +3036,6 @@ body {
   color: var(--fg-2);
 }
 
-.pb-btn {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--fg-1);
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-}
-.pb-btn:hover:not(:disabled) {
-  background: var(--border);
-}
-.pb-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
 .pb-back {
   margin-left: auto;
 }
@@ -3210,7 +3278,6 @@ body {
   margin-top: 16px;
 }
 
-.modal-section-hint,
 .startup-status {
   color: var(--fg-2);
   font-size: 12px;
@@ -3696,7 +3763,6 @@ body {
 /* Soft accent focus ring on every text-ish control. The accent border color
    is set per-control above; this adds the gentle outer glow. */
 .inline-input:focus,
-.inject-input:focus,
 .git-select:focus,
 .settings-select:focus {
   box-shadow: 0 0 0 3px var(--accent-tint-faint);

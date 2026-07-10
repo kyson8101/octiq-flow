@@ -15,8 +15,14 @@
 // write actions are plain git in a terminal, so we never shell out to mutate git
 // from Rust.
 import { runManagedCommand } from "/commands.js";
+import { shQuote } from "/util.js";
 
 const { invoke } = window.__TAURI__.core;
+
+// A branch switch is typed into the terminal, not run by us, so there is no
+// completion signal to wait on. Show the new branch optimistically, then re-read
+// the real state after roughly the time `git switch` takes to finish.
+const BRANCH_RECONCILE_MS = 1200;
 
 // --- DOM handles -----------------------------------------------------------
 const hintEl = document.querySelector("#git-hint");
@@ -39,13 +45,6 @@ let currentBranch = "";
 let repoReady = false;
 
 // --- Shell quoting ----------------------------------------------------------
-/** POSIX single-quote a value so a branch name or commit message with spaces or
- *  special characters is passed to git as one safe argument. (The command runs
- *  in the login shell of a PTY; macOS/Linux is the target platform.) */
-function shQuote(value) {
-  return "'" + String(value).replace(/'/g, "'\\''") + "'";
-}
-
 // --- Project selection ------------------------------------------------------
 window.addEventListener("project-selected", (e) => {
   project = e.detail || null;
@@ -143,7 +142,7 @@ switchBtn.addEventListener("click", () => {
   currentBranch = branch;
   branchNameEl.textContent = branch;
   branchNameEl.title = branch;
-  setTimeout(loadBranches, 1200);
+  setTimeout(loadBranches, BRANCH_RECONCILE_MS);
 });
 
 commitBtn.addEventListener("click", () => {

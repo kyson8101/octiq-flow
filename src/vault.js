@@ -14,6 +14,7 @@
 // on DOMContentLoaded. Every lookup is null-guarded so a trimmed build never
 // throws.
 import { sendToActiveTerminal } from "/terminals.js";
+import { formatBytes, timeAgo } from "/util.js";
 
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -90,25 +91,6 @@ function hotkeyEnabled() {
   return localStorage.getItem(HOTKEY_ENABLED_KEY) === "1";
 }
 
-/** Short "12s ago" / "3m ago" label from an epoch-ms timestamp. */
-function timeAgo(ms) {
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-}
-
-/** Human file size. */
-function fmtSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${Math.round(kb)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
 // Current shots, newest first (from the backend). Module-level so the capture
 // event, the drawer, and the badge all read one list.
 let shots = [];
@@ -177,7 +159,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const meta = document.createElement("div");
       meta.className = "vault-card-meta";
-      meta.textContent = `${timeAgo(shot.modified)} · ${fmtSize(shot.size)}`;
+      meta.textContent = `${timeAgo(shot.modified)} · ${formatBytes(shot.size)}`;
 
       const actions = document.createElement("div");
       actions.className = "vault-card-actions";

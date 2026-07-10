@@ -19,6 +19,7 @@
 // events it does not emit: `project-selected` (from workspaces.js, to know the
 // active project key) and `canvas-changed` (from the Rust watcher).
 import { sendToProjectTerminal } from "/terminals.js";
+import { formatBytes, loadPaneWidth, makeResizer, timeAgo } from "/util.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -58,13 +59,6 @@ let pinnedName = null;
 // Whether the pane is open (shown). Restored from localStorage at init.
 let canvasOpen = false;
 let canvasWidth = DEFAULT_WIDTH;
-
-/** Read the saved width, clamped to something sane. */
-function loadWidth() {
-  const n = Number(localStorage.getItem(WIDTH_KEY));
-  if (!Number.isFinite(n) || n < MIN_WIDTH) return DEFAULT_WIDTH;
-  return Math.min(n, Math.floor(window.innerWidth * 0.72));
-}
 
 /** Show or hide the pane (and its drag handle), persist the choice, and keep the
  *  toggle button's pressed state in sync. Opening reloads the current document
@@ -426,26 +420,6 @@ function openExternally() {
   openDocExternally(currentKey, docSelect.value || currentDocs[0]?.name);
 }
 
-/** Short "x ago" from an epoch-ms timestamp (0/unknown → empty). */
-function timeAgo(ms) {
-  if (!ms) return "";
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.round(h / 24)}d ago`;
-}
-
-/** Human file size. */
-function fmtSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${Math.round(kb)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
-}
-
 /** Fetch every project's canvases + the workspace list, then render the manager.
  *  Keys map to project names via the workspace store; an unmatched key is an
  *  orphan folder from a deleted project (shown as such so it can be cleaned up). */
@@ -512,7 +486,7 @@ function buildDocRow(key, doc) {
   nameEl.textContent = doc.name;
   const meta = document.createElement("span");
   meta.className = "canvas-all-meta";
-  meta.textContent = [timeAgo(doc.modified), fmtSize(doc.size)].filter(Boolean).join(" · ");
+  meta.textContent = [timeAgo(doc.modified), formatBytes(doc.size)].filter(Boolean).join(" · ");
   info.append(nameEl, meta);
 
   const open = document.createElement("button");
@@ -646,29 +620,18 @@ function sendAsk() {
   }
 }
 
-/** Drag the handle to resize the pane. The pane's right edge is fixed (it sits
- *  left of the command panel), so the width is that edge minus the pointer x.
- *  Clamped, and saved on release. */
+/** Drag the handle to resize the pane (shared helper, card 26). On release the
+ *  terminals need a nudge to refit to the new center width. */
 function wireResizer() {
-  resizer.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    const rightEdge = pane.getBoundingClientRect().right;
-    resizer.setPointerCapture(e.pointerId);
-    resizer.classList.add("dragging");
-    const onMove = (ev) => {
-      const max = Math.floor(window.innerWidth * 0.72);
-      canvasWidth = Math.max(MIN_WIDTH, Math.min(rightEdge - ev.clientX, max));
-      pane.style.width = `${canvasWidth}px`;
-    };
-    const onUp = () => {
-      resizer.classList.remove("dragging");
-      resizer.removeEventListener("pointermove", onMove);
-      resizer.removeEventListener("pointerup", onUp);
-      localStorage.setItem(WIDTH_KEY, String(canvasWidth));
+  makeResizer({
+    paneEl: pane,
+    resizerEl: resizer,
+    storageKey: WIDTH_KEY,
+    minWidth: MIN_WIDTH,
+    onResize: (width) => {
+      canvasWidth = width;
       window.dispatchEvent(new Event("resize"));
-    };
-    resizer.addEventListener("pointermove", onMove);
-    resizer.addEventListener("pointerup", onUp);
+    },
   });
 }
 
@@ -720,7 +683,7 @@ function init() {
     }
   });
 
-  canvasWidth = loadWidth();
+  canvasWidth = loadPaneWidth(WIDTH_KEY, MIN_WIDTH, DEFAULT_WIDTH);
 
   toggleBtn.addEventListener("click", () => setOpen(!canvasOpen));
   closeBtn?.addEventListener("click", () => setOpen(false));
