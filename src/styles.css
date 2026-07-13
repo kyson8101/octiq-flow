@@ -849,6 +849,29 @@ body {
   color: var(--fg-2);
 }
 
+/* Files mode: the folder tree takes the sidebar body in place of the project
+   list. The collapsed rail always keeps the project avatars, so the mode only
+   applies while the sidebar is expanded. */
+.sidebar-files {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.sidebar.files-mode:not(.collapsed) .sidebar-files {
+  display: block;
+}
+
+.sidebar.files-mode:not(.collapsed) #workspace-list,
+.sidebar.files-mode:not(.collapsed) #workspace-empty,
+.sidebar.files-mode:not(.collapsed) .ws-shelf-section,
+.sidebar.collapsed .gd-view-toggle,
+.sidebar.collapsed .sidebar-files {
+  display: none;
+}
+
 .btn-sm {
   padding: 4px 8px;
   font-size: 12px;
@@ -3063,6 +3086,12 @@ body {
   border-right: 1px solid var(--border);
 }
 
+/* Opened from the sidebar's file tree: that tree IS the list, so the panel drops
+   its own and the preview fills it. */
+.project-browser.preview-only .pb-list {
+  display: none;
+}
+
 /* Right preview pane. Hidden until a file is clicked. */
 .pb-preview {
   flex: 1 1 auto;
@@ -3123,29 +3152,18 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-/* Editable, syntax-highlighted code view (CodeJar + highlight.js).
-   contentEditable so the user can type. The highlight theme only colors tokens —
-   drop its own background so the app's --bg-0 shows. */
-.pb-preview-code {
-  margin: 0;
-  padding: 12px 14px;
-  min-height: 100%;
-  box-sizing: border-box;
-  font-family: Menlo, Monaco, "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre;
-  tab-size: 4;
-  outline: none;
-  caret-color: var(--accent);
+/* Monaco text editor host. The body becomes a non-scrolling column so an
+   optional truncated-file note sits above the editor, which takes the rest
+   (Monaco scrolls itself and needs a definite height, not content height). */
+.pb-preview-body.monaco-host {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-.pb-preview-code.hljs {
-  background: transparent;
-  color: var(--fg-1);
-}
-/* Read-only highlighted view (truncated files): no caret, not editable. */
-.pb-preview-code[contenteditable="false"] {
-  caret-color: transparent;
+.pb-monaco {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
 }
 
 /* Save button: tinted when there are unsaved edits, hidden otherwise. */

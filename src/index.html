@@ -25,11 +25,9 @@
     <!-- Markdown renderer for the canvas pane, vendored locally (no CDN, works
          offline). UMD build: exposes window.marked for canvas.js to use. -->
     <script src="vendor/marked.min.js"></script>
-    <!-- Syntax highlighting for the file-preview editor, vendored locally (no CDN,
-         works offline). highlight.min.js exposes window.hljs; the theme colors the
-         tokens (background is overridden to the app's --bg-0 in styles.css). -->
-    <link rel="stylesheet" href="vendor/highlight-theme.css" />
-    <script src="vendor/highlight.min.js"></script>
+    <!-- The file-preview editor is Monaco, vendored under vendor/monaco (no CDN,
+         works offline). It is NOT loaded here: browser.js injects its AMD loader
+         lazily on the first text preview, after all startup UMD globals exist. -->
 
     <link rel="stylesheet" href="styles.css" />
     <script type="module" src="/workspaces.js" defer></script>
@@ -89,7 +87,12 @@
       <!-- Left panel: only the list of workspaces -->
       <aside class="sidebar">
         <div class="sidebar-head">
-          <span class="sidebar-title">Projects</span>
+          <!-- Sidebar view toggle: the project list, or the selected project's
+               folder tree (browser.js owns both the toggle and the tree). -->
+          <span class="gd-view-toggle" role="group" aria-label="Sidebar view">
+            <button id="sb-view-projects" class="gd-toggle-btn gd-toggle-active" type="button">Projects</button>
+            <button id="sb-view-files" class="gd-toggle-btn" type="button">Files</button>
+          </span>
           <span class="sidebar-head-actions">
             <button id="new-workspace" class="icon-btn" data-tip="New project">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -120,6 +123,12 @@
           <ul id="workspace-shelf" class="ws-list ws-shelf-list"></ul>
           <p id="workspace-shelf-empty" class="ws-shelf-empty">Drag a project here, or right-click one and pick “Shelve”, to set it aside.</p>
         </section>
+
+        <!-- Files view: the selected project's folder tree, shown in place of the
+             project list when the head toggle is on "Files". Same tree rows as the
+             center file browser; clicking a file opens it in the browser's preview
+             pane. browser.js fills it. -->
+        <div id="sidebar-files" class="sidebar-files"></div>
       </aside>
 
       <!-- Center: per-project terminals on top, command drawer at the bottom -->

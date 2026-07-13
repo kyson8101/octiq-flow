@@ -15,10 +15,13 @@
 //   * `project-selected` from workspaces.js: when the selected project CHANGES
 //     while the browser is open, we close the browser and return to terminals so
 //     switching projects always lands on that project's terminals.
+//
+// This module also drives the SIDEBAR's "Files" view (see the bottom section):
+// the same tree rows, rendered over the selected project's folder paths, with a
+// file click opening the panel above in preview-only mode (no second tree).
 const { invoke, convertFileSrc } = window.__TAURI__.core;
-// CodeJar turns the highlighted code element into a tiny editor; highlight.js
-// (window.hljs, loaded as a global in index.html) colors the tokens.
-import { CodeJar } from "/vendor/codejar.js";
+// Text previews render in Monaco (the VS Code editor core), vendored under
+// /vendor/monaco and loaded lazily on the first text preview (card 27).
 import { formatBytes, loadPaneWidth, makeResizer, textEl } from "/util.js";
 
 // --- DOM handles -----------------------------------------------------------
@@ -55,58 +58,39 @@ let browsingProjectId = null;
 let previewPath = null;
 // The list row whose file is previewed, so we can clear its highlight.
 let selectedRow = null;
-// The live CodeJar editor for the previewed text file (null when none / read-only).
-let currentJar = null;
+// The live Monaco editor for the previewed text file (null when none).
+let currentEditor = null;
 // Path of the file currently OPEN FOR EDITING (null for read-only previews). Save
 // writes here.
 let editablePath = null;
 // True when the editor has unsaved edits, so we can warn before discarding them.
 let dirty = false;
 
-// File extension (lower-case, no dot) → highlight.js language. Unmapped files
-// fall back to highlight.js auto-detection. Only languages in the vendored common
-// bundle are mapped; an unknown one auto-detects anyway via getLanguage guard.
-const LANG_BY_EXT = {
-  cs: "csharp", csx: "csharp",
-  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
-  ts: "typescript", tsx: "typescript",
-  json: "json", jsonc: "json",
-  html: "xml", htm: "xml", xml: "xml", svg: "xml", xaml: "xml", vue: "xml",
-  css: "css", scss: "scss", less: "less",
-  md: "markdown", markdown: "markdown",
-  py: "python", rb: "ruby", go: "go", rs: "rust",
-  java: "java", kt: "kotlin", kts: "kotlin", swift: "swift",
-  c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp",
-  php: "php", sh: "bash", bash: "bash", zsh: "bash",
-  yml: "yaml", yaml: "yaml", toml: "ini", ini: "ini", conf: "ini",
-  sql: "sql", diff: "diff", patch: "diff",
-};
-
-// Above this size we show text read-only: re-highlighting a huge buffer on every
-// keystroke is sluggish, and a truncated read must never be saved back.
-// ponytail: char cap, lift if someone needs to edit very large files in-app.
-const EDIT_MAX_CHARS = 200 * 1024;
-
 // Side-pane width: persisted in px, clamped on open and drag (mirrors canvas.js).
 const WIDTH_KEY = "octiq.browser.width";
 const DEFAULT_WIDTH = 420;
 const MIN_WIDTH = 240;
 
-/** File extension (lower-case, no dot) of `name`, or "" when it has none. */
-function extOf(name) {
-  const i = name.lastIndexOf(".");
-  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
-}
-
-/** Paint `editor`'s text with highlight.js, by its `data-lang` or auto-detect. */
-function highlightInto(editor) {
-  const code = editor.textContent || "";
-  const lang = editor.dataset.lang;
-  const hl = window.hljs;
-  editor.innerHTML =
-    lang && hl.getLanguage(lang)
-      ? hl.highlight(code, { language: lang, ignoreIllegal: true }).value
-      : hl.highlightAuto(code).value;
+// --- Monaco (lazy) -----------------------------------------------------------
+// Resolves to the global `monaco` API, injecting the vendored AMD loader on
+// first use. Lazy so the AMD `define`/`require` globals only exist after every
+// startup UMD script (xterm, marked) has run, and so startup never pays the
+// editor's load cost. editor.main.js injects its own stylesheet. Language
+// workers may fail to start under the tauri:// protocol in release builds;
+// Monaco then falls back to running language services on the main thread.
+let monacoPromise = null;
+function loadMonaco() {
+  monacoPromise ??= new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/vendor/monaco/vs/loader.js";
+    script.onload = () => {
+      window.require.config({ paths: { vs: "/vendor/monaco/vs" } });
+      window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject);
+    };
+    script.onerror = () => reject(new Error("Could not load the code editor."));
+    document.head.append(script);
+  });
+  return monacoPromise;
 }
 
 /** Flag/clear unsaved edits and tint the Save button to match. */
@@ -116,11 +100,13 @@ function setDirty(on) {
 }
 
 /** Tear down the editor (if any) and reset the Save controls. Called before each
- *  new preview and on close, so switching files never leaks a CodeJar instance. */
+ *  new preview and on close, so switching files never leaks an editor or model. */
 function resetEditor() {
-  if (currentJar) {
-    currentJar.destroy();
-    currentJar = null;
+  if (currentEditor) {
+    const model = currentEditor.getModel();
+    currentEditor.dispose();
+    model?.dispose(); // frees the file's URI for the next preview of it
+    currentEditor = null;
   }
   editablePath = null;
   setDirty(false);
@@ -137,11 +123,12 @@ function flashStatus(text, isError) {
 
 /** Write the editor's current text back to disk via the backend. */
 async function saveCurrent() {
-  if (!editablePath || !currentJar || previewSaveBtn.disabled) return;
+  if (!editablePath || !currentEditor || previewSaveBtn.disabled) return;
   const path = editablePath;
   previewSaveBtn.disabled = true;
   try {
-    await invoke("write_file", { path, content: currentJar.toString() });
+    const content = currentEditor.getModel().getValue();
+    await invoke("write_file", { path, content });
     if (editablePath === path) {
       setDirty(false);
       flashStatus("Saved");
@@ -204,8 +191,9 @@ function treeMessage(text, depth) {
 }
 
 /** Build one tree item (a folder or file) at `depth`. A folder gets a disclosure
- *  twisty and a (lazily filled) children container; a file previews on click. */
-function treeItem(entry, depth) {
+ *  twisty and a (lazily filled) children container; a file calls `onFile` on
+ *  click (the center browser previews it; the sidebar tree passes its own). */
+function treeItem(entry, depth, onFile) {
   const item = textEl("div", "pb-tree-item");
 
   const row = document.createElement("button");
@@ -240,11 +228,11 @@ function treeItem(entry, depth) {
       children.hidden = !open;
       if (open && !loaded) {
         loaded = true;
-        await loadChildren(entry.path, children, depth + 1);
+        await loadChildren(entry.path, children, depth + 1, onFile);
       }
     });
   } else {
-    row.addEventListener("click", () => previewFile(entry.path, entry.name, row));
+    row.addEventListener("click", () => onFile(entry.path, entry.name, row));
   }
   return item;
 }
@@ -252,7 +240,7 @@ function treeItem(entry, depth) {
 /** List `dir` via the backend and render its entries into `container` as tree
  *  items at `depth`. On error or an empty folder, show an inline message there.
  *  `dir` is within the chosen root (callers guarantee this). */
-async function loadChildren(dir, container, depth) {
+async function loadChildren(dir, container, depth, onFile) {
   container.replaceChildren(treeMessage("Loading…", depth));
 
   let entries;
@@ -269,7 +257,7 @@ async function loadChildren(dir, container, depth) {
     return;
   }
 
-  container.replaceChildren(...entries.map((e) => treeItem(e, depth)));
+  container.replaceChildren(...entries.map((e) => treeItem(e, depth, onFile)));
 }
 
 /** Collapse every expanded folder back to the root (hide their children). */
@@ -294,6 +282,7 @@ function closePreview() {
   resetEditor();
   previewEl.classList.add("hidden");
   bodyEl.classList.remove("split");
+  previewBodyEl.classList.remove("monaco-host");
   previewBodyEl.replaceChildren();
   previewNameEl.textContent = "";
   previewNameEl.removeAttribute("title");
@@ -321,6 +310,8 @@ async function previewFile(fullPath, name, row) {
   bodyEl.classList.add("split");
   previewNameEl.textContent = name;
   previewNameEl.title = fullPath;
+  // Back to a normal scrolling body until (and unless) Monaco takes over.
+  previewBodyEl.classList.remove("monaco-host");
   previewBodyEl.replaceChildren(previewMessage("Loading…"));
 
   let preview;
@@ -371,30 +362,51 @@ async function previewFile(fullPath, name, row) {
     return;
   }
 
-  // Text: syntax-highlighted, and editable unless the read was truncated (saving
-  // would drop the unread tail) or the file is large enough that live
-  // re-highlighting would lag.
-  const editor = textEl("div", "pb-preview-code hljs");
-  editor.dataset.lang = LANG_BY_EXT[extOf(name)] || "";
-  editor.textContent = preview.content;
-  highlightInto(editor); // initial paint (CodeJar re-paints on edits)
+  // Text: shown in a Monaco editor, editable unless the read was truncated
+  // (saving a truncated buffer would drop the unread tail). Monaco virtualizes
+  // rendering, so no size cap beyond the backend's read cap is needed.
+  let monaco;
+  try {
+    monaco = await loadMonaco();
+  } catch (err) {
+    if (previewPath !== fullPath) return;
+    previewBodyEl.replaceChildren(previewMessage(String(err)));
+    return;
+  }
+  if (previewPath !== fullPath) return; // a newer click won the race
 
-  const editable = !preview.truncated && preview.content.length <= EDIT_MAX_CHARS;
+  const editable = !preview.truncated;
+  const host = textEl("div", "pb-monaco");
+  previewBodyEl.classList.add("monaco-host");
+  if (editable) {
+    previewBodyEl.replaceChildren(host);
+  } else {
+    const why = `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`;
+    previewBodyEl.replaceChildren(textEl("div", "pb-preview-note", why), host);
+  }
+
+  // A model per file: the file Uri makes Monaco pick the language from the
+  // extension. resetEditor disposed the previous model, so the Uri is free; the
+  // extra dispose is a guard against any stray model with the same path.
+  const uri = monaco.Uri.file(fullPath);
+  monaco.editor.getModel(uri)?.dispose();
+  const model = monaco.editor.createModel(preview.content, undefined, uri);
+  currentEditor = monaco.editor.create(host, {
+    model,
+    theme: "vs-dark",
+    automaticLayout: true, // relayout on pane resize / drag
+    readOnly: !editable,
+    fontSize: 12,
+    scrollBeyondLastLine: false,
+  });
+
   if (editable) {
     editablePath = fullPath;
-    currentJar = CodeJar(editor, highlightInto, { tab: "  " });
-    currentJar.onUpdate(() => {
+    model.onDidChangeContent(() => {
       setDirty(true);
       previewStatusEl.textContent = "";
     });
     previewSaveBtn.classList.remove("hidden");
-    previewBodyEl.replaceChildren(editor);
-  } else {
-    editor.setAttribute("contenteditable", "false");
-    const why = preview.truncated
-      ? `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`
-      : `Large file (${formatBytes(preview.size)}) — read-only to keep editing smooth. Open externally to edit.`;
-    previewBodyEl.replaceChildren(textEl("div", "pb-preview-note", why), editor);
   }
 }
 
@@ -419,6 +431,7 @@ function startBrowse(detail) {
   rootDir = (root || "").replace(/[/\\]+$/, "");
 
   closePreview(); // start each browse session as a single full-width list
+  panelEl.classList.remove("preview-only"); // this session brings its own tree
   showBrowser();
   renderHead();
 
@@ -429,7 +442,7 @@ function startBrowse(detail) {
     return;
   }
   // Root entries fill the list directly at depth 0; folders expand from there.
-  loadChildren(rootDir, listEl, 0);
+  loadChildren(rootDir, listEl, 0, previewFile);
 }
 
 window.addEventListener("project-browse", (e) => startBrowse(e.detail));
@@ -471,3 +484,89 @@ previewBodyEl.addEventListener("keydown", (e) => {
     saveCurrent();
   }
 });
+
+// --- Sidebar "Files" view ---------------------------------------------------
+// The head toggle swaps the sidebar body between the project list and the
+// selected project's folder tree. The tree is the same rows as above, rooted at
+// each of the project's folder paths; clicking a file opens the panel above in
+// preview-only mode (its own tree stays hidden, so there is only ever one tree).
+const sidebarEl = document.querySelector(".sidebar");
+const sidebarTreeEl = document.querySelector("#sidebar-files");
+const modeProjectsBtn = document.querySelector("#sb-view-projects");
+const modeFilesBtn = document.querySelector("#sb-view-files");
+const MODE_KEY = "octiq.sidebar.mode";
+
+// The selected project's folder paths (primary first), and the project the tree
+// was last drawn for — so re-selecting the same project keeps folders expanded.
+let sidebarPaths = [];
+let sidebarProjectId = null;
+let treeDrawnFor = undefined;
+
+/** Open a file clicked in the sidebar tree: show the panel with the preview
+ *  only (no second tree) and load the file into it. */
+function openFromSidebar(fullPath, name, row) {
+  panelEl.classList.add("preview-only");
+  showBrowser();
+  rootDir = "";
+  browsingProjectId = sidebarProjectId;
+  headPathEl.textContent = fullPath;
+  headPathEl.title = fullPath;
+  collapseBtn.disabled = true;
+  previewFile(fullPath, name, row);
+}
+
+/** Draw the selected project's folders in the sidebar. Each folder path is a
+ *  top-level row, except a single path, whose contents fill the tree directly. */
+function renderSidebarTree() {
+  if (treeDrawnFor === sidebarProjectId) return; // same project: keep the tree
+  treeDrawnFor = sidebarProjectId;
+
+  if (!sidebarPaths.length) {
+    sidebarTreeEl.replaceChildren(
+      textEl(
+        "div",
+        "pb-message",
+        sidebarProjectId
+          ? "This project has no folders yet."
+          : "Pick a project to see its files.",
+      ),
+    );
+    return;
+  }
+  if (sidebarPaths.length === 1) {
+    loadChildren(sidebarPaths[0], sidebarTreeEl, 0, openFromSidebar);
+    return;
+  }
+  sidebarTreeEl.replaceChildren(
+    ...sidebarPaths.map((p) =>
+      treeItem(
+        { name: p.split(/[/\\]/).filter(Boolean).pop() || p, path: p, is_dir: true },
+        0,
+        openFromSidebar,
+      ),
+    ),
+  );
+}
+
+/** Switch the sidebar between the project list and the file tree. */
+function setSidebarMode(mode) {
+  const files = mode === "files";
+  sidebarEl.classList.toggle("files-mode", files);
+  modeFilesBtn.classList.toggle("gd-toggle-active", files);
+  modeProjectsBtn.classList.toggle("gd-toggle-active", !files);
+  localStorage.setItem(MODE_KEY, files ? "files" : "projects");
+  if (files) renderSidebarTree();
+}
+
+modeProjectsBtn.addEventListener("click", () => setSidebarMode("projects"));
+modeFilesBtn.addEventListener("click", () => setSidebarMode("files"));
+
+window.addEventListener("project-selected", (e) => {
+  sidebarProjectId = e.detail?.id ?? null;
+  sidebarPaths = (e.detail?.paths || []).map((p) => p.replace(/[/\\]+$/, ""));
+  if (sidebarEl.classList.contains("files-mode")) renderSidebarTree();
+});
+
+// The mode is restored before the first project-selected fires; the tree then
+// draws from that event.
+setSidebarMode(localStorage.getItem(MODE_KEY) || "projects");
