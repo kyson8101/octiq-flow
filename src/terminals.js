@@ -790,6 +790,28 @@ export function focusTerminal(id) {
 }
 
 /**
+ * Jump to a terminal by its stable persistKey rather than its per-run pty id.
+ * The key is the only handle an outside tool can hold (it outlives a restart and
+ * the agent-session store is keyed by it), so the external focus channel — see
+ * focus.rs — routes through here. Returns false if no live tab has that key.
+ */
+export function focusTerminalByKey(key) {
+  for (const [id, entry] of idToEntry) {
+    if (entry.persistKey === key) {
+      focusTerminal(id);
+      return true;
+    }
+  }
+  return false;
+}
+
+// The backend resolved an outside "focus this agent" request (focus.rs) to a tab
+// key. Jump there, exactly as clicking its attention chip would.
+listen("focus-terminal", (event) => {
+  focusTerminalByKey(event.payload);
+});
+
+/**
  * Write `text` into the ACTIVE terminal of the project group whose id prefix is
  * `prefix` (the project id), exactly as if the user typed it (the app's core
  * pty_write trick). With `submit` true, also send Enter ("\r") so an agent runs

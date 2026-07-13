@@ -411,6 +411,21 @@ fn load_store_cached() -> HashMap<String, SessionEntry> {
         .unwrap_or_default()
 }
 
+/// The tab key whose captured agent session is `session_id` — the reverse of the
+/// store's `key -> session` mapping. An outside tool only ever knows an agent by
+/// its session id (that is all the agent writes down), so the external focus
+/// channel (focus.rs) turns that id back into the tab to jump to. `None` when the
+/// id is malformed or no live tab claims it.
+pub(crate) fn key_for_session(session_id: &str) -> Option<String> {
+    if !is_safe_session_id(session_id) {
+        return None;
+    }
+    load_store_cached()
+        .into_iter()
+        .find(|(_, entry)| entry.session_id == session_id)
+        .map(|(key, _)| key)
+}
+
 /// `load_store_cached` for one explicit path.
 fn load_store_cached_at(path: &Path) -> HashMap<String, SessionEntry> {
     // No file (no agent has ever run) or no mtime: nothing to cache.

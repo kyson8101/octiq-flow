@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
 mod canvas;
+mod focus;
 mod fonts;
 mod fsbrowse;
 mod git;
@@ -86,6 +87,9 @@ pub fn run() {
             // key listener starts only when the frontend opts in (vault_start_monitor),
             // so the Input Monitoring permission prompt never fires unasked.
             app.manage(vault::VaultMonitor::default());
+            // External focus channel: an outside tool writes an agent session id
+            // into ~/.octiqflow/focus and we jump to the tab running it.
+            focus::watch(app.handle().clone());
             // Keep the agent session-capture hook script on disk current with this
             // build, so resume fixes ship without the user re-running setup from
             // Settings. Writes only the script file (never an agent's settings);
