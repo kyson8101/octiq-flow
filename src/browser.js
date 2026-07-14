@@ -295,11 +295,25 @@ function previewMessage(text) {
   return textEl("div", "pb-preview-msg", text);
 }
 
+/** Scroll the open editor to `line` (1-based) and put the caret there. */
+function gotoLine(line) {
+  if (!currentEditor || !line) return;
+  currentEditor.revealLineInCenter(line);
+  currentEditor.setPosition({ lineNumber: line, column: 1 });
+}
+
 /** Open the preview pane (splitting the body into two panes) and load `fullPath`
  *  into it. Text files show their content; binary files show a hint to open
- *  externally. A slow read is dropped if a newer file was clicked meanwhile. */
-async function previewFile(fullPath, name, row) {
-  if (fullPath === previewPath) return; // already showing this file
+ *  externally. A slow read is dropped if a newer file was clicked meanwhile.
+ *  `line` (1-based, optional) scrolls a text preview to that line — a search hit
+ *  jumps straight to the matching line. */
+async function previewFile(fullPath, name, row, line = 0) {
+  if (fullPath === previewPath) {
+    // Already showing this file: a second search hit in it just moves the caret.
+    selectRow(row);
+    gotoLine(line);
+    return;
+  }
   if (!okToDiscard()) return; // keep unsaved edits in the current file
   resetEditor();
   previewPath = fullPath;
@@ -408,6 +422,8 @@ async function previewFile(fullPath, name, row) {
     });
     previewSaveBtn.classList.remove("hidden");
   }
+
+  gotoLine(line);
 }
 
 /** Open a file with the OS default app via the opener plugin. The command name
@@ -502,9 +518,10 @@ let sidebarPaths = [];
 let sidebarProjectId = null;
 let treeDrawnFor = undefined;
 
-/** Open a file clicked in the sidebar tree: show the panel with the preview
- *  only (no second tree) and load the file into it. */
-function openFromSidebar(fullPath, name, row) {
+/** Open a file clicked in the sidebar tree (or a search hit): show the panel with
+ *  the preview only (no second tree) and load the file into it. `line` jumps a
+ *  text preview to that 1-based line (a content search hit). */
+function openFromSidebar(fullPath, name, row, line = 0) {
   panelEl.classList.add("preview-only");
   showBrowser();
   rootDir = "";
@@ -512,7 +529,7 @@ function openFromSidebar(fullPath, name, row) {
   headPathEl.textContent = fullPath;
   headPathEl.title = fullPath;
   collapseBtn.disabled = true;
-  previewFile(fullPath, name, row);
+  previewFile(fullPath, name, row, line);
 }
 
 /** Draw the selected project's folders in the sidebar. Each folder path is a
@@ -548,6 +565,88 @@ function renderSidebarTree() {
   );
 }
 
+// --- Sidebar search ---------------------------------------------------------
+// One box searches BOTH ways over the project's folders: file names, then file
+// contents (the backend runs ripgrep for each). Hits replace the tree; clearing
+// the box brings the tree back.
+const searchEl = document.querySelector("#sb-file-search");
+const SEARCH_DEBOUNCE_MS = 200;
+let searchTimer = null;
+// The query whose results are on screen, so a slow search that lands after a
+// newer keystroke is dropped.
+let searchQuery = "";
+
+/** One search-hit row. A name hit shows just the file name; a content hit adds
+ *  its line number and the matching line's text. */
+function hitRow(hit) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "pb-row pb-row-file";
+  row.append(textEl("span", "pb-twisty pb-twisty-empty", ""));
+  row.append(textEl("span", "pb-icon", "📄"));
+  const nameEl = textEl("span", "pb-name", hit.name);
+  nameEl.title = hit.path;
+  row.append(nameEl);
+  if (hit.line) {
+    row.append(textEl("span", "pb-hit-line", `:${hit.line}`));
+    row.append(textEl("span", "pb-hit-text", hit.text));
+  }
+  row.addEventListener("click", () => openFromSidebar(hit.path, hit.name, row, hit.line));
+  return row;
+}
+
+/** Run the search and draw its hits in place of the tree. */
+async function runSearch(query) {
+  let results;
+  try {
+    results = await invoke("search_files", { roots: sidebarPaths, query });
+  } catch (err) {
+    if (searchQuery !== query) return; // a newer keystroke won the race
+    sidebarTreeEl.replaceChildren(textEl("div", "pb-message", String(err)));
+    return;
+  }
+  if (searchQuery !== query) return;
+
+  const rows = [];
+  if (results.files.length) {
+    rows.push(textEl("div", "pb-group", "Files"));
+    rows.push(...results.files.map(hitRow));
+  }
+  if (results.matches.length) {
+    rows.push(textEl("div", "pb-group", "Text matches"));
+    rows.push(...results.matches.map(hitRow));
+  }
+  if (!rows.length) {
+    sidebarTreeEl.replaceChildren(textEl("div", "pb-message", `No match for “${query}”.`));
+    return;
+  }
+  if (results.truncated) {
+    rows.push(textEl("div", "pb-tree-msg", "Showing the first hits only. Narrow the search."));
+  }
+  sidebarTreeEl.replaceChildren(...rows);
+}
+
+/** React to typing: debounce, then search — or restore the tree when cleared. */
+function onSearchInput() {
+  clearTimeout(searchTimer);
+  const query = searchEl.value.trim();
+  searchQuery = query;
+  if (!query) {
+    treeDrawnFor = undefined; // the hits replaced the tree, so force a redraw
+    renderSidebarTree();
+    return;
+  }
+  searchTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS);
+}
+
+searchEl.addEventListener("input", onSearchInput);
+searchEl.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    searchEl.value = "";
+    onSearchInput();
+  }
+});
+
 /** Switch the sidebar between the project list and the file tree. */
 function setSidebarMode(mode) {
   const files = mode === "files";
@@ -555,7 +654,9 @@ function setSidebarMode(mode) {
   modeFilesBtn.classList.toggle("gd-toggle-active", files);
   modeProjectsBtn.classList.toggle("gd-toggle-active", !files);
   localStorage.setItem(MODE_KEY, files ? "files" : "projects");
-  if (files) renderSidebarTree();
+  if (files) {
+    searchQuery ? runSearch(searchQuery) : renderSidebarTree();
+  }
 }
 
 modeProjectsBtn.addEventListener("click", () => setSidebarMode("projects"));
@@ -564,6 +665,12 @@ modeFilesBtn.addEventListener("click", () => setSidebarMode("files"));
 window.addEventListener("project-selected", (e) => {
   sidebarProjectId = e.detail?.id ?? null;
   sidebarPaths = (e.detail?.paths || []).map((p) => p.replace(/[/\\]+$/, ""));
+  // A query is scoped to one project's folders, so a project switch clears it.
+  if (searchQuery) {
+    searchEl.value = "";
+    searchQuery = "";
+    treeDrawnFor = undefined; // hits are on screen, not the tree — force a redraw
+  }
   if (sidebarEl.classList.contains("files-mode")) renderSidebarTree();
 });
 

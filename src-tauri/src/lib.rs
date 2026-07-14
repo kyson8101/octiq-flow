@@ -189,6 +189,7 @@ pub fn run() {
             fsbrowse::read_file_preview,
             fsbrowse::write_file,
             fsbrowse::resolve_paths,
+            fsbrowse::search_files,
             canvas::canvas_dir,
             canvas::canvas_list,
             canvas::canvas_list_all,

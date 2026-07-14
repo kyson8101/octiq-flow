@@ -5,6 +5,7 @@
 // The frontend opens a file with the opener plugin, not here.
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::Serialize;
 
@@ -220,6 +221,43 @@ fn resolve_path(path: String, cwd: &str) -> Option<String> {
 mod tests {
     use super::resolve_path;
 
+    /// Search finds a file by NAME and by CONTENT, and reports the hit's line.
+    /// Skipped when ripgrep is not installed (the command errors clearly then).
+    #[test]
+    fn search_files_finds_name_and_content_hits() {
+        if std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join("octiq-search-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("needle.txt"), "nothing here\n").unwrap();
+        std::fs::write(dir.join("other.txt"), "first\nholds a needle inside\n").unwrap();
+        let roots = vec![dir.to_string_lossy().into_owned()];
+
+        let res = super::search_files(roots.clone(), "needle".into()).unwrap();
+
+        // Name hit: the file called needle.txt (and only it).
+        assert_eq!(res.files.len(), 1);
+        assert_eq!(res.files[0].name, "needle.txt");
+        assert_eq!(res.files[0].line, 0);
+
+        // Content hit: line 2 of other.txt, with its text. needle.txt does not
+        // contain the word, so it is not a content hit.
+        assert_eq!(res.matches.len(), 1);
+        assert_eq!(res.matches[0].name, "other.txt");
+        assert_eq!(res.matches[0].line, 2);
+        assert_eq!(res.matches[0].text, "holds a needle inside");
+
+        // An empty query searches nothing rather than matching everything.
+        let empty = super::search_files(roots, "  ".into()).unwrap();
+        assert!(empty.files.is_empty() && empty.matches.is_empty());
+    }
+
     #[test]
     fn resolve_path_handles_absolute_relative_tilde_and_missing() {
         let dir = std::env::temp_dir().join("octiq-resolve-path-test");
@@ -243,6 +281,148 @@ mod tests {
             super::resolve_paths(vec![file_s.clone(), "nope.txt".into()], dir_s),
             vec![Some(file_s), None]
         );
+    }
+}
+
+/// One search hit: a file whose NAME matched, or one matching LINE inside a file.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SearchHit {
+    /// The file's full absolute path (click target).
+    pub path: String,
+    /// The file's own name (last path segment), shown as the row label.
+    pub name: String,
+    /// 1-based line number for a content hit; 0 for a name hit.
+    pub line: u32,
+    /// The matching line's text (trimmed, capped) for a content hit; empty for a name hit.
+    pub text: String,
+}
+
+/// Name hits and content hits for one query, each capped at MAX_HITS.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SearchResults {
+    pub files: Vec<SearchHit>,
+    pub matches: Vec<SearchHit>,
+    /// True when either list hit the cap, so the UI can say "showing the first N".
+    pub truncated: bool,
+}
+
+/// Most hits returned per list. The sidebar is a narrow list, not a grep pager.
+const MAX_HITS: usize = 60;
+
+/// Search `roots` for files whose NAME contains `query`, and for lines whose TEXT
+/// contains `query` (literal, smart-case). Both run through ripgrep, so .gitignore
+/// and hidden-file rules are honoured for free (no node_modules / .git noise).
+///
+/// Returns `Err(message)` when ripgrep is missing — it is the only external tool
+/// this needs, and the message tells the user how to install it.
+#[tauri::command]
+pub fn search_files(roots: Vec<String>, query: String) -> Result<SearchResults, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() || roots.is_empty() {
+        return Ok(SearchResults {
+            files: Vec::new(),
+            matches: Vec::new(),
+            truncated: false,
+        });
+    }
+
+    let needle = query.to_lowercase();
+
+    // Name hits: list every non-ignored file under the roots, keep the ones whose
+    // file name contains the query (case-insensitive substring, like a fuzzy-less
+    // quick-open).
+    let listing = rg(&["--files", "--"], &roots, &[])?;
+    let mut files: Vec<SearchHit> = Vec::new();
+    for path in listing.lines() {
+        let name = Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if name.to_lowercase().contains(&needle) {
+            files.push(SearchHit {
+                path: path.to_string(),
+                name,
+                line: 0,
+                text: String::new(),
+            });
+            if files.len() >= MAX_HITS {
+                break;
+            }
+        }
+    }
+
+    // Content hits: `--null` puts a NUL byte after each printed path, so a path
+    // holding a ':' can never be confused for the line-number separator.
+    let grep = rg(
+        &[
+            "--null",
+            "--no-heading",
+            "--line-number",
+            "--smart-case",
+            "--fixed-strings",
+            "--max-columns",
+            "200",
+            "--max-count",
+            "3", // at most 3 lines per file, so one big file can't fill the list
+            "--",
+        ],
+        &roots,
+        &[&query],
+    )?;
+    let mut matches: Vec<SearchHit> = Vec::new();
+    for line in grep.lines() {
+        let Some((path, rest)) = line.split_once('\0') else {
+            continue;
+        };
+        let Some((num, text)) = rest.split_once(':') else {
+            continue;
+        };
+        matches.push(SearchHit {
+            path: path.to_string(),
+            name: Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            line: num.parse().unwrap_or(0),
+            text: text.trim().chars().take(200).collect(),
+        });
+        if matches.len() >= MAX_HITS {
+            break;
+        }
+    }
+
+    let truncated = files.len() >= MAX_HITS || matches.len() >= MAX_HITS;
+    Ok(SearchResults {
+        files,
+        matches,
+        truncated,
+    })
+}
+
+/// Run ripgrep with `flags`, then `pattern` (0 or 1), then the search roots, and
+/// return its stdout. Exit code 1 means "no match", which is a normal empty
+/// result, not an error. The query is passed as an argv element (no shell), and
+/// every flag list above ends with `--`, so a query starting with `-` is data.
+fn rg(flags: &[&str], roots: &[String], pattern: &[&str]) -> Result<String, String> {
+    let out = Command::new("rg")
+        .args(flags)
+        .args(pattern)
+        .args(roots)
+        .output()
+        .map_err(|e| {
+            format!(
+                "Search needs ripgrep. Install it (`brew install ripgrep`) and try again. ({e})"
+            )
+        })?;
+
+    match out.status.code() {
+        Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout).into_owned()),
+        _ => Err(format!(
+            "Search failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
     }
 }
 
