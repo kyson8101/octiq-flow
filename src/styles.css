@@ -1196,10 +1196,15 @@ body {
   display: none;
 }
 
-/* Folded: shrink to just the header and hide the rows + empty hint. */
+/* Folded: shrink to just the header and hide the rows + empty hint. Folded, the
+   section no longer grows, so `margin-top: auto` eats the leftover space and
+   parks the header on the FLOOR of the sidebar — otherwise it would hang right
+   under the last project with a blank gap beneath it. With a long list there is
+   no leftover space and the margin does nothing. */
 .ws-shelf-section.collapsed {
   flex: 0 0 auto;
   min-height: 0;
+  margin-top: auto;
 }
 
 .ws-shelf-section.collapsed .ws-shelf-list,
