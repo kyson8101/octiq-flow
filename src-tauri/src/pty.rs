@@ -233,6 +233,19 @@ impl PtyManager {
             .map(|p| (p.id, agent_running(&p.master, p.shell_pid)))
             .collect()
     }
+
+    /// Each live session's shell pid -> its session id. agents.rs walks an agent
+    /// process's ancestors against this map to find the terminal that owns it.
+    /// A poisoned lock yields an empty map (every agent then reads as a stray).
+    pub fn shell_pids(&self) -> HashMap<i32, String> {
+        let Ok(sessions) = self.sessions.lock() else {
+            return HashMap::new();
+        };
+        sessions
+            .iter()
+            .filter_map(|(id, s)| Some((s.shell_pid?, id.clone())))
+            .collect()
+    }
 }
 
 /// Payload for the `pty-output` event. The frontend matches `id` to the right

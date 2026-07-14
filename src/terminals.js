@@ -531,6 +531,13 @@ export function workingList() {
   return [...working];
 }
 
+/** A terminal's current tab title, or "" when the id is unknown (its terminal
+ *  was closed, or the agent runs outside the app). The Agents screen labels each
+ *  agent process with this so a row reads "auth refactor", not "proj-7:2". */
+export function terminalTitle(id) {
+  return entryFor(id)?.title || "";
+}
+
 // `terminalSnapshot()` used to live here: a full snapshot of every live terminal
 // for an "Agent World" view that was never built. Nothing imported it. Removed
 // in card 26 — the shape is in git history if the view ever lands.

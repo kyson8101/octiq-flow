@@ -9,6 +9,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
+mod agents;
 mod canvas;
 mod focus;
 mod fonts;
@@ -134,6 +135,8 @@ pub fn run() {
             pty::pty_list_active,
             pty::pty_agent_running,
             pty::pty_set_visible,
+            agents::agent_procs,
+            agents::agent_kill,
             notify_hook::notify_hook_filter,
             workspaces::list_workspaces,
             workspaces::add_workspace,

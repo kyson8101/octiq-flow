@@ -42,6 +42,7 @@
     <script type="module" src="/gitdiff.js" defer></script>
     <script type="module" src="/canvas.js" defer></script>
     <script type="module" src="/alerts.js" defer></script>
+    <script type="module" src="/agents.js" defer></script>
     <script type="module" src="/working.js" defer></script>
     <script type="module" src="/usage.js" defer></script>
     <script type="module" src="/vault.js" defer></script>
@@ -70,6 +71,7 @@
         <div class="modebar-tabs">
           <button class="modebtn modebtn-active" data-mode="project">Project</button>
           <button class="modebtn" data-mode="chat">Chat</button>
+          <button class="modebtn" data-mode="agents">Agents</button>
         </div>
         <button id="vault-btn" class="modebtn modebtn-vault" data-tip="Screenshot vault — capture a window with the hotkey, then paste it into a terminal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
@@ -570,6 +572,25 @@
            project. chat.js mounts a single TerminalGroup here; each tab is its
            own real terminal (claude / codex / shell) at HOME. -->
       <div id="chat-terminals" class="chat-terminals"></div>
+      </section>
+
+      <!-- Agents mode: every running agent, its RAM (agent + MCP servers), its
+           process count and its age — so a forgotten session is easy to spot
+           and stop. Rendered by agents.js from the `agent_procs` command. -->
+      <section id="view-agents" class="view hidden">
+        <div class="agents-page">
+          <div class="agents-head">
+            <h1 class="agents-title">Agents</h1>
+            <div id="agents-summary" class="agents-summary"></div>
+            <button id="agents-refresh" class="agents-refresh" type="button">Refresh</button>
+          </div>
+          <p class="agents-note">
+            Each agent keeps its MCP servers running as child processes. The
+            memory below counts them. Stopping an agent frees that memory and
+            keeps the terminal.
+          </p>
+          <div id="agents-list" class="agents-list"></div>
+        </div>
       </section>
 
       <!-- Settings mode: opened by the gear button in the mode bar. -->
