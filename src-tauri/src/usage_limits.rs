@@ -18,10 +18,12 @@
 //     turn's stream and writes it into the session rollout JSONL under
 //     `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` as a `token_count` event's
 //     `rate_limits` field: `{ primary: {used_percent, window_minutes, resets_at},
-//     secondary: {...}, plan_type }`. `primary` is the 5-hour window (≈300 min),
-//     `secondary` the weekly (≈10080 min). We read the most-recently-modified
-//     rollout file and take its last `rate_limits` line — the latest known state,
-//     no network call.
+//     secondary: {...}, plan_type }`. `primary` used to be the 5-hour window and
+//     `secondary` the weekly — but Codex dropped the 5-hour limit, and now sends
+//     ONLY a weekly window, in `primary` (`window_minutes: 10080`, `secondary:
+//     null`). So the slots carry no fixed meaning: we classify each window by its
+//     own `window_minutes`. We read the most-recently-modified rollout file and
+//     take its last `rate_limits` line — the latest known state, no network call.
 //
 // Everything here is read-only and best-effort: any failure (no token, offline,
 // no Codex session yet) yields `available: false` for that provider so the footer
@@ -311,7 +313,11 @@ fn is_rollout_file(path: &PathBuf) -> bool {
 }
 
 /// Pull the LAST `rate_limits` snapshot out of a rollout file's contents and map
-/// it to the two windows. `primary` is the 5-hour window, `secondary` the weekly.
+/// each reported window to the slot its OWN `window_minutes` says it is — the
+/// `primary`/`secondary` slots no longer mean 5-hour/weekly (Codex dropped the
+/// 5-hour limit and now reports the weekly window in `primary`). Anything longer
+/// than a day counts as the weekly window. When `window_minutes` is missing we
+/// fall back to the old positional meaning.
 /// Returns `None` when the file carries no usable snapshot.
 fn parse_codex_rollout(contents: &str) -> Option<ProviderUsage> {
     // Scan from the end for the most recent line that holds a rate_limits object.
@@ -324,20 +330,32 @@ fn parse_codex_rollout(contents: &str) -> Option<ProviderUsage> {
     if rate.is_null() {
         return None;
     }
-    let window = |key: &str| -> Option<UsageWindow> {
-        let w = rate.get(key)?;
-        if w.is_null() {
-            return None;
-        }
-        let percent = w.get("used_percent").and_then(|v| v.as_f64())?;
-        let resets_at = w.get("resets_at").and_then(|v| v.as_i64());
-        Some(UsageWindow {
+    let mut five_hour = None;
+    let mut weekly = None;
+    for (slot, key) in ["primary", "secondary"].iter().enumerate() {
+        let Some(w) = rate.get(key) else { continue };
+        let Some(percent) = w.get("used_percent").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let win = UsageWindow {
             percent: round1(percent),
-            resets_at,
-        })
-    };
-    let five_hour = window("primary");
-    let weekly = window("secondary");
+            resets_at: w.get("resets_at").and_then(|v| v.as_i64()),
+        };
+        let minutes = w
+            .get("window_minutes")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let is_weekly = if minutes > 0 {
+            minutes > 1440
+        } else {
+            slot == 1
+        };
+        if is_weekly {
+            weekly = Some(win);
+        } else {
+            five_hour = Some(win);
+        }
+    }
     if five_hour.is_none() && weekly.is_none() {
         return None;
     }
@@ -462,6 +480,17 @@ mod tests {
         let u = parse_codex_rollout(contents).expect("should parse");
         assert_eq!(u.five_hour.as_ref().unwrap().percent, 9.0);
         assert_eq!(u.weekly.as_ref().unwrap().percent, 8.0);
+    }
+
+    #[test]
+    fn parse_codex_rollout_maps_weekly_in_the_primary_slot() {
+        // Codex dropped the 5-hour limit: the only window it sends now is the
+        // weekly one, and it sends it in `primary`. window_minutes decides.
+        let line = r#"{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":9.0,"window_minutes":10080,"resets_at":1784514218},"secondary":null,"plan_type":"plus"}}}"#;
+        let u = parse_codex_rollout(line).expect("should parse");
+        assert!(u.five_hour.is_none());
+        assert_eq!(u.weekly.as_ref().unwrap().percent, 9.0);
+        assert_eq!(u.weekly.as_ref().unwrap().resets_at, Some(1784514218));
     }
 
     #[test]

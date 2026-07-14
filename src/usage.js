@@ -160,7 +160,11 @@ function group(name, data, stale) {
     return g;
   }
 
-  g.append(meter("5h", data.fiveHour), meter("wk", data.weekly));
+  // Only show the windows the provider actually reports — Codex dropped its
+  // 5-hour limit and now sends the weekly one alone, so a fixed pair of meters
+  // would leave a permanent "5h —" next to it.
+  if (data.fiveHour) g.append(meter("5h", data.fiveHour));
+  if (data.weekly) g.append(meter("wk", data.weekly));
   return g;
 }
 
