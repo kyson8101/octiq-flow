@@ -42,7 +42,7 @@
 :root {
   /* Surfaces, from deepest to most raised. */
   --bg-0: #141417; /* app base — matches the xterm background (opaque) */
-  --bg-sunken: rgba(14, 16, 24, 0.42); /* mode bar, side rails — cool cast */
+  --bg-sunken: rgba(15, 16, 19, 0.42); /* mode bar, side rails — cool cast */
   --bg-1: rgba(255, 255, 255, 0.07); /* raised: cards, panels, forms */
   --bg-2: rgba(255, 255, 255, 0.14); /* hover / pressed / chips */
   --border: rgba(255, 255, 255, 0.12);
@@ -119,16 +119,16 @@ body {
   color: var(--fg-1);
 }
 
-/* Ambient glow the glass chrome diffuses: soft sage + cool-violet washes on
-   the deep base. Body never scrolls (the shell is 100vh), so the washes stay
+/* Ambient glow the glass chrome diffuses: mostly sage, with a faint cool
+   wash for depth. Body never scrolls (the shell is 100vh), so the washes stay
    put; the opaque terminal center covers its own area and the glow only
    shows through the translucent chrome and overlays around it. */
 body {
   background:
-    radial-gradient(1100px 700px at 8% -10%, rgba(110, 150, 235, 0.08), transparent 60%),
-    radial-gradient(1300px 800px at 110% 12%, rgba(125, 145, 235, 0.07), transparent 62%),
-    radial-gradient(1000px 800px at 50% 122%, rgba(143, 191, 168, 0.06), transparent 65%),
-    linear-gradient(180deg, #10131a, #0d0f14 60%),
+    radial-gradient(1100px 700px at 8% -10%, rgba(130, 150, 190, 0.04), transparent 60%),
+    radial-gradient(1300px 800px at 110% 12%, rgba(135, 145, 180, 0.035), transparent 62%),
+    radial-gradient(1000px 800px at 50% 122%, rgba(143, 191, 168, 0.07), transparent 65%),
+    linear-gradient(180deg, #131417, #0e0f11 60%),
     var(--bg-0);
 }
 
