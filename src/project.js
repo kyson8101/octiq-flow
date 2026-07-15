@@ -41,8 +41,7 @@ function claudeAddDirSuffix(rec, cwd) {
 /** A resume command with Claude's `--add-dir` flags re-appended when it is a
  *  Claude command. A resumed Claude tab should see the whole project, exactly as
  *  a freshly launched one does; Codex takes no such flag, so its command is
- *  returned untouched. Shared by the restart-restore path and the hibernate
- *  resume path (card 18). */
+ *  returned untouched. Used by the restart-restore path. */
 function withClaudeAddDirs(rec, startCmd, cwd) {
   if (!startCmd || !/^claude(\s|$)/.test(startCmd)) return startCmd;
   return startCmd + claudeAddDirSuffix(rec, cwd);
@@ -128,10 +127,6 @@ function groupFor(id, primaryPath, paths, startup, terminalCommand, fontOverride
     // terminal dirty when it produces output so the next flush saves it.
     group.onLayoutChange = () => scheduleLayoutSave(id);
     group.onOutput = (ptyId) => dirtyTerminals.set(ptyId, rec);
-    // Resuming a hibernated tab (card 18) rebuilds its agent start command. A
-    // resumed Claude needs the same whole-project tool access a fresh launch or a
-    // restart-restore gives it, so re-append the other folders' --add-dir flags.
-    group.onResumeCmd = (startCmd, cwd) => withClaudeAddDirs(rec, startCmd, cwd);
     projects.set(id, rec);
   } else {
     // Primary path / all paths / startup layout / terminal command may have
@@ -308,13 +303,9 @@ async function restoreProject(id, saved) {
     // created in saved order below so the tab order is preserved.
     const prepared = await Promise.all(
       saved.map(async (t) => {
-        // A hibernated tab spawns nothing, so it needs no resume command — only
-        // its scrollback, to paint behind the resume bar (card 18).
         const [scrollback, resume] = await Promise.all([
           invoke("load_scrollback", { key: t.persistKey }).catch(() => ""),
-          t.hibernated
-            ? Promise.resolve(null)
-            : invoke("agent_resume_cmd", { key: t.persistKey }).catch(() => null),
+          invoke("agent_resume_cmd", { key: t.persistKey }).catch(() => null),
         ]);
         return { t, restoreScrollback: scrollback || "", startCmd: resume || null };
       }),
@@ -344,14 +335,10 @@ async function restoreProject(id, saved) {
         startCmd,
         restoreScrollback,
         canvasKey: id,
-        // A tab the user hibernated comes back hibernated: no shell, no agent,
-        // just the tab, its output and the resume bar (card 18).
-        hibernated: !!t.hibernated,
       });
-      // A plain shell is back the moment its PTY spawns, and a hibernated tab is
-      // "back" the moment its bar is painted. An agent tab is only "resumed" once
-      // claude/codex actually prints after the `--resume`, so wait for its first
-      // output — non-blocking, the loop keeps creating the rest.
+      // A plain shell is back the moment its PTY spawns. An agent tab is only
+      // "resumed" once claude/codex actually prints after the `--resume`, so wait
+      // for its first output — non-blocking, the loop keeps creating the rest.
       if (resumeCmd) {
         onceTerminalOutput(ptyId, () => {
           setResumeState(ov, t.persistKey, "done");

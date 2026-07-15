@@ -45,12 +45,6 @@ pub struct TermEntry {
     /// name survives both the next poll and a restart.
     #[serde(default)]
     pub title_manual: bool,
-    /// True when the user hibernated this tab (card 18): its PTY was killed but
-    /// the tab, its title and its scrollback were kept. A restart rebuilds it
-    /// STILL hibernated — showing the resume bar rather than spawning a shell,
-    /// which is the whole point of having hibernated it.
-    #[serde(default)]
-    pub hibernated: bool,
 }
 
 /// The on-disk shape of `terminal_layout.json`: each project id maps to its
@@ -335,7 +329,6 @@ mod tests {
                 title: "term 1".to_string(),
                 cwd: "/work".to_string(),
                 title_manual: false,
-                hibernated: true,
             }],
         );
         let raw = serde_json::to_string(&data).unwrap();
@@ -357,9 +350,6 @@ mod tests {
         assert_eq!(entry.title, "");
         assert_eq!(entry.cwd, "");
         assert!(!entry.title_manual);
-        // A layout written before card 18 has no `hibernated` key. It must load
-        // as a normal, spawning tab — never as a tab stuck behind a resume bar.
-        assert!(!entry.hibernated);
     }
 
     #[test]
@@ -372,7 +362,6 @@ mod tests {
                 title: String::new(),
                 cwd: String::new(),
                 title_manual: false,
-                hibernated: false,
             }],
         );
         data.projects.insert(
@@ -382,7 +371,6 @@ mod tests {
                 title: String::new(),
                 cwd: String::new(),
                 title_manual: false,
-                hibernated: false,
             }],
         );
         let keys = live_keys(&data);

@@ -50,5 +50,4 @@ export const ICONS = {
     svg('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>', size),
   clock: (size) =>
     svg('<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>', size),
-  moon: (size) => svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>', size),
 };

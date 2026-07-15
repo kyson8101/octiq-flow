@@ -38,8 +38,6 @@ routes each output chunk to the right one. A login shell (`$SHELL -l`) is used s
   and rebuilt after a restart. An external capture hook records each agent's
   session id while it runs, so a restored tab re-attaches with
   `claude --resume <id>` / `codex resume <id>`.
-- **Hibernate.** Free an idle agent's process while keeping its tab, its output,
-  and a one-click resume.
 - **Attention alerts.** A tab that needs you is badged, listed in a banner, and
   raised as an OS notification — even from another project. Agents that emit no
   escape codes can call the bundled `octiq-notify` CLI, or you can turn on the
@@ -118,4 +116,3 @@ the same `pnpm` commands.
   (`src-tauri/src/paths.rs`), but a real CSP is the missing layer.
 - Child lifecycle management (restart a terminal whose shell exited).
 - Bracketed-paste for multi-line injection.
-- Auto-hibernate for agent tabs that have been quiet for a while.

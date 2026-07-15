@@ -970,11 +970,6 @@ class TerminalGroup {
     // group whose owner persists state (project.js) sets them.
     this.onLayoutChange = null;
     this.onOutput = null;
-    // Optional owner hook: given the agent resume command this tab would run and
-    // its cwd, return the command to actually run. project.js uses it to re-add
-    // Claude's per-folder --add-dir flags when a hibernated tab resumes (card 18).
-    // Unset means "run it verbatim".
-    this.onResumeCmd = null;
     // The open add menu's popup element (quickSpawn groups only), or null when
     // closed. It is mounted on <body>, so hide()/dispose() must close it.
     this.addMenuEl = null;
@@ -1172,15 +1167,13 @@ class TerminalGroup {
   // via newTerminal({ persistKey, restoreScrollback }) on the next launch.
 
   /** Ordered layout of this group: each terminal's stable key, current title,
-   *  the cwd it was spawned in, and whether it is hibernated. Tab order =
-   *  insertion order of `tabs`. */
+   *  and the cwd it was spawned in. Tab order = insertion order of `tabs`. */
   serialize() {
     return [...this.tabs.values()].map((e) => ({
       persistKey: e.persistKey,
       title: e.title,
       titleManual: !!e.titleManual,
       cwd: e.cwd || "",
-      hibernated: !!e.hibernated,
     }));
   }
 
@@ -1255,7 +1248,6 @@ class TerminalGroup {
     persistKey = null,
     restoreScrollback = "",
     canvasKey = null,
-    hibernated = false,
   } = {}) {
     // No explicit title -> auto-number from the monotonic counter (P4). An
     // explicit title (command label, chat label) is used verbatim.
@@ -1308,10 +1300,6 @@ class TerminalGroup {
     // exists by the time the user types.
     const inputState = { buf: "", mode: null };
     term.onData((data) => {
-      // A hibernated tab has no process to type into (card 18). Swallow the
-      // keystroke rather than letting pty_write fail and paint a red error line
-      // over the scrollback the user hibernated in order to keep.
-      if (entry?.hibernated) return;
       const line = nextTypedLine(inputState, data, MAX_SENT_LEN);
       if (line && entry) {
         if (!entry.firstCmd) entry.firstCmd = line.slice(0, MAX_CMD_TITLE_LEN);
@@ -1334,15 +1322,6 @@ class TerminalGroup {
       e.stopPropagation();
       this._beginRename(ptyId);
     });
-    // Hibernate (card 18): free the process, keep the tab and its output.
-    const hibernateBtn = document.createElement("button");
-    hibernateBtn.className = "tg-tab-hibernate";
-    hibernateBtn.innerHTML = ICONS.moon(11);
-    hibernateBtn.title = "Hibernate — stop the agent, keep this tab and its output";
-    hibernateBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      this.hibernateTerminal(ptyId);
-    });
     const closeBtn = document.createElement("button");
     closeBtn.className = "tg-tab-close";
     closeBtn.innerHTML = ICONS.x(11);
@@ -1351,7 +1330,7 @@ class TerminalGroup {
       e.stopPropagation();
       this.closeTerminal(ptyId);
     });
-    tabEl.append(label, hibernateBtn, closeBtn);
+    tabEl.append(label, closeBtn);
     tabEl.addEventListener("click", () => this.activate(ptyId));
     // Drag to reorder. The id lives on the element so _syncTabOrder can rebuild
     // the tabs Map (= tab + serialize order) straight from the DOM after a drop.
@@ -1395,13 +1374,6 @@ class TerminalGroup {
       cwd,
       startCmd,
       persistKey,
-      // The project's canvas folder key, kept so a resume (card 18) re-exports
-      // OCTIQ_CANVAS_DIR into the new shell exactly as the first spawn did.
-      canvasKey,
-      // True while this tab has no PTY: hibernated by the user, or restored
-      // hibernated after a restart. Its resume bar lives in `resumeBarEl`.
-      hibernated: false,
-      resumeBarEl: null,
       ro,
       // The tab's live WebGL addon, or null. Held only while this tab is the
       // active one of a visible group (see _setWebgl).
@@ -1441,18 +1413,11 @@ class TerminalGroup {
     // always uses the current choice. If the spawn fails, the pane + tab already
     // exist, so show the error there (P3) rather than swallowing it; the tab
     // stays so the user sees what happened.
-    if (hibernated) {
-      // Restored from a layout the user hibernated (card 18): rebuild the tab
-      // and its scrollback, but spawn NOTHING. The resume bar offers the shell.
-      entry.hibernated = true;
-      this._setHibernatedUI(ptyId, true);
-    } else {
-      const { shell } = getTerminalSettings();
-      try {
-        await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
-      } catch (err) {
-        reportTermError(term, `failed to start terminal: ${err}`);
-      }
+    const { shell } = getTerminalSettings();
+    try {
+      await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
+    } catch (err) {
+      reportTermError(term, `failed to start terminal: ${err}`);
     }
 
     this.activate(ptyId);
@@ -1584,122 +1549,6 @@ class TerminalGroup {
     input.select();
   }
 
-  // ---- Hibernation (card 18) ----------------------------------------------
-  // A hibernated tab has NO process: its PTY (and the agent inside it) was
-  // killed. Everything the user can see stays — the tab, its title, its whole
-  // scrollback in the xterm buffer — plus a slim bar offering to bring it back.
-  //
-  // Resume re-spawns into the SAME pty id, so the xterm, the routing entry and
-  // the persist key never move. It takes the same road a restart-restore takes:
-  // ask `agent_resume_cmd` for this tab's `claude --resume <id>` / `codex resume
-  // <id>`, and run it in a fresh shell above the old output.
-  //
-  // The captured agent session survives because the resume map is only pruned
-  // for keys whose PTY is alive and back at a bare shell prompt. A hibernated
-  // tab has no PTY at all, so nothing prunes it.
-
-  /** Paint (or clear) a tab's hibernated look: a dimmed tab, and a resume bar
-   *  laid over the bottom of its pane. Idempotent. */
-  _setHibernatedUI(ptyId, on) {
-    const entry = this.tabs.get(ptyId);
-    if (!entry) return;
-    entry.tabEl.classList.toggle("tg-tab-hibernated", on);
-    if (!on) {
-      entry.resumeBarEl?.remove();
-      entry.resumeBarEl = null;
-      return;
-    }
-    if (entry.resumeBarEl) return;
-
-    const bar = document.createElement("div");
-    bar.className = "tg-resume-bar";
-    const text = document.createElement("span");
-    text.className = "tg-resume-text";
-    // Filled in once the backend says whether this tab has a resumable agent.
-    text.textContent = "Hibernated";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "tg-resume-btn";
-    btn.innerHTML = `${ICONS.play(11)}<span>Resume</span>`;
-    btn.addEventListener("click", () => this.resumeTerminal(ptyId));
-    bar.append(text, btn);
-    entry.paneEl.append(bar);
-    entry.resumeBarEl = bar;
-
-    // A tab with no captured agent session still hibernates; say plainly that
-    // resuming it starts a fresh shell rather than re-attaching an agent.
-    invoke("agent_resume_cmd", { key: entry.persistKey })
-      .then((cmd) => {
-        if (entry.resumeBarEl !== bar) return; // resumed while we waited
-        text.textContent = cmd
-          ? "Agent hibernated — its session can be resumed"
-          : "Terminal hibernated — resuming starts a fresh shell";
-      })
-      .catch(() => {});
-  }
-
-  /**
-   * Hibernate a tab: kill its PTY (and the agent running in it), keep the tab,
-   * its scrollback and its place in the layout. No-op if already hibernated.
-   */
-  async hibernateTerminal(ptyId) {
-    const entry = this.tabs.get(ptyId);
-    if (!entry || entry.hibernated) return;
-    entry.hibernated = true;
-    await invoke("pty_close", { id: ptyId }).catch(() => {});
-    // A tab with no process is neither working, nor waiting for you, nor newly
-    // active. Drop every output-driven flag so nothing dangles.
-    if (attention.has(ptyId)) clearAttention(ptyId);
-    if (setWorking(ptyId, false)) emitWorkingChange();
-    clearActivity(ptyId);
-    silenceArmed.delete(ptyId);
-    lastOutputAt.delete(ptyId);
-    this._setHibernatedUI(ptyId, true);
-    // Persist it: a hibernated tab must come back hibernated, not spawn a shell.
-    this.onLayoutChange?.();
-  }
-
-  /**
-   * Bring a hibernated tab back: re-spawn its PTY under the same id, running the
-   * agent's resume command when one was captured. The old scrollback stays above
-   * the new prompt, separated by the same banner a restart-restore draws.
-   */
-  async resumeTerminal(ptyId) {
-    const entry = this.tabs.get(ptyId);
-    if (!entry || !entry.hibernated || entry.resuming) return;
-    entry.resuming = true;
-    try {
-      let startCmd = await invoke("agent_resume_cmd", { key: entry.persistKey }).catch(() => null);
-      // The owner may need to decorate the command (project.js re-adds Claude's
-      // `--add-dir` flags for the project's other folders).
-      if (startCmd && this.onResumeCmd) startCmd = this.onResumeCmd(startCmd, entry.cwd);
-      entry.term.write(SESSION_BREAK_LINE);
-      const { shell } = getTerminalSettings();
-      await invoke("pty_spawn", {
-        id: ptyId,
-        cwd: entry.cwd,
-        startCmd: startCmd || null,
-        persistKey: entry.persistKey,
-        shell,
-        canvasKey: entry.canvasKey,
-      });
-      entry.hibernated = false;
-      this._setHibernatedUI(ptyId, false);
-      // A fresh session starts visible on the backend. Re-assert what this tab
-      // actually is right now, so a tab resumed while hidden re-closes its gate.
-      entry.live = true;
-      this._setLive(ptyId, entry, this.activeId === ptyId && this.visible());
-      this.onLayoutChange?.();
-      if (this.activeId === ptyId) entry.term.focus();
-    } catch (err) {
-      // Leave it hibernated so the user can try again; the bar is still there.
-      entry.hibernated = true;
-      reportTermError(entry.term, `failed to resume terminal: ${err}`);
-    } finally {
-      entry.resuming = false;
-    }
-  }
-
   // ---- Attention helpers (card 13) ----------------------------------------
   // Paint or un-paint a tab's attention badge. Called by the module-level
   // badgeTab / clearAttention so the Set and the DOM stay in lock-step.
@@ -1779,7 +1628,6 @@ class TerminalGroup {
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();
     entry.term.dispose();
-    entry.resumeBarEl?.remove();
     entry.tabEl.remove();
     entry.paneEl.remove();
     this.tabs.delete(ptyId);
