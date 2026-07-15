@@ -1167,9 +1167,10 @@ class TerminalGroup {
   // via newTerminal({ persistKey, restoreScrollback }) on the next launch.
 
   /** Ordered layout of this group: each terminal's stable key, current title,
-   *  and the cwd it was spawned in. Tab order = insertion order of `tabs`. */
+   *  and the cwd it was spawned in. Tab order = insertion order of `tabs`.
+   *  Content tabs (no PTY) are not persisted, so they are skipped. */
   serialize() {
-    return [...this.tabs.values()].map((e) => ({
+    return [...this.tabs.values()].filter((e) => e.term).map((e) => ({
       persistKey: e.persistKey,
       title: e.title,
       titleManual: !!e.titleManual,
@@ -1179,9 +1180,9 @@ class TerminalGroup {
 
   /** Snapshot every terminal's scrollback (text + styles) for saving. The
    *  `scrollback` cap bounds how many lines are serialized; the backend caps
-   *  bytes again as the hard limit. */
+   *  bytes again as the hard limit. Content tabs have no buffer — skipped. */
   scrollbackEntries() {
-    return [...this.tabs.values()].map((e) => ({
+    return [...this.tabs.values()].filter((e) => e.term).map((e) => ({
       persistKey: e.persistKey,
       data: e.serializeAddon
         ? e.serializeAddon.serialize({ scrollback: FULL_SCROLLBACK_LINES })
@@ -1427,6 +1428,95 @@ class TerminalGroup {
   }
 
   /**
+   * Open (or reveal) a CONTENT tab: a tab in the same strip whose pane hosts
+   * arbitrary DOM instead of a terminal (the VS Code editor-tab pattern — a
+   * file, a diff, anything). `key` is stable: opening the same key again just
+   * activates the existing tab. `mount(paneEl)` fills the pane once on create.
+   *
+   * Content tabs have NO PTY: serialize()/scrollbackEntries() skip them (they
+   * do not survive a restart), and every PTY-side feature (WebGL, flood
+   * control, working/attention dots, auto-title) ignores them.
+   *
+   * `beforeClose()` may return false to cancel a close (unsaved edits);
+   * `onClose()` runs after the tab is removed (dispose editors); `onShow()`
+   * runs whenever the tab becomes the active one.
+   *
+   * Returns { id, paneEl, existed, setTitle, setDirty, activate, close }.
+   */
+  newContentTab({ key, title, mount, beforeClose = null, onClose = null, onShow = null }) {
+    const tabId = `${this.idPrefix}:content:${key}`;
+    const handleFor = (entry, existed) => ({
+      id: tabId,
+      paneEl: entry.paneEl,
+      existed,
+      setTitle: (t) => {
+        entry.title = t;
+        entry.labelEl.textContent = t;
+      },
+      setDirty: (on) => entry.tabEl.classList.toggle("tg-tab-dirty", !!on),
+      activate: () => this.activate(tabId),
+      close: (force = false) => this.closeTerminal(tabId, force),
+    });
+
+    const existing = this.tabs.get(tabId);
+    if (existing) {
+      this.activate(tabId);
+      return handleFor(existing, true);
+    }
+
+    const pane = document.createElement("div");
+    pane.className = "tg-pane tg-pane-content";
+    this.panesEl.append(pane);
+
+    const tabEl = document.createElement("div");
+    tabEl.className = "tg-tab tg-tab-content";
+    const label = document.createElement("span");
+    label.className = "tg-tab-label";
+    label.textContent = title;
+    label.title = title;
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "tg-tab-close";
+    closeBtn.innerHTML = ICONS.x(11);
+    closeBtn.title = "Close";
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.closeTerminal(tabId);
+    });
+    tabEl.append(label, closeBtn);
+    tabEl.addEventListener("click", () => this.activate(tabId));
+    // Content tabs join the same drag-to-reorder flow as terminal tabs.
+    tabEl.draggable = true;
+    tabEl.dataset.ptyId = tabId;
+    tabEl.addEventListener("dragstart", (e) => {
+      this._dragEl = tabEl;
+      tabEl.classList.add("tg-tab-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", tabId);
+    });
+    tabEl.addEventListener("dragend", () => {
+      tabEl.classList.remove("tg-tab-dragging");
+      this._dragEl = null;
+      this._syncTabOrder();
+    });
+    this.tabsEl.append(tabEl);
+
+    const entry = {
+      term: null, // the "this is not a terminal" marker every guard checks
+      paneEl: pane,
+      tabEl,
+      labelEl: label,
+      title,
+      beforeClose,
+      onClose,
+      onShow,
+    };
+    this.tabs.set(tabId, entry);
+    mount?.(pane);
+    this.activate(tabId);
+    return handleFor(entry, false);
+  }
+
+  /**
    * Attach or drop one tab's WebGL renderer. Only the ACTIVE tab of a VISIBLE
    * group keeps one: each addon holds a whole GPU context + glyph atlas, and
    * WebKit caps live WebGL contexts (~16) — past the cap it silently kills the
@@ -1453,6 +1543,7 @@ class TerminalGroup {
    * tab costs one IPC, not one per tab in the group.
    */
   _setLive(ptyId, entry, on) {
+    if (!entry.term) return; // content tab: no renderer, no PTY gate
     this._setWebgl(entry, on);
     if (!this.floodControl || entry.live === on) return;
     entry.live = on;
@@ -1485,7 +1576,9 @@ class TerminalGroup {
     requestAnimationFrame(() => {
       this._fit(ptyId);
       const e = this.tabs.get(ptyId);
-      if (e && !e.renaming) e.term.focus();
+      if (!e) return;
+      if (!e.term) e.onShow?.(); // content tab revealed (e.g. refocus an editor)
+      else if (!e.renaming) e.term.focus();
     });
   }
 
@@ -1602,9 +1695,25 @@ class TerminalGroup {
     return view.id.slice("view-".length);
   }
 
-  closeTerminal(ptyId) {
+  closeTerminal(ptyId, force = false) {
     const entry = this.tabs.get(ptyId);
     if (!entry) return;
+    // Content tab: no PTY, no monitors — just ask its owner (unsaved edits may
+    // cancel, unless forced by dispose), drop the DOM, and move to the next tab.
+    if (!entry.term) {
+      if (!force && entry.beforeClose && entry.beforeClose() === false) return;
+      entry.tabEl.remove();
+      entry.paneEl.remove();
+      this.tabs.delete(ptyId);
+      entry.onClose?.();
+      if (this.activeId === ptyId) {
+        const next = this.tabs.keys().next();
+        this.activeId = next.done ? null : next.value;
+        if (this.activeId) this.activate(this.activeId);
+        else this._renderLastSent(null);
+      }
+      return;
+    }
     // Drop any attention flag so the banner does not list a dead terminal
     // (card 13). Done before deleting the entry so the change event is clean.
     if (attention.has(ptyId)) {
@@ -1684,6 +1793,7 @@ class TerminalGroup {
   applyFontSettings() {
     const s = resolveTerminalSettings(this.fontOverride);
     for (const e of this.tabs.values()) {
+      if (!e.term) continue; // content tab: no terminal to restyle
       e.term.options.fontFamily = s.fontFamily;
       e.term.options.fontSize = s.fontSize;
       e.term.options.fontWeight = s.fontWeight;
@@ -1705,7 +1815,7 @@ class TerminalGroup {
 
   _fit(ptyId) {
     const entry = this.tabs.get(ptyId);
-    if (!entry || !this.visible()) return;
+    if (!entry || !entry.term || !this.visible()) return;
     try {
       // FitAddon's row count comes from the fractional CSS cell height
       // (fontSize × lineHeight, e.g. 15.6px), but the renderer rounds each
@@ -1771,7 +1881,9 @@ class TerminalGroup {
 
   dispose() {
     this._closeAddMenu();
-    for (const id of [...this.tabs.keys()]) this.closeTerminal(id);
+    // force=true: a dispose (project delete/shelve) must never be blocked by a
+    // content tab's unsaved-edits prompt.
+    for (const id of [...this.tabs.keys()]) this.closeTerminal(id, true);
     this.root.remove();
   }
 }

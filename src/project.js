@@ -49,6 +49,12 @@ function withClaudeAddDirs(rec, startCmd, cwd) {
 
 // projectId -> { group, primaryPath, paths, startup, terminalCommand, restoring, saveTimer }
 const projects = new Map();
+
+/** The terminal group of the currently selected project, or null. filetabs.js
+ *  mounts file tabs (card: layout manager) into it. */
+export function currentProjectGroup() {
+  return (currentId && projects.get(currentId)?.group) || null;
+}
 // Project ids whose startup terminals / restore have already opened this
 // session, so neither runs twice — re-opening an emptied project later gives
 // one plain terminal, not the whole layout again.

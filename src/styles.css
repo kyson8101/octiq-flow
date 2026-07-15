@@ -267,10 +267,9 @@ body {
 /* A togglable split between .center and the command panel. Shows a live   */
 /* HTML/MD document an agent writes; canvas.js owns it. Hidden by default. */
 
-/* Thin drag handle to the LEFT of the pane (between terminals and canvas, and
-   between terminals and the file browser). */
-.canvas-resizer,
-.browser-resizer {
+/* Thin drag handle to the LEFT of the canvas pane. The center panels (file
+   tree, web preview) use the layout manager's shared .lay-resizer instead. */
+.canvas-resizer {
   flex-shrink: 0;
   width: 6px;
   cursor: col-resize;
@@ -280,14 +279,8 @@ body {
 }
 
 .canvas-resizer:hover,
-.canvas-resizer.dragging,
-.browser-resizer:hover,
-.browser-resizer.dragging {
+.canvas-resizer.dragging {
   background: var(--accent);
-}
-
-.browser-resizer.hidden {
-  display: none;
 }
 
 .canvas-pane {
@@ -719,16 +712,6 @@ body {
 .git-switch-row {
   display: flex;
   gap: 6px;
-}
-
-.openfolder-row {
-  display: flex;
-  gap: 6px;
-}
-
-.openfolder-row .inline-input {
-  flex: 1;
-  min-width: 0;
 }
 
 .git-select {
@@ -2682,6 +2665,134 @@ body {
   font-style: italic;
 }
 
+/* === Content tabs (layout manager) =================================== */
+/* A tab pane hosting arbitrary DOM (a file editor) instead of an xterm.
+   Same absolute positioning as terminal panes, but flush to the edges — the
+   content brings its own chrome (a head bar), so the terminal gutter would
+   just be a hole around it. */
+.tg-pane-content {
+  inset: 0;
+}
+
+/* Unsaved-edits dot after a file tab's label (VS Code style). */
+.tg-tab-dirty .tg-tab-label::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ---- File tab (filetabs.js): head bar over the content body. -------- */
+.ft {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-0);
+}
+
+.ft-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+.ft-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  color: var(--fg-0);
+}
+/* Transient save feedback ("Saved" / an error), shown beside the file name. */
+.ft-status {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--accent);
+}
+.ft-status.err {
+  color: var(--warn);
+}
+.ft-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+/* Save button: tinted while there are unsaved edits, hidden otherwise. */
+.ft-save.dirty {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.ft-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.ft-note {
+  position: sticky;
+  top: 0;
+  padding: 6px 14px;
+  font-size: 11px;
+  color: var(--warn);
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Monaco text editor host. The body becomes a non-scrolling column so an
+   optional truncated-file note sits above the editor, which takes the rest
+   (Monaco scrolls itself and needs a definite height, not content height). */
+.ft-body.monaco-host {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ft-monaco {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.ft-msg {
+  padding: 24px 14px;
+  text-align: center;
+  color: var(--fg-2);
+  font-size: 13px;
+}
+
+/* Image tab: center and scale to fit the pane. */
+.ft-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+}
+.ft-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* PDF tab: fill the pane; white backdrop for the viewer. */
+.ft-pdf {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
 /* ===================================================================== */
 /* === Card 07 — Chat mode ============================================= */
 /* ===================================================================== */
@@ -2982,17 +3093,18 @@ body {
    custom properties, so the spec's var(--x) tokens are inlined as hex here. */
 /* Side pane: fixed (resizable) width, sits right of the terminals. JS sets the
    px width on open and on drag; clamped in browser.js. */
+/* Sizing comes from the layout manager: flex-basis on the dock axis (set by
+   layout.js), stretch on the cross axis. The shared .lay-resizer carries the
+   divider border, so the panel needs none of its own. */
 .project-browser {
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  width: 420px;
+  flex: 0 0 auto;
   min-width: 0;
-  height: 100%;
   min-height: 0;
+  overflow: hidden;
   background: var(--bg-0);
   color: var(--fg-1);
-  border-left: 1px solid var(--border);
 }
 .project-browser.hidden {
   display: none;
@@ -3023,9 +3135,8 @@ body {
   margin-left: auto;
 }
 
-/* Body holds the list pane and (once a file is clicked) the preview pane,
-   side by side. browser.js adds .split to give the list a fixed width and
-   reveal the preview; without it the list fills the whole body. */
+/* Body holds the folder tree. File previews open as tabs in the terminal tab
+   strip (filetabs.js), not here. */
 .pb-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -3040,128 +3151,7 @@ body {
   padding: 6px;
 }
 
-/* Split view: list becomes a fixed left pane, preview takes the rest. */
-.pb-body.split .pb-list {
-  flex: 0 0 340px;
-  border-right: 1px solid var(--border);
-}
-
-/* Opened from the sidebar's file tree: that tree IS the list, so the panel drops
-   its own and the preview fills it. */
-.project-browser.preview-only .pb-list {
-  display: none;
-}
-
-/* Right preview pane. Hidden until a file is clicked. */
-.pb-preview {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-0);
-}
-.pb-preview.hidden {
-  display: none;
-}
-
-.pb-preview-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-1);
-}
-.pb-preview-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: Menlo, Monaco, "Courier New", monospace;
-  font-size: 12px;
-  color: var(--fg-0);
-}
-.pb-preview-actions {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 6px;
-}
-/* Transient save feedback ("Saved" / an error), shown beside the file name. */
-.pb-preview-status {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--accent);
-}
-.pb-preview-status.err {
-  color: var(--warn);
-}
-
-.pb-preview-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-.pb-preview-note {
-  position: sticky;
-  top: 0;
-  padding: 6px 14px;
-  font-size: 11px;
-  color: var(--warn);
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--border);
-}
-
-/* Monaco text editor host. The body becomes a non-scrolling column so an
-   optional truncated-file note sits above the editor, which takes the rest
-   (Monaco scrolls itself and needs a definite height, not content height). */
-.pb-preview-body.monaco-host {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.pb-monaco {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-}
-
-/* Save button: tinted when there are unsaved edits, hidden otherwise. */
-.pb-preview-save.dirty {
-  color: var(--accent);
-  background: var(--accent-bg);
-}
-.pb-preview-msg {
-  padding: 24px 14px;
-  text-align: center;
-  color: var(--fg-2);
-  font-size: 13px;
-}
-
-/* Image preview: center and scale to fit the pane. */
-.pb-preview-media {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100%;
-  box-sizing: border-box;
-  padding: 12px;
-}
-.pb-preview-img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-
-/* PDF preview: fill the pane; white backdrop for the viewer. */
-.pb-preview-pdf {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #fff;
-}
-
-/* The row whose file is showing in the preview pane. */
+/* The row whose file was last opened as a tab. */
 .pb-row-selected,
 .pb-row-selected:hover {
   background: var(--accent-tint);
@@ -4046,82 +4036,11 @@ body {
   background: var(--accent-tint);
 }
 
-/* Right-panel "Screenshots" section: a third stacked section under Git, with a
-   capped height and its own scroll so a long shot list never pushes the others
-   off-screen (same pattern as the Git section). */
-.cmd-section-head-actions {
-  display: flex;
-  gap: 2px;
-}
-.shots-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
-  gap: 6px;
-}
-.shots-card {
-  position: relative;
-  aspect-ratio: 16 / 10;
-  overflow: hidden;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  cursor: pointer;
-}
-.shots-card img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-.shots-card-selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-/* The check badge shows only on a selected card. */
-.shots-check {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 18px;
-  height: 18px;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  color: var(--bg-0);
-  background: var(--accent);
-  border-radius: 999px;
-}
-.shots-card-selected .shots-check {
-  display: flex;
-}
-.shots-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-.shots-selectall {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--fg-2);
-  cursor: pointer;
-}
-.shots-selectall input {
-  cursor: pointer;
-}
-.shots-foot-actions {
-  display: flex;
-  gap: 6px;
-}
-
 /* ===================================================================== */
 /* Web preview pane (#project-web) — an <iframe> dev-URL preview that     */
-/* docks beside the terminals. webpreview.js owns it. The dock side is a  */
-/* class on .center that flips the flex axis; the pane's size is a        */
-/* flex-basis JS sets (so one property works for both row and column      */
-/* docks). Mutually exclusive with the file browser and git diff.         */
+/* docks beside the terminals. webpreview.js owns its content; the layout */
+/* manager (layout.js) owns showing, docking and resizing it — see the    */
+/* .lay-* rules below, shared by every docked center panel.               */
 /* ===================================================================== */
 
 /* The zones overlay positions against the center; give it a containing block. */
@@ -4129,41 +4048,51 @@ body {
   position: relative;
 }
 
-/* Dock side → flex main axis. DOM order is terminals, resizer, pane, so a
-   reverse direction puts the pane on the leading edge (left / top). */
-.center.web-dock-right {
+/* === Layout manager (layout.js) ====================================== */
+/* Dock side → flex main axis. Flex order keeps the visual sequence stable
+   (terminals 0, resizer 1, open panel 2); a reverse direction puts the open
+   panel on the leading edge (left / top). */
+.center.lay-dock-right {
   flex-direction: row;
 }
-.center.web-dock-left {
+.center.lay-dock-left {
   flex-direction: row-reverse;
 }
-.center.web-dock-bottom {
+.center.lay-dock-bottom {
   flex-direction: column;
 }
-.center.web-dock-top {
+.center.lay-dock-top {
   flex-direction: column-reverse;
 }
 
-/* Drag handle: 6px on the main axis; cursor + border flip with the dock. */
-.web-resizer {
+/* The open panel sits past the resizer. Its size on the dock axis is the
+   flex-basis layout.js sets (one property serves both axes). */
+.lay-open {
+  order: 2;
+}
+
+/* The ONE shared drag handle (layout.js creates it): 6px on the main axis;
+   cursor + divider border flip with the dock side. */
+.lay-resizer {
+  order: 1;
   flex: 0 0 6px;
   background: var(--bg-sunken);
   transition: background 0.12s ease;
 }
-.web-resizer:hover,
-.web-resizer.dragging {
+.lay-resizer:hover,
+.lay-resizer.dragging {
   background: var(--accent);
 }
-.web-resizer.hidden {
+.lay-resizer.hidden {
   display: none;
 }
-.center.web-dock-left .web-resizer,
-.center.web-dock-right .web-resizer {
+.center.lay-dock-left .lay-resizer,
+.center.lay-dock-right .lay-resizer {
   cursor: col-resize;
   border-left: 1px solid var(--border);
 }
-.center.web-dock-top .web-resizer,
-.center.web-dock-bottom .web-resizer {
+.center.lay-dock-top .lay-resizer,
+.center.lay-dock-bottom .lay-resizer {
   cursor: row-resize;
   border-top: 1px solid var(--border);
 }

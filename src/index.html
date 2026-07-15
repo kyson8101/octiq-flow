@@ -32,7 +32,9 @@
     <link rel="stylesheet" href="styles.css" />
     <script type="module" src="/workspaces.js" defer></script>
     <script type="module" src="/main.js" defer></script>
+    <script type="module" src="/layout.js" defer></script>
     <script type="module" src="/project.js" defer></script>
+    <script type="module" src="/filetabs.js" defer></script>
     <script type="module" src="/commands.js" defer></script>
     <script type="module" src="/gitactions.js" defer></script>
     <script type="module" src="/modes.js" defer></script>
@@ -141,14 +143,10 @@
           <div id="project-terminals" class="project-terminals"></div>
         </div>
 
-        <!-- Drag handle between the terminals and the file browser. Hidden until
-             the browser opens side-by-side; browser.js shows it and wires the
-             drag (same pattern as #canvas-resizer). -->
-        <div id="browser-resizer" class="browser-resizer hidden" role="separator" aria-orientation="vertical" title="Drag to resize the file explorer"></div>
-
-        <!-- File browser (right-click "Files" / "Documentation"). Hidden until a
-             browse action fires; opens side-by-side WITH the terminals (browser.js
-             reveals it + the resizer, both panes stay live). fs-only — no PTY here. -->
+        <!-- File browser (right-click "Files" / "Documentation"). A folder tree
+             docked beside the terminals by the layout manager (layout.js, which
+             also owns the shared drag handle). Clicking a file opens it as a
+             TAB in the terminal tab strip (filetabs.js). fs-only — no PTY here. -->
         <div id="project-browser" class="project-browser hidden">
           <div class="pb-head">
             <button id="pb-collapse" class="icon-btn" type="button" data-tip="Collapse all folders">
@@ -160,37 +158,17 @@
             </button>
           </div>
 
-          <!-- Body splits into two panes: the folder list (left) and, once a
-               file is clicked, a content preview (right). browser.js toggles the
-               .split class on .pb-body and shows/hides #pb-preview. -->
+          <!-- The folder tree. File previews no longer live here — they open as
+               tabs in the terminal tab strip (filetabs.js). -->
           <div class="pb-body">
             <div id="pb-list" class="pb-list"></div>
-
-            <div id="pb-preview" class="pb-preview hidden">
-              <div class="pb-preview-head">
-                <span id="pb-preview-name" class="pb-preview-name"></span>
-                <span id="pb-preview-status" class="pb-preview-status"></span>
-                <span class="pb-preview-actions">
-                  <button id="pb-preview-save" class="icon-btn pb-preview-save hidden" type="button" data-tip="Save (⌘S)">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
-                  </button>
-                  <button id="pb-preview-open" class="icon-btn" type="button" data-tip="Open with the default app">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-                  </button>
-                  <button id="pb-preview-close" class="icon-btn" type="button" data-tip="Close preview">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
-                  </button>
-                </span>
-              </div>
-              <div id="pb-preview-body" class="pb-preview-body"></div>
-            </div>
           </div>
         </div>
 
         <!-- Git changes (right-click "Git changes"). A GitHub-style diff of the
-             project's uncommitted changes across all its folder paths. Hidden
-             until opened; gitdiff.js fills it and toggles it against
-             .center-terms (and the file browser above). No PTY here. -->
+             project's uncommitted changes across all its folder paths. A "main"
+             panel of the layout manager: opening it replaces the terminal area
+             (layout.js owns the swap). gitdiff.js fills it. No PTY here. -->
         <div id="project-gitdiff" class="project-gitdiff hidden">
           <div class="gd-head">
             <span id="gd-title" class="gd-title">Git changes</span>
@@ -220,16 +198,11 @@
           </div>
         </div>
 
-        <!-- Drag handle for the web preview pane. Separate from #browser-resizer
-             so the two panes never fight over pointer events; web.js flips its
-             axis (col/row resize) with the dock side. -->
-        <div id="web-resizer" class="web-resizer hidden" role="separator" title="Drag to resize the preview"></div>
-
         <!-- Live web preview (right-click "Web preview"). An <iframe> loads a
              project's dev URL (e.g. http://localhost:5173) side-by-side with the
              terminals. webpreview.js owns it: URL bar, back/forward over typed
              URLs, reload, and a dock side (left/right/top/bottom) saved per
-             project. Mutually exclusive with the file browser and git diff. -->
+             project. Shown/docked/resized by the layout manager (layout.js). -->
         <div id="project-web" class="project-web hidden">
           <div id="web-head" class="web-head" title="Drag to dock left / right / top / bottom">
             <button id="web-back" class="icon-btn" type="button" data-tip="Back">
@@ -345,9 +318,8 @@
       </aside>
 
       <!-- Right: collapsible panel that stacks accordion sections top→bottom
-           (Open folder, Terminal font, Commands, Git, Screenshots). Only one is
-           open at a time; commands.js wires the accordion and remembers which
-           one is open. -->
+           (Terminal font & colors, Commands, Git). Only one is open at a time;
+           commands.js wires the accordion and remembers which one is open. -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
           <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
@@ -362,25 +334,14 @@
         </div>
 
         <div class="cmd-panel-body">
-          <!-- Open folder: paste any path, open it in the OS file manager
-               (Finder on macOS, Explorer on Windows) via the opener plugin. -->
-          <div class="cmd-section cmd-section-openfolder">
-            <div class="cmd-section-head">
-              <span class="cmd-section-title">Open folder</span>
-            </div>
-            <div class="openfolder-row">
-              <input id="openfolder-path" class="inline-input" placeholder="Paste a folder path" autocomplete="off" spellcheck="false" />
-              <button id="openfolder-btn" class="btn btn-sm" type="button">Open</button>
-            </div>
-          </div>
-
-          <!-- Terminal font: this project's per-project font override. Moved out
-               of the Edit page into the panel so a change previews live on the
-               project's terminals to the left. workspaces.js keeps these #modal-font-*
-               controls (same ids) in step with the selected project. -->
+          <!-- Terminal font & colors: this project's per-project font and color
+               overrides. Moved out of the Edit page into the panel so a change
+               previews live on the project's terminals to the left. workspaces.js
+               keeps these #modal-font-* / #modal-theme-* controls (same ids) in
+               step with the selected project. -->
           <div class="cmd-section cmd-section-font">
             <div class="cmd-section-head">
-              <span class="cmd-section-title">Terminal font</span>
+              <span class="cmd-section-title">Terminal font & colors</span>
             </div>
             <p class="settings-help">
               This project uses the app font from Settings by default. Turn on
@@ -433,15 +394,10 @@
                 <p class="settings-help">Copies this project's font into the app font in Settings, applied to every project that has no override.</p>
               </div>
             </div>
-          </div>
 
-          <!-- Terminal colors: this project's per-project color override. Same
-               font_override object as above (themeEnabled/theme keys), gated by
-               its own toggle so a project can recolor without changing its font. -->
-          <div class="cmd-section cmd-section-font">
-            <div class="cmd-section-head">
-              <span class="cmd-section-title">Terminal colors</span>
-            </div>
+            <!-- Colors: same font_override object (themeEnabled/theme keys),
+                 gated by its own toggle so a project can recolor without
+                 changing its font. -->
             <p class="settings-help">
               This project uses the app colors from Settings by default. Turn on
               the override to give just this project its own terminal colors.
@@ -525,35 +481,6 @@
             </div>
           </div>
 
-          <!-- Screenshots section (bottom): the screenshot vault, here in the
-               right panel. Lists every shot; the user multi-picks some and
-               inserts their paths into the terminal. vault.js fills #shots-grid
-               (the same vault as the top-bar overlay). -->
-          <div id="cmd-tab-shots" class="cmd-tabpane cmd-section cmd-section-shots">
-            <div class="cmd-section-head">
-              <span class="cmd-section-title">Screenshots</span>
-              <span class="cmd-section-head-actions">
-                <button id="shots-capture" class="icon-btn" type="button" data-tip="Capture the active window now">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-                </button>
-                <button id="shots-refresh" class="icon-btn" type="button" data-tip="Reload screenshots">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-                </button>
-              </span>
-            </div>
-            <div id="shots-grid" class="shots-grid"></div>
-            <p id="shots-empty" class="ws-empty">No screenshots yet. Use the capture hotkey or the camera button.</p>
-            <div id="shots-foot" class="shots-foot hidden">
-              <label class="shots-selectall">
-                <input type="checkbox" id="shots-selectall" />
-                <span>Select all</span>
-              </label>
-              <span class="shots-foot-actions">
-                <button id="shots-clear" class="btn btn-sm" type="button">Delete all</button>
-                <button id="shots-insert" class="btn btn-primary btn-sm" type="button" disabled>Insert (0)</button>
-              </span>
-            </div>
-          </div>
         </div>
       </aside>
       </div>

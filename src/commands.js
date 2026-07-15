@@ -290,50 +290,6 @@ commandEl.addEventListener("keydown", (e) => {
   }
 });
 
-// --- Open folder ------------------------------------------------------------
-// Paste a path, open it in the OS file manager via the opener plugin (same
-// command browser.js uses for files). Cross-platform: a folder path opens in
-// Finder on macOS, Explorer on Windows. Strips a surrounding pair of quotes so
-// a drag-pasted "/some/path" (or "C:\some\path") works too.
-const openFolderInput = document.querySelector("#openfolder-path");
-const openFolderBtn = document.querySelector("#openfolder-btn");
-// Join a path that wrapped across lines: drop every newline run AND the
-// whitespace touching it (the wrap indent). Paths never contain a real newline,
-// so any line break is a paste artifact. Filenames can hold spaces, so we only
-// eat whitespace adjacent to a newline, not all of it.
-const dewrap = (s) => s.replace(/\s*[\r\n]+\s*/g, "");
-
-async function openFolder() {
-  const path = dewrap(openFolderInput.value).trim().replace(/^["']|["']$/g, "");
-  if (!path) return;
-  try {
-    await invoke("plugin:opener|open_path", { path, with: null });
-  } catch (err) {
-    openFolderInput.setCustomValidity(`Could not open: ${err}`);
-    openFolderInput.reportValidity();
-  }
-}
-openFolderBtn.addEventListener("click", openFolder);
-openFolderInput.addEventListener("input", () => openFolderInput.setCustomValidity(""));
-// A single-line input strips raw \n on paste but keeps the wrap-indent spaces,
-// so we clean the clipboard text ourselves before it lands.
-openFolderInput.addEventListener("paste", (e) => {
-  const text = e.clipboardData?.getData("text");
-  if (!text || !/[\r\n]/.test(text)) return; // single-line paste: let it through
-  e.preventDefault();
-  const el = openFolderInput;
-  const start = el.selectionStart ?? el.value.length;
-  const end = el.selectionEnd ?? el.value.length;
-  el.value = el.value.slice(0, start) + dewrap(text) + el.value.slice(end);
-  el.setCustomValidity("");
-});
-openFolderInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    openFolder();
-  }
-});
-
 // --- Collapse / expand the panel -------------------------------------------
 toggleBtn.addEventListener("click", () => {
   const collapsed = panelEl.classList.toggle("collapsed");
@@ -342,7 +298,7 @@ toggleBtn.addEventListener("click", () => {
 });
 
 // --- Accordion: only one section open at a time ----------------------------
-// Each .cmd-section (Open folder, Terminal font, Commands, Git, Screenshots) is
+// Each .cmd-section (Terminal font & colors, Commands, Git) is
 // a clickable head + body. Opening one collapses the rest; the open section's
 // key is remembered so it reopens next launch. Default (no stored value): all
 // collapsed. Clicking an action button in a head (e.g. "+" or the camera) opens

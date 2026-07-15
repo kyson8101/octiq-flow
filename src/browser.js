@@ -1,45 +1,34 @@
 // Center file browser (right-click "Files" / "Documentation"). Shows the
-// contents of one folder as an EXPANDABLE TREE inside #project-browser, sitting
-// next to the project terminals in <main class="center">. fs-only: it lists
-// folders/files with the `list_dir` backend command. A folder row expands in
-// place (lazily listing its children the first time) so a folder's files are
-// visible without leaving the parent. Clicking a file splits the body into two
-// panes and shows a text preview (via the `read_file_preview` backend command)
-// in the right pane; binary files instead offer "Open externally" (the opener
-// plugin). It never touches a PTY.
+// contents of one folder as an EXPANDABLE TREE inside #project-browser, docked
+// beside the project terminals by the layout manager (layout.js). fs-only: it
+// lists folders/files with the `list_dir` backend command. A folder row
+// expands in place (lazily listing its children the first time) so a folder's
+// files are visible without leaving the parent. Clicking a file dispatches
+// `file-open` — filetabs.js opens it as a TAB in the terminal tab strip (the
+// VS Code editor-tab pattern; the old in-panel preview pane is gone). It never
+// touches a PTY.
 //
 // How it is driven:
 //   * workspaces.js dispatches `project-browse` { id, kind, root } when the user
 //     picks Files or Documentation. We show the panel rooted at `root`. An empty
 //     `root` (e.g. Documentation with no docs_path) shows an "unset" message.
 //   * `project-selected` from workspaces.js: when the selected project CHANGES
-//     while the browser is open, we close the browser and return to terminals so
-//     switching projects always lands on that project's terminals.
+//     while the browser is open, we close the browser so switching projects
+//     always lands on that project's terminals.
 //
 // This module also drives the SIDEBAR's "Files" view (see the bottom section):
 // the same tree rows, rendered over the selected project's folder paths, with a
-// file click opening the panel above in preview-only mode (no second tree).
-const { invoke, convertFileSrc } = window.__TAURI__.core;
-// Text previews render in Monaco (the VS Code editor core), vendored under
-// /vendor/monaco and loaded lazily on the first text preview (card 27).
-import { formatBytes, loadPaneWidth, makeResizer, textEl } from "/util.js";
+// file click opening a file tab the same way.
+const { invoke } = window.__TAURI__.core;
+import { textEl } from "/util.js";
+import { registerPanel, openPanel, closePanel, isOpen } from "/layout.js";
 
 // --- DOM handles -----------------------------------------------------------
-const termsEl = document.querySelector(".center-terms");
 const panelEl = document.querySelector("#project-browser");
-const resizerEl = document.querySelector("#browser-resizer");
 const headPathEl = document.querySelector("#pb-path");
-const bodyEl = document.querySelector(".pb-body");
 const listEl = document.querySelector("#pb-list");
 const collapseBtn = document.querySelector("#pb-collapse");
 const backBtn = document.querySelector("#pb-back");
-const previewEl = document.querySelector("#pb-preview");
-const previewNameEl = document.querySelector("#pb-preview-name");
-const previewBodyEl = document.querySelector("#pb-preview-body");
-const previewOpenBtn = document.querySelector("#pb-preview-open");
-const previewCloseBtn = document.querySelector("#pb-preview-close");
-const previewSaveBtn = document.querySelector("#pb-preview-save");
-const previewStatusEl = document.querySelector("#pb-preview-status");
 
 // Each tree level indents its rows by this many pixels past the level above.
 const INDENT_STEP = 14;
@@ -53,121 +42,44 @@ let rootDir = "";
 // The project whose folder we are browsing, so a switch to a DIFFERENT project
 // closes the browser.
 let browsingProjectId = null;
-// The file currently shown in the preview pane, or null when it is closed. Also
-// used to drop a slow read whose result arrives after a newer click.
-let previewPath = null;
-// The list row whose file is previewed, so we can clear its highlight.
+// The last-clicked file row, so its highlight can be cleared.
 let selectedRow = null;
-// The live Monaco editor for the previewed text file (null when none).
-let currentEditor = null;
-// Path of the file currently OPEN FOR EDITING (null for read-only previews). Save
-// writes here.
-let editablePath = null;
-// True when the editor has unsaved edits, so we can warn before discarding them.
-let dirty = false;
 
-// Side-pane width: persisted in px, clamped on open and drag (mirrors canvas.js).
-const WIDTH_KEY = "octiq.browser.width";
-const DEFAULT_WIDTH = 420;
-const MIN_WIDTH = 240;
-
-// --- Monaco (lazy) -----------------------------------------------------------
-// Resolves to the global `monaco` API, injecting the vendored AMD loader on
-// first use. Lazy so the AMD `define`/`require` globals only exist after every
-// startup UMD script (xterm, marked) has run, and so startup never pays the
-// editor's load cost. editor.main.js injects its own stylesheet. Language
-// workers may fail to start under the tauri:// protocol in release builds;
-// Monaco then falls back to running language services on the main thread.
-let monacoPromise = null;
-function loadMonaco() {
-  monacoPromise ??= new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "/vendor/monaco/vs/loader.js";
-    script.onload = () => {
-      window.require.config({ paths: { vs: "/vendor/monaco/vs" } });
-      window.require(["vs/editor/editor.main"], () => resolve(window.monaco), reject);
-    };
-    script.onerror = () => reject(new Error("Could not load the code editor."));
-    document.head.append(script);
-  });
-  return monacoPromise;
-}
-
-/** Flag/clear unsaved edits and tint the Save button to match. */
-function setDirty(on) {
-  dirty = on;
-  previewSaveBtn.classList.toggle("dirty", on);
-}
-
-/** Tear down the editor (if any) and reset the Save controls. Called before each
- *  new preview and on close, so switching files never leaks an editor or model. */
-function resetEditor() {
-  if (currentEditor) {
-    const model = currentEditor.getModel();
-    currentEditor.dispose();
-    model?.dispose(); // frees the file's URI for the next preview of it
-    currentEditor = null;
-  }
-  editablePath = null;
-  setDirty(false);
-  previewSaveBtn.classList.add("hidden");
-  previewStatusEl.textContent = "";
-  previewStatusEl.classList.remove("err");
-}
-
-/** Briefly show a save result ("Saved" or an error) beside the file name. */
-function flashStatus(text, isError) {
-  previewStatusEl.textContent = text;
-  previewStatusEl.classList.toggle("err", !!isError);
-}
-
-/** Write the editor's current text back to disk via the backend. */
-async function saveCurrent() {
-  if (!editablePath || !currentEditor || previewSaveBtn.disabled) return;
-  const path = editablePath;
-  previewSaveBtn.disabled = true;
-  try {
-    const content = currentEditor.getModel().getValue();
-    await invoke("write_file", { path, content });
-    if (editablePath === path) {
-      setDirty(false);
-      flashStatus("Saved");
-    }
-  } catch (err) {
-    flashStatus(String(err), true);
-  } finally {
-    previewSaveBtn.disabled = false;
-  }
-}
-
-/** True when it is safe to drop the current preview (no edits, or user agrees). */
-function okToDiscard() {
-  return !dirty || confirm("You have unsaved changes. Discard them?");
-}
+// The layout manager owns showing/hiding, the dock side, the drag handle and
+// the persisted size. onHidden fires however the panel closes (its ✕, another
+// panel opening) so the state reset lives in exactly one place.
+registerPanel("browser", {
+  el: panelEl,
+  side: "right",
+  min: 240,
+  width: 420,
+  onHidden: () => {
+    rootDir = "";
+    browsingProjectId = null;
+    selectRow(null);
+  },
+});
 
 /** Left padding for a row at `depth`, so deeper rows sit further right. */
 function indentFor(depth) {
   return `${BASE_INDENT + depth * INDENT_STEP}px`;
 }
 
-// --- Show / hide the panel --------------------------------------------------
-/** Open the browser as a side pane to the RIGHT of the terminals (both stay
- *  live). The git-diff panel takes over the whole row, so hide it. */
-function showBrowser() {
-  document.querySelector("#project-gitdiff")?.classList.add("hidden");
-  if (termsEl) termsEl.classList.remove("hidden"); // keep terminals visible
-  panelEl.style.width = `${loadPaneWidth(WIDTH_KEY, MIN_WIDTH, DEFAULT_WIDTH)}px`;
-  panelEl.classList.remove("hidden");
-  resizerEl?.classList.remove("hidden");
+/** Highlight `row` as the last-opened file, clearing any previous highlight. */
+function selectRow(row) {
+  if (selectedRow) selectedRow.classList.remove("pb-row-selected");
+  selectedRow = row || null;
+  if (selectedRow) selectedRow.classList.add("pb-row-selected");
 }
 
-/** Close the browser: hide it and the drag handle, leave terminals as they are. */
-function backToTerminals() {
-  closePreview();
-  panelEl.classList.add("hidden");
-  resizerEl?.classList.add("hidden");
-  rootDir = "";
-  browsingProjectId = null;
+/** Open a clicked file as a tab in the terminal tab strip (filetabs.js).
+ *  `line` (1-based, optional) jumps a text file to that line — a search hit
+ *  lands straight on the matching line. */
+function openFileTab(fullPath, name, row, line = 0) {
+  selectRow(row);
+  window.dispatchEvent(
+    new CustomEvent("file-open", { detail: { path: fullPath, name, line } }),
+  );
 }
 
 // --- Render -----------------------------------------------------------------
@@ -192,7 +104,7 @@ function treeMessage(text, depth) {
 
 /** Build one tree item (a folder or file) at `depth`. A folder gets a disclosure
  *  twisty and a (lazily filled) children container; a file calls `onFile` on
- *  click (the center browser previews it; the sidebar tree passes its own). */
+ *  click (both trees pass openFileTab). */
 function treeItem(entry, depth, onFile) {
   const item = textEl("div", "pb-tree-item");
 
@@ -269,186 +181,14 @@ function collapseAll() {
   });
 }
 
-// --- Preview pane -----------------------------------------------------------
-/** Highlight `row` as the previewed file, clearing any previous highlight. */
-function selectRow(row) {
-  if (selectedRow) selectedRow.classList.remove("pb-row-selected");
-  selectedRow = row || null;
-  if (selectedRow) selectedRow.classList.add("pb-row-selected");
-}
-
-/** Close the preview pane and return the body to a single full-width list. */
-function closePreview() {
-  resetEditor();
-  previewEl.classList.add("hidden");
-  bodyEl.classList.remove("split");
-  previewBodyEl.classList.remove("monaco-host");
-  previewBodyEl.replaceChildren();
-  previewNameEl.textContent = "";
-  previewNameEl.removeAttribute("title");
-  previewPath = null;
-  selectRow(null);
-}
-
-/** A single-line message node for the preview body (loading / error / binary). */
-function previewMessage(text) {
-  return textEl("div", "pb-preview-msg", text);
-}
-
-/** Scroll the open editor to `line` (1-based) and put the caret there. */
-function gotoLine(line) {
-  if (!currentEditor || !line) return;
-  currentEditor.revealLineInCenter(line);
-  currentEditor.setPosition({ lineNumber: line, column: 1 });
-}
-
-/** Open the preview pane (splitting the body into two panes) and load `fullPath`
- *  into it. Text files show their content; binary files show a hint to open
- *  externally. A slow read is dropped if a newer file was clicked meanwhile.
- *  `line` (1-based, optional) scrolls a text preview to that line — a search hit
- *  jumps straight to the matching line. */
-async function previewFile(fullPath, name, row, line = 0) {
-  if (fullPath === previewPath) {
-    // Already showing this file: a second search hit in it just moves the caret.
-    selectRow(row);
-    gotoLine(line);
-    return;
-  }
-  if (!okToDiscard()) return; // keep unsaved edits in the current file
-  resetEditor();
-  previewPath = fullPath;
-  selectRow(row);
-
-  // Reveal the right pane and split the body into two columns.
-  previewEl.classList.remove("hidden");
-  bodyEl.classList.add("split");
-  previewNameEl.textContent = name;
-  previewNameEl.title = fullPath;
-  // Back to a normal scrolling body until (and unless) Monaco takes over.
-  previewBodyEl.classList.remove("monaco-host");
-  previewBodyEl.replaceChildren(previewMessage("Loading…"));
-
-  let preview;
-  try {
-    preview = await invoke("read_file_preview", { path: fullPath });
-  } catch (err) {
-    if (previewPath !== fullPath) return; // superseded by a newer click
-    previewBodyEl.replaceChildren(previewMessage(String(err)));
-    return;
-  }
-  if (previewPath !== fullPath) return; // a newer click won the race
-
-  // Image: load the file itself via the asset protocol (convertFileSrc), shown
-  // centered and scaled to fit the pane.
-  if (preview.kind === "image") {
-    const img = document.createElement("img");
-    img.className = "pb-preview-img";
-    img.alt = name;
-    img.src = convertFileSrc(fullPath);
-    img.addEventListener("error", () => {
-      previewBodyEl.replaceChildren(
-        previewMessage("Could not show this image. Use “Open externally” to view it."),
-      );
-    });
-    const wrap = textEl("div", "pb-preview-media");
-    wrap.append(img);
-    previewBodyEl.replaceChildren(wrap);
-    return;
-  }
-
-  // PDF: render via the asset protocol in an iframe (the webview's built-in PDF
-  // viewer). If it stays blank, "Open externally" is the fallback.
-  if (preview.kind === "pdf") {
-    const frame = document.createElement("iframe");
-    frame.className = "pb-preview-pdf";
-    frame.title = name;
-    frame.src = convertFileSrc(fullPath);
-    previewBodyEl.replaceChildren(frame);
-    return;
-  }
-
-  if (preview.kind === "binary") {
-    previewBodyEl.replaceChildren(
-      previewMessage(
-        `This file is not text (${formatBytes(preview.size)}). Use “Open externally” to view it.`,
-      ),
-    );
-    return;
-  }
-
-  // Text: shown in a Monaco editor, editable unless the read was truncated
-  // (saving a truncated buffer would drop the unread tail). Monaco virtualizes
-  // rendering, so no size cap beyond the backend's read cap is needed.
-  let monaco;
-  try {
-    monaco = await loadMonaco();
-  } catch (err) {
-    if (previewPath !== fullPath) return;
-    previewBodyEl.replaceChildren(previewMessage(String(err)));
-    return;
-  }
-  if (previewPath !== fullPath) return; // a newer click won the race
-
-  const editable = !preview.truncated;
-  const host = textEl("div", "pb-monaco");
-  previewBodyEl.classList.add("monaco-host");
-  if (editable) {
-    previewBodyEl.replaceChildren(host);
-  } else {
-    const why = `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`;
-    previewBodyEl.replaceChildren(textEl("div", "pb-preview-note", why), host);
-  }
-
-  // A model per file: the file Uri makes Monaco pick the language from the
-  // extension. resetEditor disposed the previous model, so the Uri is free; the
-  // extra dispose is a guard against any stray model with the same path.
-  const uri = monaco.Uri.file(fullPath);
-  monaco.editor.getModel(uri)?.dispose();
-  const model = monaco.editor.createModel(preview.content, undefined, uri);
-  currentEditor = monaco.editor.create(host, {
-    model,
-    theme: "vs-dark",
-    automaticLayout: true, // relayout on pane resize / drag
-    readOnly: !editable,
-    fontSize: 12,
-    scrollBeyondLastLine: false,
-  });
-
-  if (editable) {
-    editablePath = fullPath;
-    model.onDidChangeContent(() => {
-      setDirty(true);
-      previewStatusEl.textContent = "";
-    });
-    previewSaveBtn.classList.remove("hidden");
-  }
-
-  gotoLine(line);
-}
-
-/** Open a file with the OS default app via the opener plugin. The command name
- *  and payload are exact: `plugin:opener|open_path` with { path, with }. `with:
- *  null` means "use the default app". Requires the opener:allow-open-path
- *  permission + a path scope in the capability (see the backend spec). */
-async function openExternally(fullPath) {
-  try {
-    await invoke("plugin:opener|open_path", { path: fullPath, with: null });
-  } catch (err) {
-    previewBodyEl.replaceChildren(previewMessage(`Could not open file: ${err}`));
-  }
-}
-
 // --- Entry points -----------------------------------------------------------
 /** Start a browse session from the right-click menu. */
 function startBrowse(detail) {
   if (!detail) return;
   const { id, root } = detail;
+  openPanel("browser");
   browsingProjectId = id;
   rootDir = (root || "").replace(/[/\\]+$/, "");
-
-  closePreview(); // start each browse session as a single full-width list
-  panelEl.classList.remove("preview-only"); // this session brings its own tree
-  showBrowser();
   renderHead();
 
   if (!rootDir) {
@@ -458,54 +198,26 @@ function startBrowse(detail) {
     return;
   }
   // Root entries fill the list directly at depth 0; folders expand from there.
-  loadChildren(rootDir, listEl, 0, previewFile);
+  loadChildren(rootDir, listEl, 0, openFileTab);
 }
 
 window.addEventListener("project-browse", (e) => startBrowse(e.detail));
 
-// Switching to a DIFFERENT project returns to terminals. Re-selecting the SAME
-// project (e.g. a refresh) leaves the browser as-is.
+// Switching to a DIFFERENT project closes the browser. Re-selecting the SAME
+// project (e.g. a refresh) leaves it as-is.
 window.addEventListener("project-selected", (e) => {
   const id = e.detail?.id ?? null;
-  const browserOpen = !panelEl.classList.contains("hidden");
-  if (browserOpen && id !== browsingProjectId && okToDiscard()) {
-    backToTerminals();
-  }
-});
-
-// Drag the handle to resize the side pane (shared helper, card 26).
-makeResizer({
-  paneEl: panelEl,
-  resizerEl,
-  storageKey: WIDTH_KEY,
-  minWidth: MIN_WIDTH,
+  if (isOpen("browser") && id !== browsingProjectId) closePanel("browser");
 });
 
 collapseBtn.addEventListener("click", collapseAll);
-backBtn.addEventListener("click", () => {
-  if (okToDiscard()) backToTerminals();
-});
-previewCloseBtn.addEventListener("click", () => {
-  if (okToDiscard()) closePreview();
-});
-previewOpenBtn.addEventListener("click", () => {
-  if (previewPath) openExternally(previewPath);
-});
-previewSaveBtn.addEventListener("click", saveCurrent);
-
-// ⌘S / Ctrl+S saves the file while the editor is focused.
-previewBodyEl.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
-    e.preventDefault();
-    saveCurrent();
-  }
-});
+backBtn.addEventListener("click", () => closePanel("browser"));
 
 // --- Sidebar "Files" view ---------------------------------------------------
 // The head toggle swaps the sidebar body between the project list and the
 // selected project's folder tree. The tree is the same rows as above, rooted at
-// each of the project's folder paths; clicking a file opens the panel above in
-// preview-only mode (its own tree stays hidden, so there is only ever one tree).
+// each of the project's folder paths; clicking a file opens it as a tab in the
+// terminal tab strip (filetabs.js), like the center tree.
 const sidebarEl = document.querySelector(".sidebar");
 const sidebarTreeEl = document.querySelector("#sidebar-files");
 const modeProjectsBtn = document.querySelector("#sb-view-projects");
@@ -517,20 +229,6 @@ const MODE_KEY = "octiq.sidebar.mode";
 let sidebarPaths = [];
 let sidebarProjectId = null;
 let treeDrawnFor = undefined;
-
-/** Open a file clicked in the sidebar tree (or a search hit): show the panel with
- *  the preview only (no second tree) and load the file into it. `line` jumps a
- *  text preview to that 1-based line (a content search hit). */
-function openFromSidebar(fullPath, name, row, line = 0) {
-  panelEl.classList.add("preview-only");
-  showBrowser();
-  rootDir = "";
-  browsingProjectId = sidebarProjectId;
-  headPathEl.textContent = fullPath;
-  headPathEl.title = fullPath;
-  collapseBtn.disabled = true;
-  previewFile(fullPath, name, row, line);
-}
 
 /** Draw the selected project's folders in the sidebar. Each folder path is a
  *  top-level row, except a single path, whose contents fill the tree directly. */
@@ -551,7 +249,7 @@ function renderSidebarTree() {
     return;
   }
   if (sidebarPaths.length === 1) {
-    loadChildren(sidebarPaths[0], sidebarTreeEl, 0, openFromSidebar);
+    loadChildren(sidebarPaths[0], sidebarTreeEl, 0, openFileTab);
     return;
   }
   sidebarTreeEl.replaceChildren(
@@ -559,7 +257,7 @@ function renderSidebarTree() {
       treeItem(
         { name: p.split(/[/\\]/).filter(Boolean).pop() || p, path: p, is_dir: true },
         0,
-        openFromSidebar,
+        openFileTab,
       ),
     ),
   );
@@ -591,7 +289,7 @@ function hitRow(hit) {
     row.append(textEl("span", "pb-hit-line", `:${hit.line}`));
     row.append(textEl("span", "pb-hit-text", hit.text));
   }
-  row.addEventListener("click", () => openFromSidebar(hit.path, hit.name, row, hit.line));
+  row.addEventListener("click", () => openFileTab(hit.path, hit.name, row, hit.line));
   return row;
 }
 

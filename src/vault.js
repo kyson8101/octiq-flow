@@ -105,15 +105,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const empty = document.getElementById("vault-empty");
   const hint = document.getElementById("vault-hint");
   const footStatus = document.getElementById("vault-foot-status");
-  // Right-panel "Screenshots" section: a second view of the same vault with
-  // multi-pick + insert. Any of these may be absent in a trimmed build.
-  const paneGrid = document.getElementById("shots-grid");
-  const paneEmpty = document.getElementById("shots-empty");
-  const paneFoot = document.getElementById("shots-foot");
-  const insertBtn = document.getElementById("shots-insert");
-  const selectAll = document.getElementById("shots-selectall");
-  // Names selected in the right-panel multi-pick (kept across refreshes).
-  const selected = new Set();
   // The vault button is the minimum the feature needs; bail quietly if absent.
   if (!btn || !overlay || !grid) return;
 
@@ -193,98 +184,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (!Array.isArray(shots)) shots = [];
     renderGrid();
-    renderShotsPane();
     updateBadge();
   };
-
-  // ---- Right-panel "Screenshots" section (multi-pick + insert) ----
-  /** Build the right-panel thumbnail grid with selection state. */
-  function renderShotsPane() {
-    if (!paneGrid) return;
-    // Drop selections whose shot was removed/cleared since the last render.
-    const names = new Set(shots.map((s) => s.name));
-    for (const n of [...selected]) if (!names.has(n)) selected.delete(n);
-
-    paneGrid.replaceChildren();
-    if (paneEmpty) paneEmpty.classList.toggle("hidden", shots.length > 0);
-    if (paneFoot) paneFoot.classList.toggle("hidden", shots.length === 0);
-
-    for (const shot of shots) {
-      const card = document.createElement("div");
-      card.className = "shots-card";
-      card.classList.toggle("shots-card-selected", selected.has(shot.name));
-      card.title = "Click to select; insert selected shots together";
-      const img = document.createElement("img");
-      img.alt = shot.name;
-      img.loading = "lazy";
-      img.src = `${convertFileSrc(shot.path)}?t=${shot.modified}`;
-      const check = document.createElement("span");
-      check.className = "shots-check";
-      check.innerHTML =
-        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
-      card.append(img, check);
-      card.addEventListener("click", () => {
-        if (selected.has(shot.name)) selected.delete(shot.name);
-        else selected.add(shot.name);
-        card.classList.toggle("shots-card-selected", selected.has(shot.name));
-        updateInsertBtn();
-      });
-      paneGrid.append(card);
-    }
-    updateInsertBtn();
-  }
-
-  /** Refresh the insert button label/disabled state and the select-all box. */
-  function updateInsertBtn() {
-    const n = selected.size;
-    if (insertBtn) {
-      insertBtn.textContent = `Insert (${n})`;
-      insertBtn.disabled = n === 0;
-    }
-    if (selectAll) {
-      selectAll.checked = shots.length > 0 && n === shots.length;
-      selectAll.indeterminate = n > 0 && n < shots.length;
-    }
-  }
-
-  selectAll?.addEventListener("change", () => {
-    selected.clear();
-    if (selectAll.checked) for (const s of shots) selected.add(s.name);
-    renderShotsPane();
-  });
-  insertBtn?.addEventListener("click", () => {
-    const chosen = shots.filter((s) => selected.has(s.name));
-    if (!chosen.length) return;
-    const ok = sendToActiveTerminal(`${chosen.map((s) => s.path).join(" ")} `, false);
-    if (ok) {
-      selected.clear();
-      renderShotsPane();
-    } else if (insertBtn) {
-      // No terminal is visible right now; keep the selection and nudge the user.
-      insertBtn.textContent = "Open a terminal first";
-      setTimeout(updateInsertBtn, 1600);
-    }
-  });
-  document.getElementById("shots-capture")?.addEventListener("click", async () => {
-    try {
-      await invoke("vault_capture_now");
-      await refresh();
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn("[octiq vault] capture failed:", err);
-    }
-  });
-  document.getElementById("shots-refresh")?.addEventListener("click", refresh);
-  document.getElementById("shots-clear")?.addEventListener("click", async () => {
-    try {
-      await invoke("vault_clear");
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn("[octiq vault] delete all failed:", err);
-    }
-    selected.clear();
-    await refresh();
-  });
 
   // ---- Drawer open/close ----
   let onKey = null;

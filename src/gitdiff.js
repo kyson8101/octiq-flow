@@ -13,17 +13,16 @@
 //   * `project-selected` from workspaces.js: switching to a DIFFERENT project
 //     closes this panel and returns to the terminals (like the file browser).
 //
-// It shares the center area (<main class="center">) with the terminals and the
-// file browser, so opening it hides both; the "✕ Terminals" button brings the
-// terminals back. fs/git read-only — it never touches a PTY.
+// It is a "main" panel of the layout manager (layout.js): opening it replaces
+// the terminal area, and layout.js closes whichever other center panel was
+// open. The "✕" button brings the terminals back. fs/git read-only — it never
+// touches a PTY.
 import { baseName, textEl } from "/util.js";
+import { registerPanel, openPanel, closePanel, isOpen } from "/layout.js";
 
 const { invoke } = window.__TAURI__.core;
 
 // --- DOM handles -----------------------------------------------------------
-const termsEl = document.querySelector(".center-terms");
-const browserEl = document.querySelector("#project-browser");
-const browserResizerEl = document.querySelector("#browser-resizer");
 const panelEl = document.querySelector("#project-gitdiff");
 const titleEl = document.querySelector("#gd-title");
 const listEl = document.querySelector("#gd-list");
@@ -63,23 +62,18 @@ function splitPath(path) {
 }
 
 // --- Show / hide the panel --------------------------------------------------
-/** Show this panel, hiding the terminals and the file browser (we all share the
- *  center area). */
-function showPanel() {
-  termsEl?.classList.add("hidden");
-  browserEl?.classList.add("hidden");
-  browserResizerEl?.classList.add("hidden");
-  panelEl.classList.remove("hidden");
-}
-
-/** Back to terminals: hide this panel, show the terminals, clear state. */
-function backToTerminals() {
-  panelEl.classList.add("hidden");
-  termsEl?.classList.remove("hidden");
-  currentProjectId = null;
-  currentPaths = [];
-  clearDiff();
-}
+// The layout manager owns visibility: a "main" panel replaces the terminal
+// area while open. onHidden fires however the panel closes (its ✕, another
+// panel opening), so the state reset lives in exactly one place.
+registerPanel("gitdiff", {
+  el: panelEl,
+  mode: "main",
+  onHidden: () => {
+    currentProjectId = null;
+    currentPaths = [];
+    clearDiff();
+  },
+});
 
 // --- File list (left pane) --------------------------------------------------
 /** Show a single-line message in the list area (loading / empty / error). */
@@ -442,7 +436,7 @@ function openFor(detail) {
   currentProjectId = id;
   currentPaths = (paths || []).filter((p) => (p || "").trim());
   titleEl.textContent = name ? `Git changes — ${name}` : "Git changes";
-  showPanel();
+  openPanel("gitdiff");
   loadChanges();
 }
 
@@ -452,12 +446,11 @@ window.addEventListener("project-gitdiff", (e) => openFor(e.detail));
 // project (e.g. a refresh) leaves the panel open.
 window.addEventListener("project-selected", (e) => {
   const id = e.detail?.id ?? null;
-  const open = !panelEl.classList.contains("hidden");
-  if (open && id !== currentProjectId) backToTerminals();
+  if (isOpen("gitdiff") && id !== currentProjectId) closePanel("gitdiff");
 });
 
 refreshBtn.addEventListener("click", loadChanges);
-backBtn.addEventListener("click", backToTerminals);
+backBtn.addEventListener("click", () => closePanel("gitdiff"));
 unifiedBtn.addEventListener("click", () => setView("unified"));
 splitBtn.addEventListener("click", () => setView("split"));
 

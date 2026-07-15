@@ -104,6 +104,17 @@ not an npm import).
   deactivate/hide): each context costs GPU memory and WebKit caps live contexts
   (~16), silently killing the oldest past the cap. On GPU context loss the addon
   disposes itself; the next activation attaches a fresh one.
+- **`layout.js` is the center layout manager**: at most ONE panel (file tree /
+  web preview / git diff) is open at a time, docked to any of the 4 sides of
+  the terminal area (`lay-dock-*` classes + one shared resizer + persisted
+  sizes) or replacing it (`mode: "main"`, git diff). Panels register once
+  (`registerPanel`) and call `openPanel`/`closePanel`; never toggle another
+  panel's element directly.
+- **Files open as TABS in the terminal tab strip** (VS Code style):
+  `browser.js` (trees + search) dispatches `file-open`; `filetabs.js` opens a
+  Monaco editor tab via `TerminalGroup.newContentTab` (a tab hosting arbitrary
+  DOM instead of an xterm — content tabs are skipped by layout/scrollback
+  persistence and do not survive a restart).
 - `main.js` is intentionally empty (kept only so its `<script>` tag stays valid).
 
 ### Persistence locations
