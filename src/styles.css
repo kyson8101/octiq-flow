@@ -31,19 +31,22 @@
   src: url("vendor/fonts/jetbrains-mono-700.woff2") format("woff2");
 }
 
-/* ---- Design tokens — warm "zen" dark theme ---------------------------- */
-/* One calm sage accent; warm graphite surfaces. Every color in this sheet
-   reads from these tokens. The terminal theme now comes from user Settings
+/* ---- Design tokens — "liquid glass" dark theme ------------------------ */
+/* One calm sage accent over translucent glass surfaces. Every color in this
+   sheet reads from these tokens. The terminal theme comes from user Settings
    (settings.js THEME_COLORS); its defaults mirror --bg-0 / --fg-1 / --accent so
-   the pane background blends with a terminal the user has not recolored. */
+   the pane background blends with a terminal the user has not recolored.
+   --bg-0 stays OPAQUE: it is the xterm background, and the terminal gutters
+   must never show the ambient glow. The raised surfaces are white-alpha glass
+   fills; the chrome/panel/overlay rules add the backdrop blur on top. */
 :root {
   /* Surfaces, from deepest to most raised. */
-  --bg-0: #141417; /* app base — matches the xterm background */
-  --bg-sunken: #0f0f12; /* mode bar, side rails */
-  --bg-1: #1b1b1f; /* raised: cards, panels, forms */
-  --bg-2: #232329; /* hover / pressed / chips */
-  --border: #28282e;
-  --border-strong: #36363e;
+  --bg-0: #141417; /* app base — matches the xterm background (opaque) */
+  --bg-sunken: rgba(14, 16, 24, 0.42); /* mode bar, side rails — cool cast */
+  --bg-1: rgba(255, 255, 255, 0.07); /* raised: cards, panels, forms */
+  --bg-2: rgba(255, 255, 255, 0.14); /* hover / pressed / chips */
+  --border: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.2);
 
   /* Warm grays for text. */
   --fg-0: #ececea;
@@ -75,14 +78,23 @@
   --warn-soft-border: rgba(212, 176, 106, 0.45);
   --warn-ring: rgba(212, 176, 106, 0.22);
 
-  --backdrop: rgba(10, 10, 12, 0.6);
+  --backdrop: rgba(8, 8, 12, 0.42);
 
-  /* Shape + depth. */
-  --r-sm: 8px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-2: 0 12px 32px rgba(0, 0, 0, 0.38);
+  /* Shape + depth. Bigger radii + a soft top edge-light sell the glass
+     (visionOS-style continuous corners). */
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 22px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 18px 50px rgba(0, 0, 0, 0.55);
+
+  /* Liquid-glass material. Fills for surfaces that need more body than the
+     white-alpha tints (floating menus, tooltips, overlays); the blur is
+     applied per-surface via backdrop-filter (it cannot ride on a token). */
+  --glass-bg: rgba(24, 24, 30, 0.52);
+  --glass-bg-strong: rgba(26, 26, 34, 0.74);
+  --glass-blur: blur(28px) saturate(1.8);
+  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 
   /* Shared height for the top header bar across the three columns (Projects /
      terminal tabs / Canvas, plus the file-browser and git-diff heads that swap
@@ -105,6 +117,19 @@ body {
   height: 100%;
   background: var(--bg-0);
   color: var(--fg-1);
+}
+
+/* Ambient glow the glass chrome diffuses: soft sage + cool-violet washes on
+   the deep base. Body never scrolls (the shell is 100vh), so the washes stay
+   put; the opaque terminal center covers its own area and the glow only
+   shows through the translucent chrome and overlays around it. */
+body {
+  background:
+    radial-gradient(1100px 700px at 8% -10%, rgba(110, 150, 235, 0.08), transparent 60%),
+    radial-gradient(1300px 800px at 110% 12%, rgba(125, 145, 235, 0.07), transparent 62%),
+    radial-gradient(1000px 800px at 50% 122%, rgba(143, 191, 168, 0.06), transparent 65%),
+    linear-gradient(180deg, #10131a, #0d0f14 60%),
+    var(--bg-0);
 }
 
 /* Outer shell: a row of three columns, with a full-width footer below them */
@@ -133,7 +158,10 @@ body {
   flex: 1;
   min-width: 0;
   height: 100%;
-  background: var(--bg-0);
+  /* Transparent: the tab row floats on the ambient glow; the dark sheet
+     starts BELOW it (rounded shoulders live on .tg-panes + the docked
+     panels — see the glass materials section). */
+  background: transparent;
 }
 
 /* Terminals fill the space left of the browser (or all of it when closed). */
@@ -186,7 +214,9 @@ body {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: var(--bg-sunken);
+  /* The panel behind is translucent glass now, so the sticky head needs the
+     stronger fill to keep masking rows that scroll under it. */
+  background: var(--glass-bg-strong);
 }
 
 /* Leading chevron: points right when collapsed, down when the section is open. */
@@ -851,14 +881,21 @@ body {
 .sb-file-search {
   display: none;
   flex: 0 0 auto;
-  margin: 6px 8px 0;
-  padding: 5px 8px;
+  margin: 8px 10px 2px;
+  padding: 6px 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 999px; /* Apple-style pill search field */
   background: var(--bg-1);
   color: var(--fg-0);
   font: inherit;
   font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.sb-file-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint-faint);
 }
 
 .sidebar.files-mode:not(.collapsed) .sb-file-search {
@@ -1278,7 +1315,7 @@ body {
   color: var(--fg-2);
   background: transparent;
   border: 1px solid transparent;
-  border-radius: var(--r-sm);
+  border-radius: 999px; /* visionOS capsule */
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
 }
@@ -1390,13 +1427,13 @@ body {
 /* Buttons. Quiet by default; the primary/accent variants use a soft accent
    tint instead of a solid loud fill. */
 .btn {
-  padding: 7px 14px;
+  padding: 7px 15px;
   font-size: 13px;
   font-weight: 500;
   color: var(--fg-1);
   background: var(--bg-2);
   border: 1px solid transparent;
-  border-radius: var(--r-sm);
+  border-radius: 999px; /* visionOS capsule */
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
@@ -1594,11 +1631,11 @@ body {
   max-width: calc(100vw - 40px);
   max-height: calc(100vh - 40px);
   overflow-y: auto;
-  background: var(--bg-1);
+  background: var(--glass-bg);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   padding: 16px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--glass-edge), var(--shadow-2);
 }
 
 .modal-head {
@@ -1910,6 +1947,10 @@ body {
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
+  /* Glass tile: tint + top edge-light, but NO backdrop blur — these cards
+     scroll with the page, and a scrolling backdrop-filter repaints every
+     frame. The ambient wash behind the page carries the depth instead. */
+  box-shadow: var(--glass-edge), var(--shadow-1);
 }
 
 .settings-section-title {
@@ -2252,7 +2293,7 @@ body {
   flex: 1;
   min-height: 0;
   height: 100%;
-  background: var(--bg-0);
+  background: transparent; /* tabs float; the sheet is .tg-panes */
   position: relative; /* anchors the resume-progress overlay */
 }
 
@@ -2267,10 +2308,10 @@ body {
   width: 260px;
   max-width: calc(100% - 24px);
   padding: 10px 12px;
-  background: var(--bg-1);
+  background: var(--glass-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  border-radius: var(--r-md);
+  box-shadow: var(--glass-edge), 0 8px 24px rgba(0, 0, 0, 0.35);
   pointer-events: none;
   opacity: 1;
   transition: opacity 0.35s ease;
@@ -2378,15 +2419,16 @@ body {
 }
 
 /* Tab strip: the row of tabs plus the "+" button */
+/* Tabs are floating glass pills now (no bottom-blend trapezoids), so the
+   strip centers them instead of stretching them onto its bottom border. */
 .tg-strip {
   display: flex;
-  align-items: stretch;
-  gap: 2px;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
   height: var(--head-h);
-  padding: 4px 6px 0;
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+  background: transparent;
   overflow-x: auto;
 }
 
@@ -2407,27 +2449,27 @@ body {
   align-items: center;
   gap: 6px;
   max-width: 160px;
-  padding: 6px 8px 6px 10px;
+  padding: 5px 8px 5px 10px;
   font-size: 12px;
   color: var(--fg-2);
-  background: var(--bg-0);
-  border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
 }
 
 .tg-tab:hover {
   color: var(--fg-0);
-  background: var(--bg-1);
+  background: var(--bg-2);
 }
 
+/* Current tab: a raised glass pill (fill + hairline + top edge-light). */
 .tg-tab-active {
   color: var(--fg-0);
-  background: var(--bg-0);
-  border-color: var(--accent);
-  border-bottom-color: var(--bg-0);
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+  box-shadow: var(--glass-edge), var(--shadow-1);
 }
 
 /* The tab being dragged to reorder: dim it so the gap it leaves is clear. */
@@ -2545,14 +2587,14 @@ body {
   position: fixed;
   z-index: 1000;
   min-width: 168px;
-  padding: 4px;
+  padding: 5px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--bg-1);
+  background: var(--glass-bg-strong);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  box-shadow: var(--shadow-2);
+  border-radius: 16px;
+  box-shadow: var(--glass-edge), var(--shadow-2);
 }
 
 .tg-add-item {
@@ -2745,7 +2787,8 @@ body {
   padding: 6px 14px;
   font-size: 11px;
   color: var(--warn);
-  background: var(--bg-1);
+  /* Sticky over scrolling content: needs the strong fill to keep masking. */
+  background: var(--glass-bg-strong);
   border-bottom: 1px solid var(--border);
 }
 
@@ -2806,7 +2849,7 @@ body {
   flex: 1;
   min-height: 0;
   height: 100%;
-  background: var(--bg-0);
+  background: transparent; /* tabs float; the sheet is .tg-panes */
 }
 
 /* === Card 13: attention alerts === */
@@ -2901,7 +2944,6 @@ body {
 
 .tg-tab-attention.tg-tab-active {
   border-color: var(--warn);
-  border-bottom-color: var(--bg-0);
 }
 
 /* The attention dot sits in the reserved slot before the label. Pulses gently
@@ -2960,11 +3002,11 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px;
-  background: var(--bg-1);
+  padding: 5px;
+  background: var(--glass-bg-strong);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  border-radius: 16px;
+  box-shadow: var(--glass-edge), var(--shadow-2);
 }
 
 .ctx-item {
@@ -3157,27 +3199,47 @@ body {
   background: var(--accent-tint);
 }
 
+.pb-row-selected .pb-name {
+  color: var(--fg-0);
+}
+
 .pb-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 6px 10px;
+  padding: 4px 10px; /* horizontal 10px must match browser.js BASE_INDENT */
+  min-height: 26px;
   text-align: left;
   background: transparent;
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: 8px;
   color: var(--fg-1);
   font-size: 13px;
   cursor: pointer;
+  transition: background 0.12s ease;
 }
 .pb-row:hover {
-  background: var(--bg-1);
+  background: var(--bg-2);
 }
+/* Row icons: browser.js emits emoji (📁/📄); hide the glyph (font-size 0)
+   and paint a clean OUTLINE shape over it with a CSS mask instead — sage
+   folders, quiet gray documents with a folded corner. Stroke style matches
+   the app's other SVG icons. CSS-only, no JS change. */
 .pb-icon {
   flex: 0 0 auto;
-  font-size: 14px;
+  width: 17px;
+  height: 17px;
+  font-size: 0;
   line-height: 1;
+  background: var(--fg-2);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h8l4 4v14H6z'/%3E%3Cpath d='M14 3v4h4'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 3h8l4 4v14H6z'/%3E%3Cpath d='M14 3v4h4'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.pb-row-dir .pb-icon {
+  background: var(--accent);
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'/%3E%3C/svg%3E");
 }
 .pb-name {
   flex: 1 1 auto;
@@ -3748,10 +3810,10 @@ body {
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--fg-0);
-  background: var(--bg-2);
+  background: var(--glass-bg-strong);
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
-  box-shadow: var(--shadow-2);
+  border-radius: 9px;
+  box-shadow: var(--glass-edge), var(--shadow-2);
   pointer-events: none;
   opacity: 0;
   transform: translateY(2px);
@@ -3831,9 +3893,9 @@ body {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background: var(--bg-1);
+  background: var(--glass-bg);
   border-left: 1px solid var(--border);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--glass-edge), var(--shadow-2);
 }
 .vault-head {
   display: flex;
@@ -3957,11 +4019,11 @@ body {
   flex-direction: column;
   max-width: calc(100vw - 48px);
   max-height: calc(100vh - 48px);
-  background: var(--bg-1);
+  background: var(--glass-bg-strong);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   padding: 12px;
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--glass-edge), var(--shadow-2);
 }
 .vault-crop-head {
   display: flex;
@@ -4282,7 +4344,7 @@ body {
 .agents-refresh {
   background: var(--bg-2);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg-1);
   cursor: pointer;
   font-size: 12px;
@@ -4317,8 +4379,9 @@ body {
   gap: 12px;
   background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 10px 14px;
+  box-shadow: var(--glass-edge), var(--shadow-1);
 }
 
 .agent-state-dot {
@@ -4391,7 +4454,7 @@ body {
 .agent-kill {
   background: transparent;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--fg-2);
   cursor: pointer;
   flex: none;
@@ -4403,4 +4466,103 @@ body {
   background: var(--danger-bg);
   border-color: var(--danger);
   color: var(--fg-0);
+}
+
+/* ===================================================================== */
+/* === Liquid glass materials (cards 29–30) ============================ */
+/* The blur that makes the translucent chrome read as glass. Applied only
+   to large, stable surfaces — never to per-row/hover items (each backdrop
+   filter costs GPU in WKWebView). The chrome diffuses the body's ambient
+   washes; the tab strip sits over the opaque terminal center, so it gets
+   the translucent fill but no blur (blurring a flat color is a no-op). */
+.modebar,
+.sidebar,
+.cmd-panel,
+.usage-bar,
+.paths-footer,
+.alert-banner {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+/* Floating overlays: the strongest glass — they sit over live content
+   (terminals, diffs), which melts into the blur behind them. */
+.modal,
+.tg-add-menu,
+.ctx-menu,
+.vault-panel,
+.vault-crop-box,
+.resume-overlay,
+#app-tooltip {
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+}
+
+/* Dimmed scrims behind modal layers pick up a light blur of their own so
+   the whole app melts back instead of just darkening. */
+.modal-backdrop,
+.vault-overlay,
+.vault-crop-backdrop {
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+/* The dark content sheets: rounded top shoulders START BELOW the floating
+   tab row. Applies to the terminal panes and every docked center panel so
+   they match side by side. (.tg-panes already clips; the others gain
+   overflow:hidden so their square heads clip to the radius.) */
+.tg-panes,
+.project-browser,
+.project-gitdiff,
+.project-web {
+  border-top-left-radius: var(--r-lg);
+  border-top-right-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+/* Fewer hairlines: modern glass separates by tone + space, not border
+   lines. This block drops the CHROME dividers in one reviewable place
+   (overriding the per-area rules above). Content dividers stay: the diff
+   file-list/split borders, the amber alert banner, control edges. */
+.modebar,
+.sidebar-head,
+.cmd-panel-head,
+.canvas-head,
+.pb-head,
+.gd-head,
+.web-head,
+.ft-head {
+  border-bottom: none;
+}
+.sidebar {
+  border-right: none;
+}
+.cmd-panel,
+.canvas-pane {
+  border-left: none;
+}
+.usage-bar,
+.paths-footer,
+.ws-shelf-section {
+  border-top: none;
+}
+.cmd-section:not(:last-child) {
+  border-bottom: none;
+}
+/* Resizers: invisible until touched — the accent hover/drag fill stays
+   (those :hover rules outrank this base override). */
+.canvas-resizer,
+.lay-resizer {
+  background: transparent;
+}
+.canvas-resizer {
+  border-left: none;
+}
+.center.lay-dock-left .lay-resizer,
+.center.lay-dock-right .lay-resizer {
+  border-left: none;
+}
+.center.lay-dock-top .lay-resizer,
+.center.lay-dock-bottom .lay-resizer {
+  border-top: none;
 }
