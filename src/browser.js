@@ -222,12 +222,14 @@ const sidebarEl = document.querySelector(".sidebar");
 const sidebarTreeEl = document.querySelector("#sidebar-files");
 const modeProjectsBtn = document.querySelector("#sb-view-projects");
 const modeFilesBtn = document.querySelector("#sb-view-files");
+const modeGitBtn = document.querySelector("#sb-view-git");
 const MODE_KEY = "octiq.sidebar.mode";
 
 // The selected project's folder paths (primary first), and the project the tree
 // was last drawn for — so re-selecting the same project keeps folders expanded.
 let sidebarPaths = [];
 let sidebarProjectId = null;
+let sidebarProjectName = "";
 let treeDrawnFor = undefined;
 
 /** Draw the selected project's folders in the sidebar. Each folder path is a
@@ -345,13 +347,21 @@ searchEl.addEventListener("keydown", (e) => {
   }
 });
 
-/** Switch the sidebar between the project list and the file tree. */
+/** Switch the sidebar between the project list, the file tree, and Git. "git"
+ *  keeps the project list in the sidebar and opens the center diff panel
+ *  (gitdiff.js) — that panel IS the Git view (changed files + diffs). Leaving
+ *  git mode closes the panel, so the tabs and the center always agree. */
 function setSidebarMode(mode) {
   const files = mode === "files";
+  const git = mode === "git";
   sidebarEl.classList.toggle("files-mode", files);
   modeFilesBtn.classList.toggle("gd-toggle-active", files);
-  modeProjectsBtn.classList.toggle("gd-toggle-active", !files);
-  localStorage.setItem(MODE_KEY, files ? "files" : "projects");
+  modeGitBtn.classList.toggle("gd-toggle-active", git);
+  modeProjectsBtn.classList.toggle("gd-toggle-active", !files && !git);
+  // Git is not persisted: the diff panel does not survive a reload, so the
+  // stored mode is always the tab to fall back to when the panel closes.
+  if (!git) localStorage.setItem(MODE_KEY, files ? "files" : "projects");
+  if (!git && isOpen("gitdiff")) closePanel("gitdiff");
   if (files) {
     searchQuery ? runSearch(searchQuery) : renderSidebarTree();
   }
@@ -359,9 +369,28 @@ function setSidebarMode(mode) {
 
 modeProjectsBtn.addEventListener("click", () => setSidebarMode("projects"));
 modeFilesBtn.addEventListener("click", () => setSidebarMode("files"));
+modeGitBtn.addEventListener("click", () => {
+  if (!sidebarProjectId) return; // no project selected — nothing to diff
+  window.dispatchEvent(
+    new CustomEvent("project-gitdiff", {
+      detail: { id: sidebarProjectId, name: sidebarProjectName, paths: sidebarPaths },
+    }),
+  );
+});
+
+// The Git tab highlight follows the diff panel however it opens (this tab or
+// the project right-click menu) and however it closes (its ✕, a project
+// deselect — gitdiff.js announces that with gitdiff-closed). A project SWITCH
+// keeps the panel open (gitdiff.js reloads it), so the tab stays on Git.
+window.addEventListener("project-gitdiff", () => setSidebarMode("git"));
+window.addEventListener("gitdiff-closed", () => {
+  if (modeGitBtn.classList.contains("gd-toggle-active"))
+    setSidebarMode(localStorage.getItem(MODE_KEY) || "projects");
+});
 
 window.addEventListener("project-selected", (e) => {
   sidebarProjectId = e.detail?.id ?? null;
+  sidebarProjectName = e.detail?.name || "";
   sidebarPaths = (e.detail?.paths || []).map((p) => p.replace(/[/\\]+$/, ""));
   // A query is scoped to one project's folders, so a project switch clears it.
   if (searchQuery) {

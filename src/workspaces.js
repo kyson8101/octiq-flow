@@ -191,7 +191,7 @@ function selected() {
 }
 
 /** Tell other modules which project is now selected (project.js terminals,
- *  commands.js command panel, gitactions.js Git tab). detail =
+ *  commands.js command panel, browser.js sidebar tabs). detail =
  *  { id, name, primaryPath, paths, actions, startup } or null. */
 function emitProjectSelected() {
   const ws = selected();

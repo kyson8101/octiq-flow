@@ -4,14 +4,15 @@
 // section); inside each section, one row per changed file. Clicking a file loads
 // its unified diff into the right pane, rendered GitHub-style with old/new line
 // numbers and green/red rows. A toggle switches between a Unified and a Split
-// (side-by-side) view.
+// (side-by-side) view; another regroups the file list Flat ↔ folder Tree.
 //
 // How it is driven:
 //   * workspaces.js dispatches `project-gitdiff` { id, name, paths } when the
 //     user picks "Git changes" from the project right-click menu. We show the
 //     panel and load the changes for those paths.
 //   * `project-selected` from workspaces.js: switching to a DIFFERENT project
-//     closes this panel and returns to the terminals (like the file browser).
+//     while open reloads the panel for the new project, so the sidebar's Git
+//     tab survives project changes. A deselect (null) closes it.
 //
 // It is a "main" panel of the layout manager (layout.js): opening it replaces
 // the terminal area, and layout.js closes whichever other center panel was
@@ -34,6 +35,8 @@ const refreshBtn = document.querySelector("#gd-refresh");
 const backBtn = document.querySelector("#gd-back");
 const unifiedBtn = document.querySelector("#gd-view-unified");
 const splitBtn = document.querySelector("#gd-view-split");
+const listFlatBtn = document.querySelector("#gd-list-flat");
+const listTreeBtn = document.querySelector("#gd-list-tree");
 
 // --- State -----------------------------------------------------------------
 // The project this panel is showing, so a switch to a DIFFERENT project closes
@@ -51,6 +54,11 @@ let selectedRow = null;
 let loadedHunks = null;
 // "unified" or "split" — the current diff view, remembered across files.
 let viewMode = "unified";
+// "flat" or "tree" — how the changed-file list is grouped.
+let listMode = "flat";
+// The repos from the last load, so the Flat/Tree toggle re-renders the list
+// without re-reading git.
+let loadedRepos = null;
 
 // --- Small DOM helpers ------------------------------------------------------
 /** Split a repo-relative path into { dir, name } so the list can dim the folder
@@ -71,7 +79,10 @@ registerPanel("gitdiff", {
   onHidden: () => {
     currentProjectId = null;
     currentPaths = [];
+    loadedRepos = null;
     clearDiff();
+    // The sidebar's Git tab highlight tracks this panel (browser.js).
+    window.dispatchEvent(new CustomEvent("gitdiff-closed"));
   },
 });
 
@@ -97,8 +108,10 @@ function statusLetter(status) {
   }
 }
 
-/** Build one clickable file row. Selecting it loads the diff on the right. */
-function fileRow(repo, file) {
+/** Build one clickable file row. Selecting it loads the diff on the right.
+ *  `depth` (tree mode only) indents the row under its folder and drops the
+ *  directory prefix — the folder rows above already carry it. */
+function fileRow(repo, file, depth = null) {
   const row = document.createElement("button");
   row.type = "button";
   row.className = "gd-file";
@@ -107,7 +120,10 @@ function fileRow(repo, file) {
   row.append(textEl("span", `gd-st ${st.cls}`, st.letter));
 
   const pathEl = textEl("span", "gd-file-path");
-  if (file.status === "renamed") {
+  if (depth != null) {
+    row.style.paddingLeft = indentFor(depth);
+    pathEl.append(textEl("span", "gd-file-name", splitPath(file.path).name));
+  } else if (file.status === "renamed") {
     // Renames already carry an "old → new" display; show it whole.
     pathEl.append(textEl("span", "gd-file-name", file.display));
   } else {
@@ -117,6 +133,12 @@ function fileRow(repo, file) {
   }
   pathEl.title = file.display;
   row.append(pathEl);
+
+  // A Flat/Tree re-render rebuilds every row; keep the open file highlighted.
+  if (selected && selected.root === repo.root && selected.file === file.path) {
+    row.classList.add("gd-file-selected");
+    selectedRow = row;
+  }
 
   // Add / remove counts on the right (tracked files; untracked show nothing).
   const counts = textEl("span", "gd-file-counts");
@@ -130,6 +152,61 @@ function fileRow(repo, file) {
 
   row.addEventListener("click", () => selectFile(repo.root, file, row));
   return row;
+}
+
+// --- Tree list mode ----------------------------------------------------------
+// The Flat/Tree head toggle regroups the file list. Tree mode nests the files
+// under collapsible folder rows, VS Code style.
+
+/** Left padding for a tree row at `depth` (6px is .gd-file's own padding). */
+const indentFor = (depth) => `${6 + depth * 14}px`;
+
+/** Group a repo's changed files by folder: { dirs: Map<name, node>, files: [] }.
+ *  A renamed file sits under its NEW path (file.path). */
+function buildTree(files) {
+  const root = { dirs: new Map(), files: [] };
+  for (const file of files) {
+    const parts = file.path.split("/");
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push(file);
+  }
+  return root;
+}
+
+/** Render a node's folders (collapsible), then its files, into `container`.
+ *  A folder chain with one child and no files of its own folds into a single
+ *  "a/b/c" row so deep paths don't waste rows. */
+function renderTreeInto(repo, node, depth, container) {
+  const dirs = [...node.dirs].sort((a, b) => a[0].localeCompare(b[0]));
+  for (let [name, child] of dirs) {
+    while (child.files.length === 0 && child.dirs.size === 1) {
+      const [childName, grandchild] = child.dirs.entries().next().value;
+      name += "/" + childName;
+      child = grandchild;
+    }
+
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "gd-file gd-dir";
+    row.style.paddingLeft = indentFor(depth);
+    const twisty = textEl("span", "gd-twisty", "▾");
+    row.append(twisty, textEl("span", "gd-dir-name", name));
+    container.append(row);
+
+    const children = document.createElement("div");
+    renderTreeInto(repo, child, depth + 1, children);
+    container.append(children);
+
+    row.addEventListener("click", () => {
+      children.hidden = !children.hidden;
+      twisty.textContent = children.hidden ? "▸" : "▾";
+    });
+  }
+  for (const file of node.files) container.append(fileRow(repo, file, depth));
 }
 
 /** Render the grouped file list: one section per repo, files under it. */
@@ -158,6 +235,8 @@ function renderList(repos) {
 
     if (!repo.files || repo.files.length === 0) {
       group.append(textEl("div", "gd-group-clean", "No changes"));
+    } else if (listMode === "tree") {
+      renderTreeInto(repo, buildTree(repo.files), 0, group);
     } else {
       for (const file of repo.files) group.append(fileRow(repo, file));
     }
@@ -409,9 +488,11 @@ async function loadChanges() {
   try {
     repos = await invoke("git_changed_files", { paths: currentPaths });
   } catch (err) {
+    loadedRepos = null;
     listMessage(`Could not load changes: ${err}`);
     return;
   }
+  loadedRepos = repos;
   renderList(repos);
 
   // Auto-select the first changed file so the diff pane is not empty.
@@ -419,13 +500,21 @@ async function loadChanges() {
   if (firstRow) firstRow.click();
 }
 
-// --- View toggle ------------------------------------------------------------
+// --- View toggles -------------------------------------------------------------
 function setView(mode) {
   if (mode === viewMode) return;
   viewMode = mode;
   unifiedBtn.classList.toggle("gd-toggle-active", mode === "unified");
   splitBtn.classList.toggle("gd-toggle-active", mode === "split");
   renderDiff(); // re-render the already-loaded diff in the new layout
+}
+
+function setListMode(mode) {
+  if (mode === listMode) return;
+  listMode = mode;
+  listFlatBtn.classList.toggle("gd-toggle-active", mode === "flat");
+  listTreeBtn.classList.toggle("gd-toggle-active", mode === "tree");
+  if (loadedRepos) renderList(loadedRepos); // regroup without re-reading git
 }
 
 // --- Entry points -----------------------------------------------------------
@@ -442,16 +531,27 @@ function openFor(detail) {
 
 window.addEventListener("project-gitdiff", (e) => openFor(e.detail));
 
-// Switching to a DIFFERENT project returns to terminals. Re-selecting the SAME
-// project (e.g. a refresh) leaves the panel open.
+// Switching to a DIFFERENT project keeps the panel open and reloads it for the
+// new project, so the sidebar's Git tab stays selected across project changes.
+// Re-selecting the SAME project (e.g. a refresh) leaves the panel as-is; a
+// deselect (no project) closes it.
 window.addEventListener("project-selected", (e) => {
-  const id = e.detail?.id ?? null;
-  if (isOpen("gitdiff") && id !== currentProjectId) closePanel("gitdiff");
+  if (!isOpen("gitdiff")) return;
+  const detail = e.detail;
+  if (!detail) {
+    closePanel("gitdiff");
+    return;
+  }
+  if (detail.id !== currentProjectId) {
+    openFor({ id: detail.id, name: detail.name, paths: detail.paths });
+  }
 });
 
 refreshBtn.addEventListener("click", loadChanges);
 backBtn.addEventListener("click", () => closePanel("gitdiff"));
 unifiedBtn.addEventListener("click", () => setView("unified"));
 splitBtn.addEventListener("click", () => setView("split"));
+listFlatBtn.addEventListener("click", () => setListMode("flat"));
+listTreeBtn.addEventListener("click", () => setListMode("tree"));
 
 clearDiff();

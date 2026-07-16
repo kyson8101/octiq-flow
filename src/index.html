@@ -36,7 +36,6 @@
     <script type="module" src="/project.js" defer></script>
     <script type="module" src="/filetabs.js" defer></script>
     <script type="module" src="/commands.js" defer></script>
-    <script type="module" src="/gitactions.js" defer></script>
     <script type="module" src="/modes.js" defer></script>
     <script type="module" src="/chat.js" defer></script>
     <script type="module" src="/browser.js" defer></script>
@@ -96,6 +95,7 @@
           <span class="gd-view-toggle" role="group" aria-label="Sidebar view">
             <button id="sb-view-projects" class="gd-toggle-btn gd-toggle-active" type="button">Projects</button>
             <button id="sb-view-files" class="gd-toggle-btn" type="button">Files</button>
+            <button id="sb-view-git" class="gd-toggle-btn" type="button">Git</button>
           </span>
           <span class="sidebar-head-actions">
             <button id="new-workspace" class="icon-btn" data-tip="New project">
@@ -186,7 +186,15 @@
 
           <!-- Body: changed-file list (left) | diff for the selected file (right). -->
           <div class="gd-body">
-            <div id="gd-list" class="gd-list"></div>
+            <div class="gd-list-pane">
+              <div class="gd-list-head">
+                <div class="gd-view-toggle" role="group" aria-label="File list layout">
+                  <button id="gd-list-flat" class="gd-toggle-btn gd-toggle-active" type="button">Flat</button>
+                  <button id="gd-list-tree" class="gd-toggle-btn" type="button">Tree</button>
+                </div>
+              </div>
+              <div id="gd-list" class="gd-list"></div>
+            </div>
 
             <div class="gd-diff-pane">
               <div id="gd-diff-head" class="gd-diff-head hidden">
@@ -318,7 +326,7 @@
       </aside>
 
       <!-- Right: collapsible panel that stacks accordion sections top→bottom
-           (Terminal font & colors, Commands, Git). Only one is open at a time;
+           (Terminal font & colors, Commands). Only one is open at a time;
            commands.js wires the accordion and remembers which one is open. -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
@@ -443,42 +451,6 @@
 
             <ul id="cmd-list" class="cmd-list"></ul>
             <p id="cmd-empty" class="ws-empty">No commands yet. Press + to add one.</p>
-          </div>
-
-          <!-- Git section (bottom): common git actions for the project's primary repo. -->
-          <div id="cmd-tab-git" class="cmd-tabpane cmd-section cmd-section-git">
-            <div class="cmd-section-head">
-              <span class="cmd-section-title">Git</span>
-            </div>
-            <p id="git-hint" class="ws-empty">Select a project to use git.</p>
-
-            <div id="git-actions" class="git-actions hidden">
-              <div class="git-branch-line">
-                <span class="git-branch-label">On branch</span>
-                <span id="git-current-branch" class="git-branch-name" title="Current branch">—</span>
-                <button id="git-branch-refresh" class="icon-btn" data-tip="Refresh branches">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
-                </button>
-              </div>
-
-              <button id="git-diff-btn" class="btn git-action-btn">View diff</button>
-
-              <div class="git-section">
-                <label class="git-field-label" for="git-branch-select">Switch branch</label>
-                <div class="git-switch-row">
-                  <select id="git-branch-select" class="git-select"></select>
-                  <button id="git-switch-btn" class="btn btn-sm">Switch</button>
-                </div>
-              </div>
-
-              <div class="git-section">
-                <label class="git-field-label" for="git-commit-msg">Commit (tracked changes)</label>
-                <input id="git-commit-msg" class="inline-input" placeholder="Commit message" autocomplete="off" />
-                <button id="git-commit-btn" class="btn btn-primary btn-sm">Commit</button>
-              </div>
-
-              <button id="git-push-btn" class="btn btn-accent git-action-btn">Push</button>
-            </div>
           </div>
 
         </div>
