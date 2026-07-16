@@ -16,7 +16,7 @@
 //
 // project.js learns of selection from a `project-selected` window event that
 // workspaces.js dispatches: detail = { id, primaryPath } or null.
-import { createTerminalGroup, onceTerminalOutput, setAgentTab } from "/terminals.js";
+import { createTerminalGroup, onceTerminalOutput } from "/terminals.js";
 import { shQuote } from "/util.js";
 
 const { invoke } = window.__TAURI__.core;
@@ -526,10 +526,9 @@ async function refreshTitles() {
   }).catch(() => jobs.map(() => null));
   jobs.forEach(({ rec, ptyId }, i) => {
     const info = infos[i];
-    // Tell the silence monitor (card 15) which tabs really run an agent, so it
-    // never mistakes an idle `vim` or a paused build for an agent awaiting you.
-    // A dropped backend read (info === null) leaves the last known value alone.
-    if (info) setAgentTab(ptyId, !!info.isAgent);
+    // (Agent-tab registration for the monitors no longer rides this poll — it
+    // moved to terminals.js's pollAgentTabs, which also covers chat tabs and
+    // keeps running while the window is hidden.)
     if (info?.isAgent) {
       // Agent tab: use the session title once the agent has generated one.
       // Until then leave the current name — do NOT fall back to a command.

@@ -662,26 +662,28 @@ document.addEventListener("visibilitychange", () => {
 //   ACTIVITY — a tab printed while the user was not looking at it. A subtle
 //     per-tab dot, no banner and no OS notification: it answers "did anything
 //     happen over there", not "come here now". Cleared by looking at the tab.
+//     OFF by default (tmux-style opt-in): left on, every streaming background
+//     tab would light up.
 //   SILENCE  — an AGENT tab (Claude/Codex, confirmed by the backend session
 //     map, not merely a non-shell foreground) printed and then went quiet for
 //     `silenceSeconds`. That is almost always the agent finishing its turn and
 //     waiting, so this one raises a real attention alert through alerts.js.
+//     ALWAYS ON — "your agent finished and is waiting" is the one notification
+//     this app exists to give, so it needs no setting. False positives are
+//     bounded by the agent-tab gate: a quiet `vim` or a paused build never
+//     fires because only backend-confirmed agent sessions arm the timer.
 //
 // Detection is frontend-side on purpose: this file already owns tab visibility
 // and sees every chunk in the single pty-output listener, while the backend
 // knows nothing about which tab is focused.
-//
-// Both are OFF by default (see DEFAULT_TERMINAL_SETTINGS) — a long build or a
-// slow agent tool call would otherwise flag tabs that do not need the user.
 
-// The three monitor settings, cached so the pty-output hot path never rebuilds
-// the whole settings object per chunk. Refreshed on the settings-change event.
-let monitors = { activity: false, silence: false, silenceMs: 15000 };
+// The monitor settings, cached so the pty-output hot path never rebuilds the
+// whole settings object per chunk. Refreshed on the settings-change event.
+let monitors = { activity: false, silenceMs: 15000 };
 
 function readMonitorSettings(s) {
   monitors = {
     activity: !!s.monitorActivity,
-    silence: !!s.monitorSilence,
     silenceMs: s.silenceSeconds * 1000,
   };
 }
@@ -695,9 +697,9 @@ export const MONITOR_ALERT = "tg-monitor-alert";
 // Tabs currently flagged with the activity dot.
 const activityTabs = new Set();
 
-// Tabs the BACKEND confirmed are running an agent session (project.js pushes
-// this from its agent_tab_info poll). The silence monitor arms only for these,
-// so an idle `vim` or a paused build never looks like an agent waiting for you.
+// Tabs the BACKEND confirmed are running an agent session (fed by the
+// pollAgentTabs sweep below). The silence monitor arms only for these, so an
+// idle `vim` or a paused build never looks like an agent waiting for you.
 const agentTabs = new Set();
 
 // Tabs whose next quiet stretch should fire exactly one silence alert. Output
@@ -739,7 +741,7 @@ function clearActivity(id) {
  *  `silenceMs`. Runs on the working tick. A tab the user is already watching is
  *  disarmed silently — its prompt is right in front of them. */
 function refreshSilence() {
-  if (!monitors.silence || silenceArmed.size === 0) return;
+  if (silenceArmed.size === 0) return;
   const now = performance.now();
   for (const id of [...silenceArmed]) {
     if (!idToEntry.has(id)) {
@@ -764,13 +766,45 @@ function refreshSilence() {
   }
 }
 
-/** Tell the monitors whether a terminal is running an agent session. project.js
- *  already polls `agent_tab_infos` for auto-titling; this rides that result
- *  instead of adding a second backend query. */
-export function setAgentTab(id, isAgent) {
+/** Set whether a terminal is running an agent session. Fires "tg-agents-change"
+ *  on a real change so the idle badge (working.js) recounts. Internal: fed by
+ *  pollAgentTabs below and the close path — no module imports it anymore. */
+function setAgentTab(id, isAgent) {
+  if (isAgent === agentTabs.has(id)) return;
   if (isAgent) agentTabs.add(id);
   else agentTabs.delete(id);
+  window.dispatchEvent(new CustomEvent("tg-agents-change"));
 }
+
+/** Agent sessions that are open but NOT streaming right now — idle, probably
+ *  waiting for you. working.js counts these on the Agents mode button; the
+ *  Agents screen lists them with click-to-jump rows. */
+export function idleAgentList() {
+  return [...agentTabs].filter((id) => idToEntry.has(id) && !working.has(id));
+}
+
+// Feed agentTabs for EVERY live tab — project, chat, and command groups alike —
+// with one batched `agent_tab_infos` call (the backend read is mtime-cached).
+// This used to ride project.js's title poll, which (a) never saw chat tabs, so
+// a Chat-mode agent could never raise a silence alert, and (b) stopped while
+// the window was hidden — exactly when the user most needs the notification.
+// So it runs on its own timer here, hidden or not.
+const AGENT_TAB_POLL_MS = 5000;
+async function pollAgentTabs() {
+  const jobs = [...idToEntry].filter(([, e]) => e.persistKey);
+  if (jobs.length === 0) return;
+  let infos;
+  try {
+    infos = await invoke("agent_tab_infos", { keys: jobs.map(([, e]) => e.persistKey) });
+  } catch {
+    return; // backend hiccup: keep the last known values, retry next tick
+  }
+  jobs.forEach(([id], i) => {
+    // A dropped read (null info) leaves the last known value alone.
+    if (infos[i]) setAgentTab(id, !!infos[i].isAgent);
+  });
+}
+setInterval(pollAgentTabs, AGENT_TAB_POLL_MS);
 
 // modes.js owns the top-level view router but does not export a setMode. We
 // switch views by clicking the matching mode button, exactly as a user would.
@@ -1732,7 +1766,8 @@ class TerminalGroup {
     // Monitor state for a dead terminal (card 15). The DOM is about to go, so
     // drop the flags straight from the sets rather than repainting.
     activityTabs.delete(ptyId);
-    agentTabs.delete(ptyId);
+    // Through setAgentTab so tg-agents-change fires and the idle badge drops it.
+    setAgentTab(ptyId, false);
     silenceArmed.delete(ptyId);
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();

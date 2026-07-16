@@ -9,7 +9,7 @@
 // It mirrors the attention-badge code in alerts.js: derive per-project totals
 // from the namespaced pty ids, apply them to the rows, and re-apply after the
 // project list re-renders (renderList wipes the row DOM).
-import { workingList } from "/terminals.js";
+import { workingList, idleAgentList } from "/terminals.js";
 
 // PTY ids are namespaced: "chat:N", "util:N", "cmd:<projectId>:N" (a command
 // terminal), or "<projectId>:N" (a project terminal). Only the last two belong
@@ -61,9 +61,28 @@ function setRowBadge(row, n) {
   badge.title = n === 1 ? "1 agent working" : `${n} agents working`;
 }
 
+// ---- Idle-agent count on the Agents mode button (card 34) ------------------
+// "Idle" = an agent session that is open but not streaming output — probably
+// finished and waiting. The badge is the glanceable count; the Agents screen
+// behind the button is the full list, where each row jumps to its terminal.
+function applyIdleBadge() {
+  const badge = document.getElementById("agents-idle-badge");
+  if (!badge) return;
+  const n = idleAgentList().length;
+  badge.textContent = String(n);
+  badge.classList.toggle("hidden", n === 0);
+  badge.title = n === 1 ? "1 idle agent session" : `${n} idle agent sessions`;
+}
+
 // Re-apply whenever the working set changes (top-level so an early poll event is
-// never missed) — matches how alerts.js binds its attention re-render.
-window.addEventListener("tg-working-change", applyWorkingCounts);
+// never missed) — matches how alerts.js binds its attention re-render. The idle
+// badge recounts on the same event, plus whenever the agent-tab set itself
+// changes (an agent session starting or ending).
+window.addEventListener("tg-working-change", () => {
+  applyWorkingCounts();
+  applyIdleBadge();
+});
+window.addEventListener("tg-agents-change", applyIdleBadge);
 
 document.addEventListener("DOMContentLoaded", () => {
   // The project list re-renders (workspaces.js) on select / refresh, which drops
@@ -73,4 +92,5 @@ document.addEventListener("DOMContentLoaded", () => {
     new MutationObserver(applyWorkingCounts).observe(list, { childList: true });
   }
   applyWorkingCounts();
+  applyIdleBadge();
 });

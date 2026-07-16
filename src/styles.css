@@ -2263,6 +2263,22 @@ body {
   color: var(--fg-0);
 }
 
+/* Idle-agent count on the Agents mode button (card 34): sessions open but not
+   streaming. Amber, matching the Agents screen's idle state dot. */
+.modebtn-idle-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 15px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  color: var(--bg-0);
+  background: var(--warn);
+  border-radius: 999px;
+}
+
 .modebtn-active {
   color: var(--fg-0);
   background: var(--bg-2);
