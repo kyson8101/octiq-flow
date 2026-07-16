@@ -535,7 +535,7 @@ export function workingList() {
  *  was closed, or the agent runs outside the app). The Agents screen labels each
  *  agent process with this so a row reads "auth refactor", not "proj-7:2". */
 export function terminalTitle(id) {
-  return entryFor(id)?.title || "";
+  return entryFor(id)?.group.tabs.get(id)?.title || "";
 }
 
 // `terminalSnapshot()` used to live here: a full snapshot of every live terminal
