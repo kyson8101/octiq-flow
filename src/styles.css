@@ -194,45 +194,47 @@ body {
 .cmd-panel-head {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 4px;
   flex-shrink: 0;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 
-/* Each stacked section's header: a disclosure chevron + uppercase title (and,
-   for Commands / Screenshots, the action buttons). Click to open this section
-   (accordion). Sticky so it stays put while the open section scrolls. */
+/* Icon tab strip: one icon per panel (Terminal font & colors, Commands).
+   Click an icon to switch which panel shows below — see .cmd-tab-btn.active
+   and commands.js's tab switcher. */
+.cmd-tab-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cmd-panel-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Active tab: filled capsule + accent icon (no left-border strip). */
+.cmd-tab-btn.active {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+/* Each panel's header: uppercase title (and, for Commands, the add button).
+   Sticky so it stays put while the panel body scrolls. */
 .cmd-section-head {
   display: flex;
   align-items: center;
   gap: 6px;
   min-height: 22px;
-  cursor: pointer;
-  user-select: none;
   position: sticky;
   top: 0;
   z-index: 1;
   /* The panel behind is translucent glass now, so the sticky head needs the
      stronger fill to keep masking rows that scroll under it. */
   background: var(--glass-bg-strong);
-}
-
-/* Leading chevron: points right when collapsed, down when the section is open. */
-.cmd-section-head::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  flex-shrink: 0;
-  border-right: 1.5px solid var(--fg-2);
-  border-bottom: 1.5px solid var(--fg-2);
-  transform: rotate(-45deg);
-  transition: transform 0.15s ease;
-}
-
-.cmd-section:not(.collapsed) > .cmd-section-head::before {
-  transform: rotate(45deg);
 }
 
 /* Any trailing head control (the add "+" / capture / refresh) sits at the far
@@ -254,15 +256,27 @@ body {
   display: none;
 }
 
-/* Collapsed (44px) panel: stack the head's buttons vertically so the canvas
-   toggle and the expand chevron both fit in the narrow rail instead of
-   overflowing onto the canvas pane / terminals to their left. */
+/* Collapsed (44px) panel: every head icon stays visible, stacked in a single
+   column (tab icons still switch the panel that reappears on expand) so they
+   all fit in the narrow rail instead of overflowing onto the canvas pane /
+   terminals to their left. A rule separates the tab icons from the
+   canvas/collapse icons below them. */
 .cmd-panel.collapsed .cmd-panel-head {
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
   padding: 8px 4px;
+}
+
+.cmd-panel.collapsed .cmd-tab-strip,
+.cmd-panel.collapsed .cmd-panel-head-actions {
+  flex-direction: column;
+}
+
+.cmd-panel.collapsed .cmd-panel-head-actions {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
 }
 
 /* Panel toggle: chevrons point right (collapse) and flip when collapsed. */
@@ -552,32 +566,21 @@ body {
 }
 
 /* Every panel section: head + body stacked, with uniform padding across all of
-   them (Open folder, Terminal font, Commands, Git, Screenshots) so they line up.
-   Accordion — only one is open at a time: the open section grows and scrolls,
-   collapsed ones show just their head. */
+   them (Terminal font, Commands) so they line up. Tab-switched — only the
+   active one (picked via the icon tab strip) is shown, and it fills the panel
+   and scrolls. */
 .cmd-section {
-  display: flex;
+  display: none;
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
   min-height: 0;
-}
-
-.cmd-section:not(:last-child) {
-  border-bottom: 1px solid var(--border);
-}
-
-.cmd-section:not(.collapsed) {
   flex: 1 1 auto;
   overflow-y: auto;
 }
 
-.cmd-section.collapsed {
-  flex: 0 0 auto;
-}
-
-.cmd-section.collapsed > :not(.cmd-section-head) {
-  display: none;
+.cmd-section.active {
+  display: flex;
 }
 
 /* Font controls sit in the narrow panel now: let selects fill the width and drop
@@ -4503,9 +4506,6 @@ body {
 .paths-footer,
 .ws-shelf-section {
   border-top: none;
-}
-.cmd-section:not(:last-child) {
-  border-bottom: none;
 }
 /* Resizers: invisible until touched — the accent hover/drag fill stays
    (those :hover rules outrank this base override). */

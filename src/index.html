@@ -325,20 +325,31 @@
         </div>
       </aside>
 
-      <!-- Right: collapsible panel that stacks accordion sections top→bottom
-           (Terminal font & colors, Commands). Only one is open at a time;
-           commands.js wires the accordion and remembers which one is open. -->
+      <!-- Right: a panel with an icon tab strip on top (Terminal font &
+           colors, Commands). Only one tab's panel shows at a time; click an
+           icon to switch. commands.js wires the tab strip and remembers
+           which tab was last open. -->
       <aside id="cmd-panel" class="cmd-panel">
         <div class="cmd-panel-head">
-          <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 9h11"/><path d="M3 15h11"/></svg>
-          </button>
-          <button id="cmd-panel-toggle" class="icon-btn cmd-panel-toggle" title="Collapse panel" aria-expanded="true">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="m6 17 5-5-5-5" />
-              <path d="m13 17 5-5-5-5" />
-            </svg>
-          </button>
+          <div class="cmd-tab-strip" role="tablist">
+            <button type="button" class="icon-btn cmd-tab-btn" data-tab="font" data-tip="Terminal font & colors" role="tab" aria-selected="false">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+            </button>
+            <button type="button" class="icon-btn cmd-tab-btn active" data-tab="commands" data-tip="Commands" role="tab" aria-selected="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+            </button>
+          </div>
+          <div class="cmd-panel-head-actions">
+            <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 9h11"/><path d="M3 15h11"/></svg>
+            </button>
+            <button id="cmd-panel-toggle" class="icon-btn cmd-panel-toggle" title="Collapse panel" aria-expanded="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m6 17 5-5-5-5" />
+                <path d="m13 17 5-5-5-5" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         <div class="cmd-panel-body">
@@ -347,7 +358,7 @@
                previews live on the project's terminals to the left. workspaces.js
                keeps these #modal-font-* / #modal-theme-* controls (same ids) in
                step with the selected project. -->
-          <div class="cmd-section cmd-section-font">
+          <div class="cmd-section cmd-section-font" data-tab-panel="font">
             <div class="cmd-section-head">
               <span class="cmd-section-title">Terminal font & colors</span>
             </div>
@@ -432,7 +443,7 @@
           </div>
 
           <!-- Commands section (top) -->
-          <div id="cmd-tab-commands" class="cmd-tabpane cmd-section cmd-section-commands">
+          <div id="cmd-tab-commands" class="cmd-section cmd-section-commands active" data-tab-panel="commands">
             <div class="cmd-section-head">
               <span class="cmd-section-title">Commands</span>
               <button id="cmd-add" class="icon-btn" data-tip="Add command">
