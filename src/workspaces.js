@@ -938,8 +938,10 @@ newBtn.addEventListener("click", () => {
 // Mirrors the right command panel's collapse. State is remembered in
 // localStorage so the sidebar stays collapsed/expanded across restarts.
 const SIDEBAR_COLLAPSE_KEY = "octiq.sidebarCollapsed";
+let sidebarCollapsed = false;
 
 function applySidebarCollapsed(collapsed) {
+  sidebarCollapsed = collapsed;
   sidebarEl.classList.toggle("collapsed", collapsed);
   sidebarToggleBtn.setAttribute("aria-expanded", String(!collapsed));
   sidebarToggleBtn.setAttribute(
@@ -951,9 +953,21 @@ function applySidebarCollapsed(collapsed) {
 applySidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === "1");
 
 sidebarToggleBtn.addEventListener("click", () => {
-  const collapsed = !sidebarEl.classList.contains("collapsed");
+  const collapsed = !sidebarCollapsed;
   applySidebarCollapsed(collapsed);
   localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? "1" : "0");
+});
+
+// Hover-to-peek: while collapsed, hovering the rail temporarily expands it
+// (visual only — the "collapsed" class comes off) and hovering away
+// collapses it back. The persisted collapsed state (sidebarCollapsed) never
+// changes, so the toggle button and localStorage stay correct.
+sidebarEl.addEventListener("mouseenter", () => {
+  if (sidebarCollapsed) sidebarEl.classList.remove("collapsed");
+});
+
+sidebarEl.addEventListener("mouseleave", () => {
+  if (sidebarCollapsed) sidebarEl.classList.add("collapsed");
 });
 
 // --- Collapse / expand the Shelved section ---------------------------------
