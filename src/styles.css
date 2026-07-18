@@ -705,6 +705,15 @@ body {
   overflow: hidden;
 }
 
+/* Hover-to-peek (workspaces.js): hovering the project list widens the rail
+   back out so full rows are readable. The head is deliberately NOT part of
+   this — every .sidebar.collapsed rule below keeps applying during peek —
+   so the collapse toggle button never moves and is never a moving target to
+   chase with the mouse. */
+.sidebar.collapsed.peek {
+  width: 260px;
+}
+
 .sidebar-head {
   display: flex;
   flex: 0 0 auto;
@@ -729,44 +738,35 @@ body {
 }
 
 /* Collapsed rail: the active project list stays, but each row shrinks to just
-   its initial-letter avatar. Hide the parts that need the full width. */
-.sidebar.collapsed .ws-list {
+   its initial-letter avatar. Hide the parts that need the full width.
+   :not(.peek) — hovering the list (see workspaces.js) suspends these so full
+   rows reappear, same as the expanded sidebar. */
+.sidebar.collapsed:not(.peek) .ws-list {
   padding: 6px 0;
 }
 
-.sidebar.collapsed .ws-item {
+.sidebar.collapsed:not(.peek) .ws-item {
   justify-content: center;
   padding: 4px 0;
   gap: 0;
 }
 
-.sidebar.collapsed .ws-item-body {
+.sidebar.collapsed:not(.peek) .ws-item-body {
   display: none;
 }
 
 /* The collapsed rail has no per-row hover/selected wash — the avatar carries
    the selected state instead, so the row background stays flat. */
-.sidebar.collapsed .ws-item:hover,
-.sidebar.collapsed .ws-item.selected,
-.sidebar.collapsed .ws-item.selected:hover {
+.sidebar.collapsed:not(.peek) .ws-item:hover,
+.sidebar.collapsed:not(.peek) .ws-item.selected,
+.sidebar.collapsed:not(.peek) .ws-item.selected:hover {
   background: transparent;
 }
 
-/* New + collapse buttons sit together on the right of the head. */
 .sidebar-head-actions {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-}
-
-/* Toggle chevrons point left (collapse) and flip when collapsed. */
-.sidebar-toggle svg {
-  display: block;
-  transition: transform 0.15s ease;
-}
-
-.sidebar.collapsed .sidebar-toggle svg {
-  transform: rotate(180deg);
 }
 
 .sidebar-title {
@@ -953,14 +953,15 @@ body {
 }
 
 /* Selected project on the collapsed rail: the avatar fills with its accent
-   color so it reads as current at a glance. */
-.sidebar.collapsed .ws-item.selected .ws-item-initial {
+   color so it reads as current at a glance. Suspended during .peek — the
+   full row's own selected wash (from the :not(.peek) rules above) takes over. */
+.sidebar.collapsed:not(.peek) .ws-item.selected .ws-item-initial {
   background: var(--ws-bar, var(--fg-3));
   border-color: var(--ws-bar, var(--fg-3));
   color: var(--bg-0);
 }
 
-.sidebar.collapsed .ws-item:hover .ws-item-initial {
+.sidebar.collapsed:not(.peek) .ws-item:hover .ws-item-initial {
   border-color: var(--ws-bar, var(--fg-3));
 }
 
@@ -1745,7 +1746,7 @@ body {
 /* On the collapsed rail the name (and its dot) is hidden, so show the attention
    dot on the initial-letter avatar instead — a small amber dot at its top-right
    corner. The 2px ring is the rail background so the dot reads as a cutout. */
-.sidebar.collapsed .ws-item-attention .ws-item-initial::after {
+.sidebar.collapsed:not(.peek) .ws-item-attention .ws-item-initial::after {
   content: "";
   position: absolute;
   top: -3px;
@@ -1788,11 +1789,11 @@ body {
    working state as a sage dot at the avatar's BOTTOM-right corner, so it never
    collides with the amber attention dot at the top-right. The 2px ring is the
    rail background, so the dot reads as a cutout. */
-.sidebar.collapsed .ws-working-badge {
+.sidebar.collapsed:not(.peek) .ws-working-badge {
   display: none;
 }
 
-.sidebar.collapsed .ws-item-working .ws-item-initial::before {
+.sidebar.collapsed:not(.peek) .ws-item-working .ws-item-initial::before {
   content: "";
   position: absolute;
   bottom: -3px;
@@ -2138,15 +2139,27 @@ body {
   margin-top: 0;
 }
 
+/* Now a <button> (click toggles the projects sidebar) — reset the native
+   button chrome so it still reads as plain brand text. */
 .modebar-brand {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   flex-shrink: 0;
+  font: inherit;
   font-weight: 700;
   font-size: 13px;
   letter-spacing: 0.2px;
   color: var(--fg-0);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.modebar-brand:hover {
+  opacity: 0.75;
 }
 
 .modebar-brand-mark {

@@ -59,7 +59,7 @@
 
       <!-- Top-level mode bar: one view shows at a time (router in modes.js) -->
       <nav class="modebar">
-        <span class="modebar-brand" aria-label="OctiqFlow">
+        <button id="modebar-brand" class="modebar-brand" type="button" aria-label="OctiqFlow" data-tip="Toggle the projects panel">
           <img
             class="modebar-brand-mark"
             src="assets/brand/app-icons/octiq-flow-64.png"
@@ -68,7 +68,7 @@
             height="24"
           />
           <span>OctiqFlow</span>
-        </span>
+        </button>
         <div class="modebar-tabs">
           <button class="modebtn modebtn-active" data-mode="project">Project</button>
           <button class="modebtn" data-mode="chat">Chat</button>
@@ -100,12 +100,6 @@
           <span class="sidebar-head-actions">
             <button id="new-workspace" class="icon-btn" data-tip="New project">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-            </button>
-            <button id="sidebar-toggle" class="icon-btn sidebar-toggle" data-tip="Collapse projects" aria-expanded="true">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="m11 17-5-5 5-5" />
-                <path d="m18 17-5-5 5-5" />
-              </svg>
             </button>
           </span>
         </div>

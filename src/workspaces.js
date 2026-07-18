@@ -35,7 +35,7 @@ const shelfToggleBtn = document.querySelector("#workspace-shelf-toggle");
 const shelfCountEl = document.querySelector("#workspace-shelf-count");
 const newBtn = document.querySelector("#new-workspace");
 const sidebarEl = document.querySelector(".sidebar");
-const sidebarToggleBtn = document.querySelector("#sidebar-toggle");
+const sidebarToggleBtn = document.querySelector("#modebar-brand");
 const newModalEl = document.querySelector("#new-modal");
 const newModalFolderEl = document.querySelector("#new-modal-folder");
 const newModalPickBtn = document.querySelector("#new-modal-pick");
@@ -935,8 +935,9 @@ newBtn.addEventListener("click", () => {
 });
 
 // --- Collapse / expand the project sidebar ---------------------------------
-// Mirrors the right command panel's collapse. State is remembered in
-// localStorage so the sidebar stays collapsed/expanded across restarts.
+// No dedicated toggle icon — clicking the app logo (#modebar-brand, top
+// left) toggles it. State is remembered in localStorage so the sidebar stays
+// collapsed/expanded across restarts.
 const SIDEBAR_COLLAPSE_KEY = "octiq.sidebarCollapsed";
 let sidebarCollapsed = false;
 
@@ -958,16 +959,18 @@ sidebarToggleBtn.addEventListener("click", () => {
   localStorage.setItem(SIDEBAR_COLLAPSE_KEY, collapsed ? "1" : "0");
 });
 
-// Hover-to-peek: while collapsed, hovering the rail temporarily expands it
-// (visual only — the "collapsed" class comes off) and hovering away
-// collapses it back. The persisted collapsed state (sidebarCollapsed) never
-// changes, so the toggle button and localStorage stay correct.
-sidebarEl.addEventListener("mouseenter", () => {
-  if (sidebarCollapsed) sidebarEl.classList.remove("collapsed");
+// Hover-to-peek: while collapsed, hovering the project LIST (not the head)
+// temporarily widens the rail so full rows are readable, then narrows back
+// on mouseleave. Scoped to listEl, not the whole sidebar, so hovering the
+// (now empty) sidebar head never triggers a peek. The "peek" class only
+// affects list styling (see styles.css); the persisted collapsed state
+// (sidebarCollapsed) never changes.
+listEl.addEventListener("mouseenter", () => {
+  if (sidebarCollapsed) sidebarEl.classList.add("peek");
 });
 
-sidebarEl.addEventListener("mouseleave", () => {
-  if (sidebarCollapsed) sidebarEl.classList.add("collapsed");
+listEl.addEventListener("mouseleave", () => {
+  sidebarEl.classList.remove("peek");
 });
 
 // --- Collapse / expand the Shelved section ---------------------------------
