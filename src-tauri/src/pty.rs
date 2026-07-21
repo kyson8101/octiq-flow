@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Upper bound on the OSC scan buffer's retained tail (bytes). An OSC
 /// attention sequence is tiny; anything longer is plain output that can be
@@ -232,6 +232,29 @@ impl PtyManager {
             .into_iter()
             .map(|p| (p.id, agent_running(&p.master, p.shell_pid)))
             .collect()
+    }
+
+    /// Remove one session and reap its child: kill (best-effort — it may already
+    /// be dead), then wait, so the process can never linger as a zombie in the
+    /// OS process table. Returns whether a session with this id existed.
+    ///
+    /// Two callers: `pty_close` for a tab the user closes, and the reader
+    /// thread when a shell exits ON ITS OWN (`exit`, Ctrl-D, a crash). The
+    /// second path used to leave the dead child un-waited — one `<defunct>`
+    /// entry per self-exited shell until the app quit — and kept its stale pid
+    /// in `shell_pids`, where an OS pid reuse could match it to the wrong
+    /// process.
+    fn reap_session(&self, id: &str) -> bool {
+        let session = match self.sessions.lock() {
+            Ok(mut sessions) => sessions.remove(id),
+            Err(_) => None,
+        };
+        let Some(mut session) = session else {
+            return false;
+        };
+        let _ = session.child.kill();
+        let _ = session.child.wait();
+        true
     }
 
     /// Each live session's shell pid -> its session id. agents.rs walks an agent
@@ -872,6 +895,15 @@ pub fn pty_spawn(
                 Err(_) => break,
             }
         }
+        // The stream ended: the shell exited on its own (EOF) or the PTY died.
+        // A user-closed tab is reaped by `pty_close`; nothing reaps THIS child,
+        // so without this it sits as a zombie until the app quits. Reaping here
+        // also races safely with `pty_close` — whichever takes the session from
+        // the map does the wait, the other is a no-op. try_state: app teardown
+        // may already have dropped the managed state.
+        if let Some(manager) = app_handle.try_state::<PtyManager>() {
+            manager.reap_session(&emit_id);
+        }
     });
 
     // Registration is the LAST step, but the shell and its two threads already
@@ -1013,15 +1045,7 @@ pub fn pty_resize(
 /// an unknown id is a no-op success (idempotent).
 #[tauri::command]
 pub fn pty_close(manager: State<PtyManager>, id: String) -> Result<(), String> {
-    let session = {
-        let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.remove(&id)
-    };
-    if let Some(mut session) = session {
-        // Best-effort kill; the shell may already be gone.
-        let _ = session.child.kill();
-        let _ = session.child.wait();
-    }
+    manager.reap_session(&id);
     Ok(())
 }
 
@@ -1557,6 +1581,50 @@ mod tests {
         let seq = format!("\x1b]99;p=body;{}\x07", "x".repeat(1000));
         let (_, body) = hits(&seq).into_iter().next().expect("one hit");
         assert_eq!(body.chars().count(), MAX_ALERT_TEXT_CHARS);
+    }
+
+    // ---- reap_session: no shell may linger as a zombie ----------------------
+
+    #[test]
+    #[cfg(unix)]
+    fn reap_session_reaps_a_dead_shell_and_forgets_it() {
+        use super::{PtyManager, Session};
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+        use std::sync::{Arc, Mutex};
+
+        let manager = PtyManager::default();
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 4,
+                cols: 20,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let writer = pair.master.take_writer().expect("writer");
+        // A child that exits immediately: the self-exited-shell (EOF) case.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("exit 0");
+        let child = pair.slave.spawn_command(cmd).expect("spawn");
+        manager.sessions.lock().unwrap().insert(
+            "t".into(),
+            Session {
+                master: Arc::new(Mutex::new(pair.master)),
+                writer: Arc::new(Mutex::new(writer)),
+                child,
+                out: Arc::new(Mutex::new(OutBuf::new())),
+                persist_key: None,
+                shell_pid: None,
+            },
+        );
+
+        assert!(manager.reap_session("t"), "a registered session is reaped");
+        assert!(
+            manager.sessions.lock().unwrap().is_empty(),
+            "the dead session is dropped from the map"
+        );
+        assert!(!manager.reap_session("t"), "reaping again is a no-op");
     }
 
     #[test]
