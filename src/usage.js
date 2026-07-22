@@ -130,9 +130,11 @@ function meter(label, win) {
   el.append(val);
 
   const reset = resetText(win.resetsAt);
-  el.title = `${label === "5h" ? "5-hour" : "weekly"} usage: ${val.textContent}${
-    reset ? ` · ${reset}` : ""
-  }`;
+  // "5h"/"wk" are the fixed windows; any other label is a per-model weekly
+  // window (e.g. "fable", "opus").
+  const kind =
+    label === "5h" ? "5-hour" : label === "wk" ? "weekly" : `weekly ${label}`;
+  el.title = `${kind} usage: ${val.textContent}${reset ? ` · ${reset}` : ""}`;
   return el;
 }
 
@@ -165,6 +167,8 @@ function group(name, data, stale) {
   // would leave a permanent "5h —" next to it.
   if (data.fiveHour) g.append(meter("5h", data.fiveHour));
   if (data.weekly) g.append(meter("wk", data.weekly));
+  // Per-model weekly windows (Claude sends e.g. fable/opus; Codex sends none).
+  for (const m of data.models || []) g.append(meter(m.name, m));
   return g;
 }
 

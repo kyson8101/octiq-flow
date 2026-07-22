@@ -48,6 +48,16 @@ pub struct UsageWindow {
     pub resets_at: Option<i64>,
 }
 
+/// A per-model weekly window (Claude reports e.g. `seven_day_opus`,
+/// `seven_day_fable` next to the all-models `seven_day`). `name` is the model
+/// part of the key ("opus", "fable"), used as the meter label.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ModelWindow {
+    pub name: String,
+    #[serde(flatten)]
+    pub window: UsageWindow,
+}
+
 /// One agent's usage: the two windows the user asked for, plus an `available`
 /// flag and an optional plan label / note. When `available` is false the windows
 /// are `None` and the footer renders a dash.
@@ -59,6 +69,8 @@ pub struct ProviderUsage {
     pub five_hour: Option<UsageWindow>,
     /// The 7-day (weekly) window.
     pub weekly: Option<UsageWindow>,
+    /// Per-model weekly windows (Claude only; empty for Codex).
+    pub models: Vec<ModelWindow>,
     /// Plan label when known (Codex reports e.g. "plus"); empty otherwise.
     pub plan: String,
     /// Short reason the data is missing (e.g. "not signed in"); for a tooltip.
@@ -205,6 +217,22 @@ fn parse_claude_usage(body: &str) -> Option<ProviderUsage> {
     };
     let five_hour = window("five_hour");
     let weekly = window("seven_day");
+    // Per-model weekly windows: any `seven_day_<model>` key (seven_day_opus,
+    // seven_day_fable, whatever ships next) becomes a named meter. Null keys
+    // (no separate limit on this plan) are skipped by `window`.
+    let mut models = Vec::new();
+    if let Some(obj) = json.as_object() {
+        for key in obj.keys() {
+            if let Some(name) = key.strip_prefix("seven_day_") {
+                if let Some(win) = window(key) {
+                    models.push(ModelWindow {
+                        name: name.to_string(),
+                        window: win,
+                    });
+                }
+            }
+        }
+    }
     // If neither window parsed, the body was not the shape we expect.
     if five_hour.is_none() && weekly.is_none() {
         return None;
@@ -213,6 +241,7 @@ fn parse_claude_usage(body: &str) -> Option<ProviderUsage> {
         available: true,
         five_hour,
         weekly,
+        models,
         plan: String::new(),
         note: String::new(),
     })
@@ -368,6 +397,7 @@ fn parse_codex_rollout(contents: &str) -> Option<ProviderUsage> {
         available: true,
         five_hour,
         weekly,
+        models: Vec::new(),
         plan,
         note: String::new(),
     })
@@ -446,6 +476,23 @@ mod tests {
         assert_eq!(u.five_hour.as_ref().unwrap().percent, 4.0);
         assert_eq!(u.weekly.as_ref().unwrap().percent, 11.0);
         assert_eq!(u.five_hour.as_ref().unwrap().resets_at, Some(1781801999));
+        // A null per-model window (no separate limit) yields no model meter.
+        assert!(u.models.is_empty());
+    }
+
+    #[test]
+    fn parse_claude_usage_reads_per_model_windows() {
+        let body = r#"{
+            "five_hour": {"utilization": 4.0, "resets_at": "2026-06-18T16:59:59Z"},
+            "seven_day": {"utilization": 11.0, "resets_at": "2026-06-24T21:59:59Z"},
+            "seven_day_fable": {"utilization": 30.5, "resets_at": "2026-06-24T21:59:59Z"},
+            "seven_day_opus": null
+        }"#;
+        let u = parse_claude_usage(body).expect("should parse");
+        assert_eq!(u.models.len(), 1);
+        assert_eq!(u.models[0].name, "fable");
+        assert_eq!(u.models[0].window.percent, 30.5);
+        assert!(u.models[0].window.resets_at.is_some());
     }
 
     #[test]
