@@ -291,11 +291,15 @@ commandEl.addEventListener("keydown", (e) => {
 });
 
 // --- Collapse / expand the panel -------------------------------------------
-toggleBtn.addEventListener("click", () => {
-  const collapsed = panelEl.classList.toggle("collapsed");
+function setCollapsed(collapsed) {
+  panelEl.classList.toggle("collapsed", collapsed);
   toggleBtn.setAttribute("aria-expanded", String(!collapsed));
   toggleBtn.title = collapsed ? "Expand panel" : "Collapse panel";
-});
+}
+
+toggleBtn.addEventListener("click", () =>
+  setCollapsed(!panelEl.classList.contains("collapsed")),
+);
 
 // --- Tab strip: only one panel showing at a time ----------------------------
 // Icons at the top of the panel (Terminal font & colors, Commands) switch
@@ -319,6 +323,10 @@ setTab(localStorage.getItem(SECTION_OPEN_KEY) || "commands");
 
 for (const btn of tabBtns) {
   btn.addEventListener("click", () => {
+    // The tab icons stay visible in the collapsed 44px rail, where switching a
+    // hidden panel would look like nothing happened — so a tab click always
+    // expands too.
+    setCollapsed(false);
     localStorage.setItem(SECTION_OPEN_KEY, btn.dataset.tab);
     setTab(btn.dataset.tab);
   });
