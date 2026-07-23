@@ -136,6 +136,12 @@ fn iso_utc_to_unix(s: &str) -> Option<i64> {
     Some(days * 86400 + hour * 3600 + minute * 60 + second)
 }
 
+/// `resets_at` as unix seconds from either shape the API uses: a raw number
+/// (unix seconds) in the `limits` array, or an ISO-8601 UTC string elsewhere.
+fn flexible_resets_at(v: &Value) -> Option<i64> {
+    v.as_i64().or_else(|| v.as_str().and_then(iso_utc_to_unix))
+}
+
 // ===================================================================== //
 // === Claude ========================================================== //
 
@@ -217,19 +223,57 @@ fn parse_claude_usage(body: &str) -> Option<ProviderUsage> {
     };
     let five_hour = window("five_hour");
     let weekly = window("seven_day");
-    // Per-model weekly windows: any `seven_day_<model>` key (seven_day_opus,
-    // seven_day_fable, whatever ships next) becomes a named meter. Null keys
-    // (no separate limit on this plan) are skipped by `window`.
-    let mut models = Vec::new();
+    // Per-model weekly windows come from the `limits` array — each entry is
+    // `{kind, percent, resets_at, scope:{model:{display_name}}}` and the ones we
+    // want are `kind == "weekly_scoped"` with a model scope (e.g. "Fable",
+    // "Opus"). `resets_at` here may be unix seconds OR an ISO string.
+    // The older `seven_day_<model>` top-level keys still exist, so read those
+    // too and de-dup by name (case-insensitive) with `limits` winning — it
+    // carries the nicer display name.
+    let mut models: Vec<ModelWindow> = Vec::new();
+    if let Some(arr) = json.get("limits").and_then(|v| v.as_array()) {
+        for item in arr {
+            if item.get("kind").and_then(|v| v.as_str()) != Some("weekly_scoped") {
+                continue;
+            }
+            let Some(name) = item
+                .get("scope")
+                .and_then(|s| s.get("model"))
+                .and_then(|m| m.get("display_name"))
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let Some(percent) = item.get("percent").and_then(|v| v.as_f64()) else {
+                continue;
+            };
+            models.push(ModelWindow {
+                name: name.to_string(),
+                window: UsageWindow {
+                    percent: round1(percent),
+                    resets_at: item.get("resets_at").and_then(flexible_resets_at),
+                },
+            });
+        }
+    }
     if let Some(obj) = json.as_object() {
         for key in obj.keys() {
-            if let Some(name) = key.strip_prefix("seven_day_") {
-                if let Some(win) = window(key) {
-                    models.push(ModelWindow {
-                        name: name.to_string(),
-                        window: win,
-                    });
-                }
+            let Some(name) = key.strip_prefix("seven_day_") else {
+                continue;
+            };
+            // Not every `seven_day_*` key is a model: `seven_day_oauth_apps` and
+            // `seven_day_overage_included` are other buckets, not meters.
+            if name == "oauth_apps" || name == "overage_included" {
+                continue;
+            }
+            if models.iter().any(|m| m.name.eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            if let Some(win) = window(key) {
+                models.push(ModelWindow {
+                    name: name.to_string(),
+                    window: win,
+                });
             }
         }
     }
@@ -493,6 +537,33 @@ mod tests {
         assert_eq!(u.models[0].name, "fable");
         assert_eq!(u.models[0].window.percent, 30.5);
         assert!(u.models[0].window.resets_at.is_some());
+    }
+
+    #[test]
+    fn parse_claude_usage_reads_model_windows_from_the_limits_array() {
+        // The real shape today: per-model weekly windows live in `limits[]` as
+        // `weekly_scoped` entries with a numeric `percent` and a unix `resets_at`.
+        let body = r#"{
+            "five_hour": {"utilization": 4.0, "resets_at": "2026-06-18T16:59:59Z"},
+            "seven_day": {"utilization": 11.0, "resets_at": "2026-06-24T21:59:59Z"},
+            "seven_day_opus": {"utilization": 12.0, "resets_at": "2026-06-24T21:59:59Z"},
+            "seven_day_oauth_apps": {"utilization": 3.0, "resets_at": "2026-06-24T21:59:59Z"},
+            "limits": [
+                {"kind": "weekly_scoped", "percent": 30.5, "resets_at": 1781801999,
+                 "scope": {"model": {"display_name": "Fable"}}},
+                {"kind": "weekly_scoped", "percent": 12.0, "resets_at": 1781801999,
+                 "scope": {"model": {"display_name": "Opus"}}},
+                {"kind": "weekly", "percent": 99.0, "resets_at": 1781801999, "scope": {}}
+            ]
+        }"#;
+        let u = parse_claude_usage(body).expect("should parse");
+        let names: Vec<&str> = u.models.iter().map(|m| m.name.as_str()).collect();
+        // Fable + Opus only: the un-scoped `weekly` entry and the oauth_apps
+        // bucket are not model meters, and `seven_day_opus` de-dups against the
+        // nicer-cased "Opus" from `limits`.
+        assert_eq!(names, vec!["Fable", "Opus"]);
+        assert_eq!(u.models[0].window.percent, 30.5);
+        assert_eq!(u.models[0].window.resets_at, Some(1781801999));
     }
 
     #[test]
