@@ -1,11 +1,14 @@
-// Attention alerts (card 13).
+// Attention alerts (card 13; the single-chrome-row badge is card 37).
 //
 // When a terminal needs the user (a `pty-attention` event), this module makes
 // it obvious which one:
 //   1. It badges that terminal's TAB (via terminals.js) so the dot shows even
 //      when the terminal is in another project/mode.
-//   2. It lists every waiting terminal in a TOP BANNER. Clicking an entry jumps
-//      to that terminal and clears its flag.
+//   2. It lists every waiting terminal in a compact badge + dropdown INSIDE
+//      the mode bar (card 37 — one chrome row, not a second full-width banner
+//      stacked above it). Each entry reads "project · tab title", never a raw
+//      pty id (terminals.js knows the title; workspaces.js knows the name).
+//      Clicking an entry jumps to that terminal and clears its flag.
 //   3. A keyboard shortcut (Ctrl/Cmd + .) jumps to the NEXT waiting terminal,
 //      cycling through them in arrival order.
 //   4. It raises an OS-level notification (with the system sound) so the user
@@ -20,8 +23,10 @@ import {
   focusTerminal,
   attentionList,
   isActiveVisible,
+  terminalTitle,
   MONITOR_ALERT,
 } from "/terminals.js";
+import { projectNameById } from "/workspaces.js";
 
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
@@ -63,67 +68,81 @@ async function osNotify(title, body) {
   }
 }
 
-// The banner element is declared in index.html (a hidden div). We look it up
-// once the DOM is ready. Everything degrades to a no-op if it is missing.
-let bannerEl = null;
+// The widget (card 37: a badge + dropdown living INSIDE the mode bar) is
+// declared in index.html. We look it up once the DOM is ready. Everything
+// degrades to a no-op if it is missing.
+let widgetEl = null;
+let badgeEl = null;
+let countEl = null;
+let dropdownEl = null;
 
 // Remember which id we jumped to last so the shortcut cycles to the NEXT one
 // instead of repeating the same terminal.
 let lastJumpedId = null;
 
-// Build (or rebuild) the banner from the current attention list. Each waiting
-// terminal becomes a clickable chip that jumps to it. The banner hides itself
-// when nothing is waiting.
-function renderBanner() {
-  if (!bannerEl) return;
+/** Turn a raw pty id into "project · tab title" — never the raw id (card 37).
+ *  Ids are namespaced (see deriveAttention below): "chat:N" (Chat mode),
+ *  "cmd:<projectId>:N" (a command terminal), or "<projectId>:N" (a project
+ *  terminal). terminals.js knows the tab's title; workspaces.js knows the
+ *  project's display name. Falls back to a generic label if either lookup
+ *  comes up empty (e.g. the project was deleted from under a live terminal). */
+function humanLabel(id) {
+  const title = terminalTitle(id) || "Terminal";
+  if (id.startsWith("chat:")) return `Chat · ${title}`;
+  const pid = id.startsWith("cmd:") ? id.split(":")[1] : id.split(":")[0];
+  const projectName = (pid && projectNameById(pid)) || "Project";
+  return `${projectName} · ${title}`;
+}
+
+/** Close the dropdown without touching the attention set. */
+function closeDropdown() {
+  dropdownEl?.classList.add("hidden");
+}
+
+/** Build (or rebuild) the badge + dropdown from the current attention list.
+ *  Each waiting terminal becomes a clickable row that jumps to it. The whole
+ *  widget hides itself when nothing is waiting. */
+function renderAttention() {
+  if (!widgetEl) return;
   const ids = attentionList();
 
   // Nothing waiting: clear and hide.
   if (ids.length === 0) {
-    bannerEl.replaceChildren();
-    bannerEl.classList.add("hidden");
+    widgetEl.classList.add("hidden");
+    dropdownEl.replaceChildren();
+    closeDropdown();
     lastJumpedId = null;
     return;
   }
 
-  bannerEl.replaceChildren();
-
-  const label = document.createElement("span");
-  label.className = "alert-banner-label";
-  label.textContent =
+  widgetEl.classList.remove("hidden");
+  countEl.textContent = String(ids.length);
+  const summary =
     ids.length === 1 ? "1 terminal needs you" : `${ids.length} terminals need you`;
-  bannerEl.append(label);
+  badgeEl.setAttribute("data-tip", `${summary} — ${shortcutLabel()} to jump to next`);
 
+  dropdownEl.replaceChildren();
   for (const id of ids) {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "alert-chip";
-    chip.title = `Jump to ${id}`;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "alert-item";
 
     const dot = document.createElement("span");
-    dot.className = "alert-chip-dot";
+    dot.className = "alert-item-dot";
 
     const text = document.createElement("span");
-    text.className = "alert-chip-label";
-    // Show a short, readable id. PTY ids look like "<prefix>:<n>"; the prefix
-    // is the project id / "chat" / "util", which is enough for the user to tell
-    // terminals apart.
-    text.textContent = id;
+    text.className = "alert-item-label";
+    text.textContent = humanLabel(id);
 
-    chip.append(dot, text);
-    // Clicking a chip jumps to that terminal; focusTerminal clears its flag,
-    // which fires tg-attention-change and re-renders this banner.
-    chip.addEventListener("click", () => focusTerminal(id));
-    bannerEl.append(chip);
+    item.append(dot, text);
+    // Clicking a row jumps to that terminal; focusTerminal clears its flag,
+    // which fires tg-attention-change and re-renders this widget.
+    item.addEventListener("click", () => {
+      focusTerminal(id);
+      closeDropdown();
+    });
+    dropdownEl.append(item);
   }
-
-  // A hint for the cycle shortcut, so the user can discover it.
-  const hint = document.createElement("span");
-  hint.className = "alert-banner-hint";
-  hint.textContent = `${shortcutLabel()} to jump to next`;
-  bannerEl.append(hint);
-
-  bannerEl.classList.remove("hidden");
 }
 
 // Label for the cycle shortcut, matched to the platform modifier.
@@ -166,14 +185,27 @@ function onKeydown(e) {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  bannerEl = document.getElementById("alert-banner");
-  renderBanner();
+  widgetEl = document.getElementById("alert-widget");
+  badgeEl = document.getElementById("alert-badge");
+  countEl = document.getElementById("alert-count");
+  dropdownEl = document.getElementById("alert-dropdown");
+  renderAttention();
+
+  // Badge toggles the dropdown; clicking anywhere else closes it.
+  badgeEl?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    dropdownEl.classList.toggle("hidden");
+  });
+  document.addEventListener("click", (e) => {
+    if (widgetEl && !widgetEl.contains(e.target)) closeDropdown();
+  });
+
   // Ask for notification permission up front so the first alert is not delayed
   // by a permission prompt mid-event.
   ensureNotifyPermission();
 
-  // Test button (mode bar): fire a sample OS notification so the user can check
-  // the banner + sound work on their machine.
+  // Test button (Settings page): fire a sample OS notification so the user
+  // can check the banner + sound work on their machine.
   const testBtn = document.getElementById("test-notify");
   testBtn?.addEventListener("click", () =>
     osNotify("OctiqFlow", "Test notification — banner + sound working ✅"),
@@ -190,8 +222,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // THE single pty-attention listener for the whole app. Badge the tab (which
 // adds the id to the shared attention set) — that fires tg-attention-change,
-// which re-renders the banner. We do not render here directly; the change event
-// is the single path so the banner and the tab badges never drift apart.
+// which re-renders the widget. We do not render here directly; the change
+// event is the single path so the widget and the tab badges never drift apart.
 listen("pty-attention", (event) => {
   const { id, title, body } = event.payload || {};
   if (!id) return;
@@ -233,9 +265,9 @@ window.addEventListener(MONITOR_ALERT, async (e) => {
   if (!document.hasFocus()) osNotify(alert.title, alert.body);
 });
 
-// Rebuild the banner whenever the attention set changes — from a new alert, a
+// Rebuild the widget whenever the attention set changes — from a new alert, a
 // jump/focus that cleared one, a tab activation, or a closed terminal.
-window.addEventListener("tg-attention-change", renderBanner);
+window.addEventListener("tg-attention-change", renderAttention);
 
 // ---- Cross-mode attention badges -----------------------------------------
 // Beyond the tab badge, show an amber dot on the MODE BAR (the mode that holds a

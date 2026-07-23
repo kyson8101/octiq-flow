@@ -9,7 +9,7 @@
 // (commands.js) react to the `project-selected` event this module emits.
 import { ICONS } from "/icons.js";
 import { openCtxMenu } from "/ctxmenu.js";
-import { baseName } from "/util.js";
+import { baseName, loadPaneWidth } from "/util.js";
 import {
   buildFontOptions,
   buildThemeInputs,
@@ -188,6 +188,13 @@ function projectAvatar(ws, extraClass = "") {
 /** The currently selected workspace, or undefined. */
 function selected() {
   return workspaces.find((w) => w.id === selectedId);
+}
+
+/** A project's display name by id (active or shelved), or "" if unknown.
+ *  Card 37 — alerts.js uses this to name an attention entry "project · tab
+ *  title" instead of the raw pty id, which is namespaced by project id. */
+export function projectNameById(id) {
+  return workspaces.find((w) => w.id === id)?.name || "";
 }
 
 /** Tell other modules which project is now selected (project.js terminals,
@@ -971,6 +978,56 @@ listEl.addEventListener("mouseenter", () => {
 
 listEl.addEventListener("mouseleave", () => {
   sidebarEl.classList.remove("peek");
+});
+
+// --- Resize the sidebar width ------------------------------------------------
+// A slim handle between the sidebar and the center column (#sidebar-resizer in
+// index.html), sized like the sidebar's own resizer (col-resize, accent on
+// hover/drag). NOT wired through util.js's makeResizer(): that helper assumes
+// the pane's RIGHT edge is fixed (a handle on its left, like the canvas pane);
+// here the sidebar's LEFT edge is fixed and the handle sits on its right, so
+// the drag math is the mirror image. Width is stored as the --sidebar-w CSS
+// custom property (see .sidebar in styles.css), not a plain inline `width` —
+// that keeps the collapsed (44px) and peek (260px) rules, which set `width`
+// directly on more specific selectors, in charge whenever they apply.
+const SIDEBAR_WIDTH_KEY = "octiq.sidebar.width";
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_FRACTION = 0.45;
+const sidebarResizerEl = document.querySelector("#sidebar-resizer");
+
+function applySidebarWidth(px) {
+  sidebarEl.style.setProperty("--sidebar-w", `${px}px`);
+}
+
+applySidebarWidth(loadPaneWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_MIN_WIDTH, 260, SIDEBAR_MAX_FRACTION));
+
+sidebarResizerEl.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  // The sidebar's left edge does not move during the drag, so measure it once
+  // and take the width as (pointer x − that edge) on every move.
+  const leftEdge = sidebarEl.getBoundingClientRect().left;
+  sidebarResizerEl.setPointerCapture(e.pointerId);
+  sidebarResizerEl.classList.add("dragging");
+  // Suspend the collapse/expand transition (see .sidebar.resizing in
+  // styles.css) so the width tracks the pointer instantly instead of easing
+  // toward each intermediate value.
+  sidebarEl.classList.add("resizing");
+  let width = sidebarEl.getBoundingClientRect().width;
+
+  const onMove = (ev) => {
+    const max = Math.floor(window.innerWidth * SIDEBAR_MAX_FRACTION);
+    width = Math.max(SIDEBAR_MIN_WIDTH, Math.min(ev.clientX - leftEdge, max));
+    applySidebarWidth(width);
+  };
+  const onUp = () => {
+    sidebarResizerEl.classList.remove("dragging");
+    sidebarEl.classList.remove("resizing");
+    sidebarResizerEl.removeEventListener("pointermove", onMove);
+    sidebarResizerEl.removeEventListener("pointerup", onUp);
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(Math.round(width)));
+  };
+  sidebarResizerEl.addEventListener("pointermove", onMove);
+  sidebarResizerEl.addEventListener("pointerup", onUp);
 });
 
 // --- Collapse / expand the Shelved section ---------------------------------

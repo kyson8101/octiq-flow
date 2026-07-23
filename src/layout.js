@@ -2,8 +2,12 @@
 // beside the terminal tab area (card: layout manager).
 //
 // Model (deliberately small):
-//   * The MAIN slot is the terminal/tab area (.center-terms). It is always
-//     there; a `mode: "main"` panel (git diff) temporarily takes its place.
+//   * The MAIN slot is `.center-main` — the terminal area PLUS the file-preview
+//     column (filepreview.js), wrapped together in their own fixed row (see
+//     styles.css). It is always there; a `mode: "main"` panel (git diff)
+//     temporarily takes its place, hiding the terminals and the preview as
+//     one unit. filepreview.js is not registered here — it manages its own
+//     visibility/sizing inside that wrapper, independent of this panel set.
 //   * At most ONE registered panel is open at a time (file tree, web preview,
 //     git diff) — the same mutual exclusivity the modules used to enforce by
 //     hiding each other's elements, now in one place.
@@ -18,7 +22,7 @@
 // state in exactly one place. onHidden must therefore be idempotent.
 
 const centerEl = document.querySelector("main.center");
-const termsEl = document.querySelector(".center-terms");
+const termsEl = document.querySelector(".center-main");
 
 const SIDES = ["right", "left", "bottom", "top"];
 const isRow = (s) => s === "left" || s === "right";

@@ -40,7 +40,17 @@
    must never show the ambient glow. The raised surfaces are white-alpha glass
    fills; the chrome/panel/overlay rules add the backdrop blur on top. */
 :root {
-  /* Surfaces, from deepest to most raised. */
+  /* Surfaces, from deepest to most raised (card 35 — the ONE background-tone
+     layer every panel reads from, replacing hairline borders as the way
+     panels separate from one another; see the "fewer hairlines" override
+     block further down for the actual border removal):
+       tone 1 --bg-sunken  — sidebar, mode bar, footers (darkest)
+       tone 2 --bg-0       — center (terminal panes, opaque)
+       tone 3 --bg-1       — raised panels (panel heads, cards, docked trees)
+     --bg-2 is NOT a 4th tone — it is the interaction-state layer (hover /
+     pressed / chip fill) painted OVER whichever of the 3 tones a component
+     sits on. Keep every new panel/surface on one of these three; do not add
+     a 4th background token. */
   --bg-0: #141417; /* app base — matches the xterm background (opaque) */
   --bg-sunken: rgba(15, 16, 19, 0.42); /* mode bar, side rails — cool cast */
   --bg-1: rgba(255, 255, 255, 0.07); /* raised: cards, panels, forms */
@@ -54,7 +64,13 @@
   --fg-2: #8f8f8a;
   --fg-3: #67675f;
 
-  /* The single accent: muted sage. */
+  /* The single accent: muted sage. Card 35 — every interactive/active/
+     selected chrome state routes through --accent (or its tints below); the
+     only OTHER colors allowed in chrome are --warn (attention needs-you
+     state — a distinct status color, not decoration) and --ok/--danger,
+     which stay scoped to git diff +/- numbers (--diff-add-bg/--diff-del-bg)
+     and usage-meter severity (see .usage-meter-track.is-*). No teal/orange/
+     blue anywhere in this sheet — audited clean for card 35. */
   --accent: #8fbfa8;
   --accent-bg: rgba(143, 191, 168, 0.16);
   --accent-bg-hover: rgba(143, 191, 168, 0.26);
@@ -81,10 +97,18 @@
   --backdrop: rgba(8, 8, 12, 0.42);
 
   /* Shape + depth. Bigger radii + a soft top edge-light sell the glass
-     (visionOS-style continuous corners). */
+     (visionOS-style continuous corners). r-sm/r-md/r-lg is ONE considered
+     scale (small controls → mid cards → big panel shoulders), not three
+     competing tokens — every rounded rect in the app picks its size off this
+     one ladder. --radius (card 35) names the TOP of that ladder as the
+     app's single "shared corner radius" for panels/cards/big surfaces —
+     the large, Codex-like roundness the design target asks for; reach for
+     it (not a new literal px value) wherever a panel/card/prominent input
+     wants that big radius (e.g. the card-39 filter-files field). */
   --r-sm: 10px;
   --r-md: 14px;
   --r-lg: 22px;
+  --radius: var(--r-lg);
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
   --shadow-2: 0 18px 50px rgba(0, 0, 0, 0.55);
 
@@ -100,6 +124,10 @@
      terminal tabs / Canvas, plus the file-browser and git-diff heads that swap
      into the center slot) so their bottom borders and content line up. */
   --head-h: 43px;
+  /* Shared horizontal padding for the same recipe (card 36) — see the
+     .tg-strip / .cmd-panel-head / .ft-head / .pb-head / .gd-head / .web-head
+     rule right below. */
+  --head-pad: 0 12px;
 
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter,
     "Segoe UI", Helvetica, Arial, sans-serif;
@@ -109,6 +137,26 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* ===================================================================== */
+/* === Shared panel-head recipe (card 36) ================================
+   ONE recipe (height + horizontal padding) for every panel head in the app:
+   the terminal tab strip, the command panel, the file-preview head, the
+   file-tree head, the git-diff head, and the web-preview head — so heads
+   line up across adjacent columns no matter which panel is open next to
+   which. .sidebar-head already matches this by hand (same --head-h /
+   --head-pad values) so the sidebar's head lines up too. Each per-head rule
+   further down layers on ONLY what is unique to it (background tint, drag
+   cursor, border) — do not redeclare height/padding there. */
+.tg-strip,
+.cmd-panel-head,
+.ft-head,
+.pb-head,
+.gd-head,
+.web-head {
+  height: var(--head-h);
+  padding: var(--head-pad);
 }
 
 html,
@@ -164,13 +212,90 @@ body {
   background: transparent;
 }
 
-/* Terminals fill the space left of the browser (or all of it when closed). */
+/* #center-main wraps the terminal area + the file-preview column (below) in a
+   ROW that never flips direction. It sits where .center-terms used to sit
+   directly: an unset (default 0) order, so the lay-dock-* classes on .center
+   still treat it as the one "main" slot the docked tree/web-preview panel
+   goes beside — see the layout manager section further down, which targets
+   THIS wrapper (not .center-terms) as termsEl. Nesting it this way is what
+   lets the file-preview pane stay glued to the terminals' right edge no
+   matter which side (left/right/top/bottom) the OTHER panel docks to: that
+   dock class only reverses .center's axis, never this inner one. */
+.center-main {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Terminals fill the space left of the file preview (or all of it when the
+   preview is closed). */
 .center-terms {
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* ---- File preview column (filepreview.js) ---------------------------- */
+/* A single dedicated pane right of .center-terms — NOT one of layout.js's
+   registered panels (that manager only arbitrates the tree / web preview /
+   git diff). Sizing + the drag handle below are owned entirely by
+   filepreview.js, using the same fixed-width + `makeResizer` helper (card 26)
+   as the canvas pane, since the preview's right edge is the one that stays
+   put during a drag (same shape of problem, different pane). */
+.file-preview {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 480px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-0);
+  color: var(--fg-1);
+}
+.file-preview.hidden {
+  display: none;
+}
+
+/* Expand animation, same recipe as .lay-open: grow from 0 to the inline
+   width filepreview.js sets, fading in; @starting-style covers the frame the
+   pane leaves display:none. Collapse stays instant (see the .lay-open note). */
+.file-preview {
+  transition:
+    width 0.18s ease,
+    opacity 0.18s ease;
+}
+@starting-style {
+  .file-preview {
+    width: 0 !important;
+    opacity: 0;
+  }
+}
+/* Its handle sits immediately before it — while dragging, no transition. */
+.file-preview-resizer.dragging + .file-preview {
+  transition: none;
+}
+
+/* The handle: same look/behavior as the layout manager's shared .lay-resizer
+   (6px, col-resize, accent on hover/drag), just owned by filepreview.js
+   instead of layout.js. */
+.file-preview-resizer {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--bg-sunken);
+  border-left: 1px solid var(--border);
+  transition: background 0.12s ease;
+}
+.file-preview-resizer:hover,
+.file-preview-resizer.dragging {
+  background: var(--accent);
+}
+.file-preview-resizer.hidden {
+  display: none;
 }
 
 /* ---- Bottom command drawer ------------------------------------------ */
@@ -197,7 +322,6 @@ body {
   justify-content: space-between;
   gap: 4px;
   flex-shrink: 0;
-  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -262,6 +386,10 @@ body {
    terminals to their left. A rule separates the tab icons from the
    canvas/collapse icons below them. */
 .cmd-panel.collapsed .cmd-panel-head {
+  /* Stacked icons need more room than the shared recipe's fixed --head-h —
+     grow with content instead of clipping (card 36's recipe is for the
+     one-row head; the collapsed rail is a deliberate different shape). */
+  height: auto;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -303,6 +431,12 @@ body {
 
 /* Canvas toggle in the command-panel head: lights up while the canvas is open. */
 .cmd-panel-canvas-toggle.active {
+  color: var(--accent);
+}
+
+/* Files toggle in the command-panel head: lights up while the right-docked
+   #project-browser panel is open (browser.js), however it got that way. */
+.cmd-panel-files-toggle.active {
   color: var(--accent);
 }
 
@@ -688,15 +822,46 @@ body {
 }
 
 /* ---- Left panel: workspaces ------------------------------------------- */
+/* Width is a CSS custom property, not a plain px value, so a resized sidebar
+   (workspaces.js sets --sidebar-w) still yields to the collapsed/peek rules
+   below: those set `width` directly, and a plain `width` declaration on a
+   more specific selector (.sidebar.collapsed, two classes) always outranks
+   this single-class rule, regardless of what --sidebar-w holds. */
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 260px;
+  width: var(--sidebar-w, 260px);
   flex-shrink: 0;
   background: var(--bg-sunken);
   border-right: 1px solid var(--border);
   overflow: hidden;
   transition: width 0.15s ease;
+}
+
+/* While the resizer is actively dragging, drop the collapse/expand transition
+   above — animating every pointermove would lag the sidebar behind the
+   cursor instead of tracking it. workspaces.js toggles this class for the
+   duration of the drag only. */
+.sidebar.resizing {
+  transition: none;
+}
+
+/* Sidebar width handle (workspaces.js): same look as the other slim resizers
+   in the app (.lay-resizer, .canvas-resizer). Hidden while the sidebar is
+   collapsed — resizing a fixed 44px rail makes no sense. */
+.sidebar-resizer {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  transition: background 0.12s ease;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer.dragging {
+  background: var(--accent);
+}
+.sidebar.collapsed + .sidebar-resizer {
+  display: none;
 }
 
 /* Collapsed: only the head bar (with the toggle) stays visible. */
@@ -777,46 +942,6 @@ body {
   color: var(--fg-2);
 }
 
-/* Files mode: the folder tree takes the sidebar body in place of the project
-   list. The collapsed rail always keeps the project avatars, so the mode only
-   applies while the sidebar is expanded. */
-.sidebar-files {
-  display: none;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 6px 0;
-}
-
-.sidebar.files-mode:not(.collapsed) .sidebar-files {
-  display: block;
-}
-
-/* Search box: only in the sidebar's Files view. */
-.sb-file-search {
-  display: none;
-  flex: 0 0 auto;
-  margin: 8px 10px 2px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px; /* Apple-style pill search field */
-  background: var(--bg-1);
-  color: var(--fg-0);
-  font: inherit;
-  font-size: 12px;
-  outline: none;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
-}
-
-.sb-file-search:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-tint-faint);
-}
-
-.sidebar.files-mode:not(.collapsed) .sb-file-search {
-  display: block;
-}
-
 /* Search results: a flat list of name hits, then line hits. */
 .pb-group {
   padding: 8px 10px 2px;
@@ -842,11 +967,9 @@ body {
   text-overflow: ellipsis;
 }
 
-.sidebar.files-mode:not(.collapsed) #workspace-list,
-.sidebar.files-mode:not(.collapsed) #workspace-empty,
-.sidebar.files-mode:not(.collapsed) .ws-shelf-section,
-.sidebar.collapsed .gd-view-toggle,
-.sidebar.collapsed .sidebar-files {
+/* The Projects/Git toggle needs the full rail width, so it hides along with
+   the rest of the sidebar's expanded-only content when collapsed. */
+.sidebar.collapsed .gd-view-toggle {
   display: none;
 }
 
@@ -916,21 +1039,26 @@ body {
 /* Project avatar: the project's icon/logo when set, otherwise its first letter
    in a rounded square tinted with the accent color. Always shown (expanded and
    collapsed) — it replaces the old accent bar. */
+/* Card 38 — a small, quiet inline marker, not a "boxed avatar" logo tile:
+   smaller, circular (was a rounded square), and a softer tint/border so a
+   row reads as text-first. Still carries the project's color/icon and still
+   fills solid as the ONLY selected indicator on the collapsed rail (see the
+   .sidebar.collapsed rules below) — only the size/shape/opacity changed. */
 .ws-item-initial {
   display: flex;
   position: relative; /* anchors the collapsed-rail attention dot */
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--r-sm);
-  overflow: hidden; /* clip the icon image to the rounded square */
-  font-size: 13px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  overflow: hidden; /* clip the icon image to the circle */
+  font-size: 11px;
   font-weight: 600;
-  color: var(--fg-0);
-  background: color-mix(in srgb, var(--ws-bar, var(--fg-3)) 26%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ws-bar, var(--fg-3)) 50%, transparent);
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--ws-bar, var(--fg-3)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ws-bar, var(--fg-3)) 32%, transparent);
 }
 
 /* With an icon, drop the tint/border so the image fills the square cleanly. */
@@ -2370,8 +2498,6 @@ body {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  height: var(--head-h);
-  padding: 0 8px;
   background: transparent;
   overflow-x: auto;
 }
@@ -2672,21 +2798,16 @@ body {
   background: var(--accent);
 }
 
-/* ---- File tab (filetabs.js): head bar over the content body. -------- */
-.ft {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  background: var(--bg-0);
-}
-
+/* ---- File preview pane (filepreview.js): head bar over the content body. --
+   These ft-* classes used to decorate a per-tab wrapper div (filetabs.js);
+   filepreview.js's single static pane (#file-preview in index.html) IS that
+   wrapper now, laid out via .file-preview above, so there is no separate `.ft`
+   class left to apply — just its head/body/status children below. -------- */
 .ft-head {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
-  padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
 }
@@ -2796,74 +2917,111 @@ body {
   background: transparent; /* tabs float; the sheet is .tg-panes */
 }
 
-/* === Card 13: attention alerts === */
-/* ---- Attention alerts (card 13) ----------------------------------------- */
-/* Top banner: full-width row above the mode bar listing terminals that need
-   the user. Amber accent = "needs attention" (distinct from the blue accent
-   used for active/selected UI). Hidden via the shared .hidden class when empty. */
-.alert-banner {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  flex-shrink: 0;
-  padding: 6px 14px;
-  background: var(--warn-tint);            /* dark amber wash on the var(--bg-0) base */
-  border-bottom: 1px solid var(--warn-soft-border);
-  color: var(--warn);
-  font-size: 12px;
+/* === Card 37: attention widget (single chrome row) ======================
+   Was a full-width banner ABOVE the mode bar (card 13); now a compact badge
+   INSIDE it, so the app has exactly ONE chrome row. Amber = "needs
+   attention" (distinct from --accent, the active/selected color). Clicking
+   the badge opens a dropdown listing every waiting terminal as "project ·
+   tab title" (alerts.js — never a raw pty id); clicking an entry jumps to
+   it and clears its flag. */
+.alert-widget {
+  position: relative;
+  display: inline-flex;
 }
 
-/* .hidden may be defined elsewhere; this keeps the banner collapsed even if a
-   later rule sets display on .alert-banner. */
-.alert-banner.hidden {
+.alert-widget.hidden {
   display: none;
 }
 
-.alert-banner-label {
-  font-weight: 600;
-  color: var(--warn-bright);
-  white-space: nowrap;
-}
-
-.alert-banner-hint {
-  margin-left: auto;
-  color: var(--warn);
-  opacity: 0.8;
-  white-space: nowrap;
-}
-
-/* One chip per waiting terminal. Click jumps to that terminal. */
-.alert-chip {
+.alert-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 220px;
-  padding: 3px 9px;
+  height: 26px;
+  padding: 0 10px;
   font-size: 12px;
-  color: var(--fg-0);
-  background: var(--bg-1);
-  border: 1px solid var(--warn-soft-border);
+  font-weight: 600;
+  color: var(--warn-bright);
+  background: var(--warn-tint);
+  border: none;
   border-radius: 999px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease;
 }
 
-.alert-chip:hover {
-  background: var(--bg-2);
-  border-color: var(--warn);
+.alert-badge:hover {
+  background: var(--warn-ring);
 }
 
-.alert-chip-dot {
+.alert-badge-dot {
   flex-shrink: 0;
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.alert-count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Floating list, anchored under the badge. Same glass material as the other
+   floating menus (.tg-add-menu) — see the backdrop-filter list below. */
+.alert-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 60;
+  min-width: 240px;
+  max-width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--glass-edge), var(--shadow-2);
+}
+
+.alert-dropdown.hidden {
+  display: none;
+}
+
+/* One row per waiting terminal. Click jumps to it (alerts.js). */
+.alert-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--fg-1);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.alert-item:hover {
+  color: var(--fg-0);
+  background: var(--bg-2);
+}
+
+.alert-item-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--warn);
   box-shadow: 0 0 0 2px var(--warn-ring);
 }
 
-.alert-chip-label {
+.alert-item-label {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3100,29 +3258,96 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: var(--head-h);
-  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
 }
 
+/* Card 39 — a breadcrumb (project name › … › folder), not a raw truncated
+   path string. browser.js's renderHead fills this with one .pb-crumb per
+   segment, separated by .pb-crumb-sep; single-root sessions end on the
+   folder name, multi-root sessions show only the project name. */
 .pb-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+}
+
+.pb-crumb {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 12px;
   color: var(--fg-2);
+}
+
+/* The project name (first crumb) and the current folder (last crumb) carry
+   the weight; anything between (an elided "…" or a middle folder) stays
+   quiet. */
+.pb-crumb:first-child {
+  flex: 0 1 auto;
+  color: var(--fg-1);
+  font-weight: 600;
+}
+.pb-crumb:last-child {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+
+.pb-crumb-sep {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 11px;
 }
 
 .pb-back {
   margin-left: auto;
 }
 
-/* Body holds the folder tree. File previews open as tabs in the terminal tab
-   strip (filetabs.js), not here. */
+/* Card 39 — the Codex-style "Filter files…" field: quiet rounded fill (no
+   border until focus), a magnifier icon inlaid via the wrapper below, muted
+   placeholder. Scoped to ALL the project's folder paths regardless of which
+   root the tree below is showing (browser.js runs both a name and a content
+   search on it). */
+.pb-search-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  margin: 8px 10px;
+}
+.pb-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--fg-3);
+  pointer-events: none;
+}
+.pb-search {
+  width: 100%;
+  padding: 6px 12px 6px 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+.pb-search::placeholder {
+  color: var(--fg-3);
+}
+
+.pb-search:focus {
+  background: var(--bg-1);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint-faint);
+}
+
+/* Body holds the folder tree. File previews open in the file-preview column
+   (filepreview.js), not here. */
 .pb-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -3374,8 +3599,6 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: var(--head-h);
-  padding: 0 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
 }
@@ -3392,31 +3615,37 @@ body {
 }
 
 /* Segmented Unified / Split control. */
+/* Card 38 — a true segmented PILL (one rounded container, active segment
+   filled), not a bordered rounded-rect with hairline dividers between
+   segments. Shared by the sidebar Projects/Git toggle, the git-diff
+   Unified/Split toggle, and the Flat/Tree file-list toggle — restyling this
+   once covers all three. The active segment reads through the single
+   --accent (matching .cmd-tab-btn.active elsewhere in this sheet), not a
+   neutral gray fill. */
 .gd-view-toggle {
   display: inline-flex;
   flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  overflow: hidden;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg-2);
+  border-radius: 999px;
 }
 .gd-toggle-btn {
   padding: 4px 10px;
   font-size: 12px;
   color: var(--fg-2);
-  background: var(--bg-0);
+  background: transparent;
   border: 0;
+  border-radius: 999px;
   cursor: pointer;
-}
-.gd-toggle-btn + .gd-toggle-btn {
-  border-left: 1px solid var(--border);
 }
 .gd-toggle-btn:hover {
   color: var(--fg-1);
 }
 .gd-toggle-active,
 .gd-toggle-active:hover {
-  color: var(--fg-0);
-  background: var(--bg-2);
+  color: var(--accent);
+  background: var(--accent-tint);
 }
 
 /* ---- Body: file list (left) | diff (right) -------------------------- */
@@ -4107,6 +4336,30 @@ body {
   order: 2;
 }
 
+/* Panel expand animation (pure CSS, no JS timing): a side panel grows from 0
+   to the flex-basis layout.js sets; the git diff ("main" mode, no basis)
+   fades in instead. @starting-style supplies the first-frame value when the
+   element leaves display:none, and its !important outranks the inline
+   flex-basis for that one frame only. Collapse stays instant on purpose —
+   animating it would keep dead panels rendered mid-close and reintroduce the
+   reopen races this CSS-only approach avoids. */
+.lay-open {
+  transition:
+    flex-basis 0.18s ease,
+    opacity 0.18s ease;
+}
+@starting-style {
+  .lay-open {
+    flex-basis: 0 !important;
+    opacity: 0;
+  }
+}
+/* While the shared handle is dragging, the panel must track the pointer
+   1:1 — the transition would rubber-band it behind the cursor. */
+.center:has(> .lay-resizer.dragging) .lay-open {
+  transition: none;
+}
+
 /* The ONE shared drag handle (layout.js creates it): 6px on the main axis;
    cursor + divider border flip with the dock side. */
 .lay-resizer {
@@ -4153,8 +4406,6 @@ body {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  height: var(--head-h);
-  padding: 0 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-1);
   cursor: grab;
@@ -4453,8 +4704,7 @@ body {
 .sidebar,
 .cmd-panel,
 .usage-bar,
-.paths-footer,
-.alert-banner {
+.paths-footer {
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
@@ -4463,6 +4713,7 @@ body {
    (terminals, diffs), which melts into the blur behind them. */
 .modal,
 .tg-add-menu,
+.alert-dropdown,
 .ctx-menu,
 .vault-panel,
 .vault-crop-box,
@@ -4481,16 +4732,14 @@ body {
   backdrop-filter: blur(14px);
 }
 
-/* The dark content sheets: rounded top shoulders START BELOW the floating
-   tab row. Applies to the terminal panes and every docked center panel so
-   they match side by side. (.tg-panes already clips; the others gain
-   overflow:hidden so their square heads clip to the radius.) */
+/* The dark content sheets: FLAT flush columns (Codex look) — no top radius;
+   adjacent panels touch edge-to-edge and separate by background tone only.
+   overflow:hidden stays so panel content never bleeds past the column. */
 .tg-panes,
 .project-browser,
 .project-gitdiff,
-.project-web {
-  border-top-left-radius: var(--r-lg);
-  border-top-right-radius: var(--r-lg);
+.project-web,
+.file-preview {
   overflow: hidden;
 }
 
@@ -4523,11 +4772,16 @@ body {
 /* Resizers: invisible until touched — the accent hover/drag fill stays
    (those :hover rules outrank this base override). */
 .canvas-resizer,
-.lay-resizer {
+.lay-resizer,
+.sidebar-resizer,
+.file-preview-resizer {
   background: transparent;
 }
-.canvas-resizer {
+.canvas-resizer,
+.sidebar-resizer,
+.file-preview-resizer {
   border-left: none;
+  border-right: none;
 }
 .center.lay-dock-left .lay-resizer,
 .center.lay-dock-right .lay-resizer {

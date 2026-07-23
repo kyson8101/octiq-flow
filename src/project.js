@@ -50,8 +50,9 @@ function withClaudeAddDirs(rec, startCmd, cwd) {
 // projectId -> { group, primaryPath, paths, startup, terminalCommand, restoring, saveTimer }
 const projects = new Map();
 
-/** The terminal group of the currently selected project, or null. filetabs.js
- *  mounts file tabs (card: layout manager) into it. */
+/** The terminal group of the currently selected project, or null. No current
+ *  caller (the file-preview pane is a single global column, not per-project
+ *  tabs) — kept for any future module that needs the active project's group. */
 export function currentProjectGroup() {
   return (currentId && projects.get(currentId)?.group) || null;
 }

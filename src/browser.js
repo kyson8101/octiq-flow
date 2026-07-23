@@ -1,53 +1,71 @@
-// Center file browser (right-click "Files" / "Documentation"). Shows the
-// contents of one folder as an EXPANDABLE TREE inside #project-browser, docked
-// beside the project terminals by the layout manager (layout.js). fs-only: it
+// Center file browser (right-click "Files" / "Documentation") AND the right-
+// docked project file-tree panel toggled from the command-panel head. Both
+// paths render into the SAME #project-browser panel (docked beside the
+// project terminals by the layout manager, layout.js) — this is the single
+// files UI in the app; the sidebar no longer has its own tree. fs-only: it
 // lists folders/files with the `list_dir` backend command. A folder row
 // expands in place (lazily listing its children the first time) so a folder's
 // files are visible without leaving the parent. Clicking a file dispatches
-// `file-open` — filetabs.js opens it as a TAB in the terminal tab strip (the
-// VS Code editor-tab pattern; the old in-panel preview pane is gone). It never
+// `file-open` — filepreview.js opens it in the dedicated file-preview column
+// to the right of the terminals (a single pane, not a tab strip). It never
 // touches a PTY.
 //
-// How it is driven:
+// Two ways to open the panel:
 //   * workspaces.js dispatches `project-browse` { id, kind, root } when the user
-//     picks Files or Documentation. We show the panel rooted at `root`. An empty
-//     `root` (e.g. Documentation with no docs_path) shows an "unset" message.
-//   * `project-selected` from workspaces.js: when the selected project CHANGES
-//     while the browser is open, we close the browser so switching projects
-//     always lands on that project's terminals.
+//     picks Files or Documentation from a project's right-click menu. The
+//     panel is rooted at that ONE `root` (single-root view). An empty `root`
+//     (e.g. Documentation with no docs_path) shows an "unset" message.
+//   * The folder icon in the command-panel head (#files-toggle) opens the
+//     panel rooted at ALL of the selected project's folder paths — one
+//     top-level row per path (primary first), or that folder's contents
+//     directly when the project has only one path (multi-root view).
+// `project-selected`: when the selected project CHANGES while the browser is
+// open, we close it so switching projects always lands on that project's
+// terminals; the toggle's pressed state and the search box reset with it
+// (registerPanel's onHidden, fired on every close path).
 //
-// This module also drives the SIDEBAR's "Files" view (see the bottom section):
-// the same tree rows, rendered over the selected project's folder paths, with a
-// file click opening a file tab the same way.
+// A single search box (moved here from the old sidebar Files view) searches
+// file names and contents across ALL the selected project's folder paths,
+// regardless of which root the tree below is currently showing.
 const { invoke } = window.__TAURI__.core;
 import { textEl } from "/util.js";
 import { registerPanel, openPanel, closePanel, isOpen } from "/layout.js";
 
-// --- DOM handles -----------------------------------------------------------
+// --- DOM handles -------------------------------------------------------------
 const panelEl = document.querySelector("#project-browser");
 const headPathEl = document.querySelector("#pb-path");
 const listEl = document.querySelector("#pb-list");
 const collapseBtn = document.querySelector("#pb-collapse");
 const backBtn = document.querySelector("#pb-back");
+const filesToggleBtn = document.querySelector("#files-toggle");
+const searchEl = document.querySelector("#pb-search");
 
 // Each tree level indents its rows by this many pixels past the level above.
 const INDENT_STEP = 14;
 // The list row's own left padding at depth 0 (matches the .pb-row CSS padding).
 const BASE_INDENT = 10;
 
-// --- State -----------------------------------------------------------------
-// The chosen root for the current browse session. The tree is rooted here and
-// never lists above it.
+// --- State -------------------------------------------------------------------
+// The chosen root for a single-root session (right-click Files/Documentation).
+// Empty while the panel shows the multi-root project view instead.
 let rootDir = "";
-// The project whose folder we are browsing, so a switch to a DIFFERENT project
-// closes the browser.
+// The project whose folder(s) are being browsed, so a switch to a DIFFERENT
+// project closes the browser — true for both single-root and multi-root
+// sessions.
 let browsingProjectId = null;
 // The last-clicked file row, so its highlight can be cleared.
 let selectedRow = null;
 
+// The current project's id/name/folder paths, tracked from `project-selected`
+// so the multi-root view (opened by the toggle) and the search box (scoped to
+// ALL the project's paths) have something to work with as soon as they open.
+let currentProjectId = null;
+let currentProjectName = "";
+let currentPaths = [];
+
 // The layout manager owns showing/hiding, the dock side, the drag handle and
 // the persisted size. onHidden fires however the panel closes (its ✕, another
-// panel opening) so the state reset lives in exactly one place.
+// panel opening, project switch) so the state reset lives in exactly one place.
 registerPanel("browser", {
   el: panelEl,
   side: "right",
@@ -57,6 +75,11 @@ registerPanel("browser", {
     rootDir = "";
     browsingProjectId = null;
     selectRow(null);
+    setToggleActive(false);
+    if (searchQuery) {
+      searchEl.value = "";
+      searchQuery = "";
+    }
   },
 });
 
@@ -72,7 +95,7 @@ function selectRow(row) {
   if (selectedRow) selectedRow.classList.add("pb-row-selected");
 }
 
-/** Open a clicked file as a tab in the terminal tab strip (filetabs.js).
+/** Open a clicked file in the file-preview column (filepreview.js).
  *  `line` (1-based, optional) jumps a text file to that line — a search hit
  *  lands straight on the matching line. */
 function openFileTab(fullPath, name, row, line = 0) {
@@ -82,17 +105,64 @@ function openFileTab(fullPath, name, row, line = 0) {
   );
 }
 
-// --- Render -----------------------------------------------------------------
+/** The folder toggle's pressed state follows the panel — lit up whenever it
+ *  is open, however it got that way (the toggle, or a right-click browse). */
+function setToggleActive(active) {
+  filesToggleBtn.classList.toggle("active", active);
+  filesToggleBtn.setAttribute("aria-pressed", active ? "true" : "false");
+}
+
+/** Open the panel and light up the toggle. Both entry points (right-click
+ *  single-root, toggle multi-root) route through this so the pressed state
+ *  always matches. */
+function openBrowserPanel() {
+  openPanel("browser");
+  setToggleActive(true);
+}
+
+// --- Render -------------------------------------------------------------------
 /** Show a single-line message in the list area (unset / empty / error). */
 function showMessage(text) {
   listEl.replaceChildren(textEl("div", "pb-message", text));
 }
 
-/** Update the header: show the root path; enable "collapse all" when rooted. */
-function renderHead() {
-  headPathEl.textContent = rootDir || "";
-  headPathEl.title = rootDir || "";
-  collapseBtn.disabled = !rootDir;
+/** Build the head's breadcrumb segments (card 39): the project name first,
+ *  then the folder path relative to whichever of the project's OWN folder
+ *  paths contains it — never the raw absolute path. A root that IS one of
+ *  the project's folders (the common case) collapses to just the project
+ *  name; a deep root shows "…" plus its last 2 segments so the crumb never
+ *  grows unreadably long. `rootPath` empty (the multi-root / toggle view)
+ *  is just the project name. */
+function buildBreadcrumb(rootPath) {
+  const root = (rootPath || "").replace(/[\\/]+$/, "");
+  const crumbs = [currentProjectName || "Files"];
+  if (!root) return crumbs;
+
+  const base = currentPaths.find(
+    (p) => root === p || root.startsWith(p + "/") || root.startsWith(p + "\\"),
+  );
+  const rel = base ? root.slice(base.length).replace(/^[\\/]+/, "") : root;
+  const parts = rel.split(/[\\/]+/).filter(Boolean);
+
+  if (parts.length > 2) crumbs.push("…", ...parts.slice(-2));
+  else crumbs.push(...parts);
+  return crumbs;
+}
+
+/** Update the header with a breadcrumb (card 39) instead of a raw path
+ *  string. `rootPath` is the single-root path, or "" for the multi-root
+ *  project view (which shows just the project name). `hasTree` enables
+ *  "collapse all". */
+function renderHead(rootPath, hasTree) {
+  const crumbs = buildBreadcrumb(rootPath);
+  const els = [];
+  crumbs.forEach((c, i) => {
+    if (i > 0) els.push(textEl("span", "pb-crumb-sep", "›"));
+    els.push(textEl("span", "pb-crumb", c));
+  });
+  headPathEl.replaceChildren(...els);
+  headPathEl.title = rootPath || currentProjectName;
+  collapseBtn.disabled = !hasTree;
 }
 
 /** An inline status row (loading / empty / error) indented to a tree depth. */
@@ -181,81 +251,20 @@ function collapseAll() {
   });
 }
 
-// --- Entry points -----------------------------------------------------------
-/** Start a browse session from the right-click menu. */
-function startBrowse(detail) {
-  if (!detail) return;
-  const { id, root } = detail;
-  openPanel("browser");
-  browsingProjectId = id;
-  rootDir = (root || "").replace(/[/\\]+$/, "");
-  renderHead();
-
-  if (!rootDir) {
-    // Documentation with no docs_path set (or Files with no primary_path).
-    headPathEl.textContent = "";
-    showMessage("No docs folder set for this project.");
+/** Draw the multi-root tree, or its "no folders" message: one top-level row
+ *  per the project's folder paths (primary first), except a single path,
+ *  whose contents fill the list directly. */
+function renderMultiRootTree() {
+  if (!currentPaths.length) {
+    showMessage("This project has no folders yet.");
     return;
   }
-  // Root entries fill the list directly at depth 0; folders expand from there.
-  loadChildren(rootDir, listEl, 0, openFileTab);
-}
-
-window.addEventListener("project-browse", (e) => startBrowse(e.detail));
-
-// Switching to a DIFFERENT project closes the browser. Re-selecting the SAME
-// project (e.g. a refresh) leaves it as-is.
-window.addEventListener("project-selected", (e) => {
-  const id = e.detail?.id ?? null;
-  if (isOpen("browser") && id !== browsingProjectId) closePanel("browser");
-});
-
-collapseBtn.addEventListener("click", collapseAll);
-backBtn.addEventListener("click", () => closePanel("browser"));
-
-// --- Sidebar "Files" view ---------------------------------------------------
-// The head toggle swaps the sidebar body between the project list and the
-// selected project's folder tree. The tree is the same rows as above, rooted at
-// each of the project's folder paths; clicking a file opens it as a tab in the
-// terminal tab strip (filetabs.js), like the center tree.
-const sidebarEl = document.querySelector(".sidebar");
-const sidebarTreeEl = document.querySelector("#sidebar-files");
-const modeProjectsBtn = document.querySelector("#sb-view-projects");
-const modeFilesBtn = document.querySelector("#sb-view-files");
-const modeGitBtn = document.querySelector("#sb-view-git");
-const MODE_KEY = "octiq.sidebar.mode";
-
-// The selected project's folder paths (primary first), and the project the tree
-// was last drawn for — so re-selecting the same project keeps folders expanded.
-let sidebarPaths = [];
-let sidebarProjectId = null;
-let sidebarProjectName = "";
-let treeDrawnFor = undefined;
-
-/** Draw the selected project's folders in the sidebar. Each folder path is a
- *  top-level row, except a single path, whose contents fill the tree directly. */
-function renderSidebarTree() {
-  if (treeDrawnFor === sidebarProjectId) return; // same project: keep the tree
-  treeDrawnFor = sidebarProjectId;
-
-  if (!sidebarPaths.length) {
-    sidebarTreeEl.replaceChildren(
-      textEl(
-        "div",
-        "pb-message",
-        sidebarProjectId
-          ? "This project has no folders yet."
-          : "Pick a project to see its files.",
-      ),
-    );
+  if (currentPaths.length === 1) {
+    loadChildren(currentPaths[0], listEl, 0, openFileTab);
     return;
   }
-  if (sidebarPaths.length === 1) {
-    loadChildren(sidebarPaths[0], sidebarTreeEl, 0, openFileTab);
-    return;
-  }
-  sidebarTreeEl.replaceChildren(
-    ...sidebarPaths.map((p) =>
+  listEl.replaceChildren(
+    ...currentPaths.map((p) =>
       treeItem(
         { name: p.split(/[/\\]/).filter(Boolean).pop() || p, path: p, is_dir: true },
         0,
@@ -265,11 +274,73 @@ function renderSidebarTree() {
   );
 }
 
-// --- Sidebar search ---------------------------------------------------------
+/** Redraw whichever tree is active — single-root or multi-root — after search
+ *  hits are cleared. */
+function renderCurrentTree() {
+  if (rootDir) loadChildren(rootDir, listEl, 0, openFileTab);
+  else renderMultiRootTree();
+}
+
+// --- Entry points --------------------------------------------------------------
+/** Start a single-root browse session from the right-click menu. */
+function startBrowse(detail) {
+  if (!detail) return;
+  const { id, root } = detail;
+  openBrowserPanel();
+  browsingProjectId = id;
+  rootDir = (root || "").replace(/[/\\]+$/, "");
+  renderHead(rootDir, !!rootDir);
+
+  if (!rootDir) {
+    // Documentation with no docs_path set (or Files with no primary_path).
+    showMessage("No docs folder set for this project.");
+    return;
+  }
+  // Root entries fill the list directly at depth 0; folders expand from there.
+  loadChildren(rootDir, listEl, 0, openFileTab);
+}
+
+/** Start the multi-root project view — the folder toggle's entry point. */
+function browseProject() {
+  if (!currentProjectId) return; // no project selected — nothing to browse
+  openBrowserPanel();
+  browsingProjectId = currentProjectId;
+  rootDir = "";
+  renderHead("", currentPaths.length > 0);
+  renderMultiRootTree();
+}
+
+window.addEventListener("project-browse", (e) => startBrowse(e.detail));
+
+filesToggleBtn.addEventListener("click", () => {
+  if (isOpen("browser")) closePanel("browser");
+  else browseProject();
+});
+
+// Switching to a DIFFERENT project closes the browser. Re-selecting the SAME
+// project (e.g. a refresh) leaves it as-is.
+window.addEventListener("project-selected", (e) => {
+  const id = e.detail?.id ?? null;
+  if (isOpen("browser") && id !== browsingProjectId) closePanel("browser");
+});
+
+// Track the selected project's id/name/paths regardless of whether the panel
+// is open, so the toggle and the search box always have the right project the
+// moment they are used.
+window.addEventListener("project-selected", (e) => {
+  currentProjectId = e.detail?.id ?? null;
+  currentProjectName = e.detail?.name || "";
+  currentPaths = (e.detail?.paths || []).map((p) => p.replace(/[/\\]+$/, ""));
+});
+
+collapseBtn.addEventListener("click", collapseAll);
+backBtn.addEventListener("click", () => closePanel("browser"));
+
+// --- Search --------------------------------------------------------------------
 // One box searches BOTH ways over the project's folders: file names, then file
 // contents (the backend runs ripgrep for each). Hits replace the tree; clearing
-// the box brings the tree back.
-const searchEl = document.querySelector("#sb-file-search");
+// the box brings the tree back. Scoped to ALL the project's paths regardless of
+// which root the tree is currently showing.
 const SEARCH_DEBOUNCE_MS = 200;
 let searchTimer = null;
 // The query whose results are on screen, so a slow search that lands after a
@@ -299,10 +370,10 @@ function hitRow(hit) {
 async function runSearch(query) {
   let results;
   try {
-    results = await invoke("search_files", { roots: sidebarPaths, query });
+    results = await invoke("search_files", { roots: currentPaths, query });
   } catch (err) {
     if (searchQuery !== query) return; // a newer keystroke won the race
-    sidebarTreeEl.replaceChildren(textEl("div", "pb-message", String(err)));
+    listEl.replaceChildren(textEl("div", "pb-message", String(err)));
     return;
   }
   if (searchQuery !== query) return;
@@ -317,13 +388,13 @@ async function runSearch(query) {
     rows.push(...results.matches.map(hitRow));
   }
   if (!rows.length) {
-    sidebarTreeEl.replaceChildren(textEl("div", "pb-message", `No match for “${query}”.`));
+    listEl.replaceChildren(textEl("div", "pb-message", `No match for “${query}”.`));
     return;
   }
   if (results.truncated) {
     rows.push(textEl("div", "pb-tree-msg", "Showing the first hits only. Narrow the search."));
   }
-  sidebarTreeEl.replaceChildren(...rows);
+  listEl.replaceChildren(...rows);
 }
 
 /** React to typing: debounce, then search — or restore the tree when cleared. */
@@ -332,8 +403,7 @@ function onSearchInput() {
   const query = searchEl.value.trim();
   searchQuery = query;
   if (!query) {
-    treeDrawnFor = undefined; // the hits replaced the tree, so force a redraw
-    renderSidebarTree();
+    renderCurrentTree();
     return;
   }
   searchTimer = setTimeout(() => runSearch(query), SEARCH_DEBOUNCE_MS);
@@ -347,33 +417,36 @@ searchEl.addEventListener("keydown", (e) => {
   }
 });
 
-/** Switch the sidebar between the project list, the file tree, and Git. "git"
- *  keeps the project list in the sidebar and opens the center diff panel
- *  (gitdiff.js) — that panel IS the Git view (changed files + diffs). Leaving
- *  git mode closes the panel, so the tabs and the center always agree. */
+// --- Sidebar mode toggle (Projects / Git) ---------------------------------------
+// The sidebar head toggle switches its body between the project list and Git;
+// the file tree lives only in this module's #project-browser panel now.
+const modeProjectsBtn = document.querySelector("#sb-view-projects");
+const modeGitBtn = document.querySelector("#sb-view-git");
+const MODE_KEY = "octiq.sidebar.mode";
+
+/** Switch the sidebar between the project list and Git. "git" keeps the
+ *  project list in the sidebar and opens the center diff panel (gitdiff.js)
+ *  — that panel IS the Git view (changed files + diffs). Leaving git mode
+ *  closes the panel, so the tabs and the center always agree. This function
+ *  only ever distinguishes git from not-git, so a stored "files" value from
+ *  before the sidebar Files view was removed falls back to "projects" here
+ *  with no special-casing needed. */
 function setSidebarMode(mode) {
-  const files = mode === "files";
   const git = mode === "git";
-  sidebarEl.classList.toggle("files-mode", files);
-  modeFilesBtn.classList.toggle("gd-toggle-active", files);
   modeGitBtn.classList.toggle("gd-toggle-active", git);
-  modeProjectsBtn.classList.toggle("gd-toggle-active", !files && !git);
+  modeProjectsBtn.classList.toggle("gd-toggle-active", !git);
   // Git is not persisted: the diff panel does not survive a reload, so the
-  // stored mode is always the tab to fall back to when the panel closes.
-  if (!git) localStorage.setItem(MODE_KEY, files ? "files" : "projects");
+  // stored mode is always "projects", the tab to fall back to when it closes.
+  if (!git) localStorage.setItem(MODE_KEY, "projects");
   if (!git && isOpen("gitdiff")) closePanel("gitdiff");
-  if (files) {
-    searchQuery ? runSearch(searchQuery) : renderSidebarTree();
-  }
 }
 
 modeProjectsBtn.addEventListener("click", () => setSidebarMode("projects"));
-modeFilesBtn.addEventListener("click", () => setSidebarMode("files"));
 modeGitBtn.addEventListener("click", () => {
-  if (!sidebarProjectId) return; // no project selected — nothing to diff
+  if (!currentProjectId) return; // no project selected — nothing to diff
   window.dispatchEvent(
     new CustomEvent("project-gitdiff", {
-      detail: { id: sidebarProjectId, name: sidebarProjectName, paths: sidebarPaths },
+      detail: { id: currentProjectId, name: currentProjectName, paths: currentPaths },
     }),
   );
 });
@@ -388,19 +461,4 @@ window.addEventListener("gitdiff-closed", () => {
     setSidebarMode(localStorage.getItem(MODE_KEY) || "projects");
 });
 
-window.addEventListener("project-selected", (e) => {
-  sidebarProjectId = e.detail?.id ?? null;
-  sidebarProjectName = e.detail?.name || "";
-  sidebarPaths = (e.detail?.paths || []).map((p) => p.replace(/[/\\]+$/, ""));
-  // A query is scoped to one project's folders, so a project switch clears it.
-  if (searchQuery) {
-    searchEl.value = "";
-    searchQuery = "";
-    treeDrawnFor = undefined; // hits are on screen, not the tree — force a redraw
-  }
-  if (sidebarEl.classList.contains("files-mode")) renderSidebarTree();
-});
-
-// The mode is restored before the first project-selected fires; the tree then
-// draws from that event.
 setSidebarMode(localStorage.getItem(MODE_KEY) || "projects");

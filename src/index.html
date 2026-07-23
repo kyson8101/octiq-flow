@@ -34,7 +34,7 @@
     <script type="module" src="/main.js" defer></script>
     <script type="module" src="/layout.js" defer></script>
     <script type="module" src="/project.js" defer></script>
-    <script type="module" src="/filetabs.js" defer></script>
+    <script type="module" src="/filepreview.js" defer></script>
     <script type="module" src="/commands.js" defer></script>
     <script type="module" src="/modes.js" defer></script>
     <script type="module" src="/chat.js" defer></script>
@@ -53,11 +53,9 @@
 
   <body>
     <div class="shell">
-      <!-- Attention banner (card 13): lists terminals waiting for the user. Hidden
-           until at least one terminal needs attention; alerts.js fills/clears it. -->
-      <div id="alert-banner" class="alert-banner hidden"></div>
-
-      <!-- Top-level mode bar: one view shows at a time (router in modes.js) -->
+      <!-- Top-level mode bar: one row of chrome (card 37) — nav, the attention
+           badge, and the right-side actions. One view shows at a time (router
+           in modes.js). -->
       <nav class="modebar">
         <button id="modebar-brand" class="modebar-brand" type="button" aria-label="OctiqFlow" data-tip="Toggle the projects panel">
           <img
@@ -74,6 +72,21 @@
           <button class="modebtn" data-mode="chat">Chat</button>
           <button class="modebtn" data-mode="agents">Agents<span id="agents-idle-badge" class="modebtn-idle-badge hidden" title="Idle agent sessions">0</span></button>
         </div>
+
+        <!-- Attention widget (card 37): replaces the old full-width banner
+             (removed) with a compact badge in this ONE chrome row. Hidden
+             while nothing needs the user. alerts.js fills the count and the
+             dropdown, naming each entry "project · tab title" — never a raw
+             pty id. Clicking an entry jumps to that terminal and clears its
+             flag; Cmd+. (Ctrl+. on Windows/Linux) cycles to the next one. -->
+        <div id="alert-widget" class="alert-widget hidden">
+          <button id="alert-badge" class="alert-badge" type="button" data-tip="Terminals waiting for you">
+            <span class="alert-badge-dot"></span>
+            <span id="alert-count" class="alert-count"></span>
+          </button>
+          <div id="alert-dropdown" class="alert-dropdown hidden" role="menu"></div>
+        </div>
+
         <button id="vault-btn" class="modebtn modebtn-vault" data-tip="Screenshot vault — capture a window with the hotkey, then paste it into a terminal">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
           <span id="vault-badge" class="vault-badge hidden">0</span>
@@ -83,18 +96,21 @@
         </button>
       </nav>
 
-      <!-- Project view: sidebar (projects) | center (terminals + command drawer)
-           | right (collapsible command panel); paths footer spans below. -->
+      <!-- Project view: sidebar (projects) | terminals | file preview | docked
+           file tree/web preview/git diff | right (collapsible command panel).
+           Every split is a drag handle: #sidebar-resizer (workspaces.js),
+           #file-preview-resizer (filepreview.js), and layout.js's shared
+           .lay-resizer for the docked panel. Paths footer spans below. -->
       <section id="view-project" class="view view-active">
       <div class="columns">
       <!-- Left panel: only the list of workspaces -->
       <aside class="sidebar">
         <div class="sidebar-head">
-          <!-- Sidebar view toggle: the project list, or the selected project's
-               folder tree (browser.js owns both the toggle and the tree). -->
+          <!-- Sidebar view toggle: the project list, or Git (browser.js owns
+               the toggle). The file tree lives only in the right-docked
+               #project-browser panel, opened from the command-panel head. -->
           <span class="gd-view-toggle" role="group" aria-label="Sidebar view">
             <button id="sb-view-projects" class="gd-toggle-btn gd-toggle-active" type="button">Projects</button>
-            <button id="sb-view-files" class="gd-toggle-btn" type="button">Files</button>
             <button id="sb-view-git" class="gd-toggle-btn" type="button">Git</button>
           </span>
           <span class="sidebar-head-actions">
@@ -121,26 +137,64 @@
           <ul id="workspace-shelf" class="ws-list ws-shelf-list"></ul>
           <p id="workspace-shelf-empty" class="ws-shelf-empty">Drag a project here, or right-click one and pick “Shelve”, to set it aside.</p>
         </section>
-
-        <!-- Files view: the selected project's folder tree, shown in place of the
-             project list when the head toggle is on "Files". Same tree rows as the
-             center file browser; clicking a file opens it in the browser's preview
-             pane. browser.js fills it. -->
-        <input id="sb-file-search" class="sb-file-search" type="search" autocomplete="off"
-               spellcheck="false" placeholder="Search files and text…" />
-        <div id="sidebar-files" class="sidebar-files"></div>
       </aside>
 
-      <!-- Center: per-project terminals on top, command drawer at the bottom -->
+      <!-- Sidebar width: a slim drag handle, persisted in localStorage
+           (workspaces.js). Hidden while the sidebar is collapsed — see the
+           .sidebar.collapsed + .sidebar-resizer rule in styles.css. -->
+      <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" title="Drag to resize the sidebar"></div>
+
+      <!-- Center: terminals + file preview in a fixed row (#center-main), with
+           the docked file tree / web preview / git diff panel (layout.js)
+           beside them. -->
       <main class="center">
-        <div class="center-terms">
-          <div id="project-terminals" class="project-terminals"></div>
+        <!-- #center-main wraps the terminal area and the file-preview pane in a
+             row that never flips direction — the lay-dock-* classes below
+             reverse .center's OWN axis for the tree/web-preview panel, but this
+             inner row keeps the preview to the terminals' right no matter which
+             side that panel docks to. layout.js targets this wrapper (not
+             .center-terms directly) as its "main" slot, so opening the git diff
+             (mode: "main") hides the terminals AND the preview together. -->
+        <div class="center-main">
+          <div class="center-terms">
+            <div id="project-terminals" class="project-terminals"></div>
+          </div>
+
+          <!-- File preview column (filepreview.js). Hidden until a file is
+               open (`file-open` from browser.js — sidebar tree, center tree, or
+               a search hit); opening a second file swaps THIS SAME pane's
+               content in place — no tabs. Its own slim drag handle + persisted
+               width, independent of layout.js's panel registry (that manager
+               only arbitrates the tree / web preview / git diff panels). -->
+          <div id="file-preview-resizer" class="file-preview-resizer hidden" role="separator" aria-orientation="vertical" title="Drag to resize the file preview"></div>
+          <div id="file-preview" class="file-preview hidden">
+            <div class="ft-head">
+              <span id="fp-name" class="ft-name"></span>
+              <span id="fp-status" class="ft-status"></span>
+              <span class="ft-actions">
+                <button id="fp-save" class="icon-btn ft-save hidden" type="button" data-tip="Save (⌘S)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+                </button>
+                <button id="fp-open-external" class="icon-btn" type="button" data-tip="Open with the default app">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                </button>
+                <button id="fp-close" class="icon-btn" type="button" data-tip="Close preview">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                </button>
+              </span>
+            </div>
+            <div id="fp-body" class="ft-body"></div>
+          </div>
         </div>
 
-        <!-- File browser (right-click "Files" / "Documentation"). A folder tree
-             docked beside the terminals by the layout manager (layout.js, which
-             also owns the shared drag handle). Clicking a file opens it as a
-             TAB in the terminal tab strip (filetabs.js). fs-only — no PTY here. -->
+        <!-- The single files UI: opened either by the folder toggle in the
+             command-panel head (#files-toggle, browser.js) rooted at ALL of
+             the selected project's folder paths, or by a project's right-click
+             "Files" / "Documentation" (workspaces.js), rooted at that ONE
+             folder. Docked beside the terminals by the layout manager
+             (layout.js, which also owns the shared drag handle). Clicking a
+             file opens it in the file-preview column (filepreview.js).
+             fs-only — no PTY here. -->
         <div id="project-browser" class="project-browser hidden">
           <div class="pb-head">
             <button id="pb-collapse" class="icon-btn" type="button" data-tip="Collapse all folders">
@@ -152,8 +206,19 @@
             </button>
           </div>
 
-          <!-- The folder tree. File previews no longer live here — they open as
-               tabs in the terminal tab strip (filetabs.js). -->
+          <!-- File name + content search, scoped to ALL the project's folder
+               paths regardless of which root the tree below is showing
+               (browser.js). Hits replace the tree until cleared. Styled as a
+               quiet "Filter files…" field (card 39) — the placeholder still
+               covers both name and content search; the icon is decorative. -->
+          <div class="pb-search-wrap">
+            <svg class="pb-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="pb-search" class="pb-search" type="search" autocomplete="off"
+                   spellcheck="false" placeholder="Filter files…" />
+          </div>
+
+          <!-- The folder tree. File previews do not live here — they open in
+               the dedicated file-preview column (filepreview.js). -->
           <div class="pb-body">
             <div id="pb-list" class="pb-list"></div>
           </div>
@@ -334,6 +399,9 @@
             </button>
           </div>
           <div class="cmd-panel-head-actions">
+            <button id="files-toggle" class="icon-btn cmd-panel-files-toggle" type="button" data-tip="Files" aria-pressed="false">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            </button>
             <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 9h11"/><path d="M3 15h11"/></svg>
             </button>
