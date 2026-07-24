@@ -74,6 +74,7 @@ registerPanel("browser", {
   onHidden: () => {
     rootDir = "";
     browsingProjectId = null;
+    loadedDirs.clear();
     selectRow(null);
     setToggleActive(false);
     if (searchQuery) {
@@ -197,6 +198,9 @@ function treeItem(entry, depth, onFile) {
   nameEl.title = entry.path;
   row.append(nameEl);
   item.append(row);
+  // The auto-refresh matches items by path so an unchanged row (and the whole
+  // expanded subtree under it) is reused instead of rebuilt.
+  item.dataset.path = entry.path;
 
   if (entry.is_dir) {
     const children = textEl("div", "pb-children");
@@ -224,6 +228,10 @@ function treeItem(entry, depth, onFile) {
  *  `dir` is within the chosen root (callers guarantee this). */
 async function loadChildren(dir, container, depth, onFile) {
   container.replaceChildren(treeMessage("Loading…", depth));
+  // Remember this level so the auto-refresh below can re-list exactly what is
+  // on screen. Registered even when the load fails, so a folder that comes back
+  // recovers on the next refresh.
+  loadedDirs.set(container, { dir, depth, onFile });
 
   let entries;
   try {
@@ -231,16 +239,91 @@ async function loadChildren(dir, container, depth, onFile) {
   } catch (err) {
     // The backend returns a human string for missing / not-a-dir / permission.
     container.replaceChildren(treeMessage(String(err), depth));
+    container.dataset.sig = "";
     return;
   }
 
   if (!entries || entries.length === 0) {
     container.replaceChildren(treeMessage("This folder is empty.", depth));
+    container.dataset.sig = "";
     return;
   }
 
+  container.dataset.sig = signature(entries);
   container.replaceChildren(...entries.map((e) => treeItem(e, depth, onFile)));
 }
+
+// --- Auto-refresh on disk changes ---------------------------------------------
+// The backend fs watcher (git_watch.rs) already watches every project folder for
+// the sidebar's git counts and emits a debounced `git-status-changed`. The tree
+// rides on that same event — no second watcher — and re-lists the folders it has
+// loaded. Two things it inherits from that watcher: changes under node_modules /
+// target / dist / build / .venv are ignored, and a docs-only root outside the
+// project's folder paths is not watched.
+//
+// Every loaded level: container element -> {dir, depth, onFile}. Pruned when its
+// container leaves the DOM (a parent folder collapsed away or the tree redrew).
+const loadedDirs = new Map();
+
+/** A level's identity: the paths it holds, in order. Unchanged signature means
+ *  nothing to redraw. */
+function signature(entries) {
+  return entries.map((e) => `${e.path}\t${e.is_dir}`).join("\n");
+}
+
+/** Re-list one loaded level and patch it in place. Rows whose path is still
+ *  there are REUSED, so an expanded folder keeps everything loaded under it;
+ *  replaceChildren moves them into the new order and drops the rest. */
+async function refreshLevel(container, ctx) {
+  let entries;
+  try {
+    entries = await invoke("list_dir", { path: ctx.dir });
+  } catch {
+    return; // folder gone or unreadable — keep showing what we have
+  }
+  if (!container.isConnected) return;
+
+  if (!entries || entries.length === 0) {
+    if (container.dataset.sig) {
+      container.dataset.sig = "";
+      container.replaceChildren(treeMessage("This folder is empty.", ctx.depth));
+    }
+    return;
+  }
+
+  const sig = signature(entries);
+  if (sig === container.dataset.sig) return;
+  container.dataset.sig = sig;
+
+  const existing = new Map();
+  for (const item of container.children) {
+    if (item.dataset.path) existing.set(item.dataset.path, item);
+  }
+  container.replaceChildren(
+    ...entries.map(
+      (e) => existing.get(e.path) || treeItem(e, ctx.depth, ctx.onFile),
+    ),
+  );
+}
+
+/** Re-list every loaded level. Skipped while search hits are showing (those are
+ *  not a tree) and while the panel is closed. Serialised so a burst of events
+ *  cannot stack overlapping passes. */
+let refreshing = false;
+async function refreshTree() {
+  if (refreshing || searchQuery || !isOpen("browser")) return;
+  refreshing = true;
+  try {
+    for (const [container, ctx] of [...loadedDirs]) {
+      if (!container.isConnected) loadedDirs.delete(container);
+      else await refreshLevel(container, ctx);
+    }
+  } finally {
+    refreshing = false;
+  }
+}
+
+window.__TAURI__.event.listen("git-status-changed", refreshTree);
 
 /** Collapse every expanded folder back to the root (hide their children). */
 function collapseAll() {
@@ -255,6 +338,9 @@ function collapseAll() {
  *  per the project's folder paths (primary first), except a single path,
  *  whose contents fill the list directly. */
 function renderMultiRootTree() {
+  // The list is redrawn from scratch here, so drop what the refresh knew: the
+  // top-level rows below are the project's folders, not a listed directory.
+  loadedDirs.clear();
   if (!currentPaths.length) {
     showMessage("This project has no folders yet.");
     return;
@@ -287,6 +373,7 @@ function startBrowse(detail) {
   if (!detail) return;
   const { id, root } = detail;
   openBrowserPanel();
+  loadedDirs.clear(); // a new root replaces the whole tree
   browsingProjectId = id;
   rootDir = (root || "").replace(/[/\\]+$/, "");
   renderHead(rootDir, !!rootDir);
