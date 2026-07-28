@@ -338,6 +338,10 @@ async function restoreProject(id, saved) {
         // Carry the manual-rename flag so a hand-named tab is not re-titled by
         // the auto-rename poller after a restart.
         titleManual: !!t.titleManual,
+        // Carry this terminal's own notification choice, so a tab the user
+        // silenced comes back silent — and one they singled out to keep
+        // watching comes back watched.
+        notify: t.notify ?? null,
         cwd,
         startCmd,
         restoreScrollback,

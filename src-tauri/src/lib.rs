@@ -15,6 +15,7 @@ mod focus;
 mod fonts;
 mod fsbrowse;
 mod git;
+mod git_ops;
 mod git_watch;
 mod notify_hook;
 mod paths;
@@ -135,6 +136,7 @@ pub fn run() {
             pty::pty_list_active,
             pty::pty_agent_running,
             pty::pty_set_visible,
+            pty::pty_set_status_scan,
             agents::agent_procs,
             agents::agent_kill,
             notify_hook::notify_hook_filter,
@@ -185,6 +187,9 @@ pub fn run() {
             git::git_changed_files,
             git::git_file_diff,
             git::git_local_branches,
+            git_ops::git_commit,
+            git_ops::git_push,
+            git_ops::git_pull,
             fsbrowse::list_dir,
             fsbrowse::read_file_preview,
             fsbrowse::write_file,

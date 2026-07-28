@@ -40,6 +40,12 @@ export const ICONS = {
       '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
       size
     ),
+  // Bell with a slash: this terminal's notifications are off (card 43).
+  bellOff: (size) =>
+    svg(
+      '<path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="M21 17H3s3-2 3-9a6 6 0 0 1 9-5.2"/><path d="m2 2 20 20"/>',
+      size
+    ),
   arrowUp: (size) => svg('<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>', size),
   external: (size) =>
     svg(

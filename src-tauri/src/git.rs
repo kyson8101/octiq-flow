@@ -36,6 +36,14 @@ pub struct RepoChanges {
     pub branch: String,
     /// Changed files in this repo, in git's order.
     pub files: Vec<ChangedFile>,
+    /// Commits on this branch that the upstream does not have yet (0 when there
+    /// is no upstream). Labels the panel's Push button.
+    pub ahead: u32,
+    /// Commits on the upstream this branch does not have yet. Labels Pull.
+    pub behind: u32,
+    /// True when the current branch tracks an upstream branch. False means Pull
+    /// has nothing to pull from and Push must set the upstream first.
+    pub has_upstream: bool,
 }
 
 /// One changed file inside a repo.
@@ -282,16 +290,50 @@ fn changes_for_repo(root: String) -> RepoChanges {
         files = parse_porcelain_as_new(&st);
     }
 
+    let (ahead, behind, has_upstream) = upstream_counts(&root);
     RepoChanges {
         root,
         branch,
         files,
+        ahead,
+        behind,
+        has_upstream,
     }
+}
+
+/// Commits ahead of / behind the current branch's upstream, plus whether an
+/// upstream exists at all. `git rev-list --left-right --count @{u}...HEAD`
+/// prints "<behind>\t<ahead>"; it exits non-zero when the branch tracks nothing
+/// (or the repo has no commits), which we report as "no upstream" rather than an
+/// error — the panel then offers Push (with `--set-upstream`) and disables Pull.
+fn upstream_counts(root: &str) -> (u32, u32, bool) {
+    let Some(text) = run_git(
+        root,
+        &["rev-list", "--left-right", "--count", "@{u}...HEAD"],
+    ) else {
+        return (0, 0, false);
+    };
+    let (ahead, behind) = parse_rev_list_counts(&text);
+    (ahead, behind, true)
+}
+
+/// Split `git rev-list --left-right --count` output ("<behind>\t<ahead>") into
+/// `(ahead, behind)`. Garbled or missing columns count as zero.
+fn parse_rev_list_counts(text: &str) -> (u32, u32) {
+    let mut cols = text.split_whitespace();
+    let behind = cols.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = cols.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (ahead, behind)
 }
 
 /// Run `git -C dir <args>`; `Some(stdout)` on a clean exit, `None` otherwise
 /// (git missing, folder gone, not a repo, non-zero exit).
-fn run_git(dir: &str, args: &[&str]) -> Option<String> {
+///
+/// Read-only by contract: `git_ops.rs` (commit / push / pull) borrows this for
+/// its own lookups — branch name, upstream, index entries — but runs every
+/// MUTATING command through its own runner, which keeps git's stderr so a
+/// failure can be shown to the user.
+pub(crate) fn run_git(dir: &str, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
@@ -818,6 +860,19 @@ mod tests {
     #[test]
     fn sum_numstat_empty_output_is_zero() {
         assert_eq!(sum_numstat(""), (0, 0));
+    }
+
+    #[test]
+    fn rev_list_counts_read_behind_then_ahead() {
+        // git prints the LEFT side (@{u}, i.e. behind) first.
+        assert_eq!(parse_rev_list_counts("3\t7\n"), (7, 3));
+        assert_eq!(parse_rev_list_counts("0\t0\n"), (0, 0));
+    }
+
+    #[test]
+    fn rev_list_counts_tolerate_garbled_output() {
+        assert_eq!(parse_rev_list_counts(""), (0, 0));
+        assert_eq!(parse_rev_list_counts("x\ty\n"), (0, 0));
     }
 
     #[test]

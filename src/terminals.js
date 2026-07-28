@@ -20,6 +20,7 @@ import {
   TERMINAL_SETTINGS_CHANGED,
 } from "/settings.js";
 import { ICONS } from "/icons.js";
+import { openCtxMenu } from "/ctxmenu.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -443,6 +444,7 @@ function entryFor(id) {
  * unknown (its terminal may have been closed). Safe to call repeatedly.
  */
 export function badgeTab(id) {
+  if (!notificationsOn(id)) return; // this terminal is not watched (card 43)
   const entry = entryFor(id);
   if (!entry) return;
   attention.add(id);
@@ -467,6 +469,81 @@ function clearAttention(id) {
   attention.delete(id);
   entryFor(id)?.group._paintAttention(id, false);
   emitAttentionChange();
+}
+
+// ---- Who is watched (card 43) ----------------------------------------------
+// "Watching" a terminal covers everything the app does to report its state: the
+// working dot, the activity mark, the silence alert, the attention badge, the
+// banner entry and the OS notification — plus the two backend polls and the
+// backend's OSC attention scan that feed them.
+//
+// Two levels decide it, and the terminal's own choice wins:
+//
+//   * the SETTINGS switch (`statusMonitoring`) is the default for every
+//     terminal, and
+//   * each terminal may OVERRIDE it from its tab's right-click menu: on, off,
+//     or follow the setting (the default).
+//
+// So a terminal can be watched while the setting is off, and silenced while the
+// setting is on. With the setting off and no terminal overriding it to on,
+// nothing runs at all — the app stops watching, not just stops telling, and a
+// terminal then costs nothing beyond drawing its output.
+let masterOn = true;
+
+// Ids of terminals explicitly set to ON, which is what keeps the machinery
+// running while the settings switch is off. A Set (rather than a scan of every
+// tab) because `monitoringActive` is asked on the per-chunk output path.
+const forcedOn = new Set();
+
+/** True when ANYTHING is being watched — the settings switch, or at least one
+ *  terminal overriding it to on. The polls, the ticks and the backend scan all
+ *  hang off this. */
+function monitoringActive() {
+  return masterOn || forcedOn.size > 0;
+}
+
+/** Whether THIS terminal is watched: its own override when it has one, else the
+ *  settings switch. Exported because alerts.js asks before raising a badge or
+ *  an OS notification, so an alert arriving from the backend is judged by the
+ *  same rule as one raised here. An unknown id (closed terminal) follows the
+ *  switch. */
+export function notificationsOn(id) {
+  const override = entryFor(id)?.notify;
+  return override == null ? masterOn : override === true;
+}
+
+/** Drop everything one terminal has already raised. Called when it stops being
+ *  watched, so a badge from a second ago cannot sit there with nothing left
+ *  running to clear it. */
+function silenceTerminal(id) {
+  clearAttention(id);
+  clearActivity(id);
+  silenceArmed.delete(id);
+  // Through setAgentTab so the idle-agent badge recounts without this terminal.
+  setAgentTab(id, false);
+  if (setWorking(id, false)) emitWorkingChange();
+}
+
+/** Bring the world in line with the current switches: clear every indicator on
+ *  terminals that are no longer watched, and turn the backend's OSC scan on or
+ *  off. Called after any change to the setting or to a terminal's override. */
+function syncMonitoring() {
+  for (const id of [...attention, ...working, ...activityTabs, ...silenceArmed]) {
+    if (!notificationsOn(id)) silenceTerminal(id);
+  }
+  if (!monitoringActive()) {
+    // Nothing is watched: drop the tracked sets too, so no stale membership
+    // survives to be acted on if watching is turned back on later.
+    agentTabs.clear();
+    foregroundAgents = new Set();
+    window.dispatchEvent(new CustomEvent("tg-agents-change"));
+  }
+  emitAttentionChange();
+  emitWorkingChange();
+  // The backend scans PTY output for OSC attention sequences on every reader
+  // thread. Stop that too, so "nothing is watched" really is off all the way
+  // down. It is process-wide, so it follows `monitoringActive`, not one tab.
+  invoke("pty_set_status_scan", { enabled: monitoringActive() }).catch(() => {});
 }
 
 // ---- Working flags --------------------------------------------------------
@@ -554,6 +631,7 @@ function emitWorkingChange() {
  *  waiting for input, and still streaming output (a chunk within the last
  *  WORKING_IDLE_MS). */
 function isWorkingNow(id) {
+  if (!notificationsOn(id)) return false; // not watched (card 43)
   if (!foregroundAgents.has(id) || attention.has(id)) return false;
   const last = lastOutputAt.get(id);
   return last !== undefined && performance.now() - last < WORKING_IDLE_MS;
@@ -591,6 +669,9 @@ function noteOutput(id) {
       }
     }
   }
+  // The stamp and the first-output waiters above are NOT monitoring — the
+  // agent-resume progress mark rides on them — but the working dot is.
+  if (!notificationsOn(id)) return;
   if (foregroundAgents.has(id) && !attention.has(id)) {
     if (setWorking(id, true)) emitWorkingChange();
   }
@@ -601,6 +682,7 @@ function noteOutput(id) {
  *  This is what turns a dot OFF after its tab goes silent (WORKING_IDLE_MS),
  *  flips to waiting, or closes; noteOutput turns dots ON. */
 function refreshWorking() {
+  if (!monitoringActive()) return;
   // Nothing can be working when there are no agent tabs and no lit dots, so skip
   // the per-tick Set build entirely. This is the common idle case (a 300ms timer
   // that would otherwise wake forever doing nothing).
@@ -616,6 +698,7 @@ function refreshWorking() {
 // "agent tab" gate), refresh the snapshot, then recompute. A backend hiccup
 // keeps the last snapshot and tries again next tick.
 async function pollForeground() {
+  if (!monitoringActive()) return; // nothing watched: no per-PTY foreground read
   // No live terminals: drop any stale snapshot and skip the IPC entirely (e.g.
   // while the user sits on Dashboard/Settings with no project terminals open).
   if (idToEntry.size === 0) {
@@ -686,8 +769,23 @@ function readMonitorSettings(s) {
     activity: !!s.monitorActivity,
     silenceMs: s.silenceSeconds * 1000,
   };
+  const on = s.statusMonitoring !== false;
+  if (on === masterOn) return;
+  masterOn = on;
+  // Turning the switch off has to clean up after itself: the timers that would
+  // have cleared a lit dot are about to stop running. Terminals overriding the
+  // switch to on keep theirs.
+  syncMonitoring();
 }
-readMonitorSettings(getTerminalSettings());
+// First read, at module load. `masterOn` is set BEFORE the call so the branch
+// inside sees no change and skips syncMonitoring: the sets it walks are
+// declared further down this file and are still in their temporal dead zone
+// here — and nothing is painted yet, so there is nothing to clean up. The
+// backend gets its one boot-time sync right after.
+const initialSettings = getTerminalSettings();
+masterOn = initialSettings.statusMonitoring !== false;
+readMonitorSettings(initialSettings);
+invoke("pty_set_status_scan", { enabled: masterOn }).catch(() => {});
 window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => readMonitorSettings(e.detail));
 
 // Custom event carrying a monitor-raised alert to alerts.js, which owns every
@@ -724,6 +822,7 @@ function userIsWatching(id) {
  *  forward does not re-activate the tab, so a focus-sensitive test would leave
  *  a dot on the tab the user is already reading with nothing to clear it. */
 function noteActivity(id) {
+  if (!notificationsOn(id)) return; // this terminal is not watched (card 43)
   silenceArmed.add(id);
   if (!monitors.activity || activityTabs.has(id) || isActiveVisible(id)) return;
   activityTabs.add(id);
@@ -741,7 +840,7 @@ function clearActivity(id) {
  *  `silenceMs`. Runs on the working tick. A tab the user is already watching is
  *  disarmed silently — its prompt is right in front of them. */
 function refreshSilence() {
-  if (silenceArmed.size === 0) return;
+  if (!monitoringActive() || silenceArmed.size === 0) return;
   const now = performance.now();
   for (const id of [...silenceArmed]) {
     if (!idToEntry.has(id)) {
@@ -749,6 +848,10 @@ function refreshSilence() {
       continue;
     }
     if (!agentTabs.has(id)) continue; // only a confirmed agent tab can go "quiet"
+    if (!notificationsOn(id)) {
+      silenceArmed.delete(id); // not watched: disarm, never alert
+      continue;
+    }
     const last = lastOutputAt.get(id);
     if (last === undefined || now - last < monitors.silenceMs) continue;
     silenceArmed.delete(id);
@@ -791,7 +894,10 @@ export function idleAgentList() {
 // So it runs on its own timer here, hidden or not.
 const AGENT_TAB_POLL_MS = 5000;
 async function pollAgentTabs() {
-  const jobs = [...idToEntry].filter(([, e]) => e.persistKey);
+  if (!monitoringActive()) return; // nothing watched: no agent-session tracking
+  // Only watched terminals are tracked, so an unwatched one can never arm the
+  // silence alert or be counted as an idle agent.
+  const jobs = [...idToEntry].filter(([id, e]) => e.persistKey && notificationsOn(id));
   if (jobs.length === 0) return;
   let infos;
   try {
@@ -1208,6 +1314,8 @@ class TerminalGroup {
       persistKey: e.persistKey,
       title: e.title,
       titleManual: !!e.titleManual,
+      // true | false | null — null means "follow the Settings switch".
+      notify: e.notify ?? null,
       cwd: e.cwd || "",
     }));
   }
@@ -1280,6 +1388,7 @@ class TerminalGroup {
     startCmd = null,
     title = null,
     titleManual = false,
+    notify = null,
     persistKey = null,
     restoreScrollback = "",
     canvasKey = null,
@@ -1367,6 +1476,12 @@ class TerminalGroup {
     });
     tabEl.append(label, closeBtn);
     tabEl.addEventListener("click", () => this.activate(ptyId));
+    // Right-click the tab title to turn this ONE terminal's notifications off
+    // (card 43). Per-terminal, on top of the global switch in Settings.
+    tabEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this._openTabMenu(ptyId, e.clientX, e.clientY);
+    });
     // Drag to reorder. The id lives on the element so _syncTabOrder can rebuild
     // the tabs Map (= tab + serialize order) straight from the DOM after a drop.
     tabEl.draggable = true;
@@ -1395,6 +1510,12 @@ class TerminalGroup {
       // True once the user renames the tab by hand: auto-rename then leaves it
       // alone. Restored from the saved layout so a manual name survives restart.
       titleManual,
+      // This terminal's own notification choice (card 43), set by right-clicking
+      // the tab: true = watched, false = silent, null = follow the Settings
+      // switch (the default). Persisted with the layout, so a terminal the user
+      // silenced — or singled out to keep watching — stays that way after a
+      // restart.
+      notify,
       // True once an agent session title named this tab. It makes the agent
       // title "sticky": after the agent exits (its session mapping is pruned),
       // the first-command path must not downgrade the tab back to "claude".
@@ -1419,6 +1540,12 @@ class TerminalGroup {
       live: true,
     };
     this.tabs.set(ptyId, entry);
+    // A terminal restored with a saved choice wears its mark from the start,
+    // and an explicit "on" counts towards keeping the machinery running.
+    if (notify != null) {
+      if (notify === true) forcedOn.add(ptyId);
+      this._paintNotify(ptyId);
+    }
 
     // Restore prior output BEFORE routing goes live (idToEntry.set) and before
     // the PTY spawns. The global pty-output listener only writes once the id is
@@ -1701,6 +1828,73 @@ class TerminalGroup {
     entry.tabEl.classList.toggle("tg-tab-activity", on);
   }
 
+  // ---- Per-terminal notification choice (card 43) -------------------------
+  // A tab that OVERRIDES the Settings switch says so on the tab itself, not
+  // only inside its right-click menu: a crossed-out bell when it is silenced, a
+  // plain bell when it is watched while the switch is off. A tab that simply
+  // follows the switch carries no mark — the common case stays clean.
+  _paintNotify(ptyId) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    const choice = entry.notify; // true | false | null
+    entry.tabEl.classList.toggle("tg-tab-muted", choice === false);
+    entry.tabEl.querySelector(".tg-tab-mute-mark")?.remove();
+
+    if (choice == null) {
+      entry.tabEl.title = "";
+      return;
+    }
+    entry.tabEl.title =
+      choice === true
+        ? "Notifications are on for this terminal"
+        : "Notifications are off for this terminal";
+    const el = document.createElement("span");
+    el.className = "tg-tab-mute-mark";
+    el.innerHTML = choice === true ? ICONS.bell(11) : ICONS.bellOff(11);
+    entry.labelEl.after(el);
+  }
+
+  /** Set this ONE terminal's notification choice: true (watch it), false
+   *  (silence it) or null (follow the Settings switch). Anything it has already
+   *  raised is cleared when the change stops it being watched — a badge left
+   *  behind would have nothing running to clear it. Persists with the layout. */
+  _setNotify(ptyId, choice) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry || entry.notify === choice) return;
+    entry.notify = choice;
+    if (choice === true) forcedOn.add(ptyId);
+    else forcedOn.delete(ptyId);
+    this._paintNotify(ptyId);
+    syncMonitoring();
+    this.onLayoutChange?.();
+  }
+
+  /** The right-click menu on a tab: this terminal's notifications. The choice
+   *  in force is ticked, and "Follow the setting" names what the setting
+   *  currently is, so the menu answers "what happens now?" on its own. */
+  _openTabMenu(ptyId, x, y) {
+    const entry = this.tabs.get(ptyId);
+    if (!entry) return;
+    const choice = entry.notify;
+    // Non-breaking spaces: the menu item renders as text, and plain spaces
+    // would collapse, leaving the three labels ragged.
+    const tick = (mine) => (mine === choice ? "✓ " : "   ");
+    openCtxMenu(x, y, [
+      {
+        label: `${tick(null)}Follow the setting (now ${masterOn ? "on" : "off"})`,
+        onClick: () => this._setNotify(ptyId, null),
+      },
+      {
+        label: `${tick(true)}Notifications on for this terminal`,
+        onClick: () => this._setNotify(ptyId, true),
+      },
+      {
+        label: `${tick(false)}Notifications off for this terminal`,
+        onClick: () => this._setNotify(ptyId, false),
+      },
+    ]);
+  }
+
   // ---- Last-sent bar ------------------------------------------------------
   // Write `text` into the bottom bar, or show the dim placeholder when it is
   // null/empty (no line sent yet in the active terminal). Kept tiny: one text
@@ -1769,6 +1963,10 @@ class TerminalGroup {
     // Through setAgentTab so tg-agents-change fires and the idle badge drops it.
     setAgentTab(ptyId, false);
     silenceArmed.delete(ptyId);
+    // A closed terminal can no longer hold the machinery on by overriding the
+    // Settings switch (card 43). When it was the last one doing so and the
+    // switch is off, this is what stops the polls and the backend scan.
+    if (forcedOn.delete(ptyId) && !monitoringActive()) syncMonitoring();
     invoke("pty_close", { id: ptyId }).catch(() => {});
     entry.ro?.disconnect();
     entry.term.dispose();

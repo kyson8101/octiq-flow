@@ -10,6 +10,7 @@
 // session the frontend spawns by id at startup.
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,6 +23,23 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// attention sequence is tiny; anything longer is plain output that can be
 /// dropped, so the reader never holds unbounded scrollback.
 const SCAN_TAIL_CAP: usize = 8 * 1024;
+
+/// Whether reader threads scan PTY output for OSC attention sequences at all
+/// (card 43). The frontend's master "watch terminal status" switch flips this;
+/// with it off, every reader skips the scan buffer and the scan itself, so a
+/// terminal with monitoring off costs nothing beyond moving its bytes.
+///
+/// One process-wide flag rather than per session: the setting is global, and a
+/// relaxed atomic read per chunk is free next to the read that produced it.
+/// Sessions spawned later pick it up automatically.
+static STATUS_SCAN: AtomicBool = AtomicBool::new(true);
+
+/// Turn OSC attention scanning on or off for every PTY, now and later. Called by
+/// the frontend at boot and whenever the user flips the setting.
+#[tauri::command]
+pub fn pty_set_status_scan(enabled: bool) {
+    STATUS_SCAN.store(enabled, Ordering::Relaxed);
+}
 
 /// Upper bound on the per-session ring that buffers output while a terminal is
 /// HIDDEN (card 16). Output past this is dropped from the FRONT and the session
@@ -833,6 +851,20 @@ pub fn pty_spawn(
                     byte_carry.extend_from_slice(&buf[..n]);
                     let (chunk, tail) = decode_utf8_stream(&byte_carry);
                     byte_carry = tail;
+
+                    // Status watching off (card 43): skip the scan entirely —
+                    // no buffer copy, no parse, no alert. Drop whatever tail the
+                    // buffer held so it is not scanned late if the user turns
+                    // watching back on mid-stream.
+                    if !STATUS_SCAN.load(Ordering::Relaxed) {
+                        if !scan_buf.is_empty() {
+                            scan_buf.clear();
+                        }
+                        if !chunk.is_empty() {
+                            let _ = out_tx.send(chunk);
+                        }
+                        continue;
+                    }
 
                     // Append to the carry-over, scan the whole thing, emit any
                     // hits, then keep only the unsettled tail for the next read.

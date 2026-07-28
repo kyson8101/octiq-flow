@@ -2068,6 +2068,13 @@ body {
   cursor: pointer;
 }
 
+/* A control switched off by the master status-monitoring switch (card 43). It
+   keeps its saved value and stays readable — it is inactive, not gone. */
+.settings-disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 /* Helper line under a settings field input. */
 .settings-hint {
   font-size: 11px;
@@ -2796,6 +2803,19 @@ body {
   vertical-align: middle;
   border-radius: 50%;
   background: var(--accent);
+}
+
+/* A terminal silenced from its tab's right-click menu (card 43): a small
+   crossed-out bell after the title. Dim on purpose — it is a state to notice
+   when you look, not another thing shouting for attention. It is its own
+   element between the label and the close button, so it never collides with
+   the label's ::before status dot (working / activity / attention). */
+.tg-tab-mute-mark {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-left: 5px;
+  color: var(--fg-3);
 }
 
 /* ---- File preview pane (filepreview.js): head bar over the content body. --
@@ -3648,6 +3668,23 @@ body {
   background: var(--accent-tint);
 }
 
+/* Pull-style picker in the head (Rebase / Merge / Fast-forward only). Compact
+   so it sits beside the Unified/Split pill without crowding the title. */
+.gd-select {
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--fg-1);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.gd-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ---- Body: file list (left) | diff (right) -------------------------- */
 .gd-body {
   flex: 1 1 auto;
@@ -3656,12 +3693,37 @@ body {
 }
 
 /* Left pane: the Flat/Tree toggle sits right above the file list. */
+/* Width is set by gitdiff.js (dragged, saved per user) — the 320px here is only
+   the value before the saved one is applied.
+
+   `min-width: 0` is load-bearing. Without it a flex item may not shrink below
+   its own min-content width, and one long path in the list (repo-relative paths
+   run to 100+ monospace characters) would push the pane to several hundred
+   pixels wider than asked, squeezing the diff pane to a sliver. With it, the
+   pane honours its width and the paths ellipsize instead. */
 .gd-list-pane {
-  flex: 0 0 320px;
+  flex: 0 0 auto;
+  width: 320px;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   border-right: 1px solid var(--border);
+}
+
+/* Drag handle between the list and the diff. util.js's makeResizer measures
+   from a pane's fixed RIGHT edge; this pane's LEFT edge is the fixed one, so
+   gitdiff.js drives the drag itself. */
+.gd-resizer {
+  flex: 0 0 5px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.gd-resizer:hover,
+.gd-resizer.dragging {
+  background: var(--accent-tint-strong);
 }
 .gd-list-head {
   flex: 0 0 auto;
@@ -3688,14 +3750,15 @@ body {
 }
 .gd-group-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   padding: 4px 6px;
   position: sticky;
   top: 0;
   background: var(--bg-0);
 }
 .gd-group-name {
+  flex: 0 1 auto;
   font-size: 12px;
   font-weight: 600;
   color: var(--fg-1);
@@ -3703,8 +3766,14 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Shrinkable: at a narrow list width a long branch name must ellipsize rather
+   than push the Pull / Push buttons out of the section head. */
 .gd-group-branch {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-family: Menlo, Monaco, "Courier New", monospace;
   font-size: 11px;
   color: var(--fg-2);
@@ -3717,6 +3786,58 @@ body {
   padding: 4px 8px 4px 24px;
   font-size: 12px;
   color: var(--fg-3);
+}
+
+/* Unpushed (↑) / unpulled (↓) commit counts. `margin-left: auto` is what pushes
+   this and the Pull/Push buttons to the right edge of the section head, so it
+   stays there even when the counts are empty. */
+.gd-group-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+}
+.gd-ahead-n {
+  color: var(--accent);
+}
+.gd-behind-n {
+  color: var(--warn);
+}
+
+/* Per-repo Pull / Push. Quiet by default — these act on a whole repo, so they
+   should not shout louder than the file rows below them. */
+.gd-op-btn {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.gd-op-btn:hover:not(:disabled) {
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+}
+.gd-op-btn:disabled {
+  color: var(--fg-3);
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* Tick box choosing what goes into the next commit (one per file, one per repo
+   head for "all"). */
+.gd-check {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 /* A changed-file row. */
@@ -3814,6 +3935,99 @@ body {
 }
 .gd-bin {
   color: var(--fg-2);
+}
+
+/* ---- Commit bar (bottom of the file-list pane) ----------------------- */
+/* Message box + one Commit button, with the result of the last commit / push /
+   pull above them. It sits below the scrolling list and never scrolls away. */
+.gd-commit {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+.gd-commit.hidden {
+  display: none;
+}
+.gd-commit-msg {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-0);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.gd-commit-msg:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.gd-commit-msg::placeholder {
+  color: var(--fg-3);
+}
+.gd-commit-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-soft-border);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.gd-commit-btn:hover:not(:disabled) {
+  background: var(--accent-bg-hover);
+}
+.gd-commit-btn:disabled {
+  color: var(--fg-3);
+  background: var(--bg-1);
+  border-color: var(--border);
+  cursor: default;
+}
+
+/* Result line: the one-line summary, plus git's own output under it. */
+.gd-op-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.gd-op-status.hidden {
+  display: none;
+}
+.gd-op-line {
+  font-weight: 600;
+}
+.gd-op-ok .gd-op-line {
+  color: var(--ok);
+}
+.gd-op-err .gd-op-line {
+  color: var(--danger);
+}
+.gd-op-busy .gd-op-line {
+  color: var(--fg-2);
+}
+.gd-op-detail {
+  max-height: 96px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px 8px;
+  font-family: Menlo, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg-2);
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
 }
 
 /* ---- Right diff pane ------------------------------------------------- */

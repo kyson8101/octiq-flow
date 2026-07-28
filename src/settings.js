@@ -110,11 +110,18 @@ export const DEFAULT_TERMINAL_SETTINGS = {
   lineHeight: 1.0,
   letterSpacing: 0,
   shell: "powershell",
+  // Master switch for every terminal-status monitor and notification (card 43).
+  // ON by default — watching agent tabs is what the app is for. Turned off, the
+  // app stops WATCHING as well as stops TELLING: no OSC scan in the backend, no
+  // foreground / agent-session polls, no working dots, activity marks, silence
+  // alerts, tab badges or OS notifications. See terminals.js.
+  statusMonitoring: true,
   // Activity monitor (card 15) OFF by default, tmux-style opt-in: left on it
   // would light up for every streaming background tab. The SILENCE alert has no
   // on/off setting — it is always on for agent tabs (see terminals.js), because
   // "your agent finished and is waiting" is the notification the app exists to
-  // give; only its quiet threshold is configurable.
+  // give; only its quiet threshold is configurable. Both sit UNDER
+  // `statusMonitoring`: with the master switch off, neither runs.
   monitorActivity: false,
   silenceSeconds: 15,
 };
@@ -235,6 +242,9 @@ export function getTerminalSettings() {
     ),
     theme: resolveTheme(saved.theme),
     shell: shellById(saved.shell),
+    // Absent means ON: a settings file written before this switch existed keeps
+    // the monitoring its user already had. Only an explicit `false` turns it off.
+    statusMonitoring: saved.statusMonitoring !== false,
     monitorActivity: !!saved.monitorActivity,
     silenceSeconds: Math.round(
       clamp(saved.silenceSeconds, SILENCE_SECONDS_MIN, SILENCE_SECONDS_MAX, DEFAULT_TERMINAL_SETTINGS.silenceSeconds),
@@ -307,6 +317,7 @@ export function saveTerminalSettings(partial) {
     letterSpacing: next.letterSpacing,
     theme: resolveTheme(next.theme),
     shell: next.shell,
+    statusMonitoring: next.statusMonitoring,
     monitorActivity: next.monitorActivity,
     silenceSeconds: next.silenceSeconds,
   };
@@ -574,21 +585,35 @@ document.addEventListener("DOMContentLoaded", () => {
   wireInstallButton("install-canvas-codex", "install-canvas-codex-status", "install_canvas_codex_guide");
 });
 
-/** Wire the terminal monitor controls (card 15): the activity checkbox and the
- *  silence-seconds number box. The silence alert itself is always on (see
- *  terminals.js), so only its threshold is settable. Bails quietly if absent. */
+/** Wire the terminal monitor controls: the master status-monitoring switch
+ *  (card 43), the activity checkbox and the silence-seconds number box. The
+ *  silence alert has no switch of its own (see terminals.js), so only its
+ *  threshold is settable. Bails quietly if absent.
+ *
+ *  The two lower controls are disabled while the master switch is off — they
+ *  keep their saved values, but nothing they configure is running. */
 function wireMonitorControls() {
+  const master = document.getElementById("term-status-monitoring");
   const activity = document.getElementById("term-monitor-activity");
   const seconds = document.getElementById("term-silence-seconds");
   if (!activity || !seconds) return;
 
   const reflect = (s) => {
+    if (master) master.checked = s.statusMonitoring;
     activity.checked = s.monitorActivity;
     seconds.value = String(s.silenceSeconds);
+    activity.disabled = !s.statusMonitoring;
+    seconds.disabled = !s.statusMonitoring;
+    for (const el of document.querySelectorAll(".settings-submonitor")) {
+      el.classList.toggle("settings-disabled", !s.statusMonitoring);
+    }
   };
   reflect(getTerminalSettings());
   window.addEventListener(TERMINAL_SETTINGS_CHANGED, (e) => reflect(e.detail));
 
+  master?.addEventListener("change", () =>
+    reflect(saveTerminalSettings({ statusMonitoring: master.checked })),
+  );
   activity.addEventListener("change", () =>
     reflect(saveTerminalSettings({ monitorActivity: activity.checked })),
   );

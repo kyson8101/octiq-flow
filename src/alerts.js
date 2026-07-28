@@ -24,6 +24,7 @@ import {
   attentionList,
   isActiveVisible,
   terminalTitle,
+  notificationsOn,
   MONITOR_ALERT,
 } from "/terminals.js";
 import { projectNameById } from "/workspaces.js";
@@ -227,6 +228,10 @@ document.addEventListener("DOMContentLoaded", () => {
 listen("pty-attention", (event) => {
   const { id, title, body } = event.payload || {};
   if (!id) return;
+  // This terminal is not watched (card 43): no badge, no banner, no OS
+  // notification. The backend stops scanning when NOTHING is watched, so this
+  // guard is what silences a single terminal while others still alert.
+  if (!notificationsOn(id)) return;
   // If the user is already looking at this exact terminal (it is the active tab
   // of a visible group AND the window is focused), the agent's prompt is right
   // in front of them — no badge needed. Any OTHER terminal (a background tab, a
@@ -256,6 +261,7 @@ listen("pty-attention", (event) => {
 window.addEventListener(MONITOR_ALERT, async (e) => {
   const { id, source, title, body } = e.detail || {};
   if (!id) return;
+  if (!notificationsOn(id)) return; // this terminal is not watched (card 43)
   const alert = await invoke("notify_hook_filter", { id, source, title, body }).catch(
     // A backend hiccup must never swallow an alert: show the original.
     () => ({ title, body, suppress: false }),

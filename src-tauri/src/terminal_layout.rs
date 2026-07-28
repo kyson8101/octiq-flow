@@ -45,6 +45,13 @@ pub struct TermEntry {
     /// name survives both the next poll and a restart.
     #[serde(default)]
     pub title_manual: bool,
+    /// This terminal's own notification choice, set from its tab's right-click
+    /// menu (card 43): `Some(true)` watch it, `Some(false)` silence it, `None`
+    /// (the default, and what an older layout file reads as) follow the global
+    /// `statusMonitoring` setting. A terminal's own choice wins over the
+    /// setting, in both directions.
+    #[serde(default)]
+    pub notify: Option<bool>,
 }
 
 /// The on-disk shape of `terminal_layout.json`: each project id maps to its
@@ -329,6 +336,7 @@ mod tests {
                 title: "term 1".to_string(),
                 cwd: "/work".to_string(),
                 title_manual: false,
+                notify: Some(false),
             }],
         );
         let raw = serde_json::to_string(&data).unwrap();
@@ -350,6 +358,9 @@ mod tests {
         assert_eq!(entry.title, "");
         assert_eq!(entry.cwd, "");
         assert!(!entry.title_manual);
+        // A layout saved before the per-terminal notification choice existed
+        // reads back as None — follow the global switch.
+        assert_eq!(entry.notify, None);
     }
 
     #[test]
@@ -362,6 +373,7 @@ mod tests {
                 title: String::new(),
                 cwd: String::new(),
                 title_manual: false,
+                notify: None,
             }],
         );
         data.projects.insert(
@@ -371,6 +383,7 @@ mod tests {
                 title: String::new(),
                 cwd: String::new(),
                 title_manual: false,
+                notify: None,
             }],
         );
         let keys = live_keys(&data);
