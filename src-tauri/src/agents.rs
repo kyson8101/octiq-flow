@@ -18,9 +18,14 @@
 // ancestor is a stray started outside the app; it still shows (it is still eating
 // the same RAM), just with no tab to jump to.
 //
-// ponytail: shells out to `ps` instead of linking a process-info crate — one
-// command, one parse, Unix only. Windows gets an empty list until someone needs
-// it.
+// ponytail: shells out instead of linking a process-info crate — one command,
+// one parse. Unix reads `ps`; Windows reads the same five-field shape from
+// PowerShell CIM (`Get-CimInstance Win32_Process`, see the Windows `snapshot`).
+// On Windows every session — the CLI, the VS Code agent, the browser host — is
+// `claude.exe`, so the exact-basename check that hides the macOS Desktop app
+// cannot separate them; the IDE/browser variants are filtered by command line
+// instead (see `is_embedded_agent`) so the app never offers to kill your editor's
+// own agent.
 use crate::proc::no_console;
 use crate::pty::PtyManager;
 use serde::Serialize;
@@ -63,7 +68,18 @@ struct Proc {
 /// substring match would list every Electron helper it runs as an agent.
 fn agent_kind(command: &str) -> Option<String> {
     let argv0 = command.split_whitespace().next()?;
-    let name = argv0.rsplit('/').next()?;
+    // Windows CommandLine wraps the exe path in quotes ("C:\...\claude.exe");
+    // strip them so the basename is clean.
+    let argv0 = argv0.trim_matches('"');
+    // basename after either separator — Unix `/` or Windows `\`.
+    let name = argv0.rsplit(['/', '\\']).next()?;
+    // A Windows executable/script carries an extension the bare name does not.
+    let name = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".cmd"))
+        .or_else(|| name.strip_suffix(".bat"))
+        .or_else(|| name.strip_suffix(".ps1"))
+        .unwrap_or(name);
     match name {
         "claude" | "codex" => Some(name.to_string()),
         _ => None,
@@ -72,6 +88,9 @@ fn agent_kind(command: &str) -> Option<String> {
 
 /// Seconds from a `ps` etime field: `MM:SS`, `HH:MM:SS`, or `DD-HH:MM:SS`.
 /// An unparsable field yields 0 (shown as an unknown age, never a crash).
+/// Unix-only: Windows reads age straight from CIM as seconds, so this is unused
+/// there (still compiled for the shared test suite).
+#[cfg_attr(not(unix), allow(dead_code))]
 fn parse_etime(etime: &str) -> u64 {
     let (days, clock) = match etime.split_once('-') {
         Some((d, rest)) => (d.parse::<u64>().unwrap_or(0), rest),
@@ -121,9 +140,85 @@ fn snapshot() -> HashMap<i32, Proc> {
     procs
 }
 
-#[cfg(not(unix))]
+// Windows has no `ps`, so shell out to PowerShell and read the process table
+// through CIM (`Get-CimInstance Win32_Process`). One line per process, four
+// fixed fields then the command line — the same shape the Unix parser expects.
+// Age is computed in PowerShell from CreationDate so Rust never parses a date.
+// The script is passed as a UTF-16 `-EncodedCommand` (base64) so its inner
+// quotes and backtick-escapes survive Windows argument quoting untouched.
+#[cfg(windows)]
+fn snapshot() -> HashMap<i32, Proc> {
+    use base64::Engine;
+    const SCRIPT: &str = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;\
+Get-CimInstance Win32_Process|ForEach-Object{\
+$a=0;if($_.CreationDate){$a=[int]((Get-Date)-$_.CreationDate).TotalSeconds};\
+$c=$_.CommandLine;if(-not $c){$c=$_.Name};\
+\"$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.WorkingSetSize)`t$a`t$c\"}";
+    let utf16: Vec<u8> = SCRIPT.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded]);
+    no_console(&mut cmd);
+    let Ok(out) = cmd.output() else {
+        return HashMap::new();
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut procs = HashMap::new();
+    for line in text.lines() {
+        if let Some((pid, proc)) = parse_win_line(line) {
+            procs.insert(pid, proc);
+        }
+    }
+    procs
+}
+
+#[cfg(not(any(unix, windows)))]
 fn snapshot() -> HashMap<i32, Proc> {
     HashMap::new()
+}
+
+/// A claude/codex process the app must NOT list as a killable session: an
+/// IDE-embedded agent (VS Code / Cursor drive `claude` with the stream-json
+/// I/O flags, from a `native-binary` path) or the browser native-messaging host.
+/// On Windows every one of these is `claude.exe`, so the exact-basename check
+/// that hides the macOS Desktop app cannot tell them apart — and killing the
+/// editor's own agent from the Agents screen would be a nasty surprise. The
+/// command line is the reliable signal, so filter on it before a process becomes
+/// an agent root.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn is_embedded_agent(command: &str) -> bool {
+    command.contains("--chrome-native-host")
+        || command.contains("--output-format stream-json")
+        || command.contains("--input-format stream-json")
+        || command.contains("native-binary")
+}
+
+/// Parse one line of the Windows CIM sweep — `pid \t ppid \t rssBytes \t
+/// ageSecs \t commandLine` — into the same `Proc` the Unix path builds. The
+/// command line is last and kept whole (it holds spaces and tabs of its own).
+/// A line whose fixed fields do not parse (a header, a blank, a truncated row)
+/// yields None and is skipped. An IDE/browser helper still parses — it belongs
+/// in the tree so a real agent's RAM is complete — but its `kind` is cleared so
+/// it can never be an agent root.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_win_line(line: &str) -> Option<(i32, Proc)> {
+    let mut fields = line.splitn(5, '\t');
+    let pid = fields.next()?.trim().parse().ok()?;
+    let ppid = fields.next()?.trim().parse().ok()?;
+    let rss_bytes = fields.next()?.trim().parse::<u64>().ok()?;
+    let age_secs = fields.next()?.trim().parse().unwrap_or(0);
+    let command = fields.next().unwrap_or("");
+    let kind = agent_kind(command).filter(|_| !is_embedded_agent(command));
+    Some((
+        pid,
+        Proc {
+            ppid,
+            rss_kb: rss_bytes / 1024,
+            age_secs,
+            kind,
+        },
+    ))
 }
 
 /// Whether any ancestor of `pid` is itself an agent — i.e. this process is part
@@ -231,8 +326,7 @@ pub fn agent_kill(manager: State<PtyManager>, pid: i32) -> Result<(), String> {
     if !collect(manager.shell_pids()).iter().any(|a| a.pid == pid) {
         return Err(format!("pid {pid} is not a running agent"));
     }
-    let mut cmd = Command::new("kill");
-    cmd.args(["-TERM", &pid.to_string()]);
+    let mut cmd = kill_command(pid);
     no_console(&mut cmd);
     let out = cmd.output().map_err(|e| e.to_string())?;
     if out.status.success() {
@@ -240,6 +334,31 @@ pub fn agent_kill(manager: State<PtyManager>, pid: i32) -> Result<(), String> {
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
+}
+
+/// SIGTERM the agent so it tears its own MCP fleet down with it.
+#[cfg(unix)]
+fn kill_command(pid: i32) -> Command {
+    let mut cmd = Command::new("kill");
+    cmd.args(["-TERM", &pid.to_string()]);
+    cmd
+}
+
+/// `taskkill /T` kills the whole process tree, so the MCP servers (which hang
+/// off the agent through intermediate `cmd.exe` / `npx` hops on Windows) go with
+/// it — the same net effect as the Unix SIGTERM-takes-the-fleet path.
+#[cfg(windows)]
+fn kill_command(pid: i32) -> Command {
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    cmd
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kill_command(pid: i32) -> Command {
+    let mut cmd = Command::new("kill");
+    cmd.args(["-TERM", &pid.to_string()]);
+    cmd
 }
 
 #[cfg(test)]
@@ -259,6 +378,72 @@ mod tests {
                 a.pid, a.kind, a.rss_mb, a.procs, a.age_secs
             );
         }
+    }
+
+    #[test]
+    fn agent_kind_reads_a_windows_exe_path() {
+        // Windows CommandLine quotes the exe path and uses `\` separators; the
+        // basename carries a `.exe` / `.cmd` extension. All must reduce to the
+        // bare agent name.
+        assert_eq!(
+            agent_kind("\"C:\\Users\\Jink\\.local\\bin\\claude.exe\" --resume abc"),
+            Some("claude".into())
+        );
+        assert_eq!(agent_kind("\"C:\\tools\\codex.cmd\""), Some("codex".into()));
+        // A node-hosted MCP server on Windows is still not an agent session.
+        assert_eq!(
+            agent_kind("\"C:\\Program Files\\nodejs\\node.exe\" npx-cli.js"),
+            None
+        );
+    }
+
+    #[test]
+    fn windows_ide_and_browser_helpers_are_not_sessions() {
+        // The VS Code extension binary and the browser native-messaging host are
+        // both `claude.exe` on Windows — killing them from the Agents screen would
+        // take down the user's active editor agent, so they must be excluded.
+        assert!(is_embedded_agent(
+            "c:\\Users\\Jink\\.vscode\\extensions\\anthropic.claude-code\\native-binary\\claude.exe --output-format stream-json --verbose"
+        ));
+        assert!(is_embedded_agent(
+            "\"C:\\Users\\Jink\\.local\\bin\\claude.exe\" --chrome-native-host"
+        ));
+        // A real interactive session is NOT a helper.
+        assert!(!is_embedded_agent(
+            "\"C:\\Users\\Jink\\.local\\bin\\claude.exe\" --resume 92669ab2"
+        ));
+        assert!(!is_embedded_agent(
+            "\"C:\\Users\\Jink\\.local\\bin\\claude.exe\""
+        ));
+    }
+
+    #[test]
+    fn parse_win_line_reads_a_cim_row_and_folds_bytes_to_kb() {
+        // pid \t ppid \t rssBytes \t ageSecs \t commandLine
+        let line =
+            "55816\t24588\t67846144\t567\t\"C:\\Users\\Jink\\.local\\bin\\claude.exe\" --resume e76de334";
+        let (pid, proc) = parse_win_line(line).expect("row parses");
+        assert_eq!(pid, 55816);
+        assert_eq!(proc.ppid, 24588);
+        assert_eq!(proc.rss_kb, 67_846_144 / 1024);
+        assert_eq!(proc.age_secs, 567);
+        assert_eq!(proc.kind.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn parse_win_line_keeps_the_ide_binary_as_a_process_but_not_an_agent() {
+        // It counts toward the process tree (so a real agent's RAM is complete)
+        // but must never become an agent ROOT.
+        let line =
+            "85212\t62520\t220237824\t230\tc:\\Users\\Jink\\.vscode\\extensions\\x\\native-binary\\claude.exe --output-format stream-json";
+        let (_, proc) = parse_win_line(line).expect("row parses");
+        assert!(proc.kind.is_none());
+    }
+
+    #[test]
+    fn parse_win_line_skips_a_header_or_junk_line() {
+        assert!(parse_win_line("").is_none());
+        assert!(parse_win_line("not-a-number\tx\ty\tz\tcmd").is_none());
     }
 
     #[test]
