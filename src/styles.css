@@ -3782,6 +3782,35 @@ body {
   border-radius: 999px;
   padding: 0 7px;
 }
+/* The same pill, but a <select> that switches branch (gitdiff.js swaps it in
+   once the repo's branch list has loaded). `appearance: none` is what keeps the
+   pill shape — the native control would draw its own box — so the caret has to
+   be drawn here too, as a background image. */
+.gd-branch-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 18px;
+  max-width: 240px;
+  padding: 0 17px 0 7px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.75 6 7.75l3-3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 4px center;
+  background-size: 9px;
+}
+.gd-branch-select:hover:not(:disabled) {
+  color: var(--fg-0);
+  background-color: var(--bg-2);
+  border-color: var(--border-strong);
+}
+.gd-branch-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.gd-branch-select:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 .gd-group-clean {
   padding: 4px 8px 4px 24px;
   font-size: 12px;

@@ -190,6 +190,7 @@ pub fn run() {
             git_ops::git_commit,
             git_ops::git_push,
             git_ops::git_pull,
+            git_ops::git_switch_branch,
             fsbrowse::list_dir,
             fsbrowse::read_file_preview,
             fsbrowse::write_file,

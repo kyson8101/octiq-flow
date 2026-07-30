@@ -1,4 +1,5 @@
-// Mutating git commands for the Git changes panel: commit, push, pull.
+// Mutating git commands for the Git changes panel: commit, push, pull, switch
+// branch.
 //
 // `git.rs` is the read-only git backend and stays that way. Every command that
 // CHANGES a repository lives here, so "can this touch my repo?" is answered by
@@ -120,6 +121,38 @@ pub fn git_pull(root: String, mode: String) -> Result<GitOpResult, String> {
     let output = run_git_mut(&root, pull_args(&mode), true)?;
     Ok(GitOpResult {
         summary: pull_summary(&branch, &output),
+        output,
+    })
+}
+
+/// Switch this repo to another LOCAL branch (the panel's branch dropdown).
+///
+/// `git switch`, never `git checkout`: switch only ever moves HEAD, so a name
+/// that happens to match a file can never be read as "throw away my changes to
+/// that path". `--` ends the options for the same reason a path would need it.
+///
+/// Uncommitted work is left to git, which is the whole point of not stashing
+/// behind the user's back: changes that do not clash come along to the new
+/// branch, and ones that would be overwritten abort the switch with git's own
+/// "Your local changes … would be overwritten" text, which the panel shows.
+#[tauri::command]
+pub fn git_switch_branch(root: String, branch: String) -> Result<GitOpResult, String> {
+    let branch = branch.trim().to_string();
+    if branch.is_empty() {
+        return Err("Pick a branch to switch to.".into());
+    }
+    // Already there: say so instead of running git. The dropdown can send this
+    // (re-picking the selected option), and a pointless switch still touches the
+    // index, which would wake the fs watcher for nothing.
+    if current_branch(&root).ok().as_deref() == Some(branch.as_str()) {
+        return Ok(GitOpResult {
+            summary: format!("Already on {branch}."),
+            output: String::new(),
+        });
+    }
+    let output = run_git_mut(&root, &["switch", "--", branch.as_str()], false)?;
+    Ok(GitOpResult {
+        summary: format!("Switched to {branch}"),
         output,
     })
 }
@@ -493,6 +526,80 @@ mod tests {
             run_git(&root, &["status", "--porcelain"]).unwrap().trim(),
             ""
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switch_moves_head_to_another_local_branch() {
+        let Some(dir) = temp_repo("switch") else {
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["branch", "feature/x"])
+            .output()
+            .unwrap();
+
+        let res = git_switch_branch(root.clone(), "  feature/x  ".into()).expect("switch works");
+        assert_eq!(res.summary, "Switched to feature/x");
+        assert_eq!(
+            run_git(&root, &["branch", "--show-current"])
+                .unwrap()
+                .trim(),
+            "feature/x"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switch_to_the_current_branch_changes_nothing() {
+        let Some(dir) = temp_repo("switch-same") else {
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let branch = run_git(&root, &["branch", "--show-current"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // An uncommitted change proves git was never called: `git switch` to the
+        // branch you are already on prints "Already on …" but also re-reads the
+        // index, and we want the no-op to be free.
+        std::fs::write(dir.join("kept.txt"), "changed\n").unwrap();
+        let res = git_switch_branch(root.clone(), branch.clone()).expect("no-op succeeds");
+        assert_eq!(res.summary, format!("Already on {branch}."));
+        assert_eq!(
+            run_git(&root, &["status", "--porcelain"]).unwrap().trim(),
+            "M kept.txt"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switch_rejects_an_empty_branch_name() {
+        let Some(dir) = temp_repo("switch-empty") else {
+            return;
+        };
+        let err = git_switch_branch(dir.to_string_lossy().into_owned(), "   ".into()).unwrap_err();
+        assert!(err.contains("Pick a branch"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn switch_reports_gits_own_refusal() {
+        let Some(dir) = temp_repo("switch-refused") else {
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let err = git_switch_branch(root, "no-such-branch".into()).unwrap_err();
+        // git's own words, not ours — the panel shows this line verbatim.
+        assert!(err.contains("no-such-branch"), "{err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

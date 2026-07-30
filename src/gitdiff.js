@@ -4,7 +4,9 @@
 // section); inside each section, one row per changed file. Clicking a file loads
 // its unified diff into the right pane, rendered GitHub-style with old/new line
 // numbers and green/red rows. A toggle switches between a Unified and a Split
-// (side-by-side) view; another regroups the file list Flat ↔ folder Tree.
+// (side-by-side) view; another regroups the file list Flat ↔ folder Tree. Each
+// repo section head also carries that repo's branch as a dropdown, so picking a
+// branch there switches the repo to it.
 //
 // How it is driven:
 //   * workspaces.js dispatches `project-gitdiff` { id, name, paths } when the
@@ -73,6 +75,11 @@ let loadedRepos = null;
 // is told apart from "the user unticked it".
 let checkedByRoot = new Map();
 let knownByRoot = new Map();
+// The local branch names of each repo, for the head's switch dropdown:
+// Map<repoRoot, string[]>. Filled AFTER the file list is on screen (one git read
+// per repo) and read from here by every re-render, so a Flat/Tree toggle or a
+// disable-the-buttons repaint never costs another git call.
+let branchesByRoot = new Map();
 // True while a commit / push / pull is running. Every button is disabled for
 // the duration so two git commands can never overlap in one repo.
 let opRunning = false;
@@ -102,6 +109,7 @@ registerPanel("gitdiff", {
     loadedRepos = null;
     checkedByRoot = new Map();
     knownByRoot = new Map();
+    branchesByRoot = new Map();
     commitMsgEl.value = "";
     showOpStatus("", null);
     commitBarEl.classList.add("hidden");
@@ -262,6 +270,53 @@ function renderTreeInto(repo, node, depth, container) {
   for (const file of node.files) container.append(fileRow(repo, file, depth));
 }
 
+/** The repo's branch in the section head.
+ *
+ *  Once that repo's local branch list has arrived it is a dropdown: pick another
+ *  branch and the repo switches to it. Until then — and for a repo with only the
+ *  one branch, or whose branch list could not be read — it stays the plain pill,
+ *  so nothing in the head waits on a git call and a lone branch offers no
+ *  pointless menu.
+ *
+ *  What HEAD is on comes from `repo.branch`, read in the SAME call as the file
+ *  list, not from the branch list: right after a switch the fresh file list is
+ *  already on screen while the new branch list is still loading, and reading
+ *  "current" from the older of the two would show the branch we just left. */
+function branchPicker(repo) {
+  const head = repo.branch || "(detached)";
+  const names = branchesByRoot.get(repo.root) || [];
+  const others = names.filter((b) => b !== head);
+
+  if (others.length === 0) {
+    const pill = textEl("span", "gd-group-branch", head);
+    pill.title = `On ${head}`;
+    return pill;
+  }
+
+  const sel = document.createElement("select");
+  sel.className = "gd-group-branch gd-branch-select";
+  sel.disabled = opRunning;
+  // A detached HEAD, and a brand-new branch with no commit yet, is not in
+  // refs/heads — it has no entry of its own, so it gets one here. Its value is
+  // empty: it says where HEAD is, it is not somewhere to switch TO.
+  if (!names.includes(head)) sel.append(new Option(head, "", true, true));
+  for (const name of names) {
+    sel.append(new Option(name, name, name === head, name === head));
+  }
+  sel.title = names.includes(head)
+    ? `On ${head} — pick a branch to switch to`
+    : `HEAD is at ${head} — pick a branch to check out`;
+
+  sel.addEventListener("change", () => {
+    const branch = sel.value;
+    if (!branch || branch === head) return;
+    runOp(`Switching ${baseName(repo.root)} to ${branch}…`, () =>
+      invoke("git_switch_branch", { root: repo.root, branch }),
+    );
+  });
+  return sel;
+}
+
 /** The head of one repo section: tick-all box, repo name, branch, the
  *  ahead/behind counts, and that repo's Pull / Push buttons. A repo with no
  *  changes still gets a head, so Push and Pull stay reachable right after a
@@ -288,7 +343,7 @@ function groupHead(repo) {
   }
 
   head.append(textEl("span", "gd-group-name", baseName(repo.root)));
-  head.append(textEl("span", "gd-group-branch", repo.branch || "(detached)"));
+  head.append(branchPicker(repo));
 
   // Unpushed / unpulled commit counts, shown only when there are any.
   const counts = textEl("span", "gd-group-sync");
@@ -819,6 +874,29 @@ async function loadChanges() {
   // Auto-select the first changed file so the diff pane is not empty.
   const firstRow = listEl.querySelector(".gd-file");
   if (firstRow) firstRow.click();
+
+  // The branch lists come after: they are one git read per repo and only the
+  // head's dropdown wants them, so nothing above waits on them.
+  loadBranches(repos);
+}
+
+/** Load every repo's local branches, then repaint the heads so each one becomes
+ *  a switch dropdown. All repos are read at once; a repo whose read fails simply
+ *  keeps its plain branch pill (there is nothing to tell the user — the branch
+ *  name itself is already on screen). */
+async function loadBranches(repos) {
+  const lists = await Promise.all(
+    (repos || []).map((repo) =>
+      invoke("git_local_branches", { path: repo.root })
+        .then((info) => (info?.is_repo ? [repo.root, info.branches || []] : null))
+        .catch(() => null),
+    ),
+  );
+  // A newer load (Refresh, another project, a finished commit) may have replaced
+  // the list while we waited; its own loadBranches owns the heads now.
+  if (loadedRepos !== repos) return;
+  branchesByRoot = new Map(lists.filter(Boolean));
+  renderList(repos);
 }
 
 // --- View toggles -------------------------------------------------------------
