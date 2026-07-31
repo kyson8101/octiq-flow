@@ -11,16 +11,33 @@
 import { createTerminalGroup } from "/terminals.js";
 
 const mountEl = document.querySelector("#chat-terminals");
-const group = createTerminalGroup(mountEl, "chat");
+// quickSpawn: the "+" is a dropdown with Terminal / Claude / Codex, exactly like
+// Project mode. Chat is where a quick throwaway agent belongs most, so it gets
+// the same one-click launch. The agent rows hide themselves when that agent is
+// not installed (terminals.js).
+const group = createTerminalGroup(mountEl, "chat", { quickSpawn: true });
 
-// "+" spawns another free terminal at HOME (cwd "" -> backend uses HOME),
-// no start command. Title is just a running count so tabs are tellable apart.
+// Add-menu "Terminal" row: another free terminal at HOME (cwd "" -> backend uses
+// HOME), no start command. Title is just a running count so tabs are tellable
+// apart.
 group.onAdd = () => spawnChatTerminal();
+// Add-menu "Claude" / "Codex" rows: a new terminal already running that agent.
+group.onQuickSpawn = (agent) => spawnChatAgent(agent);
 
 /** Spawn one free terminal in the chat group, cd'd to HOME. */
 async function spawnChatTerminal() {
   const n = group.count() + 1;
-  await group.newTerminal({ cwd: "", startCmd: null, title: `term ${n}` });
+  return group.newTerminal({ cwd: "", startCmd: null, title: `term ${n}` });
+}
+
+/** Open a new chat terminal and launch an AI agent in it at HOME. The binary is
+ *  picked from a fixed allowlist — the agent name from the UI only chooses
+ *  between two literal strings, never interpolated. Unlike Project mode there
+ *  are no project folders, so Claude gets no `--add-dir` flags. */
+async function spawnChatAgent(agent) {
+  const bin = agent === "codex" ? "codex" : "claude";
+  const title = bin === "codex" ? "Codex" : "Claude";
+  return group.newTerminal({ cwd: "", startCmd: bin, title });
 }
 
 // Seed the first terminal once at init so Chat mode is never empty. Switching
