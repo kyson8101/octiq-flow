@@ -139,6 +139,7 @@ pub fn run() {
             pty::pty_set_status_scan,
             agents::agent_procs,
             agents::agent_kill,
+            agents::available_agents,
             notify_hook::notify_hook_filter,
             workspaces::list_workspaces,
             workspaces::add_workspace,

@@ -38,6 +38,28 @@ const { listen } = window.__TAURI__.event;
 const SESSION_BREAK_TEXT = "session restored · shell restarted";
 const SESSION_BREAK_LINE = `\r\n\x1b[2m──────── ${SESSION_BREAK_TEXT} ────────\x1b[0m\r\n`;
 
+// ---- Which agents can this machine launch? ---------------------------------
+// The add menu offers a row per agent, but only for agents actually installed:
+// a "Codex" row on a machine without codex just opens a tab printing "command
+// not found". The backend probes the LOGIN shell's PATH (agents.rs), which is
+// the same PATH a spawned terminal gets.
+//
+// Held as a plain array refreshed in the background, so building the menu stays
+// synchronous. It starts with BOTH agents so the very first menu — opened before
+// the first probe answers — is never emptier than the old fixed one; the probe
+// then narrows it. Refreshed on every menu open, so installing an agent while
+// the app runs shows up on the next-but-one open without a restart.
+let installedAgents = ["claude", "codex"];
+
+function refreshInstalledAgents() {
+  invoke("available_agents")
+    .then((list) => {
+      if (Array.isArray(list)) installedAgents = list;
+    })
+    .catch(() => {}); // keep the last known list
+}
+refreshInstalledAgents();
+
 function makeTerminal(s) {
   return new Terminal({
     fontFamily: s.fontFamily,
@@ -1219,10 +1241,20 @@ class TerminalGroup {
     menu.className = "tg-add-menu";
     menu.setAttribute("role", "menu");
 
+    const agentRows = [
+      { agent: "claude", label: "Claude", hint: "Claude Code agent" },
+      { agent: "codex", label: "Codex", hint: "Codex agent" },
+    ];
     const rows = [
       { label: "Terminal", hint: "Plain shell", run: () => this.onAdd?.() },
-      { label: "Claude", hint: "Claude Code agent", run: () => this.onQuickSpawn?.("claude") },
-      { label: "Codex", hint: "Codex agent", run: () => this.onQuickSpawn?.("codex") },
+      // Only agents this machine can actually launch (see installedAgents).
+      ...agentRows
+        .filter((r) => installedAgents.includes(r.agent))
+        .map((r) => ({
+          label: r.label,
+          hint: r.hint,
+          run: () => this.onQuickSpawn?.(r.agent),
+        })),
     ];
     for (const r of rows) {
       const item = document.createElement("button");
@@ -1254,6 +1286,10 @@ class TerminalGroup {
   /** Open the add menu, fixed-positioned just under the "+" button. */
   _openAddMenu() {
     if (this.addMenuEl || !this.addBtn) return;
+    // Re-probe in the background: this menu is built from the list we already
+    // have (so it opens instantly), and an agent installed since the last probe
+    // appears the next time the menu opens.
+    refreshInstalledAgents();
     const menu = this._buildAddMenu();
     document.body.append(menu);
     this.addMenuEl = menu;

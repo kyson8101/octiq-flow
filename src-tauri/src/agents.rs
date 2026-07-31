@@ -31,6 +31,8 @@ use crate::pty::PtyManager;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::State;
 
 /// One running agent session, with everything it spawned folded in.
@@ -361,6 +363,111 @@ fn kill_command(pid: i32) -> Command {
     cmd
 }
 
+// ---- Which agents can this machine launch? ---------------------------------
+//
+// The terminal add-menu offers a row per agent. Offering "Codex" on a machine
+// with no `codex` installed just produces a tab printing "command not found",
+// so the menu asks here first and hides the rows that would fail.
+//
+// The probe must see the same PATH a spawned terminal sees. A GUI app does not
+// inherit the interactive shell PATH (the same reason pty.rs spawns a LOGIN
+// shell), so the check runs through the login shell too — otherwise an agent
+// installed by a version manager would look missing.
+
+/// Every agent the app knows how to launch, in menu order. A fixed compile-time
+/// list: the frontend never supplies a name, so nothing user-typed is ever
+/// interpolated into the probe script or a launch command.
+pub const KNOWN_AGENTS: [&str; 2] = ["claude", "codex"];
+
+/// How long a probe result is trusted before the login shell is asked again.
+/// Installing an agent mid-session is rare, and a login shell costs a few
+/// hundred milliseconds, so the menu reads the cache almost every time — but a
+/// fresh install still shows up within a few minutes without a restart.
+const AGENT_PROBE_TTL: Duration = Duration::from_secs(300);
+
+/// Cached probe result: when it was taken, and what it found.
+static AGENT_PROBE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+
+/// The agents this machine can actually launch, in `KNOWN_AGENTS` order.
+///
+/// Fails OPEN: if the probe cannot run at all (no shell, spawn error), every
+/// known agent is returned. These rows are a convenience, and a menu that
+/// silently loses both agents is far worse than one offering an agent that
+/// turns out to be missing.
+#[tauri::command]
+pub fn available_agents() -> Vec<String> {
+    if let Ok(cache) = AGENT_PROBE.lock() {
+        if let Some((at, found)) = cache.as_ref() {
+            if at.elapsed() < AGENT_PROBE_TTL {
+                return found.clone();
+            }
+        }
+    }
+    let found = probe_agents();
+    if let Ok(mut cache) = AGENT_PROBE.lock() {
+        *cache = Some((Instant::now(), found.clone()));
+    }
+    found
+}
+
+/// Run the probe through a login shell and read back the names it found.
+fn probe_agents() -> Vec<String> {
+    let mut cmd = probe_command();
+    no_console(&mut cmd);
+    match cmd.output() {
+        Ok(out) => parse_probe_output(&String::from_utf8_lossy(&out.stdout)),
+        // Could not even start a shell — fail open (see available_agents).
+        Err(_) => KNOWN_AGENTS.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+/// Keep only lines that name a known agent, in `KNOWN_AGENTS` order and without
+/// duplicates. A login shell prints whatever the user's rc files print (banners,
+/// version notices, fastfetch), so the output is filtered against the fixed list
+/// rather than trusted line by line.
+fn parse_probe_output(stdout: &str) -> Vec<String> {
+    let lines: Vec<&str> = stdout.lines().map(|l| l.trim()).collect();
+    KNOWN_AGENTS
+        .iter()
+        .filter(|a| lines.iter().any(|l| l == *a))
+        .map(|a| a.to_string())
+        .collect()
+}
+
+/// Ask the user's LOGIN shell which agents resolve on its PATH, printing one
+/// name per hit. One shell for both agents: starting a login shell is the
+/// expensive part, and the loop inside it is free.
+#[cfg(unix)]
+fn probe_command() -> Command {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let script = format!(
+        "for a in {}; do command -v \"$a\" >/dev/null 2>&1 && echo \"$a\"; done",
+        KNOWN_AGENTS.join(" ")
+    );
+    let mut cmd = Command::new(shell);
+    // `-l` populates PATH the way pty.rs does for a real terminal; `-c` runs
+    // the script. Both are needed — `-c` alone would read the GUI PATH.
+    cmd.args(["-lc", &script]);
+    cmd
+}
+
+/// Windows has no login shell; PowerShell loading the user profile is the
+/// equivalent step that fills PATH, so the profile is deliberately NOT skipped.
+#[cfg(windows)]
+fn probe_command() -> Command {
+    let names = KNOWN_AGENTS
+        .iter()
+        .map(|a| format!("'{a}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        "foreach ($a in {names}) {{ if (Get-Command $a -ErrorAction SilentlyContinue) {{ $a }} }}"
+    );
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args(["-NoLogo", "-Command", &script]);
+    cmd
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +485,21 @@ mod tests {
                 a.pid, a.kind, a.rss_mb, a.procs, a.age_secs
             );
         }
+    }
+
+    #[test]
+    fn probe_output_keeps_only_known_agents_in_menu_order() {
+        // A login shell prints the user's own banners around our echoes, and
+        // may print them in any order. Only the known names survive, and they
+        // come back in KNOWN_AGENTS order, not in the order the shell printed.
+        let out = "Welcome to zsh!\ncodex\nnpm notice: update available\nclaude\n";
+        assert_eq!(parse_probe_output(out), vec!["claude", "codex"]);
+        // One installed agent.
+        assert_eq!(parse_probe_output("claude\n"), vec!["claude"]);
+        // Neither installed: banner noise alone yields nothing.
+        assert!(parse_probe_output("some banner\n").is_empty());
+        // A line that merely CONTAINS an agent name is not a hit.
+        assert!(parse_probe_output("claude not found\n").is_empty());
     }
 
     #[test]
