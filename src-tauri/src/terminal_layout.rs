@@ -52,6 +52,17 @@ pub struct TermEntry {
     /// setting, in both directions.
     #[serde(default)]
     pub notify: Option<bool>,
+    /// Split view (card 42): `Some("row")` / `Some("col")` marks THIS tab as the
+    /// second pane of a split and says how the area was cut; `None` (and any
+    /// older layout file) means it is an ordinary tab. At most one entry per
+    /// project carries it.
+    #[serde(default)]
+    pub split: Option<String>,
+    /// True on the tab that shared the screen with the `split` one — the first
+    /// pane. Meaningless on its own: the frontend only restores a split when it
+    /// finds BOTH halves, so a layout missing either one comes back unsplit.
+    #[serde(default)]
+    pub primary: bool,
 }
 
 /// The on-disk shape of `terminal_layout.json`: each project id maps to its
@@ -337,6 +348,8 @@ mod tests {
                 cwd: "/work".to_string(),
                 title_manual: false,
                 notify: Some(false),
+                split: Some("row".to_string()),
+                primary: false,
             }],
         );
         let raw = serde_json::to_string(&data).unwrap();
@@ -361,6 +374,10 @@ mod tests {
         // A layout saved before the per-terminal notification choice existed
         // reads back as None — follow the global switch.
         assert_eq!(entry.notify, None);
+        // Likewise for split view: an older layout has no split halves, so the
+        // project comes back as a single pane.
+        assert_eq!(entry.split, None);
+        assert!(!entry.primary);
     }
 
     #[test]
@@ -374,6 +391,8 @@ mod tests {
                 cwd: String::new(),
                 title_manual: false,
                 notify: None,
+                split: None,
+                primary: false,
             }],
         );
         data.projects.insert(
@@ -384,6 +403,8 @@ mod tests {
                 cwd: String::new(),
                 title_manual: false,
                 notify: None,
+                split: None,
+                primary: false,
             }],
         );
         let keys = live_keys(&data);

@@ -2549,6 +2549,16 @@ body {
   box-shadow: var(--glass-edge), var(--shadow-1);
 }
 
+/* The OTHER half of a split (card 42): also on screen, but not the pane the
+   keyboard is in. A softer version of the active pill — enough to say "this one
+   is showing too", not enough to compete with the focused tab. Deliberately no
+   left-edge bar; the fill IS the mark. */
+.tg-tab-shown {
+  color: var(--fg-0);
+  background: var(--bg-2);
+  border-color: var(--border);
+}
+
 /* The tab being dragged to reorder: dim it so the gap it leaves is clear. */
 .tg-tab-dragging {
   opacity: 0.4;
@@ -2736,6 +2746,45 @@ body {
 
 .tg-pane-active {
   display: block;
+}
+
+/* ---- Split view (card 42) -------------------------------------------------
+   Two panes share the area. Their geometry is written as inline insets by
+   TerminalGroup._applyPanes (the panes are absolutely positioned so FitAddon
+   keeps measuring the exact drawable rectangle — see the .tg-pane note above),
+   so there is no flex/grid here on purpose. Only the divider is styled. */
+
+.tg-split-divider {
+  position: absolute;
+  z-index: 2;
+  border-radius: 3px;
+  background: transparent;
+  /* Stacked split: a horizontal bar, so the pointer is the row cursor. */
+  cursor: row-resize;
+  /* The 6px hit area is thin; a visible 1px line is drawn with a gradient so
+     the bar itself stays a comfortable grab target. */
+  background-image: linear-gradient(to bottom, transparent 2px, var(--border) 2px 4px, transparent 4px);
+  touch-action: none;
+}
+
+.tg-split-divider-row {
+  cursor: col-resize;
+  width: 6px;
+  background-image: linear-gradient(to right, transparent 2px, var(--border) 2px 4px, transparent 4px);
+}
+
+.tg-split-divider:not(.tg-split-divider-row) {
+  height: 6px;
+}
+
+.tg-split-divider:hover,
+.tg-split-divider-drag {
+  background-image: linear-gradient(to bottom, transparent 1px, var(--accent) 1px 5px, transparent 5px);
+}
+
+.tg-split-divider-row:hover,
+.tg-split-divider-row.tg-split-divider-drag {
+  background-image: linear-gradient(to right, transparent 1px, var(--accent) 1px 5px, transparent 5px);
 }
 
 /* Bottom "last sent" bar: a thin one-line strip under the panes showing the

@@ -151,13 +151,15 @@ function groupFor(id, primaryPath, paths, startup, terminalCommand, fontOverride
 
 /** Spawn one terminal in a project's group, cd'd to its primary path. If the
  *  project defines a "run on every new terminal" command, it is sent to the new
- *  shell on open. */
+ *  shell on open. Returns the new terminal's pty id — "Split right/down" on the
+ *  active tab spawns through this hook and needs the id to put the result in the
+ *  second pane. */
 async function spawnInProject(id) {
   const rec = projects.get(id);
-  if (!rec) return;
+  if (!rec) return null;
   // No explicit title: the group numbers the tab from its monotonic counter
   // (P4), so closing then reopening a tab never shows a duplicate number.
-  await rec.group.newTerminal({
+  return rec.group.newTerminal({
     cwd: rec.primaryPath,
     startCmd: rec.terminalCommand || null,
     canvasKey: id,
@@ -173,12 +175,12 @@ async function spawnInProject(id) {
  *  the agent. */
 async function spawnAgentInProject(id, agent) {
   const rec = projects.get(id);
-  if (!rec) return;
+  if (!rec) return null;
   const bin = agent === "codex" ? "codex" : "claude";
   const title = bin === "codex" ? "Codex" : "Claude";
   const startCmd =
     bin === "claude" ? bin + claudeAddDirSuffix(rec, rec.primaryPath) : bin;
-  await rec.group.newTerminal({
+  return rec.group.newTerminal({
     cwd: rec.primaryPath,
     startCmd,
     title,
@@ -360,6 +362,16 @@ async function restoreProject(id, saved) {
       }
     }
     finishResumeOverlay(ov);
+    // Put the split back (card 42), now that every tab exists. The saved layout
+    // marks one tab as the second pane (`split` = the direction) and one as the
+    // pane it sat beside (`primary`). Both must be present — a layout missing
+    // either half restores as a single pane, which is also what an older layout
+    // file (no split fields at all) does.
+    const splitTab = saved.find((t) => t.split);
+    const primaryTab = saved.find((t) => t.primary);
+    if (splitTab && primaryTab && splitTab !== primaryTab) {
+      rec.group.setSplitByKeys(primaryTab.persistKey, splitTab.persistKey, splitTab.split);
+    }
   } finally {
     rec.restoring = false;
   }

@@ -51,6 +51,11 @@ const SESSION_BREAK_LINE = `\r\n\x1b[2m──────── ${SESSION_BREAK_
 // the app runs shows up on the next-but-one open without a restart.
 let installedAgents = ["claude", "codex"];
 
+/// Smallest share of the pane area either half of a split may be dragged to.
+/// Below roughly this, an xterm has too few columns to be readable and its fit
+/// math starts proposing degenerate sizes.
+const MIN_SPLIT_RATIO = 0.15;
+
 function refreshInstalledAgents() {
   invoke("available_agents")
     .then((list) => {
@@ -446,13 +451,14 @@ export function attentionList() {
   return [...attention];
 }
 
-/** Whether a pty id is the ACTIVE tab of a currently-VISIBLE group — i.e. the
- *  terminal the user is looking at right now. alerts.js uses this to skip
- *  badging a terminal that is already in front of the user (the agent's prompt
- *  is right there), while still badging every other / hidden terminal. */
+/** Whether a pty id is ON SCREEN in a currently-VISIBLE group — i.e. a terminal
+ *  the user is looking at right now. alerts.js uses this to skip badging a
+ *  terminal already in front of the user (the agent's prompt is right there),
+ *  while still badging every other / hidden terminal. With a split, BOTH halves
+ *  are in front, so both are skipped. */
 export function isActiveVisible(id) {
   const entry = idToEntry.get(id);
-  return !!entry && entry.group.activeId === id && entry.group.visible();
+  return !!entry && entry.group.isShown(id) && entry.group.visible();
 }
 
 /** Find the { term, group } entry for a pty id, or undefined. */
@@ -990,8 +996,10 @@ listen("focus-terminal", (event) => {
  */
 export function sendToProjectTerminal(prefix, text, submit = false) {
   for (const { group } of idToEntry.values()) {
-    if (group.idPrefix === prefix && group.activeId) {
-      const id = group.activeId;
+    if (group.idPrefix === prefix && group.focusedId()) {
+      // With a split, the half the user is typing in is the one that should
+      // receive the text — not always the primary pane.
+      const id = group.focusedId();
       invoke("pty_write", { id, data: submit ? `${text}\r` : text }).catch(() => {});
       group.show();
       group.activate(id);
@@ -1012,7 +1020,7 @@ export function sendToProjectTerminal(prefix, text, submit = false) {
  */
 export function sendToActiveTerminal(text, submit = false) {
   for (const [id, { group }] of idToEntry) {
-    if (group.activeId === id && group.visible()) {
+    if (group.focusedId() === id && group.visible()) {
       invoke("pty_write", { id, data: submit ? `${text}\r` : text }).catch(() => {});
       group.activate(id);
       return true;
@@ -1100,6 +1108,23 @@ class TerminalGroup {
     // ptyId -> { term, fitAddon, paneEl, tabEl, title }
     this.tabs = new Map();
 
+    // ---- Split view (card 42) ---------------------------------------------
+    // Normally ONE tab is on screen. With a split, a SECOND tab shares the pane
+    // area: `splitId` is that second tab, `splitDir` is how the area is cut
+    // ("row" = side by side, "col" = stacked), and `splitRatio` is where the
+    // divider sits (fraction of the area given to the primary pane).
+    //
+    // Deliberately two panes, not a tree: two is what "keep an eye on the agent
+    // while I work" needs, and it keeps the WebGL budget at two contexts per
+    // group (see _setWebgl) instead of an unbounded number.
+    this.splitId = null;
+    this.splitDir = "row";
+    this.splitRatio = 0.5;
+    // The shown tab that last had keyboard focus. It drives the bottom
+    // "last sent" bar and the stronger tab highlight, so with a split both say
+    // which half you are actually typing into. Equals activeId without a split.
+    this.focusId = null;
+
     // Group DOM: a tab strip on top, a panes area filling the rest.
     this.root = document.createElement("div");
     this.root.className = "tg";
@@ -1177,6 +1202,15 @@ class TerminalGroup {
     this.panesEl = document.createElement("div");
     this.panesEl.className = "tg-panes";
 
+    // The draggable bar between the two split panes. Always in the DOM (one
+    // element, hidden when there is no split) so a split never costs a node
+    // insert mid-drag.
+    this.dividerEl = document.createElement("div");
+    this.dividerEl.className = "tg-split-divider";
+    this.dividerEl.hidden = true;
+    this.dividerEl.addEventListener("pointerdown", (e) => this._beginDividerDrag(e));
+    this.panesEl.append(this.dividerEl);
+
     // Thin bottom bar showing the last line the user typed and sent (Enter) in
     // the ACTIVE terminal — a reminder of "what did I just send to Claude/Codex".
     // A sibling of the panes (not a child of any pane), so it never affects the
@@ -1195,6 +1229,9 @@ class TerminalGroup {
 
     this.root.append(this.stripEl, this.panesEl, this.lastSentEl);
     mountEl.append(this.root);
+
+    // Reuse the direction + divider position this group was last split with.
+    this._loadSplitPrefs();
   }
 
   ids() {
@@ -1346,6 +1383,12 @@ class TerminalGroup {
    *  and the cwd it was spawned in. Tab order = insertion order of `tabs`.
    *  Content tabs (no PTY) are not persisted, so they are skipped. */
   serialize() {
+    // Split state rides on the two tabs it involves: the primary is marked
+    // `primary`, the second pane carries the direction in `split`. Storing it
+    // per tab (rather than as a group field) means it survives tab reordering
+    // and self-heals — if either tab is gone on the next launch, the halves no
+    // longer pair up and the group simply comes back unsplit.
+    const splitEntry = this.splitId && this.tabs.get(this.splitId);
     return [...this.tabs.values()].filter((e) => e.term).map((e) => ({
       persistKey: e.persistKey,
       title: e.title,
@@ -1353,6 +1396,10 @@ class TerminalGroup {
       // true | false | null — null means "follow the Settings switch".
       notify: e.notify ?? null,
       cwd: e.cwd || "",
+      // "row" | "col" on the split half, null on every other tab.
+      split: splitEntry && e === splitEntry ? this.splitDir : null,
+      // The half the split sits beside. Only meaningful when a split half exists.
+      primary: !!splitEntry && this.tabs.get(this.activeId) === e,
     }));
   }
 
@@ -1440,7 +1487,18 @@ class TerminalGroup {
 
     const pane = document.createElement("div");
     pane.className = "tg-pane";
-    this.panesEl.append(pane);
+    // Clicking into a pane makes it the half the keyboard belongs to (split
+    // view). `focusin` fires when xterm's hidden textarea takes focus, so this
+    // catches a real click into the terminal without touching xterm internals.
+    pane.addEventListener("focusin", () => {
+      if (this.focusId === ptyId || !this.isShown(ptyId)) return;
+      this.focusId = ptyId;
+      this._applyPanes();
+      this._paintLastSent(ptyId);
+    });
+    // Insert before the divider so the divider always paints on top of both
+    // panes (they are all absolutely positioned siblings).
+    this.panesEl.insertBefore(pane, this.dividerEl);
 
     const term = makeTerminal(resolveTerminalSettings(this.fontOverride));
     const fitAddon = new FitAddon.FitAddon();
@@ -1460,7 +1518,7 @@ class TerminalGroup {
     // so the fit — and the rows/cols we report to the PTY — never drift out of
     // sync with what is painted. We refit only when this tab is the active one.
     const ro = new ResizeObserver(() => {
-      if (this.activeId === ptyId) this._fit(ptyId);
+      if (this.isShown(ptyId)) this._fit(ptyId);
     });
     ro.observe(pane);
     // Also watch the rendered grid (.xterm-screen). Its height is rows × cell
@@ -1663,7 +1721,8 @@ class TerminalGroup {
 
     const pane = document.createElement("div");
     pane.className = "tg-pane tg-pane-content";
-    this.panesEl.append(pane);
+    // Before the split divider, so the divider always paints above the panes.
+    this.panesEl.insertBefore(pane, this.dividerEl);
 
     const tabEl = document.createElement("div");
     tabEl.className = "tg-tab tg-tab-content";
@@ -1748,18 +1807,262 @@ class TerminalGroup {
     invoke("pty_set_visible", { id: ptyId, visible: on }).catch(() => {});
   }
 
-  activate(ptyId) {
-    if (!this.tabs.has(ptyId)) return;
-    this.activeId = ptyId;
+  // ---- Split view ---------------------------------------------------------
+
+  /** The tabs on screen right now: the primary, plus the split one when there
+   *  is a split. Everything that means "on screen" — WebGL, the backend output
+   *  gate, refits — asks this, so the two panes are treated alike. */
+  _shownIds() {
+    const ids = [];
+    if (this.activeId && this.tabs.has(this.activeId)) ids.push(this.activeId);
+    if (this.splitId && this.tabs.has(this.splitId) && this.splitId !== this.activeId) {
+      ids.push(this.splitId);
+    }
+    return ids;
+  }
+
+  /** Whether a tab is one of the (at most two) tabs on screen in this group. */
+  isShown(ptyId) {
+    return this._shownIds().includes(ptyId);
+  }
+
+  /** The shown tab the keyboard belongs to: the focused half of a split, or the
+   *  primary when there is no split (or the focus is stale). Anything that means
+   *  "the terminal the user is typing into" reads this, not activeId. */
+  focusedId() {
+    return this.isShown(this.focusId) ? this.focusId : this.activeId;
+  }
+
+  /**
+   * Lay the panes out for the current split state and repaint the tab strip.
+   *
+   * Geometry is written as inline insets rather than flex boxes because the
+   * panes are absolutely positioned inside `.tg-panes` (FitAddon measures the
+   * pane's own border box — see the `.tg-pane` comment in styles.css — so the
+   * pane must stay the exact drawable rectangle). `PANE_INSET` mirrors the CSS
+   * inset; `HALF_DIVIDER` is the clearance each pane leaves for the drag bar.
+   */
+  _applyPanes() {
+    const PANE_INSET = "10px";
+    const HALF_DIVIDER = 3; // half the divider's 6px, so each pane clears it
+    const shown = this._shownIds();
+    const split = shown.length === 2;
+    const pct = Math.round(this.splitRatio * 1000) / 10;
+    const row = this.splitDir === "row";
+
+    for (const [id, e] of this.tabs) {
+      const on = shown.includes(id);
+      e.paneEl.classList.toggle("tg-pane-active", on);
+      const s = e.paneEl.style;
+      if (!on || !split) {
+        // Single pane (or hidden): back to the plain CSS inset.
+        s.left = s.right = s.top = s.bottom = "";
+        continue;
+      }
+      const first = id === shown[0];
+      const near = `calc(${pct}% + ${HALF_DIVIDER}px)`;
+      const far = `calc(${100 - pct}% + ${HALF_DIVIDER}px)`;
+      s.left = row && !first ? near : PANE_INSET;
+      s.right = row && first ? far : PANE_INSET;
+      s.top = !row && !first ? near : PANE_INSET;
+      s.bottom = !row && first ? far : PANE_INSET;
+    }
+
+    // Tab strip: the focused half is the strong "active" tab; the other shown
+    // half gets a lighter mark so the strip says which two are on screen.
+    for (const [id, e] of this.tabs) {
+      const on = shown.includes(id);
+      e.tabEl.classList.toggle("tg-tab-active", on && id === this.focusId);
+      e.tabEl.classList.toggle("tg-tab-shown", on && id !== this.focusId);
+    }
+
+    // Divider: sits on the split line, spanning the other axis.
+    const d = this.dividerEl.style;
+    this.dividerEl.hidden = !split;
+    this.dividerEl.classList.toggle("tg-split-divider-row", row);
+    if (split) {
+      const at = `calc(${pct}% - ${HALF_DIVIDER}px)`;
+      d.left = row ? at : PANE_INSET;
+      d.right = row ? "auto" : PANE_INSET;
+      d.top = row ? PANE_INSET : at;
+      d.bottom = row ? PANE_INSET : "auto";
+    }
+
     const groupVisible = this.visible();
     for (const [id, e] of this.tabs) {
-      const on = id === ptyId;
-      e.tabEl.classList.toggle("tg-tab-active", on);
-      e.paneEl.classList.toggle("tg-pane-active", on);
-      this._setLive(id, e, on && groupVisible);
+      this._setLive(id, e, shown.includes(id) && groupVisible);
     }
-    // The bottom bar always tracks the visible terminal: repaint it for the
-    // now-active tab's last sent line (or the placeholder if it has none).
+  }
+
+  /**
+   * Put a second terminal on screen beside the current one.
+   *
+   * Splitting FROM the tab you are on means "give me another terminal here", so
+   * a new one is spawned (through the owner's onAdd policy, which knows the cwd
+   * and any per-project start command) and takes the second pane. Splitting from
+   * a DIFFERENT tab means "show that one too", so that existing tab moves into
+   * the second pane instead. Re-running it with another direction just re-cuts
+   * the area.
+   */
+  async _splitWith(ptyId, dir) {
+    this.splitDir = dir === "col" ? "col" : "row";
+    if (!this.tabs.has(ptyId)) return;
+
+    if (ptyId !== this.activeId) {
+      this.splitId = ptyId;
+    } else {
+      // Splitting off the active tab: the NEW terminal fills the second pane and
+      // the current one stays primary, so the split appears next to what you
+      // were already looking at. newTerminal() activates what it creates, so the
+      // primary is restored afterwards.
+      const primary = this.activeId;
+      const created = await this.onAdd?.();
+      if (!created || !this.tabs.has(created)) return;
+      this.activeId = this.tabs.has(primary) ? primary : created;
+      this.splitId = created === this.activeId ? null : created;
+    }
+    this.focusId = this.splitId || this.activeId;
+    this._applyPanes();
+    this._paintLastSent(this.focusId);
+    this._saveSplitPrefs();
+    this.onLayoutChange?.();
+    // Both panes just changed size; fit them once the new geometry is laid out.
+    requestAnimationFrame(() => {
+      this.refitActive();
+      this._focusActive();
+    });
+  }
+
+  /** Back to a single pane. The split terminal is NOT closed — it goes back to
+   *  being an ordinary background tab. */
+  _closeSplit() {
+    if (!this.splitId) return;
+    this.splitId = null;
+    this.focusId = this.activeId;
+    this._applyPanes();
+    this._paintLastSent(this.activeId);
+    this.onLayoutChange?.();
+    requestAnimationFrame(() => {
+      this.refitActive();
+      this._focusActive();
+    });
+  }
+
+  /** Restore a saved split by the tabs' stable persist keys (project.js calls
+   *  this after rebuilding a project's tabs). Unknown keys are ignored, so a
+   *  layout whose split tab was since closed simply comes back unsplit. */
+  setSplitByKeys(primaryKey, splitKey, dir) {
+    const idFor = (key) => {
+      for (const [id, e] of this.tabs) if (e.persistKey === key) return id;
+      return null;
+    };
+    const primary = idFor(primaryKey);
+    const second = idFor(splitKey);
+    if (!primary || !second || primary === second) return;
+    this.activeId = primary;
+    this.splitId = second;
+    this.splitDir = dir === "col" ? "col" : "row";
+    this.focusId = primary;
+    this._applyPanes();
+    this._paintLastSent(primary);
+    requestAnimationFrame(() => {
+      this.refitActive();
+      this._focusActive();
+    });
+  }
+
+  /** Remember the direction + divider position for this group, so the NEXT
+   *  split opens the way the user last left it. Kept in localStorage next to the
+   *  other appearance choices: it is a UI preference, not session state, and a
+   *  command-drawer group should not push it through the layout store. */
+  _saveSplitPrefs() {
+    try {
+      localStorage.setItem(
+        `octiq.split.${this.idPrefix}`,
+        JSON.stringify({ dir: this.splitDir, ratio: this.splitRatio }),
+      );
+    } catch (_) {
+      // Storage full or blocked — the split still works, it just won't be
+      // remembered.
+    }
+  }
+
+  _loadSplitPrefs() {
+    try {
+      const raw = localStorage.getItem(`octiq.split.${this.idPrefix}`);
+      if (!raw) return;
+      const { dir, ratio } = JSON.parse(raw) || {};
+      if (dir === "row" || dir === "col") this.splitDir = dir;
+      if (typeof ratio === "number" && ratio >= MIN_SPLIT_RATIO && ratio <= 1 - MIN_SPLIT_RATIO) {
+        this.splitRatio = ratio;
+      }
+    } catch (_) {
+      // Corrupt entry — keep the defaults.
+    }
+  }
+
+  /** Drag the divider to re-balance the two panes. Pointer capture keeps the
+   *  drag alive over the terminals (which would otherwise swallow the moves),
+   *  and the refit is rAF-throttled: every ratio change resizes two xterms AND
+   *  sends two PTY resizes, which is far too much to do per pointermove. */
+  _beginDividerDrag(ev) {
+    if (!this.splitId) return;
+    ev.preventDefault();
+    this.dividerEl.setPointerCapture?.(ev.pointerId);
+    this.dividerEl.classList.add("tg-split-divider-drag");
+    let queued = false;
+
+    const onMove = (e) => {
+      const box = this.panesEl.getBoundingClientRect();
+      const span = this.splitDir === "row" ? box.width : box.height;
+      if (span <= 0) return;
+      const at = this.splitDir === "row" ? e.clientX - box.left : e.clientY - box.top;
+      const ratio = at / span;
+      // Clamp so neither pane can be squeezed to nothing (an xterm below a
+      // couple of columns is useless and its fit math starts failing).
+      this.splitRatio = Math.min(1 - MIN_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio));
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        this._applyPanes();
+        this.refitActive();
+      });
+    };
+
+    const onUp = () => {
+      this.dividerEl.removeEventListener("pointermove", onMove);
+      this.dividerEl.removeEventListener("pointerup", onUp);
+      this.dividerEl.removeEventListener("pointercancel", onUp);
+      this.dividerEl.classList.remove("tg-split-divider-drag");
+      this._applyPanes();
+      this.refitActive();
+      this._saveSplitPrefs();
+    };
+
+    this.dividerEl.addEventListener("pointermove", onMove);
+    this.dividerEl.addEventListener("pointerup", onUp);
+    this.dividerEl.addEventListener("pointercancel", onUp);
+  }
+
+  activate(ptyId) {
+    if (!this.tabs.has(ptyId)) return;
+    // Clicking the split half just moves the keyboard there — it is already on
+    // screen, so re-laying the panes out would only make it jump.
+    if (ptyId === this.splitId) {
+      this.focusId = ptyId;
+      this._applyPanes();
+      this._paintLastSent(ptyId);
+      if (attention.has(ptyId)) clearAttention(ptyId);
+      clearActivity(ptyId);
+      requestAnimationFrame(() => this._focusActive());
+      return;
+    }
+    this.activeId = ptyId;
+    this.focusId = ptyId;
+    this._applyPanes();
+    // The bottom bar always tracks the terminal being typed into: repaint it for
+    // the now-active tab's last sent line (or the placeholder if it has none).
     this._paintLastSent(ptyId);
     // Becoming the active tab counts as the user attending to this terminal, so
     // clear any attention flag on it (card 13). clearAttention is a no-op when
@@ -1768,15 +2071,50 @@ class TerminalGroup {
     // Same for the quieter activity mark (card 15).
     clearActivity(ptyId);
     // Fit + focus on the next frame so the now-shown pane has a real size.
-    // Skip focusing the terminal while the tab is being renamed, or the rAF
-    // would steal focus from the inline rename input.
     requestAnimationFrame(() => {
       this._fit(ptyId);
-      const e = this.tabs.get(ptyId);
-      if (!e) return;
-      if (!e.term) e.onShow?.(); // content tab revealed (e.g. refocus an editor)
-      else if (!e.renaming) e.term.focus();
+      if (this.activeId === ptyId) this._focusActive();
     });
+  }
+
+  /**
+   * Give the active tab keyboard focus.
+   *
+   * Why this is its own method and not just a line in activate(): a terminal
+   * inside a `display:none` pane CANNOT take focus — the call silently does
+   * nothing — so a group activated while its view is hidden ends up with no
+   * focused terminal at all, and typing goes nowhere until the user clicks in
+   * the pane. Chat hit this on every launch: chat.js seeds its first terminal
+   * at module load, while Project mode is the visible view. So focusing is
+   * skipped while hidden and run again from show(), when it can actually land.
+   *
+   * It also refuses to STEAL focus out of a form field elsewhere in the app (a
+   * project rename box, a search input), because show() also fires on routine
+   * re-selection. Another terminal's helper textarea is not treated as such a
+   * field — moving focus from one terminal to the newly shown one is the whole
+   * point.
+   */
+  _focusActive() {
+    if (!this.visible()) return;
+    // With a split, focus belongs to the half the user last typed in, not
+    // always the primary pane.
+    const id = this.focusedId();
+    const e = id && this.tabs.get(id);
+    if (!e) return;
+    if (this._focusWouldSteal()) return;
+    if (!e.term) e.onShow?.(); // content tab revealed (e.g. refocus an editor)
+    else if (!e.renaming) e.term.focus();
+  }
+
+  /** True when focus currently sits in an editable control OUTSIDE this group,
+   *  so taking it would interrupt someone mid-typing. */
+  _focusWouldSteal() {
+    const ae = document.activeElement;
+    if (!ae || ae === document.body) return false;
+    if (this.root.contains(ae)) return false; // already inside this group
+    // xterm's own hidden input: another terminal, fine to take over from.
+    if (ae.classList?.contains("xterm-helper-textarea")) return false;
+    return !!ae.closest?.("input, textarea, select, [contenteditable='true']");
   }
 
   /**
@@ -1915,7 +2253,24 @@ class TerminalGroup {
     // Non-breaking spaces: the menu item renders as text, and plain spaces
     // would collapse, leaving the three labels ragged.
     const tick = (mine) => (mine === choice ? "✓ " : "   ");
+    // Split entries first — they are the layout actions; the notification
+    // choices below are a settings block.
+    const splitItems = [];
+    if (this.splitId === ptyId) {
+      splitItems.push({ label: "Close split", onClick: () => this._closeSplit() });
+    } else {
+      // From the tab you are on, these open a NEW terminal in the second pane;
+      // from any other tab, they bring THAT tab on screen beside this one.
+      splitItems.push(
+        { label: "Split right", onClick: () => this._splitWith(ptyId, "row") },
+        { label: "Split down", onClick: () => this._splitWith(ptyId, "col") },
+      );
+      if (this.splitId) {
+        splitItems.push({ label: "Close split", onClick: () => this._closeSplit() });
+      }
+    }
     openCtxMenu(x, y, [
+      ...splitItems,
       {
         label: `${tick(null)}Follow the setting (now ${masterOn ? "on" : "off"})`,
         onClick: () => this._setNotify(ptyId, null),
@@ -1942,10 +2297,11 @@ class TerminalGroup {
   }
 
   // Repaint the bar to reflect a terminal's last sent line, but only when that
-  // terminal is the active one — the bar always shows the visible terminal.
-  // No-op for a background tab, so typing never leaks across tabs.
+  // terminal is the one being typed into — with a split there are two on screen
+  // and the bar follows the focused half. No-op for any other tab, so typing
+  // never leaks across tabs.
   _paintLastSent(ptyId) {
-    if (ptyId !== this.activeId) return;
+    if (ptyId !== this.focusedId()) return;
     this._renderLastSent(this.tabs.get(ptyId)?.lastSent ?? null);
   }
 
@@ -1970,12 +2326,7 @@ class TerminalGroup {
       entry.paneEl.remove();
       this.tabs.delete(ptyId);
       entry.onClose?.();
-      if (this.activeId === ptyId) {
-        const next = this.tabs.keys().next();
-        this.activeId = next.done ? null : next.value;
-        if (this.activeId) this.activate(this.activeId);
-        else this._renderLastSent(null);
-      }
+      this._afterTabRemoved(ptyId);
       return;
     }
     // Drop any attention flag so the banner does not list a dead terminal
@@ -2010,32 +2361,65 @@ class TerminalGroup {
     entry.paneEl.remove();
     this.tabs.delete(ptyId);
     idToEntry.delete(ptyId);
-    if (this.activeId === ptyId) {
-      const next = this.tabs.keys().next();
-      this.activeId = next.done ? null : next.value;
-      if (this.activeId) this.activate(this.activeId);
-      // No terminals left: clear the bar so it does not keep the closed tab's
-      // last sent line.
-      else this._renderLastSent(null);
-    }
+    this._afterTabRemoved(ptyId);
     // A tab was removed: let the owner persist the shrunken layout. The backend
     // reconciles and deletes the closed terminal's saved scrollback file.
     this.onLayoutChange?.();
   }
 
+  /** Settle which tabs are on screen after one was removed. Closing the split
+   *  half drops back to a single pane; closing the primary promotes the next
+   *  tab — and if that next tab IS the split half, the split collapses rather
+   *  than showing the same terminal twice. */
+  _afterTabRemoved(ptyId) {
+    if (this.splitId === ptyId) this.splitId = null;
+    if (this.activeId === ptyId) {
+      const next = this.tabs.keys().next();
+      this.activeId = next.done ? null : next.value;
+      if (this.activeId === this.splitId) this.splitId = null;
+    }
+    if (!this.isShown(this.focusId)) this.focusId = this.activeId;
+    if (this.activeId) {
+      this._applyPanes();
+      // A tab promoted to the screen is now in front of the user, so its
+      // attention badge and activity mark have been attended to — the same
+      // clearing activate() does when a tab is clicked.
+      for (const id of this._shownIds()) {
+        if (attention.has(id)) clearAttention(id);
+        clearActivity(id);
+      }
+      this._paintLastSent(this.focusId);
+      requestAnimationFrame(() => {
+        this.refitActive();
+        this._focusActive();
+      });
+    } else {
+      // No terminals left: clear the bar so it does not keep the closed tab's
+      // last sent line, and take the divider away with the split.
+      this._applyPanes();
+      this._renderLastSent(null);
+    }
+  }
+
   show() {
     this.root.style.display = "";
-    // Visible again: give the active tab its WebGL renderer back and re-open its
-    // backend output gate (hide() released both). Attach after display flips so
-    // the canvas has a real size.
-    const active = this.activeId && this.tabs.get(this.activeId);
-    if (active) this._setLive(this.activeId, active, true);
-    // The now-revealed tab is being looked at: drop its activity mark (card 15).
-    // activate() covers a tab CLICK; this covers a mode/project switch that
-    // reveals the group without re-activating its tab.
-    if (this.activeId) clearActivity(this.activeId);
-    // Refit the active terminal after the element is laid out and measurable.
-    requestAnimationFrame(() => this.refitActive());
+    // Visible again: give every shown tab (both halves of a split) its WebGL
+    // renderer back and re-open its backend output gate (hide() released both).
+    // Attach after display flips so the canvas has a real size.
+    for (const id of this._shownIds()) this._setLive(id, this.tabs.get(id), true);
+    // The now-revealed tabs are being looked at: drop their activity mark
+    // (card 15). activate() covers a tab CLICK; this covers a mode/project
+    // switch that reveals the group without re-activating its tab.
+    for (const id of this._shownIds()) clearActivity(id);
+    // Refit the active terminal after the element is laid out and measurable,
+    // then focus it. The focus MUST happen here and not only in activate(): a
+    // terminal activated while this group was hidden could not take focus then
+    // (display:none panes cannot), so without this the freshly shown terminal
+    // ignores the keyboard until it is clicked. See _focusActive.
+    requestAnimationFrame(() => {
+      this.refitActive();
+      this._focusActive();
+    });
   }
 
   hide() {
@@ -2051,7 +2435,9 @@ class TerminalGroup {
   }
 
   refitActive() {
-    if (this.activeId && this.visible()) this._fit(this.activeId);
+    if (!this.visible()) return;
+    // Both halves of a split are on screen, so both need the fit.
+    for (const id of this._shownIds()) this._fit(id);
   }
 
   /** Resolve this group's effective appearance (its per-project font/color
