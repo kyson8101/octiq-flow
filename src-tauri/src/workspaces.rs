@@ -116,6 +116,11 @@ pub struct Workspace {
 struct WorkspaceData {
     #[serde(default)]
     workspaces: Vec<Workspace>,
+    /// Commands offered in EVERY project. Stored once at store level, not on a
+    /// workspace, so they are defined in one place and run in whichever
+    /// project's folder is selected.
+    #[serde(default)]
+    global_actions: Vec<Action>,
 }
 
 /// In-memory workspace list plus the file it is saved to.
@@ -438,6 +443,35 @@ pub fn delete_action(
         .find(|w| w.id == workspace_id)
         .ok_or("workspace not found")?;
     ws.actions.retain(|a| a.id != action_id);
+    state.save(&data)
+}
+
+/// Return the commands available in every project.
+#[tauri::command]
+pub fn list_global_actions(state: State<WorkspaceState>) -> Result<Vec<Action>, String> {
+    let data = state.data.lock().map_err(|e| e.to_string())?;
+    Ok(data.global_actions.clone())
+}
+
+/// Replace the whole global command list. The frontend owns the list (it holds
+/// it in memory and sends it back whole after any add / edit / remove), so one
+/// setter covers all three — ponytail: no per-item add/update/delete commands
+/// for a list this small. Rows with an empty label or command are dropped.
+#[tauri::command]
+pub fn set_global_actions(
+    state: State<WorkspaceState>,
+    actions: Vec<Action>,
+) -> Result<(), String> {
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    data.global_actions = actions
+        .into_iter()
+        .map(|a| Action {
+            id: a.id,
+            label: a.label.trim().to_string(),
+            command: a.command.trim().to_string(),
+        })
+        .filter(|a| !a.label.is_empty() && !a.command.is_empty())
+        .collect();
     state.save(&data)
 }
 

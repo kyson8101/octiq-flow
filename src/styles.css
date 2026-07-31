@@ -821,6 +821,27 @@ body {
   opacity: 1;
 }
 
+/* Global commands (shown in every project) carry a small tag so they are
+   telling apart from the selected project's own commands. */
+.cmd-global-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+.cmd-run-tag {
+  align-self: flex-start;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
 /* ---- Left panel: workspaces ------------------------------------------- */
 /* Width is a CSS custom property, not a plain px value, so a resized sidebar
    (workspaces.js sets --sidebar-w) still yields to the collapsed/peek rules

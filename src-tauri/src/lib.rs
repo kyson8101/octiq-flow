@@ -154,6 +154,8 @@ pub fn run() {
             workspaces::add_action,
             workspaces::update_action,
             workspaces::delete_action,
+            workspaces::list_global_actions,
+            workspaces::set_global_actions,
             workspaces::set_startup,
             workspaces::set_terminal_command,
             workspaces::set_description,

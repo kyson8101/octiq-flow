@@ -27,6 +27,7 @@ const addBtn = document.querySelector("#cmd-add");
 const formEl = document.querySelector("#cmd-form");
 const labelEl = document.querySelector("#cmd-label");
 const commandEl = document.querySelector("#cmd-command");
+const globalEl = document.querySelector("#cmd-global");
 const formSaveBtn = document.querySelector("#cmd-form-save");
 const formCancelBtn = document.querySelector("#cmd-form-cancel");
 const listEl = document.querySelector("#cmd-list");
@@ -46,6 +47,20 @@ let currentId = null;
 let currentPath = "";
 let currentActions = [];
 let editingActionId = null;
+let editingGlobal = false;
+
+// Commands shown in EVERY project, owned by the backend store (not by a
+// workspace) and held here whole: any add / edit / remove rewrites this array
+// and sends it back with one `set_global_actions` call. They run exactly like a
+// project command — in the selected project's folder — so a project must be
+// selected to run one.
+let globalActions = [];
+invoke("list_global_actions")
+  .then((list) => {
+    globalActions = list || [];
+    renderList();
+  })
+  .catch(() => {});
 
 // projectId -> { group } drawer TerminalGroup. One per project; stays alive
 // (with scrollback) when the user switches projects, like the center group.
@@ -209,7 +224,7 @@ window.addEventListener("project-shelved", (e) => {
 // --- Command list (right panel) --------------------------------------------
 function renderList() {
   listEl.innerHTML = "";
-  const have = currentId && currentActions.length > 0;
+  const have = currentId && currentActions.length + globalActions.length > 0;
   emptyEl.classList.toggle("hidden", !!have);
   // With no project, hide the empty hint too (nothing to add to).
   emptyEl.textContent = currentId
@@ -217,18 +232,21 @@ function renderList() {
     : "Select a project to see its commands.";
   if (!currentId) return;
 
-  for (const a of currentActions) listEl.append(makeRow(a));
+  for (const a of currentActions) listEl.append(makeRow(a, false));
+  for (const a of globalActions) listEl.append(makeRow(a, true));
 }
 
 // A command is one quiet row: click runs it, right-click offers Edit / Remove
 // (shared ctx menu). A play glyph fades in on hover as the run affordance.
-function makeRow(action) {
+function makeRow(action, isGlobal) {
   const li = document.createElement("li");
   li.className = "cmd-item";
 
   const run = document.createElement("button");
   run.className = "cmd-run";
-  run.title = `Run: ${action.command}\nRight-click to edit or remove`;
+  run.title = `Run: ${action.command}${
+    isGlobal ? "\nShown in every project" : ""
+  }\nRight-click to edit or remove`;
   const label = document.createElement("span");
   label.className = "cmd-run-label";
   label.textContent = action.label;
@@ -239,16 +257,22 @@ function makeRow(action) {
   play.className = "cmd-run-play";
   play.innerHTML = ICONS.play(12);
   run.append(label, cmd, play);
+  if (isGlobal) {
+    const tag = document.createElement("span");
+    tag.className = "cmd-run-tag";
+    tag.textContent = "global";
+    run.append(tag);
+  }
   run.addEventListener("click", () => runCommand(action));
   run.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     openCtxMenu(e.clientX, e.clientY, [
-      { label: "Edit", onClick: () => openForm(action) },
+      { label: "Edit", onClick: () => openForm(action, isGlobal) },
       {
         label: "Remove",
         danger: true,
         confirm: "Click again to remove",
-        onClick: () => removeCommand(action.id),
+        onClick: () => removeCommand(action.id, isGlobal),
       },
     ]);
   });
@@ -258,10 +282,12 @@ function makeRow(action) {
 }
 
 // --- Add / edit / delete (reuse the workspaces-action commands) ------------
-function openForm(action) {
+function openForm(action, isGlobal) {
   editingActionId = action ? action.id : null;
+  editingGlobal = !!isGlobal;
   labelEl.value = action ? action.label : "";
   commandEl.value = action ? action.command : "";
+  globalEl.checked = !!isGlobal;
   formEl.classList.remove("hidden");
   labelEl.focus();
 }
@@ -269,8 +295,17 @@ function openForm(action) {
 function closeForm() {
   formEl.classList.add("hidden");
   editingActionId = null;
+  editingGlobal = false;
   labelEl.value = "";
   commandEl.value = "";
+  globalEl.checked = false;
+}
+
+/** Persist the whole global list and repaint. One setter covers add, edit and
+ *  remove — see `set_global_actions` in workspaces.rs. */
+async function saveGlobals() {
+  await invoke("set_global_actions", { actions: globalActions });
+  renderList();
 }
 
 async function saveCommand() {
@@ -278,6 +313,28 @@ async function saveCommand() {
   const label = labelEl.value.trim();
   const command = commandEl.value.trim();
   if (!label || !command) return;
+  const wantGlobal = globalEl.checked;
+
+  // The checkbox can also MOVE a command between the two lists, so an edit that
+  // flips it deletes from the old side before adding to the new one.
+  if (editingActionId && editingGlobal !== wantGlobal) {
+    await removeCommand(editingActionId, editingGlobal);
+    editingActionId = null;
+  }
+
+  if (wantGlobal) {
+    const existing = globalActions.find((a) => a.id === editingActionId);
+    if (existing) {
+      existing.label = label;
+      existing.command = command;
+    } else {
+      globalActions.push({ id: crypto.randomUUID(), label, command });
+    }
+    closeForm();
+    await saveGlobals();
+    return;
+  }
+
   if (editingActionId) {
     await invoke("update_action", {
       workspaceId: currentId,
@@ -297,13 +354,18 @@ async function saveCommand() {
   await refreshWorkspaces();
 }
 
-async function removeCommand(actionId) {
+async function removeCommand(actionId, isGlobal) {
+  if (isGlobal) {
+    globalActions = globalActions.filter((a) => a.id !== actionId);
+    await saveGlobals();
+    return;
+  }
   if (!currentId) return;
   await invoke("delete_action", { workspaceId: currentId, actionId });
   await refreshWorkspaces();
 }
 
-addBtn.addEventListener("click", () => openForm(null));
+addBtn.addEventListener("click", () => openForm(null, false));
 formCancelBtn.addEventListener("click", closeForm);
 formSaveBtn.addEventListener("click", saveCommand);
 labelEl.addEventListener("keydown", (e) => {
