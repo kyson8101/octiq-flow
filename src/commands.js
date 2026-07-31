@@ -60,9 +60,32 @@ const startupCmdsRan = new Set();
 // The footer shows the latest output line of any of these (one line, right side).
 const cmdLabelById = new Map();
 
+// projectId -> the last footer line shown for that project (card 44).
+//
+// The footer used to be filled ONLY by live output, so switching projects blanked
+// it and it came back only if the command printed again. A finished command never
+// does, so its status looked lost even though the terminal was still sitting in
+// the modal. Remembering the last line per project means switching back restores
+// it with no new output needed.
+const lastCmdLine = new Map();
+
 /** Set the one-line command message on the footer right (or clear it). */
 function setFooterCmd(text) {
   if (footerCmdEl) footerCmdEl.textContent = text || "";
+}
+
+/** Show the footer line belonging to `id`, or clear it. The line is dropped when
+ *  that project has no command terminal left, so a stale status can never
+ *  outlive the terminal it describes (and can never be clicked to open an empty
+ *  modal). */
+function restoreFooterCmd(id) {
+  const rec = id ? drawers.get(id) : null;
+  if (!rec || rec.group.count() === 0) {
+    if (id) lastCmdLine.delete(id);
+    setFooterCmd("");
+    return;
+  }
+  setFooterCmd(lastCmdLine.get(id) || "");
 }
 
 // Show the latest output line of a command terminal on the footer. The "cmd:"
@@ -71,14 +94,20 @@ function setFooterCmd(text) {
 // every chunk of every terminal was being stripped of ANSI codes on its behalf
 // and then discarded (card 24).
 //
-// The check below narrows further, to command terminals of the CURRENT project
-// (ids are `cmd:<projectId>:N`), so a command still running in a background
-// project never overwrites the footer of the project the user is looking at.
+// Every command terminal's line is REMEMBERED against its own project, but only
+// the current project's line is painted — so a command still running in a
+// background project never overwrites the footer of the project the user is
+// looking at, yet its own status is there the moment they switch back.
 onTerminalLine((id, line) => {
   const label = cmdLabelById.get(id);
-  if (label && currentId && id.startsWith(`cmd:${currentId}:`)) {
-    setFooterCmd(`▶ ${label} · ${line}`);
-  }
+  if (!label) return;
+  // ids are `cmd:<projectId>:N` — keep each project's newest line so switching
+  // back to it restores the status (card 44).
+  const projectId = id.split(":")[1];
+  if (!projectId) return;
+  const text = `▶ ${label} · ${line}`;
+  lastCmdLine.set(projectId, text);
+  if (projectId === currentId) setFooterCmd(text);
 }, "cmd:");
 
 // --- Project selection -----------------------------------------------------
@@ -100,7 +129,9 @@ function onProjectSelected(detail) {
   currentActions = detail.actions || [];
   if (switching) {
     closeForm();
-    setFooterCmd(""); // the footer message belongs to the previous project
+    // Swap the footer to THIS project's own command status — the previous
+    // project's line must not linger, but this one's must come back (card 44).
+    restoreFooterCmd(currentId);
     closeCmdModal();
   }
   renderList();
@@ -143,6 +174,7 @@ window.addEventListener("project-deleted", (e) => {
     drawers.delete(id);
   }
   startupCmdsRan.delete(id);
+  lastCmdLine.delete(id);
   if (currentId === id) {
     currentId = null;
     currentPath = "";
@@ -164,6 +196,7 @@ window.addEventListener("project-shelved", (e) => {
     rec.group.dispose();
     drawers.delete(id);
   }
+  lastCmdLine.delete(id);
   if (currentId === id) {
     currentId = null;
     currentPath = "";
@@ -386,6 +419,7 @@ function endActiveCommand() {
   if (id) rec.group.closeTerminal(id);
   if (rec.group.count() === 0) {
     closeCmdModal();
+    lastCmdLine.delete(currentId);
     setFooterCmd("");
   }
 }
@@ -410,6 +444,9 @@ const cmdObserver = new MutationObserver(() => {
   const rec = currentId ? drawers.get(currentId) : null;
   if (rec && rec.group.count() === 0) {
     closeCmdModal();
+    // The status has nothing left to describe, so drop it for good — not just
+    // from the footer, or a project switch would bring it back (card 44).
+    lastCmdLine.delete(currentId);
     setFooterCmd("");
   }
 });
