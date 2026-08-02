@@ -221,6 +221,19 @@ function reportTermError(term, message) {
 // chunk into the matching xterm, no matter which group owns it.
 const idToEntry = new Map();
 
+/** Every live terminal's pty id, across all groups (project, chat, command).
+ *  "Live" = the tab exists and its PTY is open; a hidden group's terminals are
+ *  still live. working.js counts these per project for the sidebar badge. */
+export function terminalIds() {
+  return [...idToEntry.keys()];
+}
+
+/** Fire "tg-terminals-change" so the sidebar terminal-count badge recounts.
+ *  Called on every open/close — the only two moments the live set changes. */
+function emitTerminalsChange() {
+  window.dispatchEvent(new CustomEvent("tg-terminals-change"));
+}
+
 // Subscribers that want the latest non-empty OUTPUT line of a terminal (e.g.
 // commands.js shows it on the footer). Each is `{ fn, idPrefix }` and is called
 // fn(id, line) only for terminals whose id starts with its prefix.
@@ -1660,6 +1673,7 @@ class TerminalGroup {
       term.write(SESSION_BREAK_LINE);
     }
     idToEntry.set(ptyId, { term, group: this, persistKey });
+    emitTerminalsChange();
 
     // Spawn the backing PTY. Note Tauri maps start_cmd -> startCmd and
     // persist_key -> persistKey. The persist key is exported into the shell as
@@ -2361,6 +2375,7 @@ class TerminalGroup {
     entry.paneEl.remove();
     this.tabs.delete(ptyId);
     idToEntry.delete(ptyId);
+    emitTerminalsChange();
     this._afterTabRemoved(ptyId);
     // A tab was removed: let the owner persist the shrunken layout. The backend
     // reconciles and deletes the closed terminal's saved scrollback file.

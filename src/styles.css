@@ -1907,6 +1907,32 @@ body {
   box-shadow: 0 0 0 2px var(--bg-0);
 }
 
+/* Per-project "terminals open" count: a dim prompt-glyph + number at a row's
+   right end, counting that project's LIVE terminals (open tabs, busy or idle).
+   Deliberately quieter than the sage working pill and the amber attention dot —
+   it is background information, not a call to look. It sits to the LEFT of the
+   working pill when a project shows both. Managed by working.js. */
+.ws-term-badge {
+  align-self: center;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+
+.ws-term-icon {
+  display: inline-flex;
+  opacity: 0.8;
+}
+
+/* Collapsed rail: the row is just the avatar, so the count has nowhere to go. */
+.sidebar.collapsed:not(.peek) .ws-term-badge {
+  display: none;
+}
+
 /* Per-project "agents working" badge: a small sage pill ("● N") at a row's right
    end, counting that project's terminals whose agent is busy (a foreground job
    running and NOT waiting for input). Sage, so it reads apart from the amber
