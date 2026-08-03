@@ -82,7 +82,23 @@ registerPanel("browser", {
       searchQuery = "";
     }
   },
+  // Card 49: the file tree was open when the app last closed, so bring it back.
+  // It needs a project, and `project-selected` has not fired yet at boot, so the
+  // reopen waits for the first selection rather than opening onto an empty tree.
+  // Also the path a layout preset takes when it wants the tree open (card 51),
+  // where a project usually IS already selected — so open straight away when we
+  // have one, and fall back to waiting only at boot.
+  onRestore: () => {
+    if (currentProjectId) browseProject();
+    else restorePending = true;
+  },
+  // Card 50: drag this head to another edge to re-dock the tree.
+  head: document.querySelector("#project-browser .pb-head"),
 });
+
+// True while a saved "the file tree was open" is waiting for a project to
+// arrive. Cleared the moment it is honoured, so it can only reopen once.
+let restorePending = false;
 
 /** Left padding for a row at `depth`, so deeper rows sit further right. */
 function indentFor(depth) {
@@ -418,6 +434,12 @@ window.addEventListener("project-selected", (e) => {
   currentProjectId = e.detail?.id ?? null;
   currentProjectName = e.detail?.name || "";
   currentPaths = (e.detail?.paths || []).map((p) => p.replace(/[/\\]+$/, ""));
+  // A saved "the tree was open" waits here for the first project of the session,
+  // because at boot there was none to root the tree in (card 49).
+  if (restorePending && currentProjectId) {
+    restorePending = false;
+    browseProject();
+  }
 });
 
 collapseBtn.addEventListener("click", collapseAll);

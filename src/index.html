@@ -42,6 +42,7 @@
     <script type="module" src="/browser.js" defer></script>
     <script type="module" src="/webpreview.js" defer></script>
     <script type="module" src="/gitdiff.js" defer></script>
+    <script type="module" src="/presets.js" defer></script>
     <script type="module" src="/canvas.js" defer></script>
     <script type="module" src="/alerts.js" defer></script>
     <script type="module" src="/agents.js" defer></script>
@@ -342,11 +343,11 @@
         <!-- Drop-zone overlay for the drag-to-dock gesture. Shown only while the
              user drags the preview's head; dropping on a strip docks the pane to
              that side. webpreview.js toggles .hidden and reads data-dock. -->
-        <div id="web-zones" class="web-zones hidden" aria-hidden="true">
-          <button class="web-zone web-zone-left" type="button" data-dock="left" tabindex="-1"></button>
-          <button class="web-zone web-zone-right" type="button" data-dock="right" tabindex="-1"></button>
-          <button class="web-zone web-zone-top" type="button" data-dock="top" tabindex="-1"></button>
-          <button class="web-zone web-zone-bottom" type="button" data-dock="bottom" tabindex="-1"></button>
+        <div id="lay-zones" class="lay-zones hidden" aria-hidden="true">
+          <button class="lay-zone lay-zone-left" type="button" data-side="left" tabindex="-1"></button>
+          <button class="lay-zone lay-zone-right" type="button" data-side="right" tabindex="-1"></button>
+          <button class="lay-zone lay-zone-top" type="button" data-side="top" tabindex="-1"></button>
+          <button class="lay-zone lay-zone-bottom" type="button" data-side="bottom" tabindex="-1"></button>
         </div>
       </main>
 
@@ -442,6 +443,11 @@
             </button>
             <button id="canvas-toggle" class="icon-btn cmd-panel-canvas-toggle" type="button" data-tip="Show canvas" aria-pressed="false">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M14 3v18"/><path d="M3 9h11"/><path d="M3 15h11"/></svg>
+            </button>
+            <!-- Named layout presets (presets.js, card 51): save the current
+                 pane tree + panel docks under a name, and switch back later. -->
+            <button id="layouts-toggle" class="icon-btn cmd-panel-layouts-toggle" type="button" data-tip="Layouts" aria-haspopup="menu" aria-expanded="false">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M9 12h12"/></svg>
             </button>
             <button id="cmd-panel-toggle" class="icon-btn cmd-panel-toggle" title="Collapse panel" aria-expanded="true">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

@@ -31,7 +31,6 @@ const reloadBtn = document.querySelector("#web-reload");
 const dockBtn = document.querySelector("#web-dock");
 const externalBtn = document.querySelector("#web-open-external");
 const closeBtn = document.querySelector("#web-close");
-const zonesEl = document.querySelector("#web-zones");
 
 const DOCKS = ["right", "left", "bottom", "top"];
 
@@ -48,10 +47,16 @@ registerPanel("web", {
   min: 220,
   width: 480,
   height: 320,
+  // Card 50: the layout manager makes the head draggable and reports where it
+  // was dropped, so this pane only has to remember the choice per project.
+  head: headEl,
+  onSideChange: (side) => {
+    dock = DOCKS.includes(side) ? side : "right";
+    saveState();
+  },
   onHidden: () => {
     // Closed directly or displaced by another panel: blank the frame so the
     // dev site stops running off screen, and forget the project.
-    zonesEl.classList.add("hidden");
     frame.removeAttribute("src");
     projId = null;
   },
@@ -178,48 +183,10 @@ function reload() {
   });
 }
 
-// --- Drag the head onto a drop zone to dock (left / right / top / bottom) ---
-function wireHeadDrag() {
-  headEl.addEventListener("pointerdown", (e) => {
-    // Let the toolbar controls work normally; only a bare-head drag docks.
-    if (e.target.closest("button, input")) return;
-    e.preventDefault();
-    headEl.setPointerCapture(e.pointerId);
-    const sx = e.clientX;
-    const sy = e.clientY;
-    let active = false; // becomes true once the pointer moves past the threshold
-    let hot = null;
-
-    const hilite = (x, y) => {
-      const el = document.elementFromPoint(x, y);
-      const zone = el ? el.closest(".web-zone") : null;
-      if (zone === hot) return zone;
-      if (hot) hot.classList.remove("web-zone-hot");
-      hot = zone || null;
-      if (hot) hot.classList.add("web-zone-hot");
-      return zone;
-    };
-    const onMove = (ev) => {
-      if (!active) {
-        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;
-        active = true;
-        zonesEl.classList.remove("hidden");
-      }
-      hilite(ev.clientX, ev.clientY);
-    };
-    const onUp = (ev) => {
-      headEl.removeEventListener("pointermove", onMove);
-      headEl.removeEventListener("pointerup", onUp);
-      if (!active) return; // a plain click, not a drag — leave the dock as-is
-      const zone = hilite(ev.clientX, ev.clientY);
-      if (hot) hot.classList.remove("web-zone-hot");
-      zonesEl.classList.add("hidden");
-      if (zone) applyDock(zone.dataset.dock);
-    };
-    headEl.addEventListener("pointermove", onMove);
-    headEl.addEventListener("pointerup", onUp);
-  });
-}
+// (Card 50: dragging the head to another edge is no longer wired here. The
+// layout manager owns it for EVERY panel now — this pane just hands it the head
+// element at registerPanel time, so there is one drag implementation, not one
+// per panel.)
 
 // --- Wiring ----------------------------------------------------------------
 urlInput.addEventListener("keydown", (e) => {
@@ -236,7 +203,6 @@ closeBtn.addEventListener("click", () => closePanel("web"));
 dockBtn.addEventListener("click", () => {
   applyDock(DOCKS[(DOCKS.indexOf(dock) + 1) % DOCKS.length]);
 });
-wireHeadDrag();
 
 window.addEventListener("project-web", (e) => open(e.detail?.id));
 // "Open in browser" from the project menu: launch the project's saved URL in the
