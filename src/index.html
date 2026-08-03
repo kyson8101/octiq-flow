@@ -51,6 +51,7 @@
     <script type="module" src="/vault.js" defer></script>
     <script type="module" src="/settings.js" defer></script>
     <script type="module" src="/profiles.js" defer></script>
+    <script type="module" src="/quickopen.js" defer></script>
   </head>
 
   <body>
@@ -170,10 +171,12 @@
 
           <!-- File preview column (filepreview.js). Hidden until a file is
                open (`file-open` from browser.js — sidebar tree, center tree, or
-               a search hit); opening a second file swaps THIS SAME pane's
-               content in place — no tabs. Its own slim drag handle + persisted
-               width, independent of layout.js's panel registry (that manager
-               only arbitrates the tree / web preview / git diff panels). -->
+               a search hit). card 52: every opened file becomes a TAB in
+               #fp-tabs below — the pane holds several files at once and one
+               shared Monaco editor swaps between them. Its own slim drag handle
+               + persisted width, independent of layout.js's panel registry
+               (that manager only arbitrates the tree / web preview / git diff
+               panels). -->
           <div id="file-preview-resizer" class="file-preview-resizer hidden" role="separator" aria-orientation="vertical" title="Drag to resize the file preview"></div>
           <div id="file-preview" class="file-preview hidden">
             <div class="ft-head">
@@ -191,6 +194,9 @@
                 </button>
               </span>
             </div>
+            <!-- One tab per open file (card 52), built by filepreview.js.
+                 Scrolls sideways when the tabs outgrow the pane. -->
+            <div id="fp-tabs" class="fp-tabs" role="tablist"></div>
             <div id="fp-body" class="ft-body"></div>
           </div>
         </div>
@@ -1053,6 +1059,17 @@
         <div class="modal-foot">
           <button id="cmd-modal-end" class="btn btn-sm cmd-end">End command</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Quick-open palette (card 54, ⌘P / Ctrl+P): fuzzy-filters every file
+         under the selected project's roots and opens the pick as an editor
+         tab via the shared `file-open` event. quickopen.js owns all of it. -->
+    <div id="qo-overlay" class="modal-backdrop qo-overlay hidden">
+      <div class="modal qo-modal-box" role="dialog" aria-modal="true" aria-label="Quick open">
+        <input id="qo-input" class="qo-input" type="text" placeholder="Go to file…" autocomplete="off" spellcheck="false" />
+        <ul id="qo-list" class="qo-list"></ul>
+        <div id="qo-foot" class="qo-foot"></div>
       </div>
     </div>
 

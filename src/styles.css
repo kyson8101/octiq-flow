@@ -3117,9 +3117,23 @@ body {
   background: var(--accent-bg);
 }
 
+/* card 52: the body is a fixed column of three PERMANENT children — the
+   truncated-file note, the non-text box (.ft-alt), and the shared Monaco host —
+   of which only the ones the active tab needs are shown. It never scrolls
+   itself: whichever child is showing owns the scrolling (Monaco scrolls
+   internally and needs a definite height, not a content height). */
 .ft-body {
   flex: 1 1 auto;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Everything that is not the editor: loading / error text, an image, a PDF. */
+.ft-alt {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
   overflow: auto;
 }
 .ft-note {
@@ -3133,14 +3147,8 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-/* Monaco text editor host. The body becomes a non-scrolling column so an
-   optional truncated-file note sits above the editor, which takes the rest
-   (Monaco scrolls itself and needs a definite height, not content height). */
-.ft-body.monaco-host {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+/* Monaco text editor host. Created once and kept for the pane's lifetime (see
+   filepreview.js) — only hidden when a non-text tab is showing. */
 .ft-monaco {
   flex: 1 1 auto;
   min-height: 0;
@@ -3175,6 +3183,100 @@ body {
   height: 100%;
   border: 0;
   background: #fff;
+}
+
+/* ---- File preview tab strip (card 52) ---------------------------------
+   One tab per open file, under the pane head. Deliberately the same visual
+   family as the terminal tabs (.tg-tab): quiet until selected, then a raised
+   fill. The CURRENT tab is marked by a BACKGROUND TINT + brighter text and
+   nothing else — no left border, no accent bar down the edge. That pattern is
+   banned app-wide (see the .tg-tab-shown note), and the fill IS the mark.
+   Overflow scrolls sideways with no visible scrollbar: the strip is thin, and
+   a bar under the tabs would read as a divider. */
+.fp-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 8px 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.fp-tabs::-webkit-scrollbar {
+  height: 0;
+}
+/* No open files (or the pane mid-teardown): no strip, no stray gap. */
+.fp-tabs:empty {
+  display: none;
+}
+
+.fp-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 170px;
+  padding: 4px 6px 4px 9px;
+  font-size: var(--text-callout);
+  letter-spacing: var(--track-callout);
+  color: var(--fg-2);
+  background: transparent;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fp-tab:hover {
+  color: var(--fg-0);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* Current file: fill + brighter text. Nothing else. */
+.fp-tab-active {
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.38);
+}
+
+.fp-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unsaved-edits dot after the label, mirroring the terminal file tabs. */
+.fp-tab-dirty .fp-tab-label::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.fp-tab-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--fg-3);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.fp-tab-close:hover {
+  color: var(--danger);
+  background: var(--danger-tint);
 }
 
 /* ===================================================================== */
@@ -3504,6 +3606,99 @@ body {
 
 .cmd-end:hover {
   background: var(--danger-tint);
+}
+
+/* === Quick-open palette (card 54, ⌘P / Ctrl+P) === */
+/* Reuses .modal-backdrop for the dark click-to-close overlay and .modal for
+   the panel edge/shadow, same family as .cmd-modal-box above. Sits higher in
+   the viewport than a centered modal (VS Code-style), so it does not fight
+   the terminal underneath for visual center. */
+.qo-overlay {
+  align-items: flex-start;
+  padding-top: 14vh;
+}
+
+.qo-modal-box {
+  width: min(640px, 92vw);
+  max-width: 92vw;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.qo-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg-0);
+  font-size: 14px;
+  padding: 14px 16px;
+  outline: none;
+}
+
+.qo-input::placeholder {
+  color: var(--fg-2);
+}
+
+.qo-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  max-height: 48vh;
+  overflow-y: auto;
+}
+
+/* Highlighted / hovered row: background tint only — never a left border or
+   accent bar (banned app-wide, see CLAUDE.md). */
+.qo-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.qo-row.active {
+  background: var(--bg-2);
+}
+
+.qo-row-name {
+  color: var(--fg-0);
+  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qo-row-rel {
+  color: var(--fg-2);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.qo-msg {
+  padding: 10px;
+  color: var(--fg-2);
+  font-size: 13px;
+}
+
+.qo-msg-error {
+  color: var(--danger);
+}
+
+.qo-foot {
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-2);
+  font-size: 11px;
 }
 
 /* --- Center file browser (Files / Documentation) ------------------------- */
@@ -5958,71 +6153,26 @@ input[type="range"]::-webkit-slider-thumb {
   background: rgba(255, 255, 255, 0.07);
 }
 
+/* Selection is an accent TINT, not a solid accent fill. A solid fill forces
+   every glyph in the row to white, which flattens the row's own color language:
+   the green/red git counts, the accent "↑N", the sage working pill and the
+   project avatar all had to be restated as near-white and each one lost
+   contrast doing it. On a tint the normal palette keeps working as-is, so the
+   row stays legible and still reads as current. */
 .ws-item.selected {
-  background: var(--accent);
+  background: var(--accent-tint);
   box-shadow: none;
+  color: var(--fg-0);
 }
 
-/* Everything inside a selected row turns white — AppKit recolors the whole
-   row's content, including the secondary line and any badge. */
-.ws-item.selected,
-.ws-item.selected .ws-item-name,
-.ws-item.selected .ws-item-desc,
-.ws-item.selected .ws-item-icon,
-.ws-item.selected .ws-term-badge,
-.ws-item.selected .ws-item-diff {
-  color: var(--accent-fg);
-}
-
-.ws-item.selected .ws-item-desc,
-.ws-item.selected .ws-term-badge {
-  opacity: 0.75;
-}
-
-/* The git counts on a SELECTED row sit on the solid accent fill, so their own
-   --ok / --danger / --accent colors stop working: green and red both land near
-   the fill's brightness, and "↑N" (accent) vanishes into it entirely. The
-   accent is whatever the user picked in System Settings, so no fixed hue is
-   safe — recolor to near-white tints that only *hint* green/red. Contrast then
-   tracks --accent-fg (white), which macOS guarantees is legible on any accent,
-   while the +/-/↑ signs still carry the meaning. */
-.ws-item.selected .ws-diff-add {
-  color: #d9f8de;
-}
-
-.ws-item.selected .ws-diff-del {
-  color: #ffdad5;
-}
-
-.ws-item.selected .ws-diff-ahead {
-  color: var(--accent-fg);
-}
-
-.ws-item.selected .ws-diff-slash,
-.ws-item.selected .ws-diff-sep {
-  color: rgba(255, 255, 255, 0.6);
-}
-
-.ws-item.selected .ws-working-badge {
-  color: var(--accent-fg);
-  background: rgba(255, 255, 255, 0.22);
-  border-color: transparent;
-}
-
-.ws-item.selected .ws-working-dot {
-  background: var(--accent-fg);
+.ws-item.selected:hover {
+  background: var(--accent-tint-strong);
 }
 
 /* Not the frontmost window: macOS drains the accent out of the selection and
    leaves a neutral gray behind. appearance.js sets .win-inactive on <html>. */
 .win-inactive .ws-item.selected {
-  background: rgba(120, 120, 128, 0.36);
-}
-
-.win-inactive .ws-item.selected,
-.win-inactive .ws-item.selected .ws-item-name,
-.win-inactive .ws-item.selected .ws-item-desc {
-  color: var(--fg-1);
+  background: rgba(120, 120, 128, 0.2);
 }
 
 .win-inactive .modebar-tabs .modebtn.modebtn-active,

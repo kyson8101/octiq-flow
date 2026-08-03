@@ -258,6 +258,37 @@ mod tests {
         assert!(empty.files.is_empty() && empty.matches.is_empty());
     }
 
+    /// list_project_files returns every non-ignored file under the root, and
+    /// caps the result with a truncation flag once the cap is hit.
+    /// Skipped when ripgrep is not installed (the command errors clearly then).
+    #[test]
+    fn list_project_files_lists_and_truncates() {
+        if std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join("octiq-quickopen-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join("b.txt"), "b").unwrap();
+        let roots = vec![dir.to_string_lossy().into_owned()];
+
+        let res = super::list_project_files(roots).unwrap();
+
+        assert_eq!(res.files.len(), 2);
+        assert!(!res.truncated);
+        assert!(res.files.iter().any(|p| p.ends_with("a.txt")));
+        assert!(res.files.iter().any(|p| p.ends_with("b.txt")));
+
+        // Empty roots returns an empty, non-truncated list rather than erroring.
+        let empty = super::list_project_files(Vec::new()).unwrap();
+        assert!(empty.files.is_empty() && !empty.truncated);
+    }
+
     #[test]
     fn resolve_path_handles_absolute_relative_tilde_and_missing() {
         let dir = std::env::temp_dir().join("octiq-resolve-path-test");
@@ -399,6 +430,50 @@ pub fn search_files(roots: Vec<String>, query: String) -> Result<SearchResults, 
         matches,
         truncated,
     })
+}
+
+/// Every non-ignored file path under a set of roots, for the quick-open (⌘P)
+/// palette (card 54). `truncated` tells the frontend the list was cut off, so
+/// it can say "showing the first N" instead of implying the list is complete.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFiles {
+    /// Absolute paths, exactly as ripgrep emits them (no re-resolution).
+    pub files: Vec<String>,
+    /// True when the file count hit MAX_PROJECT_FILES, so the list is a prefix.
+    pub truncated: bool,
+}
+
+/// Maximum paths returned by `list_project_files`. The palette fuzzy-filters this
+/// list entirely in JS, so it needs a hard cap to stay responsive on a huge repo.
+const MAX_PROJECT_FILES: usize = 20_000;
+
+/// List every non-ignored file under `roots` for the quick-open (⌘P) palette
+/// (card 54). Reuses the same `rg --files` helper `search_files` already runs
+/// (fsbrowse.rs:336) so `.gitignore` and hidden-file rules apply for free.
+///
+/// Returns `Err(message)` when ripgrep is missing, matching `search_files`.
+#[tauri::command]
+pub fn list_project_files(roots: Vec<String>) -> Result<ProjectFiles, String> {
+    if roots.is_empty() {
+        return Ok(ProjectFiles {
+            files: Vec::new(),
+            truncated: false,
+        });
+    }
+
+    let listing = rg(&["--files", "--"], &roots, &[])?;
+    let mut files: Vec<String> = Vec::new();
+    let mut truncated = false;
+    for path in listing.lines() {
+        if files.len() >= MAX_PROJECT_FILES {
+            truncated = true;
+            break;
+        }
+        files.push(path.to_string());
+    }
+
+    Ok(ProjectFiles { files, truncated })
 }
 
 /// Run ripgrep with `flags`, then `pattern` (0 or 1), then the search roots, and

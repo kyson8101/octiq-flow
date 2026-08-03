@@ -1,11 +1,27 @@
-// File preview pane — a SINGLE dedicated column to the right of the terminal
-// area (card: 4-column project layout: sidebar | terminals | file preview |
-// docked tree). Replaces the old content-tab model (filetabs.js, retired):
-// browser.js's file clicks now render here instead of as a tab in the
-// terminal strip. One file at a time — opening another file swaps this same
-// pane's content in place (confirming first if the current file has unsaved
-// edits). The read/save/Monaco plumbing below is the old content-tab pane's,
-// unchanged in behavior.
+// File preview pane — a dedicated column to the right of the terminal area
+// (card: 4-column project layout: sidebar | terminals | file preview | docked
+// tree). Replaces the old content-tab model (filetabs.js, retired): browser.js's
+// file clicks render here instead of as a tab in the terminal strip.
+//
+// card 52 — MULTI-FILE TABS. The pane used to hold ONE file: opening file B
+// threw file A away (after a "discard changes?" nag). It now works like a VS
+// Code editor group: every opened path becomes a TAB in #fp-tabs, and the pane
+// keeps them all alive at once.
+//   - `openFiles` (Map, keyed by absolute path) is the whole state; `activePath`
+//     says which tab is showing.
+//   - ONE shared Monaco editor is created lazily on the first text file and kept
+//     for the pane's lifetime. Switching tabs swaps its MODEL
+//     (saveViewState → setModel → restoreViewState), which is exactly how VS
+//     Code editor groups work: undo history lives in the model, so it survives a
+//     switch for free, and only one editor ever costs layout/DOM.
+//   - Switching tabs NEVER asks to discard. The only confirms left are closing a
+//     dirty tab and closing the whole pane while any tab is dirty.
+//   - Non-text files (image / pdf / binary) are tabs too. They render into a
+//     separate `altEl` box; the Monaco host is shown only for text tabs.
+//
+// card 53 — the editor is themed from the app's TERMINAL palette (settings.js)
+// instead of stock `vs-dark`, and re-themed live when the terminal settings
+// change, so the editor and the terminals never look like two different apps.
 //
 // Layout ownership: #file-preview is a plain child of #center-main (see
 // index.html), NOT one of layout.js's registered panels — that manager only
@@ -19,12 +35,9 @@
 //
 // browser.js dispatches `file-open` { path, name, line } for every file click
 // (sidebar tree, center tree, search hits) — same event contract as before.
-// Text files edit in Monaco (⌘S or the head Save button saves; a tinted Save
-// button flags unsaved edits; closing the pane or switching to a different
-// file with unsaved edits confirms first). Images and PDFs render inline;
-// other binaries offer "Open externally".
 const { invoke, convertFileSrc } = window.__TAURI__.core;
 import { closeMainPanel } from "/layout.js";
+import { getTerminalSettings, TERMINAL_SETTINGS_CHANGED } from "/settings.js";
 import { formatBytes, loadPaneWidth, makeResizer, textEl } from "/util.js";
 
 // --- Monaco (lazy) -----------------------------------------------------------
@@ -52,12 +65,25 @@ function loadMonaco() {
 // --- DOM handles -------------------------------------------------------------
 const previewEl = document.querySelector("#file-preview");
 const resizerEl = document.querySelector("#file-preview-resizer");
+const tabsEl = document.querySelector("#fp-tabs");
 const nameEl = document.querySelector("#fp-name");
 const statusEl = document.querySelector("#fp-status");
 const saveBtn = document.querySelector("#fp-save");
 const openBtn = document.querySelector("#fp-open-external");
 const closeBtn = document.querySelector("#fp-close");
 const bodyEl = document.querySelector("#fp-body");
+
+// The body's three PERMANENT children (card 52). They are built once and only
+// shown/hidden, never replaced: the Monaco host in particular must keep the same
+// element for the pane's lifetime, because the shared editor is mounted in it
+// and re-parenting a live editor is what makes it mis-measure.
+//   noteEl — the truncated-read warning, above the editor, text tabs only.
+//   altEl  — everything that is not Monaco (loading / error / image / pdf).
+//   hostEl — the shared Monaco editor's mount point.
+const noteEl = textEl("div", "ft-note hidden");
+const altEl = textEl("div", "ft-alt hidden");
+const hostEl = textEl("div", "ft-monaco hidden");
+bodyEl.replaceChildren(noteEl, altEl, hostEl);
 
 // --- Sizing: persisted width + a shared drag-handle helper (util.js, card 26) ---
 const WIDTH_KEY = "octiq.filePreview.width";
@@ -72,22 +98,154 @@ makeResizer({
   onResize: () => window.dispatchEvent(new Event("resize")), // nudge terminals to refit
 });
 
-// --- State: one file at a time -----------------------------------------------
-// `current` is null while the pane is closed. `st.closed` guards a disposed
-// pane/swapped file against an in-flight read_file_preview landing late.
-let current = null;
+// --- State: one entry per open tab (card 52) ---------------------------------
+// openFiles: absolute path -> {
+//   path, name, projectId,
+//   kind: "loading" | "text" | "image" | "pdf" | "binary" | "error",
+//   message,          // body text for the binary / error kinds
+//   dirty, editable,  // editable is false for a TRUNCATED read (see loadContent)
+//   truncatedNote,    // the read-only warning shown above the editor, or ""
+//   model, viewState, // Monaco per-file state (undo history lives in the model)
+//   pendingLine,      // a search hit's line, applied once the read lands
+//   closed,           // guards an in-flight read landing after the tab is gone
+// }
+const openFiles = new Map();
+let activePath = null;
+
+// The ONE shared editor + the Monaco API once loaded (card 52/53). Both outlive
+// individual tabs AND pane closes: only its model changes.
+let sharedEditor = null;
+let monacoApi = null;
+
+/** The entry showing right now, or null when the pane is empty. */
+function activeEntry() {
+  return activePath ? openFiles.get(activePath) || null : null;
+}
 
 /** A single-line message node for the pane body (loading / error / binary). */
 function bodyMessage(text) {
   return textEl("div", "ft-msg", text);
 }
 
-/** Scroll the editor to `line` (1-based) and put the caret there. */
-function gotoLine(st, line) {
-  if (!st.editor || !line) return;
-  st.editor.revealLineInCenter(line);
-  st.editor.setPosition({ lineNumber: line, column: 1 });
+// --- card 53: a Monaco theme built from the terminal palette -----------------
+
+const THEME_NAME = "octiq";
+
+/** A `#rrggbb` string from a `#rgb` or `#rrggbb` one (settings.js allows both).
+ *  Monaco's token-rule parser only accepts 6 hex digits. */
+function hex6(color) {
+  const s = String(color || "").replace("#", "");
+  const full = s.length === 3 ? s[0] + s[0] + s[1] + s[1] + s[2] + s[2] : s;
+  return /^[0-9a-fA-F]{6}$/.test(full) ? full : "000000";
 }
+
+/** `#rrggbb` — the form Monaco's `colors` map wants (its token rules want the
+ *  same digits WITHOUT the hash, hence the two helpers). */
+function cssHex(color) {
+  return `#${hex6(color)}`;
+}
+
+/** True when `color` is dark enough that the editor should sit on the dark base
+ *  theme. Rec. 601 luma, the same rough test the rest of the app uses by eye. */
+function isDarkColor(color) {
+  const n = parseInt(hex6(color), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 < 0.5;
+}
+
+/** (Re)define the "octiq" Monaco theme from the current terminal palette
+ *  (card 53). Token colors map onto the ANSI set the terminals already use — a
+ *  One-Dark-ish assignment — so code in the editor is colored by the same
+ *  palette as agent output two columns to the left. Safe to call repeatedly:
+ *  defineTheme overwrites a theme of the same name. */
+function defineOctiqTheme(monaco, settings) {
+  const t = settings.theme;
+  const dark = isDarkColor(t.background);
+  monaco.editor.defineTheme(THEME_NAME, {
+    base: dark ? "vs-dark" : "vs",
+    inherit: true,
+    rules: [
+      { token: "", foreground: hex6(t.foreground), background: hex6(t.background) },
+      { token: "comment", foreground: hex6(t.brightBlack), fontStyle: "italic" },
+      { token: "string", foreground: hex6(t.green) },
+      { token: "string.escape", foreground: hex6(t.cyan) },
+      { token: "regexp", foreground: hex6(t.cyan) },
+      { token: "keyword", foreground: hex6(t.magenta) },
+      { token: "keyword.operator", foreground: hex6(t.cyan) },
+      { token: "operator", foreground: hex6(t.cyan) },
+      { token: "number", foreground: hex6(t.yellow) },
+      { token: "constant", foreground: hex6(t.yellow) },
+      { token: "type", foreground: hex6(t.cyan) },
+      { token: "type.identifier", foreground: hex6(t.yellow) },
+      { token: "identifier", foreground: hex6(t.red) },
+      { token: "variable", foreground: hex6(t.red) },
+      { token: "variable.predefined", foreground: hex6(t.yellow) },
+      { token: "function", foreground: hex6(t.blue) },
+      { token: "attribute.name", foreground: hex6(t.red) },
+      { token: "attribute.value", foreground: hex6(t.green) },
+      { token: "tag", foreground: hex6(t.red) },
+      { token: "delimiter", foreground: hex6(t.white) },
+      { token: "metatag", foreground: hex6(t.magenta) },
+      { token: "key", foreground: hex6(t.red) },
+      { token: "invalid", foreground: hex6(t.brightRed) },
+    ],
+    colors: {
+      "editor.background": cssHex(t.background),
+      "editor.foreground": cssHex(t.foreground),
+      "editorCursor.foreground": cssHex(t.cursor),
+      "editor.selectionBackground": cssHex(t.selectionBackground),
+      "editor.inactiveSelectionBackground": cssHex(t.selectionBackground),
+      "editor.lineHighlightBorder": cssHex(t.background),
+      "editorLineNumber.foreground": cssHex(t.brightBlack),
+      "editorLineNumber.activeForeground": cssHex(t.white),
+      "editorIndentGuide.background1": cssHex(t.black),
+      "editorIndentGuide.activeBackground1": cssHex(t.brightBlack),
+      "editorWhitespace.foreground": cssHex(t.brightBlack),
+      "editorGutter.background": cssHex(t.background),
+      "editorWidget.background": cssHex(t.background),
+      "editorSuggestWidget.background": cssHex(t.background),
+      "input.background": cssHex(t.background),
+      "scrollbarSlider.background": cssHex(t.black),
+      "minimap.background": cssHex(t.background),
+    },
+  });
+}
+
+/** Re-theme + re-size the live editor when the terminal appearance changes
+ *  (card 53). No-op until Monaco has actually been loaded by a text file. */
+window.addEventListener(TERMINAL_SETTINGS_CHANGED, () => {
+  if (!monacoApi) return;
+  const settings = getTerminalSettings();
+  defineOctiqTheme(monacoApi, settings);
+  monacoApi.editor.setTheme(THEME_NAME);
+  sharedEditor?.updateOptions({ fontSize: settings.fontSize || 12 });
+});
+
+/** The shared editor, created on first use (card 52/53). Options are set ONCE
+ *  here: per-file state (the model, readOnly) is applied on activation instead.
+ *  No keybindings are touched, so Monaco's built-ins — ⌘F find, ⌥-click
+ *  multi-cursor, ⌘D, F1 command palette — all keep working. */
+function ensureEditor(monaco) {
+  if (sharedEditor) return sharedEditor;
+  monacoApi = monaco;
+  const settings = getTerminalSettings();
+  defineOctiqTheme(monaco, settings);
+  sharedEditor = monaco.editor.create(hostEl, {
+    theme: THEME_NAME,
+    automaticLayout: true, // relayout on pane resize / dock drag
+    fontSize: settings.fontSize || 12,
+    scrollBeyondLastLine: false,
+    folding: true,
+    bracketPairColorization: { enabled: true },
+    minimap: { enabled: false }, // the pane is narrow; a minimap eats a third of it
+    readOnly: true, // the first activated model decides the real value
+  });
+  return sharedEditor;
+}
+
+// --- Head chrome -------------------------------------------------------------
 
 /** Briefly show a save result ("Saved" or an error) beside the file name. */
 function flashStatus(text, isError) {
@@ -95,241 +253,434 @@ function flashStatus(text, isError) {
   statusEl.classList.toggle("err", !!isError);
 }
 
-/** Flag/clear unsaved edits: tinted Save button. */
-function setDirty(on) {
-  current.dirty = on;
-  saveBtn.classList.toggle("dirty", on);
+/** Repaint the head for the active tab: full path, save button visibility and
+ *  its unsaved tint. Called on every activation and dirty change. */
+function renderHead() {
+  const entry = activeEntry();
+  nameEl.textContent = entry ? entry.path : "";
+  nameEl.title = entry ? entry.path : "";
+  saveBtn.classList.toggle("hidden", !entry?.editable);
+  saveBtn.classList.toggle("dirty", !!entry?.dirty);
 }
 
-/** True when the pane holds unsaved edits — gates the discard confirm. */
-function isDirty() {
-  return !!current?.dirty;
+// --- Tab strip (card 52) -----------------------------------------------------
+
+/** Rebuild the whole tab strip. Cheap (a handful of tabs) and it keeps tab DOM
+ *  a pure function of `openFiles` + `activePath`, so there is no second place
+ *  where a dirty dot or the active mark can drift out of sync.
+ *
+ *  STYLE: the active tab is marked by a background tint + brighter text ONLY.
+ *  Never a left border / left accent bar — that pattern is banned app-wide. */
+function renderTabs() {
+  const tabs = [];
+  for (const entry of openFiles.values()) {
+    const tab = textEl("div", "fp-tab");
+    if (entry.path === activePath) tab.classList.add("fp-tab-active");
+    if (entry.dirty) tab.classList.add("fp-tab-dirty");
+    tab.title = entry.path;
+    tab.setAttribute("role", "tab");
+    tab.append(textEl("span", "fp-tab-label", entry.name));
+
+    const close = textEl("button", "fp-tab-close", "×");
+    close.type = "button";
+    close.title = "Close file";
+    close.setAttribute("aria-label", `Close ${entry.name}`);
+    close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(entry.path);
+    });
+    tab.append(close);
+
+    tab.addEventListener("click", () => activate(entry.path, { focus: true }));
+    // Middle-click closes, the same as in a browser / VS Code.
+    tab.addEventListener("auxclick", (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      closeTab(entry.path);
+    });
+    tabs.push(tab);
+  }
+  tabsEl.replaceChildren(...tabs);
 }
 
-/** Ask before losing unsaved edits; true when it is safe to proceed
- *  (nothing dirty, or the user confirmed the discard). */
-function confirmDiscard() {
-  return !isDirty() || confirm("You have unsaved changes. Discard them?");
+// --- Tab lifecycle -----------------------------------------------------------
+
+/** Stash the active text tab's scroll + caret before its model leaves the
+ *  editor, so restoreViewState puts it back exactly where it was. */
+function stashViewState() {
+  const entry = activeEntry();
+  if (!entry || !sharedEditor || !entry.model) return;
+  if (sharedEditor.getModel() !== entry.model) return;
+  entry.viewState = sharedEditor.saveViewState();
 }
 
-/** Write the pane's current text back to disk via the backend. */
-async function saveCurrent() {
-  if (!current?.editable || !current.editor || saveBtn.disabled) return;
+/** Show `entry` in the body: the shared Monaco editor for text (model swap), a
+ *  freshly built node for every other kind. Non-text bodies are rebuilt on each
+ *  activation on purpose — an <img>/<iframe>/message costs nothing, and it keeps
+ *  one place that knows how each kind renders. */
+function renderBody(entry) {
+  if (!entry) {
+    noteEl.classList.add("hidden");
+    altEl.classList.add("hidden");
+    hostEl.classList.add("hidden");
+    return;
+  }
+
+  const isText = entry.kind === "text" && !!entry.model;
+  noteEl.textContent = isText ? entry.truncatedNote || "" : "";
+  noteEl.classList.toggle("hidden", !isText || !entry.truncatedNote);
+  hostEl.classList.toggle("hidden", !isText);
+  altEl.classList.toggle("hidden", isText);
+
+  if (isText) {
+    const editor = sharedEditor;
+    // Only swap when the model really changes: re-activating the tab that is
+    // already showing must NOT restore a view state saved when the user last
+    // switched away, or clicking the current tab would yank the scroll back.
+    if (editor.getModel() !== entry.model) {
+      editor.setModel(entry.model);
+      if (entry.viewState) editor.restoreViewState(entry.viewState);
+    }
+    editor.updateOptions({ readOnly: !entry.editable });
+    // The host was display:none a moment ago (or the pane was), so Monaco has a
+    // stale size; automaticLayout would catch up a frame later, this is instant.
+    editor.layout();
+    return;
+  }
+
+  altEl.replaceChildren(buildAltBody(entry));
+}
+
+/** The body node for a non-text tab. */
+function buildAltBody(entry) {
+  if (entry.kind === "image") {
+    const img = document.createElement("img");
+    img.className = "ft-img";
+    img.alt = entry.name;
+    img.src = convertFileSrc(entry.path);
+    img.addEventListener("error", () => {
+      altEl.replaceChildren(
+        bodyMessage("Could not show this image. Use “Open externally” to view it."),
+      );
+    });
+    const wrap = textEl("div", "ft-media");
+    wrap.append(img);
+    return wrap;
+  }
+
+  if (entry.kind === "pdf") {
+    const frame = document.createElement("iframe");
+    frame.className = "ft-pdf";
+    frame.title = entry.name;
+    frame.src = convertFileSrc(entry.path);
+    return frame;
+  }
+
+  return bodyMessage(entry.message || "Loading…");
+}
+
+/** Make `path` the showing tab. Switching NEVER asks about unsaved edits — the
+ *  edits simply stay in that file's model until it is saved or its tab closes. */
+function activate(path, { focus = false } = {}) {
+  const entry = openFiles.get(path);
+  if (!entry) return;
+  if (activePath !== path) {
+    stashViewState();
+    activePath = path;
+  }
+  renderTabs();
+  renderHead();
+  statusEl.textContent = "";
+  statusEl.classList.remove("err");
+  renderBody(entry);
+  // A search hit that landed while this tab was in the background (or still
+  // loading) jumps now that its model is actually in the editor.
+  if (entry.pendingLine) gotoLine(entry, entry.pendingLine);
+  else if (focus && entry.kind === "text" && sharedEditor) sharedEditor.focus();
+}
+
+/** Close one tab. A dirty tab confirms first unless `force` (the project-switch
+ *  sweep, which only ever force-closes CLEAN tabs). Returns true when the tab is
+ *  gone. Disposing the model is what frees its Uri for a later re-open — and it
+ *  must leave the editor first, or the editor is left holding a dead model. */
+function closeTab(path, { force = false } = {}) {
+  const entry = openFiles.get(path);
+  if (!entry) return true;
+  if (!force && entry.dirty && !confirm("You have unsaved changes. Discard them?")) return false;
+
+  const order = [...openFiles.keys()];
+  const index = order.indexOf(path);
+
+  entry.closed = true; // a read still in flight must not touch the pane
+  if (entry.model) {
+    if (sharedEditor?.getModel() === entry.model) sharedEditor.setModel(null);
+    entry.model.dispose();
+    entry.model = null;
+  }
+  openFiles.delete(path);
+
+  if (activePath !== path) {
+    renderTabs();
+    return true;
+  }
+
+  // The closed tab was showing: fall back to its right-hand neighbour, else its
+  // left-hand one, else there is nothing left to show.
+  activePath = null;
+  const next = order[index + 1] && openFiles.has(order[index + 1]) ? order[index + 1] : order[index - 1];
+  if (next && openFiles.has(next)) activate(next);
+  else closePane();
+  return true;
+}
+
+/** True while any open tab holds unsaved edits. */
+function anyDirty() {
+  for (const entry of openFiles.values()) if (entry.dirty) return true;
+  return false;
+}
+
+/** Hide the pane and drop every tab. The shared editor SURVIVES (only its model
+ *  is detached): it is the pane's editor, not the file's, and rebuilding it per
+ *  open would re-pay Monaco's create cost for nothing. Callers that need a
+ *  confirm do it first — this one just tears down. */
+function closePane() {
+  for (const entry of openFiles.values()) {
+    entry.closed = true;
+    if (entry.model) {
+      if (sharedEditor?.getModel() === entry.model) sharedEditor.setModel(null);
+      entry.model.dispose();
+      entry.model = null;
+    }
+  }
+  openFiles.clear();
+  activePath = null;
+  sharedEditor?.setModel(null);
+  renderTabs();
+  renderHead();
+  renderBody(null);
+  altEl.replaceChildren();
+  statusEl.textContent = "";
+  statusEl.classList.remove("err");
+  previewEl.classList.add("hidden");
+  resizerEl.classList.add("hidden");
+}
+
+// --- Save / open externally --------------------------------------------------
+
+/** Flag or clear unsaved edits on ONE tab: its dirty dot, plus the head's Save
+ *  tint when it is the tab showing. */
+function setDirty(entry, on) {
+  if (entry.dirty === on) return;
+  entry.dirty = on;
+  renderTabs();
+  if (entry.path === activePath) renderHead();
+}
+
+/** Write the ACTIVE tab's text back to disk. Only that tab's dirty dot clears —
+ *  every other tab keeps its edits and its dot. A truncated read is never
+ *  editable (`entry.editable`), so a partial buffer can never overwrite a file.*/
+async function saveActive() {
+  const entry = activeEntry();
+  if (!entry?.editable || !entry.model || saveBtn.disabled) return;
   saveBtn.disabled = true;
   try {
-    const content = current.editor.getModel().getValue();
-    await invoke("write_file", { path: current.path, content });
-    if (current && !current.closed) {
-      setDirty(false);
-      flashStatus("Saved");
-    }
+    const content = entry.model.getValue();
+    await invoke("write_file", { path: entry.path, content });
+    if (entry.closed) return;
+    setDirty(entry, false);
+    if (activePath === entry.path) flashStatus("Saved");
   } catch (err) {
-    if (current && !current.closed) flashStatus(String(err), true);
+    if (!entry.closed && activePath === entry.path) flashStatus(String(err), true);
   } finally {
     saveBtn.disabled = false;
   }
 }
 
-/** Open the current file with the OS default app via the opener plugin. */
+/** Open the active file with the OS default app via the opener plugin. */
 function openExternally() {
-  if (!current) return;
-  invoke("plugin:opener|open_path", { path: current.path, with: null }).catch((err) => {
-    bodyEl.replaceChildren(bodyMessage(`Could not open file: ${err}`));
+  const entry = activeEntry();
+  if (!entry) return;
+  invoke("plugin:opener|open_path", { path: entry.path, with: null }).catch((err) => {
+    altEl.replaceChildren(bodyMessage(`Could not open file: ${err}`));
+    hostEl.classList.add("hidden");
+    altEl.classList.remove("hidden");
   });
 }
 
-/** Tear down a retired file's editor + model so its URI is free for a re-open. */
-function disposeEditor(st) {
-  st.closed = true;
-  if (st.editor) {
-    const model = st.editor.getModel();
-    st.editor.dispose();
-    model?.dispose();
-    st.editor = null;
-  }
-}
-
-/** Hide the pane and forget the current file (no confirm — callers that need
- *  one check confirmDiscard() first). */
-function closePane() {
-  if (current) disposeEditor(current);
-  current = null;
-  previewEl.classList.add("hidden");
-  resizerEl.classList.add("hidden");
-}
-
 closeBtn.addEventListener("click", () => {
-  if (!confirmDiscard()) return;
+  if (anyDirty() && !confirm("You have unsaved changes. Discard them?")) return;
   closePane();
 });
-saveBtn.addEventListener("click", saveCurrent);
+saveBtn.addEventListener("click", saveActive);
 openBtn.addEventListener("click", openExternally);
 
 // ⌘S / Ctrl+S saves while anything in the pane (the editor) is focused.
 previewEl.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
-    saveCurrent();
+    saveActive();
   }
 });
 
-/** Load `st`'s file into the pane body: Monaco for text, inline image/PDF, an
- *  "open externally" hint for other binaries. `line` jumps a text file to a
- *  1-based line (a content-search hit). */
-async function loadContent(st, line) {
-  bodyEl.replaceChildren(bodyMessage("Loading…"));
+// --- Reading a file ----------------------------------------------------------
 
+/** Scroll the editor to `line` (1-based) and put the caret there. Only the
+ *  ACTIVE text tab can be scrolled — the editor shows one model at a time — so
+ *  a line for a still-loading tab is stashed and applied by loadContent. */
+function gotoLine(entry, line) {
+  if (!entry || !line) return;
+  if (entry.kind !== "text" || !entry.model || activePath !== entry.path || !sharedEditor) {
+    entry.pendingLine = line;
+    return;
+  }
+  entry.pendingLine = 0;
+  sharedEditor.revealLineInCenter(line);
+  sharedEditor.setPosition({ lineNumber: line, column: 1 });
+  sharedEditor.focus();
+}
+
+/** Read `entry`'s file and fill in its kind + content. Every await is followed
+ *  by an `entry.closed` check: the tab can be closed (or the whole pane can be)
+ *  while the read is in flight, and a late chunk must not resurrect it. */
+async function loadContent(entry, line) {
   let preview;
   try {
-    preview = await invoke("read_file_preview", { path: st.path });
+    preview = await invoke("read_file_preview", { path: entry.path });
   } catch (err) {
-    if (st.closed) return;
-    bodyEl.replaceChildren(bodyMessage(String(err)));
+    if (entry.closed) return;
+    entry.kind = "error";
+    entry.message = String(err);
+    if (activePath === entry.path) renderBody(entry);
     return;
   }
-  if (st.closed) return; // pane closed or swapped to another file mid-read
+  if (entry.closed) return;
 
-  // Image: load the file itself via the asset protocol, centered + scaled.
-  if (preview.kind === "image") {
-    const img = document.createElement("img");
-    img.className = "ft-img";
-    img.alt = st.name;
-    img.src = convertFileSrc(st.path);
-    img.addEventListener("error", () => {
-      bodyEl.replaceChildren(
-        bodyMessage("Could not show this image. Use “Open externally” to view it."),
-      );
-    });
-    const wrap = textEl("div", "ft-media");
-    wrap.append(img);
-    bodyEl.replaceChildren(wrap);
-    return;
-  }
-
-  // PDF: the webview's built-in viewer in an iframe.
-  if (preview.kind === "pdf") {
-    const frame = document.createElement("iframe");
-    frame.className = "ft-pdf";
-    frame.title = st.name;
-    frame.src = convertFileSrc(st.path);
-    bodyEl.replaceChildren(frame);
+  if (preview.kind === "image" || preview.kind === "pdf") {
+    entry.kind = preview.kind;
+    if (activePath === entry.path) renderBody(entry);
     return;
   }
 
   if (preview.kind === "binary") {
-    bodyEl.replaceChildren(
-      bodyMessage(
-        `This file is not text (${formatBytes(preview.size)}). Use “Open externally” to view it.`,
-      ),
-    );
+    entry.kind = "binary";
+    entry.message = `This file is not text (${formatBytes(preview.size)}). Use “Open externally” to view it.`;
+    if (activePath === entry.path) renderBody(entry);
     return;
   }
 
-  // Text: a Monaco editor, editable unless the read was truncated (saving a
+  // Text: a Monaco model, editable unless the read was truncated (saving a
   // truncated buffer would drop the unread tail).
   let monaco;
   try {
     monaco = await loadMonaco();
   } catch (err) {
-    if (!st.closed) bodyEl.replaceChildren(bodyMessage(String(err)));
+    if (entry.closed) return;
+    entry.kind = "error";
+    entry.message = String(err);
+    if (activePath === entry.path) renderBody(entry);
     return;
   }
-  if (st.closed) return;
+  if (entry.closed) return;
 
-  st.editable = !preview.truncated;
-  const host = textEl("div", "ft-monaco");
-  bodyEl.classList.add("monaco-host");
-  if (st.editable) {
-    bodyEl.replaceChildren(host);
-  } else {
-    const why = `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`;
-    bodyEl.replaceChildren(textEl("div", "ft-note", why), host);
-  }
+  ensureEditor(monaco);
+  entry.editable = !preview.truncated;
+  entry.truncatedNote = entry.editable
+    ? ""
+    : `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`;
 
   // A model per file: the file Uri makes Monaco pick the language from the
-  // extension. A stray model with the same path (e.g. a crashed prior open)
-  // is disposed first so createModel never throws on a taken Uri.
-  const uri = monaco.Uri.file(st.path);
+  // extension. A stray model with the same path (e.g. a crashed prior open) is
+  // disposed first so createModel never throws on a taken Uri.
+  const uri = monaco.Uri.file(entry.path);
   monaco.editor.getModel(uri)?.dispose();
-  const model = monaco.editor.createModel(preview.content, undefined, uri);
-  st.editor = monaco.editor.create(host, {
-    model,
-    theme: "vs-dark",
-    automaticLayout: true, // relayout on pane resize / dock drag
-    readOnly: !st.editable,
-    fontSize: 12,
-    scrollBeyondLastLine: false,
-  });
+  entry.model = monaco.editor.createModel(preview.content, undefined, uri);
+  entry.kind = "text";
 
-  if (st.editable) {
-    model.onDidChangeContent(() => {
-      if (current !== st) return; // a stale editor from a since-swapped file
-      setDirty(true);
-      statusEl.textContent = "";
+  if (entry.editable) {
+    entry.model.onDidChangeContent(() => {
+      if (entry.closed) return;
+      setDirty(entry, true);
+      if (activePath === entry.path) statusEl.textContent = "";
     });
-    saveBtn.classList.remove("hidden");
   }
 
-  gotoLine(st, line);
+  if (activePath === entry.path) {
+    renderTabs(); // the tab may need its first dirty-dot slot / active repaint
+    renderHead();
+    renderBody(entry);
+  }
+  gotoLine(entry, line || entry.pendingLine);
 }
 
-/** Open `path` in the preview pane (or just jump the line if it is already
- *  the file showing). Confirms before discarding unsaved edits in a
- *  DIFFERENT file; cancelling keeps the current file untouched. */
+/** Open `path` as a tab (card 52). An already-open path just activates its tab —
+ *  and still honours `line`, so a content-search hit jumps inside a file that is
+ *  already open. Nothing is ever discarded here: other tabs keep their edits. */
 function openFile({ path, name, line = 0 }) {
   if (!path) return;
 
-  if (current?.path === path) {
-    gotoLine(current, line);
+  showPane();
+
+  const existing = openFiles.get(path);
+  if (existing) {
+    activate(path, { focus: true });
+    gotoLine(existing, line);
     return;
   }
-  if (!confirmDiscard()) return;
 
-  // The git diff ("main" mode) would otherwise hide the terminal area — and
-  // this pane along with it, since both live in #center-main. Give it back
-  // so the newly opened file is actually visible.
-  closeMainPanel();
-
-  if (current) disposeEditor(current);
-  const st = {
+  const entry = {
     path,
     name: name || path,
     projectId: activeProjectId,
+    kind: "loading",
+    message: "Loading…",
     dirty: false,
     editable: false,
+    truncatedNote: "",
+    model: null,
+    viewState: null,
+    pendingLine: line,
     closed: false,
-    editor: null,
   };
-  current = st;
+  openFiles.set(path, entry);
+  activate(path);
+  loadContent(entry, line);
+}
 
-  // Reset the shared head chrome for the new file — it is reused across
-  // opens, unlike the old per-tab pane which built a fresh one each time.
-  nameEl.textContent = st.name;
-  nameEl.title = st.path;
-  statusEl.textContent = "";
-  statusEl.classList.remove("err");
-  saveBtn.classList.add("hidden");
-  saveBtn.classList.remove("dirty");
-  bodyEl.classList.remove("monaco-host");
-
+/** Reveal the pane (and its drag handle) at the persisted width. */
+function showPane() {
+  // The git diff ("main" mode) would otherwise hide the terminal area — and this
+  // pane along with it, since both live in #center-main. Give it back so the
+  // newly opened file is actually visible.
+  closeMainPanel();
   previewEl.classList.remove("hidden");
   resizerEl.classList.remove("hidden");
   previewEl.style.width = `${loadPaneWidth(WIDTH_KEY, MIN_WIDTH, DEFAULT_WIDTH)}px`;
-
-  loadContent(st, line);
 }
 
 window.addEventListener("file-open", (e) => openFile(e.detail || {}));
 
-// The project a file was opened from, so switching AWAY from it (not just
+// The project each tab was opened from, so switching AWAY from it (not just
 // re-selecting the same project — selectWorkspace() re-emits unconditionally)
-// closes the preview. Mirrors browsingProjectId / projId in browser.js and
-// webpreview.js. A project switch has already happened by the time this event
-// fires — there is no "current" project left to keep if a confirm were
-// cancelled — so a genuine switch closes outright, without asking.
+// clears the pane. Mirrors browsingProjectId / projId in browser.js and
+// webpreview.js.
+//
+// card 52: a project switch has already happened by the time this event fires,
+// so there is nothing to cancel back to — CLEAN tabs from the old project close
+// outright, without asking. DIRTY ones are kept instead of silently dropped:
+// the pane stays open showing only them, with a note saying where they came
+// from. Nothing the user typed is ever thrown away behind their back.
 let activeProjectId = null;
 window.addEventListener("project-selected", (e) => {
   const id = e.detail?.id ?? null;
-  if (current && id !== current.projectId) closePane();
+  const previousId = activeProjectId;
   activeProjectId = id;
+  if (id === previousId || !openFiles.size) return;
+
+  for (const entry of [...openFiles.values()]) {
+    if (entry.projectId !== id && !entry.dirty) closeTab(entry.path, { force: true });
+  }
+  if (!openFiles.size) return; // closeTab already closed the pane
+
+  if (!activePath || !openFiles.has(activePath)) activate([...openFiles.keys()][0]);
+  flashStatus("Unsaved file from the previous project");
 });
