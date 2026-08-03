@@ -2600,6 +2600,103 @@ body {
   height: 100%;
 }
 
+/* ---- Pane tree (card 45) --------------------------------------------------
+   The group's area is a recursive tree: split nodes are flex boxes, leaves are
+   .tg-pane-group (own tab strip + own panes area). Sizing is inline flex written
+   by TerminalGroup._applyRatios; only the axis and the sash are styled here.
+
+   Why flex and not the absolute insets card 42 used: a leaf's .tg-panes is the
+   box FitAddon measures through, so it must stay a plain rectangle at any depth
+   of the tree. Flex resizes the LEAF, never the pane insets inside it. */
+
+.tg-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tg-split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.tg-split-row {
+  flex-direction: row;
+}
+
+.tg-split-col {
+  flex-direction: column;
+}
+
+/* One leaf pane: its tab strip above its own terminal area. */
+.tg-pane-group {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The drag bar between two sibling panes. 6px hit area (SASH_SIZE in
+   terminals.js — the flex math subtracts it), with a 1px line drawn by a
+   gradient so the bar itself stays a comfortable grab target. */
+.tg-sash {
+  flex: 0 0 6px;
+  position: relative;
+  z-index: 2;
+  border-radius: 3px;
+  background: transparent;
+  touch-action: none;
+}
+
+.tg-sash-row {
+  cursor: col-resize;
+  background-image: linear-gradient(to right, transparent 2px, var(--border) 2px 4px, transparent 4px);
+}
+
+.tg-sash-col {
+  cursor: row-resize;
+  background-image: linear-gradient(to bottom, transparent 2px, var(--border) 2px 4px, transparent 4px);
+}
+
+.tg-sash-row:hover,
+.tg-sash-row.tg-sash-drag {
+  background-image: linear-gradient(to right, transparent 1px, var(--accent) 1px 5px, transparent 5px);
+}
+
+.tg-sash-col:hover,
+.tg-sash-col.tg-sash-drag {
+  background-image: linear-gradient(to bottom, transparent 1px, var(--accent) 1px 5px, transparent 5px);
+}
+
+/* Transient "you hit a limit" message over the pane area (the 6-pane cap).
+   pointer-events:none so it can never swallow a click on the terminals. */
+.tg-notice {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.tg-notice-show {
+  opacity: 1;
+}
+
 /* Tab strip: the row of tabs plus the "+" button */
 /* Tabs are floating glass pills now (no bottom-blend trapezoids), so the
    strip centers them instead of stretching them onto its bottom border. */
@@ -2821,9 +2918,19 @@ body {
 /* Panes area: all panes stack; only the active one shows. overflow:hidden
    clips any not-yet-refitted xterm so it can never paint past the panel
    edge while a resize is settling. */
+/* The dark sheet the terminal sits on. --bg-0 here is only the pre-paint
+   fallback: TerminalGroup._applyPanesBackground overwrites it inline with the
+   group's EFFECTIVE terminal background (global theme + any per-project
+   override). It has to, because .tg-pane below is inset 10px inside this box —
+   if the two colors differ, that gutter reads as a separate frame around the
+   terminal, so the user sees three stacked boxes (backdrop, sheet, terminal)
+   instead of one surface. */
 .tg-panes {
   position: relative;
   flex: 1;
+  /* Both axes: a leaf pane is sized by the split tree, so its panes box must be
+     free to shrink below its content on the row axis too. */
+  min-width: 0;
   min-height: 0;
   background: var(--bg-0);
   overflow: hidden;
@@ -2842,8 +2949,8 @@ body {
   inset: 10px;
   /* Clip the terminal to the pane. xterm's grid is a hard rectangle; without
      this its square corners can sit over the surrounding border, which read as
-     the terminal being "stamped on". The leftover fit-gap blends in because the
-     pane background matches the terminal background (var(--bg-0)). */
+     the terminal being "stamped on". The leftover fit-gap blends in because
+     .tg-panes is painted in the terminal's own background (see its rule). */
   overflow: hidden;
 }
 
@@ -2851,44 +2958,8 @@ body {
   display: block;
 }
 
-/* ---- Split view (card 42) -------------------------------------------------
-   Two panes share the area. Their geometry is written as inline insets by
-   TerminalGroup._applyPanes (the panes are absolutely positioned so FitAddon
-   keeps measuring the exact drawable rectangle — see the .tg-pane note above),
-   so there is no flex/grid here on purpose. Only the divider is styled. */
-
-.tg-split-divider {
-  position: absolute;
-  z-index: 2;
-  border-radius: 3px;
-  background: transparent;
-  /* Stacked split: a horizontal bar, so the pointer is the row cursor. */
-  cursor: row-resize;
-  /* The 6px hit area is thin; a visible 1px line is drawn with a gradient so
-     the bar itself stays a comfortable grab target. */
-  background-image: linear-gradient(to bottom, transparent 2px, var(--border) 2px 4px, transparent 4px);
-  touch-action: none;
-}
-
-.tg-split-divider-row {
-  cursor: col-resize;
-  width: 6px;
-  background-image: linear-gradient(to right, transparent 2px, var(--border) 2px 4px, transparent 4px);
-}
-
-.tg-split-divider:not(.tg-split-divider-row) {
-  height: 6px;
-}
-
-.tg-split-divider:hover,
-.tg-split-divider-drag {
-  background-image: linear-gradient(to bottom, transparent 1px, var(--accent) 1px 5px, transparent 5px);
-}
-
-.tg-split-divider-row:hover,
-.tg-split-divider-row.tg-split-divider-drag {
-  background-image: linear-gradient(to right, transparent 1px, var(--accent) 1px 5px, transparent 5px);
-}
+/* (Card 42's single `.tg-split-divider` is gone: the pane tree gives every
+   split node its own `.tg-sash`, styled up with the tree rules above.) */
 
 /* Bottom "last sent" bar: a thin one-line strip under the panes showing the
    last line the user typed and sent in the active terminal. flex-shrink:0 so it
@@ -5737,6 +5808,30 @@ input[type="range"]::-webkit-slider-thumb {
 .ws-item.selected .ws-item-desc,
 .ws-item.selected .ws-term-badge {
   opacity: 0.75;
+}
+
+/* The git counts on a SELECTED row sit on the solid accent fill, so their own
+   --ok / --danger / --accent colors stop working: green and red both land near
+   the fill's brightness, and "↑N" (accent) vanishes into it entirely. The
+   accent is whatever the user picked in System Settings, so no fixed hue is
+   safe — recolor to near-white tints that only *hint* green/red. Contrast then
+   tracks --accent-fg (white), which macOS guarantees is legible on any accent,
+   while the +/-/↑ signs still carry the meaning. */
+.ws-item.selected .ws-diff-add {
+  color: #d9f8de;
+}
+
+.ws-item.selected .ws-diff-del {
+  color: #ffdad5;
+}
+
+.ws-item.selected .ws-diff-ahead {
+  color: var(--accent-fg);
+}
+
+.ws-item.selected .ws-diff-slash,
+.ws-item.selected .ws-diff-sep {
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .ws-item.selected .ws-working-badge {

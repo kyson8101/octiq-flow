@@ -51,10 +51,28 @@ const SESSION_BREAK_LINE = `\r\n\x1b[2m──────── ${SESSION_BREAK_
 // the app runs shows up on the next-but-one open without a restart.
 let installedAgents = ["claude", "codex"];
 
-/// Smallest share of the pane area either half of a split may be dragged to.
-/// Below roughly this, an xterm has too few columns to be readable and its fit
-/// math starts proposing degenerate sizes.
+/// Smallest share of a split node either child may be dragged to. Below roughly
+/// this, an xterm has too few columns to be readable and its fit math starts
+/// proposing degenerate sizes.
 const MIN_SPLIT_RATIO = 0.15;
+
+/// Most leaf panes one group may hold (card 45).
+///
+/// Every visible pane keeps its own WebGL context for its active tab, and WebKit
+/// caps live contexts at roughly 16 across the whole webview — past the cap it
+/// silently kills the OLDEST, permanently downgrading that terminal to the slow
+/// DOM renderer. Six panes per group leaves room for the other groups (chat, the
+/// command drawers) to keep theirs, and is already more panes than a terminal
+/// area this size can show usefully.
+const MAX_PANES = 6;
+
+/// Thickness of the drag bar between two sibling panes, px. Kept in JS because
+/// the flex sizing has to subtract it to keep the pair filling the split
+/// exactly; the matching `.tg-sash` rule in styles.css uses the same number.
+const SASH_SIZE = 6;
+
+/// How long the "you hit a limit" notice stays on screen, ms.
+const NOTICE_MS = 2600;
 
 function refreshInstalledAgents() {
   invoke("available_agents")
@@ -1117,45 +1135,44 @@ class TerminalGroup {
     // Monotonic counter for DEFAULT tab titles ("term N"). Never decremented,
     // so closing a tab and opening a new one cannot reuse a number (P4).
     this.titleSeq = 0;
-    this.activeId = null;
-    // ptyId -> { term, fitAddon, paneEl, tabEl, title }
+    // ptyId -> { term, fitAddon, paneEl, tabEl, title, paneId }
+    // (`activeId` is no longer a field: it is a getter over the active pane —
+    // each leaf of the pane tree owns which of ITS tabs is on screen.)
     this.tabs = new Map();
 
-    // ---- Split view (card 42) ---------------------------------------------
-    // Normally ONE tab is on screen. With a split, a SECOND tab shares the pane
-    // area: `splitId` is that second tab, `splitDir` is how the area is cut
-    // ("row" = side by side, "col" = stacked), and `splitRatio` is where the
-    // divider sits (fraction of the area given to the primary pane).
+    // ---- Pane tree (card 45) ----------------------------------------------
+    // The group's area is a recursive tree of panes, the way VS Code arranges
+    // editor groups. Two node shapes:
     //
-    // Deliberately two panes, not a tree: two is what "keep an eye on the agent
-    // while I work" needs, and it keeps the WebGL budget at two contexts per
-    // group (see _setWebgl) instead of an unbounded number.
-    this.splitId = null;
+    //   leaf   { type: "pane", id, tabIds: [], activeId, el, stripEl, tabsEl,
+    //            addBtn, panesEl, parent }
+    //   split  { type: "split", dir: "row" | "col", ratio, children: [a, b],
+    //            el, sashEl, parent }
+    //
+    // A leaf owns its OWN tab strip and its own active tab, so every leaf shows
+    // exactly one tab and the strip above it lists only that leaf's tabs. Splits
+    // are binary with a single `ratio` (the share given to the first child); a
+    // three-pane arrangement is a split whose child is another split, which is
+    // what makes any VS Code layout expressible.
+    //
+    // `this.tabs` stays the ONE owner of tab entries (so idToEntry, the alert /
+    // working monitors and persistence are untouched); the tree only decides
+    // WHERE each tab is shown. Each entry carries `paneId` back to its leaf.
+    this.paneSeq = 0;
+    // paneId -> leaf node, for O(1) lookup from a tab's `paneId`.
+    this.panes = new Map();
+    // Defaults for the NEXT split (remembered across splits, see _saveSplitPrefs).
     this.splitDir = "row";
     this.splitRatio = 0.5;
-    // The shown tab that last had keyboard focus. It drives the bottom
-    // "last sent" bar and the stronger tab highlight, so with a split both say
-    // which half you are actually typing into. Equals activeId without a split.
-    this.focusId = null;
 
-    // Group DOM: a tab strip on top, a panes area filling the rest.
+    // Group DOM: the pane tree fills the group, with the "last sent" bar below.
     this.root = document.createElement("div");
     this.root.className = "tg";
 
-    this.stripEl = document.createElement("div");
-    this.stripEl.className = "tg-strip";
-
-    this.tabsEl = document.createElement("div");
-    this.tabsEl.className = "tg-tabs";
-    // Live tab reorder while dragging: slide the dragged tab to wherever the
-    // pointer sits. The Map is rebuilt from this DOM order on dragend.
-    this.tabsEl.addEventListener("dragover", (e) => {
-      if (!this._dragEl) return;
-      e.preventDefault();
-      const after = this._tabAfterX(e.clientX);
-      if (after == null) this.tabsEl.append(this._dragEl);
-      else if (after !== this._dragEl) this.tabsEl.insertBefore(this._dragEl, after);
-    });
+    // Options the leaf builder needs — read by _makeLeaf for every pane, not
+    // just the first, so a pane created by a split gets the same "+" behavior.
+    this.showAdd = showAdd;
+    this.quickSpawn = quickSpawn;
 
     // The "+" callback is set by the owner via onAdd; default is a no-op so the
     // primitive does not assume any cwd/startCmd policy.
@@ -1173,56 +1190,30 @@ class TerminalGroup {
     // The open add menu's popup element (quickSpawn groups only), or null when
     // closed. It is mounted on <body>, so hide()/dispose() must close it.
     this.addMenuEl = null;
-    if (showAdd) {
-      this.addBtn = document.createElement("button");
-      this.addBtn.className = "tg-add";
-      if (quickSpawn) {
-        // A "+" with a caret that opens a Terminal / Claude / Codex dropdown.
-        // The agent rows replace the old right-aligned "Claude | Codex" control,
-        // so everything that opens a tab in this group lives in one menu.
-        this.addBtn.classList.add("tg-add--menu");
-        this.addBtn.title = "New terminal or agent";
-        this.addBtn.setAttribute("aria-haspopup", "menu");
-        this.addBtn.setAttribute("aria-expanded", "false");
-        const plus = document.createElement("span");
-        plus.className = "tg-add-plus";
-        plus.textContent = "+";
-        const caret = document.createElement("span");
-        caret.className = "tg-add-caret";
-        caret.setAttribute("aria-hidden", "true");
-        caret.textContent = "▾";
-        this.addBtn.append(plus, caret);
-        this.addBtn.addEventListener("click", (e) => {
-          e.stopPropagation();
-          this._toggleAddMenu();
-        });
-      } else {
-        // Plain groups (chat): "+" opens a new terminal directly, no menu.
-        this.addBtn.title = "New terminal";
-        this.addBtn.textContent = "+";
-        this.addBtn.addEventListener("click", () => this.onAdd?.());
-      }
-      this.stripEl.append(this.tabsEl, this.addBtn);
-    } else {
-      // Drawer groups (P5) have no add behavior; do not render the button.
-      this.addBtn = null;
-      this.stripEl.append(this.tabsEl);
-    }
+    // The "+" button the open add menu belongs to (each leaf has its own), so
+    // the popup is positioned under the one that was actually clicked.
+    this.addMenuBtn = null;
     // The old right-aligned "Claude | Codex" strip control is gone; its actions
     // are now rows in the add menu (quickSpawn groups only).
     this.agentsEl = null;
 
-    this.panesEl = document.createElement("div");
-    this.panesEl.className = "tg-panes";
+    // The pane tree lives in here. It starts as a single leaf — the plain
+    // one-strip-one-terminal-area look every group had before splitting existed.
+    this.bodyEl = document.createElement("div");
+    this.bodyEl.className = "tg-body";
+    this.layout = this._makeLeaf();
+    this.bodyEl.append(this.layout.el);
+    // The pane the keyboard belongs to. Everything that means "the terminal the
+    // user is typing into" reads it through focusedId().
+    this.activePaneId = this.layout.id;
 
-    // The draggable bar between the two split panes. Always in the DOM (one
-    // element, hidden when there is no split) so a split never costs a node
-    // insert mid-drag.
-    this.dividerEl = document.createElement("div");
-    this.dividerEl.className = "tg-split-divider";
-    this.dividerEl.hidden = true;
-    this.dividerEl.addEventListener("pointerdown", (e) => this._beginDividerDrag(e));
-    this.panesEl.append(this.dividerEl);
+    // Transient "you hit a limit" notice (the pane cap). Positioned over the
+    // tree, pointer-events:none, so it never blocks a click.
+    this.noticeEl = document.createElement("div");
+    this.noticeEl.className = "tg-notice";
+    this.noticeEl.hidden = true;
+    this.bodyEl.append(this.noticeEl);
+    this._noticeTimer = null;
 
     // Thin bottom bar showing the last line the user typed and sent (Enter) in
     // the ACTIVE terminal — a reminder of "what did I just send to Claude/Codex".
@@ -1240,10 +1231,10 @@ class TerminalGroup {
     this.lastSentEl.append(this.lastSentLabelEl, this.lastSentTextEl);
     this._renderLastSent(null);
 
-    this.root.append(this.stripEl, this.panesEl, this.lastSentEl);
+    this.root.append(this.bodyEl, this.lastSentEl);
     mountEl.append(this.root);
 
-    // Reuse the direction + divider position this group was last split with.
+    // Reuse the direction + sash position this group was last split with.
     this._loadSplitPrefs();
   }
 
@@ -1251,28 +1242,312 @@ class TerminalGroup {
     return [...this.tabs.keys()];
   }
 
-  /** First non-dragged tab whose horizontal midpoint sits right of `x`, or null
-   *  to drop at the end. Drives the live reorder during a drag. */
-  _tabAfterX(x) {
-    for (const el of this.tabsEl.querySelectorAll(".tg-tab:not(.tg-tab-dragging)")) {
+  /** The tab the keyboard belongs to, for callers outside this file. It is the
+   *  active tab of the ACTIVE pane, so with several panes on screen it names the
+   *  one being typed into rather than an arbitrary visible tab. */
+  get activeId() {
+    return this.panes.get(this.activePaneId)?.activeId ?? null;
+  }
+
+  // ---- Pane tree: shape helpers -------------------------------------------
+
+  /** Every leaf pane, left-to-right / top-to-bottom in tree order. */
+  _leaves(node = this.layout, out = []) {
+    if (!node) return out;
+    if (node.type === "pane") out.push(node);
+    else for (const child of node.children) this._leaves(child, out);
+    return out;
+  }
+
+  /** The leaf a tab lives in, or null. */
+  _leafOf(ptyId) {
+    const paneId = this.tabs.get(ptyId)?.paneId;
+    return (paneId && this.panes.get(paneId)) || null;
+  }
+
+  /** Every tab id in pane-tree order (each leaf's tabs, leaves in tree order).
+   *  This is the order serialize() saves, so a restored layout comes back
+   *  reading left-to-right the way it looked. */
+  _orderedIds() {
+    return this._leaves().flatMap((leaf) => leaf.tabIds);
+  }
+
+  /** First non-dragged tab in `tabsEl` whose horizontal midpoint sits right of
+   *  `x`, or null to drop at the end. Drives the live reorder during a drag. */
+  _tabAfterX(tabsEl, x) {
+    for (const el of tabsEl.querySelectorAll(".tg-tab:not(.tg-tab-dragging)")) {
       const r = el.getBoundingClientRect();
       if (x < r.left + r.width / 2) return el;
     }
     return null;
   }
 
-  /** Rebuild the tabs Map from the current DOM order after a drag, then persist.
-   *  serialize() and ids() read Map insertion order, so this is what makes the
-   *  new tab order stick (and survive a restart via onLayoutChange). */
-  _syncTabOrder() {
-    const reordered = new Map();
-    for (const el of this.tabsEl.children) {
+  /** Rebuild ONE leaf's tab order from its strip's DOM order after a drag, then
+   *  re-sort the tabs Map into pane-tree order and persist. serialize() reads
+   *  that order, so this is what makes a reorder stick across a restart. */
+  _syncTabOrder(leaf) {
+    // The pane may have been collapsed while the drag was in flight.
+    if (!leaf || !this.panes.has(leaf.id)) return;
+    const reordered = [];
+    for (const el of leaf.tabsEl.children) {
       const id = el.dataset.ptyId;
-      if (this.tabs.has(id)) reordered.set(id, this.tabs.get(id));
+      if (this.tabs.has(id)) reordered.push(id);
     }
-    if (reordered.size !== this.tabs.size) return; // DOM/Map mismatch — leave as is.
-    this.tabs = reordered;
+    if (reordered.length !== leaf.tabIds.length) return; // DOM/model mismatch
+    leaf.tabIds = reordered;
+    this._resortTabs();
     this.onLayoutChange?.();
+  }
+
+  /** Re-key the tabs Map into pane-tree order. The Map is insertion-ordered and
+   *  serialize()/ids() walk it, so the saved order follows what is on screen. */
+  _resortTabs() {
+    const sorted = new Map();
+    for (const id of this._orderedIds()) {
+      if (this.tabs.has(id)) sorted.set(id, this.tabs.get(id));
+    }
+    // Anything the tree lost track of keeps its entry rather than vanishing.
+    for (const [id, entry] of this.tabs) if (!sorted.has(id)) sorted.set(id, entry);
+    this.tabs = sorted;
+  }
+
+  /** Show a short-lived message over the pane area (the pane cap is the only
+   *  caller today). There is no app-wide toast, and writing into a terminal's
+   *  buffer would pollute its saved scrollback, so the notice lives here. */
+  _flashNotice(text) {
+    this.noticeEl.textContent = text;
+    this.noticeEl.hidden = false;
+    // Restart the fade if a second notice lands while the first is showing.
+    this.noticeEl.classList.remove("tg-notice-show");
+    void this.noticeEl.offsetWidth;
+    this.noticeEl.classList.add("tg-notice-show");
+    clearTimeout(this._noticeTimer);
+    this._noticeTimer = setTimeout(() => {
+      this.noticeEl.classList.remove("tg-notice-show");
+      this.noticeEl.hidden = true;
+    }, NOTICE_MS);
+  }
+
+  // ---- Pane tree: building ------------------------------------------------
+
+  /**
+   * Build one leaf pane: its own tab strip (tabs + "+") above its own panes
+   * area. Every leaf is built here — the group's first pane and every pane a
+   * split creates — so a new pane behaves exactly like the original one.
+   *
+   * The panes area keeps `position: relative` with absolutely-inset `.tg-pane`
+   * children, because FitAddon measures the xterm element's PARENT border box:
+   * the pane must stay the exact drawable rectangle. Splitting resizes the
+   * leaf's box through flex, never the pane insets, so that stays true at any
+   * depth of the tree.
+   */
+  _makeLeaf() {
+    const id = `pane-${this.paneSeq++}`;
+
+    const el = document.createElement("div");
+    el.className = "tg-pane-group";
+    el.dataset.paneId = id;
+
+    const stripEl = document.createElement("div");
+    stripEl.className = "tg-strip";
+
+    const tabsEl = document.createElement("div");
+    tabsEl.className = "tg-tabs";
+    // Live tab reorder while dragging: slide the dragged tab to wherever the
+    // pointer sits. Same-strip only here; moving a tab BETWEEN panes is card 46.
+    tabsEl.addEventListener("dragover", (e) => {
+      const dragEl = this._dragEl;
+      if (!dragEl || dragEl.parentElement !== tabsEl) return;
+      e.preventDefault();
+      const after = this._tabAfterX(tabsEl, e.clientX);
+      if (after == null) tabsEl.append(dragEl);
+      else if (after !== dragEl) tabsEl.insertBefore(dragEl, after);
+    });
+
+    const addBtn = this.showAdd ? this._makeAddButton(id) : null;
+    if (addBtn) stripEl.append(tabsEl, addBtn);
+    else stripEl.append(tabsEl); // drawer groups (P5) have no add behavior
+
+    const panesEl = document.createElement("div");
+    panesEl.className = "tg-panes";
+
+    el.append(stripEl, panesEl);
+
+    // Anything that puts a pointer or the keyboard inside this pane makes it the
+    // active pane. `pointerdown` in the capture phase runs before a tab's own
+    // click handler, so a click lands in the right pane first; `focusin` covers
+    // focus arriving without a click (xterm's hidden textarea, tabbing).
+    el.addEventListener("pointerdown", () => this._setActivePane(id), true);
+    el.addEventListener("focusin", () => this._setActivePane(id));
+
+    const leaf = {
+      type: "pane",
+      id,
+      el,
+      stripEl,
+      tabsEl,
+      addBtn,
+      panesEl,
+      // Ordered tab ids shown in this leaf's strip.
+      tabIds: [],
+      // The one tab of this leaf that is on screen, or null when it has none.
+      activeId: null,
+      parent: null,
+    };
+    this.panes.set(id, leaf);
+    // The sheet must paint in the TERMINAL's own background, not the chrome's
+    // --bg-0: .tg-pane is inset 10px inside it, so any difference between the
+    // two turns that gutter into a visible box framing the terminal.
+    this._applyPanesBackground(null, leaf);
+    return leaf;
+  }
+
+  /** The "+" control for one leaf's strip. A quickSpawn group gets the caret
+   *  menu (Terminal / Claude / Codex); a plain group gets a bare "+". Either
+   *  way the click first makes THAT pane active, so the new tab opens in the
+   *  pane whose "+" was pressed rather than wherever the keyboard last was. */
+  _makeAddButton(paneId) {
+    const btn = document.createElement("button");
+    btn.className = "tg-add";
+    if (this.quickSpawn) {
+      // A "+" with a caret that opens a Terminal / Claude / Codex dropdown.
+      // The agent rows replace the old right-aligned "Claude | Codex" control,
+      // so everything that opens a tab in this group lives in one menu.
+      btn.classList.add("tg-add--menu");
+      btn.title = "New terminal or agent";
+      btn.setAttribute("aria-haspopup", "menu");
+      btn.setAttribute("aria-expanded", "false");
+      const plus = document.createElement("span");
+      plus.className = "tg-add-plus";
+      plus.textContent = "+";
+      const caret = document.createElement("span");
+      caret.className = "tg-add-caret";
+      caret.setAttribute("aria-hidden", "true");
+      caret.textContent = "▾";
+      btn.append(plus, caret);
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this._setActivePane(paneId);
+        this._toggleAddMenu(btn);
+      });
+    } else {
+      // Plain groups (chat): "+" opens a new terminal directly, no menu.
+      btn.title = "New terminal";
+      btn.textContent = "+";
+      btn.addEventListener("click", () => {
+        this._setActivePane(paneId);
+        this.onAdd?.();
+      });
+    }
+    return btn;
+  }
+
+  /** The leaf new tabs open in: the active pane, falling back to the first leaf
+   *  if the active one has gone (it cannot normally). */
+  _activeLeaf() {
+    return this.panes.get(this.activePaneId) || this._leaves()[0] || null;
+  }
+
+  /** Move the keyboard (and the "last sent" bar and the strong tab highlight) to
+   *  another pane. No-op when it is already the active one, so the pointerdown /
+   *  focusin handlers can fire freely. */
+  _setActivePane(paneId) {
+    if (!this.panes.has(paneId) || this.activePaneId === paneId) return;
+    this.activePaneId = paneId;
+    this._applyPanes();
+    this._paintLastSent(this.focusedId());
+  }
+
+  // ---- Pane tree: splitting and collapsing --------------------------------
+
+  /**
+   * Wrap `leaf` in a new split node and put `sibling` beside it, cutting the
+   * space `dir` ("row" = side by side, "col" = stacked). The new pane takes the
+   * far half, so a "split right" appears to the right of what you were looking
+   * at.
+   */
+  _insertSibling(leaf, sibling, dir) {
+    const parent = leaf.parent;
+    const el = document.createElement("div");
+    el.className = `tg-split tg-split-${dir === "col" ? "col" : "row"}`;
+    const sashEl = document.createElement("div");
+    sashEl.className = `tg-sash tg-sash-${dir === "col" ? "col" : "row"}`;
+    sashEl.setAttribute("role", "separator");
+    sashEl.title = "Drag to resize";
+
+    const split = {
+      type: "split",
+      dir: dir === "col" ? "col" : "row",
+      ratio: this.splitRatio,
+      children: [leaf, sibling],
+      el,
+      sashEl,
+      parent,
+    };
+    sashEl.addEventListener("pointerdown", (e) => this._beginSashDrag(split, e));
+
+    // Splice the new node into the tree in the leaf's place...
+    if (!parent) this.layout = split;
+    else parent.children[parent.children.indexOf(leaf)] = split;
+    leaf.parent = split;
+    sibling.parent = split;
+
+    // ...and mirror that in the DOM: the split element takes the leaf's spot,
+    // then adopts the leaf, the sash and the new pane. The leaf is detached and
+    // re-inserted on the way, so its terminals give up their GPU contexts first.
+    this._dropWebglIn(leaf);
+    leaf.el.replaceWith(el);
+    el.append(leaf.el, sashEl, sibling.el);
+    this._applyRatios();
+    return split;
+  }
+
+  /**
+   * Take `leaf` out of the tree and give its space to its sibling. The sibling
+   * subtree replaces the whole split node, which is what makes closing a pane
+   * feel like the space "falling back" into the neighbour.
+   *
+   * The root leaf is never removed: a group with no terminals still needs one
+   * strip to put the next "+" in.
+   */
+  _removePane(leaf) {
+    const split = leaf.parent;
+    if (!split) return false; // the root leaf stays, even when empty
+    const sibling = split.children.find((c) => c !== leaf);
+    const grand = split.parent;
+
+    if (!grand) this.layout = sibling;
+    else grand.children[grand.children.indexOf(split)] = sibling;
+    sibling.parent = grand;
+
+    // The sibling element moves up into the split's place; the detached split
+    // element takes the removed leaf and the sash with it. The sibling subtree
+    // is reparented, so its terminals give up their GPU contexts first.
+    this._dropWebglIn(sibling);
+    split.el.replaceWith(sibling.el);
+    split.el.remove();
+    // Drop the size the sibling had INSIDE the removed split. _applyRatios gives
+    // it a fresh one when its new parent is a split; when it has become the root
+    // it must fall back to the stylesheet's "fill the group" instead.
+    sibling.el.style.flex = "";
+    this.panes.delete(leaf.id);
+    this._applyRatios();
+    return true;
+  }
+
+  /** Write every split node's ratio into its children's flex sizing. One place
+   *  owns the geometry, so a resize, a new split and a collapse all lay out the
+   *  same way. */
+  _applyRatios(node = this.layout) {
+    if (!node || node.type === "pane") return;
+    const [a, b] = node.children;
+    const pct = Math.round(node.ratio * 1000) / 10;
+    // The first child is sized exactly; the second takes what is left, so the
+    // pair always fills the split with no sub-pixel gap between them.
+    a.el.style.flex = `0 0 calc(${pct}% - ${SASH_SIZE / 2}px)`;
+    b.el.style.flex = "1 1 0";
+    this._applyRatios(a);
+    this._applyRatios(b);
   }
 
   count() {
@@ -1327,15 +1602,19 @@ class TerminalGroup {
     return menu;
   }
 
-  /** Toggle the add menu open/closed (quickSpawn groups only). */
-  _toggleAddMenu() {
-    if (this.addMenuEl) this._closeAddMenu();
-    else this._openAddMenu();
+  /** Toggle the add menu open/closed under `btn` (quickSpawn groups only).
+   *  Clicking a DIFFERENT pane's "+" while the menu is open moves the menu
+   *  there rather than just closing it. */
+  _toggleAddMenu(btn) {
+    const wasOpenHere = this.addMenuEl && this.addMenuBtn === btn;
+    this._closeAddMenu();
+    if (!wasOpenHere) this._openAddMenu(btn);
   }
 
   /** Open the add menu, fixed-positioned just under the "+" button. */
-  _openAddMenu() {
-    if (this.addMenuEl || !this.addBtn) return;
+  _openAddMenu(btn) {
+    if (this.addMenuEl || !btn) return;
+    this.addMenuBtn = btn;
     // Re-probe in the background: this menu is built from the list we already
     // have (so it opens instantly), and an agent installed since the last probe
     // appears the next time the menu opens.
@@ -1343,11 +1622,11 @@ class TerminalGroup {
     const menu = this._buildAddMenu();
     document.body.append(menu);
     this.addMenuEl = menu;
-    this.addBtn.setAttribute("aria-expanded", "true");
+    btn.setAttribute("aria-expanded", "true");
 
     // Place under the button; clamp to the viewport's right edge so a button
     // near the window edge never pushes the menu off-screen.
-    const rect = this.addBtn.getBoundingClientRect();
+    const rect = btn.getBoundingClientRect();
     menu.style.top = `${Math.round(rect.bottom + 4)}px`;
     const left = Math.min(rect.left, window.innerWidth - 8 - menu.offsetWidth);
     menu.style.left = `${Math.round(Math.max(8, left))}px`;
@@ -1359,7 +1638,7 @@ class TerminalGroup {
         if (ev.key === "Escape") this._closeAddMenu();
         return;
       }
-      if (menu.contains(ev.target) || this.addBtn.contains(ev.target)) return;
+      if (menu.contains(ev.target) || btn.contains(ev.target)) return;
       this._closeAddMenu();
     };
     document.addEventListener("mousedown", this._addMenuDismiss, true);
@@ -1385,7 +1664,8 @@ class TerminalGroup {
     }
     this.addMenuEl.remove();
     this.addMenuEl = null;
-    this.addBtn?.setAttribute("aria-expanded", "false");
+    this.addMenuBtn?.setAttribute("aria-expanded", "false");
+    this.addMenuBtn = null;
   }
 
   // ---- Persistence (session restore) --------------------------------------
@@ -1393,26 +1673,36 @@ class TerminalGroup {
   // via newTerminal({ persistKey, restoreScrollback }) on the next launch.
 
   /** Ordered layout of this group: each terminal's stable key, current title,
-   *  and the cwd it was spawned in. Tab order = insertion order of `tabs`.
-   *  Content tabs (no PTY) are not persisted, so they are skipped. */
+   *  and the cwd it was spawned in. Tab order is pane-tree order, so a restored
+   *  layout reads the way it looked. Content tabs (no PTY) are not persisted,
+   *  so they are skipped. */
   serialize() {
-    // Split state rides on the two tabs it involves: the primary is marked
-    // `primary`, the second pane carries the direction in `split`. Storing it
-    // per tab (rather than as a group field) means it survives tab reordering
-    // and self-heals — if either tab is gone on the next launch, the halves no
-    // longer pair up and the group simply comes back unsplit.
-    const splitEntry = this.splitId && this.tabs.get(this.splitId);
-    return [...this.tabs.values()].filter((e) => e.term).map((e) => ({
+    // Split state still rides on the two tabs it involves, the way it has since
+    // card 42: the first pane's tab is marked `primary`, the second pane's tab
+    // carries the direction in `split`. That on-disk shape only describes TWO
+    // panes, so it is written only when the tree happens to be exactly two —
+    // deeper trees save nothing here and come back as a single pane until the
+    // tree itself is persisted (card 48 replaces this whole block).
+    const leaves = this._leaves();
+    const pair = leaves.length === 2 ? leaves : null;
+    const splitDir = pair ? pair[0].parent?.dir ?? "row" : null;
+    const firstId = pair?.[0].activeId ?? null;
+    const secondId = pair?.[1].activeId ?? null;
+
+    const ordered = this._orderedIds()
+      .map((id) => this.tabs.get(id))
+      .filter((e) => e && e.term);
+    return ordered.map((e) => ({
       persistKey: e.persistKey,
       title: e.title,
       titleManual: !!e.titleManual,
       // true | false | null — null means "follow the Settings switch".
       notify: e.notify ?? null,
       cwd: e.cwd || "",
-      // "row" | "col" on the split half, null on every other tab.
-      split: splitEntry && e === splitEntry ? this.splitDir : null,
-      // The half the split sits beside. Only meaningful when a split half exists.
-      primary: !!splitEntry && this.tabs.get(this.activeId) === e,
+      // "row" | "col" on the second pane's tab, null on every other tab.
+      split: secondId && e === this.tabs.get(secondId) ? splitDir : null,
+      // The tab the split sits beside. Only meaningful alongside a `split` tab.
+      primary: !!firstId && e === this.tabs.get(firstId),
     }));
   }
 
@@ -1498,22 +1788,21 @@ class TerminalGroup {
     if (persistKey == null) persistKey = crypto.randomUUID();
     const ptyId = `${this.idPrefix}:${this.seq++}`;
 
+    // A new terminal opens in the ACTIVE pane. Splitting sets the new pane
+    // active before it calls back into here, so a "split right" lands its
+    // terminal in the pane it just made. (The leaf owns the focus handling —
+    // its own `focusin`/`pointerdown` listeners make it the active pane.)
+    const leaf = this._activeLeaf();
     const pane = document.createElement("div");
     pane.className = "tg-pane";
-    // Clicking into a pane makes it the half the keyboard belongs to (split
-    // view). `focusin` fires when xterm's hidden textarea takes focus, so this
-    // catches a real click into the terminal without touching xterm internals.
-    pane.addEventListener("focusin", () => {
-      if (this.focusId === ptyId || !this.isShown(ptyId)) return;
-      this.focusId = ptyId;
-      this._applyPanes();
-      this._paintLastSent(ptyId);
-    });
-    // Insert before the divider so the divider always paints on top of both
-    // panes (they are all absolutely positioned siblings).
-    this.panesEl.insertBefore(pane, this.dividerEl);
+    leaf.panesEl.append(pane);
 
-    const term = makeTerminal(resolveTerminalSettings(this.fontOverride));
+    const settings = resolveTerminalSettings(this.fontOverride);
+    // Re-sync the sheet here too: a group built before the per-profile settings
+    // finished loading only gets the change event once it HAS a terminal, so a
+    // brand-new group would otherwise keep the constructor's stale color.
+    this._applyPanesBackground(settings);
+    const term = makeTerminal(settings);
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(pane);
@@ -1590,7 +1879,7 @@ class TerminalGroup {
       this._openTabMenu(ptyId, e.clientX, e.clientY);
     });
     // Drag to reorder. The id lives on the element so _syncTabOrder can rebuild
-    // the tabs Map (= tab + serialize order) straight from the DOM after a drop.
+    // this pane's tab order straight from the DOM after a drop.
     tabEl.draggable = true;
     tabEl.dataset.ptyId = ptyId;
     tabEl.addEventListener("dragstart", (e) => {
@@ -1602,9 +1891,11 @@ class TerminalGroup {
     tabEl.addEventListener("dragend", () => {
       tabEl.classList.remove("tg-tab-dragging");
       this._dragEl = null;
-      this._syncTabOrder();
+      // Read the leaf back from the entry: a drop may have moved the tab into
+      // another pane (card 46), and the order to rebuild is that pane's.
+      this._syncTabOrder(this._leafOf(ptyId) || leaf);
     });
-    this.tabsEl.append(tabEl);
+    leaf.tabsEl.append(tabEl);
 
     const entry = {
       term,
@@ -1645,8 +1936,11 @@ class TerminalGroup {
       // (card 16). A fresh PTY starts visible on both sides, so this starts true
       // and _setLive only calls the backend when it actually flips.
       live: true,
+      // Which leaf pane of the tree shows this tab (card 45).
+      paneId: leaf.id,
     };
     this.tabs.set(ptyId, entry);
+    leaf.tabIds.push(ptyId);
     // A terminal restored with a saved choice wears its mark from the start,
     // and an explicit "on" counts towards keeping the machinery running.
     if (notify != null) {
@@ -1733,10 +2027,11 @@ class TerminalGroup {
       return handleFor(existing, true);
     }
 
+    // Like a terminal tab, a content tab opens in the ACTIVE pane.
+    const leaf = this._activeLeaf();
     const pane = document.createElement("div");
     pane.className = "tg-pane tg-pane-content";
-    // Before the split divider, so the divider always paints above the panes.
-    this.panesEl.insertBefore(pane, this.dividerEl);
+    leaf.panesEl.append(pane);
 
     const tabEl = document.createElement("div");
     tabEl.className = "tg-tab tg-tab-content";
@@ -1766,9 +2061,9 @@ class TerminalGroup {
     tabEl.addEventListener("dragend", () => {
       tabEl.classList.remove("tg-tab-dragging");
       this._dragEl = null;
-      this._syncTabOrder();
+      this._syncTabOrder(this._leafOf(tabId) || leaf);
     });
-    this.tabsEl.append(tabEl);
+    leaf.tabsEl.append(tabEl);
 
     const entry = {
       term: null, // the "this is not a terminal" marker every guard checks
@@ -1779,8 +2074,10 @@ class TerminalGroup {
       beforeClose,
       onClose,
       onShow,
+      paneId: leaf.id,
     };
     this.tabs.set(tabId, entry);
+    leaf.tabIds.push(tabId);
     mount?.(pane);
     this.activate(tabId);
     return handleFor(entry, false);
@@ -1821,87 +2118,59 @@ class TerminalGroup {
     invoke("pty_set_visible", { id: ptyId, visible: on }).catch(() => {});
   }
 
-  // ---- Split view ---------------------------------------------------------
+  // ---- Pane tree: what is on screen ---------------------------------------
 
-  /** The tabs on screen right now: the primary, plus the split one when there
-   *  is a split. Everything that means "on screen" — WebGL, the backend output
-   *  gate, refits — asks this, so the two panes are treated alike. */
+  /** The tabs on screen right now: the active tab of every leaf pane.
+   *  Everything that means "on screen" — WebGL, the backend output gate,
+   *  refits — asks this, so every pane is treated alike. */
   _shownIds() {
     const ids = [];
-    if (this.activeId && this.tabs.has(this.activeId)) ids.push(this.activeId);
-    if (this.splitId && this.tabs.has(this.splitId) && this.splitId !== this.activeId) {
-      ids.push(this.splitId);
+    for (const leaf of this._leaves()) {
+      if (leaf.activeId && this.tabs.has(leaf.activeId)) ids.push(leaf.activeId);
     }
     return ids;
   }
 
-  /** Whether a tab is one of the (at most two) tabs on screen in this group. */
+  /** Whether a tab is the one its own pane is currently showing. */
   isShown(ptyId) {
-    return this._shownIds().includes(ptyId);
+    return this._leafOf(ptyId)?.activeId === ptyId;
   }
 
-  /** The shown tab the keyboard belongs to: the focused half of a split, or the
-   *  primary when there is no split (or the focus is stale). Anything that means
-   *  "the terminal the user is typing into" reads this, not activeId. */
+  /** The shown tab the keyboard belongs to: the active tab of the ACTIVE pane,
+   *  falling back to any shown tab if that pane has none. Anything that means
+   *  "the terminal the user is typing into" reads this. */
   focusedId() {
-    return this.isShown(this.focusId) ? this.focusId : this.activeId;
+    return this._activeLeaf()?.activeId ?? this._shownIds()[0] ?? null;
   }
 
   /**
-   * Lay the panes out for the current split state and repaint the tab strip.
+   * Repaint which tab each pane shows, mark the active pane's tab, and settle
+   * every tab's WebGL context + backend output gate.
    *
-   * Geometry is written as inline insets rather than flex boxes because the
-   * panes are absolutely positioned inside `.tg-panes` (FitAddon measures the
-   * pane's own border box — see the `.tg-pane` comment in styles.css — so the
-   * pane must stay the exact drawable rectangle). `PANE_INSET` mirrors the CSS
-   * inset; `HALF_DIVIDER` is the clearance each pane leaves for the drag bar.
+   * There is no geometry here any more: a leaf's box is sized by the flex tree
+   * (_applyRatios), and inside it every `.tg-pane` keeps the plain CSS inset, so
+   * FitAddon still measures the exact drawable rectangle at any tree depth.
    */
   _applyPanes() {
-    const PANE_INSET = "10px";
-    const HALF_DIVIDER = 3; // half the divider's 6px, so each pane clears it
-    const shown = this._shownIds();
-    const split = shown.length === 2;
-    const pct = Math.round(this.splitRatio * 1000) / 10;
-    const row = this.splitDir === "row";
+    const activeLeafId = this._activeLeaf()?.id ?? null;
 
-    for (const [id, e] of this.tabs) {
-      const on = shown.includes(id);
-      e.paneEl.classList.toggle("tg-pane-active", on);
-      const s = e.paneEl.style;
-      if (!on || !split) {
-        // Single pane (or hidden): back to the plain CSS inset.
-        s.left = s.right = s.top = s.bottom = "";
-        continue;
+    for (const leaf of this._leaves()) {
+      const isActiveLeaf = leaf.id === activeLeafId;
+      leaf.el.classList.toggle("tg-pane-group-active", isActiveLeaf);
+      for (const id of leaf.tabIds) {
+        const e = this.tabs.get(id);
+        if (!e) continue;
+        const on = id === leaf.activeId;
+        e.paneEl.classList.toggle("tg-pane-active", on);
+        // The tab of the pane the keyboard is in gets the strong highlight; the
+        // shown tab of every OTHER pane gets a lighter mark, so the strips say
+        // both what is on screen and where typing goes.
+        e.tabEl.classList.toggle("tg-tab-active", on && isActiveLeaf);
+        e.tabEl.classList.toggle("tg-tab-shown", on && !isActiveLeaf);
       }
-      const first = id === shown[0];
-      const near = `calc(${pct}% + ${HALF_DIVIDER}px)`;
-      const far = `calc(${100 - pct}% + ${HALF_DIVIDER}px)`;
-      s.left = row && !first ? near : PANE_INSET;
-      s.right = row && first ? far : PANE_INSET;
-      s.top = !row && !first ? near : PANE_INSET;
-      s.bottom = !row && first ? far : PANE_INSET;
     }
 
-    // Tab strip: the focused half is the strong "active" tab; the other shown
-    // half gets a lighter mark so the strip says which two are on screen.
-    for (const [id, e] of this.tabs) {
-      const on = shown.includes(id);
-      e.tabEl.classList.toggle("tg-tab-active", on && id === this.focusId);
-      e.tabEl.classList.toggle("tg-tab-shown", on && id !== this.focusId);
-    }
-
-    // Divider: sits on the split line, spanning the other axis.
-    const d = this.dividerEl.style;
-    this.dividerEl.hidden = !split;
-    this.dividerEl.classList.toggle("tg-split-divider-row", row);
-    if (split) {
-      const at = `calc(${pct}% - ${HALF_DIVIDER}px)`;
-      d.left = row ? at : PANE_INSET;
-      d.right = row ? "auto" : PANE_INSET;
-      d.top = row ? PANE_INSET : at;
-      d.bottom = row ? PANE_INSET : "auto";
-    }
-
+    const shown = this._shownIds();
     const groupVisible = this.visible();
     for (const [id, e] of this.tabs) {
       this._setLive(id, e, shown.includes(id) && groupVisible);
@@ -1909,52 +2178,81 @@ class TerminalGroup {
   }
 
   /**
-   * Put a second terminal on screen beside the current one.
+   * Move a tab into a NEW pane beside the one it is in, cutting the space `dir`
+   * ("row" = side by side, "col" = stacked).
    *
-   * Splitting FROM the tab you are on means "give me another terminal here", so
-   * a new one is spawned (through the owner's onAdd policy, which knows the cwd
-   * and any per-project start command) and takes the second pane. Splitting from
-   * a DIFFERENT tab means "show that one too", so that existing tab moves into
-   * the second pane instead. Re-running it with another direction just re-cuts
-   * the area.
+   * Splitting FROM the tab you are looking at means "give me another terminal
+   * here", so a new one is spawned (through the owner's onAdd policy, which
+   * knows the cwd and any per-project start command) and takes the new pane.
+   * Splitting from a DIFFERENT tab of the same pane means "show that one too",
+   * so that existing tab moves into the new pane instead.
+   *
+   * Refuses past MAX_PANES, and says so — an unbounded split would quietly cost
+   * the user a terminal's WebGL renderer.
    */
   async _splitWith(ptyId, dir) {
-    this.splitDir = dir === "col" ? "col" : "row";
-    if (!this.tabs.has(ptyId)) return;
-
-    if (ptyId !== this.activeId) {
-      this.splitId = ptyId;
-    } else {
-      // Splitting off the active tab: the NEW terminal fills the second pane and
-      // the current one stays primary, so the split appears next to what you
-      // were already looking at. newTerminal() activates what it creates, so the
-      // primary is restored afterwards.
-      const primary = this.activeId;
-      const created = await this.onAdd?.();
-      if (!created || !this.tabs.has(created)) return;
-      this.activeId = this.tabs.has(primary) ? primary : created;
-      this.splitId = created === this.activeId ? null : created;
+    const leaf = this._leafOf(ptyId);
+    if (!leaf) return;
+    const spawning = ptyId === leaf.activeId;
+    // A group with no add policy (the command drawers) can only split by moving
+    // an existing tab across; there is nothing to spawn into the new pane. Say
+    // so rather than letting the menu item look broken.
+    if (spawning && !this.onAdd) {
+      this._flashNotice("Split another tab of this pane — this one cannot open new terminals");
+      return;
     }
-    this.focusId = this.splitId || this.activeId;
+    if (this._leaves().length >= MAX_PANES) {
+      this._flashNotice(`${MAX_PANES}-pane limit reached — close a pane to split again`);
+      return;
+    }
+
+    this.splitDir = dir === "col" ? "col" : "row";
+    const created = this._makeLeaf();
+    this._insertSibling(leaf, created, this.splitDir);
+    // The new pane is where the user is going, so make it active FIRST: both
+    // paths below (spawn / move) put their tab in the active pane.
+    this.activePaneId = created.id;
+
+    if (spawning) {
+      const newId = await this.onAdd?.();
+      if (!newId || !this.tabs.has(newId)) {
+        // The spawn failed — undo the split rather than leaving an empty pane.
+        this._removePane(created);
+        this.activePaneId = leaf.id;
+        this._applyPanes();
+        return;
+      }
+    } else {
+      this._moveTabToPane(ptyId, created);
+    }
+
     this._applyPanes();
-    this._paintLastSent(this.focusId);
+    this._paintLastSent(this.focusedId());
     this._saveSplitPrefs();
     this.onLayoutChange?.();
-    // Both panes just changed size; fit them once the new geometry is laid out.
+    // Every pane on this branch just changed size; fit them once the new
+    // geometry is laid out.
     requestAnimationFrame(() => {
       this.refitActive();
       this._focusActive();
     });
   }
 
-  /** Back to a single pane. The split terminal is NOT closed — it goes back to
-   *  being an ordinary background tab. */
-  _closeSplit() {
-    if (!this.splitId) return;
-    this.splitId = null;
-    this.focusId = this.activeId;
+  /** Merge a pane back into its sibling: its tabs move across (they are NOT
+   *  closed — they go back to being ordinary background tabs there) and the
+   *  pane is removed. The root leaf has no sibling, so it is left alone. */
+  _closeSplit(paneId) {
+    const leaf = this.panes.get(paneId ?? this.activePaneId);
+    if (!leaf || !leaf.parent) return;
+    const target = this._firstLeafOf(leaf.parent.children.find((c) => c !== leaf));
+    if (!target) return;
+    const wasActive = leaf.activeId;
+    for (const id of [...leaf.tabIds]) this._moveTabToPane(id, target);
+    this._removePane(leaf);
+    this.activePaneId = target.id;
+    if (wasActive) target.activeId = wasActive;
     this._applyPanes();
-    this._paintLastSent(this.activeId);
+    this._paintLastSent(this.focusedId());
     this.onLayoutChange?.();
     requestAnimationFrame(() => {
       this.refitActive();
@@ -1962,9 +2260,65 @@ class TerminalGroup {
     });
   }
 
-  /** Restore a saved split by the tabs' stable persist keys (project.js calls
-   *  this after rebuilding a project's tabs). Unknown keys are ignored, so a
-   *  layout whose split tab was since closed simply comes back unsplit. */
+  /** The first leaf inside a subtree (its top-left pane). */
+  _firstLeafOf(node) {
+    return node ? this._leaves(node)[0] ?? null : null;
+  }
+
+  /**
+   * Release the WebGL context of every terminal inside a subtree, ahead of a
+   * reparent (splitting wraps a leaf in a new split element; collapsing lifts a
+   * sibling up into its place — both detach and re-insert the subtree).
+   *
+   * A canvas that is detached and re-inserted can come back blank, and the addon
+   * has no "the element moved" hook. Dropping the context first and letting
+   * _applyPanes re-attach afterwards is the same drop/re-attach cycle a tab
+   * activation already does, and it repaints the whole grid on the way back.
+   */
+  _dropWebglIn(node) {
+    for (const leaf of this._leaves(node)) {
+      for (const id of leaf.tabIds) {
+        const entry = this.tabs.get(id);
+        if (entry) this._setWebgl(entry, false);
+      }
+    }
+  }
+
+  /**
+   * Move a tab into another leaf pane, optionally at a position in its strip.
+   * Both the model (tabIds + entry.paneId) and the DOM (tab element, pane
+   * element) move together, so the tree and what is painted cannot drift apart.
+   *
+   * The WebGL context is dropped first: reparenting the pane element detaches
+   * and re-attaches its canvas, and _applyPanes gives the tab a fresh context
+   * afterwards if it is still on screen.
+   */
+  _moveTabToPane(ptyId, target, index = null) {
+    const entry = this.tabs.get(ptyId);
+    const from = this._leafOf(ptyId);
+    if (!entry || !target || !from || from === target) return false;
+
+    this._setWebgl(entry, false);
+    from.tabIds = from.tabIds.filter((id) => id !== ptyId);
+    const at = index == null ? target.tabIds.length : Math.max(0, Math.min(index, target.tabIds.length));
+    target.tabIds.splice(at, 0, ptyId);
+    entry.paneId = target.id;
+
+    const before = target.tabsEl.children[at] ?? null;
+    target.tabsEl.insertBefore(entry.tabEl, before);
+    target.panesEl.append(entry.paneEl);
+
+    // The source pane promotes another tab; the target shows the arrival.
+    if (from.activeId === ptyId) from.activeId = from.tabIds[0] ?? null;
+    target.activeId = ptyId;
+    this._resortTabs();
+    return true;
+  }
+
+  /** Restore a saved two-pane split by the tabs' stable persist keys (project.js
+   *  calls this after rebuilding a project's tabs). Unknown keys are ignored, so
+   *  a layout whose split tab was since closed simply comes back unsplit.
+   *  Card 48 replaces this with a full pane-tree restore. */
   setSplitByKeys(primaryKey, splitKey, dir) {
     const idFor = (key) => {
       for (const [id, e] of this.tabs) if (e.persistKey === key) return id;
@@ -1973,10 +2327,14 @@ class TerminalGroup {
     const primary = idFor(primaryKey);
     const second = idFor(splitKey);
     if (!primary || !second || primary === second) return;
-    this.activeId = primary;
-    this.splitId = second;
+    const leaf = this._leafOf(primary);
+    if (!leaf || leaf !== this._leafOf(second)) return; // already split somehow
     this.splitDir = dir === "col" ? "col" : "row";
-    this.focusId = primary;
+    const created = this._makeLeaf();
+    this._insertSibling(leaf, created, this.splitDir);
+    this._moveTabToPane(second, created);
+    leaf.activeId = primary;
+    this.activePaneId = leaf.id;
     this._applyPanes();
     this._paintLastSent(primary);
     requestAnimationFrame(() => {
@@ -1985,8 +2343,8 @@ class TerminalGroup {
     });
   }
 
-  /** Remember the direction + divider position for this group, so the NEXT
-   *  split opens the way the user last left it. Kept in localStorage next to the
+  /** Remember the direction + sash position for this group, so the NEXT split
+   *  opens the way the user last left it. Kept in localStorage next to the
    *  other appearance choices: it is a UI preference, not session state, and a
    *  command-drawer group should not push it through the layout store. */
   _saveSplitPrefs() {
@@ -2015,65 +2373,61 @@ class TerminalGroup {
     }
   }
 
-  /** Drag the divider to re-balance the two panes. Pointer capture keeps the
-   *  drag alive over the terminals (which would otherwise swallow the moves),
-   *  and the refit is rAF-throttled: every ratio change resizes two xterms AND
-   *  sends two PTY resizes, which is far too much to do per pointermove. */
-  _beginDividerDrag(ev) {
-    if (!this.splitId) return;
+  /** Drag ONE split node's sash to re-balance its two children. Pointer capture
+   *  keeps the drag alive over the terminals (which would otherwise swallow the
+   *  moves), and the refit is rAF-throttled: every ratio change resizes the
+   *  xterms on that branch AND sends a PTY resize each, which is far too much to
+   *  do per pointermove. */
+  _beginSashDrag(split, ev) {
     ev.preventDefault();
-    this.dividerEl.setPointerCapture?.(ev.pointerId);
-    this.dividerEl.classList.add("tg-split-divider-drag");
+    const sash = split.sashEl;
+    sash.setPointerCapture?.(ev.pointerId);
+    sash.classList.add("tg-sash-drag");
     let queued = false;
 
     const onMove = (e) => {
-      const box = this.panesEl.getBoundingClientRect();
-      const span = this.splitDir === "row" ? box.width : box.height;
+      const box = split.el.getBoundingClientRect();
+      const span = split.dir === "row" ? box.width : box.height;
       if (span <= 0) return;
-      const at = this.splitDir === "row" ? e.clientX - box.left : e.clientY - box.top;
-      const ratio = at / span;
-      // Clamp so neither pane can be squeezed to nothing (an xterm below a
+      const at = split.dir === "row" ? e.clientX - box.left : e.clientY - box.top;
+      // Clamp so neither child can be squeezed to nothing (an xterm below a
       // couple of columns is useless and its fit math starts failing).
-      this.splitRatio = Math.min(1 - MIN_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, ratio));
+      split.ratio = Math.min(1 - MIN_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, at / span));
       if (queued) return;
       queued = true;
       requestAnimationFrame(() => {
         queued = false;
-        this._applyPanes();
+        this._applyRatios(split);
         this.refitActive();
       });
     };
 
     const onUp = () => {
-      this.dividerEl.removeEventListener("pointermove", onMove);
-      this.dividerEl.removeEventListener("pointerup", onUp);
-      this.dividerEl.removeEventListener("pointercancel", onUp);
-      this.dividerEl.classList.remove("tg-split-divider-drag");
-      this._applyPanes();
+      sash.removeEventListener("pointermove", onMove);
+      sash.removeEventListener("pointerup", onUp);
+      sash.removeEventListener("pointercancel", onUp);
+      sash.classList.remove("tg-sash-drag");
+      this._applyRatios(split);
       this.refitActive();
+      // The last position the user chose seeds the next split in this group.
+      this.splitRatio = split.ratio;
       this._saveSplitPrefs();
+      this.onLayoutChange?.();
     };
 
-    this.dividerEl.addEventListener("pointermove", onMove);
-    this.dividerEl.addEventListener("pointerup", onUp);
-    this.dividerEl.addEventListener("pointercancel", onUp);
+    sash.addEventListener("pointermove", onMove);
+    sash.addEventListener("pointerup", onUp);
+    sash.addEventListener("pointercancel", onUp);
   }
 
   activate(ptyId) {
-    if (!this.tabs.has(ptyId)) return;
-    // Clicking the split half just moves the keyboard there — it is already on
-    // screen, so re-laying the panes out would only make it jump.
-    if (ptyId === this.splitId) {
-      this.focusId = ptyId;
-      this._applyPanes();
-      this._paintLastSent(ptyId);
-      if (attention.has(ptyId)) clearAttention(ptyId);
-      clearActivity(ptyId);
-      requestAnimationFrame(() => this._focusActive());
-      return;
-    }
-    this.activeId = ptyId;
-    this.focusId = ptyId;
+    const leaf = this._leafOf(ptyId);
+    if (!leaf) return;
+    // Show the tab in its OWN pane and move the keyboard to that pane. Clicking
+    // a tab already on screen in another pane is therefore just a pane switch —
+    // nothing moves, which is what makes several panes feel stable.
+    leaf.activeId = ptyId;
+    this.activePaneId = leaf.id;
     this._applyPanes();
     // The bottom bar always tracks the terminal being typed into: repaint it for
     // the now-active tab's last sent line (or the placeholder if it has none).
@@ -2087,7 +2441,7 @@ class TerminalGroup {
     // Fit + focus on the next frame so the now-shown pane has a real size.
     requestAnimationFrame(() => {
       this._fit(ptyId);
-      if (this.activeId === ptyId) this._focusActive();
+      if (this.focusedId() === ptyId) this._focusActive();
     });
   }
 
@@ -2269,19 +2623,20 @@ class TerminalGroup {
     const tick = (mine) => (mine === choice ? "✓ " : "   ");
     // Split entries first — they are the layout actions; the notification
     // choices below are a settings block.
-    const splitItems = [];
-    if (this.splitId === ptyId) {
-      splitItems.push({ label: "Close split", onClick: () => this._closeSplit() });
-    } else {
-      // From the tab you are on, these open a NEW terminal in the second pane;
-      // from any other tab, they bring THAT tab on screen beside this one.
-      splitItems.push(
-        { label: "Split right", onClick: () => this._splitWith(ptyId, "row") },
-        { label: "Split down", onClick: () => this._splitWith(ptyId, "col") },
-      );
-      if (this.splitId) {
-        splitItems.push({ label: "Close split", onClick: () => this._closeSplit() });
-      }
+    const leaf = this._leafOf(ptyId);
+    // From the tab its pane is showing, these open a NEW terminal in the new
+    // pane; from any other tab of that pane, they move THAT tab into it.
+    const splitItems = [
+      { label: "Split right", onClick: () => this._splitWith(ptyId, "row") },
+      { label: "Split down", onClick: () => this._splitWith(ptyId, "col") },
+    ];
+    // Only a pane that HAS a sibling can be merged back into one. Its tabs move
+    // to the sibling rather than closing, so nothing is lost.
+    if (leaf?.parent) {
+      splitItems.push({
+        label: "Close this pane",
+        onClick: () => this._closeSplit(leaf.id),
+      });
     }
     openCtxMenu(x, y, [
       ...splitItems,
@@ -2332,6 +2687,9 @@ class TerminalGroup {
   closeTerminal(ptyId, force = false) {
     const entry = this.tabs.get(ptyId);
     if (!entry) return;
+    // Capture the pane before the entry goes: _afterTabRemoved settles that
+    // pane (and may collapse it), and the entry is what points at it.
+    const leaf = this._leafOf(ptyId);
     // Content tab: no PTY, no monitors — just ask its owner (unsaved edits may
     // cancel, unless forced by dispose), drop the DOM, and move to the next tab.
     if (!entry.term) {
@@ -2340,7 +2698,7 @@ class TerminalGroup {
       entry.paneEl.remove();
       this.tabs.delete(ptyId);
       entry.onClose?.();
-      this._afterTabRemoved(ptyId);
+      this._afterTabRemoved(ptyId, leaf);
       return;
     }
     // Drop any attention flag so the banner does not list a dead terminal
@@ -2376,26 +2734,35 @@ class TerminalGroup {
     this.tabs.delete(ptyId);
     idToEntry.delete(ptyId);
     emitTerminalsChange();
-    this._afterTabRemoved(ptyId);
+    this._afterTabRemoved(ptyId, leaf);
     // A tab was removed: let the owner persist the shrunken layout. The backend
     // reconciles and deletes the closed terminal's saved scrollback file.
     this.onLayoutChange?.();
   }
 
-  /** Settle which tabs are on screen after one was removed. Closing the split
-   *  half drops back to a single pane; closing the primary promotes the next
-   *  tab — and if that next tab IS the split half, the split collapses rather
-   *  than showing the same terminal twice. */
-  _afterTabRemoved(ptyId) {
-    if (this.splitId === ptyId) this.splitId = null;
-    if (this.activeId === ptyId) {
-      const next = this.tabs.keys().next();
-      this.activeId = next.done ? null : next.value;
-      if (this.activeId === this.splitId) this.splitId = null;
+  /** Settle a pane after one of its tabs was removed. The pane promotes its
+   *  next tab; a pane left with NO tabs is removed and its space falls back to
+   *  its sibling. The root leaf is the exception — an empty group still needs
+   *  one strip to put the next "+" in. */
+  _afterTabRemoved(ptyId, leaf) {
+    if (leaf && this.panes.has(leaf.id)) {
+      const at = leaf.tabIds.indexOf(ptyId);
+      if (at >= 0) leaf.tabIds.splice(at, 1);
+      if (leaf.activeId === ptyId) {
+        // Promote the tab that slid into the closed one's place, else the last.
+        leaf.activeId = leaf.tabIds[Math.min(at, leaf.tabIds.length - 1)] ?? null;
+      }
+      // Emptied pane: give the space back to its sibling and move the keyboard
+      // to whichever pane took over.
+      if (!leaf.tabIds.length && leaf.parent) {
+        const heir = this._firstLeafOf(leaf.parent.children.find((c) => c !== leaf));
+        this._removePane(leaf);
+        if (this.activePaneId === leaf.id) this.activePaneId = heir?.id ?? this._leaves()[0]?.id;
+      }
     }
-    if (!this.isShown(this.focusId)) this.focusId = this.activeId;
-    if (this.activeId) {
-      this._applyPanes();
+    this._resortTabs();
+    this._applyPanes();
+    if (this._shownIds().length) {
       // A tab promoted to the screen is now in front of the user, so its
       // attention badge and activity mark have been attended to — the same
       // clearing activate() does when a tab is clicked.
@@ -2403,15 +2770,14 @@ class TerminalGroup {
         if (attention.has(id)) clearAttention(id);
         clearActivity(id);
       }
-      this._paintLastSent(this.focusId);
+      this._paintLastSent(this.focusedId());
       requestAnimationFrame(() => {
         this.refitActive();
         this._focusActive();
       });
     } else {
-      // No terminals left: clear the bar so it does not keep the closed tab's
-      // last sent line, and take the divider away with the split.
-      this._applyPanes();
+      // No terminals left on screen: clear the bar so it does not keep the
+      // closed tab's last sent line.
       this._renderLastSent(null);
     }
   }
@@ -2471,7 +2837,19 @@ class TerminalGroup {
       e.term.options.letterSpacing = s.letterSpacing;
       e.term.options.theme = s.theme;
     }
+    this._applyPanesBackground(s);
     this.refitActive();
+  }
+
+  /** Paint the panes sheet in this group's effective terminal background so the
+   *  pane's 10px gutter blends into the terminal instead of ringing it. Takes an
+   *  already-resolved settings object when the caller has one, and one leaf when
+   *  only that pane needs it (a pane a split just created); otherwise every leaf
+   *  is repainted, so all panes of a group stay the same colour. */
+  _applyPanesBackground(settings, leaf = null) {
+    const s = settings || resolveTerminalSettings(this.fontOverride);
+    const bg = s.theme?.background || "";
+    for (const l of leaf ? [leaf] : this._leaves()) l.panesEl.style.background = bg;
   }
 
   /** Set this group's per-project override (raw workspace font_override — the
@@ -2551,6 +2929,7 @@ class TerminalGroup {
 
   dispose() {
     this._closeAddMenu();
+    clearTimeout(this._noticeTimer);
     // force=true: a dispose (project delete/shelve) must never be blocked by a
     // content tab's unsaved-edits prompt.
     for (const id of [...this.tabs.keys()]) this.closeTerminal(id, true);
