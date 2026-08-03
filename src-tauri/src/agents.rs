@@ -447,7 +447,17 @@ fn probe_command() -> Command {
     let mut cmd = Command::new(shell);
     // `-l` populates PATH the way pty.rs does for a real terminal; `-c` runs
     // the script. Both are needed — `-c` alone would read the GUI PATH.
-    cmd.args(["-lc", &script]);
+    //
+    // `-i` matters as much as `-l`: pty.rs spawns its shell on a TTY, so that
+    // shell is INTERACTIVE and reads `.zshrc`/`.bashrc`, while a bare `-lc`
+    // shell reads only the login files. Anything a version manager or installer
+    // adds to PATH from the interactive rc (e.g. `~/.local/bin` via
+    // `. "$HOME/.local/bin/env"`, which is where npm-less `claude` installs go)
+    // is invisible without it — the probe would hide an agent that a real
+    // terminal launches fine. Interactive rc files also print banners and
+    // prompt-plugin warnings on stderr/stdout; `parse_probe_output` keeps only
+    // lines that exactly match a known agent, so that noise is already handled.
+    cmd.args(["-lic", &script]);
     cmd
 }
 
@@ -500,6 +510,26 @@ mod tests {
         assert!(parse_probe_output("some banner\n").is_empty());
         // A line that merely CONTAINS an agent name is not a hit.
         assert!(parse_probe_output("claude not found\n").is_empty());
+    }
+
+    /// The probe shell must be INTERACTIVE as well as a login shell. pty.rs
+    /// spawns its shell on a TTY, which makes it interactive, so it reads
+    /// `.zshrc`/`.bashrc`; a `-lc` probe reads only the login files and misses
+    /// every PATH entry those rc files add (that is how the "Claude" row
+    /// disappeared from the add menu while `claude` ran fine in a terminal).
+    #[cfg(unix)]
+    #[test]
+    fn probe_runs_an_interactive_login_shell() {
+        let cmd = probe_command();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-lic", "probe shell must be login AND interactive");
+        // The script itself asks about exactly the agents the menu offers.
+        for a in KNOWN_AGENTS {
+            assert!(args[1].contains(a), "probe script must ask about {a}");
+        }
     }
 
     #[test]
