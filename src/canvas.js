@@ -129,10 +129,14 @@ const FRAME_SCRIPT = `
 const CANVAS_CSS = `
   :root {
     color-scheme: dark;
-    --bg-0:#141417; --bg-2:#232329; --bg-sunken:#0f0f12;
-    --border:#26262b; --border-strong:#34343c;
-    --fg-0:#f0f0ee; --fg-1:#cfcfca; --fg-2:#8f8f8a;
-    --accent:#8fbfa8; --ok:#85c79a; --danger:#de8d85; --warn:#d4b06a;
+    /* The canvas renders in its own document, so it cannot inherit the app's
+       tokens — this is a hand-kept copy of the same Apple dark palette
+       styles.css uses. Keep the two in step when either changes. --accent is
+       replaced at render time with the live system accent (see wrapHtml). */
+    --bg-0:#1c1c1e; --bg-2:rgba(120,120,128,0.32); --bg-sunken:#141416;
+    --border:rgba(84,84,88,0.65); --border-strong:#48484a;
+    --fg-0:#ffffff; --fg-1:rgba(235,235,245,0.78); --fg-2:rgba(235,235,245,0.55);
+    --accent:#0a84ff; --ok:#32d74b; --danger:#ff453a; --warn:#ff9f0a;
     --r-sm:6px;
   }
   html, body { margin: 0; }
@@ -185,10 +189,10 @@ const CANVAS_CSS = `
   /* Badge — a flat hairline pill (no fill); variants recolor text + outline only. */
   .badge, .pill { display: inline-block; font-size: .75em; font-weight: 600; padding: 1px 8px; border-radius: 999px;
                   background: none; color: var(--fg-2); border: 1px solid var(--border-strong); }
-  .badge.accent { color: var(--accent); border-color: rgba(143,191,168,.5); }
-  .badge.ok { color: var(--ok); border-color: rgba(133,199,154,.5); }
-  .badge.warn { color: var(--warn); border-color: rgba(212,176,106,.5); }
-  .badge.danger { color: var(--danger); border-color: rgba(222,141,133,.5); }
+  .badge.accent { color: var(--accent); border-color: rgba(10,132,255,.5); }
+  .badge.ok { color: var(--ok); border-color: rgba(50,215,75,.5); }
+  .badge.warn { color: var(--warn); border-color: rgba(255,159,10,.5); }
+  .badge.danger { color: var(--danger); border-color: rgba(255,69,58,.5); }
   kbd, .kbd { font-family: ui-monospace, monospace; font-size: .8em; background: var(--bg-2);
               border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 6px; color: var(--fg-0); }
   .eyebrow { font-size: .74em; text-transform: uppercase; letter-spacing: .08em; color: var(--fg-2); font-weight: 600; margin-bottom: .2em; }
@@ -198,11 +202,29 @@ const CANVAS_CSS = `
   .right { text-align: right; } .center { text-align: center; }
 `;
 
+/** The app's live accent (the one macOS handed appearance.js) as an "r g b"
+ *  triple the canvas document can build colors from. Falls back to systemBlue
+ *  — the canvas sheet's own default — when the variable is missing or
+ *  malformed, so a canvas always renders. */
+function accentChannels() {
+  const rgb = getComputedStyle(document.documentElement)
+    .getPropertyValue("--accent-rgb")
+    .trim();
+  return /^\d+ \d+ \d+$/.test(rgb) ? rgb : "10 132 255";
+}
+
 /** Wrap inner HTML (rendered Markdown, a plain-text fallback, or an agent HTML
- *  fragment) in the fixed canvas template so it reads as part of OctiqFlow. */
+ *  fragment) in the fixed canvas template so it reads as part of OctiqFlow.
+ *  The accent is injected here rather than baked into CANVAS_CSS because it
+ *  follows the macOS system accent, which can change while the app runs; a
+ *  canvas picks the new one up the next time it renders. */
 function wrapHtml(inner) {
+  const accent = accentChannels();
   return `<!doctype html><html><head><meta charset="utf-8">
-<style>${CANVAS_CSS}</style></head><body>${inner}
+<style>${CANVAS_CSS}
+  :root { --accent: rgb(${accent}); }
+  .badge.accent { border-color: rgb(${accent} / 0.5); }
+</style></head><body>${inner}
 <script>${FRAME_SCRIPT}</script>
 </body></html>`;
 }

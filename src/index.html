@@ -30,6 +30,7 @@
          lazily on the first text preview, after all startup UMD globals exist. -->
 
     <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/appearance.js" defer></script>
     <script type="module" src="/workspaces.js" defer></script>
     <script type="module" src="/main.js" defer></script>
     <script type="module" src="/layout.js" defer></script>
@@ -56,7 +57,13 @@
       <!-- Top-level mode bar: one row of chrome (card 37) — nav, the attention
            badge, and the right-side actions. One view shows at a time (router
            in modes.js). -->
-      <nav class="modebar">
+      <!-- data-tauri-drag-region + titleBarStyle "Overlay" (tauri.conf.json)
+           merge this row WITH the macOS title bar, the way a native Mac app's
+           unified toolbar works: the traffic lights float over the row's left
+           inset (see .is-macos .modebar) and dragging empty toolbar space moves
+           the window. Children are not drag regions, so the buttons still
+           click normally. -->
+      <nav class="modebar" data-tauri-drag-region>
         <button id="modebar-brand" class="modebar-brand" type="button" aria-label="OctiqFlow" data-tip="Toggle the projects panel">
           <img
             class="modebar-brand-mark"

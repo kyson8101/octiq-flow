@@ -31,14 +31,18 @@
   src: url("vendor/fonts/jetbrains-mono-700.woff2") format("woff2");
 }
 
-/* ---- Design tokens — "liquid glass" dark theme ------------------------ */
-/* One calm sage accent over translucent glass surfaces. Every color in this
-   sheet reads from these tokens. The terminal theme comes from user Settings
-   (settings.js THEME_COLORS); its defaults mirror --bg-0 / --fg-1 / --accent so
-   the pane background blends with a terminal the user has not recolored.
-   --bg-0 stays OPAQUE: it is the xterm background, and the terminal gutters
-   must never show the ambient glow. The raised surfaces are white-alpha glass
-   fills; the chrome/panel/overlay rules add the backdrop blur on top. */
+/* ---- Design tokens — macOS dark appearance ---------------------------- */
+/* Every color, radius and type size in this sheet reads from these tokens,
+   and they are Apple's own dark-mode values rather than invented ones: the
+   iOS/macOS system grays for surfaces, the label/separator/fill tiers for
+   text and dividers, the system colors for status, and the NSVisualEffectView
+   materials for the translucent chrome. Matching Apple's numbers is what makes
+   the app read as native — a "close enough" gray does not.
+
+   The terminal theme comes from user Settings (settings.js THEME_COLORS); its
+   defaults mirror --bg-0 / --fg-1 / --accent so the pane background blends with
+   a terminal the user has not recolored. --bg-0 stays OPAQUE: it is the xterm
+   background, and the terminal gutters must never show the window backdrop. */
 :root {
   /* Surfaces, from deepest to most raised (card 35 — the ONE background-tone
      layer every panel reads from, replacing hairline borders as the way
@@ -50,88 +54,142 @@
      --bg-2 is NOT a 4th tone — it is the interaction-state layer (hover /
      pressed / chip fill) painted OVER whichever of the 3 tones a component
      sits on. Keep every new panel/surface on one of these three; do not add
-     a 4th background token. */
-  --bg-0: #141417; /* app base — matches the xterm background (opaque) */
-  --bg-sunken: rgba(15, 16, 19, 0.42); /* mode bar, side rails — cool cast */
-  --bg-1: rgba(255, 255, 255, 0.07); /* raised: cards, panels, forms */
-  --bg-2: rgba(255, 255, 255, 0.14); /* hover / pressed / chips */
-  --border: rgba(255, 255, 255, 0.12);
-  --border-strong: rgba(255, 255, 255, 0.2);
+     a 4th background token.
 
-  /* Warm grays for text. */
-  --fg-0: #ececea;
-  --fg-1: #c9c9c5;
-  --fg-2: #8f8f8a;
-  --fg-3: #67675f;
+     --bg-1 / --bg-2 use Apple's *system fill* grays (120,120,128) rather than
+     plain white alpha. That faint blue-gray cast is what stops stacked
+     translucent panels from looking washed-out, and it is the single most
+     recognisable difference between an Apple surface and a generic one. */
+  --bg-0: #1c1c1e; /* systemGray6 dark — the xterm background (opaque) */
+  --bg-sunken: rgba(28, 28, 30, 0.62); /* macOS sidebar material */
+  --bg-1: rgba(118, 118, 128, 0.18); /* quaternarySystemFill — cards, panels */
+  --bg-2: rgba(120, 120, 128, 0.32); /* secondarySystemFill — hover / pressed */
+  --border: rgba(84, 84, 88, 0.65); /* separator (dark) */
+  --border-strong: #48484a; /* opaqueSeparator (dark) */
 
-  /* The single accent: muted sage. Card 35 — every interactive/active/
-     selected chrome state routes through --accent (or its tints below); the
-     only OTHER colors allowed in chrome are --warn (attention needs-you
-     state — a distinct status color, not decoration) and --ok/--danger,
-     which stay scoped to git diff +/- numbers (--diff-add-bg/--diff-del-bg)
-     and usage-meter severity (see .usage-meter-track.is-*). No teal/orange/
-     blue anywhere in this sheet — audited clean for card 35. */
-  --accent: #8fbfa8;
-  --accent-bg: rgba(143, 191, 168, 0.16);
-  --accent-bg-hover: rgba(143, 191, 168, 0.26);
-  --accent-tint: rgba(143, 191, 168, 0.13);
-  --accent-tint-strong: rgba(143, 191, 168, 0.22);
-  --accent-tint-faint: rgba(143, 191, 168, 0.08);
-  --accent-soft-border: rgba(143, 191, 168, 0.35);
+  /* Label tiers. Apple's dark labels are a very slightly blue white
+     (235,235,245) stepped down by alpha, never a gray hex — the alpha is what
+     keeps text legible over whichever surface tone it lands on. */
+  --fg-0: #ffffff; /* label */
+  --fg-1: rgba(235, 235, 245, 0.78); /* body text */
+  --fg-2: rgba(235, 235, 245, 0.55); /* secondaryLabel */
+  --fg-3: rgba(235, 235, 245, 0.32); /* tertiaryLabel */
 
-  /* Status colors, all desaturated to stay cozy. */
-  --ok: #85c79a;
-  --ok-tint: rgba(133, 199, 154, 0.14);
-  --danger: #de8d85;
-  --danger-bg: rgba(222, 141, 133, 0.18);
-  --danger-tint: rgba(222, 141, 133, 0.12);
-  --diff-add-bg: rgba(34, 122, 67, 0.42);
-  --diff-del-bg: rgba(153, 48, 48, 0.4);
-  --danger-soft-border: rgba(222, 141, 133, 0.4);
-  --warn: #d4b06a;
-  --warn-bright: #e3c78a;
-  --warn-tint: rgba(212, 176, 106, 0.12);
-  --warn-soft-border: rgba(212, 176, 106, 0.45);
-  --warn-ring: rgba(212, 176, 106, 0.22);
+  /* The single accent. It is the color the user picked in System Settings —
+     appearance.js reads it from macOS on launch and on every window focus and
+     rewrites --accent-rgb here; everything below derives from that one channel
+     triple, so a new accent repaints the whole app with no other JS. The
+     literal default is systemBlue (dark), which is also what macOS itself
+     falls back to. Off macOS, appearance.js swaps in OctiqFlow's own sage.
 
-  --backdrop: rgba(8, 8, 12, 0.42);
+     Card 35 still holds: every interactive/active/selected chrome state routes
+     through --accent or its tints; the only OTHER colors allowed in chrome are
+     --warn (attention needs-you state) and --ok/--danger, which stay scoped to
+     git diff +/- numbers and usage-meter severity. */
+  --accent-rgb: 10 132 255;
+  --accent: rgb(var(--accent-rgb));
+  --accent-fg: #ffffff; /* text/glyphs sitting ON an accent fill */
+  --accent-bg: rgb(var(--accent-rgb) / 0.22);
+  --accent-bg-hover: rgb(var(--accent-rgb) / 0.32);
+  --accent-tint: rgb(var(--accent-rgb) / 0.16);
+  --accent-tint-strong: rgb(var(--accent-rgb) / 0.28);
+  --accent-tint-faint: rgb(var(--accent-rgb) / 0.1);
+  --accent-soft-border: rgb(var(--accent-rgb) / 0.45);
+  /* The macOS keyboard-focus ring: the accent at half strength, 3.5px wide. */
+  --focus-ring: rgb(var(--accent-rgb) / 0.5);
 
-  /* Shape + depth. Bigger radii + a soft top edge-light sell the glass
-     (visionOS-style continuous corners). r-sm/r-md/r-lg is ONE considered
-     scale (small controls → mid cards → big panel shoulders), not three
-     competing tokens — every rounded rect in the app picks its size off this
-     one ladder. --radius (card 35) names the TOP of that ladder as the
-     app's single "shared corner radius" for panels/cards/big surfaces —
-     the large, Codex-like roundness the design target asks for; reach for
-     it (not a new literal px value) wherever a panel/card/prominent input
-     wants that big radius (e.g. the card-39 filter-files field). */
-  --r-sm: 10px;
-  --r-md: 14px;
-  --r-lg: 22px;
+  /* Status colors — Apple's system colors, dark variants. */
+  --ok: #32d74b; /* systemGreen */
+  --ok-tint: rgba(50, 215, 75, 0.16);
+  --danger: #ff453a; /* systemRed */
+  --danger-bg: rgba(255, 69, 58, 0.22);
+  --danger-tint: rgba(255, 69, 58, 0.14);
+  --danger-soft-border: rgba(255, 69, 58, 0.45);
+  --diff-add-bg: rgba(48, 209, 88, 0.3);
+  --diff-del-bg: rgba(255, 69, 58, 0.3);
+  --warn: #ff9f0a; /* systemOrange */
+  --warn-bright: #ffb340;
+  --warn-tint: rgba(255, 159, 10, 0.16);
+  --warn-soft-border: rgba(255, 159, 10, 0.45);
+  --warn-ring: rgba(255, 159, 10, 0.25);
+
+  --backdrop: rgba(0, 0, 0, 0.35); /* the dim macOS puts behind a sheet */
+
+  /* Shape. This is Apple's control-radius ladder, not a free scale: 4px is a
+     menu row, 6px is THE macOS control radius (push button, text field, source
+     list row), 8px is a segmented control, 12px is a sheet / popover / grouped
+     card, 16px is a large floating overlay. --radius names the panel/card rung
+     (12px) as the app's shared corner radius — reach for it, not a literal px,
+     wherever a panel or prominent input wants that roundness.
+     --r-round stays for badges and status pills, which Apple *does* draw as
+     full capsules. */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
   --radius: var(--r-lg);
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-2: 0 18px 50px rgba(0, 0, 0, 0.55);
+  --r-round: 999px;
 
-  /* Liquid-glass material. Fills for surfaces that need more body than the
-     white-alpha tints (floating menus, tooltips, overlays); the blur is
+  /* Depth. Apple shadows are tight and dark, and every floating surface also
+     carries a 0.5px light ring so its edge stays crisp against live content
+     behind the blur — that ring, not the shadow, is what reads as "a real
+     macOS panel". */
+  --shadow-1: 0 0.5px 1.5px rgba(0, 0, 0, 0.34);
+  --shadow-2: 0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
+  --hairline: inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+
+  /* NSVisualEffectView materials. The heavy blur plus the saturation boost is
+     the recipe: Apple's materials pull color THROUGH from behind, which is why
+     a plain dark translucent fill never looks like vibrancy. The blur is
      applied per-surface via backdrop-filter (it cannot ride on a token). */
-  --glass-bg: rgba(24, 24, 30, 0.52);
-  --glass-bg-strong: rgba(26, 26, 34, 0.74);
-  --glass-blur: blur(28px) saturate(1.8);
-  --glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --glass-bg: rgba(40, 40, 42, 0.72); /* .menu material */
+  --glass-bg-strong: rgba(44, 44, 46, 0.86); /* .popover / .hudWindow */
+  --glass-blur: blur(50px) saturate(180%);
+  --glass-edge: var(--hairline);
 
   /* Shared height for the top header bar across the three columns (Projects /
      terminal tabs / Canvas, plus the file-browser and git-diff heads that swap
-     into the center slot) so their bottom borders and content line up. */
-  --head-h: 43px;
+     into the center slot) so their bottom borders and content line up. 40px is
+     the macOS compact-toolbar height. */
+  --head-h: 40px;
   /* Shared horizontal padding for the same recipe (card 36) — see the
      .tg-strip / .cmd-panel-head / .ft-head / .pb-head / .gd-head / .web-head
      rule right below. */
-  --head-pad: 0 12px;
+  --head-pad: 0 10px;
 
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter,
-    "Segoe UI", Helvetica, Arial, sans-serif;
+  /* Type. The macOS text-style ramp — smaller than iOS on purpose, because a
+     desktop window sits further from the eye and holds far more per screen.
+     Apple pairs each size with a tracking value; without it, SF at 11px looks
+     cramped and at 22px looks loose, which is the usual tell that a web UI is
+     only *using* the system font rather than typesetting like the system. */
+  --text-large-title: 26px;
+  --text-title-1: 22px;
+  --text-title-2: 17px;
+  --text-title-3: 15px;
+  --text-headline: 13px;
+  --text-body: 13px;
+  --text-callout: 12px;
+  --text-subhead: 11px;
+  --text-footnote: 10px;
+  --track-large-title: 0.22px;
+  --track-title-1: -0.26px;
+  --track-title-2: -0.43px;
+  --track-title-3: -0.23px;
+  --track-body: -0.08px;
+  --track-callout: 0;
+  --track-subhead: 0.06px;
+  --track-footnote: 0.12px;
+
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
   color-scheme: dark;
+  /* Hands the accent to every native control WebKit still draws itself —
+     checkboxes, radios, range thumbs, progress bars — so they tint with the
+     rest of the app for free. */
+  accent-color: var(--accent);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -167,17 +225,15 @@ body {
   color: var(--fg-1);
 }
 
-/* Ambient glow the glass chrome diffuses: mostly sage, with a faint cool
-   wash for depth. Body never scrolls (the shell is 100vh), so the washes stay
-   put; the opaque terminal center covers its own area and the glow only
-   shows through the translucent chrome and overlays around it. */
+/* The window backdrop the translucent chrome diffuses. A native Mac window has
+   NO colored ambient glow — the sidebar just samples the neutral gray behind
+   it — so this is a plain, barely-there vertical fall from systemGray5 to
+   systemGray6. The previous sage/blue radial washes were the loudest non-Apple
+   thing on screen; keeping them would tint every glass surface in the app.
+   Body never scrolls (the shell is 100vh), and the opaque terminal center
+   covers its own area, so this only shows through the chrome and overlays. */
 body {
-  background:
-    radial-gradient(1100px 700px at 8% -10%, rgba(130, 150, 190, 0.04), transparent 60%),
-    radial-gradient(1300px 800px at 110% 12%, rgba(135, 145, 180, 0.035), transparent 62%),
-    radial-gradient(1000px 800px at 50% 122%, rgba(143, 191, 168, 0.07), transparent 65%),
-    linear-gradient(180deg, #131417, #0e0f11 60%),
-    var(--bg-0);
+  background: linear-gradient(180deg, #2c2c2e, #1c1c1e 55%), var(--bg-0);
 }
 
 /* Outer shell: a row of three columns, with a full-width footer below them */
@@ -5129,4 +5185,795 @@ body {
 .center.lay-dock-top .lay-resizer,
 .center.lay-dock-bottom .lay-resizer {
   border-top: none;
+}
+
+/* ===================================================================== */
+/* === macOS refit ===================================================== */
+/* The final layer: it reshapes the app's controls into their AppKit
+   counterparts. The token block at the top of this file already moved every
+   color, radius and type size onto Apple's values; what is left is the part
+   tokens cannot express — the specific geometry of a macOS push button, a
+   source-list row, a segmented control, a menu, a sheet.
+
+   Ground rules for anything added here:
+     • Copy Apple's numbers, do not approximate them. 6px is the macOS control
+       radius; 0.5px is the hairline; 3.5px is the focus ring. Rounding these
+       to 8/1/3 is exactly what makes a web UI read as "Mac-ish" but not Mac.
+     • Selection means an accent FILL with white content, and it goes gray when
+       the window is not frontmost (.win-inactive, set by appearance.js).
+     • Floating surfaces get material + a 0.5px light ring + a tight shadow.
+     • No new colors. Everything routes through the tokens above.
+   This block sits last on purpose: it overrides the per-area rules earlier in
+   the file, so shared control looks live in ONE reviewable place.            */
+
+/* ---- Typography ------------------------------------------------------ */
+/* SF's optical sizes need Apple's tracking to sit right; see the --track-*
+   tokens. Body text is inherited from :root, so only the roles that deviate
+   are set here. */
+body {
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
+}
+
+.settings-title {
+  font-size: var(--text-large-title);
+  font-weight: 700;
+  letter-spacing: var(--track-large-title);
+}
+
+.modal-title,
+.canvas-head-title {
+  font-size: var(--text-title-3);
+  font-weight: 600;
+  letter-spacing: var(--track-title-3);
+}
+
+/* Section headers in a macOS source list are sentence case, NOT uppercase —
+   the uppercase+letterspaced treatment is a web convention Apple dropped. */
+.sidebar-title {
+  font-size: var(--text-subhead);
+  font-weight: 590;
+  text-transform: none;
+  letter-spacing: var(--track-subhead);
+  color: var(--fg-2);
+}
+
+.settings-label,
+.settings-section-title {
+  font-size: var(--text-headline);
+  font-weight: 590;
+  letter-spacing: var(--track-body);
+  color: var(--fg-0);
+}
+
+.settings-hint,
+.settings-help {
+  font-size: var(--text-callout);
+  line-height: 1.45;
+  letter-spacing: var(--track-callout);
+  color: var(--fg-2);
+}
+
+/* The other uppercase+letterspaced headers. Same reasoning as .sidebar-title:
+   AppKit section headers are sentence case. */
+.cmd-section-title,
+.canvas-title,
+.resume-overlay-head,
+.tg-lastsent-label {
+  font-size: var(--text-subhead);
+  font-weight: 590;
+  text-transform: none;
+  letter-spacing: var(--track-subhead);
+}
+
+/* ---- Focus ring ------------------------------------------------------ */
+/* AppKit's keyboard-focus ring: the accent at half strength, 3.5px, hugging
+   the control's own corner radius. :focus-visible (not :focus) matches the
+   system — macOS only rings a control reached by keyboard.
+   Listed per element type rather than as a bare `:focus-visible`, so it can
+   never land on a scroll container, a tabindex'd pane, or xterm's hidden
+   helper textarea (which holds focus the entire time a terminal is open). */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible,
+input:not(.xterm-helper-textarea):focus-visible,
+textarea:not(.xterm-helper-textarea):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3.5px var(--focus-ring);
+}
+
+.inline-input:focus,
+.settings-select:focus {
+  /* Replaces the old faint-glow rule in the Zen layer. */
+  box-shadow: 0 0 0 3.5px var(--focus-ring);
+}
+
+/* ---- Scrollbars ------------------------------------------------------ */
+/* macOS overlay scrollbars: no track, a thin translucent thumb that darkens
+   on hover, and enough transparent padding that the thumb floats clear of
+   the content edge. */
+::-webkit-scrollbar {
+  width: 15px;
+  height: 15px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.22);
+  border: 4px solid transparent;
+  border-radius: var(--r-round);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.38);
+  border: 4px solid transparent;
+  background-clip: padding-box;
+}
+
+::selection {
+  background: rgb(var(--accent-rgb) / 0.35);
+}
+
+/* ---- Unified title bar ------------------------------------------------ */
+/* With titleBarStyle "Overlay" the traffic lights float INSIDE the webview at
+   the window's top-left, so the mode bar reserves their width. 78px is where
+   AppKit puts the first item after a standard three-button set. Off macOS
+   there are no traffic lights, so the inset must not apply. */
+.modebar {
+  height: 44px;
+  gap: 14px;
+  /* A macOS toolbar does carry a hairline against the content below it — the
+     "fewer hairlines" block above strips it, so put it back at 0.5px. */
+  box-shadow: inset 0 -0.5px 0 var(--border);
+}
+
+.is-macos .modebar {
+  padding-left: 78px;
+}
+
+.modebar-brand {
+  font-weight: 590;
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
+}
+
+/* ---- Segmented control ------------------------------------------------ */
+/* NSSegmentedControl: a filled track, 2px inset, with the chosen segment as an
+   accent-filled pill. The mode switcher and the diff view switcher are both
+   pick-exactly-one controls, which is the case AppKit fills with the accent
+   (a toolbar's momentary segments get a gray raise instead). */
+.modebar-tabs,
+.gd-view-toggle {
+  gap: 2px;
+  padding: 2px;
+  background: rgba(120, 120, 128, 0.24);
+  border-radius: var(--r-md);
+}
+
+.modebar-tabs .modebtn,
+.gd-toggle-btn {
+  padding: 3px 11px;
+  font-size: var(--text-callout);
+  font-weight: 500;
+  letter-spacing: var(--track-callout);
+  color: var(--fg-1);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.modebar-tabs .modebtn:hover,
+.gd-toggle-btn:hover {
+  color: var(--fg-0);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.modebar-tabs .modebtn.modebtn-active,
+.gd-toggle-btn.gd-toggle-active {
+  color: var(--accent-fg);
+  background: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+
+/* ---- Toolbar icon buttons -------------------------------------------- */
+/* A toolbar button in AppKit has no chrome until you point at it, then it
+   takes a soft rounded-rect fill — never a full capsule. The command panel's
+   tab strip belongs here rather than with the segmented controls above: its
+   tabs are icons, and AppKit treats an icon-only picker as toolbar buttons
+   with the chosen one filled. */
+.icon-btn,
+.modebtn.modebtn-gear,
+.modebtn.modebtn-vault,
+.cmd-tab-btn {
+  border-radius: var(--r-sm);
+  border-color: transparent;
+}
+
+.icon-btn:hover,
+.modebtn.modebtn-gear:hover,
+.modebtn.modebtn-vault:hover,
+.cmd-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.modebtn.modebtn-gear.modebtn-active,
+.modebtn.modebtn-vault.modebtn-active,
+.cmd-tab-btn.active {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+/* ---- Push buttons ----------------------------------------------------- */
+/* NSButton, bordered style: a low-contrast fill with a hairline ring and a
+   tight shadow, at the 6px control radius — not the capsule it was. The
+   "default" button (the one Return triggers) is the same shape filled with the
+   accent, and a destructive one only recolors its LABEL; AppKit reserves a
+   solid red fill for a confirmation sheet's primary action, not for inline
+   buttons. This is the app's shared button vocabulary (.btn + modifiers), so
+   it carries most of the screens. */
+.btn {
+  padding: 4px 12px;
+  font-size: var(--text-body);
+  font-weight: 500;
+  letter-spacing: var(--track-body);
+  white-space: nowrap;
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.28);
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: var(--hairline), var(--shadow-1);
+}
+
+.btn:hover {
+  background: rgba(120, 120, 128, 0.42);
+}
+
+.btn:active {
+  background: rgba(120, 120, 128, 0.52);
+}
+
+.btn-sm {
+  padding: 2px 9px;
+  font-size: var(--text-callout);
+  letter-spacing: var(--track-callout);
+}
+
+.btn.btn-primary,
+.btn.btn-accent {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.btn.btn-primary:hover,
+.btn.btn-accent:hover {
+  background: var(--accent);
+  filter: brightness(1.12);
+}
+
+.btn.btn-danger {
+  color: var(--danger);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  filter: none;
+}
+
+/* A default button loses its accent while the window is in the background,
+   exactly as AppKit does. */
+.win-inactive .btn.btn-primary,
+.win-inactive .btn.btn-accent {
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.4);
+}
+
+.gd-op-btn,
+.settings-make-global-btn {
+  padding: 3px 10px;
+  font-size: var(--text-callout);
+  font-weight: 500;
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.28);
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: var(--hairline), var(--shadow-1);
+  cursor: pointer;
+}
+
+.gd-op-btn:hover,
+.settings-make-global-btn:hover {
+  background: rgba(120, 120, 128, 0.42);
+}
+
+.gd-op-btn:active,
+.settings-make-global-btn:active {
+  background: rgba(120, 120, 128, 0.5);
+}
+
+.gd-commit-btn,
+.canvas-ask-btn {
+  padding: 4px 14px;
+  font-size: var(--text-body);
+  font-weight: 500;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  cursor: pointer;
+}
+
+.gd-commit-btn:hover,
+.canvas-ask-btn:hover {
+  filter: brightness(1.1);
+}
+
+.gd-commit-btn:disabled,
+.canvas-ask-btn:disabled {
+  /* AppKit dims a disabled control rather than recoloring it. */
+  opacity: 0.4;
+  filter: none;
+}
+
+/* A "plain" button — Apple's borderless style: accent-colored text, no fill,
+   no underline. */
+.settings-reset-btn {
+  color: var(--accent);
+  font-size: var(--text-callout);
+  text-decoration: none;
+}
+
+.settings-reset-btn:hover {
+  text-decoration: none;
+  filter: brightness(1.15);
+}
+
+/* ---- Text fields ------------------------------------------------------ */
+/* NSTextField: a sunken fill, a hairline ring, 6px corners. On focus the ring
+   turns accent and the focus glow appears outside it. */
+.settings-input,
+.settings-number,
+.inline-input,
+.ws-rename-input,
+.tg-tab-rename,
+.canvas-ask-input,
+.pb-search,
+.web-url {
+  padding: 4px 8px;
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
+  color: var(--fg-0);
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.18);
+  outline: none;
+}
+
+.settings-input::placeholder,
+.settings-number::placeholder,
+.inline-input::placeholder,
+.canvas-ask-input::placeholder,
+.pb-search::placeholder,
+.web-url::placeholder {
+  color: var(--fg-3);
+}
+
+/* WebKit's number spinner is a pair of tiny arrows with their own chrome that
+   does not follow any of the above. AppKit's stepper is a separate control, so
+   the field simply drops them and stays keyboard/scroll driven. */
+.settings-number::-webkit-inner-spin-button,
+.settings-number::-webkit-outer-spin-button {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* ---- Pop-up buttons --------------------------------------------------- */
+/* NSPopUpButton. WebKit's own menulist ignores background and border, so the
+   only way to get the Mac shape is appearance:none plus a drawn chevron. The
+   double chevron (up over down) is what distinguishes a pop-up button from a
+   plain disclosure control, and it sits in the trailing 22px. */
+.settings-select,
+.gd-select,
+.gd-branch-select,
+.canvas-doc-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 4px 24px 4px 9px;
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.28)
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 16"><path d="M2 6.6 5 3.4l3 3.2M2 9.4l3 3.2 3-3.2" fill="none" stroke="rgb(235,235,245)" stroke-opacity="0.62" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    no-repeat right 7px center / 8px 13px;
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: var(--hairline), var(--shadow-1);
+  cursor: pointer;
+}
+
+.settings-select:hover,
+.gd-select:hover,
+.gd-branch-select:hover,
+.canvas-doc-select:hover {
+  background-color: rgba(120, 120, 128, 0.42);
+}
+
+.settings-select:focus-visible,
+.gd-select:focus-visible,
+.canvas-doc-select:focus-visible {
+  outline: none;
+  box-shadow: var(--hairline), 0 0 0 3.5px var(--focus-ring);
+}
+
+/* ---- Color wells ------------------------------------------------------ */
+/* NSColorWell: just the swatch inside a hairline, no padding of its own. */
+.theme-color-input {
+  padding: 0;
+  border: none;
+  border-radius: var(--r-xs);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+
+.theme-color-input::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.theme-color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.settings-input:focus,
+.settings-number:focus,
+.inline-input:focus,
+.ws-rename-input:focus,
+.tg-tab-rename:focus,
+.canvas-ask-input:focus,
+.pb-search:focus,
+.web-url:focus {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3.5px var(--focus-ring);
+}
+
+/* ---- Checkboxes ------------------------------------------------------- */
+/* The AppKit checkbox: 14px, 3.5px corners, accent fill with a white check.
+   WebKit's own control is close but sits on its own gray and ignores the app
+   accent, so it is worth drawing. The check is a data-URI stroke so it stays
+   crisp and stays white over any accent. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border-radius: 3.5px;
+  background: rgba(120, 120, 128, 0.32);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--accent) center / 10px 10px no-repeat
+    url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14"><path d="M3 7.2 5.8 10 11 4.2" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+  box-shadow: var(--shadow-1);
+}
+
+input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- Sliders ---------------------------------------------------------- */
+/* NSSlider: a 4px sunken track and a white knob that carries the shadow. */
+input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(120, 120, 128, 0.32);
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.14);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0.5px 2px rgba(0, 0, 0, 0.5), inset 0 0 0 0.5px rgba(0, 0, 0, 0.15);
+}
+
+/* ---- Source list (the projects sidebar) ------------------------------- */
+/* NSOutlineView in its sidebar style: rows inset from the pane edge, 6px
+   corners, and a selection that is a solid accent fill with white content.
+   The inset is what makes a Mac sidebar read as a sidebar — the fill must
+   float inside the pane, never run edge to edge. */
+.sidebar {
+  background: var(--bg-sunken);
+}
+
+.ws-item,
+.ws-shelf-item {
+  border-radius: var(--r-sm);
+}
+
+.ws-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.ws-item.selected {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+/* Everything inside a selected row turns white — AppKit recolors the whole
+   row's content, including the secondary line and any badge. */
+.ws-item.selected,
+.ws-item.selected .ws-item-name,
+.ws-item.selected .ws-item-desc,
+.ws-item.selected .ws-item-icon,
+.ws-item.selected .ws-term-badge,
+.ws-item.selected .ws-item-diff {
+  color: var(--accent-fg);
+}
+
+.ws-item.selected .ws-item-desc,
+.ws-item.selected .ws-term-badge {
+  opacity: 0.75;
+}
+
+.ws-item.selected .ws-working-badge {
+  color: var(--accent-fg);
+  background: rgba(255, 255, 255, 0.22);
+  border-color: transparent;
+}
+
+.ws-item.selected .ws-working-dot {
+  background: var(--accent-fg);
+}
+
+/* Not the frontmost window: macOS drains the accent out of the selection and
+   leaves a neutral gray behind. appearance.js sets .win-inactive on <html>. */
+.win-inactive .ws-item.selected {
+  background: rgba(120, 120, 128, 0.36);
+}
+
+.win-inactive .ws-item.selected,
+.win-inactive .ws-item.selected .ws-item-name,
+.win-inactive .ws-item.selected .ws-item-desc {
+  color: var(--fg-1);
+}
+
+.win-inactive .modebar-tabs .modebtn.modebtn-active,
+.win-inactive .cmd-tab-btn.active,
+.win-inactive .gd-toggle-btn.gd-toggle-active {
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.4);
+}
+
+/* Selected rows in the other list-shaped panes follow the same rule. The
+   :hover pairs are needed because both panes define a `-selected:hover` rule
+   of their own further up, which would otherwise win on pointer-over. */
+.pb-row-selected,
+.pb-row-selected:hover,
+.gd-file-selected,
+.gd-file-selected:hover {
+  color: var(--accent-fg);
+  background: var(--accent);
+  border-radius: var(--r-sm);
+}
+
+.pb-row-selected .pb-name {
+  color: var(--accent-fg);
+}
+
+.win-inactive .pb-row-selected,
+.win-inactive .pb-row-selected:hover,
+.win-inactive .pb-row-selected .pb-name,
+.win-inactive .gd-file-selected,
+.win-inactive .gd-file-selected:hover {
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.36);
+}
+
+.win-inactive .pb-row-selected .pb-name {
+  background: transparent;
+}
+
+/* ---- Menus ------------------------------------------------------------ */
+/* NSMenu: the menu material, a 0.5px ring, 5px of padding around 4px-cornered
+   rows, and an accent fill under the pointer. Menu corners are 12px on
+   Big Sur and later — the old 16px read as a web dropdown. */
+.ctx-menu,
+.tg-add-menu,
+.alert-dropdown {
+  padding: 5px;
+  background: var(--glass-bg);
+  border: none;
+  border-radius: var(--r-lg);
+  box-shadow: var(--hairline), var(--shadow-2);
+}
+
+.ctx-item,
+.tg-add-item {
+  padding: 4px 9px;
+  font-size: var(--text-body);
+  letter-spacing: var(--track-body);
+  border-radius: var(--r-xs);
+}
+
+/* Alert rows carry a dot plus a two-part label, so they keep their taller
+   padding — only the corner and the fill follow the menu recipe. */
+.alert-item {
+  border-radius: var(--r-xs);
+}
+
+.ctx-item:hover,
+.tg-add-item:hover,
+.alert-item:hover {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+
+/* A hovered menu row is accent-filled, so its subdued second line and any
+   colored dot have to flip to white too or they vanish into the fill. */
+.tg-add-item:hover .tg-add-item-hint,
+.alert-item:hover .alert-item-label {
+  color: var(--accent-fg);
+  opacity: 0.8;
+}
+
+.alert-item:hover .alert-item-dot {
+  background: var(--accent-fg);
+}
+
+/* Destructive rows stay red until hovered, then take the standard fill —
+   AppKit does not paint a red menu row. */
+.ctx-item-danger {
+  color: var(--danger);
+}
+
+.ctx-item-danger:hover {
+  color: var(--accent-fg);
+  background: var(--danger);
+}
+
+/* ---- Sheets, panels, popovers ----------------------------------------- */
+/* An NSPanel/sheet: popover material, 12px corners, the 0.5px ring, and a
+   tight dark shadow. The scrim behind it is a plain dim — macOS does not blur
+   the parent window behind a sheet. */
+.modal,
+.vault-panel,
+.vault-crop-box,
+.resume-overlay {
+  background: var(--glass-bg-strong);
+  border: none;
+  border-radius: var(--r-lg);
+  box-shadow: var(--hairline), var(--shadow-2);
+}
+
+.modal-backdrop,
+.vault-overlay,
+.vault-crop-backdrop {
+  background: var(--backdrop);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* The help tag macOS shows on hover: small, opaque-ish, barely rounded. */
+#app-tooltip {
+  padding: 4px 8px;
+  font-size: var(--text-subhead);
+  letter-spacing: var(--track-subhead);
+  border: none;
+  border-radius: var(--r-sm);
+  box-shadow: var(--hairline), var(--shadow-1);
+}
+
+/* ---- Grouped lists (Settings, Edit project) --------------------------- */
+/* The inset grouped card iOS and System Settings use: a raised fill on the
+   page tone, 12px corners, a hairline instead of a drawn border, and no
+   shadow — these cards scroll, and a shadow on a scrolling card reads as a
+   floating panel rather than a grouped section. */
+.settings-section {
+  padding: 14px 16px;
+  background: rgba(118, 118, 128, 0.14);
+  border: none;
+  border-radius: var(--r-lg);
+  box-shadow: var(--hairline);
+}
+
+.settings-page {
+  padding: 24px 22px 40px;
+}
+
+/* A settings row is a full-width flex column, which stretches a button across
+   the whole card. A macOS button is always intrinsic width. */
+.settings-field > .btn,
+.settings-field > .settings-make-global-btn {
+  align-self: flex-start;
+}
+
+/* ---- Terminal tabs ---------------------------------------------------- */
+/* Safari/Terminal tabs: no chrome until selected, then a raised fill with the
+   hairline and a small shadow — an accent fill would fight the terminal
+   content sitting right below the strip. */
+.tg-tab {
+  padding: 4px 8px 4px 10px;
+  font-size: var(--text-callout);
+  letter-spacing: var(--track-callout);
+  border-radius: var(--r-sm);
+  border-color: transparent;
+}
+
+.tg-tab:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.tg-tab.tg-tab-active {
+  color: var(--fg-0);
+  background: rgba(120, 120, 128, 0.38);
+  border-color: transparent;
+  box-shadow: var(--hairline), var(--shadow-1);
+}
+
+/* ---- Cards ------------------------------------------------------------ */
+/* The remaining list cards follow the grouped-card recipe: a fill plus a 0.5px
+   hairline, never a drawn 1px border. A 1px border at this contrast is the
+   single most common giveaway that a surface was not drawn by AppKit. */
+.agent-row,
+.vault-card,
+.canvas-all-row {
+  border: none;
+  border-radius: var(--r-lg);
+  box-shadow: var(--hairline), var(--shadow-1);
+}
+
+/* ---- Status pills ----------------------------------------------------- */
+/* Badges are the one place Apple really does draw a full capsule. */
+.ws-working-badge,
+.modebtn-idle-badge,
+.vault-badge,
+.alert-count,
+.alert-badge,
+.badge-primary {
+  border-radius: var(--r-round);
+  font-size: var(--text-footnote);
+  font-weight: 590;
+  letter-spacing: var(--track-footnote);
+}
+
+/* White on the accent, sentence case: an AppKit badge does not shout in caps,
+   and dark-text-on-accent breaks the moment the user picks a dark accent
+   (graphite, purple) in System Settings. */
+.badge-primary {
+  padding: 1px 7px;
+  text-transform: none;
+  color: var(--accent-fg);
+}
+
+/* ---- Footers ---------------------------------------------------------- */
+/* A macOS status bar: quiet, hairline-separated, small type. */
+.usage-bar,
+.paths-footer {
+  box-shadow: inset 0 0.5px 0 var(--border);
+  font-size: var(--text-footnote);
+  letter-spacing: var(--track-footnote);
 }

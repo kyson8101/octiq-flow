@@ -61,12 +61,23 @@ export function customFontStack(name) {
  *  a default `#rrggbb` (the app's dark palette + a One-Dark-ish ANSI set). The
  *  four non-ANSI keys come first (they matter most), then the 8 ANSI + 8 bright
  *  colors. Exported so the global Settings page and the per-project override
- *  editor build the same set of color inputs. */
+ *  editor build the same set of color inputs.
+ *
+ *  The four leading keys track the app chrome: background is --bg-0 (Apple's
+ *  systemGray6 dark) so the pane blends with the panes around it, text is the
+ *  label white, and the cursor/selection are systemBlue — macOS's default
+ *  accent, which is also this sheet's --accent default.
+ *
+ *  The 16 ANSI colors deliberately stay One Dark. They are not UI chrome: they
+ *  are what agent output and syntax highlighting are read through, and Apple's
+ *  system colors are tuned for controls, not for long runs of small text on
+ *  black (systemYellow in particular is far too hot). Anyone who wants them to
+ *  match the chrome can recolor them in Settings. */
 export const THEME_COLORS = [
-  { key: "background", label: "Background", def: "#141417" },
-  { key: "foreground", label: "Text", def: "#c9c9c5" },
-  { key: "cursor", label: "Cursor", def: "#8fbfa8" },
-  { key: "selectionBackground", label: "Selection", def: "#31443c" },
+  { key: "background", label: "Background", def: "#1c1c1e" },
+  { key: "foreground", label: "Text", def: "#e5e5e7" },
+  { key: "cursor", label: "Cursor", def: "#0a84ff" },
+  { key: "selectionBackground", label: "Selection", def: "#154f78" },
   { key: "black", label: "Black", def: "#1c1c1c" },
   { key: "red", label: "Red", def: "#e06c75" },
   { key: "green", label: "Green", def: "#98c379" },

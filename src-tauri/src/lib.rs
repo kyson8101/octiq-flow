@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 mod agent_resume;
 mod agents;
+mod appearance;
 mod canvas;
 mod focus;
 mod fonts;
@@ -140,6 +141,7 @@ pub fn run() {
             agents::agent_procs,
             agents::agent_kill,
             agents::available_agents,
+            appearance::system_accent,
             notify_hook::notify_hook_filter,
             workspaces::list_workspaces,
             workspaces::add_workspace,
