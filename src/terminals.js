@@ -2495,32 +2495,177 @@ class TerminalGroup {
     return true;
   }
 
-  /** Restore a saved two-pane split by the tabs' stable persist keys (project.js
-   *  calls this after rebuilding a project's tabs). Unknown keys are ignored, so
-   *  a layout whose split tab was since closed simply comes back unsplit.
-   *  Card 48 replaces this with a full pane-tree restore. */
-  setSplitByKeys(primaryKey, splitKey, dir) {
-    const idFor = (key) => {
-      for (const [id, e] of this.tabs) if (e.persistKey === key) return id;
-      return null;
+  // ---- Pane tree persistence (card 48) ------------------------------------
+
+  /**
+   * This group's pane tree, described by the tabs' STABLE persist keys — the
+   * live pty id is regenerated every launch, so only the key can survive a
+   * restart. Shape matches `PaneNode` in `terminal_layout.rs`.
+   *
+   * Content tabs (a Monaco file editor) have no persist key and do not survive a
+   * restart, so they are left out; a pane holding only content tabs therefore
+   * serializes to nothing and its space folds into its sibling on the next
+   * launch, exactly as it would if the user had closed those tabs.
+   *
+   * Returns null when there is nothing worth saving (no terminals at all).
+   */
+  serializeLayout() {
+    const build = (node) => {
+      if (node.type === "pane") {
+        const keys = node.tabIds
+          .map((id) => this.tabs.get(id))
+          .filter((e) => e?.term && e.persistKey)
+          .map((e) => e.persistKey);
+        if (!keys.length) return null;
+        const activeKey = this.tabs.get(node.activeId)?.persistKey;
+        return {
+          type: "pane",
+          keys,
+          active: keys.includes(activeKey) ? activeKey : keys[0],
+        };
+      }
+      const children = node.children.map(build).filter(Boolean);
+      if (!children.length) return null;
+      // A split that lost a side is no longer a split — same collapse rule the
+      // UI and the Rust pruner apply, so all three agree on the shape.
+      if (children.length === 1) return children[0];
+      return { type: "split", dir: node.dir, ratio: node.ratio, children };
     };
-    const primary = idFor(primaryKey);
-    const second = idFor(splitKey);
-    if (!primary || !second || primary === second) return;
-    const leaf = this._leafOf(primary);
-    if (!leaf || leaf !== this._leafOf(second)) return; // already split somehow
-    this.splitDir = dir === "col" ? "col" : "row";
-    const created = this._makeLeaf();
-    this._insertSibling(leaf, created, this.splitDir);
-    this._moveTabToPane(second, created);
-    leaf.activeId = primary;
-    this.activePaneId = leaf.id;
+    return build(this.layout);
+  }
+
+  /**
+   * Collapse back to ONE pane holding every tab, without closing anything.
+   *
+   * Applying a saved arrangement (card 51) has to start from a known shape:
+   * `restoreLayout` grows its panes out of the group's single leaf, so a group
+   * that is already split must be flattened first.
+   */
+  resetPanes() {
+    const leaves = this._leaves();
+    if (leaves.length < 2) return;
+    const [root, ...rest] = leaves;
+    for (const leaf of rest) {
+      for (const id of [...leaf.tabIds]) this._moveTabToPane(id, root);
+    }
+    // Remove deepest-first: each removal lifts a sibling up, and taking the
+    // later leaves first keeps every remaining node's parent chain valid.
+    for (const leaf of rest.reverse()) this._removePane(leaf);
+    this.activePaneId = root.id;
+    if (!root.activeId) root.activeId = root.tabIds[0] ?? null;
+    this._resortTabs();
     this._applyPanes();
-    this._paintLastSent(primary);
+  }
+
+  /**
+   * Rebuild the pane tree from a saved one, AFTER every tab exists.
+   *
+   * Called once per project restore, when the group is still a single leaf
+   * holding all the rebuilt tabs. Keys that no longer resolve to a tab are
+   * skipped and a leaf left with none is dropped, so a tree naming a terminal
+   * the user has since closed comes back as fewer panes rather than failing.
+   */
+  restoreLayout(tree) {
+    const plan = this._planFromSaved(tree);
+    if (!plan) return;
+
+    // The group's one existing leaf becomes the plan's first pane; every other
+    // pane is grown beside it. Collected as we go so tabs can be handed out
+    // once the whole shape exists.
+    const host = this._leaves()[0];
+    if (!host) return;
+    const seats = [];
+    this._growPlan(plan, host, seats);
+
+    for (const seat of seats) {
+      for (const id of seat.ids) this._moveTabToPane(id, seat.leaf);
+      seat.leaf.activeId = seat.ids.includes(seat.activeId) ? seat.activeId : seat.ids[0];
+    }
+
+    this.activePaneId = seats[0]?.leaf.id ?? host.id;
+    this._resortTabs();
+    this._applyPanes();
+    this._paintLastSent(this.focusedId());
     requestAnimationFrame(() => {
       this.refitActive();
       this._focusActive();
     });
+  }
+
+  /**
+   * Turn a saved tree into a plan of panes this group can actually build: keys
+   * resolved to live tab ids, dead keys dropped, empty nodes folded away, and
+   * any node with more than two children re-nested into binary splits (the tree
+   * this class builds is always binary, and `_insertSibling` assumes it).
+   * Returns null when nothing survives.
+   */
+  _planFromSaved(node) {
+    if (!node || typeof node !== "object") return null;
+
+    if (node.type === "pane") {
+      const ids = (node.keys || [])
+        .map((key) => this._idForPersistKey(key))
+        .filter(Boolean);
+      if (!ids.length) return null;
+      const activeId = this._idForPersistKey(node.active);
+      return { type: "pane", ids, activeId: ids.includes(activeId) ? activeId : ids[0] };
+    }
+
+    const kids = (node.children || []).map((c) => this._planFromSaved(c)).filter(Boolean);
+    if (!kids.length) return null;
+    if (kids.length === 1) return kids[0];
+
+    const dir = node.dir === "col" ? "col" : "row";
+    const ratio = Number.isFinite(node.ratio)
+      ? Math.min(1 - MIN_SPLIT_RATIO, Math.max(MIN_SPLIT_RATIO, node.ratio))
+      : 0.5;
+    // Fold 3+ children into right-nested binary splits, sharing the ratio.
+    const fold = (list) =>
+      list.length === 2
+        ? { type: "split", dir, ratio, children: list }
+        : { type: "split", dir, ratio, children: [list[0], fold(list.slice(1))] };
+    return fold(kids);
+  }
+
+  /** The live tab id for a stable persist key, or null. */
+  _idForPersistKey(key) {
+    if (!key) return null;
+    for (const [id, e] of this.tabs) if (e.persistKey === key) return id;
+    return null;
+  }
+
+  /**
+   * Grow the pane structure for `plan`, using `host` as the subtree's first
+   * leaf and creating a sibling for each further branch. Appends one
+   * `{ leaf, ids, activeId }` seat per pane, in tree order, so the caller can
+   * hand the tabs out afterwards.
+   *
+   * Stops creating panes at MAX_PANES: any remaining plan panes have their tabs
+   * folded into the last seat, so a tree saved by some future version with more
+   * panes still restores every terminal, just in fewer panes.
+   */
+  _growPlan(plan, host, seats) {
+    if (plan.type === "pane") {
+      seats.push({ leaf: host, ids: plan.ids, activeId: plan.activeId });
+      return;
+    }
+    if (this._leaves().length >= MAX_PANES) {
+      // No room to split: everything below here shares the host pane.
+      const ids = [];
+      const collect = (n) => {
+        if (n.type === "pane") ids.push(...n.ids);
+        else n.children.forEach(collect);
+      };
+      collect(plan);
+      seats.push({ leaf: host, ids, activeId: ids[0] });
+      return;
+    }
+    const second = this._makeLeaf();
+    this._insertSibling(host, second, plan.dir);
+    host.parent.ratio = plan.ratio;
+    this._applyRatios();
+    this._growPlan(plan.children[0], host, seats);
+    this._growPlan(plan.children[1], second, seats);
   }
 
   /** Remember the direction + sash position for this group, so the NEXT split

@@ -65,13 +65,28 @@ let currentId = null;
 // Persisted layouts, loaded once on boot: projectId -> [{ persistKey, title, cwd }].
 // `project-selected` may fire before this resolves, so restore awaits it.
 let layouts = {};
-const layoutsReady = invoke("load_terminal_layouts")
-  .then((m) => {
-    layouts = m || {};
-  })
-  .catch(() => {
-    layouts = {};
-  });
+// Each project's saved PANE TREE (card 48): projectId -> PaneNode. A separate
+// backend map from the tab list above, so a project with no tree simply has no
+// entry and reopens as a single pane.
+let paneLayouts = {};
+const layoutsReady = Promise.all([
+  invoke("load_terminal_layouts")
+    .then((m) => {
+      layouts = m || {};
+    })
+    .catch(() => {
+      layouts = {};
+    }),
+  invoke("load_pane_layouts")
+    .then((m) => {
+      paneLayouts = m || {};
+    })
+    .catch(() => {
+      // A missing or unreadable tree must never block the tab restore — the
+      // project just comes back as a single pane.
+      paneLayouts = {};
+    }),
+]);
 
 // Debounce window for layout saves (a structural change is small + frequent).
 const LAYOUT_SAVE_MS = 500;
@@ -295,6 +310,31 @@ function finishResumeOverlay(ov, force = false) {
   }, 400);
 }
 
+/**
+ * The pane tree equivalent to a pre-card-48 saved layout, or null.
+ *
+ * Those layouts describe a split by marking ONE tab as the second pane (`split`
+ * = the direction) and one as the pane it sat beside (`primary`); every other
+ * tab lived in that first pane's strip. Both halves must be present — a layout
+ * missing either one restores as a single pane, which is also what a layout with
+ * no split fields at all does.
+ */
+function legacySplitTree(saved) {
+  const splitTab = saved.find((t) => t.split);
+  const primaryTab = saved.find((t) => t.primary);
+  if (!splitTab || !primaryTab || splitTab === primaryTab) return null;
+  const rest = saved.filter((t) => t !== splitTab).map((t) => t.persistKey);
+  return {
+    type: "split",
+    dir: splitTab.split === "col" ? "col" : "row",
+    ratio: 0.5,
+    children: [
+      { type: "pane", keys: rest, active: primaryTab.persistKey },
+      { type: "pane", keys: [splitTab.persistKey], active: splitTab.persistKey },
+    ],
+  };
+}
+
 /** Rebuild a project's saved terminals: one tab per saved entry, in order, with
  *  its old scrollback written back. Layout saves are suppressed during the loop
  *  (`restoring`) so a half-built layout is never written — which would make the
@@ -362,15 +402,20 @@ async function restoreProject(id, saved) {
       }
     }
     finishResumeOverlay(ov);
-    // Put the split back (card 42), now that every tab exists. The saved layout
-    // marks one tab as the second pane (`split` = the direction) and one as the
-    // pane it sat beside (`primary`). Both must be present — a layout missing
-    // either half restores as a single pane, which is also what an older layout
-    // file (no split fields at all) does.
-    const splitTab = saved.find((t) => t.split);
-    const primaryTab = saved.find((t) => t.primary);
-    if (splitTab && primaryTab && splitTab !== primaryTab) {
-      rec.group.setSplitByKeys(primaryTab.persistKey, splitTab.persistKey, splitTab.split);
+    // Put the panes back, now that every tab exists. A tree saved by this
+    // version wins; a layout written before pane trees existed only knows about
+    // a two-pane split, so it is converted to the equivalent tree first. Either
+    // way restoreLayout drops keys whose terminal is gone, so a stale layout
+    // comes back as fewer panes rather than failing.
+    //
+    // Guarded: the tabs and their scrollback are the valuable part of a restore
+    // and they already exist by now, so a tree this version cannot make sense of
+    // must cost the user their PANE ARRANGEMENT, never their terminals.
+    try {
+      rec.group.restoreLayout(paneLayouts[id] || legacySplitTree(saved));
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[octiq] could not restore the pane layout:", err);
     }
   } finally {
     rec.restoring = false;
@@ -448,6 +493,7 @@ function saveLayout(id) {
   invoke("save_terminal_layout", {
     projectId: id,
     terminals: rec.group.serialize(),
+    paneLayout: rec.group.serializeLayout(),
   }).catch(() => {});
 }
 
@@ -568,6 +614,7 @@ async function flushProject(id) {
     invoke("save_terminal_layout", {
       projectId: id,
       terminals: rec.group.serialize(),
+      paneLayout: rec.group.serializeLayout(),
     }).catch(() => {}),
   ];
   for (const { persistKey, data } of rec.group.scrollbackEntries()) {
@@ -585,6 +632,7 @@ async function flushAll() {
       invoke("save_terminal_layout", {
         projectId: id,
         terminals: rec.group.serialize(),
+        paneLayout: rec.group.serializeLayout(),
       }).catch(() => {}),
     );
     for (const { persistKey, data } of rec.group.scrollbackEntries()) {
@@ -634,6 +682,7 @@ window.addEventListener("project-deleted", (e) => {
   projects.delete(id);
   startedUp.delete(id);
   delete layouts[id];
+  delete paneLayouts[id];
   if (currentId === id) currentId = null;
   invoke("clear_project_layout", { projectId: id }).catch(() => {});
 });
@@ -651,8 +700,9 @@ window.addEventListener("project-shelved", async (e) => {
   const rec = projects.get(id);
   if (!rec) return; // never opened this session — its on-disk layout already stands
   // Persist the current tabs + scrollback and refresh the in-memory cache, so a
-  // same-session bring-back restores exactly these tabs.
+  // same-session bring-back restores exactly these tabs, in the same panes.
   layouts[id] = rec.group.serialize();
+  paneLayouts[id] = rec.group.serializeLayout();
   await flushProject(id);
   // Suppress the per-close layout saves dispose() would otherwise schedule —
   // they would reconcile away the scrollback we just saved.
