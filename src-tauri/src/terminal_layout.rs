@@ -65,13 +65,116 @@ pub struct TermEntry {
     pub primary: bool,
 }
 
+/// One node of a project's pane tree (card 47) — the arrangement of panes the
+/// terminal area is split into, mirroring the frontend's tree in `terminals.js`.
+///
+/// Leaves hold `persist_key`s, never live pty ids: the pty id is regenerated on
+/// every launch, so only the stable key can survive a restart. The tag and the
+/// field names must match what the frontend writes (`{ type: "split" | "pane" }`)
+/// or a saved tree cannot be read back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PaneNode {
+    /// Two or more child nodes sharing a box, cut `dir` ("row" | "col").
+    /// `ratio` is the share given to the first child.
+    Split {
+        dir: String,
+        ratio: f64,
+        children: Vec<PaneNode>,
+    },
+    /// One leaf pane: the tabs it shows, and which of them is on screen.
+    Pane {
+        keys: Vec<String>,
+        #[serde(default)]
+        active: Option<String>,
+    },
+}
+
+/// Read the pane-tree map, DROPPING any single tree that will not parse.
+///
+/// Without this, one corrupt or future-shaped tree fails the whole
+/// `LayoutData` deserialization, and the user loses every project's tab list —
+/// far worse damage than losing one pane arrangement. A dropped tree simply
+/// means that project reopens as a single pane.
+fn lenient_pane_layouts<'de, D>(d: D) -> Result<HashMap<String, PaneNode>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Take the field as a raw value first. Deserializing straight into a map
+    // would make a `paneLayouts` that is not an object at all fail the whole
+    // parse — and `TerminalLayoutState::load` turns any parse failure into an
+    // EMPTY store, so that one bad field would wipe every project's tab index.
+    let raw = serde_json::Value::deserialize(d)?;
+    let Some(map) = raw.as_object() else {
+        return Ok(HashMap::new());
+    };
+    Ok(map
+        .iter()
+        .filter_map(|(k, v)| {
+            serde_json::from_value::<PaneNode>(v.clone())
+                .ok()
+                .map(|n| (k.clone(), n))
+        })
+        .collect())
+}
+
 /// The on-disk shape of `terminal_layout.json`: each project id maps to its
-/// ordered terminals. `#[serde(default)]` so a missing file or an older file
-/// without the field loads as an empty map instead of failing.
+/// ordered terminals, and (since card 47) to its pane tree. `#[serde(default)]`
+/// so a missing file or an older file without the field loads as an empty map
+/// instead of failing.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LayoutData {
     #[serde(default)]
     projects: HashMap<String, Vec<TermEntry>>,
+    /// projectId -> pane tree. Absent for a project that is a single pane, and
+    /// absent entirely in every file written before card 47.
+    #[serde(default, deserialize_with = "lenient_pane_layouts")]
+    pane_layouts: HashMap<String, PaneNode>,
+}
+
+/// Drop every leaf key that is no longer a live terminal, collapsing whatever
+/// that empties: a pane with no keys left disappears, and a split left with one
+/// surviving child becomes that child. Returns `None` when nothing survives.
+///
+/// This is what keeps the tree honest against the tab list saved beside it — the
+/// scrollback reconcile already treats that list as authoritative, so a tree
+/// naming a closed terminal must never be able to resurrect it. Pure, so it is
+/// unit-tested without touching the filesystem.
+fn prune_pane_node(node: PaneNode, live: &HashSet<String>) -> Option<PaneNode> {
+    match node {
+        PaneNode::Pane { keys, active } => {
+            let keys: Vec<String> = keys.into_iter().filter(|k| live.contains(k)).collect();
+            if keys.is_empty() {
+                return None;
+            }
+            // A pane must never point at a tab it no longer holds.
+            let active = active
+                .filter(|a| keys.contains(a))
+                .or_else(|| keys.first().cloned());
+            Some(PaneNode::Pane { keys, active })
+        }
+        PaneNode::Split {
+            dir,
+            ratio,
+            children,
+        } => {
+            let mut kept: Vec<PaneNode> = children
+                .into_iter()
+                .filter_map(|c| prune_pane_node(c, live))
+                .collect();
+            match kept.len() {
+                0 => None,
+                // The same "space falls back to the sibling" rule the UI applies.
+                1 => Some(kept.remove(0)),
+                _ => Some(PaneNode::Split {
+                    dir,
+                    ratio,
+                    children: kept,
+                }),
+            }
+        }
+    }
 }
 
 /// In-memory layout map plus the paths it persists to.
@@ -204,17 +307,30 @@ fn live_keys(data: &LayoutData) -> HashSet<String> {
 /// removes the project from the index (its tabs were all closed). After saving,
 /// reconcile the scrollback dir so any terminal that vanished from the index has
 /// its blob file deleted — this is the single authoritative cleanup point.
+///
+/// `pane_layout` is the project's pane tree (card 47). It is pruned against the
+/// tab list saved in the SAME call, so the two can never disagree. Passing
+/// `None` means "this project has no tree" and clears any stored one — the
+/// frontend always sends the current tree alongside the tabs, so a missing tree
+/// is a real absence, never "leave the old one".
 #[tauri::command]
 pub fn save_terminal_layout(
     state: State<TerminalLayoutState>,
     project_id: String,
     terminals: Vec<TermEntry>,
+    pane_layout: Option<PaneNode>,
 ) -> Result<(), String> {
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     if terminals.is_empty() {
         data.projects.remove(&project_id);
+        data.pane_layouts.remove(&project_id);
     } else {
-        data.projects.insert(project_id, terminals);
+        let saved_keys: HashSet<String> = terminals.iter().map(|t| t.persist_key.clone()).collect();
+        data.projects.insert(project_id.clone(), terminals);
+        match pane_layout.and_then(|tree| prune_pane_node(tree, &saved_keys)) {
+            Some(tree) => data.pane_layouts.insert(project_id, tree),
+            None => data.pane_layouts.remove(&project_id),
+        };
     }
     state.save(&data)?;
     let live = live_keys(&data);
@@ -233,6 +349,21 @@ pub fn load_terminal_layouts(
 ) -> Result<HashMap<String, Vec<TermEntry>>, String> {
     let data = state.data.lock().map_err(|e| e.to_string())?;
     Ok(data.projects.clone())
+}
+
+/// Return every project's pane tree (card 47), for the boot restore.
+///
+/// Deliberately a SEPARATE command rather than a new field on
+/// `load_terminal_layouts`: widening that command's return shape would break
+/// `project.js`, which reads its result directly as `projectId -> tabs`, and
+/// this card must leave the app working on its own. A project with no tree is
+/// simply absent from the map and reopens as a single pane.
+#[tauri::command]
+pub fn load_pane_layouts(
+    state: State<TerminalLayoutState>,
+) -> Result<HashMap<String, PaneNode>, String> {
+    let data = state.data.lock().map_err(|e| e.to_string())?;
+    Ok(data.pane_layouts.clone())
 }
 
 /// Save one terminal's scrollback blob, capped to the most recent
@@ -267,6 +398,7 @@ pub fn clear_project_layout(
 ) -> Result<(), String> {
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.projects.remove(&project_id);
+    data.pane_layouts.remove(&project_id);
     state.save(&data)?;
     let live = live_keys(&data);
     reconcile_scrollback(&state.scrollback_dir, &live);
@@ -411,5 +543,153 @@ mod tests {
         assert!(keys.contains("a"));
         assert!(keys.contains("b"));
         assert_eq!(keys.len(), 2);
+    }
+
+    // ---- Pane tree (card 47) ---------------------------------------------
+
+    /// A two-pane tree: a row split holding one leaf per side.
+    fn sample_tree() -> PaneNode {
+        PaneNode::Split {
+            dir: "row".to_string(),
+            ratio: 0.5,
+            children: vec![
+                PaneNode::Pane {
+                    keys: vec!["a".to_string()],
+                    active: Some("a".to_string()),
+                },
+                PaneNode::Pane {
+                    keys: vec!["b".to_string(), "c".to_string()],
+                    active: Some("b".to_string()),
+                },
+            ],
+        }
+    }
+
+    fn live(keys: &[&str]) -> HashSet<String> {
+        keys.iter().map(|k| k.to_string()).collect()
+    }
+
+    #[test]
+    fn pane_tree_round_trips_through_json() {
+        let mut data = LayoutData::default();
+        data.pane_layouts.insert("p1".to_string(), sample_tree());
+        let raw = serde_json::to_string(&data).unwrap();
+        let back: LayoutData = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.pane_layouts, data.pane_layouts);
+    }
+
+    #[test]
+    fn pane_tree_uses_the_frontends_tagged_shape() {
+        // The frontend writes { type: "split" | "pane", ... }; the tag and the
+        // field names must match it exactly or a saved tree cannot be read back.
+        let raw = serde_json::to_string(&sample_tree()).unwrap();
+        assert!(raw.contains(r#""type":"split""#), "got {raw}");
+        assert!(raw.contains(r#""type":"pane""#), "got {raw}");
+        assert!(raw.contains(r#""keys":["a"]"#), "got {raw}");
+    }
+
+    #[test]
+    fn a_layout_file_without_pane_layouts_still_loads() {
+        // The file every existing install has on disk today.
+        let raw = r#"{ "projects": { "p": [ { "persistKey": "k" } ] } }"#;
+        let parsed: LayoutData = serde_json::from_str(raw).unwrap();
+        assert!(parsed.pane_layouts.is_empty());
+        // ...and its tab list is untouched.
+        assert_eq!(parsed.projects["p"][0].persist_key, "k");
+    }
+
+    #[test]
+    fn an_unreadable_tree_is_dropped_without_failing_the_whole_load() {
+        // One corrupt tree must not cost the user every project's tab list.
+        let raw = r#"{
+            "projects": { "p": [ { "persistKey": "k" } ] },
+            "paneLayouts": {
+                "bad": { "type": "wormhole" },
+                "good": { "type": "pane", "keys": ["k"], "active": "k" }
+            }
+        }"#;
+        let parsed: LayoutData = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.projects["p"][0].persist_key, "k");
+        assert!(!parsed.pane_layouts.contains_key("bad"));
+        assert!(parsed.pane_layouts.contains_key("good"));
+    }
+
+    #[test]
+    fn a_pane_layouts_field_that_is_not_an_object_costs_only_the_trees() {
+        // Found in code review: any parse failure makes TerminalLayoutState::load
+        // fall back to an EMPTY store, so one malformed field must never be able
+        // to take every project's tab list with it.
+        let raw = r#"{ "projects": { "p": [ { "persistKey": "k" } ] }, "paneLayouts": 7 }"#;
+        let parsed: LayoutData = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.projects["p"][0].persist_key, "k");
+        assert!(parsed.pane_layouts.is_empty());
+    }
+
+    #[test]
+    fn prune_drops_leaf_keys_that_are_no_longer_live() {
+        // "c" was closed; the rest of the tree survives.
+        let pruned = prune_pane_node(sample_tree(), &live(&["a", "b"])).unwrap();
+        let PaneNode::Split { children, .. } = &pruned else {
+            panic!("expected a split, got {pruned:?}");
+        };
+        assert_eq!(
+            children[1],
+            PaneNode::Pane {
+                keys: vec!["b".to_string()],
+                active: Some("b".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn prune_collapses_a_split_whose_child_emptied() {
+        // Every tab of the first pane is gone, so the split collapses to the
+        // surviving sibling — the same "space falls back" rule the UI applies.
+        let pruned = prune_pane_node(sample_tree(), &live(&["b", "c"])).unwrap();
+        assert_eq!(
+            pruned,
+            PaneNode::Pane {
+                keys: vec!["b".to_string(), "c".to_string()],
+                active: Some("b".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn prune_returns_none_when_no_key_survives() {
+        assert_eq!(prune_pane_node(sample_tree(), &live(&[])), None);
+    }
+
+    #[test]
+    fn prune_repoints_active_when_the_active_key_is_gone() {
+        // "b" was the active tab of its pane; with it closed the pane must show
+        // one of its remaining tabs, never a dangling key.
+        let pruned = prune_pane_node(sample_tree(), &live(&["a", "c"])).unwrap();
+        let PaneNode::Split { children, .. } = &pruned else {
+            panic!("expected a split, got {pruned:?}");
+        };
+        assert_eq!(
+            children[1],
+            PaneNode::Pane {
+                keys: vec!["c".to_string()],
+                active: Some("c".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn prune_keeps_a_pane_whose_active_is_already_none() {
+        let node = PaneNode::Pane {
+            keys: vec!["a".to_string()],
+            active: None,
+        };
+        let pruned = prune_pane_node(node, &live(&["a"])).unwrap();
+        assert_eq!(
+            pruned,
+            PaneNode::Pane {
+                keys: vec!["a".to_string()],
+                active: Some("a".to_string()),
+            }
+        );
     }
 }

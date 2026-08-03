@@ -169,6 +169,7 @@ pub fn run() {
             workspaces::pick_folder,
             terminal_layout::save_terminal_layout,
             terminal_layout::load_terminal_layouts,
+            terminal_layout::load_pane_layouts,
             terminal_layout::save_scrollback,
             terminal_layout::load_scrollback,
             terminal_layout::clear_project_layout,
