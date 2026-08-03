@@ -118,10 +118,24 @@ where
         .collect())
 }
 
+/// One saved, named arrangement (card 51): the pane tree plus which side panel
+/// sits on which edge. Both parts are optional in practice — a preset that only
+/// moves the panels around leaves `panes` as `None`, rather than being forced to
+/// invent a tree.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutPreset {
+    #[serde(default)]
+    pub panes: Option<PaneNode>,
+    /// panel key -> dock side ("left" | "right" | "top" | "bottom").
+    #[serde(default)]
+    pub docks: HashMap<String, String>,
+}
+
 /// The on-disk shape of `terminal_layout.json`: each project id maps to its
-/// ordered terminals, and (since card 47) to its pane tree. `#[serde(default)]`
-/// so a missing file or an older file without the field loads as an empty map
-/// instead of failing.
+/// ordered terminals, its pane tree (card 47), and its named presets (card 51).
+/// `#[serde(default)]` so a missing file or an older file without the field
+/// loads as an empty map instead of failing.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LayoutData {
@@ -131,6 +145,28 @@ struct LayoutData {
     /// absent entirely in every file written before card 47.
     #[serde(default, deserialize_with = "lenient_pane_layouts")]
     pane_layouts: HashMap<String, PaneNode>,
+    /// projectId -> preset name -> the arrangement. Presets are NOT pruned
+    /// against the live tab list the way `pane_layouts` is: a preset is a
+    /// remembered arrangement the user may reapply later, so it is allowed to
+    /// name terminals that are closed right now. The frontend skips the keys it
+    /// cannot resolve when it applies one.
+    #[serde(default)]
+    presets: HashMap<String, HashMap<String, LayoutPreset>>,
+}
+
+/// A project's preset names, sorted, so the picker lists them in a stable order.
+fn preset_names(data: &LayoutData, project_id: &str) -> Vec<String> {
+    let Some(slot) = data.presets.get(project_id) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = slot.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// One project's preset by name, or `None` when either is unknown.
+fn find_preset(data: &LayoutData, project_id: &str, name: &str) -> Option<LayoutPreset> {
+    data.presets.get(project_id)?.get(name).cloned()
 }
 
 /// Drop every leaf key that is no longer a live terminal, collapsing whatever
@@ -388,6 +424,67 @@ pub fn load_scrollback(state: State<TerminalLayoutState>, key: String) -> Option
     fs::read_to_string(path).ok()
 }
 
+// ---- Named layout presets (card 51) ---------------------------------------
+
+/// Save (or overwrite) one named arrangement for a project.
+#[tauri::command]
+pub fn save_layout_preset(
+    state: State<TerminalLayoutState>,
+    project_id: String,
+    name: String,
+    preset: LayoutPreset,
+) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("a preset needs a name".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    data.presets
+        .entry(project_id)
+        .or_default()
+        .insert(name, preset);
+    state.save(&data)
+}
+
+/// A project's preset names, sorted.
+#[tauri::command]
+pub fn list_layout_presets(
+    state: State<TerminalLayoutState>,
+    project_id: String,
+) -> Result<Vec<String>, String> {
+    let data = state.data.lock().map_err(|e| e.to_string())?;
+    Ok(preset_names(&data, &project_id))
+}
+
+/// One preset by name, or `None` when either the project or the name is unknown.
+#[tauri::command]
+pub fn load_layout_preset(
+    state: State<TerminalLayoutState>,
+    project_id: String,
+    name: String,
+) -> Result<Option<LayoutPreset>, String> {
+    let data = state.data.lock().map_err(|e| e.to_string())?;
+    Ok(find_preset(&data, &project_id, &name))
+}
+
+/// Delete one preset. Removing the last one drops the project's whole slot, so
+/// the file does not accumulate empty maps.
+#[tauri::command]
+pub fn delete_layout_preset(
+    state: State<TerminalLayoutState>,
+    project_id: String,
+    name: String,
+) -> Result<(), String> {
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    if let Some(slot) = data.presets.get_mut(&project_id) {
+        slot.remove(&name);
+        if slot.is_empty() {
+            data.presets.remove(&project_id);
+        }
+    }
+    state.save(&data)
+}
+
 /// Remove a project from the index entirely and delete all of its terminals'
 /// scrollback files. Called when a project is deleted, so nothing is left
 /// behind. Reconcile (against the now-smaller index) does the file deletes.
@@ -399,6 +496,7 @@ pub fn clear_project_layout(
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.projects.remove(&project_id);
     data.pane_layouts.remove(&project_id);
+    data.presets.remove(&project_id);
     state.save(&data)?;
     let live = live_keys(&data);
     reconcile_scrollback(&state.scrollback_dir, &live);
@@ -675,6 +773,74 @@ mod tests {
                 active: Some("c".to_string()),
             }
         );
+    }
+
+    // ---- Named layout presets (card 51) ----------------------------------
+
+    fn sample_preset() -> LayoutPreset {
+        let mut docks = HashMap::new();
+        docks.insert("browser".to_string(), "left".to_string());
+        LayoutPreset {
+            panes: Some(sample_tree()),
+            docks,
+        }
+    }
+
+    #[test]
+    fn a_preset_round_trips_through_json() {
+        let mut data = LayoutData::default();
+        data.presets
+            .entry("p1".to_string())
+            .or_default()
+            .insert("wide".to_string(), sample_preset());
+        let raw = serde_json::to_string(&data).unwrap();
+        let back: LayoutData = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.presets, data.presets);
+    }
+
+    #[test]
+    fn preset_names_come_back_sorted() {
+        let mut data = LayoutData::default();
+        let slot = data.presets.entry("p1".to_string()).or_default();
+        for n in ["zebra", "apple", "middle"] {
+            slot.insert(n.to_string(), sample_preset());
+        }
+        assert_eq!(preset_names(&data, "p1"), vec!["apple", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn preset_names_of_an_unknown_project_is_empty() {
+        assert!(preset_names(&LayoutData::default(), "nope").is_empty());
+    }
+
+    #[test]
+    fn an_unknown_preset_name_loads_as_none() {
+        let mut data = LayoutData::default();
+        data.presets
+            .entry("p1".to_string())
+            .or_default()
+            .insert("wide".to_string(), sample_preset());
+        assert!(find_preset(&data, "p1", "tall").is_none());
+        assert!(find_preset(&data, "other", "wide").is_none());
+        assert!(find_preset(&data, "p1", "wide").is_some());
+    }
+
+    #[test]
+    fn a_layout_file_without_presets_still_loads() {
+        let raw = r#"{ "projects": { "p": [ { "persistKey": "k" } ] } }"#;
+        let parsed: LayoutData = serde_json::from_str(raw).unwrap();
+        assert!(parsed.presets.is_empty());
+        assert_eq!(parsed.projects["p"][0].persist_key, "k");
+    }
+
+    #[test]
+    fn a_preset_may_hold_docks_but_no_panes() {
+        // Saving a preset with only the panels open (a single-pane terminal
+        // area) must be expressible, not forced to invent a tree.
+        let raw = r#"{ "docks": { "browser": "bottom" } }"#;
+        let parsed: LayoutPreset = serde_json::from_str(raw).unwrap();
+        assert!(parsed.panes.is_none());
+        assert_eq!(parsed.docks["browser"], "bottom");
     }
 
     #[test]
