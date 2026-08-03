@@ -1355,13 +1355,23 @@ class TerminalGroup {
     tabsEl.className = "tg-tabs";
     // Live tab reorder while dragging: slide the dragged tab to wherever the
     // pointer sits. Same-strip only here; moving a tab BETWEEN panes is card 46.
+    // Live tab reorder while dragging: slide the dragged tab to wherever the
+    // pointer sits — in THIS strip or any other pane's strip (card 46). Only the
+    // element moves here; the model catches up on drop (see _wireTabDrag), which
+    // is what lets the same handler serve reorder and cross-pane move.
     tabsEl.addEventListener("dragover", (e) => {
       const dragEl = this._dragEl;
-      if (!dragEl || dragEl.parentElement !== tabsEl) return;
+      if (!dragEl) return;
       e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
       const after = this._tabAfterX(tabsEl, e.clientX);
       if (after == null) tabsEl.append(dragEl);
       else if (after !== dragEl) tabsEl.insertBefore(dragEl, after);
+    });
+    // A strip drop is handled by dragend (the element is already in place);
+    // this only stops the browser treating it as an unhandled drag.
+    tabsEl.addEventListener("drop", (e) => {
+      if (this._dragEl) e.preventDefault();
     });
 
     const addBtn = this.showAdd ? this._makeAddButton(id) : null;
@@ -1370,6 +1380,37 @@ class TerminalGroup {
 
     const panesEl = document.createElement("div");
     panesEl.className = "tg-panes";
+
+    // Drop target covering this pane's terminal area, shown only while a tab
+    // drag is in flight (card 46). It sits INSIDE .tg-panes (which is
+    // position:relative) so it never covers the tab strips — a strip drop is a
+    // reorder/move and must stay reachable.
+    const dropEl = document.createElement("div");
+    dropEl.className = "tg-dropzones";
+    const hintEl = document.createElement("div");
+    hintEl.className = "tg-drop-hint";
+    dropEl.append(hintEl);
+    panesEl.append(dropEl);
+
+    dropEl.addEventListener("dragover", (e) => {
+      if (!this._dragEl) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      const zone = this._zoneAt(dropEl, e.clientX, e.clientY);
+      this._paintDropHint(hintEl, zone);
+    });
+    dropEl.addEventListener("dragleave", (e) => {
+      // Only when the pointer really left this pane, not on a child crossing.
+      if (e.relatedTarget && dropEl.contains(e.relatedTarget)) return;
+      hintEl.classList.remove("tg-drop-hint-on");
+    });
+    dropEl.addEventListener("drop", (e) => {
+      if (!this._dragId) return;
+      e.preventDefault();
+      const zone = this._zoneAt(dropEl, e.clientX, e.clientY);
+      hintEl.classList.remove("tg-drop-hint-on");
+      this._dropTabOnPane(this._dragId, id, zone);
+    });
 
     el.append(stripEl, panesEl);
 
@@ -1388,6 +1429,9 @@ class TerminalGroup {
       tabsEl,
       addBtn,
       panesEl,
+      // Drop target + its highlight, armed only during a tab drag (card 46).
+      dropEl,
+      hintEl,
       // Ordered tab ids shown in this leaf's strip.
       tabIds: [],
       // The one tab of this leaf that is on screen, or null when it has none.
@@ -1400,6 +1444,168 @@ class TerminalGroup {
     // two turns that gutter into a visible box framing the terminal.
     this._applyPanesBackground(null, leaf);
     return leaf;
+  }
+
+  // ---- Tab drag and drop (card 46) ----------------------------------------
+
+  /**
+   * Make one tab draggable. A drag can end three ways:
+   *   - dropped on a strip (this pane's or another's) -> the element is already
+   *     where the pointer left it, so dragend reads the DOM back into the model;
+   *   - dropped on a pane body -> the pane's own drop handler ran first and has
+   *     already moved the tab (dragend then finds nothing left to do);
+   *   - cancelled -> the element may sit in another strip, and the same dragend
+   *     path adopts it, which is the behaviour a user who dragged it there
+   *     expects anyway.
+   */
+  _wireTabDrag(tabEl, tabId) {
+    tabEl.draggable = true;
+    tabEl.dataset.ptyId = tabId;
+    tabEl.addEventListener("dragstart", (e) => {
+      this._dragEl = tabEl;
+      this._dragId = tabId;
+      tabEl.classList.add("tg-tab-dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", tabId); // Firefox won't drag without data.
+      this._setDropZones(true);
+    });
+    tabEl.addEventListener("dragend", () => {
+      tabEl.classList.remove("tg-tab-dragging");
+      this._dragEl = null;
+      this._dragId = null;
+      this._setDropZones(false);
+
+      const from = this._leafOf(tabId);
+      // Which strip is the element sitting in now?
+      const paneId = tabEl.closest(".tg-pane-group")?.dataset.paneId;
+      const target = paneId ? this.panes.get(paneId) : null;
+      if (target && from && target !== from) {
+        // Cross-pane strip drop: the element is already at the position the user
+        // chose, so take the index from the DOM and let the one mover reconcile
+        // the model (_moveTabToPane re-inserts it in the same spot, a no-op).
+        const index = [...target.tabsEl.children].indexOf(tabEl);
+        this._moveTabToPane(tabId, target, index < 0 ? null : index);
+        this._collapseIfEmpty(from);
+        this._applyPanes();
+        this._paintLastSent(this.focusedId());
+        requestAnimationFrame(() => {
+          this.refitActive();
+          this._focusActive();
+        });
+      }
+      this._syncTabOrder(this._leafOf(tabId));
+    });
+  }
+
+  /** Arm or disarm every pane's drop target for the duration of a tab drag. */
+  _setDropZones(on) {
+    for (const leaf of this._leaves()) {
+      leaf.dropEl.classList.toggle("tg-dropzones-on", on);
+      if (!on) leaf.hintEl.classList.remove("tg-drop-hint-on");
+    }
+  }
+
+  /**
+   * Which of the five drop zones the pointer is in: "left" | "right" | "top" |
+   * "bottom" | "center". The outer EDGE_BAND of each side splits the pane in
+   * that direction; the middle moves the tab in. In a corner both bands match,
+   * so the side whose edge is nearest wins.
+   */
+  _zoneAt(el, clientX, clientY) {
+    const EDGE_BAND = 0.3;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return "center";
+    const x = (clientX - r.left) / r.width;
+    const y = (clientY - r.top) / r.height;
+    // Distance to each edge, as a fraction of the pane. Smallest wins.
+    const near = [
+      { zone: "left", d: x },
+      { zone: "right", d: 1 - x },
+      { zone: "top", d: y },
+      { zone: "bottom", d: 1 - y },
+    ]
+      .filter((c) => c.d < EDGE_BAND)
+      .sort((a, b) => a.d - b.d);
+    return near[0]?.zone ?? "center";
+  }
+
+  /** Draw the highlight for the zone under the pointer. The rectangle shows the
+   *  space the tab would take, so an edge zone previews the half it would split
+   *  off and the centre previews the whole pane. */
+  _paintDropHint(hintEl, zone) {
+    const G = "10px"; // matches the .tg-pane inset, so the hint lines up with it
+    const HALF = "calc(50% - 10px)";
+    const s = hintEl.style;
+    s.left = s.right = s.top = s.bottom = G;
+    s.width = s.height = "";
+    if (zone === "left") s.width = HALF;
+    else if (zone === "right") {
+      s.left = "auto";
+      s.width = HALF;
+    } else if (zone === "top") s.height = HALF;
+    else if (zone === "bottom") {
+      s.top = "auto";
+      s.height = HALF;
+    }
+    hintEl.classList.add("tg-drop-hint-on");
+  }
+
+  /**
+   * Finish a drop on a pane body. The centre zone moves the tab into that pane;
+   * an edge zone splits the pane in that direction and puts the tab in the new
+   * half. A source pane left with nothing collapses into its sibling.
+   *
+   * Past MAX_PANES an edge drop cannot split, so it falls back to a plain move
+   * and says why — losing the tab entirely would be the worse answer.
+   */
+  _dropTabOnPane(tabId, paneId, zone) {
+    const target = this.panes.get(paneId);
+    const from = this._leafOf(tabId);
+    if (!target || !from) return;
+    // Dropping a pane's only tab back onto its own pane changes nothing.
+    if (from === target && (zone === "center" || from.tabIds.length < 2)) {
+      if (zone !== "center") {
+        this._flashNotice("That pane has only this tab — nothing to split off");
+      }
+      return;
+    }
+
+    let landing = target;
+    if (zone !== "center") {
+      if (this._leaves().length >= MAX_PANES) {
+        this._flashNotice(`${MAX_PANES}-pane limit reached — moved the tab instead`);
+      } else {
+        const dir = zone === "left" || zone === "right" ? "row" : "col";
+        // "left"/"top" put the new pane BEFORE the one dropped on, so the tab
+        // lands on the side the user aimed at.
+        const before = zone === "left" || zone === "top";
+        this.splitDir = dir;
+        landing = this._makeLeaf();
+        this._insertSibling(target, landing, dir, before);
+      }
+    }
+
+    this._moveTabToPane(tabId, landing);
+    this._collapseIfEmpty(from);
+    this.activePaneId = landing.id;
+    this._applyPanes();
+    this._paintLastSent(this.focusedId());
+    this._saveSplitPrefs();
+    this.onLayoutChange?.();
+    requestAnimationFrame(() => {
+      this.refitActive();
+      this._focusActive();
+    });
+  }
+
+  /** Remove a pane that a move left with no tabs, giving its space back to its
+   *  sibling. The root leaf is kept — an empty group still needs one strip. */
+  _collapseIfEmpty(leaf) {
+    if (!leaf || leaf.tabIds.length || !leaf.parent) return;
+    const heir = this._firstLeafOf(leaf.parent.children.find((c) => c !== leaf));
+    const wasActive = this.activePaneId === leaf.id;
+    this._removePane(leaf);
+    if (wasActive) this.activePaneId = heir?.id ?? this._leaves()[0]?.id;
   }
 
   /** The "+" control for one leaf's strip. A quickSpawn group gets the caret
@@ -1464,9 +1670,10 @@ class TerminalGroup {
    * Wrap `leaf` in a new split node and put `sibling` beside it, cutting the
    * space `dir` ("row" = side by side, "col" = stacked). The new pane takes the
    * far half, so a "split right" appears to the right of what you were looking
-   * at.
+   * at; `before` puts it in the near half instead, which is what a drop on a
+   * pane's left or top edge means (card 46).
    */
-  _insertSibling(leaf, sibling, dir) {
+  _insertSibling(leaf, sibling, dir, before = false) {
     const parent = leaf.parent;
     const el = document.createElement("div");
     el.className = `tg-split tg-split-${dir === "col" ? "col" : "row"}`;
@@ -1479,7 +1686,7 @@ class TerminalGroup {
       type: "split",
       dir: dir === "col" ? "col" : "row",
       ratio: this.splitRatio,
-      children: [leaf, sibling],
+      children: before ? [sibling, leaf] : [leaf, sibling],
       el,
       sashEl,
       parent,
@@ -1497,7 +1704,8 @@ class TerminalGroup {
     // re-inserted on the way, so its terminals give up their GPU contexts first.
     this._dropWebglIn(leaf);
     leaf.el.replaceWith(el);
-    el.append(leaf.el, sashEl, sibling.el);
+    if (before) el.append(sibling.el, sashEl, leaf.el);
+    else el.append(leaf.el, sashEl, sibling.el);
     this._applyRatios();
     return split;
   }
@@ -1878,23 +2086,7 @@ class TerminalGroup {
       e.preventDefault();
       this._openTabMenu(ptyId, e.clientX, e.clientY);
     });
-    // Drag to reorder. The id lives on the element so _syncTabOrder can rebuild
-    // this pane's tab order straight from the DOM after a drop.
-    tabEl.draggable = true;
-    tabEl.dataset.ptyId = ptyId;
-    tabEl.addEventListener("dragstart", (e) => {
-      this._dragEl = tabEl;
-      tabEl.classList.add("tg-tab-dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", ptyId); // Firefox won't drag without data.
-    });
-    tabEl.addEventListener("dragend", () => {
-      tabEl.classList.remove("tg-tab-dragging");
-      this._dragEl = null;
-      // Read the leaf back from the entry: a drop may have moved the tab into
-      // another pane (card 46), and the order to rebuild is that pane's.
-      this._syncTabOrder(this._leafOf(ptyId) || leaf);
-    });
+    this._wireTabDrag(tabEl, ptyId);
     leaf.tabsEl.append(tabEl);
 
     const entry = {
@@ -2049,20 +2241,8 @@ class TerminalGroup {
     });
     tabEl.append(label, closeBtn);
     tabEl.addEventListener("click", () => this.activate(tabId));
-    // Content tabs join the same drag-to-reorder flow as terminal tabs.
-    tabEl.draggable = true;
-    tabEl.dataset.ptyId = tabId;
-    tabEl.addEventListener("dragstart", (e) => {
-      this._dragEl = tabEl;
-      tabEl.classList.add("tg-tab-dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", tabId);
-    });
-    tabEl.addEventListener("dragend", () => {
-      tabEl.classList.remove("tg-tab-dragging");
-      this._dragEl = null;
-      this._syncTabOrder(this._leafOf(tabId) || leaf);
-    });
+    // Content tabs join the same drag flow as terminal tabs.
+    this._wireTabDrag(tabEl, tabId);
     leaf.tabsEl.append(tabEl);
 
     const entry = {

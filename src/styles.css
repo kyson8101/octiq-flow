@@ -2697,6 +2697,39 @@ body {
   opacity: 1;
 }
 
+/* ---- Tab drop targets (card 46) -------------------------------------------
+   One per pane, inside .tg-panes so the tab strips stay clickable during a
+   drag. Armed only while a tab is being dragged: the rest of the time it is
+   display:none, so it can never swallow a click or a wheel event on the
+   terminal underneath. */
+.tg-dropzones {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+}
+
+.tg-dropzones-on {
+  display: block;
+}
+
+/* The highlight showing where the tab would land. Its rectangle is written
+   inline by _paintDropHint: half the pane for an edge zone (the half that
+   would be split off), the whole pane for the centre. */
+.tg-drop-hint {
+  position: absolute;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  opacity: 0;
+  transition: opacity 90ms ease;
+  pointer-events: none;
+}
+
+.tg-drop-hint-on {
+  opacity: 1;
+}
+
 /* Tab strip: the row of tabs plus the "+" button */
 /* Tabs are floating glass pills now (no bottom-blend trapezoids), so the
    strip centers them instead of stretching them onto its bottom border. */
