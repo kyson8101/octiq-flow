@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window. opener:allow-open-path was `**` (card 25): it asks the OS to open a path with its DEFAULT HANDLER, so an unscoped grant let the webview launch any .app or executable on disk. Now scoped to $HOME, the profile dir, and the temp dirs where agents drop files they print as clickable links. NOTE: `**` never matches a dot-directory (Tauri sets require_literal_leading_dot on unix), which is why $HOME/.octiqflow needs its own entry. A project on a volume outside $HOME loses 'open externally'; add its root here if you keep one.",
+  "description": "Capability for the main window. opener:allow-open-path was `**` (card 25): it asks the OS to open a path with its DEFAULT HANDLER, so an unscoped grant let the webview launch any .app or executable on disk. Now scoped to $HOME, the profile dir, and the temp dirs where agents drop files they print as clickable links. NOTE: `**` never matches a dot-directory (Tauri sets require_literal_leading_dot on unix), which is why $HOME/.octiqflow needs its own entry. A project on a volume outside $HOME loses 'open externally'; add its root here if you keep one. core:window:allow-start-dragging is what makes the window movable: titleBarStyle 'Overlay' hides the native title bar, so the ONLY way to move the window is the mode bar's data-tauri-drag-region, whose injected script invokes plugin:window|start_dragging — and that command is NOT part of core:window:default, so without this line the window cannot be dragged at all.",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "opener:default",
     "notification:default",
+    "core:window:allow-start-dragging",
     {
       "identifier": "opener:allow-open-path",
       "allow": [
