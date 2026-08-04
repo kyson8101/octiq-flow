@@ -35,7 +35,14 @@
 //
 // browser.js dispatches `file-open` { path, name, line } for every file click
 // (sidebar tree, center tree, search hits) — same event contract as before.
+// card 55 — LIVE RELOAD. A tab used to show the bytes read when it was opened
+// and nothing else: an agent rewriting the file two columns to the left left the
+// pane stale until the tab was closed and re-opened. The open paths are now
+// registered with a backend fs watcher (file_watch.rs), and a `file-changed`
+// event re-reads them in place. A tab with UNSAVED edits is never overwritten —
+// it is marked stale instead, so the user's typing always wins.
 const { invoke, convertFileSrc } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 import { closeMainPanel } from "/layout.js";
 import { getTerminalSettings, TERMINAL_SETTINGS_CHANGED } from "/settings.js";
 import { formatBytes, loadPaneWidth, makeResizer, textEl } from "/util.js";
@@ -351,13 +358,23 @@ function renderBody(entry) {
   altEl.replaceChildren(buildAltBody(entry));
 }
 
+/** The asset URL for a media tab, with a cache-busting token (card 55). The
+ *  WebView caches `asset://` responses by URL, so a re-render after the file
+ *  changed on disk would otherwise redraw the OLD bytes; `mediaToken` is bumped
+ *  on every reload to make the URL new. */
+function mediaSrc(entry) {
+  const url = convertFileSrc(entry.path);
+  if (!entry.mediaToken) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}v=${entry.mediaToken}`;
+}
+
 /** The body node for a non-text tab. */
 function buildAltBody(entry) {
   if (entry.kind === "image") {
     const img = document.createElement("img");
     img.className = "ft-img";
     img.alt = entry.name;
-    img.src = convertFileSrc(entry.path);
+    img.src = mediaSrc(entry);
     img.addEventListener("error", () => {
       altEl.replaceChildren(
         bodyMessage("Could not show this image. Use “Open externally” to view it."),
@@ -372,7 +389,7 @@ function buildAltBody(entry) {
     const frame = document.createElement("iframe");
     frame.className = "ft-pdf";
     frame.title = entry.name;
-    frame.src = convertFileSrc(entry.path);
+    frame.src = mediaSrc(entry);
     return frame;
   }
 
@@ -392,6 +409,9 @@ function activate(path, { focus = false } = {}) {
   renderHead();
   statusEl.textContent = "";
   statusEl.classList.remove("err");
+  // A stale warning belongs to the TAB, not to a moment in time: re-show it
+  // whenever that tab comes back up (card 55).
+  if (entry.stale) flashStatus(STALE_MSG, true);
   renderBody(entry);
   // A search hit that landed while this tab was in the background (or still
   // loading) jumps now that its model is actually in the editor.
@@ -418,6 +438,7 @@ function closeTab(path, { force = false } = {}) {
     entry.model = null;
   }
   openFiles.delete(path);
+  syncWatch();
 
   if (activePath !== path) {
     renderTabs();
@@ -453,6 +474,7 @@ function closePane() {
     }
   }
   openFiles.clear();
+  syncWatch(); // nothing open: stop watching
   activePath = null;
   sharedEditor?.setModel(null);
   renderTabs();
@@ -488,6 +510,7 @@ async function saveActive() {
     await invoke("write_file", { path: entry.path, content });
     if (entry.closed) return;
     setDirty(entry, false);
+    entry.stale = false; // this buffer IS the file on disk again
     if (activePath === entry.path) flashStatus("Saved");
   } catch (err) {
     if (!entry.closed && activePath === entry.path) flashStatus(String(err), true);
@@ -583,6 +606,7 @@ async function loadContent(entry, line) {
   if (entry.closed) return;
 
   ensureEditor(monaco);
+  entry.stale = false;
   entry.editable = !preview.truncated;
   entry.truncatedNote = entry.editable
     ? ""
@@ -599,6 +623,7 @@ async function loadContent(entry, line) {
   if (entry.editable) {
     entry.model.onDidChangeContent(() => {
       if (entry.closed) return;
+      if (entry.reloading) return; // a disk reload writing the model, not the user
       setDirty(entry, true);
       if (activePath === entry.path) statusEl.textContent = "";
     });
@@ -611,6 +636,97 @@ async function loadContent(entry, line) {
   }
   gotoLine(entry, line || entry.pendingLine);
 }
+
+// --- card 54: live reload when a file changes on disk ------------------------
+
+/** Shown when a tab the user has EDITED changed underneath them. Their buffer is
+ *  left exactly as it is; saving overwrites the newer file on disk. */
+const STALE_MSG = "Changed on disk — your unsaved edits are kept";
+
+/** Tell the backend which files to watch: exactly the open tabs. Called after
+ *  every change to `openFiles`. Best-effort — a watcher that fails to install
+ *  only costs the live refresh, so it must never surface an error at the user. */
+function syncWatch() {
+  invoke("file_watch_paths", { paths: [...openFiles.keys()] }).catch(() => {});
+}
+
+/** Re-read one tab's file after the watcher says it changed.
+ *
+ *  A DIRTY tab is never overwritten — it is flagged stale and left alone. A
+ *  clean text tab keeps its model (so its Uri/language and the editor's scroll
+ *  survive) and only swaps the text in; anything else — including a file that
+ *  changed KIND, e.g. a text file replaced by a binary — is rebuilt through the
+ *  normal load path. */
+async function reloadFromDisk(entry) {
+  if (entry.closed || entry.reloading) return;
+  if (entry.dirty) {
+    entry.stale = true;
+    if (activePath === entry.path) flashStatus(STALE_MSG, true);
+    return;
+  }
+
+  entry.reloading = true;
+  try {
+    let preview;
+    try {
+      preview = await invoke("read_file_preview", { path: entry.path });
+    } catch (err) {
+      if (entry.closed) return;
+      // Deleted or unreadable now: say so instead of showing stale content.
+      if (entry.model) {
+        if (sharedEditor?.getModel() === entry.model) sharedEditor.setModel(null);
+        entry.model.dispose();
+        entry.model = null;
+      }
+      entry.kind = "error";
+      entry.message = String(err);
+      if (activePath === entry.path) renderBody(entry);
+      return;
+    }
+    if (entry.closed) return;
+
+    if (preview.kind === "text" && entry.kind === "text" && entry.model) {
+      // Our own save echoes back through the watcher; nothing changed then.
+      if (entry.model.getValue() === preview.content) return;
+      const live = activePath === entry.path && sharedEditor?.getModel() === entry.model;
+      const view = live ? sharedEditor.saveViewState() : entry.viewState;
+      entry.model.setValue(preview.content);
+      if (live) sharedEditor.restoreViewState(view);
+      else entry.viewState = view;
+      entry.editable = !preview.truncated;
+      entry.truncatedNote = entry.editable
+        ? ""
+        : `Large file (${formatBytes(preview.size)}) — showing the first part only, read-only. Open externally for the full file.`;
+      if (activePath === entry.path) {
+        renderHead();
+        renderBody(entry);
+      }
+      return;
+    }
+
+    // Kind changed, or a media/binary tab: rebuild it from scratch. The media
+    // token makes the WebView fetch the new bytes instead of its cached copy.
+    if (entry.model) {
+      if (sharedEditor?.getModel() === entry.model) sharedEditor.setModel(null);
+      entry.model.dispose();
+      entry.model = null;
+    }
+    entry.mediaToken = (entry.mediaToken || 0) + 1;
+    entry.kind = "loading";
+    entry.reloading = false; // loadContent installs its own change handler
+    await loadContent(entry, 0);
+  } finally {
+    entry.reloading = false;
+  }
+}
+
+// One watcher event can name several files (a git checkout, a formatter pass).
+listen("file-changed", (e) => {
+  for (const path of e.payload || []) {
+    const entry = openFiles.get(path);
+    if (entry) reloadFromDisk(entry);
+  }
+});
 
 /** Open `path` as a tab (card 52). An already-open path just activates its tab —
  *  and still honours `line`, so a content-search hit jumps inside a file that is
@@ -640,8 +756,12 @@ function openFile({ path, name, line = 0 }) {
     viewState: null,
     pendingLine: line,
     closed: false,
+    reloading: false, // true while a disk reload writes the model (card 55)
+    stale: false, // the file changed on disk under unsaved edits
+    mediaToken: 0, // cache-buster for image/pdf reloads
   };
   openFiles.set(path, entry);
+  syncWatch();
   activate(path);
   loadContent(entry, line);
 }

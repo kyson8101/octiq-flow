@@ -12,6 +12,7 @@ mod agent_resume;
 mod agents;
 mod appearance;
 mod canvas;
+mod file_watch;
 mod focus;
 mod fonts;
 mod fsbrowse;
@@ -82,6 +83,10 @@ pub fn run() {
             // Fs watcher behind the sidebar's live git counts; the frontend
             // installs the watched paths via git_watch_paths after each render.
             app.manage(git_watch::GitWatchState::default());
+            // Fs watcher behind the file preview pane's live reload; the frontend
+            // points it at the open editor tabs via file_watch_paths so an
+            // external edit (agent, build, git checkout) refreshes the pane.
+            app.manage(file_watch::FileWatchState::default());
             // Fs watcher behind the canvas pane; the frontend points it at the
             // selected project's ~/.octiqflow/canvas/<key> folder via canvas_watch
             // so an agent's document writes re-render the pane live.
@@ -194,6 +199,7 @@ pub fn run() {
             profile::set_profile_base,
             git::git_status_summary,
             git_watch::git_watch_paths,
+            file_watch::file_watch_paths,
             git::git_changed_files,
             git::git_file_diff,
             git::git_local_branches,
