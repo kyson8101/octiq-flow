@@ -208,6 +208,7 @@ pub fn run() {
             git_ops::git_pull,
             git_ops::git_switch_branch,
             fsbrowse::list_dir,
+            fsbrowse::open_in_vscode,
             fsbrowse::read_file_preview,
             fsbrowse::write_file,
             fsbrowse::resolve_paths,

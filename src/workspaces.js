@@ -724,6 +724,15 @@ function revealProjectFolder(ws) {
   if (!path) return;
   invoke("plugin:opener|open_path", { path, with: null }).catch(() => {});
 }
+// Open a project's folder in VS Code (backend command; a GUI app has no shell
+// PATH, so `code` cannot be launched from here directly). Same path pick as
+// revealProjectFolder: primary path, else the first non-empty extra path.
+function openProjectInVSCode(ws) {
+  const path = ws.primary_path || (ws.paths || []).find((p) => (p || "").trim());
+  if (!path) return;
+  invoke("open_in_vscode", { path }).catch((e) => console.error("open_in_vscode", e));
+}
+
 const REVEAL_LABEL = navigator.userAgent.includes("Win")
   ? "Open in Explorer"
   : navigator.userAgent.includes("Mac")
@@ -775,6 +784,7 @@ function openProjectMenu(x, y, ws, nameEl) {
   openCtxMenu(x, y, [
     { label: "Files", onClick: () => browse("files", ws.primary_path || "") },
     { label: REVEAL_LABEL, onClick: () => revealProjectFolder(ws) },
+    { label: "Open with VS Code", onClick: () => openProjectInVSCode(ws) },
     { label: "Documentation", onClick: () => browse("docs", ws.docs_path || "") },
     { label: "Web preview", onClick: webPreview },
     { label: "Open in browser", onClick: openInBrowser },

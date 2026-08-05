@@ -64,6 +64,48 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     Ok(entries)
 }
 
+/// Open `path` (a project folder or a file) in VS Code.
+///
+/// A GUI app does not inherit the interactive shell `PATH`, so the `code`
+/// launcher is often not on `PATH` here (same reason PTY shells are login
+/// shells). On macOS we therefore ask Launch Services for the app by bundle id,
+/// which needs no `PATH` at all; elsewhere we run `code` and report a clear
+/// error when it is missing.
+#[tauri::command]
+pub fn open_in_vscode(path: String) -> Result<(), String> {
+    let target = Path::new(&path);
+    if !target.exists() {
+        return Err(format!("Path not found: {path}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg("-b").arg("com.microsoft.VSCode").arg(&path);
+        c
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut cmd = {
+        let mut c = Command::new("code");
+        c.arg(&path);
+        c
+    };
+
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Cannot start VS Code: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if err.is_empty() {
+        "Cannot open VS Code. Is it installed?".to_string()
+    } else {
+        format!("Cannot open VS Code: {err}")
+    })
+}
+
 /// A preview descriptor for one file for the in-app preview pane. The frontend
 /// renders it by `kind`:
 ///   * "text"   — show `content` (the capped UTF-8 text).
