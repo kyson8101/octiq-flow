@@ -30,6 +30,8 @@
          lazily on the first text preview, after all startup UMD globals exist. -->
 
     <link rel="stylesheet" href="styles.css" />
+    <!-- First: a dropped file must never navigate the webview away from the app. -->
+    <script type="module" src="/dropguard.js" defer></script>
     <script type="module" src="/appearance.js" defer></script>
     <script type="module" src="/workspaces.js" defer></script>
     <script type="module" src="/main.js" defer></script>
