@@ -62,6 +62,13 @@ export type ChatState = {
   /** From the last `result` event. */
   lastCostUsd?: number;
   lastDurationMs?: number;
+  /** How much of the model's context the session is holding, and how much it
+   *  can hold. Both come from the `result` event: the token counts from
+   *  `usage`, the ceiling from `modelUsage.<model>.contextWindow` — which is
+   *  the only place the agent reports it, and it is not fixed (Opus 5 answers
+   *  1,000,000 here, other models less). */
+  contextTokens?: number;
+  contextWindow?: number;
   /** A non-JSON line or a stderr line from the agent process. */
   notices: string[];
   /** Set when the agent process exits. */
@@ -72,6 +79,19 @@ export type ChatState = {
   stopping: boolean;
   /** Set on the turn the user stopped, so it can say so. */
   stoppedAt?: string;
+  /** The turn ended badly, in a way worth putting in front of the user rather
+   *  than leaving as a line in `notices`. Cleared when they say anything else. */
+  failure?: Failure;
+};
+
+/** A turn that failed, said in words the user can act on. */
+export type Failure = {
+  title: string;
+  detail?: string;
+  /** Somewhere to go about it, when the agent named one. */
+  link?: string;
+  /** True when the agent is out of quota rather than broken. */
+  outOfCredit?: boolean;
 };
 
 export const emptyChat = (): ChatState => ({
@@ -85,11 +105,56 @@ export const emptyChat = (): ChatState => ({
  *  marker, not something the user said, so it never becomes a bubble. */
 const INTERRUPT_MARKER = "[Request interrupted by user]";
 
+/** Turn an agent's error text into something worth reading.
+ *
+ *  Running out of quota is the failure that actually happens, and both agents
+ *  report it as a wall of prose with links in it. It is not a bug and there is
+ *  nothing to debug — the answer is "wait, or buy more" — so it gets said
+ *  plainly instead of being dropped into the notices with everything else. */
+export function describeFailure(agent: "claude" | "codex", raw: string): Failure {
+  const text = raw.trim();
+  const outOfCredit =
+    /usage limit|out of credits|quota|rate.?limit|purchase more credits|upgrade to pro/i.test(text);
+
+  if (outOfCredit) {
+    // "try again at Aug 20th, 2026 11:37 AM" — the one fact that matters.
+    const when = /try again (?:at|after|on)\s+([^.()]+)/i.exec(text)?.[1]?.trim();
+    return {
+      title:
+        agent === "codex"
+          ? "Your Codex account is out of credits"
+          : "You have hit your Claude usage limit",
+      detail: when ? `It comes back at ${when}.` : text,
+      link: /https?:\/\/[^\s)]+/.exec(text)?.[0],
+      outOfCredit: true,
+    };
+  }
+
+  return { title: "The agent stopped with an error", detail: text || undefined };
+}
+
 type Json = Record<string, unknown>;
 
 const asObj = (v: unknown): Json => (v && typeof v === "object" ? (v as Json) : {});
 const asArr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const asStr = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** How much context a turn was holding, from its `usage` block.
+ *
+ *  The sum of every input the model saw plus what it wrote: fresh input, the
+ *  part served from cache, the part written to cache, and the output. Cached
+ *  tokens count — being cached makes them cheap, not absent, and they occupy
+ *  the window exactly like the rest. */
+function contextFrom(raw: unknown): number | undefined {
+  const u = asObj(raw);
+  const n = (v: unknown) => (typeof v === "number" && v >= 0 ? v : 0);
+  const total =
+    n(u.input_tokens) +
+    n(u.cache_creation_input_tokens) +
+    n(u.cache_read_input_tokens) +
+    n(u.output_tokens);
+  return total > 0 ? total : undefined;
+}
 
 /** Append to the last block when it is the same kind, else start a new one.
  *  Streaming text arrives in many small pieces; one block per piece would
@@ -133,12 +198,40 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     };
   }
 
+  // Codex speaks its own event language. `thread.started` carries the id that
+  // `codex exec resume` takes, which is the same job Claude's `session_id`
+  // does — so it lands in the same field and the resume path needs no branch.
+  if (type === "thread.started") {
+    const id = asStr(e.thread_id);
+    return id ? { ...state, sessionId: id } : state;
+  }
+
+  // Codex reports a failed turn twice: once as a bare `error`, once wrapped in
+  // `turn.failed`. Either is enough, and taking both means an older or newer
+  // Codex that sends only one is still covered.
+  if (type === "error" || type === "turn.failed") {
+    const message = asStr(e.message) || asStr(asObj(e.error).message);
+    return {
+      ...state,
+      busy: false,
+      stopping: false,
+      failure: describeFailure("codex", message),
+      messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+    };
+  }
+
   if (type === "stream_event") return reduceStream(state, asObj(e.event));
 
   if (type === "assistant") {
     const msg = asObj(e.message);
     const id = asStr(msg.id);
     const aborted = e.aborted === true;
+    // Every assistant message names the model that wrote it, which is how a
+    // mid-session `/model sonnet` becomes visible: init reported the model the
+    // session STARTED on, and that is no longer the truth.
+    if (asStr(msg.model) && asStr(msg.model) !== state.model) {
+      state = { ...state, model: asStr(msg.model) };
+    }
     if (aborted && state.messages.some((m) => m.id === id)) {
       return {
         ...state,
@@ -225,12 +318,31 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   if (type === "result") {
     // An interrupted turn ends as `error_during_execution`. That is the user's
     // own stop coming back to them, so it is not reported as a failure.
+    const models = asObj(e.modelUsage);
+    // Whichever model actually ran this turn. Taking the largest window rather
+    // than assuming one entry: a turn that changed model mid-way reports both,
+    // and the roomier one is the one the conversation now lives in.
+    let window = state.contextWindow;
+    for (const key of Object.keys(models)) {
+      const size = asObj(models[key]).contextWindow;
+      if (typeof size === "number" && size > 0 && (!window || size > window)) window = size;
+    }
+    // Claude says so on the result. `error_during_execution` is the user's own
+    // interrupt coming back to them, which is not a failure to report.
+    const subtype = asStr(e.subtype);
+    const failed =
+      e.is_error === true && subtype !== "error_during_execution" && !state.stopping;
     return {
       ...state,
       busy: false,
       stopping: false,
+      failure: failed
+        ? describeFailure("claude", asStr(e.result) || asStr(e.api_error_status) || subtype)
+        : state.failure,
       lastCostUsd: typeof e.total_cost_usd === "number" ? e.total_cost_usd : state.lastCostUsd,
       lastDurationMs: typeof e.duration_ms === "number" ? e.duration_ms : state.lastDurationMs,
+      contextTokens: contextFrom(e.usage) ?? state.contextTokens,
+      contextWindow: window,
       messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
     };
   }
@@ -330,6 +442,8 @@ export function addUserTurn(state: ChatState, text: string): ChatState {
     busy: true,
     stopping: false,
     stoppedAt: undefined,
+    // The last failure belonged to the last turn; asking again clears it.
+    failure: undefined,
     messages: [
       ...state.messages,
       { id: `u${state.messages.length}`, role: "user", blocks: [{ kind: "text", text }], streaming: false },

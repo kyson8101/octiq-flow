@@ -29,6 +29,10 @@ export type Conversation = {
    *  does not silently change either. */
   modelId?: string;
   permission?: string;
+  /** When the chat was STARTED. This is what the sidebar orders by, and it
+   *  never changes — ordering by `updatedAt` made the list re-sort under the
+   *  cursor as you typed, so the chat you were reading moved. */
+  createdAt: number;
   updatedAt: number;
 };
 
@@ -40,16 +44,21 @@ export function loadConversations(): Conversation[] {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "[]");
     if (!Array.isArray(raw)) return [];
-    return raw.filter((c) => c && typeof c.id === "string" && Array.isArray(c.messages));
+    return raw
+      .filter((c) => c && typeof c.id === "string" && Array.isArray(c.messages))
+      // Chats saved before `createdAt` existed take their last-used time as
+      // their start time — a one-off guess that then holds still forever.
+      .map((c) => (typeof c.createdAt === "number" ? c : { ...c, createdAt: c.updatedAt ?? 0 }));
   } catch {
     return [];
   }
 }
 
 export function saveConversations(list: Conversation[]): void {
-  // Newest first, and bounded: a long transcript of tool results can be large,
-  // and a quota error would otherwise lose the whole store rather than the
-  // oldest entry.
+  // Bounded, dropping the LEAST RECENTLY USED first: a long transcript of tool
+  // results can be large, and a quota error would otherwise lose the whole
+  // store rather than one entry. This is eviction order only — what the sidebar
+  // shows is ordered by byProject, which never moves a row.
   const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
   for (let attempt = ordered.length; attempt > 0; attempt--) {
     try {
@@ -70,10 +79,15 @@ export function titleFrom(messages: Message[]): string {
   return clean.length > 48 ? `${clean.slice(0, 48)}…` : clean;
 }
 
-/** Group conversations under their project, newest first. */
+/** Group conversations under their project, newest chat first.
+ *
+ *  Ordered by when each chat STARTED, not when it was last used: a list that
+ *  re-sorts while you are talking moves the row you are reading, and every
+ *  other row with it. A chat appears at the top of its project when you start
+ *  it and stays exactly there. */
 export function byProject(list: Conversation[]): Map<string, Conversation[]> {
   const out = new Map<string, Conversation[]>();
-  for (const c of [...list].sort((a, b) => b.updatedAt - a.updatedAt)) {
+  for (const c of [...list].sort((a, b) => b.createdAt - a.createdAt)) {
     const bucket = out.get(c.projectId);
     if (bucket) bucket.push(c);
     else out.set(c.projectId, [c]);
