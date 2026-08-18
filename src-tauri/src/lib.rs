@@ -161,6 +161,7 @@ pub fn run() {
             agent_chat::chat_interrupt,
             agent_chat::chat_stop,
             agent_chat::chat_list,
+            agent_chat::save_attachment,
             pty::pty_agent_running,
             pty::pty_set_visible,
             pty::pty_set_status_scan,

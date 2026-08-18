@@ -117,16 +117,60 @@ fn safe_session_id(id: &str) -> Option<String> {
     ok.then(|| id.to_string())
 }
 
-/// Permission modes Claude accepts. Same reasoning as the model allowlist.
-fn safe_permission_mode(mode: &str) -> Option<&'static str> {
-    match mode {
-        "acceptEdits" => Some("acceptEdits"),
-        "bypassPermissions" => Some("bypassPermissions"),
-        "plan" => Some("plan"),
-        "dontAsk" => Some("dontAsk"),
-        "auto" => Some("auto"),
-        "manual" => Some("manual"),
+/// Reasoning effort, per agent.
+///
+/// Both support the idea and neither spells it the same way: Claude takes
+/// `--effort`, Codex takes a config override. The levels differ too — Codex has
+/// a `minimal` that Claude does not, Claude has a `max` that Codex does not —
+/// so the UI offers each agent its own list and this refuses anything else.
+/// Same reasoning as the model allowlist: it reaches a command line.
+fn safe_effort(agent: ChatAgent, level: &str) -> Option<&'static str> {
+    match (agent, level) {
+        (_, "low") => Some("low"),
+        (_, "medium") => Some("medium"),
+        (_, "high") => Some("high"),
+        (_, "xhigh") => Some("xhigh"),
+        (ChatAgent::Claude, "max") => Some("max"),
+        (ChatAgent::Codex, "minimal") => Some("minimal"),
         _ => None,
+    }
+}
+
+/// How much the agent may do unattended, as ONE idea across both agents.
+///
+/// The UI asks one question — look only, edit files, or anything — because that
+/// is the decision the user is actually making. Each agent then gets its own
+/// flag for it: Claude a permission mode, Codex a sandbox policy. Mapping here
+/// rather than in the UI keeps the two spellings out of the frontend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Access {
+    /// Look and plan, change nothing.
+    Read,
+    /// Edit files in the project without asking.
+    Edit,
+    /// Run anything without asking.
+    Full,
+}
+
+impl Access {
+    /// Claude's `--permission-mode` value.
+    fn claude(self) -> &'static str {
+        match self {
+            Access::Read => "plan",
+            Access::Edit => "acceptEdits",
+            Access::Full => "bypassPermissions",
+        }
+    }
+
+    /// Codex's `--sandbox` value. `workspace-write` is the direct match for
+    /// "edit files": writes inside the workspace, nothing outside it.
+    fn codex(self) -> &'static str {
+        match self {
+            Access::Read => "read-only",
+            Access::Edit => "workspace-write",
+            Access::Full => "danger-full-access",
+        }
     }
 }
 
@@ -139,9 +183,12 @@ fn safe_permission_mode(mode: &str) -> Option<&'static str> {
 fn build_command(
     agent: ChatAgent,
     model: Option<&str>,
-    permission_mode: Option<&str>,
+    access: Option<Access>,
     prompt: &str,
     resume: Option<&str>,
+    extra_dirs: &[String],
+    effort: Option<&str>,
+    images: &[String],
 ) -> String {
     match agent {
         ChatAgent::Claude => {
@@ -157,15 +204,72 @@ fn build_command(
             if let Some(m) = model.and_then(|m| safe_model(m)) {
                 cmd.push_str(&format!(" --model {}", sh_quote(&m)));
             }
-            if let Some(p) = permission_mode.and_then(safe_permission_mode) {
-                cmd.push_str(&format!(" --permission-mode {p}"));
+            if let Some(a) = access {
+                cmd.push_str(&format!(" --permission-mode {}", a.claude()));
+            }
+            if let Some(e) = effort.and_then(|e| safe_effort(agent, e)) {
+                cmd.push_str(&format!(" --effort {e}"));
+            }
+            // A project can group several folders. The agent starts in one of
+            // them (`cwd`) and can already read that one; every OTHER folder of
+            // the project has to be named or the agent cannot touch it.
+            for dir in extra_dirs {
+                cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
             }
             cmd
         }
         ChatAgent::Codex => {
-            let mut cmd = String::from("codex exec --json");
+            // Codex ends after each turn, so every turn is a new process. That
+            // makes continuing a conversation a RESUME rather than something
+            // written to a running stdin — `codex exec resume <id> <prompt>`,
+            // where the id is the `thread_id` from its own `thread.started`.
+            //
+            // The resume subcommand takes a narrower set of flags than a fresh
+            // exec: no `--sandbox`, no `--add-dir`. Both have config keys
+            // instead, so the same settings are expressed with `-c` and the
+            // conversation is kept.
+            let resuming = resume.and_then(|id| safe_session_id(id));
+            let mut cmd = match &resuming {
+                Some(id) => format!("codex exec resume --json {}", sh_quote(id)),
+                None => String::from("codex exec --json"),
+            };
             if let Some(m) = model.and_then(|m| safe_model(m)) {
                 cmd.push_str(&format!(" -m {}", sh_quote(&m)));
+            }
+            // Codex calls it a sandbox policy rather than a permission mode,
+            // but it answers the same question.
+            if let Some(a) = access {
+                if resuming.is_some() {
+                    cmd.push_str(&format!(" -c sandbox_mode={}", sh_quote(a.codex())));
+                } else {
+                    cmd.push_str(&format!(" --sandbox {}", a.codex()));
+                }
+            }
+            // Effort has no flag of its own on either form: it is a config key.
+            // The value comes from the allowlist, so it is a bare word — which
+            // fails to parse as TOML and is taken as the literal string, which
+            // is what we want.
+            if let Some(e) = effort.and_then(|e| safe_effort(agent, e)) {
+                cmd.push_str(&format!(" -c model_reasoning_effort={}", sh_quote(e)));
+            }
+            // Extra folders: the same idea as Claude's, and the reason a chat
+            // in a multi-folder project can reach all of it.
+            for dir in extra_dirs {
+                if resuming.is_some() {
+                    // `--add-dir` is not offered on resume; the config key is.
+                    cmd.push_str(&format!(
+                        " -c sandbox_workspace_write.writable_roots={}",
+                        sh_quote(&format!("[\"{dir}\"]"))
+                    ));
+                } else {
+                    cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
+                }
+            }
+            // Images are FILES on the command line here, where Claude takes
+            // them inline on stdin (see write_user_message). Same attachment
+            // either way — only the delivery differs.
+            for path in images {
+                cmd.push_str(&format!(" -i {}", sh_quote(path)));
             }
             cmd.push(' ');
             cmd.push_str(&sh_quote(prompt));
@@ -185,9 +289,16 @@ pub fn chat_start(
     cwd: String,
     agent: ChatAgent,
     model: Option<String>,
-    permission_mode: Option<String>,
+    access: Option<Access>,
     prompt: Option<String>,
     resume: Option<String>,
+    // The project's other folders, so a chat sees the whole project and not
+    // just the folder it starts in. See build_command.
+    extra_dirs: Option<Vec<String>>,
+    // Reasoning effort (Claude only), fixed for the life of the process.
+    effort: Option<String>,
+    // Image files to attach to the first turn.
+    images: Option<Vec<String>>,
 ) -> Result<(), String> {
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -196,13 +307,26 @@ pub fn chat_start(
         }
     }
 
+    // The folder we start in is already visible to the agent, so naming it
+    // again would be noise; blanks and repeats are dropped for the same reason.
+    let mut seen = std::collections::HashSet::new();
+    let extras: Vec<String> = extra_dirs
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| !p.trim().is_empty() && p != &cwd && seen.insert(p.clone()))
+        .collect();
+
     let prompt = prompt.unwrap_or_default();
+    let images = images.unwrap_or_default();
     let line = build_command(
         agent,
         model.as_deref(),
-        permission_mode.as_deref(),
+        access,
         &prompt,
         resume.as_deref(),
+        &extras,
+        effort.as_deref(),
+        &images,
     );
 
     // Login shell, for PATH — see the module docs.
@@ -214,7 +338,16 @@ pub fn chat_start(
         } else {
             cwd.clone()
         })
-        .stdin(Stdio::piped())
+        // Claude reads every turn off stdin, so it needs a pipe. Codex must
+        // NOT have one: `codex exec` treats piped stdin as MORE INPUT to append
+        // to the prompt, so an open pipe leaves it sitting on
+        // "Reading additional input from stdin..." waiting for an end that
+        // never comes. Its prompt is on the command line; there is nothing to
+        // send it.
+        .stdin(match agent {
+            ChatAgent::Claude => Stdio::piped(),
+            ChatAgent::Codex => Stdio::null(),
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -255,7 +388,7 @@ pub fn chat_start(
                     // A non-JSON line means the agent printed something we did
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
-                    // produced nothing.
+                    // produced nothing. The one exception is below.
                     Err(_) => crate::web::emit(
                         &app,
                         "chat-status",
@@ -278,7 +411,7 @@ pub fn chat_start(
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                if line.trim().is_empty() {
+                if line.trim().is_empty() || is_expected_chatter(&line) {
                     continue;
                 }
                 crate::web::emit(
@@ -332,10 +465,22 @@ pub fn chat_start(
     // path is the same code for turn 1 and turn 9. Codex already has the prompt
     // on its command line.
     if agent == ChatAgent::Claude && !prompt.trim().is_empty() {
-        write_user_message(&session, &prompt)?;
+        write_user_message(&session, &prompt, &images)?;
     }
 
     Ok(())
+}
+
+/// Lines an agent writes to stderr as a matter of course, which are noise here.
+///
+/// `codex exec` announces "Reading additional input from stdin..." whenever its
+/// stdin is not a terminal — which is always, for a process we spawned. Nothing
+/// is wrong and nothing is waiting: it reads EOF and carries on. Showing it as
+/// a notice on every Codex turn trains the user to ignore notices, which is
+/// exactly what a real one needs them not to do.
+fn is_expected_chatter(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("Reading additional input from stdin")
 }
 
 fn app_manager(app: &AppHandle) -> Option<State<'_, ChatManager>> {
@@ -343,12 +488,53 @@ fn app_manager(app: &AppHandle) -> Option<State<'_, ChatManager>> {
     app.try_state::<ChatManager>()
 }
 
+/// The media type for an image path, or None when it is not an image we can
+/// hand to the model. Anthropic accepts these four and nothing else.
+fn image_media_type(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Read an image off disk as a base64 content block. `None` when it is not a
+/// readable image — a failed attachment must not stop the message being sent.
+fn image_block(path: &str) -> Option<Value> {
+    use base64::Engine;
+    let media_type = image_media_type(path)?;
+    let bytes = std::fs::read(path).ok()?;
+    // A ceiling, because this whole payload goes down a pipe as one line.
+    if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
+        return None;
+    }
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(json!({
+        "type": "image",
+        "source": { "type": "base64", "media_type": media_type, "data": data }
+    }))
+}
+
 /// Write one user message to a Claude session's stdin, in the shape
 /// `--input-format stream-json` expects.
-fn write_user_message(session: &Arc<Mutex<ChatSession>>, text: &str) -> Result<(), String> {
+///
+/// Images go in as content blocks beside the text, which is how the model
+/// actually SEES them — as opposed to being told a path and having to open it
+/// with a tool. They come first: a picture followed by the question about it
+/// reads better to a model than the reverse.
+fn write_user_message(
+    session: &Arc<Mutex<ChatSession>>,
+    text: &str,
+    images: &[String],
+) -> Result<(), String> {
+    let mut content: Vec<Value> = images.iter().filter_map(|p| image_block(p)).collect();
+    content.push(json!({ "type": "text", "text": text }));
     let payload = json!({
         "type": "user",
-        "message": { "role": "user", "content": [{ "type": "text", "text": text }] }
+        "message": { "role": "user", "content": content }
     });
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     let stdin = guard
@@ -359,14 +545,19 @@ fn write_user_message(session: &Arc<Mutex<ChatSession>>, text: &str) -> Result<(
     stdin.flush().map_err(|e| e.to_string())
 }
 
-/// Send the next user turn to a running chat.
+/// Send the next user turn to a running chat, with any images attached to it.
 #[tauri::command]
-pub fn chat_send(manager: State<ChatManager>, key: String, text: String) -> Result<(), String> {
+pub fn chat_send(
+    manager: State<ChatManager>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
     };
-    write_user_message(&session, &text)
+    write_user_message(&session, &text, &images.unwrap_or_default())
 }
 
 /// Ask the agent to stop what it is doing, WITHOUT ending the conversation.
@@ -412,6 +603,52 @@ pub fn chat_stop(manager: State<ChatManager>, key: String) -> Result<(), String>
     Ok(())
 }
 
+/// Where pasted images are kept. Under `~/.octiqflow` rather than in the
+/// project, because a screenshot you pasted into a chat is not part of anyone's
+/// repository and must never turn up in `git status`.
+fn attachments_dir() -> Result<std::path::PathBuf, String> {
+    let dir = crate::paths::home_dir()
+        .ok_or("could not find your home folder")?
+        .join(".octiqflow")
+        .join("attachments");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {dir:?}: {e}"))?;
+    Ok(dir)
+}
+
+/// Save a pasted image and return its path.
+///
+/// A clipboard image has no file behind it, and both agents need one: Codex
+/// takes `-i <FILE>`, and Claude wants bytes we can only read from somewhere.
+/// So it lands on disk first, and the path is what the rest of the flow passes
+/// around — the same shape as a file the user picked.
+///
+/// The name is ours, never the browser's: a name from the page could carry
+/// `../` and walk out of the folder.
+#[tauri::command]
+pub fn save_attachment(data_base64: String, extension: String) -> Result<String, String> {
+    use base64::Engine;
+    let ext = extension
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    let ext = match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" => ext,
+        _ => return Err(format!("unsupported image type: {extension}")),
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|e| format!("not valid base64: {e}"))?;
+    if bytes.is_empty() {
+        return Err("empty image".into());
+    }
+    if bytes.len() > 12 * 1024 * 1024 {
+        return Err("image is larger than 12 MB".into());
+    }
+    let path = attachments_dir()?.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, bytes).map_err(|e| format!("could not save the image: {e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// The keys of every running chat. A reconnecting browser uses this the way it
 /// uses pty_active_sessions: to find what is already going.
 #[tauri::command]
@@ -446,30 +683,162 @@ mod tests {
     #[test]
     fn resume_only_takes_a_plain_id() {
         let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
-        let c = build_command(ChatAgent::Claude, None, None, "", Some(id));
+        let c = build_command(ChatAgent::Claude, None, None, "", Some(id), &[], None, &[]);
         assert!(c.contains(&format!("--resume '{id}'")));
         // Anything that could become a second shell word is dropped outright.
-        let bad = build_command(ChatAgent::Claude, None, None, "", Some("x; rm -rf /"));
+        let bad = build_command(ChatAgent::Claude, None, None, "", Some("x; rm -rf /"), &[], None, &[]);
         assert!(!bad.contains("--resume"));
     }
 
     #[test]
-    fn permission_modes_are_fixed_strings() {
-        assert_eq!(safe_permission_mode("plan"), Some("plan"));
-        assert_eq!(safe_permission_mode("nonsense"), None);
+    fn one_access_level_becomes_each_agents_own_flag() {
+        // The same question — how much may it do unattended — asked once and
+        // spelled differently for each agent.
+        for (level, claude, codex) in [
+            (Access::Read, "plan", "read-only"),
+            (Access::Edit, "acceptEdits", "workspace-write"),
+            (Access::Full, "bypassPermissions", "danger-full-access"),
+        ] {
+            let c = build_command(ChatAgent::Claude, None, Some(level), "", None, &[], None, &[]);
+            assert!(c.contains(&format!("--permission-mode {claude}")), "claude {level:?}");
+            assert!(!c.contains("--sandbox"), "claude must not get a sandbox flag");
+
+            let x = build_command(ChatAgent::Codex, None, Some(level), "hi", None, &[], None, &[]);
+            assert!(x.contains(&format!("--sandbox {codex}")), "codex {level:?}");
+            assert!(!x.contains("--permission-mode"), "codex must not get a permission mode");
+        }
     }
 
     #[test]
     fn claude_gets_a_two_way_stream_and_codex_gets_the_prompt() {
-        let c = build_command(ChatAgent::Claude, Some("opus"), Some("plan"), "hi", None);
+        let c = build_command(ChatAgent::Claude, Some("opus"), Some(Access::Read), "hi", None, &[], None, &[]);
         assert!(c.contains("--input-format stream-json"));
         assert!(c.contains("--model 'opus'"));
         assert!(c.contains("--permission-mode plan"));
         // Claude's prompt goes over stdin, never on the command line.
         assert!(!c.contains("hi"));
 
-        let x = build_command(ChatAgent::Codex, None, None, "hi there", None);
+        let x = build_command(ChatAgent::Codex, None, None, "hi there", None, &[], None, &[]);
         assert!(x.contains("codex exec --json"));
         assert!(x.ends_with("'hi there'"));
+    }
+
+    #[test]
+    fn effort_is_an_allowlist_and_spelled_per_agent() {
+        let c = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("xhigh"), &[]);
+        assert!(c.contains("--effort xhigh"));
+        // Codex supports it too, but only as a config override.
+        let x = build_command(ChatAgent::Codex, None, None, "hi", None, &[], Some("xhigh"), &[]);
+        assert!(x.contains("-c model_reasoning_effort='xhigh'"));
+        assert!(!x.contains("--effort"));
+
+        // Anything outside the set is dropped rather than forwarded.
+        let bad = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("turbo; id"), &[]);
+        assert!(!bad.contains("--effort"));
+
+        // The levels are not the same on both sides: `max` is Claude's alone,
+        // `minimal` is Codex's alone, and each is refused for the other.
+        let claude_max = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("max"), &[]);
+        assert!(claude_max.contains("--effort max"));
+        let codex_max = build_command(ChatAgent::Codex, None, None, "hi", None, &[], Some("max"), &[]);
+        assert!(!codex_max.contains("model_reasoning_effort"));
+        let codex_min = build_command(ChatAgent::Codex, None, None, "hi", None, &[], Some("minimal"), &[]);
+        assert!(codex_min.contains("model_reasoning_effort='minimal'"));
+        let claude_min = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("minimal"), &[]);
+        assert!(!claude_min.contains("--effort"));
+    }
+
+    #[test]
+    fn codex_continues_a_conversation_by_resuming_its_thread() {
+        let id = "01a0142d-552d-7a93-9152-47530c33e501";
+        let c = build_command(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Read),
+            "next question",
+            Some(id),
+            &["/tmp/api".to_string()],
+            Some("high"),
+            &[],
+        );
+        // The subcommand, with the id BEFORE the prompt — that is the order
+        // `codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]` expects.
+        assert!(c.starts_with(&format!("codex exec resume --json '{id}'")));
+        assert!(c.ends_with("'next question'"));
+        // resume takes neither --sandbox nor --add-dir, so both settings have
+        // to travel as config overrides instead.
+        assert!(!c.contains("--sandbox"));
+        assert!(!c.contains("--add-dir"));
+        assert!(c.contains("-c sandbox_mode='read-only'"));
+        assert!(c.contains("-c model_reasoning_effort='high'"));
+        assert!(c.contains("writable_roots"));
+
+        // A FIRST turn has no thread yet, so it is a plain exec with the flags.
+        let first = build_command(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Read),
+            "hello",
+            None,
+            &["/tmp/api".to_string()],
+            None,
+            &[],
+        );
+        assert!(first.starts_with("codex exec --json"));
+        assert!(!first.contains("resume"));
+        assert!(first.contains("--sandbox read-only"));
+        assert!(first.contains("--add-dir '/tmp/api'"));
+    }
+
+    #[test]
+    fn the_stdin_notice_codex_always_prints_is_not_a_notice() {
+        assert!(is_expected_chatter("Reading additional input from stdin..."));
+        assert!(is_expected_chatter("  Reading additional input from stdin... "));
+        // Anything else still reaches the user — that is the whole point of
+        // surfacing stderr.
+        assert!(!is_expected_chatter("Error loading config.toml"));
+        assert!(!is_expected_chatter("You've hit your usage limit."));
+    }
+
+    #[test]
+    fn codex_takes_images_as_files_and_claude_does_not() {
+        let shots = vec!["/tmp/a shot.png".to_string(), "/tmp/b.webp".to_string()];
+        let x = build_command(ChatAgent::Codex, None, None, "look", None, &[], None, &shots);
+        // Quoted, so a space in the name stays one argument.
+        assert!(x.contains("-i '/tmp/a shot.png'"));
+        assert!(x.contains("-i '/tmp/b.webp'"));
+        // ...and the prompt still ends the line, after the images.
+        assert!(x.ends_with("'look'"));
+
+        // Claude's images ride on stdin instead — see write_user_message.
+        let c = build_command(ChatAgent::Claude, None, None, "look", None, &[], None, &shots);
+        assert!(!c.contains("-i "));
+    }
+
+    #[test]
+    fn only_real_image_extensions_are_offered_to_the_model() {
+        assert_eq!(image_media_type("/tmp/a.PNG"), Some("image/png"));
+        assert_eq!(image_media_type("/tmp/a.jpeg"), Some("image/jpeg"));
+        assert_eq!(image_media_type("/tmp/a.webp"), Some("image/webp"));
+        // Not an image: passing it on would be an API error, so it is dropped.
+        assert_eq!(image_media_type("/tmp/notes.md"), None);
+        assert_eq!(image_media_type("/tmp/noextension"), None);
+    }
+
+    #[test]
+    fn a_projects_other_folders_are_added_for_both_agents() {
+        let dirs = vec![
+            "/Users/me/api".to_string(),
+            "/Users/me/my docs".to_string(),
+        ];
+        let c = build_command(ChatAgent::Claude, None, None, "", None, &dirs, None, &[]);
+        assert!(c.contains("--add-dir '/Users/me/api'"));
+        // A space in a folder name stays one argument.
+        assert!(c.contains("--add-dir '/Users/me/my docs'"));
+
+        // Codex takes extra folders too — it was a mistake to think otherwise.
+        let x = build_command(ChatAgent::Codex, None, None, "hi", None, &dirs, None, &[]);
+        assert!(x.contains("--add-dir '/Users/me/api'"));
+        assert!(x.contains("--add-dir '/Users/me/my docs'"));
     }
 }

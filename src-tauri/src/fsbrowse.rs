@@ -25,8 +25,23 @@ pub struct DirEntry {
 /// sorted case-insensitively by name. Returns `Err(message)` when `path` is
 /// missing, is not a directory, or cannot be read (permission), so the frontend
 /// can show the message in the browser panel.
+///
+/// An empty path, or one starting `~`, resolves against the user's home folder.
+/// The v2 folder picker needs that: it runs in a browser that has no idea what
+/// this machine's home folder is called, so "start me at home" has to be
+/// something it can ask for by name.
 #[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    let expanded = if path.trim().is_empty() || path == "~" {
+        crate::paths::home_dir().ok_or("could not find your home folder")?
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        crate::paths::home_dir()
+            .ok_or("could not find your home folder")?
+            .join(rest)
+    } else {
+        PathBuf::from(&path)
+    };
+    let path = expanded.to_string_lossy().into_owned();
     let dir = Path::new(&path);
 
     if !dir.exists() {
