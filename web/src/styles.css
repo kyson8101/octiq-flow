@@ -166,40 +166,11 @@ body {
   list-style: none;
 }
 
-.proj {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  width: 100%;
-  padding: 9px 10px;
-  border: 0;
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--fg-1);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.proj:hover {
-  background: var(--bg-1);
-}
-
-/* The current project: a background fill. Never a left-edge bar. */
-.proj.is-on {
-  background: var(--accent-tint);
-  color: var(--fg-0);
-}
-
+/* The project row's own layout lives in the "Project folders" section below —
+   this only keeps the name's truncation, which both used. */
 .proj-name {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.proj-path {
-  font-size: 11px;
-  color: var(--fg-3);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -905,4 +876,189 @@ body {
   .prose.is-typing > :last-child::after {
     animation: none;
   }
+}
+
+/* Words fade in as they are revealed (lib/wordfade.ts wraps them). Only newly
+   mounted spans run the animation — the ones already on screen keep their DOM
+   node across a re-render, so settled text never re-animates. */
+.prose .w {
+  animation: word-in 0.32s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prose .w {
+    animation: none;
+  }
+}
+
+@keyframes word-in {
+  from {
+    opacity: 0;
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* ---- Project folders + conversation list ------------------------------ */
+.proj-node {
+  margin-bottom: 1px;
+}
+
+.proj {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 2px 4px 2px 2px;
+  border-radius: var(--r-md);
+}
+
+.proj:hover {
+  background: var(--bg-1);
+}
+
+/* The open project: a background fill. Never a left-edge bar. */
+.proj.is-on {
+  background: var(--accent-tint);
+}
+
+.proj-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.proj.is-on .proj-main {
+  color: var(--fg-0);
+}
+
+.proj-count {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 10.5px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.twisty,
+.proj-add,
+.chat-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+
+.twisty {
+  width: 20px;
+  height: 26px;
+  transition: transform 0.14s ease;
+}
+
+.twisty.is-open {
+  transform: rotate(90deg);
+}
+
+/* A project with nothing in it keeps the space, so the names stay in line. */
+.twisty.is-idle {
+  visibility: hidden;
+}
+
+.proj-add,
+.chat-del {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-sm);
+  opacity: 0;
+}
+
+.proj:hover .proj-add,
+.proj.is-on .proj-add,
+.chat:hover .chat-del,
+.chat.is-on .chat-del {
+  opacity: 1;
+}
+
+.proj-add:hover,
+.chat-del:hover,
+.twisty:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Conversations, indented under their project with a hairline guide. */
+.chat-list {
+  list-style: none;
+  margin: 1px 0 4px 12px;
+  padding: 0 0 0 8px;
+  border-left: 1px solid var(--border);
+}
+
+.chat {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-sm);
+}
+
+.chat:hover {
+  background: var(--bg-1);
+}
+
+.chat.is-on {
+  background: var(--accent-tint);
+}
+
+.chat-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 4px 6px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat.is-on .chat-main,
+.chat:hover .chat-main {
+  color: var(--fg-0);
+}
+
+.chat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-when {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
 }

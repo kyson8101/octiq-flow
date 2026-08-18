@@ -108,6 +108,15 @@ fn safe_model(model: &str) -> Option<String> {
     }
 }
 
+/// Session ids are uuids the agent gave us. Checked, not escaped: like the
+/// model name it lands on a command line, so the shape is the guard.
+fn safe_session_id(id: &str) -> Option<String> {
+    let ok = id.len() <= 64
+        && !id.is_empty()
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    ok.then(|| id.to_string())
+}
+
 /// Permission modes Claude accepts. Same reasoning as the model allowlist.
 fn safe_permission_mode(mode: &str) -> Option<&'static str> {
     match mode {
@@ -127,13 +136,24 @@ fn safe_permission_mode(mode: &str) -> Option<&'static str> {
 /// whole conversation. Codex's `exec --json` is one-shot, so a Codex chat sends
 /// its prompt on the command line and the session ends with the answer; the UI
 /// starts a new one for the next turn.
-fn build_command(agent: ChatAgent, model: Option<&str>, permission_mode: Option<&str>, prompt: &str) -> String {
+fn build_command(
+    agent: ChatAgent,
+    model: Option<&str>,
+    permission_mode: Option<&str>,
+    prompt: &str,
+    resume: Option<&str>,
+) -> String {
     match agent {
         ChatAgent::Claude => {
             let mut cmd = String::from(
                 "claude -p --output-format stream-json --input-format stream-json \
                  --include-partial-messages --replay-user-messages --verbose",
             );
+            // Continuing an earlier conversation: the agent comes back with its
+            // own context, rather than being handed a transcript to read.
+            if let Some(id) = resume.and_then(|id| safe_session_id(id)) {
+                cmd.push_str(&format!(" --resume {}", sh_quote(&id)));
+            }
             if let Some(m) = model.and_then(|m| safe_model(m)) {
                 cmd.push_str(&format!(" --model {}", sh_quote(&m)));
             }
@@ -167,6 +187,7 @@ pub fn chat_start(
     model: Option<String>,
     permission_mode: Option<String>,
     prompt: Option<String>,
+    resume: Option<String>,
 ) -> Result<(), String> {
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -181,6 +202,7 @@ pub fn chat_start(
         model.as_deref(),
         permission_mode.as_deref(),
         &prompt,
+        resume.as_deref(),
     );
 
     // Login shell, for PATH — see the module docs.
@@ -422,6 +444,16 @@ mod tests {
     }
 
     #[test]
+    fn resume_only_takes_a_plain_id() {
+        let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
+        let c = build_command(ChatAgent::Claude, None, None, "", Some(id));
+        assert!(c.contains(&format!("--resume '{id}'")));
+        // Anything that could become a second shell word is dropped outright.
+        let bad = build_command(ChatAgent::Claude, None, None, "", Some("x; rm -rf /"));
+        assert!(!bad.contains("--resume"));
+    }
+
+    #[test]
     fn permission_modes_are_fixed_strings() {
         assert_eq!(safe_permission_mode("plan"), Some("plan"));
         assert_eq!(safe_permission_mode("nonsense"), None);
@@ -429,14 +461,14 @@ mod tests {
 
     #[test]
     fn claude_gets_a_two_way_stream_and_codex_gets_the_prompt() {
-        let c = build_command(ChatAgent::Claude, Some("opus"), Some("plan"), "hi");
+        let c = build_command(ChatAgent::Claude, Some("opus"), Some("plan"), "hi", None);
         assert!(c.contains("--input-format stream-json"));
         assert!(c.contains("--model 'opus'"));
         assert!(c.contains("--permission-mode plan"));
         // Claude's prompt goes over stdin, never on the command line.
         assert!(!c.contains("hi"));
 
-        let x = build_command(ChatAgent::Codex, None, None, "hi there");
+        let x = build_command(ChatAgent::Codex, None, None, "hi there", None);
         assert!(x.contains("codex exec --json"));
         assert!(x.ends_with("'hi there'"));
     }

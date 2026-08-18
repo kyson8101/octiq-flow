@@ -10,6 +10,7 @@ import remarkGfm from "remark-gfm";
 import type { Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
 import { closeOpenFences, useTypewriter } from "../lib/typewriter";
+import { rehypeWordFade } from "../lib/wordfade";
 
 function Thinking({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -71,7 +72,11 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
   const caret = animate && shown.length < text.length;
   return (
     <div className={`prose ${caret ? "is-typing" : ""}`}>
-      <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={animate ? [rehypeWordFade] : []}
+        components={{ pre: CodeBlock }}
+      >
         {closeOpenFences(shown)}
       </Markdown>
     </div>
