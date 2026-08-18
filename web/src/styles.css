@@ -701,3 +701,91 @@ body {
     display: none;
   }
 }
+
+/* ---- Connect gate ------------------------------------------------------ */
+.gate {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100dvh;
+  padding: 20px;
+}
+
+.gate-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+.gate-title {
+  margin: 0 0 8px;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.gate-body,
+.gate-hint {
+  margin: 0 0 14px;
+  font-size: 13px;
+  color: var(--fg-2);
+}
+
+.gate-hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.gate-body code,
+.gate-hint code {
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.gate-form {
+  display: flex;
+  gap: 8px;
+}
+
+.gate-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font-family: var(--mono);
+  /* 16px: anything smaller makes iOS Safari zoom on focus. */
+  font-size: 16px;
+  outline: none;
+}
+
+.gate-input:focus {
+  border-color: var(--accent);
+}
+
+.gate-btn {
+  flex: 0 0 auto;
+  padding: 9px 15px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.gate-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

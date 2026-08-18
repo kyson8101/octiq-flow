@@ -16,7 +16,12 @@ type Reply = { t: "reply"; id: number; ok: boolean; result?: unknown; error?: st
 type EventFrame = { t: "event"; event: string; payload: unknown };
 type Frame = Reply | EventFrame;
 
-export type ConnectionState = "connecting" | "open" | "closed";
+/** "unauthorized" is its own state on purpose. A WebSocket whose handshake was
+ *  refused closes exactly like one that never reached the server, so a client
+ *  that only knows "closed" retries forever over a thing retrying cannot fix.
+ *  The /auth probe tells the two apart, and this is how the UI knows to ask for
+ *  the token rather than show a reconnect spinner. */
+export type ConnectionState = "connecting" | "open" | "closed" | "unauthorized";
 
 const TOKEN_KEY = "octiq.web.token";
 
@@ -120,7 +125,14 @@ class Bridge {
       }
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", async () => {
+      // Refused, or unreachable? Ask over plain HTTP before deciding, because
+      // the close event cannot tell us and the right response differs: a bad
+      // token needs the user, a dropped network needs patience.
+      if (await this.tokenRejected()) {
+        this.setState("unauthorized");
+        return; // no retry loop: nothing changes until a token is supplied
+      }
       this.setState("closed");
       // The sessions live on the server, so a dropped socket costs the VIEW and
       // nothing else. Back off to a few seconds so a sleeping phone does not
@@ -130,6 +142,32 @@ class Bridge {
     });
 
     socket.addEventListener("error", () => socket.close());
+  }
+
+  /** True when the server is up and says this token is no good. A network
+   *  failure answers false — that is the "keep retrying" case. */
+  private async tokenRejected(): Promise<boolean> {
+    const scheme = location.protocol === "https:" ? "https" : "http";
+    try {
+      const res = await fetch(
+        `${scheme}://${serverHost()}/auth?token=${encodeURIComponent(readToken())}`,
+        { cache: "no-store" },
+      );
+      return res.status === 401;
+    } catch {
+      return false; // could not reach it at all
+    }
+  }
+
+  /** Save a token the user pasted in and reconnect with it. */
+  useToken(token: string) {
+    try {
+      localStorage.setItem(TOKEN_KEY, token.trim());
+    } catch {
+      /* private mode: it lasts for this page */
+    }
+    this.retry = 0;
+    this.connect();
   }
 
   private send(frame: unknown) {

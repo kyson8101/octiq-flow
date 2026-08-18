@@ -351,9 +351,11 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
     };
     let ctx = Ctx { app: app.clone() };
 
+    let token = cfg.token.clone();
     tauri::async_runtime::spawn(async move {
         let router = Router::new()
             .route("/ws", get(ws_handler))
+            .route("/auth", get(auth_handler))
             .fallback(get(asset_handler))
             .with_state(ctx);
 
@@ -364,7 +366,13 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
                 return;
             }
         };
-        println!("[web] OctiqFlow is reachable at http://{addr}/");
+        // The whole URL, token and all. Without it the first thing a browser
+        // does is fail to connect, and the token lives in a JSON file most
+        // people would have to go hunting for. It is the user's own machine and
+        // their own terminal; the usability is worth more than the secrecy of a
+        // value that already sits in plain text on the same disk.
+        println!("[web] OctiqFlow v2:      http://{addr}/v2/?token={token}");
+        println!("[web] OctiqFlow classic: http://{addr}/?token={token}");
         if let Err(e) = axum::serve(listener, router).await {
             eprintln!("[web] server stopped: {e}");
         }
@@ -481,6 +489,31 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
     }
 }
 
+/// Is this token good? 200 yes, 401 no.
+///
+/// A rejected WebSocket handshake closes with the same code as a network
+/// failure, so a client cannot tell "the server is down" from "you are not
+/// allowed in" — and would sit there reconnecting forever over something no
+/// amount of retrying can fix. This endpoint is how it tells the difference,
+/// and therefore how it knows to ask for the token instead.
+async fn auth_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<TokenQuery>) -> Response {
+    if token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        (StatusCode::OK, "ok").into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, "bad token").into_response()
+    }
+}
+
+/// Constant-ish token check shared by /auth and /ws.
+fn token_ok(ctx: &Ctx, given: &str) -> bool {
+    let expected = ctx
+        .app
+        .try_state::<WebState>()
+        .and_then(|st| st.cfg.lock().ok().map(|c| c.token.clone()))
+        .unwrap_or_default();
+    !expected.is_empty() && given == expected
+}
+
 async fn ws_handler(
     AxumState(ctx): AxumState<Ctx>,
     Query(q): Query<TokenQuery>,
@@ -488,13 +521,7 @@ async fn ws_handler(
 ) -> Response {
     // The socket is the whole attack surface — it can start shells. Everything
     // past this line has already proved it knows the token.
-    let expected = ctx
-        .app
-        .try_state::<WebState>()
-        .and_then(|st| st.cfg.lock().ok().map(|c| c.token.clone()))
-        .unwrap_or_default();
-    let given = q.token.unwrap_or_default();
-    if expected.is_empty() || given != expected {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     upgrade.on_upgrade(move |socket| client(ctx, socket))

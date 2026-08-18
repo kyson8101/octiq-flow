@@ -13,6 +13,7 @@ import { bridge, type ConnectionState } from "./lib/bridge";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./lib/chat";
 import { MessageList } from "./components/MessageList";
 import { Composer, MODELS, type ModelChoice } from "./components/Composer";
+import { Connect } from "./components/Connect";
 
 type Workspace = {
   id: string;
@@ -161,6 +162,10 @@ export default function App() {
     }
     setChat(emptyChat());
   }, []);
+
+  // A refused token is not a connection problem to wait out — it needs the
+  // user, so it gets the whole screen instead of a strip.
+  if (conn === "unauthorized") return <Connect />;
 
   return (
     <div className={`app ${drawer ? "drawer-open" : ""}`}>
