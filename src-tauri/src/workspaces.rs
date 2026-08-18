@@ -4,10 +4,10 @@
 // launch agents in those folders.
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
@@ -178,7 +178,18 @@ impl WorkspaceState {
 
 /// Return all workspaces in their stored order.
 #[tauri::command]
-pub fn list_workspaces(state: State<WorkspaceState>) -> Result<Vec<Workspace>, String> {
+pub fn list_workspaces(
+    state: State<Arc<WorkspaceState>>,
+) -> Result<Vec<Workspace>, String> {
+    list_workspaces_impl(
+        &state,
+    )
+}
+
+/// The Tauri-free half of `list_workspaces`.
+pub fn list_workspaces_impl(
+    state: &WorkspaceState,
+) -> Result<Vec<Workspace>, String> {
     let data = state.data.lock().map_err(|e| e.to_string())?;
     Ok(data.workspaces.clone())
 }
@@ -189,11 +200,8 @@ pub fn list_workspaces(state: State<WorkspaceState>) -> Result<Vec<Workspace>, S
 /// definition (card 26). This one has a different contract: it prefers Tauri's
 /// platform home lookup, returns a `String` rather than an `Option<PathBuf>`,
 /// and falls back to `"/"` so a project always has SOME primary path.
-fn default_primary_path(app: &AppHandle) -> String {
-    app.path()
-        .home_dir()
-        .ok()
-        .or_else(crate::paths::home_dir)
+fn default_primary_path() -> String {
+    crate::paths::home_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "/".to_string())
 }
@@ -203,8 +211,20 @@ fn default_primary_path(app: &AppHandle) -> String {
 /// folder is used, so a project can be created without picking a folder first.
 #[tauri::command]
 pub fn add_workspace(
-    app: AppHandle,
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    name: String,
+    primary_path: String,
+) -> Result<Workspace, String> {
+    add_workspace_impl(
+        &state,
+        name,
+        primary_path,
+    )
+}
+
+/// The Tauri-free half of `add_workspace`.
+pub fn add_workspace_impl(
+    state: &WorkspaceState,
     name: String,
     primary_path: String,
 ) -> Result<Workspace, String> {
@@ -214,7 +234,7 @@ pub fn add_workspace(
     }
     let primary_path = primary_path.trim().to_string();
     let primary_path = if primary_path.is_empty() {
-        default_primary_path(&app)
+        default_primary_path()
     } else {
         primary_path
     };
@@ -244,7 +264,20 @@ pub fn add_workspace(
 /// it later and to fill it in for a workspace saved before this field existed.
 #[tauri::command]
 pub fn set_primary_path(
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+    path: String,
+) -> Result<(), String> {
+    set_primary_path_impl(
+        &state,
+        id,
+        path,
+    )
+}
+
+/// The Tauri-free half of `set_primary_path`.
+pub fn set_primary_path_impl(
+    state: &WorkspaceState,
     id: String,
     path: String,
 ) -> Result<(), String> {
@@ -265,7 +298,20 @@ pub fn set_primary_path(
 /// Rename an existing workspace.
 #[tauri::command]
 pub fn rename_workspace(
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+    name: String,
+) -> Result<(), String> {
+    rename_workspace_impl(
+        &state,
+        id,
+        name,
+    )
+}
+
+/// The Tauri-free half of `rename_workspace`.
+pub fn rename_workspace_impl(
+    state: &WorkspaceState,
     id: String,
     name: String,
 ) -> Result<(), String> {
@@ -285,7 +331,21 @@ pub fn rename_workspace(
 
 /// Delete a workspace and all of its paths.
 #[tauri::command]
-pub fn delete_workspace(state: State<WorkspaceState>, id: String) -> Result<(), String> {
+pub fn delete_workspace(
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+) -> Result<(), String> {
+    delete_workspace_impl(
+        &state,
+        id,
+    )
+}
+
+/// The Tauri-free half of `delete_workspace`.
+pub fn delete_workspace_impl(
+    state: &WorkspaceState,
+    id: String,
+) -> Result<(), String> {
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.workspaces.retain(|w| w.id != id);
     state.save(&data)
@@ -306,7 +366,20 @@ pub fn reorder_workspaces(state: State<WorkspaceState>, ids: Vec<String>) -> Res
 /// Add a folder path to a workspace. Duplicate paths are ignored.
 #[tauri::command]
 pub fn add_workspace_path(
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+    path: String,
+) -> Result<(), String> {
+    add_workspace_path_impl(
+        &state,
+        id,
+        path,
+    )
+}
+
+/// The Tauri-free half of `add_workspace_path`.
+pub fn add_workspace_path_impl(
+    state: &WorkspaceState,
     id: String,
     path: String,
 ) -> Result<(), String> {
@@ -325,7 +398,20 @@ pub fn add_workspace_path(
 /// Remove a folder path from a workspace.
 #[tauri::command]
 pub fn remove_workspace_path(
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+    path: String,
+) -> Result<(), String> {
+    remove_workspace_path_impl(
+        &state,
+        id,
+        path,
+    )
+}
+
+/// The Tauri-free half of `remove_workspace_path`.
+pub fn remove_workspace_path_impl(
+    state: &WorkspaceState,
     id: String,
     path: String,
 ) -> Result<(), String> {
@@ -545,7 +631,20 @@ pub fn set_terminal_command(
 /// sidebar tab. The text is trimmed; an empty string clears it.
 #[tauri::command]
 pub fn set_description(
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+    description: String,
+) -> Result<(), String> {
+    set_description_impl(
+        &state,
+        id,
+        description,
+    )
+}
+
+/// The Tauri-free half of `set_description`.
+pub fn set_description_impl(
+    state: &WorkspaceState,
     id: String,
     description: String,
 ) -> Result<(), String> {
@@ -630,7 +729,20 @@ pub fn set_icon(state: State<WorkspaceState>, id: String, icon: String) -> Resul
 /// untouched — this is a temporary, fully reversible toggle, not a delete.
 #[tauri::command]
 pub fn set_workspace_shelved(
-    state: State<WorkspaceState>,
+    state: State<Arc<WorkspaceState>>,
+    id: String,
+    shelved: bool,
+) -> Result<(), String> {
+    set_workspace_shelved_impl(
+        &state,
+        id,
+        shelved,
+    )
+}
+
+/// The Tauri-free half of `set_workspace_shelved`.
+pub fn set_workspace_shelved_impl(
+    state: &WorkspaceState,
     id: String,
     shelved: bool,
 ) -> Result<(), String> {

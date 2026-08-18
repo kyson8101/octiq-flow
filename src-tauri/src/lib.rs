@@ -76,13 +76,13 @@ pub fn run() {
             // resume keeps working across the move to per-profile roots.
             profile::migrate_agent_sessions();
             // Load the persisted workspace store (folders the user works in).
-            app.manage(WorkspaceState::load());
+            app.manage(std::sync::Arc::new(WorkspaceState::load()));
             // Multi-PTY manager: terminals are spawned by id on demand from the
             // frontend (including the boot terminal), not at setup time.
             app.manage(PtyManager::default());
             // Agent chat sessions: agents run as a JSON stream instead of a TUI,
             // for the chat view (agent_chat.rs).
-            app.manage(agent_chat::ChatManager::default());
+            app.manage(std::sync::Arc::new(agent_chat::ChatManager::default()));
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load());
@@ -92,7 +92,7 @@ pub fn run() {
             // Fs watcher behind the file preview pane's live reload; the frontend
             // points it at the open editor tabs via file_watch_paths so an
             // external edit (agent, build, git checkout) refreshes the pane.
-            app.manage(file_watch::FileWatchState::default());
+            app.manage(std::sync::Arc::new(file_watch::FileWatchState::default()));
             // Fs watcher behind the canvas pane; the frontend points it at the
             // selected project's ~/.octiqflow/canvas/<key> folder via canvas_watch
             // so an agent's document writes re-render the pane live.

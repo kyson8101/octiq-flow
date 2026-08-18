@@ -4,10 +4,12 @@
 // comes back as `Err(message)` so the browser panel can show it to the user.
 // The frontend opens a file with the opener plugin, not here.
 use std::fs;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
+use tauri::State;
 
 /// One entry (file or folder) directly inside a browsed directory.
 #[derive(Debug, Clone, Serialize)]
@@ -572,7 +574,20 @@ fn rg(flags: &[&str], roots: &[String], pattern: &[&str]) -> Result<String, Stri
 /// first chunk and lose the tail.
 #[tauri::command]
 pub fn write_file(
-    state: tauri::State<crate::workspaces::WorkspaceState>,
+    state: State<Arc<crate::workspaces::WorkspaceState>>,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    write_file_impl(
+        &state,
+        path,
+        content,
+    )
+}
+
+/// The Tauri-free half of `write_file`.
+pub fn write_file_impl(
+    state: &crate::workspaces::WorkspaceState,
     path: String,
     content: String,
 ) -> Result<(), String> {

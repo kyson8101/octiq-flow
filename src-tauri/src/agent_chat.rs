@@ -35,7 +35,7 @@ use std::thread;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, State};
+use tauri::State;
 
 /// One line of an agent's stdout, on its way to the UI.
 #[derive(Clone, Serialize)]
@@ -283,8 +283,7 @@ fn build_command(
 /// a second process on the same key would interleave two conversations.
 #[tauri::command]
 pub fn chat_start(
-    app: AppHandle,
-    manager: State<ChatManager>,
+    manager: State<Arc<ChatManager>>,
     key: String,
     cwd: String,
     agent: ChatAgent,
@@ -300,6 +299,38 @@ pub fn chat_start(
     // Image files to attach to the first turn.
     images: Option<Vec<String>>,
 ) -> Result<(), String> {
+    chat_start_impl(
+        manager.inner().clone(),
+        key,
+        cwd,
+        agent,
+        model,
+        access,
+        prompt,
+        resume,
+        extra_dirs,
+        effort,
+        images,
+    )
+}
+
+/// Start a chat. The Tauri-free half of `chat_start`, so a headless server can
+/// call exactly the same code path rather than a copy of it.
+#[allow(clippy::too_many_arguments)]
+pub fn chat_start_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+) -> Result<(), String> {
+    let manager_for_exit = manager.clone();
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         if sessions.contains_key(&key) {
@@ -444,9 +475,11 @@ pub fn chat_start(
                     code,
                 },
             );
-            if let Some(app_state) = app_manager(&app) {
-                app_state.sessions.lock().ok().map(|mut m| m.remove(&key));
-            }
+            // Forget the session now it is gone, so its key is free to be
+            // started again. The manager is held by Arc rather than looked up
+            // through an AppHandle: this thread outlives the call, and a
+            // headless server has no app to look anything up in.
+            manager_for_exit.sessions.lock().ok().map(|mut m| m.remove(&key));
         });
     }
 
@@ -470,11 +503,6 @@ pub fn chat_start(
 fn is_expected_chatter(line: &str) -> bool {
     let line = line.trim();
     line.starts_with("Reading additional input from stdin")
-}
-
-fn app_manager(app: &AppHandle) -> Option<State<'_, ChatManager>> {
-    use tauri::Manager;
-    app.try_state::<ChatManager>()
 }
 
 /// The media type for an image path, or None when it is not an image we can
@@ -537,7 +565,17 @@ fn write_user_message(
 /// Send the next user turn to a running chat, with any images attached to it.
 #[tauri::command]
 pub fn chat_send(
-    manager: State<ChatManager>,
+    manager: State<Arc<ChatManager>>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+) -> Result<(), String> {
+    chat_send_impl(&manager, key, text, images)
+}
+
+/// The Tauri-free half of `chat_send`.
+pub fn chat_send_impl(
+    manager: &ChatManager,
     key: String,
     text: String,
     images: Option<Vec<String>>,
@@ -557,7 +595,12 @@ pub fn chat_send(
 /// `chat_stop` does — but it throws the conversation away, which is a heavy
 /// price for "actually, stop".
 #[tauri::command]
-pub fn chat_interrupt(manager: State<ChatManager>, key: String) -> Result<(), String> {
+pub fn chat_interrupt(manager: State<Arc<ChatManager>>, key: String) -> Result<(), String> {
+    chat_interrupt_impl(&manager, key)
+}
+
+/// The Tauri-free half of `chat_interrupt`.
+pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
@@ -579,7 +622,12 @@ pub fn chat_interrupt(manager: State<ChatManager>, key: String) -> Result<(), St
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
 #[tauri::command]
-pub fn chat_stop(manager: State<ChatManager>, key: String) -> Result<(), String> {
+pub fn chat_stop(manager: State<Arc<ChatManager>>, key: String) -> Result<(), String> {
+    chat_stop_impl(&manager, key)
+}
+
+/// The Tauri-free half of `chat_stop`.
+pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> {
     let session = {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(&key)
@@ -641,7 +689,12 @@ pub fn save_attachment(data_base64: String, extension: String) -> Result<String,
 /// The keys of every running chat. A reconnecting browser uses this the way it
 /// uses pty_active_sessions: to find what is already going.
 #[tauri::command]
-pub fn chat_list(manager: State<ChatManager>) -> Result<Vec<String>, String> {
+pub fn chat_list(manager: State<Arc<ChatManager>>) -> Result<Vec<String>, String> {
+    chat_list_impl(&manager)
+}
+
+/// The Tauri-free half of `chat_list`.
+pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions.keys().cloned().collect())
 }
