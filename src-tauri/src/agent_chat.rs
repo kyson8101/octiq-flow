@@ -347,6 +347,33 @@ pub fn chat_send(manager: State<ChatManager>, key: String, text: String) -> Resu
     write_user_message(&session, &text)
 }
 
+/// Ask the agent to stop what it is doing, WITHOUT ending the conversation.
+///
+/// Claude's init event advertises `interrupt_receipt_v1`, so the running turn
+/// can be cancelled over the same stdin the prompts go down and the session
+/// stays alive with its context. Killing the process would work too and is what
+/// `chat_stop` does — but it throws the conversation away, which is a heavy
+/// price for "actually, stop".
+#[tauri::command]
+pub fn chat_interrupt(manager: State<ChatManager>, key: String) -> Result<(), String> {
+    let session = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.get(&key).cloned().ok_or("no such chat")?
+    };
+    let payload = json!({
+        "type": "control_request",
+        "request_id": format!("int-{}", uuid::Uuid::new_v4()),
+        "request": { "subtype": "interrupt" }
+    });
+    let mut guard = session.lock().map_err(|e| e.to_string())?;
+    let stdin = guard
+        .stdin
+        .as_mut()
+        .ok_or("this chat does not take more input")?;
+    writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
 #[tauri::command]

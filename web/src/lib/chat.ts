@@ -62,9 +62,24 @@ export type ChatState = {
   notices: string[];
   /** Set when the agent process exits. */
   exited?: { code: number | null };
+  /** True from asking to stop until the turn actually ends. It changes how the
+   *  end is read: the agent reports an interrupted turn as an execution error,
+   *  which is not something to alarm the user about — they asked for it. */
+  stopping: boolean;
+  /** Set on the turn the user stopped, so it can say so. */
+  stoppedAt?: string;
 };
 
-export const emptyChat = (): ChatState => ({ messages: [], busy: false, notices: [] });
+export const emptyChat = (): ChatState => ({
+  messages: [],
+  busy: false,
+  notices: [],
+  stopping: false,
+});
+
+/** The exact user turn Claude injects when a request is interrupted. It is a
+ *  marker, not something the user said, so it never becomes a bubble. */
+const INTERRUPT_MARKER = "[Request interrupted by user]";
 
 type Json = Record<string, unknown>;
 
@@ -117,6 +132,16 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   if (type === "assistant") {
     const msg = asObj(e.message);
     const id = asStr(msg.id);
+    const aborted = e.aborted === true;
+    if (aborted && state.messages.some((m) => m.id === id)) {
+      return {
+        ...state,
+        busy: false,
+        stopping: false,
+        stoppedAt: id,
+        messages: state.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)),
+      };
+    }
     // Already rendered from the partials — the whole copy adds nothing.
     if (state.messages.some((m) => m.id === id)) {
       return { ...state, messages: state.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)) };
@@ -146,10 +171,24 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   }
 
   if (type === "user") {
-    // Tool results come back as a user turn. They belong ON the tool block that
-    // asked for them, not as a message of their own — that is the difference
-    // between a chat UI and a log.
     const content = asArr(asObj(e.message).content);
+
+    // The interrupt marker is the agent telling us the turn was cut short. Show
+    // it as a state of that turn, not as a message the user typed.
+    if (content.some((c) => asStr(asObj(c).text) === INTERRUPT_MARKER)) {
+      const last = state.messages[state.messages.length - 1];
+      return {
+        ...state,
+        busy: false,
+        stopping: false,
+        stoppedAt: last?.id,
+        messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+      };
+    }
+
+    // Tool results come back as a user turn too. They belong ON the tool block
+    // that asked for them, not as a message of their own — that is the
+    // difference between a chat UI and a log.
     let next = state;
     for (const c of content) {
       const block = asObj(c);
@@ -178,9 +217,12 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   }
 
   if (type === "result") {
+    // An interrupted turn ends as `error_during_execution`. That is the user's
+    // own stop coming back to them, so it is not reported as a failure.
     return {
       ...state,
       busy: false,
+      stopping: false,
       lastCostUsd: typeof e.total_cost_usd === "number" ? e.total_cost_usd : state.lastCostUsd,
       lastDurationMs: typeof e.duration_ms === "number" ? e.duration_ms : state.lastDurationMs,
       messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
@@ -280,6 +322,8 @@ export function addUserTurn(state: ChatState, text: string): ChatState {
   return {
     ...state,
     busy: true,
+    stopping: false,
+    stoppedAt: undefined,
     messages: [
       ...state.messages,
       { id: `u${state.messages.length}`, role: "user", blocks: [{ kind: "text", text }], streaming: false },

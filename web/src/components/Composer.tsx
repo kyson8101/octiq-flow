@@ -23,21 +23,43 @@ export const MODELS: ModelChoice[] = [
   { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "" },
 ];
 
+/** How much the agent may do without asking.
+ *
+ *  This is NOT a hidden default. A chat has no channel for answering a
+ *  permission prompt, so whatever is chosen here is what the agent will do
+ *  unattended — and that has to be on screen, next to the send button, not
+ *  buried in a settings page. */
+export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
+
+export const PERMISSIONS: { id: PermissionMode; label: string; hint: string }[] = [
+  { id: "plan", label: "Read only", hint: "look and plan, change nothing" },
+  { id: "acceptEdits", label: "Can edit", hint: "edit files without asking" },
+  { id: "bypassPermissions", label: "Full access", hint: "run anything without asking" },
+];
+
 export function Composer({
   choice,
   onChoice,
+  permission,
+  onPermission,
   onSend,
+  onStop,
   busy,
   disabled,
 }: {
   choice: ModelChoice;
   onChoice: (c: ModelChoice) => void;
+  permission: PermissionMode;
+  onPermission: (p: PermissionMode) => void;
   onSend: (text: string) => void;
+  onStop: () => void;
   busy: boolean;
   disabled?: boolean;
 }) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
+  const [permMenu, setPermMenu] = useState(false);
+  const perm = PERMISSIONS.find((p) => p.id === permission) ?? PERMISSIONS[0];
   const areaRef = useRef<HTMLTextAreaElement>(null);
 
   // Grow with the text, up to a few lines, then scroll inside.
@@ -111,8 +133,56 @@ export function Composer({
             )}
           </div>
 
+          <div className="picker">
+            <button
+              className={`picker-btn perm-${perm.id}`}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={permMenu}
+              title={perm.hint}
+              onClick={() => setPermMenu((v) => !v)}
+            >
+              {perm.label}
+              <span className="picker-caret" aria-hidden="true">
+                ▾
+              </span>
+            </button>
+            {permMenu && (
+              <>
+                <div className="picker-scrim" onClick={() => setPermMenu(false)} />
+                <div className="picker-menu" role="menu">
+                  {PERMISSIONS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      role="menuitem"
+                      className={`picker-item ${p.id === permission ? "is-on" : ""}`}
+                      onClick={() => {
+                        onPermission(p.id);
+                        setPermMenu(false);
+                      }}
+                    >
+                      <span className="picker-name">{p.label}</span>
+                      <span className="picker-model">{p.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
           <span className="composer-hint">{busy ? "working…" : "Enter to send"}</span>
 
+          {busy ? (
+            // While a turn runs, the same spot stops it. A chat you cannot
+            // interrupt is a chat you have to kill, which costs the whole
+            // conversation.
+            <button className="send stop" type="button" title="Stop" onClick={onStop}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="5" y="5" width="14" height="14" rx="2.5" />
+              </svg>
+            </button>
+          ) : (
           <button
             className="send"
             type="button"
@@ -125,6 +195,7 @@ export function Composer({
               <path d="M12 19V5" />
             </svg>
           </button>
+          )}
         </div>
       </div>
     </div>

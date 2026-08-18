@@ -789,3 +789,89 @@ body {
   opacity: 0.4;
   cursor: default;
 }
+
+/* ---- Code blocks ------------------------------------------------------- */
+.code {
+  margin: 0 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 4px 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-0);
+}
+
+.code-lang {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--fg-3);
+}
+
+.code-copy {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.code-copy:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.code pre {
+  margin: 0;
+  padding: 11px 13px;
+  overflow-x: auto;
+  border: 0;
+  background: none;
+}
+
+/* ---- Stopped marker ---------------------------------------------------- */
+.stopped {
+  align-self: flex-start;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+/* ---- Stop button ------------------------------------------------------- */
+.send.stop {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.send.stop:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* The permission pill says what the agent may do unattended. Its colour is the
+   warning: read-only is quiet, full access is not. */
+.picker-btn.perm-plan {
+  color: var(--fg-2);
+}
+
+.picker-btn.perm-acceptEdits {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+
+.picker-btn.perm-bypassPermissions {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+}

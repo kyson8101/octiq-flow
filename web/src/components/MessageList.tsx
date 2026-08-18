@@ -4,6 +4,7 @@
 // them: prose, the tool calls it made along the way, more prose. Thinking is
 // folded away — it is long, and it is not the answer.
 import { useEffect, useRef, useState } from "react";
+import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Block, Message } from "../lib/chat";
@@ -24,11 +25,48 @@ function Thinking({ text }: { text: string }) {
   );
 }
 
+/** A fenced code block, with the one control that matters: copy.
+ *  react-markdown hands us the <code> child, whose className carries the fence
+ *  language ("language-rust"). */
+function CodeBlock({ children }: { children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const ref = useRef<HTMLPreElement>(null);
+  const child = children as { props?: { className?: string } } | undefined;
+  const lang = /language-(\w+)/.exec(child?.props?.className ?? "")?.[1] ?? "";
+
+  return (
+    <div className="code">
+      <div className="code-head">
+        <span className="code-lang">{lang || "text"}</span>
+        <button
+          className="code-copy"
+          type="button"
+          onClick={async () => {
+            const text = ref.current?.innerText ?? "";
+            try {
+              await navigator.clipboard.writeText(text);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1400);
+            } catch {
+              /* clipboard blocked (insecure origin): leave the button quiet */
+            }
+          }}
+        >
+          {copied ? "copied" : "copy"}
+        </button>
+      </div>
+      <pre ref={ref}>{children}</pre>
+    </div>
+  );
+}
+
 function BlockView({ block }: { block: Block }) {
   if (block.kind === "text") {
     return (
       <div className="prose">
-        <Markdown remarkPlugins={[remarkGfm]}>{block.text}</Markdown>
+        <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
+          {block.text}
+        </Markdown>
       </div>
     );
   }
@@ -42,7 +80,7 @@ function BlockView({ block }: { block: Block }) {
  *  again, answer — and one bubble per message reads as a stack of fragments
  *  rather than a reply. Consecutive messages from the same side are drawn as a
  *  single turn, so the label appears once and the blocks flow in order. */
-function TurnView({ messages }: { messages: Message[] }) {
+function TurnView({ messages, stopped }: { messages: Message[]; stopped?: boolean }) {
   const role = messages[0].role;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
@@ -54,6 +92,7 @@ function TurnView({ messages }: { messages: Message[] }) {
           <BlockView key={i} block={block} />
         ))}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
+        {stopped && <div className="stopped">Stopped</div>}
       </div>
     </article>
   );
@@ -70,7 +109,15 @@ function groupTurns(messages: Message[]): Message[][] {
   return turns;
 }
 
-export function MessageList({ messages, busy }: { messages: Message[]; busy: boolean }) {
+export function MessageList({
+  messages,
+  busy,
+  stoppedAt,
+}: {
+  messages: Message[];
+  busy: boolean;
+  stoppedAt?: string;
+}) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   // Only follow the stream while the reader is already at the bottom: yanking
@@ -96,7 +143,11 @@ export function MessageList({ messages, busy }: { messages: Message[]; busy: boo
     <div className="msgs" ref={scrollerRef}>
       <div className="msgs-inner">
         {groupTurns(messages).map((turn) => (
-          <TurnView key={turn[0].id} messages={turn} />
+          <TurnView
+            key={turn[0].id}
+            messages={turn}
+            stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
+          />
         ))}
         {busy && !messages.some((m) => m.streaming) && <div className="dots" aria-label="working" />}
         <div ref={endRef} />

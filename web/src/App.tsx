@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./lib/chat";
 import { MessageList } from "./components/MessageList";
-import { Composer, MODELS, type ModelChoice } from "./components/Composer";
+import { Composer, MODELS, type ModelChoice, type PermissionMode } from "./components/Composer";
 import { Connect } from "./components/Connect";
 
 type Workspace = {
@@ -24,6 +24,7 @@ type Workspace = {
 };
 
 const CHOICE_KEY = "octiq.v2.model";
+const PERM_KEY = "octiq.v2.permission";
 
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
@@ -33,6 +34,12 @@ export default function App() {
   const [drawer, setDrawer] = useState(false);
   const [choice, setChoice] = useState<ModelChoice>(
     () => MODELS.find((m) => m.id === localStorage.getItem(CHOICE_KEY)) ?? MODELS[0],
+  );
+  // What the agent may do unattended. Defaults to the cautious end: a chat has
+  // no way to answer a permission prompt, so this is the whole of the answer,
+  // and the safe choice is the one to start from.
+  const [permission, setPermission] = useState<PermissionMode>(
+    () => (localStorage.getItem(PERM_KEY) as PermissionMode | null) ?? "plan",
   );
 
   // The key of the running chat process, or null before the first send. It is
@@ -127,7 +134,7 @@ export default function App() {
             cwd: project.primary_path ?? "",
             agent: choice.agent,
             model: choice.flag || null,
-            permissionMode: "acceptEdits",
+            permissionMode: permission,
             prompt: text,
           });
         } catch (err) {
@@ -152,8 +159,29 @@ export default function App() {
         }));
       }
     },
-    [project, choice],
+    [project, choice, permission],
   );
+
+  /** Ask the running turn to stop. The session survives — the agent aborts the
+   *  turn and stays ready for the next one. */
+  const stop = useCallback(() => {
+    if (!chatKey.current) return;
+    setChat((s) => ({ ...s, stopping: true }));
+    bridge.invoke("chat_interrupt", { key: chatKey.current }).catch(() => {});
+  }, []);
+
+  /** Changing what the agent is allowed to do has to start a new agent: the
+   *  permission mode is fixed when the process is spawned, so leaving the old
+   *  one running would mean the pill on screen lies about the current chat. */
+  const changePermission = useCallback((p: PermissionMode) => {
+    setPermission(p);
+    localStorage.setItem(PERM_KEY, p);
+    if (chatKey.current) {
+      bridge.invoke("chat_stop", { key: chatKey.current }).catch(() => {});
+      chatKey.current = null;
+      setChat((s) => ({ ...emptyChat(), notices: s.notices }));
+    }
+  }, []);
 
   const newChat = useCallback(() => {
     if (chatKey.current) {
@@ -219,7 +247,7 @@ export default function App() {
               {chat.cwd && <p className="hero-sub">{chat.cwd}</p>}
             </div>
           ) : (
-            <MessageList messages={chat.messages} busy={chat.busy} />
+            <MessageList messages={chat.messages} busy={chat.busy} stoppedAt={chat.stoppedAt} />
           )}
 
           {chat.notices.length > 0 && (
@@ -238,7 +266,10 @@ export default function App() {
               setChoice(c);
               localStorage.setItem(CHOICE_KEY, c.id);
             }}
+            permission={permission}
+            onPermission={changePermission}
             onSend={send}
+            onStop={stop}
             busy={chat.busy}
             disabled={!project}
           />

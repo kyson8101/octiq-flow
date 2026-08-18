@@ -158,6 +158,7 @@ pub fn run() {
             pty::pty_active_sessions,
             agent_chat::chat_start,
             agent_chat::chat_send,
+            agent_chat::chat_interrupt,
             agent_chat::chat_stop,
             agent_chat::chat_list,
             pty::pty_agent_running,
