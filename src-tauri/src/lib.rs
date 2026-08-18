@@ -24,6 +24,7 @@ mod notify_hook;
 mod paths;
 mod proc;
 mod profile;
+mod profile_lock;
 mod pty;
 mod terminal_layout;
 mod bus;
@@ -66,6 +67,12 @@ fn confirm_close(window: tauri::Window, guard: tauri::State<CloseGuard>) -> Resu
 /// whether the DESKTOP app opens a port as a side effect; running this binary
 /// is already the decision.
 pub async fn run_headless() {
+    // Refuse rather than fight. A service that silently overwrites the app's
+    // project list is worse than one that does not start.
+    if let Err(owner) = profile_lock::acquire("server") {
+        eprintln!("[server] {}", profile_lock::conflict_message(&owner));
+        std::process::exit(1);
+    }
     let cfg = web::load_config();
     let services = dispatch::Services::load();
     println!("[server] OctiqFlow backend — no window, agents run here");
@@ -142,8 +149,16 @@ pub fn run() {
             // Events reach the window through the bus from here on, so producers need
             // no AppHandle — which is what lets the same code run headless.
             web::mirror_events_to_desktop(app.handle());
+            // The app is opened on purpose, so it does not refuse — but it
+            // says what is about to happen, and it does not open a second
+            // server on top of the service's port.
+            let profile_taken = profile_lock::acquire("desktop").err();
+            if let Some(owner) = &profile_taken {
+                eprintln!("[app] {}", profile_lock::conflict_message(owner));
+            }
+
             let web_cfg = web::load_config();
-            if web_cfg.enabled {
+            if web_cfg.enabled && profile_taken.is_none() {
                 // One WebState, shared by the Tauri commands that read it and
                 // by the server itself — the same shape the headless server
                 // builds for itself.
