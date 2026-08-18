@@ -875,3 +875,34 @@ body {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
 }
+
+/* A caret on the paragraph still being written, so a pause in the stream reads
+   as "still going" rather than "finished". Sits after the last inline box, so
+   it follows the text rather than jumping to its own line. */
+.prose.is-typing > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--fg-2);
+  animation: caret 1s steps(1) infinite;
+}
+
+@keyframes caret {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prose.is-typing > :last-child::after {
+    animation: none;
+  }
+}

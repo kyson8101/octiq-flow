@@ -9,6 +9,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
+import { closeOpenFences, useTypewriter } from "../lib/typewriter";
 
 function Thinking({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -60,16 +61,25 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
   );
 }
 
-function BlockView({ block }: { block: Block }) {
-  if (block.kind === "text") {
-    return (
-      <div className="prose">
-        <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
-          {block.text}
-        </Markdown>
-      </div>
-    );
-  }
+/** Prose that types itself out while it is still arriving.
+ *
+ *  Only the block currently being written animates. Anything already finished —
+ *  every earlier message, and this one once it ends — renders whole, so
+ *  scrolling back never replays the conversation. */
+function Prose({ text, animate }: { text: string; animate: boolean }) {
+  const shown = useTypewriter(text, animate);
+  const caret = animate && shown.length < text.length;
+  return (
+    <div className={`prose ${caret ? "is-typing" : ""}`}>
+      <Markdown remarkPlugins={[remarkGfm]} components={{ pre: CodeBlock }}>
+        {closeOpenFences(shown)}
+      </Markdown>
+    </div>
+  );
+}
+
+function BlockView({ block, animate }: { block: Block; animate?: boolean }) {
+  if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "thinking") return <Thinking text={block.text} />;
   return <ToolCard tool={block} />;
 }
@@ -89,7 +99,7 @@ function TurnView({ messages, stopped }: { messages: Message[]; stopped?: boolea
       {role === "assistant" && <div className="msg-role">Claude</div>}
       <div className="msg-body">
         {blocks.map((block, i) => (
-          <BlockView key={i} block={block} />
+          <BlockView key={i} block={block} animate={streaming && i === blocks.length - 1} />
         ))}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
