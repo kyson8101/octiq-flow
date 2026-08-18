@@ -194,7 +194,7 @@ impl WebState {
 /// Whether any browser is attached right now. `false` when the web server was
 /// never started, so the desktop-only path is untouched.
 pub fn clients_connected(app: &AppHandle) -> bool {
-    app.try_state::<WebState>()
+    app.try_state::<Arc<WebState>>()
         .map(|st| st.client_count() > 0)
         .unwrap_or(false)
 }
@@ -224,10 +224,13 @@ struct WebInvoke {
 
 /// Run one command on behalf of a browser by handing it to the desktop
 /// webview (see the module docs) and waiting for its answer.
-async fn proxy_invoke(app: &AppHandle, cmd: String, args: Value) -> Result<Value, String> {
-    let st = app
-        .try_state::<WebState>()
-        .ok_or_else(|| "web bridge is not running".to_string())?;
+async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, String> {
+    let app = match &ctx.invoke {
+        // No window in the way: call the backend directly.
+        Invoker::Local(svc) => return crate::dispatch::dispatch(svc, &cmd, args),
+        Invoker::Webview(app) => app,
+    };
+    let st = &ctx.state;
 
     let id = st.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = oneshot::channel();
@@ -252,7 +255,7 @@ async fn proxy_invoke(app: &AppHandle, cmd: String, args: Value) -> Result<Value
 /// The desktop webview's answer to a `web-invoke` (webbridge.js calls this).
 #[tauri::command]
 pub fn web_reply(
-    state: tauri::State<WebState>,
+    state: tauri::State<Arc<WebState>>,
     id: u64,
     ok: bool,
     result: Option<Value>,
@@ -272,11 +275,11 @@ pub fn web_reply(
 #[tauri::command]
 pub fn web_info(app: AppHandle) -> Value {
     let cfg = app
-        .try_state::<WebState>()
+        .try_state::<Arc<WebState>>()
         .and_then(|st| st.cfg.lock().ok().map(|c| c.clone()))
         .unwrap_or_else(load_config);
     let clients = app
-        .try_state::<WebState>()
+        .try_state::<Arc<WebState>>()
         .map(|st| st.client_count())
         .unwrap_or(0);
     json!({
@@ -285,7 +288,7 @@ pub fn web_info(app: AppHandle) -> Value {
         "bind": cfg.bind,
         "token": cfg.token,
         "clients": clients,
-        "running": app.try_state::<WebState>().is_some(),
+        "running": app.try_state::<Arc<WebState>>().is_some(),
     })
 }
 
@@ -303,7 +306,7 @@ pub fn web_set_config(
     cfg.port = port;
     cfg.bind = bind;
     save_config(&cfg);
-    if let Some(st) = app.try_state::<WebState>() {
+    if let Some(st) = app.try_state::<Arc<WebState>>() {
         if let Ok(mut held) = st.cfg.lock() {
             *held = cfg.clone();
         }
@@ -317,7 +320,19 @@ pub fn web_set_config(
 
 #[derive(Clone)]
 struct Ctx {
-    app: AppHandle,
+    state: Arc<WebState>,
+    invoke: Invoker,
+}
+
+/// Who actually runs a command a browser asked for.
+///
+/// The desktop app hands it to its own window, because the classic UI's
+/// commands — PTYs above all — only exist inside Tauri. A headless server runs
+/// it here, which is the whole point: no window to hand it to.
+#[derive(Clone)]
+enum Invoker {
+    Webview(AppHandle),
+    Local(crate::dispatch::Services),
 }
 
 #[derive(Deserialize)]
@@ -327,18 +342,41 @@ struct TokenQuery {
 
 /// Start the server if `web.json` enables it. Never fails the app: a port
 /// already in use logs and leaves the desktop app working as before.
-pub fn start(app: &AppHandle, cfg: WebConfig) {
+pub fn start(app: &AppHandle, state: Arc<WebState>, cfg: WebConfig) {
+    let ctx = Ctx {
+        state,
+        invoke: Invoker::Webview(app.clone()),
+    };
+    let Some(fut) = serve(ctx, cfg) else { return };
+    tauri::async_runtime::spawn(fut);
+}
+
+/// Serve with no Tauri app at all: commands run through the dispatch table and
+/// only `/v2` is served, because the classic UI's assets live in the bundle.
+pub async fn start_headless(cfg: WebConfig, services: crate::dispatch::Services) {
+    let ctx = Ctx {
+        state: Arc::new(WebState::new(cfg.clone())),
+        invoke: Invoker::Local(services),
+    };
+    if let Some(fut) = serve(ctx, cfg) {
+        fut.await;
+    }
+}
+
+/// The server itself, shared by both. `None` when the address will not parse,
+/// which is a config problem worth saying out loud rather than retrying.
+fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = ()>> {
     let addr: SocketAddr = match format!("{}:{}", cfg.bind, cfg.port).parse() {
         Ok(a) => a,
         Err(e) => {
             eprintln!("[web] bad bind address {}:{} — {e}", cfg.bind, cfg.port);
-            return;
+            return None;
         }
     };
-    let ctx = Ctx { app: app.clone() };
 
     let token = cfg.token.clone();
-    tauri::async_runtime::spawn(async move {
+    let desktop = matches!(ctx.invoke, Invoker::Webview(_));
+    Some(async move {
         let router = Router::new()
             .route("/ws", get(ws_handler))
             .route("/auth", get(auth_handler))
@@ -360,12 +398,17 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
         // their own terminal; the usability is worth more than the secrecy of a
         // value that already sits in plain text on the same disk.
         println!("[web] OctiqFlow v2:      http://{addr}/v2/?token={token}");
-        println!("[web] OctiqFlow classic: http://{addr}/?token={token}");
+        // Only the desktop app can serve the classic UI: its assets live in the
+        // Tauri bundle and its commands need a webview. Printing that URL from
+        // a headless server would send people to a 404.
+        if desktop {
+            println!("[web] OctiqFlow classic: http://{addr}/?token={token}");
+        }
         let service = router.into_make_service_with_connect_info::<SocketAddr>();
         if let Err(e) = axum::serve(listener, service).await {
             eprintln!("[web] server stopped: {e}");
         }
-    });
+    })
 }
 
 /// Where the built v2 client lives. Tried in order:
@@ -460,7 +503,17 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
 
     let path = if raw.is_empty() { "index.html" } else { raw };
 
-    let resolver = ctx.app.asset_resolver();
+    let Invoker::Webview(app) = &ctx.invoke else {
+        // Headless: the classic UI's assets live inside the Tauri bundle, which
+        // this process does not have. v2 is served above and is the whole point
+        // of running without a window.
+        return (
+            StatusCode::NOT_FOUND,
+            "this server serves /v2 — the classic UI needs the desktop app",
+        )
+            .into_response();
+    };
+    let resolver = app.asset_resolver();
     let asset = resolver
         .get(path.to_string())
         .or_else(|| resolver.get("index.html".to_string()));
@@ -493,9 +546,11 @@ async fn token_handler(
         return (StatusCode::FORBIDDEN, "not local").into_response();
     }
     let token = ctx
-        .app
-        .try_state::<WebState>()
-        .and_then(|st| st.cfg.lock().ok().map(|c| c.token.clone()))
+        .state
+        .cfg
+        .lock()
+        .ok()
+        .map(|c| c.token.clone())
         .unwrap_or_default();
     if token.is_empty() {
         return (StatusCode::NOT_FOUND, "no token").into_response();
@@ -586,9 +641,11 @@ async fn auth_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<TokenQuery
 /// Constant-ish token check shared by /auth and /ws.
 fn token_ok(ctx: &Ctx, given: &str) -> bool {
     let expected = ctx
-        .app
-        .try_state::<WebState>()
-        .and_then(|st| st.cfg.lock().ok().map(|c| c.token.clone()))
+        .state
+        .cfg
+        .lock()
+        .ok()
+        .map(|c| c.token.clone())
         .unwrap_or_default();
     !expected.is_empty() && given == expected
 }
@@ -608,10 +665,7 @@ async fn ws_handler(
 
 /// One connected browser: forward its invokes, stream events back.
 async fn client(ctx: Ctx, socket: WebSocket) {
-    let Some(st) = ctx.app.try_state::<WebState>() else {
-        return;
-    };
-    st.clients.fetch_add(1, Ordering::SeqCst);
+    ctx.state.clients.fetch_add(1, Ordering::SeqCst);
     let mut events = crate::bus::events().subscribe();
 
     let (sink, mut stream) = socket.split();
@@ -619,7 +673,7 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 
     // Events -> this browser.
     let out = sink.clone();
-    let pump = tauri::async_runtime::spawn(async move {
+    let pump = tokio::spawn(async move {
         loop {
             match events.recv().await {
                 Ok(text) => {
@@ -657,10 +711,10 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 
         // Each request runs on its own task: a slow command must not hold up
         // the keystrokes queued behind it.
-        let app = ctx.app.clone();
+        let ctx = ctx.clone();
         let out = sink.clone();
-        tauri::async_runtime::spawn(async move {
-            let reply = match proxy_invoke(&app, cmd, args).await {
+        tokio::spawn(async move {
+            let reply = match run_command(&ctx, cmd, args).await {
                 Ok(result) => json!({ "t": "reply", "id": id, "ok": true, "result": result }),
                 Err(error) => json!({ "t": "reply", "id": id, "ok": false, "error": error }),
             };
@@ -671,7 +725,5 @@ async fn client(ctx: Ctx, socket: WebSocket) {
     }
 
     pump.abort();
-    if let Some(st) = ctx.app.try_state::<WebState>() {
-        st.clients.fetch_sub(1, Ordering::SeqCst);
-    }
+    ctx.state.clients.fetch_sub(1, Ordering::SeqCst);
 }

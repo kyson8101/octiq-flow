@@ -27,6 +27,7 @@ mod profile;
 mod pty;
 mod terminal_layout;
 mod bus;
+mod dispatch;
 mod usage_limits;
 mod vault;
 mod web;
@@ -54,6 +55,23 @@ fn confirm_close(window: tauri::Window, guard: tauri::State<CloseGuard>) -> Resu
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Run the backend as a service: no window, no Dock icon, no Tauri app.
+///
+/// The same code the desktop app runs, minus the parts that need a GUI. It
+/// serves the v2 client and dispatches its commands directly (dispatch.rs)
+/// rather than handing them to a webview, which is what made a window
+/// necessary before.
+///
+/// `enabled` in web.json is deliberately ignored here. That flag decides
+/// whether the DESKTOP app opens a port as a side effect; running this binary
+/// is already the decision.
+pub async fn run_headless() {
+    let cfg = web::load_config();
+    let services = dispatch::Services::load();
+    println!("[server] OctiqFlow backend — no window, agents run here");
+    web::start_headless(cfg, services).await;
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -126,8 +144,12 @@ pub fn run() {
             web::mirror_events_to_desktop(app.handle());
             let web_cfg = web::load_config();
             if web_cfg.enabled {
-                app.manage(web::WebState::new(web_cfg.clone()));
-                web::start(app.handle(), web_cfg);
+                // One WebState, shared by the Tauri commands that read it and
+                // by the server itself — the same shape the headless server
+                // builds for itself.
+                let state = std::sync::Arc::new(web::WebState::new(web_cfg.clone()));
+                app.manage(state.clone());
+                web::start(app.handle(), state, web_cfg);
             }
 
             Ok(())
