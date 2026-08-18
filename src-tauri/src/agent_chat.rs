@@ -366,7 +366,6 @@ pub fn chat_start(
 
     // stdout: one JSON object per line, passed through as-is.
     {
-        let app = app.clone();
         let key = key.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -377,9 +376,7 @@ pub fn chat_start(
                     continue;
                 }
                 match serde_json::from_str::<Value>(trimmed) {
-                    Ok(event) => crate::web::emit(
-                        &app,
-                        "chat-event",
+                    Ok(event) => crate::bus::emit("chat-event",
                         ChatEvent {
                             key: key.clone(),
                             event,
@@ -389,9 +386,7 @@ pub fn chat_start(
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
                     // produced nothing. The one exception is below.
-                    Err(_) => crate::web::emit(
-                        &app,
-                        "chat-status",
+                    Err(_) => crate::bus::emit("chat-status",
                         ChatStatus {
                             key: key.clone(),
                             kind: "stderr".into(),
@@ -406,7 +401,6 @@ pub fn chat_start(
 
     // stderr: never JSON, always worth showing.
     {
-        let app = app.clone();
         let key = key.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
@@ -414,9 +408,7 @@ pub fn chat_start(
                 if line.trim().is_empty() || is_expected_chatter(&line) {
                     continue;
                 }
-                crate::web::emit(
-                    &app,
-                    "chat-status",
+                crate::bus::emit("chat-status",
                     ChatStatus {
                         key: key.clone(),
                         kind: "stderr".into(),
@@ -431,7 +423,6 @@ pub fn chat_start(
     // Reap the child and tell the UI, so a chat can never look "still thinking"
     // after its process is gone.
     {
-        let app = app.clone();
         let key = key.clone();
         let session = session.clone();
         thread::spawn(move || {
@@ -445,9 +436,7 @@ pub fn chat_start(
                     None => thread::sleep(std::time::Duration::from_millis(200)),
                 }
             };
-            crate::web::emit(
-                &app,
-                "chat-status",
+            crate::bus::emit("chat-status",
                 ChatStatus {
                     key: key.clone(),
                     kind: "exit".into(),

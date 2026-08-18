@@ -26,6 +26,7 @@ mod proc;
 mod profile;
 mod pty;
 mod terminal_layout;
+mod bus;
 mod usage_limits;
 mod vault;
 mod web;
@@ -120,6 +121,9 @@ pub fn run() {
             // OCTIQ_WEB=1) turns it on: this serves the app's UI and a socket
             // that can start shells. When it IS on, this process is the server —
             // the PTYs live here and a browser on another machine drives them.
+            // Events reach the window through the bus from here on, so producers need
+            // no AppHandle — which is what lets the same code run headless.
+            web::mirror_events_to_desktop(app.handle());
             let web_cfg = web::load_config();
             if web_cfg.enabled {
                 app.manage(web::WebState::new(web_cfg.clone()));

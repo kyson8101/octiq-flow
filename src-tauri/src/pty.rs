@@ -765,7 +765,6 @@ pub fn pty_spawn(
     // nothing shows, then it all appears at once" freeze. Batching collapses
     // thousands of tiny events per second into roughly one per frame.
     let (out_tx, out_rx) = mpsc::channel::<String>();
-    let emit_app = app.clone();
     let emit_id_out = id.clone();
     // The visibility gate + hidden-output ring (card 16), shared with the
     // session so `pty_set_visible` can flip it and drain the ring.
@@ -802,8 +801,7 @@ pub fn pty_spawn(
                 break;
             };
             if out.visible {
-                crate::web::emit(
-                    &emit_app,
+                crate::bus::emit(
                     "pty-output",
                     OutputEvent {
                         id: emit_id_out.clone(),
@@ -814,8 +812,7 @@ pub fn pty_spawn(
                 out.push_hidden(&batch);
                 // Tell the frontend this terminal is alive without shipping the
                 // bytes: the working dot and the silence monitor need the beat.
-                crate::web::emit(
-                    &emit_app,
+                crate::bus::emit(
                     "pty-hidden-output",
                     HiddenOutputEvent {
                         id: emit_id_out.clone(),
@@ -883,15 +880,13 @@ pub fn pty_spawn(
                         // alert is cheaper than any machinery to avoid one.
                         // ponytail: thread per alert; pool it if alerts ever
                         // arrive faster than a person can read them.
-                        let hook_app = app_handle.clone();
                         let hook_id = emit_id.clone();
                         thread::spawn(move || {
                             let alert = crate::notify_hook::alert_for(hook_id, "osc", title, body);
                             let Some(alert) = crate::notify_hook::filter(alert) else {
                                 return; // the hook suppressed it
                             };
-                            crate::web::emit(
-                                &hook_app,
+                            crate::bus::emit(
                                 "pty-attention",
                                 AttentionEvent {
                                     id: alert.id,
@@ -1023,7 +1018,7 @@ pub fn pty_set_visible(
             // send a `pty-output` for this session until it can take the same
             // lock, so the restored block always lands before the stream
             // resumes. See the emitter thread in `pty_spawn`.
-            crate::web::emit(&app, "pty-restore", RestoreEvent { id, data, trimmed });
+            crate::bus::emit("pty-restore", RestoreEvent { id, data, trimmed });
         }
     }
     Ok(())

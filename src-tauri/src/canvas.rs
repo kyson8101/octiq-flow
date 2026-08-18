@@ -20,7 +20,6 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use tauri::{AppHandle};
 
 /// Trailing quiet period: emit once no fs event has arrived for this long.
 const QUIET: Duration = Duration::from_millis(300);
@@ -375,7 +374,6 @@ pub struct CanvasWatchState(Mutex<Option<RecommendedWatcher>>);
 /// stops watching (e.g. when no project is selected).
 #[tauri::command]
 pub fn canvas_watch(
-    app: AppHandle,
     state: tauri::State<CanvasWatchState>,
     key: String,
 ) -> Result<(), String> {
@@ -401,7 +399,7 @@ pub fn canvas_watch(
         .map_err(|e| e.to_string())?;
 
     let emit_key = trimmed.to_string();
-    std::thread::spawn(move || debounce_loop(app, rx, emit_key));
+    std::thread::spawn(move || debounce_loop(rx, emit_key));
     *guard = Some(watcher);
     Ok(())
 }
@@ -410,7 +408,7 @@ pub fn canvas_watch(
 /// the first event, then keep absorbing until QUIET passes with no event (or
 /// MAX_COALESCE total), then emit once carrying the project key. Ends when the
 /// watcher is dropped and the channel disconnects.
-fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<()>, key: String) {
+fn debounce_loop(rx: mpsc::Receiver<()>, key: String) {
     while rx.recv().is_ok() {
         let first = Instant::now();
         loop {
@@ -421,12 +419,12 @@ fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<()>, key: String) {
                 Ok(_) => continue,
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    crate::web::emit(&app, "canvas-changed", &key);
+                    crate::bus::emit("canvas-changed", &key);
                     return;
                 }
             }
         }
-        crate::web::emit(&app, "canvas-changed", &key);
+        crate::bus::emit("canvas-changed", &key);
     }
 }
 

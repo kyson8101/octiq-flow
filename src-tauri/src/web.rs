@@ -75,7 +75,6 @@ const INVOKE_TIMEOUT: Duration = Duration::from_secs(45);
 /// Backlog of the event fan-out channel. A client that falls this far behind is
 /// dropped from the stream rather than stalling the emitter — terminals must
 /// never block on a slow socket.
-const EVENT_BACKLOG: usize = 1024;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -175,18 +174,15 @@ pub struct WebState {
     /// terminal may be put in the "hidden, buffer it" state, because the
     /// desktop window's idea of what is on screen is not the browser's.
     clients: AtomicUsize,
-    events: broadcast::Sender<String>,
 }
 
 impl WebState {
     pub fn new(cfg: WebConfig) -> Self {
-        let (events, _) = broadcast::channel(EVENT_BACKLOG);
         Self {
             cfg: Mutex::new(cfg),
             pending: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             clients: AtomicUsize::new(0),
-            events,
         }
     }
 
@@ -203,26 +199,16 @@ pub fn clients_connected(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// Emit an event to the desktop window AND every attached browser.
+/// Send every event this app emits to the desktop window as well.
 ///
-/// Every `app.emit` in this app goes through here instead, so a browser sees
-/// exactly what the desktop window sees. Serialization for the sockets happens
-/// once, and only when someone is actually listening.
-pub fn emit<S: Serialize + Clone>(app: &AppHandle, event: &str, payload: S) {
-    let _ = app.emit(event, payload.clone());
-    let Some(st) = app.try_state::<WebState>() else {
-        return;
-    };
-    if st.events.receiver_count() == 0 {
-        return;
-    }
-    let Ok(value) = serde_json::to_value(&payload) else {
-        return;
-    };
-    let frame = json!({ "t": "event", "event": event, "payload": value });
-    if let Ok(text) = serde_json::to_string(&frame) {
-        let _ = st.events.send(text);
-    }
+/// Called once at startup. Producers emit through `bus::emit`, which knows
+/// nothing about Tauri; this is the part that puts those events in front of the
+/// window too. Headless, nobody calls it and the events go only to sockets.
+pub fn mirror_events_to_desktop(app: &AppHandle) {
+    let app = app.clone();
+    crate::bus::set_desktop_sink(move |event, value| {
+        let _ = app.emit(event, value);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -626,7 +612,7 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         return;
     };
     st.clients.fetch_add(1, Ordering::SeqCst);
-    let mut events = st.events.subscribe();
+    let mut events = crate::bus::events().subscribe();
 
     let (sink, mut stream) = socket.split();
     let sink = Arc::new(tokio::sync::Mutex::new(sink));

@@ -16,7 +16,6 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::{AppHandle};
 
 /// Trailing quiet period: emit once no event has arrived for this long. Shorter
 /// than the git watcher's — this drives a visible pane, not a status count.
@@ -36,7 +35,6 @@ pub struct FileWatchState(Mutex<Option<RecommendedWatcher>>);
 /// unreadable paths are skipped (best-effort, never an error).
 #[tauri::command]
 pub fn file_watch_paths(
-    app: AppHandle,
     state: tauri::State<FileWatchState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
@@ -72,7 +70,7 @@ pub fn file_watch_paths(
         let _ = watcher.watch(dir, RecursiveMode::NonRecursive);
     }
 
-    std::thread::spawn(move || debounce_loop(app, rx));
+    std::thread::spawn(move || debounce_loop(rx));
     *guard = Some(watcher);
     Ok(())
 }
@@ -82,7 +80,7 @@ pub fn file_watch_paths(
 /// total), then emit once with the set of changed paths. A single save often
 /// produces several events (create temp, rename, chmod); the frontend must see
 /// one reload, not three. Ends when the watcher is dropped.
-fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
+fn debounce_loop(rx: mpsc::Receiver<String>) {
     while let Ok(first) = rx.recv() {
         let mut changed = BTreeSet::new();
         changed.insert(first);
@@ -104,7 +102,7 @@ fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
                 }
             }
         }
-        crate::web::emit(&app, "file-changed", changed.into_iter().collect::<Vec<String>>());
+        crate::bus::emit("file-changed", changed.into_iter().collect::<Vec<String>>());
         if disconnected {
             return;
         }

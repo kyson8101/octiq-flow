@@ -72,7 +72,7 @@ pub fn watch(app: AppHandle) {
                 let _ = win.show();
                 let _ = win.set_focus();
             }
-            crate::web::emit(&app, "focus-terminal", &key);
+            crate::bus::emit("focus-terminal", &key);
         }
     });
 }

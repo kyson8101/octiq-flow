@@ -480,7 +480,7 @@ fn rdev_listen(app: AppHandle, keys: Arc<Mutex<Vec<rdev::Key>>>) {
                 }
                 if chord_held(&pressed, &required) && armed {
                     armed = false;
-                    trigger_capture(&app);
+                    trigger_capture();
                 }
             }
             rdev::EventType::KeyRelease(k) => {
@@ -706,7 +706,7 @@ mod mac_listen {
                         }
                         if chord_held(&st.pressed, &required) && st.armed {
                             st.armed = false;
-                            trigger_capture(&st.app);
+                            trigger_capture();
                         }
                     } else {
                         st.pressed.retain(|k| *k != key);
@@ -792,14 +792,13 @@ mod mac_perms {
 
 /// Run a capture off the listener thread (capture spawns a subprocess and must
 /// never stall the input event tap) and emit the result to the frontend.
-fn trigger_capture(app: &AppHandle) {
-    let app = app.clone();
+fn trigger_capture() {
     std::thread::spawn(move || match do_capture() {
         Ok(shot) => {
-            crate::web::emit(&app, "vault-captured", &shot);
+            crate::bus::emit("vault-captured", &shot);
         }
         Err(e) => {
-            crate::web::emit(&app, "vault-capture-error", e);
+            crate::bus::emit("vault-capture-error", e);
         }
     });
 }

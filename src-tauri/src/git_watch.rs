@@ -18,7 +18,6 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::{AppHandle};
 
 /// Trailing quiet period: emit once no event has arrived for this long.
 const QUIET: Duration = Duration::from_millis(400);
@@ -38,7 +37,6 @@ pub struct GitWatchState(Mutex<Option<RecommendedWatcher>>);
 /// how git.rs treats bad paths.
 #[tauri::command]
 pub fn git_watch_paths(
-    app: AppHandle,
     state: tauri::State<GitWatchState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
@@ -92,7 +90,7 @@ pub fn git_watch_paths(
         let _ = watcher.watch(root, RecursiveMode::Recursive);
     }
 
-    std::thread::spawn(move || debounce_loop(app, rx));
+    std::thread::spawn(move || debounce_loop(rx));
     *guard = Some(watcher);
     Ok(())
 }
@@ -106,7 +104,7 @@ pub fn git_watch_paths(
 /// means "something changed but we do not know where" — the frontend must then
 /// fall back to a full rescan. That happens when the watcher drops an event
 /// batch, and it is also what a boot-time render does.
-fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
+fn debounce_loop(rx: mpsc::Receiver<String>) {
     /// Collect a root into the window's set. An empty root poisons the set into
     /// "unknown", because one unattributable change means we cannot claim the
     /// other roots are clean.
@@ -145,7 +143,7 @@ fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
         } else {
             roots.into_iter().collect()
         };
-        crate::web::emit(&app, "git-status-changed", payload);
+        crate::bus::emit("git-status-changed", payload);
         if disconnected {
             return;
         }
