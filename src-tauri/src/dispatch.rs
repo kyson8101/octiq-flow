@@ -265,13 +265,11 @@ mod tests {
 
     #[test]
     fn a_desktop_only_command_is_refused_by_name() {
-        let svc = Services {
-            workspaces: Arc::new(WorkspaceState::load()),
-            chats: Arc::new(ChatManager::default()),
-            watch: Arc::new(FileWatchState::default()),
-        };
-        let err = dispatch(&svc, "pty_spawn", json!({})).unwrap_err();
-        assert!(err.contains("pty_spawn"), "{err}");
+        let svc = Services::load();
+        // pick_folder opens a NATIVE dialog, so it can only ever belong to the
+        // desktop app — a dialog on the server would open where nobody is.
+        let err = dispatch(&svc, "pick_folder", json!({})).unwrap_err();
+        assert!(err.contains("pick_folder"), "{err}");
         assert!(err.contains("desktop app"), "{err}");
     }
 }
