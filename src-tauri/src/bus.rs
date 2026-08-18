@@ -25,6 +25,7 @@
 //! The desktop sink is optional and set once at startup by the Tauri app. With
 //! no app there is simply no sink, and events go only to the sockets — which is
 //! exactly what a headless server needs.
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 use serde::Serialize;
@@ -41,6 +42,25 @@ static EVENTS: OnceLock<broadcast::Sender<String>> = OnceLock::new();
 /// Where events also go when a desktop window exists. `None` headless.
 type DesktopSink = Box<dyn Fn(&str, Value) + Send + Sync>;
 static DESKTOP: OnceLock<DesktopSink> = OnceLock::new();
+
+/// How many browsers are attached. Lives here rather than in the web server's
+/// state because `pty.rs` needs the answer and has no business knowing whether
+/// a Tauri app exists — it only wants to know whether anyone is watching.
+static CLIENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Count a client in, and out again when it leaves.
+pub fn client_joined() {
+    CLIENTS.fetch_add(1, Ordering::SeqCst);
+}
+
+pub fn client_left() {
+    CLIENTS.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Whether any browser is attached right now.
+pub fn clients_connected() -> bool {
+    CLIENTS.load(Ordering::SeqCst) > 0
+}
 
 /// The channel to subscribe to for the event stream.
 pub fn events() -> &'static broadcast::Sender<String> {

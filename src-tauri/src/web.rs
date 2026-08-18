@@ -193,11 +193,7 @@ impl WebState {
 
 /// Whether any browser is attached right now. `false` when the web server was
 /// never started, so the desktop-only path is untouched.
-pub fn clients_connected(app: &AppHandle) -> bool {
-    app.try_state::<Arc<WebState>>()
-        .map(|st| st.client_count() > 0)
-        .unwrap_or(false)
-}
+
 
 /// Send every event this app emits to the desktop window as well.
 ///
@@ -665,7 +661,7 @@ async fn ws_handler(
 
 /// One connected browser: forward its invokes, stream events back.
 async fn client(ctx: Ctx, socket: WebSocket) {
-    ctx.state.clients.fetch_add(1, Ordering::SeqCst);
+    crate::bus::client_joined();
     let mut events = crate::bus::events().subscribe();
 
     let (sink, mut stream) = socket.split();
@@ -725,5 +721,5 @@ async fn client(ctx: Ctx, socket: WebSocket) {
     }
 
     pump.abort();
-    ctx.state.clients.fetch_sub(1, Ordering::SeqCst);
+    crate::bus::client_left();
 }

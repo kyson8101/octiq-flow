@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
+use tauri::State;
 
 /// Upper bound on the OSC scan buffer's retained tail (bytes). An OSC
 /// attention sequence is tiny; anything longer is plain output that can be
@@ -662,8 +662,7 @@ fn resolve_home(home: Option<String>, userprofile: Option<String>, is_windows: b
 ///   chat terminals get no canvas. See canvas.rs.
 #[tauri::command]
 pub fn pty_spawn(
-    app: AppHandle,
-    manager: State<PtyManager>,
+    manager: State<Arc<PtyManager>>,
     id: String,
     cwd: String,
     start_cmd: Option<String>,
@@ -671,6 +670,30 @@ pub fn pty_spawn(
     shell: Option<String>,
     canvas_key: Option<String>,
 ) -> Result<(), String> {
+    pty_spawn_impl(
+        manager.inner().clone(),
+        id,
+        cwd,
+        start_cmd,
+        persist_key,
+        shell,
+        canvas_key,
+    )
+}
+
+/// Start a shell. The Tauri-free half of `pty_spawn`, so the headless server
+/// can open a terminal for a browser with no window in the loop.
+#[allow(clippy::too_many_arguments)]
+pub fn pty_spawn_impl(
+    manager: Arc<PtyManager>,
+    id: String,
+    cwd: String,
+    start_cmd: Option<String>,
+    persist_key: Option<String>,
+    shell: Option<String>,
+    canvas_key: Option<String>,
+) -> Result<(), String> {
+    let manager_for_reap = manager.clone();
     {
         // Fast path: do not respawn an id that already exists.
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -826,7 +849,6 @@ pub fn pty_spawn(
     // alerts immediately, and hand each chunk to the emitter thread above. Ends
     // on EOF (shell exited) or read error; the channel then closes and the
     // emitter thread ends with it.
-    let app_handle = app.clone();
     let emit_id = id.clone();
     let mut reader = reader;
     thread::spawn(move || {
@@ -929,11 +951,10 @@ pub fn pty_spawn(
         // A user-closed tab is reaped by `pty_close`; nothing reaps THIS child,
         // so without this it sits as a zombie until the app quits. Reaping here
         // also races safely with `pty_close` — whichever takes the session from
-        // the map does the wait, the other is a no-op. try_state: app teardown
-        // may already have dropped the managed state.
-        if let Some(manager) = app_handle.try_state::<PtyManager>() {
-            manager.reap_session(&emit_id);
-        }
+        // the map does the wait, the other is a no-op. The manager is held by
+        // Arc rather than fetched back out of an AppHandle: this thread
+        // outlives the call, and headless there is no app to fetch it from.
+        manager_for_reap.reap_session(&emit_id);
     });
 
     // Registration is the LAST step, but the shell and its two threads already
@@ -982,8 +1003,16 @@ pub fn pty_spawn(
 /// setting the value it already holds does nothing.
 #[tauri::command]
 pub fn pty_set_visible(
-    app: AppHandle,
-    manager: State<PtyManager>,
+    manager: State<Arc<PtyManager>>,
+    id: String,
+    visible: bool,
+) -> Result<(), String> {
+    pty_set_visible_impl(&manager, id, visible)
+}
+
+/// The Tauri-free half of `pty_set_visible`.
+pub fn pty_set_visible_impl(
+    manager: &PtyManager,
     id: String,
     visible: bool,
 ) -> Result<(), String> {
@@ -992,7 +1021,7 @@ pub fn pty_set_visible(
     // window — the browser may be looking straight at it, and a buffered
     // terminal would go silent there. Hiding is therefore ignored while a
     // remote client is connected; revealing still works.
-    if !visible && crate::web::clients_connected(&app) {
+    if !visible && crate::bus::clients_connected() {
         return Ok(());
     }
     // Clone the Arc out from under the sessions map, then release the map lock
@@ -1032,7 +1061,24 @@ pub fn pty_set_visible(
 /// big paste into a program that is not reading. Holding the global map across
 /// that stalled every other terminal's commands app-wide.
 #[tauri::command]
-pub fn pty_write(manager: State<PtyManager>, id: String, data: String) -> Result<(), String> {
+pub fn pty_write(
+    manager: State<Arc<PtyManager>>,
+    id: String,
+    data: String,
+) -> Result<(), String> {
+    pty_write_impl(
+        &manager,
+        id,
+        data,
+    )
+}
+
+/// The Tauri-free half of `pty_write`.
+pub fn pty_write_impl(
+    manager: &PtyManager,
+    id: String,
+    data: String,
+) -> Result<(), String> {
     let writer = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions
@@ -1053,7 +1099,22 @@ pub fn pty_write(manager: State<PtyManager>, id: String, data: String) -> Result
 /// id is an error. Like `pty_write`, the map lock is released before the ioctl.
 #[tauri::command]
 pub fn pty_resize(
-    manager: State<PtyManager>,
+    manager: State<Arc<PtyManager>>,
+    id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    pty_resize_impl(
+        &manager,
+        id,
+        rows,
+        cols,
+    )
+}
+
+/// The Tauri-free half of `pty_resize`.
+pub fn pty_resize_impl(
+    manager: &PtyManager,
     id: String,
     rows: u16,
     cols: u16,
@@ -1082,14 +1143,39 @@ pub fn pty_resize(
 /// session from the map. The reader thread ends on the resulting EOF. Closing
 /// an unknown id is a no-op success (idempotent).
 #[tauri::command]
-pub fn pty_close(manager: State<PtyManager>, id: String) -> Result<(), String> {
+pub fn pty_close(
+    manager: State<Arc<PtyManager>>,
+    id: String,
+) -> Result<(), String> {
+    pty_close_impl(
+        &manager,
+        id,
+    )
+}
+
+/// The Tauri-free half of `pty_close`.
+pub fn pty_close_impl(
+    manager: &PtyManager,
+    id: String,
+) -> Result<(), String> {
     manager.reap_session(&id);
     Ok(())
 }
 
 /// List the ids of every live session. Order is unspecified (HashMap).
 #[tauri::command]
-pub fn pty_list_active(manager: State<PtyManager>) -> Result<Vec<String>, String> {
+pub fn pty_list_active(
+    manager: State<Arc<PtyManager>>,
+) -> Result<Vec<String>, String> {
+    pty_list_active_impl(
+        &manager,
+    )
+}
+
+/// The Tauri-free half of `pty_list_active`.
+pub fn pty_list_active_impl(
+    manager: &PtyManager,
+) -> Result<Vec<String>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions.keys().cloned().collect())
 }
@@ -1109,7 +1195,18 @@ pub struct ActiveSession {
 /// each session back to its saved title and scrollback (terminal_layout.rs), so
 /// an attached tab comes up named and with its recent output.
 #[tauri::command]
-pub fn pty_active_sessions(manager: State<PtyManager>) -> Result<Vec<ActiveSession>, String> {
+pub fn pty_active_sessions(
+    manager: State<Arc<PtyManager>>,
+) -> Result<Vec<ActiveSession>, String> {
+    pty_active_sessions_impl(
+        &manager,
+    )
+}
+
+/// The Tauri-free half of `pty_active_sessions`.
+pub fn pty_active_sessions_impl(
+    manager: &PtyManager,
+) -> Result<Vec<ActiveSession>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions
         .iter()
@@ -1126,7 +1223,18 @@ pub fn pty_active_sessions(manager: State<PtyManager>) -> Result<Vec<ActiveSessi
 /// See `Session::agent_running` for the signal and its limits (it stays true
 /// while an agent sits idle at its own prompt; non-Unix always reports true).
 #[tauri::command]
-pub fn pty_agent_running(manager: State<PtyManager>) -> HashMap<String, bool> {
+pub fn pty_agent_running(
+    manager: State<Arc<PtyManager>>,
+) -> HashMap<String, bool> {
+    pty_agent_running_impl(
+        &manager,
+    )
+}
+
+/// The Tauri-free half of `pty_agent_running`.
+pub fn pty_agent_running_impl(
+    manager: &PtyManager,
+) -> HashMap<String, bool> {
     manager.agent_running_by_id()
 }
 

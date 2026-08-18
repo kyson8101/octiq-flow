@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 
 use crate::agent_chat::ChatManager;
 use crate::file_watch::FileWatchState;
+use crate::pty::PtyManager;
 use crate::workspaces::WorkspaceState;
 
 /// Everything a request might need. The same values the Tauri app manages —
@@ -34,6 +35,7 @@ pub struct Services {
     pub workspaces: Arc<WorkspaceState>,
     pub chats: Arc<ChatManager>,
     pub watch: Arc<FileWatchState>,
+    pub ptys: Arc<PtyManager>,
 }
 
 impl Services {
@@ -43,6 +45,7 @@ impl Services {
             workspaces: Arc::new(WorkspaceState::load()),
             chats: Arc::new(ChatManager::default()),
             watch: Arc::new(FileWatchState::default()),
+            ptys: Arc::new(PtyManager::default()),
         }
     }
 }
@@ -177,6 +180,41 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "file_watch_paths" => unit(crate::file_watch::file_watch_paths_impl(
             &svc.watch,
             arg(&args, "paths")?,
+        )),
+
+        // ---- terminals ----------------------------------------------------
+        // A shell in the browser, in the project's own folder. The PTY streams
+        // as `pty-output` events over the same socket the chat uses, so there
+        // is nothing new to plumb — only these to call.
+        "pty_spawn" => unit(crate::pty::pty_spawn_impl(
+            svc.ptys.clone(),
+            arg(&args, "id")?,
+            arg(&args, "cwd")?,
+            arg(&args, "startCmd")?,
+            arg(&args, "persistKey")?,
+            arg(&args, "shell")?,
+            arg(&args, "canvasKey")?,
+        )),
+        "pty_write" => unit(crate::pty::pty_write_impl(
+            &svc.ptys,
+            arg(&args, "id")?,
+            arg(&args, "data")?,
+        )),
+        // rows BEFORE cols — both are u16, so getting this the wrong way round
+        // compiles perfectly and silently transposes every terminal.
+        "pty_resize" => unit(crate::pty::pty_resize_impl(
+            &svc.ptys,
+            arg(&args, "id")?,
+            arg(&args, "rows")?,
+            arg(&args, "cols")?,
+        )),
+        "pty_close" => unit(crate::pty::pty_close_impl(&svc.ptys, arg(&args, "id")?)),
+        "pty_list_active" => to_value(crate::pty::pty_list_active_impl(&svc.ptys)),
+        "pty_active_sessions" => to_value(crate::pty::pty_active_sessions_impl(&svc.ptys)),
+        "pty_set_visible" => unit(crate::pty::pty_set_visible_impl(
+            &svc.ptys,
+            arg(&args, "id")?,
+            arg(&args, "visible")?,
         )),
 
         // ---- usage --------------------------------------------------------

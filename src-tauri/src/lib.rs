@@ -104,7 +104,7 @@ pub fn run() {
             app.manage(std::sync::Arc::new(WorkspaceState::load()));
             // Multi-PTY manager: terminals are spawned by id on demand from the
             // frontend (including the boot terminal), not at setup time.
-            app.manage(PtyManager::default());
+            app.manage(std::sync::Arc::new(PtyManager::default()));
             // Agent chat sessions: agents run as a JSON stream instead of a TUI,
             // for the chat view (agent_chat.rs).
             app.manage(std::sync::Arc::new(agent_chat::ChatManager::default()));
