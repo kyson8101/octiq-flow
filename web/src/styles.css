@@ -2473,3 +2473,89 @@ body {
   color: var(--accent);
   overflow-wrap: anywhere;
 }
+
+/* ---- Terminal drawer ---------------------------------------------------
+   A shell under the chat, in the project's own folder. It sits between the
+   transcript and the composer so the thing you type into is always the bottom
+   of the screen — the terminal appearing must not push the prompt out of reach
+   on a phone. */
+.drawer {
+  flex: 0 0 auto;
+  max-width: 780px;
+  width: 100%;
+  margin: 0 auto 8px;
+  display: flex;
+  flex-direction: column;
+  /* Tall enough for a build's output, short enough to leave the conversation
+     visible above it. */
+  height: min(42vh, 340px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 6px 6px 6px 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.drawer-title {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-1);
+}
+
+.drawer-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* Truncate from the LEFT: the end of a path is the half that names the
+     folder. The <bdi> keeps its characters in their own order. */
+  direction: rtl;
+  text-align: left;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.drawer-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.drawer-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.term {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 8px;
+}
+
+/* xterm measures itself against this, so it has to fill the pane exactly. */
+.term .xterm {
+  height: 100%;
+}
+
+/* The composer's terminal toggle, lit while the drawer is open. */
+.picker-btn.is-on {
+  color: var(--accent);
+}

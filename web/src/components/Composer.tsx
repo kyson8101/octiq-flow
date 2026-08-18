@@ -111,6 +111,8 @@ export function Composer({
   effort,
   onEffort,
   cwd,
+  onTerminal,
+  terminalOpen,
 }: {
   choice: ModelChoice;
   onChoice: (c: ModelChoice) => void;
@@ -136,6 +138,9 @@ export function Composer({
   onEffort: (e: Effort) => void;
   /** The project folder, so the file picker opens where the work is. */
   cwd?: string;
+  /** Show the shell drawer. Absent when there is no project to open one in. */
+  onTerminal?: () => void;
+  terminalOpen?: boolean;
 }) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
@@ -533,6 +538,20 @@ export function Composer({
             }}
           />
 
+          {/* A shell in this project, for the things you would rather run than
+              ask for. Next to the agent's own settings because it is the same
+              decision: who does this — you, or it. */}
+          {onTerminal && (
+            <button
+              className={`picker-btn ${terminalOpen ? "is-on" : ""}`}
+              type="button"
+              title={terminalOpen ? "Hide the terminal" : "Open a terminal here"}
+              onClick={onTerminal}
+            >
+              <TerminalIcon />
+            </button>
+          )}
+
           <span className="composer-hint">{busy ? "working…" : "Enter to send"}</span>
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
@@ -676,4 +695,13 @@ function Thumb({ attachment }: { attachment: Attachment }) {
 
   if (!url) return <ImageIcon />;
   return <img className="chip-thumb" src={url} alt="" />;
+}
+
+function TerminalIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m5 8 4 4-4 4" />
+      <path d="M13 16h6" />
+    </svg>
+  );
 }

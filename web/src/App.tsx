@@ -41,6 +41,7 @@ import { Connect } from "./components/Connect";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
+import { TerminalPane } from "./components/Terminal";
 import { useConfirm } from "./components/Confirm";
 
 type Workspace = Project & { paths?: string[]; shelved?: boolean; description?: string };
@@ -62,6 +63,7 @@ const ACCESS_KEY = "octiq.v2.access";
 const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
+const TERM_KEY = "octiq.v2.terminalOpen";
 
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
@@ -79,6 +81,9 @@ export default function App() {
   // Which project's settings are open: an id, "new" while creating one, or
   // null for closed.
   const [settingsFor, setSettingsFor] = useState<string | "new" | null>(null);
+  // The shell drawer under the chat. Remembered, because someone who works
+  // with it open wants it open next time too.
+  const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
   // Which folders are open, kept between visits — a tree that forgets is a
   // tree you re-open every time.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -735,6 +740,36 @@ export default function App() {
             </div>
           )}
 
+          {termOpen && project && (
+            <div className="drawer">
+              <div className="drawer-head">
+                <span className="drawer-title">Terminal · {project.name}</span>
+                <span className="drawer-path" title={project.primary_path}>
+                  <bdi>{project.primary_path}</bdi>
+                </span>
+                <button
+                  className="drawer-close"
+                  type="button"
+                  title="Hide the terminal (the shell keeps running)"
+                  onClick={() => {
+                    setTermOpen(false);
+                    localStorage.setItem(TERM_KEY, "0");
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+              {/* Keyed by project: switching project gets that project's own
+                  shell, and coming back reattaches to it rather than starting
+                  a second one. */}
+              <TerminalPane
+                key={project.id}
+                id={`term:${project.id}`}
+                cwd={project.primary_path ?? ""}
+              />
+            </div>
+          )}
+
           <Composer
             choice={choice}
             onChoice={changeModel}
@@ -751,6 +786,16 @@ export default function App() {
             effort={effort}
             onEffort={changeEffort}
             cwd={project?.primary_path ?? ""}
+            terminalOpen={termOpen}
+            onTerminal={
+              project
+                ? () =>
+                    setTermOpen((open) => {
+                      localStorage.setItem(TERM_KEY, open ? "0" : "1");
+                      return !open;
+                    })
+                : undefined
+            }
           />
 
           {(chat.lastDurationMs !== undefined || chat.model) && (
