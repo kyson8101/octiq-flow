@@ -30,6 +30,7 @@
 // shows a dash instead of breaking.
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 use std::time::SystemTime;
 
 use serde::Serialize;
@@ -335,8 +336,17 @@ fn fetch_claude_usage() -> ProviderUsage {
         return ProviderUsage::unavailable("usage request failed");
     }
     let body = String::from_utf8_lossy(&out.stdout);
-    parse_claude_usage(&body)
-        .unwrap_or_else(|| ProviderUsage::unavailable("could not read Claude usage"))
+    if let Some(usage) = parse_claude_usage(&body) {
+        return usage;
+    }
+    // curl exits 0 on a 4xx (no `-f`), so an error body arrives here looking
+    // like an unparseable one. The usage endpoint rate-limits per ACCOUNT, and
+    // saying so is the difference between "wait a minute" and "something is
+    // broken".
+    if body.contains("rate_limit_error") {
+        return ProviderUsage::unavailable("usage checks are rate limited — try again shortly");
+    }
+    ProviderUsage::unavailable("could not read Claude usage")
 }
 
 // ===================================================================== //
@@ -474,12 +484,53 @@ fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
+/// How long a good Claude reading is reused instead of asking again.
+///
+/// The endpoint rate-limits PER ACCOUNT, and the number of things asking has
+/// grown: the desktop footer, and now every browser tab running v2, each on
+/// their own timer. Without this they add up and 429 each other out. Held here
+/// rather than in each client so the cost is one request per minute no matter
+/// how many are watching. Codex needs none of this — it is a file read.
+const CLAUDE_CACHE_SECONDS: u64 = 55;
+
+/// The last Claude reading that actually worked, and when it was taken.
+static CLAUDE_CACHE: Mutex<Option<(SystemTime, ProviderUsage)>> = Mutex::new(None);
+
+/// Claude usage, from the cache when it is fresh enough.
+///
+/// A stale-but-real number also beats a failed refresh: when the fetch comes
+/// back unavailable and we have an older good reading, the reading wins. It is
+/// what the user is actually asking for, and "83% an hour ago" is worth more
+/// than a dash — most of all during a 429, which is exactly when someone wants
+/// to know where they stand.
+fn claude_usage_cached() -> ProviderUsage {
+    let now = SystemTime::now();
+    if let Ok(guard) = CLAUDE_CACHE.lock() {
+        if let Some((at, cached)) = guard.as_ref() {
+            let age = now.duration_since(*at).unwrap_or_default();
+            if age.as_secs() < CLAUDE_CACHE_SECONDS {
+                return cached.clone();
+            }
+        }
+    }
+
+    let fresh = fetch_claude_usage();
+    if let Ok(mut guard) = CLAUDE_CACHE.lock() {
+        if fresh.available {
+            *guard = Some((now, fresh.clone()));
+        } else if let Some((_, cached)) = guard.as_ref() {
+            return cached.clone();
+        }
+    }
+    fresh
+}
+
 /// Both providers' 5-hour + weekly usage for the footer. Read-only; each provider
 /// fails independently (one being unavailable never blocks the other).
 #[tauri::command]
 pub fn usage_summary() -> UsageSummary {
     UsageSummary {
-        claude: fetch_claude_usage(),
+        claude: claude_usage_cached(),
         codex: read_codex_usage(),
     }
 }
