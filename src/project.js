@@ -1,10 +1,14 @@
-// Card 04 — Project mode: many live terminals per project, shown as tabs.
+// Card 04 — Project mode: many live terminals per project.
 //
 // Each project owns its own TerminalGroup (from terminals.js). Selecting a
 // project shows that group and lazily spawns its first terminal (cd'd to the
-// project primary path). The "+" button spawns more terminals in the current
-// project, all at the primary path. Switching projects hides the old group
-// (its terminals stay alive with scrollback) and shows the new one.
+// project primary path). Switching projects hides the old group (its terminals
+// stay alive with scrollback) and shows the new one.
+//
+// The group has NO tab strip (`tabBar: false`): a project's terminals are
+// listed in the sidebar, under the project's folder (termtree.js), and new ones
+// are started from the composer at the bottom of the view (composer.js), which
+// calls launchInProject() below.
 //
 // SESSION PERSISTENCE: each project's tab layout (title + cwd, in order) and
 // each terminal's scrollback are saved to the backend, so a restart rebuilds
@@ -23,6 +27,13 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const mountEl = document.querySelector("#project-terminals");
+
+// True when this page is a BROWSER client of a machine running OctiqFlow (the
+// shim in tauriws.js sets it), rather than that machine's own desktop window.
+// It changes one rule and only one: the terminals belong to the server, so this
+// client ADOPTS them (attachProject) and never writes the saved layout or
+// scrollback — the window that owns them is the one that records them.
+const WEB = !!window.OCTIQ_WEB;
 
 /** The ` --add-dir '<path>'` suffix that gives Claude tool access to a project's
  *  other folders. A project can group several folders; the terminal starts in
@@ -130,7 +141,16 @@ const dirtyTerminals = new Map();
 function groupFor(id, primaryPath, paths, startup, terminalCommand, fontOverride) {
   let rec = projects.get(id);
   if (!rec) {
-    const group = createTerminalGroup(mountEl, id, { quickSpawn: true, fontOverride });
+    // tabBar: false — a project's tabs are listed in the sidebar, as rows under
+    // the project's folder (termtree.js), so the pane keeps no strip of its own.
+    const group = createTerminalGroup(mountEl, id, {
+      quickSpawn: true,
+      fontOverride,
+      tabBar: false,
+      // The composer under the terminals (composer.js) shows what is being
+      // sent, so the group's own thin "last sent" bar would just repeat it.
+      lastSentBar: false,
+    });
     // Add-menu "Terminal" row: spawn a plain terminal in THIS project, at its
     // primary path.
     group.onAdd = () => spawnInProject(id);
@@ -178,6 +198,52 @@ async function spawnInProject(id) {
     cwd: rec.primaryPath,
     startCmd: rec.terminalCommand || null,
     canvasKey: id,
+  });
+}
+
+/**
+ * Open a new terminal in a project and start it on `bin`, optionally with the
+ * user's first prompt already in the command line. This is the composer's
+ * launch path (composer.js): picking "Claude · Opus" and typing a prompt runs
+ *
+ *   claude --model opus --add-dir '<other project folders>' '<the prompt>'
+ *
+ * so the agent boots straight into that prompt. Passing the prompt as an
+ * ARGUMENT is deliberate: writing it into the PTY afterwards would race the
+ * agent's own startup and could land halfway through its first paint.
+ *
+ * `bin` is null for a plain shell — then the prompt IS the command to run.
+ * `flag` only ever comes from the composer's own fixed model table, never from
+ * typed text; the prompt itself is single-quoted (shQuote), so nothing in it
+ * can break out into another shell word.
+ */
+export async function launchInProject(projectId, { bin, flag = "", prompt = "", title = null }) {
+  const rec = projects.get(projectId);
+  if (!rec) return null;
+
+  // Plain shell: run what was typed (or the project's own terminal command).
+  if (!bin) {
+    return rec.group.newTerminal({
+      cwd: rec.primaryPath,
+      startCmd: prompt || rec.terminalCommand || null,
+      canvasKey: projectId,
+    });
+  }
+
+  // Same fixed allowlist as the "+" menu: the name from the UI only ever picks
+  // between two literal strings, it is never interpolated.
+  const safeBin = bin === "codex" ? "codex" : "claude";
+  let cmd = safeBin + (flag ? ` ${flag}` : "");
+  // Claude gets tool access to the project's other folders; Codex takes no
+  // such flag.
+  if (safeBin === "claude") cmd += claudeAddDirSuffix(rec, rec.primaryPath);
+  if (prompt) cmd += ` ${shQuote(prompt)}`;
+
+  return rec.group.newTerminal({
+    cwd: rec.primaryPath,
+    startCmd: cmd,
+    title: title || (safeBin === "codex" ? "Codex" : "Claude"),
+    canvasKey: projectId,
   });
 }
 
@@ -335,6 +401,62 @@ function legacySplitTree(saved) {
   };
 }
 
+/** Adopt the terminals this project ALREADY has running on the server.
+ *
+ *  The browser path (see WEB). The desktop window spawns terminals; a browser
+ *  attached to that machine must not — the sessions it can see are the real
+ *  ones, and starting more would give the project two sets of terminals, one of
+ *  them invisible to the machine's own window.
+ *
+ *  What comes across: the live output stream from the moment of attach, plus
+ *  whatever scrollback was last flushed to disk (every few seconds), so a tab
+ *  opens with recent history rather than a blank screen. Titles come from the
+ *  same saved layout the desktop uses, keyed by persist key. */
+async function attachProject(id) {
+  const rec = projects.get(id);
+  if (!rec || rec.restoring) return;
+  rec.restoring = true;
+  try {
+    const sessions = await invoke("pty_active_sessions").catch(() => []);
+    // A project's terminals are the ids namespaced with its project id. The
+    // command drawers ("cmd:<id>:N"), chat and util terminals are other groups.
+    const mine = (sessions || [])
+      .filter((s) => s.id.startsWith(`${id}:`))
+      .sort((a, b) => seqOf(a.id) - seqOf(b.id));
+    if (!mine.length) return;
+
+    const titles = new Map(
+      (layouts?.[id] || []).map((t) => [t.persistKey, t.title]),
+    );
+    // Scrollback reads are independent: one round trip for all of them.
+    const withText = await Promise.all(
+      mine.map(async (s) => ({
+        s,
+        text: s.persist_key
+          ? (await invoke("load_scrollback", { key: s.persist_key }).catch(() => "")) || ""
+          : "",
+      })),
+    );
+    for (const { s, text } of withText) {
+      await rec.group.newTerminal({
+        attachId: s.id,
+        persistKey: s.persist_key || undefined,
+        title: titles.get(s.persist_key) || undefined,
+        restoreScrollback: text,
+        cwd: rec.primaryPath,
+      });
+    }
+  } finally {
+    rec.restoring = false;
+  }
+}
+
+/** The trailing number of a pty id ("proj-7:3" -> 3), for stable tab order. */
+function seqOf(id) {
+  const n = Number(id.slice(id.lastIndexOf(":") + 1));
+  return Number.isFinite(n) ? n : 0;
+}
+
 /** Rebuild a project's saved terminals: one tab per saved entry, in order, with
  *  its old scrollback written back. Layout saves are suppressed during the loop
  *  (`restoring`) so a half-built layout is never written — which would make the
@@ -467,6 +589,14 @@ async function onProjectSelected(detail) {
     // A concurrent select may have populated the group while we awaited.
     if (rec.group.count() > 0) return;
 
+    // Running in a browser (web.rs): the terminals belong to the machine the
+    // app is served from, and they are already running. ADOPT them instead of
+    // starting anything — a remote view must never spawn a second set.
+    if (WEB) {
+      await attachProject(id);
+      return;
+    }
+
     const saved = layouts?.[id];
     if (saved && saved.length && !startedUp.has(id)) {
       startedUp.add(id);
@@ -509,6 +639,9 @@ function forgetDirty(rec) {
 /** Debounce a layout save after a structural change. Suppressed while the
  *  project is restoring (the saved layout is already correct). */
 function scheduleLayoutSave(id) {
+  // A browser client sees a partial picture (only what it attached to); letting
+  // it write the layout would overwrite the owning window's record.
+  if (WEB) return;
   const rec = projects.get(id);
   if (!rec || rec.restoring) return;
   clearTimeout(rec.saveTimer);
@@ -523,6 +656,7 @@ function scheduleLayoutSave(id) {
  *  before it is saved, so any further output re-queues it at the back and the
  *  budget rotates through every busy terminal in turn. */
 function flushDirty() {
+  if (WEB) return; // the machine that owns the terminals saves their scrollback
   let budget = MAX_FLUSH_PER_TICK;
   for (const [ptyId, rec] of dirtyTerminals) {
     if (budget <= 0) break;

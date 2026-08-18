@@ -41,6 +41,12 @@ rdev = "0.5"
 # Decode the cropped PNG the frontend sends back when saving a crop (vault.rs).
 base64 = "0.22"
 fontdb = "0.23"
+# Remote access (web.rs): serve the app's own UI over HTTP and bridge a browser
+# to this machine's backend over one WebSocket, so the app can run on a machine
+# that stays on while you drive it from a laptop or a phone.
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+futures-util = "0.3"
 
 # macOS-only: read the frontmost window's CoreGraphics id so the screenshot
 # hotkey captures the active window (vault.rs). CoreGraphics itself is linked

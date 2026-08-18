@@ -2,7 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover: the browser client runs full-screen on a phone, so
+         the layout reaches under the notch / home indicator and the safe-area
+         insets in styles.css keep the chrome clear of them. user-scalable=no
+         stops a double-tap on a terminal zooming the whole page. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#1c1c1e" />
     <title>OctiqFlow</title>
     <link
       rel="icon"
@@ -30,9 +41,17 @@
          lazily on the first text preview, after all startup UMD globals exist. -->
 
     <link rel="stylesheet" href="styles.css" />
+    <!-- BEFORE every module: in a browser (this page served by web.rs from the
+         machine that owns the terminals) there is no Tauri IPC, so this shim
+         puts a WebSocket-backed `window.__TAURI__` in place. Classic script, no
+         defer, so it runs before the deferred modules read that global. In the
+         desktop window it sees the real one and does nothing. -->
+    <script src="/tauriws.js"></script>
     <!-- First: a dropped file must never navigate the webview away from the app. -->
     <script type="module" src="/dropguard.js" defer></script>
+    <script type="module" src="/webbridge.js" defer></script>
     <script type="module" src="/appearance.js" defer></script>
+    <script type="module" src="/termtree.js" defer></script>
     <script type="module" src="/workspaces.js" defer></script>
     <script type="module" src="/main.js" defer></script>
     <script type="module" src="/layout.js" defer></script>
@@ -54,6 +73,8 @@
     <script type="module" src="/settings.js" defer></script>
     <script type="module" src="/profiles.js" defer></script>
     <script type="module" src="/quickopen.js" defer></script>
+    <script type="module" src="/composer.js" defer></script>
+    <script type="module" src="/phone.js" defer></script>
   </head>
 
   <body>
@@ -169,6 +190,27 @@
         <div class="center-main">
           <div class="center-terms">
             <div id="project-terminals" class="project-terminals"></div>
+
+            <!-- Composer (composer.js): the chat-style prompt box. Type what
+                 you want, pick the agent + model, press Enter — it goes to the
+                 terminal in front of you when that agent is already running
+                 there, otherwise a new terminal opens on it with the prompt as
+                 its first argument. With no terminal open, it rises into the
+                 middle of the empty area as a greeting screen (.pc-hero). -->
+            <div id="project-composer" class="pc hidden">
+              <p id="pc-greeting" class="pc-greeting hidden"></p>
+              <div class="pc-box">
+                <textarea id="pc-input" class="pc-input" rows="1" placeholder="Ask Claude to…"></textarea>
+                <div class="pc-row">
+                  <button id="pc-pick" class="pc-pick" type="button" aria-haspopup="menu" aria-expanded="false">
+                    <span id="pc-pick-label" class="pc-pick-label">Claude</span>
+                    <span class="pc-pick-caret" aria-hidden="true">▾</span>
+                  </button>
+                  <span class="pc-hint">Enter to send · Shift+Enter for a new line</span>
+                  <button id="pc-send" class="pc-send" type="button" title="Send" disabled></button>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- File preview column (filepreview.js). Hidden until a file is

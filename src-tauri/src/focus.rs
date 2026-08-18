@@ -15,7 +15,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// One write of a file arrives as several fs events; absorb the burst.
 const BURST: Duration = Duration::from_millis(80);
@@ -72,7 +72,7 @@ pub fn watch(app: AppHandle) {
                 let _ = win.show();
                 let _ = win.set_focus();
             }
-            let _ = app.emit("focus-terminal", &key);
+            crate::web::emit(&app, "focus-terminal", &key);
         }
     });
 }

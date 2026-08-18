@@ -27,7 +27,7 @@ use std::time::UNIX_EPOCH;
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle};
 
 /// Image file extensions the vault shows. Captures are always PNG; this also
 /// lets a hand-dropped image in the folder appear.
@@ -796,10 +796,10 @@ fn trigger_capture(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || match do_capture() {
         Ok(shot) => {
-            let _ = app.emit("vault-captured", &shot);
+            crate::web::emit(&app, "vault-captured", &shot);
         }
         Err(e) => {
-            let _ = app.emit("vault-capture-error", e);
+            crate::web::emit(&app, "vault-capture-error", e);
         }
     });
 }

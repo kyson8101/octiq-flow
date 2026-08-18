@@ -7,9 +7,15 @@
 // Rust backend (workspaces.json); this file only renders it and calls commands.
 // Per-project terminals (project.js) and the registered-command panel
 // (commands.js) react to the `project-selected` event this module emits.
+//
+// Each project is a FOLDER in the list: its row, plus a nested <ul> holding one
+// row per terminal open in it. This file builds the empty folder; termtree.js
+// fills it and owns every terminal action (the project terminals have no tab
+// strip of their own).
 import { ICONS } from "/icons.js";
 import { openCtxMenu } from "/ctxmenu.js";
 import { baseName, loadPaneWidth } from "/util.js";
+import { mountProjectNode, clearProjectNodes } from "/termtree.js";
 import {
   buildFontOptions,
   buildThemeInputs,
@@ -266,9 +272,20 @@ function renderList() {
       ? "No projects yet. Press + to add one."
       : "All projects are shelved. Bring one back below.";
 
+  // The rows are rebuilt below, so every tree node mounted on the old ones goes.
+  clearProjectNodes();
+
   for (const ws of active) {
+    // A project is a FOLDER: an <li> holding the project row and, under it, the
+    // list of terminals open in that project (filled by termtree.js). The row
+    // itself keeps the .ws-item class every other module matches on — the
+    // attention/working badges, the drag-reorder and the context menu all still
+    // find it, they just no longer find an <li>.
     const li = document.createElement("li");
-    li.className = "ws-item" + (ws.id === selectedId ? " selected" : "");
+    li.className = "ws-node";
+
+    const row = document.createElement("div");
+    row.className = "ws-item" + (ws.id === selectedId ? " selected" : "");
 
     // Left avatar: the project's icon/logo, or its letter initial as a fallback.
     const avatar = projectAvatar(ws);
@@ -300,19 +317,26 @@ function renderList() {
     fillDiffRow(diffEl, ws);
     body.append(diffEl);
 
-    li.append(avatar, body);
-    li.dataset.id = ws.id;
+    row.append(avatar, body);
+    row.dataset.id = ws.id;
     // Full name as a native tooltip — the only label visible when collapsed, and
     // a help for long names that ellipsis-truncate when expanded.
-    li.title = ws.name || "";
-    li.draggable = true;
-    li.addEventListener("click", () => selectWorkspace(ws.id));
-    li.addEventListener("contextmenu", (e) => {
+    row.title = ws.name || "";
+    row.draggable = true;
+    row.addEventListener("click", () => selectWorkspace(ws.id));
+    row.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       openProjectMenu(e.clientX, e.clientY, ws, name);
     });
-    wireDrag(li);
+    wireDrag(row);
+
+    // The folder's contents: one row per terminal open in this project.
+    const terms = document.createElement("ul");
+    terms.className = "ws-terms";
+
+    li.append(row, terms);
     listEl.append(li);
+    mountProjectNode(ws.id, row, terms);
   }
 
   // Fill in each row's git +/- line counts (async; one backend call for all).

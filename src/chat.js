@@ -40,6 +40,38 @@ async function spawnChatAgent(agent) {
   return group.newTerminal({ cwd: "", startCmd: bin, title });
 }
 
+/** Adopt the chat terminals the SERVER already has (the browser client — see
+ *  tauriws.js / web.rs). The machine running OctiqFlow owns them; a remote view
+ *  that seeded its own would quietly add a terminal to that machine every time
+ *  someone opened the page. Falls back to seeding one only when the server has
+ *  no chat terminal at all. */
+async function attachChatTerminals() {
+  const { invoke } = window.__TAURI__.core;
+  const sessions = await invoke("pty_active_sessions").catch(() => []);
+  const mine = (sessions || [])
+    .filter((s) => s.id.startsWith("chat:"))
+    .sort((a, b) => Number(a.id.slice(5)) - Number(b.id.slice(5)));
+  if (!mine.length) {
+    spawnChatTerminal();
+    return;
+  }
+  for (const s of mine) {
+    const text = s.persist_key
+      ? (await invoke("load_scrollback", { key: s.persist_key }).catch(() => "")) || ""
+      : "";
+    await group.newTerminal({
+      attachId: s.id,
+      persistKey: s.persist_key || undefined,
+      restoreScrollback: text,
+      cwd: "",
+    });
+  }
+}
+
 // Seed the first terminal once at init so Chat mode is never empty. Switching
 // to other modes hides the group (terminals stay alive); coming back shows it.
-if (group.count() === 0) spawnChatTerminal();
+// In a browser the terminals live on the server, so attach to them instead.
+if (group.count() === 0) {
+  if (window.OCTIQ_WEB) attachChatTerminals();
+  else spawnChatTerminal();
+}

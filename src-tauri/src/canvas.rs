@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle};
 
 /// Trailing quiet period: emit once no fs event has arrived for this long.
 const QUIET: Duration = Duration::from_millis(300);
@@ -421,12 +421,12 @@ fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<()>, key: String) {
                 Ok(_) => continue,
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let _ = app.emit("canvas-changed", &key);
+                    crate::web::emit(&app, "canvas-changed", &key);
                     return;
                 }
             }
         }
-        let _ = app.emit("canvas-changed", &key);
+        crate::web::emit(&app, "canvas-changed", &key);
     }
 }
 

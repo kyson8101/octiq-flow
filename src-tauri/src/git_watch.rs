@@ -18,7 +18,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle};
 
 /// Trailing quiet period: emit once no event has arrived for this long.
 const QUIET: Duration = Duration::from_millis(400);
@@ -145,7 +145,7 @@ fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
         } else {
             roots.into_iter().collect()
         };
-        let _ = app.emit("git-status-changed", payload);
+        crate::web::emit(&app, "git-status-changed", payload);
         if disconnected {
             return;
         }

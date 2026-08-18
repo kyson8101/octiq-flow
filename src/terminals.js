@@ -21,6 +21,7 @@ import {
 } from "/settings.js";
 import { ICONS } from "/icons.js";
 import { openCtxMenu } from "/ctxmenu.js";
+import { attachBlockOverlay } from "/termoverlay.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -84,7 +85,7 @@ function refreshInstalledAgents() {
 refreshInstalledAgents();
 
 function makeTerminal(s) {
-  return new Terminal({
+  const term = new Terminal({
     fontFamily: s.fontFamily,
     fontSize: s.fontSize,
     fontWeight: s.fontWeight,
@@ -102,6 +103,11 @@ function makeTerminal(s) {
     fastScrollModifier: "alt",
     fastScrollSensitivity: 8,
   });
+  // Command-block overlay (spike): a UI layer drawn over the grid, anchored to
+  // the shell's OSC 133 marks. Registers one OSC handler and nothing else — a
+  // terminal whose shell emits no marks never draws anything. See termoverlay.js.
+  attachBlockOverlay(term);
+  return term;
 }
 
 // Attach the WebGL renderer to an already-opened terminal and return the addon
@@ -250,6 +256,167 @@ export function terminalIds() {
  *  Called on every open/close — the only two moments the live set changes. */
 function emitTerminalsChange() {
   window.dispatchEvent(new CustomEvent("tg-terminals-change"));
+}
+
+// Every live group, keyed by its idPrefix (a project id, "chat", "cmd:<id>").
+// idToEntry can only answer "which group owns this PTY", so it cannot find the
+// group of a project that has no terminal open yet. The sidebar terminal tree
+// (termtree.js) needs exactly that — a project row must be able to open its
+// first terminal — so groups register themselves here.
+const groupsByPrefix = new Map();
+
+/** Fire "tg-tabs-change": a group's TABS changed in a way the sidebar tree
+ *  mirrors — opened, closed, activated, renamed, moved to another pane, or its
+ *  notification choice flipped. Separate from "tg-terminals-change" (open/close
+ *  only), because the tree also repaints on the quieter changes. */
+function emitTabsChange() {
+  window.dispatchEvent(new CustomEvent("tg-tabs-change"));
+}
+
+/** Whether a group exists for this id prefix (i.e. the project has been opened
+ *  at least once this session, so it owns a terminal group). */
+export function hasGroup(prefix) {
+  return groupsByPrefix.has(prefix);
+}
+
+/** One group's tabs, in pane-tree order, as plain data for the sidebar tree.
+ *  Empty when the group does not exist yet. Everything the tab strip used to
+ *  paint on a tab is in here, so the sidebar row can carry the same marks. */
+export function groupTabs(prefix) {
+  const group = groupsByPrefix.get(prefix);
+  if (!group) return [];
+  const focused = group.focusedId();
+  const shown = new Set(group._shownIds());
+  return [...group.tabs].map(([id, e]) => ({
+    id,
+    title: e.title,
+    // A content tab (an editor, no PTY) has no terminal-only state.
+    content: !e.term,
+    active: id === focused,
+    shown: shown.has(id),
+    attention: attention.has(id),
+    working: working.has(id),
+    activity: activityTabs.has(id),
+    agent: agentTabs.has(id),
+    notify: e.notify ?? null,
+    // Which half of a split it lives in — the tree groups its rows by pane so a
+    // split project reads the way it looks on screen.
+    paneId: e.paneId,
+  }));
+}
+
+/** How many panes the group is split into (1 when it is not split). */
+export function groupPaneCount(prefix) {
+  return groupsByPrefix.get(prefix)?._leaves().length ?? 0;
+}
+
+/** The tab a group's keyboard is in, as plain data, or null when the group has
+ *  no terminal. The composer reads it to decide whether the terminal in front
+ *  of the user already runs the agent it is about to send to.
+ *
+ *  `startCmd` is what the tab was LAUNCHED with; `firstCmd` the first command
+ *  typed into it — a tab that started as a plain shell and had `claude` typed
+ *  into it is running an agent just as much as one launched with it. */
+export function activeTabInfo(prefix) {
+  const group = groupsByPrefix.get(prefix);
+  const id = group?.focusedId();
+  if (!id) return null;
+  const e = group.tabs.get(id);
+  if (!e) return null;
+  return {
+    id,
+    title: e.title,
+    content: !e.term,
+    startCmd: e.startCmd || "",
+    firstCmd: e.firstCmd || "",
+    agent: agentTabs.has(id),
+  };
+}
+
+/** How many tabs a group holds (0 when it does not exist yet). */
+export function groupTabCount(prefix) {
+  return groupsByPrefix.get(prefix)?.tabs.size ?? 0;
+}
+
+/** The agent binaries this machine can actually launch ("claude", "codex"),
+ *  from the backend probe. A copy, so a caller cannot edit the live list. */
+export function installedAgentList() {
+  return [...installedAgents];
+}
+
+/** Close one tab by id (the sidebar row's × button). */
+export function closeTab(id) {
+  groupOfTab(id)?.closeTerminal(id);
+}
+
+/** Rename one tab. Pins the name (`titleManual`), exactly as the old in-strip
+ *  rename did, so auto-titling leaves it alone, and persists it. */
+export function renameTab(id, title) {
+  const group = groupOfTab(id);
+  const entry = group?.tabs.get(id);
+  const next = (title || "").trim();
+  if (!entry || !next || next === entry.title) return;
+  entry.title = next;
+  entry.labelEl.textContent = next;
+  entry.titleManual = true;
+  group.onLayoutChange?.();
+  emitTabsChange();
+}
+
+/** Split the pane this tab lives in ("row" = beside, "col" = below). */
+export function splitTab(id, dir) {
+  groupOfTab(id)?._splitWith(id, dir);
+}
+
+/** Merge this tab's pane back into its sibling. Its tabs move across (nothing
+ *  is closed). No-op for a pane with no sibling. */
+export function closePaneOf(id) {
+  const group = groupOfTab(id);
+  const leaf = group?._leafOf(id);
+  if (leaf?.parent) group._closeSplit(leaf.id);
+}
+
+/** Whether this tab's pane can be merged back (it has a sibling). */
+export function canClosePaneOf(id) {
+  return !!groupOfTab(id)?._leafOf(id)?.parent;
+}
+
+/** This tab's own notification choice: true / false / null (follow Settings). */
+export function tabNotify(id) {
+  return groupOfTab(id)?.tabs.get(id)?.notify ?? null;
+}
+
+/** Set this tab's notification choice (see _setNotify). */
+export function setTabNotify(id, choice) {
+  groupOfTab(id)?._setNotify(id, choice);
+  emitTabsChange();
+}
+
+/** Whether the GLOBAL notification switch is on — the sidebar menu says what
+ *  "follow the setting" currently means, the way the old tab menu did. */
+export function notificationsMasterOn() {
+  return masterOn;
+}
+
+/** Open the group's "+" menu (Terminal / Claude / Codex) under `btn`. Returns
+ *  false when the group does not exist yet, so the caller can open the project
+ *  first and try again. */
+export function openAddMenu(prefix, btn) {
+  const group = groupsByPrefix.get(prefix);
+  if (!group) return false;
+  group._toggleAddMenu(btn);
+  return true;
+}
+
+/** The group a tab id belongs to. idToEntry covers PTY tabs; a content tab has
+ *  no PTY, so fall back to a scan of the groups (there are only a handful). */
+function groupOfTab(id) {
+  const known = entryFor(id)?.group;
+  if (known) return known;
+  for (const group of groupsByPrefix.values()) {
+    if (group.tabs.has(id)) return group;
+  }
+  return null;
 }
 
 // Subscribers that want the latest non-empty OUTPUT line of a terminal (e.g.
@@ -886,6 +1053,7 @@ function noteActivity(id) {
   if (!monitors.activity || activityTabs.has(id) || isActiveVisible(id)) return;
   activityTabs.add(id);
   entryFor(id)?.group._paintActivity(id, true);
+  emitTabsChange(); // the sidebar tree carries the same activity mark
 }
 
 /** Drop a terminal's activity dot. No-op when it carries none. Called when the
@@ -893,6 +1061,7 @@ function noteActivity(id) {
 function clearActivity(id) {
   if (!activityTabs.delete(id)) return;
   entryFor(id)?.group._paintActivity(id, false);
+  emitTabsChange();
 }
 
 /** Fire the silence alert for any armed AGENT tab that has now been quiet for
@@ -985,12 +1154,14 @@ function switchToMode(mode) {
  * its tab inside its group, and clear its attention flag. No-op if unknown.
  */
 export function focusTerminal(id) {
-  const entry = entryFor(id);
-  if (!entry) return;
-  const mode = entry.group._mode();
+  // groupOfTab, not idToEntry: a content tab (an editor) has no PTY, and the
+  // sidebar tree jumps to those through here too.
+  const group = groupOfTab(id);
+  if (!group) return;
+  const mode = group._mode();
   if (mode) switchToMode(mode);
-  entry.group.show();
-  entry.group.activate(id);
+  group.show();
+  group.activate(id);
   // Focusing a terminal is the user acknowledging the alert: clear it.
   clearAttention(id);
 }
@@ -1107,23 +1278,59 @@ window.addEventListener(TERMINAL_SETTINGS_CHANGED, () => {
  * terminals normally sit in a CLOSED modal and the footer's live "last line" is
  * the only view of them, so their text must keep arriving.
  *
- * createTerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride, floodControl } = {})
+ * `tabBar: false` drops each pane's tab strip from the DOM. The group still has
+ * tabs — it just shows them somewhere else. Project groups use this: their tabs
+ * are the rows under the project folder in the sidebar (termtree.js), which also
+ * owns the "+", close, rename, split and notification actions the strip had.
+ *
+ * createTerminalGroup(mountEl, idPrefix,
+ *   { showAdd, quickSpawn, fontOverride, floodControl, tabBar } = {})
  */
 export function createTerminalGroup(
   mountEl,
   idPrefix,
-  { showAdd = true, quickSpawn = false, fontOverride = null, floodControl = true } = {},
+  {
+    showAdd = true,
+    quickSpawn = false,
+    fontOverride = null,
+    floodControl = true,
+    tabBar = true,
+    lastSentBar = true,
+  } = {},
 ) {
-  return new TerminalGroup(mountEl, idPrefix, { showAdd, quickSpawn, fontOverride, floodControl });
+  return new TerminalGroup(mountEl, idPrefix, {
+    showAdd,
+    quickSpawn,
+    fontOverride,
+    floodControl,
+    tabBar,
+    lastSentBar,
+  });
 }
 
 class TerminalGroup {
   constructor(
     mountEl,
     idPrefix,
-    { showAdd = true, quickSpawn = false, fontOverride = null, floodControl = true } = {},
+    {
+      showAdd = true,
+      quickSpawn = false,
+      fontOverride = null,
+      floodControl = true,
+      tabBar = true,
+      lastSentBar = true,
+    } = {},
   ) {
     this.idPrefix = idPrefix;
+    // Whether the thin "last sent" bar shows under the panes (see below).
+    this.lastSentBar = lastSentBar;
+    // Whether each pane shows its own tab strip. Project groups turn it OFF:
+    // their tabs are listed in the sidebar tree under the project folder
+    // (termtree.js), which is the only tab UI they have. The strip elements are
+    // still BUILT either way and every tab still gets its `tabEl` — they are
+    // simply left out of the pane DOM — so all the code that paints a tab's
+    // state, label or rename box keeps working untouched.
+    this.tabBar = tabBar;
     // Whether this group's hidden terminals buffer their output in the backend
     // rather than streaming it (card 16). See createTerminalGroup.
     this.floodControl = floodControl;
@@ -1231,8 +1438,16 @@ class TerminalGroup {
     this.lastSentEl.append(this.lastSentLabelEl, this.lastSentTextEl);
     this._renderLastSent(null);
 
-    this.root.append(this.bodyEl, this.lastSentEl);
+    // A group whose owner shows its own composer (project mode) leaves the bar
+    // out: the composer at the bottom of the view already says what was sent,
+    // and two stacked bars just eat terminal height. The element itself still
+    // exists, so _renderLastSent and friends need no guard.
+    if (this.lastSentBar) this.root.append(this.bodyEl, this.lastSentEl);
+    else this.root.append(this.bodyEl);
     mountEl.append(this.root);
+    // Findable by id prefix, so the sidebar tree can reach a project's group
+    // (and its "+" menu) without holding a reference to it.
+    groupsByPrefix.set(idPrefix, this);
 
     // Reuse the direction + sash position this group was last split with.
     this._loadSplitPrefs();
@@ -1412,7 +1627,12 @@ class TerminalGroup {
       this._dropTabOnPane(this._dragId, id, zone);
     });
 
-    el.append(stripEl, panesEl);
+    // A group with no tab bar (project groups) keeps its strip DETACHED: every
+    // tab still gets its element and every paint/rename path still writes to
+    // it, but nothing of it is on screen — the sidebar tree is that group's tab
+    // UI. Attaching only `panesEl` also gives the terminals the strip's height.
+    if (this.tabBar) el.append(stripEl, panesEl);
+    else el.append(panesEl);
 
     // Anything that puts a pointer or the keyboard inside this pane makes it the
     // active pane. `pointerdown` in the capture phase runs before a tab's own
@@ -1969,6 +2189,8 @@ class TerminalGroup {
     entry.titleFromAgent = fromAgent;
     // Persist the new title so it survives a restart (debounced by the owner).
     this.onLayoutChange?.();
+    // The sidebar tree shows the same title, so it repaints on the rename too.
+    emitTabsChange();
     return true;
   }
 
@@ -1986,6 +2208,7 @@ class TerminalGroup {
     persistKey = null,
     restoreScrollback = "",
     canvasKey = null,
+    attachId = null,
   } = {}) {
     // No explicit title -> auto-number from the monotonic counter (P4). An
     // explicit title (command label, chat label) is used verbatim.
@@ -1994,7 +2217,17 @@ class TerminalGroup {
     // across restarts (the live ptyId is regenerated each session, so it cannot
     // be the key). On restore the owner passes the saved key back in.
     if (persistKey == null) persistKey = crypto.randomUUID();
-    const ptyId = `${this.idPrefix}:${this.seq++}`;
+
+    // ATTACH (web.rs / project.js): this tab adopts a PTY the backend ALREADY
+    // owns instead of starting one. That is what makes a browser a second view
+    // of the same machine rather than a second machine: it keeps the server's
+    // id, spawns nothing, and picks up the live stream. The counter is pushed
+    // past the adopted number so a terminal opened later cannot reuse the id.
+    const ptyId = attachId || `${this.idPrefix}:${this.seq++}`;
+    if (attachId) {
+      const n = Number(attachId.slice(this.idPrefix.length + 1));
+      if (Number.isFinite(n) && n >= this.seq) this.seq = n + 1;
+    }
 
     // A new terminal opens in the ACTIVE pane. Splitting sets the new pane
     // active before it calls back into here, so a "split right" lands its
@@ -2169,11 +2402,19 @@ class TerminalGroup {
     // always uses the current choice. If the spawn fails, the pane + tab already
     // exist, so show the error there (P3) rather than swallowing it; the tab
     // stays so the user sees what happened.
-    const { shell } = getTerminalSettings();
-    try {
-      await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
-    } catch (err) {
-      reportTermError(term, `failed to start terminal: ${err}`);
+    if (attachId) {
+      // Adopting a running terminal: nothing to spawn. Ask the backend to treat
+      // it as on screen — it may have been put in the "hidden, buffer it" state
+      // by the desktop window before this client attached, and revealing drains
+      // that buffer to us as a pty-restore.
+      invoke("pty_set_visible", { id: ptyId, visible: true }).catch(() => {});
+    } else {
+      const { shell } = getTerminalSettings();
+      try {
+        await invoke("pty_spawn", { id: ptyId, cwd, startCmd, persistKey, shell, canvasKey });
+      } catch (err) {
+        reportTermError(term, `failed to start terminal: ${err}`);
+      }
     }
 
     this.activate(ptyId);
@@ -2355,6 +2596,10 @@ class TerminalGroup {
     for (const [id, e] of this.tabs) {
       this._setLive(id, e, shown.includes(id) && groupVisible);
     }
+    // Every structural / active-tab change lands here (open, close, activate,
+    // split, restore), so this is the one place the sidebar tree needs to hear
+    // about to stay in step with the panes.
+    emitTabsChange();
   }
 
   /**
@@ -2851,7 +3096,10 @@ class TerminalGroup {
       entry.renaming = false;
       entry.tabEl.draggable = true;
       // Persist the renamed tab so the title survives a restart.
-      if (changed) this.onLayoutChange?.();
+      if (changed) {
+        this.onLayoutChange?.();
+        emitTabsChange();
+      }
     };
 
     input.addEventListener("keydown", (e) => {
@@ -2934,6 +3182,7 @@ class TerminalGroup {
     this._paintNotify(ptyId);
     syncMonitoring();
     this.onLayoutChange?.();
+    emitTabsChange();
   }
 
   /** The right-click menu on a tab: this terminal's notifications. The choice
@@ -3259,5 +3508,9 @@ class TerminalGroup {
     // content tab's unsaved-edits prompt.
     for (const id of [...this.tabs.keys()]) this.closeTerminal(id, true);
     this.root.remove();
+    // Only drop the registry slot when it still points at THIS group — a
+    // replacement group for the same prefix must not be unregistered.
+    if (groupsByPrefix.get(this.idPrefix) === this) groupsByPrefix.delete(this.idPrefix);
+    emitTabsChange();
   }
 }

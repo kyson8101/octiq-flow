@@ -27,6 +27,7 @@ mod pty;
 mod terminal_layout;
 mod usage_limits;
 mod vault;
+mod web;
 mod workspaces;
 use pty::PtyManager;
 use terminal_layout::TerminalLayoutState;
@@ -111,6 +112,16 @@ pub fn run() {
             // failure here never blocks startup.
             agent_resume::upgrade_agent_hooks_if_present();
 
+            // Remote access (web.rs). Off unless the profile's web.json (or
+            // OCTIQ_WEB=1) turns it on: this serves the app's UI and a socket
+            // that can start shells. When it IS on, this process is the server —
+            // the PTYs live here and a browser on another machine drives them.
+            let web_cfg = web::load_config();
+            if web_cfg.enabled {
+                app.manage(web::WebState::new(web_cfg.clone()));
+                web::start(app.handle(), web_cfg);
+            }
+
             Ok(())
         })
         // Quit handshake: on the first close request, hold the window open and
@@ -140,6 +151,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_close,
             pty::pty_list_active,
+            pty::pty_active_sessions,
             pty::pty_agent_running,
             pty::pty_set_visible,
             pty::pty_set_status_scan,
@@ -232,6 +244,9 @@ pub fn run() {
             vault::vault_remove,
             vault::vault_clear,
             vault::vault_write_image,
+            web::web_reply,
+            web::web_info,
+            web::web_set_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

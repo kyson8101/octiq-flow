@@ -16,7 +16,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle};
 
 /// Trailing quiet period: emit once no event has arrived for this long. Shorter
 /// than the git watcher's — this drives a visible pane, not a status count.
@@ -104,7 +104,7 @@ fn debounce_loop(app: AppHandle, rx: mpsc::Receiver<String>) {
                 }
             }
         }
-        let _ = app.emit("file-changed", changed.into_iter().collect::<Vec<String>>());
+        crate::web::emit(&app, "file-changed", changed.into_iter().collect::<Vec<String>>());
         if disconnected {
             return;
         }

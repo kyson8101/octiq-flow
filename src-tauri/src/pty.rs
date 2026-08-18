@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 /// Upper bound on the OSC scan buffer's retained tail (bytes). An OSC
 /// attention sequence is tiny; anything longer is plain output that can be
@@ -802,7 +802,8 @@ pub fn pty_spawn(
                 break;
             };
             if out.visible {
-                let _ = emit_app.emit(
+                crate::web::emit(
+                    &emit_app,
                     "pty-output",
                     OutputEvent {
                         id: emit_id_out.clone(),
@@ -813,7 +814,8 @@ pub fn pty_spawn(
                 out.push_hidden(&batch);
                 // Tell the frontend this terminal is alive without shipping the
                 // bytes: the working dot and the silence monitor need the beat.
-                let _ = emit_app.emit(
+                crate::web::emit(
+                    &emit_app,
                     "pty-hidden-output",
                     HiddenOutputEvent {
                         id: emit_id_out.clone(),
@@ -888,7 +890,8 @@ pub fn pty_spawn(
                             let Some(alert) = crate::notify_hook::filter(alert) else {
                                 return; // the hook suppressed it
                             };
-                            let _ = hook_app.emit(
+                            crate::web::emit(
+                                &hook_app,
                                 "pty-attention",
                                 AttentionEvent {
                                     id: alert.id,
@@ -989,6 +992,14 @@ pub fn pty_set_visible(
     id: String,
     visible: bool,
 ) -> Result<(), String> {
+    // A browser is attached (web.rs): flood control has to stand down. The
+    // desktop window's "this terminal is off screen" is only true for THAT
+    // window — the browser may be looking straight at it, and a buffered
+    // terminal would go silent there. Hiding is therefore ignored while a
+    // remote client is connected; revealing still works.
+    if !visible && crate::web::clients_connected(&app) {
+        return Ok(());
+    }
     // Clone the Arc out from under the sessions map, then release the map lock
     // before touching the per-session gate — a reveal emits an event while
     // holding that gate, and doing so under the global map lock would block
@@ -1012,7 +1023,7 @@ pub fn pty_set_visible(
             // send a `pty-output` for this session until it can take the same
             // lock, so the restored block always lands before the stream
             // resumes. See the emitter thread in `pty_spawn`.
-            let _ = app.emit("pty-restore", RestoreEvent { id, data, trimmed });
+            crate::web::emit(&app, "pty-restore", RestoreEvent { id, data, trimmed });
         }
     }
     Ok(())
@@ -1086,6 +1097,32 @@ pub fn pty_close(manager: State<PtyManager>, id: String) -> Result<(), String> {
 pub fn pty_list_active(manager: State<PtyManager>) -> Result<Vec<String>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions.keys().cloned().collect())
+}
+
+/// One live session, as a remote client needs to see it.
+#[derive(Clone, serde::Serialize)]
+pub struct ActiveSession {
+    pub id: String,
+    pub persist_key: Option<String>,
+}
+
+/// Every live session with its persist key — what a client needs to ATTACH to
+/// terminals this process already owns instead of spawning its own.
+///
+/// This is the difference between the desktop window and a browser (web.rs):
+/// the desktop window spawns the terminals, a browser adopts them. The key maps
+/// each session back to its saved title and scrollback (terminal_layout.rs), so
+/// an attached tab comes up named and with its recent output.
+#[tauri::command]
+pub fn pty_active_sessions(manager: State<PtyManager>) -> Result<Vec<ActiveSession>, String> {
+    let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    Ok(sessions
+        .iter()
+        .map(|(id, session)| ActiveSession {
+            id: id.clone(),
+            persist_key: session.persist_key.clone(),
+        })
+        .collect())
 }
 
 /// Report, per live session id, whether an agent (a non-shell foreground
