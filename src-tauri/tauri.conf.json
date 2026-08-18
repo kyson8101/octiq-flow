@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.kyson.octiq-flow",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../src",
+    "beforeBuildCommand": "pnpm --dir web build || pnpm --dir ../web build",
+    "beforeDevCommand": "pnpm --dir web build || pnpm --dir ../web build"
   },
   "app": {
     "withGlobalTauri": true,
@@ -25,7 +27,10 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$HOME/**", "$HOME/.octiqflow/**"]
+        "scope": [
+          "$HOME/**",
+          "$HOME/.octiqflow/**"
+        ]
       }
     }
   },
@@ -43,6 +48,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../web/dist/": "v2/"
+    }
   }
 }
