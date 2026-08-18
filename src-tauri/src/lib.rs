@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
 
+mod agent_chat;
 mod agent_resume;
 mod agents;
 mod appearance;
@@ -78,6 +79,9 @@ pub fn run() {
             // Multi-PTY manager: terminals are spawned by id on demand from the
             // frontend (including the boot terminal), not at setup time.
             app.manage(PtyManager::default());
+            // Agent chat sessions: agents run as a JSON stream instead of a TUI,
+            // for the chat view (agent_chat.rs).
+            app.manage(agent_chat::ChatManager::default());
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load());
@@ -152,6 +156,10 @@ pub fn run() {
             pty::pty_close,
             pty::pty_list_active,
             pty::pty_active_sessions,
+            agent_chat::chat_start,
+            agent_chat::chat_send,
+            agent_chat::chat_stop,
+            agent_chat::chat_list,
             pty::pty_agent_running,
             pty::pty_set_visible,
             pty::pty_set_status_scan,

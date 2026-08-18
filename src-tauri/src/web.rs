@@ -371,11 +371,96 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
     });
 }
 
+/// Where the built v2 client lives. Tried in order:
+///   · next to the app bundle's resources (a shipped build)
+///   · the repo's `web/dist` (running from a checkout)
+/// Returns None when v2 has not been built, which simply means `/v2` 404s and
+/// the classic UI at `/` is unaffected.
+fn v2_root() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for rel in ["../Resources/v2", "v2"] {
+                let candidate = dir.join(rel);
+                if candidate.join("index.html").is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../web/dist");
+    dev.join("index.html").is_file().then_some(dev)
+}
+
+/// Serve one file of the v2 client. Any unknown path inside `/v2/` falls back
+/// to its index.html, the usual single-page-app rule.
+fn serve_v2(rel: &str) -> Response {
+    let Some(root) = v2_root() else {
+        return (
+            StatusCode::NOT_FOUND,
+            "the v2 client is not built — run `pnpm --dir web build`",
+        )
+            .into_response();
+    };
+
+    // Refuse anything that tries to climb out of the served folder. The only
+    // paths we serve are ones that stay inside it.
+    let clean = rel.trim_start_matches('/');
+    let unsafe_path = clean.split('/').any(|seg| seg == ".." || seg == ".");
+    let file = if clean.is_empty() || unsafe_path {
+        root.join("index.html")
+    } else {
+        let candidate = root.join(clean);
+        if candidate.is_file() {
+            candidate
+        } else {
+            root.join("index.html")
+        }
+    };
+
+    let mime = match file.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    };
+
+    match std::fs::read(&file) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
 /// Serve the app's own frontend — the very files the desktop window loads, read
 /// through Tauri's asset resolver, so there is one copy of the UI and no build
 /// step to keep in step.
+///
+/// `/v2` and below come from the built React client instead (web/dist).
 async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
     let raw = uri.path().trim_start_matches('/');
+
+    // The v2 bundle's asset URLs are RELATIVE (vite `base: "./"`), so the page
+    // must be served from a path ending in a slash or the browser resolves
+    // `./assets/…` against the parent and misses.
+    if raw == "v2" {
+        return Response::builder()
+            .status(StatusCode::TEMPORARY_REDIRECT)
+            .header(header::LOCATION, "/v2/")
+            .body(Body::empty())
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+    }
+    if let Some(rest) = raw.strip_prefix("v2/") {
+        return serve_v2(rest);
+    }
+
     let path = if raw.is_empty() { "index.html" } else { raw };
 
     let resolver = ctx.app.asset_resolver();
