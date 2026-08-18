@@ -56,7 +56,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State as AxumState};
+use axum::extract::{ConnectInfo, Query, State as AxumState};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -356,6 +356,7 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
         let router = Router::new()
             .route("/ws", get(ws_handler))
             .route("/auth", get(auth_handler))
+            .route("/token", get(token_handler))
             .fallback(get(asset_handler))
             .with_state(ctx);
 
@@ -373,7 +374,8 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
         // value that already sits in plain text on the same disk.
         println!("[web] OctiqFlow v2:      http://{addr}/v2/?token={token}");
         println!("[web] OctiqFlow classic: http://{addr}/?token={token}");
-        if let Err(e) = axum::serve(listener, router).await {
+        let service = router.into_make_service_with_connect_info::<SocketAddr>();
+        if let Err(e) = axum::serve(listener, service).await {
             eprintln!("[web] server stopped: {e}");
         }
     });
@@ -487,6 +489,36 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
+}
+
+/// Hand the token to a browser running on THIS machine.
+///
+/// A request from 127.0.0.1 already comes from something with the run of the
+/// machine — it can read `web.json` itself, where the token sits in plain text.
+/// Making a local browser type it in buys nothing and costs a gate every time,
+/// so loopback gets it for the asking. Every other address still has to know
+/// it: a phone, another laptop, anything across Tailscale.
+async fn token_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> Response {
+    if !peer.ip().is_loopback() {
+        return (StatusCode::FORBIDDEN, "not local").into_response();
+    }
+    let token = ctx
+        .app
+        .try_state::<WebState>()
+        .and_then(|st| st.cfg.lock().ok().map(|c| c.token.clone()))
+        .unwrap_or_default();
+    if token.is_empty() {
+        return (StatusCode::NOT_FOUND, "no token").into_response();
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(token))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Is this token good? 200 yes, 401 no.

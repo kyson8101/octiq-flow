@@ -74,7 +74,30 @@ class Bridge {
   state: ConnectionState = "connecting";
 
   constructor() {
+    void this.start();
+  }
+
+  /** Get a token before the first connect if we do not have one. A browser on
+   *  the server's own machine can just ask for it (/token, loopback only), so
+   *  the common "I opened it on this Mac" case never sees a gate. */
+  private async start() {
+    if (!readToken()) await this.tryLocalToken();
     this.connect();
+  }
+
+  /** Ask the server for its token. Only loopback gets an answer. */
+  private async tryLocalToken(): Promise<boolean> {
+    const scheme = location.protocol === "https:" ? "https" : "http";
+    try {
+      const res = await fetch(`${scheme}://${serverHost()}/token`, { cache: "no-store" });
+      if (!res.ok) return false;
+      const token = (await res.text()).trim();
+      if (!token) return false;
+      localStorage.setItem(TOKEN_KEY, token);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private setState(s: ConnectionState) {
@@ -130,6 +153,12 @@ class Bridge {
       // the close event cannot tell us and the right response differs: a bad
       // token needs the user, a dropped network needs patience.
       if (await this.tokenRejected()) {
+        // A local browser can be handed a fresh one — the stored token may just
+        // be stale (the server was reinstalled, the profile changed).
+        if (await this.tryLocalToken()) {
+          this.connect();
+          return;
+        }
         this.setState("unauthorized");
         return; // no retry loop: nothing changes until a token is supplied
       }

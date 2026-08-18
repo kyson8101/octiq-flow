@@ -41,7 +41,28 @@
     url.searchParams.delete("token");
     history.replaceState(null, "", url.pathname + url.search + url.hash);
   }
-  const token = fromUrl || localStorage.getItem(TOKEN_KEY) || "";
+  let token = fromUrl || localStorage.getItem(TOKEN_KEY) || "";
+
+  /** Ask the server for its token. It only answers a request from its OWN
+   *  machine (loopback), where the token protects nothing — anything running
+   *  there can read the file it lives in. Every other address still needs it. */
+  async function tryLocalToken() {
+    try {
+      const res = await fetch(`${location.protocol}//${location.host}/token`, {
+        cache: "no-store",
+      });
+      if (!res.ok) return false;
+      const value = (await res.text()).trim();
+      if (!value) return false;
+      token = value;
+      try {
+        localStorage.setItem(TOKEN_KEY, value);
+      } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   // requestId -> { resolve, reject }
   const pending = new Map();
@@ -105,6 +126,11 @@
       // saying "reconnecting" when the real answer is "this browser was never
       // let in" sends the user looking for a network problem that is not there.
       if (await tokenRejected()) {
+        // A local browser can just be handed a current one.
+        if (await tryLocalToken()) {
+          connect();
+          return;
+        }
         askForToken();
         return;
       }
@@ -240,5 +266,8 @@
   };
   window.OCTIQ_WEB = true;
 
-  connect();
+  (async () => {
+    if (!token) await tryLocalToken();
+    connect();
+  })();
 })();
