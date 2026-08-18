@@ -32,7 +32,19 @@ export function Sidebar({
 }) {
   return (
     <nav className="sidebar">
-      <div className="sidebar-head">Projects</div>
+      <div className="sidebar-head">
+        <span className="sidebar-title">Projects</span>
+        <button
+          className="sidebar-add"
+          type="button"
+          title="New chat"
+          onClick={() => currentProject && onNewChat(currentProject)}
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+        </button>
+      </div>
       <ul className="proj-list">
         {projects.map((p) => {
           const chats = conversations.get(p.id) ?? [];
@@ -82,6 +94,7 @@ export function Sidebar({
                     <li key={c.id}>
                       <div className={`chat ${c.id === currentConversation ? "is-on" : ""}`}>
                         <button className="chat-main" type="button" onClick={() => onPickConversation(c)}>
+                          <span className="chat-dot" aria-hidden="true" />
                           <span className="chat-title">{c.title}</span>
                           <span className="chat-when">{when(c.updatedAt)}</span>
                         </button>

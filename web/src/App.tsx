@@ -33,6 +33,7 @@ type Workspace = Project & { paths?: string[]; shelved?: boolean };
 const CHOICE_KEY = "octiq.v2.model";
 const PERM_KEY = "octiq.v2.permission";
 const OPEN_KEY = "octiq.v2.openFolders";
+const CMDS_KEY = "octiq.v2.commands";
 
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
@@ -115,6 +116,33 @@ export default function App() {
       ),
     [],
   );
+
+  // The slash commands a session reports at startup, kept per project so the
+  // menu works from the moment the composer opens — otherwise it would be empty
+  // until a chat had already been running, which is exactly when nobody needs
+  // to look up a command.
+  const [commands, setCommands] = useState<Record<string, string[]>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(CMDS_KEY) || "{}");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    if (!chat.commands?.length || !projectId) return;
+    setCommands((prev) => {
+      if (prev[projectId]?.length === chat.commands!.length) return prev;
+      const next = { ...prev, [projectId]: chat.commands! };
+      try {
+        localStorage.setItem(CMDS_KEY, JSON.stringify(next));
+      } catch {
+        /* storage blocked: the menu falls back to this session only */
+      }
+      return next;
+    });
+  }, [chat.commands, projectId]);
 
   // Keep the agent's session id for the resume path as soon as it reports one.
   useEffect(() => {
@@ -357,7 +385,12 @@ export default function App() {
               {resumeId.current && <p className="hero-sub">continuing an earlier session</p>}
             </div>
           ) : (
-            <MessageList messages={chat.messages} busy={chat.busy} stoppedAt={chat.stoppedAt} />
+            <MessageList
+              messages={chat.messages}
+              busy={chat.busy}
+              stoppedAt={chat.stoppedAt}
+              cwd={project?.primary_path ?? ""}
+            />
           )}
 
           {chat.notices.length > 0 && (
@@ -382,6 +415,7 @@ export default function App() {
             onStop={stop}
             busy={chat.busy}
             disabled={!project}
+            commands={(projectId && commands[projectId]) || []}
           />
 
           {(chat.lastDurationMs !== undefined || chat.model) && (

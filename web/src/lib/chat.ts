@@ -53,6 +53,10 @@ export type ChatState = {
   sessionId?: string;
   model?: string;
   cwd?: string;
+  /** The slash commands this session accepts — its own, the project's, and
+   *  every skill and plugin it has loaded. The agent reports them at startup,
+   *  so this is the real list rather than a guess maintained here. */
+  commands?: string[];
   /** True between sending a turn and its `result`. */
   busy: boolean;
   /** From the last `result` event. */
@@ -119,11 +123,13 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
 
   if (type === "system") {
     if (asStr(e.subtype) !== "init") return state; // hooks, token counters: noise
+    const commands = asArr(e.slash_commands).filter((c): c is string => typeof c === "string");
     return {
       ...state,
       sessionId: asStr(e.session_id) || state.sessionId,
       model: asStr(e.model) || state.model,
       cwd: asStr(e.cwd) || state.cwd,
+      commands: commands.length ? commands : state.commands,
     };
   }
 

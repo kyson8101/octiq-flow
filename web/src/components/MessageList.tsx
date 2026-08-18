@@ -11,6 +11,7 @@ import type { Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
 import { closeOpenFences, useTypewriter } from "../lib/typewriter";
 import { rehypeWordFade } from "../lib/wordfade";
+import { FileList } from "./FileList";
 
 function Thinking({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -95,7 +96,15 @@ function BlockView({ block, animate }: { block: Block; animate?: boolean }) {
  *  again, answer — and one bubble per message reads as a stack of fragments
  *  rather than a reply. Consecutive messages from the same side are drawn as a
  *  single turn, so the label appears once and the blocks flow in order. */
-function TurnView({ messages, stopped }: { messages: Message[]; stopped?: boolean }) {
+function TurnView({
+  messages,
+  stopped,
+  cwd,
+}: {
+  messages: Message[];
+  stopped?: boolean;
+  cwd?: string;
+}) {
   const role = messages[0].role;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
@@ -108,6 +117,11 @@ function TurnView({ messages, stopped }: { messages: Message[]; stopped?: boolea
         ))}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
+        {/* Only once the turn is done: a list that grows while the agent is
+            still working would rearrange itself under the reader. */}
+        {role === "assistant" && !streaming && cwd !== undefined && (
+          <FileList messages={messages} cwd={cwd} />
+        )}
       </div>
     </article>
   );
@@ -128,10 +142,14 @@ export function MessageList({
   messages,
   busy,
   stoppedAt,
+  cwd,
 }: {
   messages: Message[];
   busy: boolean;
   stoppedAt?: string;
+  /** The project folder, for turning a relative path in the reply into a real
+   *  one. Without it only absolute paths can be listed. */
+  cwd?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -162,6 +180,7 @@ export function MessageList({
             key={turn[0].id}
             messages={turn}
             stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
+            cwd={cwd}
           />
         ))}
         {busy && !messages.some((m) => m.streaming) && <div className="dots" aria-label="working" />}

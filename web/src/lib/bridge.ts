@@ -188,6 +188,19 @@ class Bridge {
     }
   }
 
+  /** Fetch one file off the server machine as a blob.
+   *
+   *  Used for image previews. It goes over plain HTTP rather than the socket
+   *  because an image in a JSON frame would have to be base64, and this way the
+   *  browser decodes it itself. */
+  async fetchFile(path: string): Promise<Blob> {
+    const scheme = location.protocol === "https:" ? "https" : "http";
+    const url = `${scheme}://${serverHost()}/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(readToken())}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`could not read the file (${res.status})`);
+    return res.blob();
+  }
+
   /** Save a token the user pasted in and reconnect with it. */
   useToken(token: string) {
     try {

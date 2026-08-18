@@ -357,6 +357,7 @@ pub fn start(app: &AppHandle, cfg: WebConfig) {
             .route("/ws", get(ws_handler))
             .route("/auth", get(auth_handler))
             .route("/token", get(token_handler))
+            .route("/file", get(file_handler))
             .fallback(get(asset_handler))
             .with_state(ctx);
 
@@ -519,6 +520,66 @@ async fn token_handler(
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(token))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Serve one file off this machine, by absolute path.
+///
+/// The chat lists the files an answer touched, and an image among them should
+/// be viewable rather than just named. Reading it over the WebSocket would mean
+/// base64 inside a JSON frame; a plain URL lets the browser fetch and decode it
+/// the way it is built to.
+///
+/// This reads anything the app's user can read, which sounds broad until you
+/// remember what is next door: the same socket can start a shell. It is gated
+/// on the same token, and on nothing else.
+async fn file_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<FileQuery>) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let path = PathBuf::from(q.path.unwrap_or_default());
+    if !path.is_absolute() || !path.is_file() {
+        return (StatusCode::NOT_FOUND, "not a file").into_response();
+    }
+    // Bounded so a stray click on a multi-gigabyte log cannot pull it into a
+    // phone's memory.
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() > 32 * 1024 * 1024 => {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "file is too large to preview").into_response();
+        }
+        Err(_) => return (StatusCode::NOT_FOUND, "not a file").into_response(),
+        _ => {}
+    }
+
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    };
+
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, mime)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct FileQuery {
+    token: Option<String>,
+    path: Option<String>,
 }
 
 /// Is this token good? 200 yes, 401 no.

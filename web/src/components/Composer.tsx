@@ -46,6 +46,7 @@ export function Composer({
   onStop,
   busy,
   disabled,
+  commands,
 }: {
   choice: ModelChoice;
   onChoice: (c: ModelChoice) => void;
@@ -55,12 +56,37 @@ export function Composer({
   onStop: () => void;
   busy: boolean;
   disabled?: boolean;
+  /** The slash commands this agent accepts, reported by the session itself.
+   *  Empty until a chat has run at least once in this project. */
+  commands?: string[];
 }) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
   const [permMenu, setPermMenu] = useState(false);
+  const [pick, setPick] = useState(0);
   const perm = PERMISSIONS.find((p) => p.id === permission) ?? PERMISSIONS[0];
   const areaRef = useRef<HTMLTextAreaElement>(null);
+
+  // The slash menu is open while the WHOLE input is one `/word` — a slash
+  // deeper in a sentence is a path or a date, not a command.
+  const slashQuery = /^\/(\S*)$/.exec(text)?.[1];
+  const matches =
+    slashQuery === undefined
+      ? []
+      : (commands ?? [])
+          .filter((c) => c.toLowerCase().startsWith(slashQuery.toLowerCase()))
+          .slice(0, 40);
+  const slashOpen = matches.length > 0;
+
+  // Keep the highlight inside the list as it narrows.
+  useEffect(() => {
+    setPick((i) => (i < matches.length ? i : 0));
+  }, [matches.length]);
+
+  function complete(name: string) {
+    setText(`/${name} `);
+    areaRef.current?.focus();
+  }
 
   // Grow with the text, up to a few lines, then scroll inside.
   useEffect(() => {
@@ -79,6 +105,29 @@ export function Composer({
 
   return (
     <div className="composer">
+      {slashOpen && (
+        <div className="slash" role="listbox">
+          <div className="slash-head">
+            {matches.length} command{matches.length === 1 ? "" : "s"} · Tab to complete
+          </div>
+          <ul className="slash-list">
+            {matches.map((name, i) => (
+              <li key={name}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={i === pick}
+                  className={`slash-item ${i === pick ? "is-on" : ""}`}
+                  onMouseEnter={() => setPick(i)}
+                  onClick={() => complete(name)}
+                >
+                  /{name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="composer-box">
         <textarea
           ref={areaRef}
@@ -89,6 +138,30 @@ export function Composer({
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            // While the command list is up it owns the arrows, Tab and Enter —
+            // the same keys a shell completion takes.
+            if (slashOpen) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setPick((i) => (i + 1) % matches.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setPick((i) => (i - 1 + matches.length) % matches.length);
+                return;
+              }
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+                e.preventDefault();
+                complete(matches[pick]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setText("");
+                return;
+              }
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send();
