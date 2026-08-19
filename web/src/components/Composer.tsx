@@ -40,16 +40,28 @@ export const MODELS: ModelChoice[] = [
  *  unattended — and that has to be on screen, next to the send button. */
 export type AccessLevel = "read" | "edit" | "full";
 
+/* Each agent's OWN words for these.
+ *
+ * They were "Read only / Can edit / Full access" for both, which reads well
+ * and matches neither. Claude Code calls them plan mode, auto-accept edits and
+ * bypass permissions; Codex calls them read-only, workspace-write and
+ * danger-full-access. Someone who has used either directly, or is reading its
+ * docs, should not have to work out which of our three words maps to the thing
+ * they already know — and Codex's own name for the last one carries the word
+ * "danger", which is not ours to soften.
+ *
+ * The `id` stays generic: it is the wire value, and the backend maps it to
+ * `--permission-mode` or `--sandbox`. Only what a person reads changes. */
 export const ACCESS: Record<Provider, { id: AccessLevel; label: string; hint: string }[]> = {
   claude: [
-    { id: "read", label: "Read only", hint: "look and plan, change nothing" },
-    { id: "edit", label: "Can edit", hint: "edit files without asking" },
-    { id: "full", label: "Full access", hint: "run anything without asking" },
+    { id: "read", label: "Plan mode", hint: "look and plan, change nothing" },
+    { id: "edit", label: "Auto-accept edits", hint: "edit files without asking" },
+    { id: "full", label: "Bypass permissions", hint: "run anything without asking" },
   ],
   codex: [
-    { id: "read", label: "Read only", hint: "sandboxed, no writes" },
-    { id: "edit", label: "Can edit", hint: "write inside the project only" },
-    { id: "full", label: "Full access", hint: "no sandbox, no approvals" },
+    { id: "read", label: "Read-only", hint: "sandboxed, no writes" },
+    { id: "edit", label: "Workspace write", hint: "write inside the project only" },
+    { id: "full", label: "Danger: full access", hint: "no sandbox, no approvals" },
   ],
 };
 

@@ -173,7 +173,7 @@ impl Access {
     /// The hook runs BEFORE `--permission-mode` is consulted — it is the first
     /// step of the permission chain — so "run anything without asking" never
     /// reaches it through that flag, and the hook went on asking about every
-    /// command on Full access. It has to be told separately.
+    /// command even under bypassPermissions. It has to be told separately.
     fn as_env(self) -> &'static str {
         match self {
             Access::Read => "read",
@@ -417,7 +417,7 @@ pub fn chat_start_impl(
         // which chat is asking so the UI can attach the question to it.
         .env("OCTIQ_CHAT_KEY", &key)
         // What the person chose. The hook cannot read --permission-mode, and on
-        // Full access it must step aside rather than ask about every command.
+        // bypassPermissions it must step aside rather than ask about every command.
         // Unset means the most cautious of the three, not the most permissive:
         // a missing value must never be the one that stops the asking.
         .env("OCTIQ_ACCESS", access.map(Access::as_env).unwrap_or("read"))
@@ -871,7 +871,7 @@ mod tests {
     fn full_access_is_named_in_the_environment_the_hook_reads() {
         // The PreToolUse hook runs BEFORE --permission-mode is consulted, so
         // "run anything without asking" cannot reach it through that flag. It
-        // has to be told separately or it keeps asking on Full access.
+        // has to be told separately or it keeps asking under bypassPermissions.
         assert_eq!(Access::Full.as_env(), "full");
         assert_eq!(Access::Edit.as_env(), "edit");
         assert_eq!(Access::Read.as_env(), "read");

@@ -139,8 +139,9 @@ async function main() {
 
   /* Rule 4: the person has already answered.
    *
-   * "Full access" means run anything without asking, and it is passed to the
-   * agent as --permission-mode bypassPermissions. But THIS HOOK RUNS FIRST —
+   * The most permissive level means run anything without asking, and it is
+   * passed to the agent as --permission-mode bypassPermissions (Claude's own
+   * name for it, which the picker now uses too). But THIS HOOK RUNS FIRST —
    * it is the opening step of the permission chain, before deny rules, allow
    * rules and the mode — so that flag never got a say and every command still
    * stopped here for approval. Choosing Full access and then being asked about
