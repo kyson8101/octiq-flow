@@ -152,8 +152,16 @@ fn safe_effort(agent: ChatAgent, level: &str) -> Option<&'static str> {
 pub enum Access {
     /// Look and plan, change nothing.
     Read,
-    /// Edit files in the project without asking.
-    Edit,
+    /// Get on with it, and ask when something looks unsafe.
+    ///
+    /// This was `Edit`, mapped to Claude's `acceptEdits`. That mode auto-accepts
+    /// FILE EDITS and nothing else, so every shell command still stopped — which
+    /// is not what a chat wants, and not what the label promised. `auto` is the
+    /// mode that actually describes the middle: run unattended, stop only at
+    /// what looks risky. It is also the one this app was already built for — the
+    /// PreToolUse hook in `permission.rs` exists to carry exactly those stops
+    /// back to the UI.
+    Auto,
     /// Run anything without asking.
     Full,
 }
@@ -163,7 +171,7 @@ impl Access {
     fn claude(self) -> &'static str {
         match self {
             Access::Read => "plan",
-            Access::Edit => "acceptEdits",
+            Access::Auto => "auto",
             Access::Full => "bypassPermissions",
         }
     }
@@ -177,18 +185,37 @@ impl Access {
     fn as_env(self) -> &'static str {
         match self {
             Access::Read => "read",
-            Access::Edit => "edit",
+            Access::Auto => "auto",
             Access::Full => "full",
         }
     }
 
-    /// Codex's `--sandbox` value. `workspace-write` is the direct match for
-    /// "edit files": writes inside the workspace, nothing outside it.
+    /// Codex's `--sandbox` value — what a command may TOUCH.
+    /// `workspace-write` is the direct match for the middle level: writes inside
+    /// the workspace, nothing outside it.
     fn codex(self) -> &'static str {
         match self {
             Access::Read => "read-only",
-            Access::Edit => "workspace-write",
+            Access::Auto => "workspace-write",
             Access::Full => "danger-full-access",
+        }
+    }
+
+    /// Codex's `--ask-for-approval` value — whether a command RUNS unasked.
+    ///
+    /// Codex splits in two what Claude answers with one flag, and only the
+    /// sandbox half was ever set. Left alone, the approval policy fell back to
+    /// the user's own config, so both outer levels could behave as the opposite
+    /// of their label: `Full` stopping to ask, `Read` prompting about a sandbox
+    /// that would have refused the write anyway. `on-request` — "the model
+    /// decides when to ask" — is the one that matches Claude's `auto`.
+    fn codex_approval(self) -> &'static str {
+        match self {
+            // The sandbox already refuses the write; asking on top of it is a
+            // question whose only honest answer is "it would fail regardless".
+            Access::Read => "never",
+            Access::Auto => "on-request",
+            Access::Full => "never",
         }
     }
 }
@@ -275,12 +302,20 @@ fn build_command(
                 cmd.push_str(&format!(" -m {}", sh_quote(&m)));
             }
             // Codex calls it a sandbox policy rather than a permission mode,
-            // but it answers the same question.
+            // and splits into two what Claude answers with one flag: the sandbox
+            // says what a command may touch, the approval policy says whether it
+            // runs without being asked. Both are needed — a sandbox alone leaves
+            // the asking to whatever the user's own config happens to say.
             if let Some(a) = access {
                 if resuming.is_some() {
                     cmd.push_str(&format!(" -c sandbox_mode={}", sh_quote(a.codex())));
+                    cmd.push_str(&format!(
+                        " -c approval_policy={}",
+                        sh_quote(a.codex_approval())
+                    ));
                 } else {
                     cmd.push_str(&format!(" --sandbox {}", a.codex()));
+                    cmd.push_str(&format!(" --ask-for-approval {}", a.codex_approval()));
                 }
             }
             // Effort has no flag of its own on either form: it is a config key.
@@ -430,8 +465,14 @@ pub fn chat_start_impl(
         .spawn()
         .map_err(|e| format!("could not start {}: {e}", agent.bin()))?;
 
-    let stdout = child.stdout.take().ok_or("no stdout on the agent process")?;
-    let stderr = child.stderr.take().ok_or("no stderr on the agent process")?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("no stdout on the agent process")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("no stderr on the agent process")?;
     let stdin = child.stdin.take();
 
     let session = Arc::new(Mutex::new(ChatSession { child, stdin }));
@@ -471,7 +512,8 @@ pub fn chat_start_impl(
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
                     // produced nothing. The one exception is below.
-                    Err(_) => crate::bus::emit("chat-status",
+                    Err(_) => crate::bus::emit(
+                        "chat-status",
                         ChatStatus {
                             key: key.clone(),
                             kind: "stderr".into(),
@@ -493,7 +535,8 @@ pub fn chat_start_impl(
                 if line.trim().is_empty() || is_expected_chatter(&line) {
                     continue;
                 }
-                crate::bus::emit("chat-status",
+                crate::bus::emit(
+                    "chat-status",
                     ChatStatus {
                         key: key.clone(),
                         kind: "stderr".into(),
@@ -513,7 +556,9 @@ pub fn chat_start_impl(
         thread::spawn(move || {
             let code = loop {
                 let status = {
-                    let Ok(mut s) = session.lock() else { break None };
+                    let Ok(mut s) = session.lock() else {
+                        break None;
+                    };
                     s.child.try_wait().ok().flatten()
                 };
                 match status {
@@ -521,7 +566,8 @@ pub fn chat_start_impl(
                     None => thread::sleep(std::time::Duration::from_millis(200)),
                 }
             };
-            crate::bus::emit("chat-status",
+            crate::bus::emit(
+                "chat-status",
                 ChatStatus {
                     key: key.clone(),
                     kind: "exit".into(),
@@ -533,7 +579,11 @@ pub fn chat_start_impl(
             // started again. The manager is held by Arc rather than looked up
             // through an AppHandle: this thread outlives the call, and a
             // headless server has no app to look anything up in.
-            manager_for_exit.sessions.lock().ok().map(|mut m| m.remove(&key));
+            manager_for_exit
+                .sessions
+                .lock()
+                .ok()
+                .map(|mut m| m.remove(&key));
         });
     }
 
@@ -686,7 +736,9 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(&key)
     };
-    let Some(session) = session else { return Ok(()) };
+    let Some(session) = session else {
+        return Ok(());
+    };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     // Closing stdin asks Claude to finish; the kill is the backstop.
     guard.stdin.take();
@@ -873,7 +925,7 @@ mod tests {
         // "run anything without asking" cannot reach it through that flag. It
         // has to be told separately or it keeps asking under bypassPermissions.
         assert_eq!(Access::Full.as_env(), "full");
-        assert_eq!(Access::Edit.as_env(), "edit");
+        assert_eq!(Access::Auto.as_env(), "auto");
         assert_eq!(Access::Read.as_env(), "read");
     }
     use super::*;
@@ -889,7 +941,10 @@ mod tests {
     #[test]
     fn model_names_are_allowlisted() {
         assert_eq!(safe_model("opus").as_deref(), Some("opus"));
-        assert_eq!(safe_model("claude-fable-5").as_deref(), Some("claude-fable-5"));
+        assert_eq!(
+            safe_model("claude-fable-5").as_deref(),
+            Some("claude-fable-5")
+        );
         assert_eq!(safe_model("gpt-5.6-sol").as_deref(), Some("gpt-5.6-sol"));
         // Anything that could become another shell word is refused outright.
         assert_eq!(safe_model("opus; id"), None);
@@ -903,27 +958,104 @@ mod tests {
         let c = build_command(ChatAgent::Claude, None, None, "", Some(id), &[], None, &[]);
         assert!(c.contains(&format!("--resume '{id}'")));
         // Anything that could become a second shell word is dropped outright.
-        let bad = build_command(ChatAgent::Claude, None, None, "", Some("x; rm -rf /"), &[], None, &[]);
+        let bad = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            Some("x; rm -rf /"),
+            &[],
+            None,
+            &[],
+        );
         assert!(!bad.contains("--resume"));
     }
 
     #[test]
     fn one_access_level_becomes_each_agents_own_flag() {
         // The same question — how much may it do unattended — asked once and
-        // spelled differently for each agent.
-        for (level, claude, codex) in [
-            (Access::Read, "plan", "read-only"),
-            (Access::Edit, "acceptEdits", "workspace-write"),
-            (Access::Full, "bypassPermissions", "danger-full-access"),
+        // spelled differently for each agent. Codex needs BOTH halves: a sandbox
+        // says what a command may touch, an approval policy says whether it runs
+        // unasked. Setting only the sandbox left the middle level asking about
+        // everything and the top level asking at all, neither of which is what
+        // the label promises.
+        for (level, claude, sandbox, approval) in [
+            (Access::Read, "plan", "read-only", "never"),
+            (Access::Auto, "auto", "workspace-write", "on-request"),
+            (
+                Access::Full,
+                "bypassPermissions",
+                "danger-full-access",
+                "never",
+            ),
         ] {
-            let c = build_command(ChatAgent::Claude, None, Some(level), "", None, &[], None, &[]);
-            assert!(c.contains(&format!("--permission-mode {claude}")), "claude {level:?}");
-            assert!(!c.contains("--sandbox"), "claude must not get a sandbox flag");
+            let c = build_command(
+                ChatAgent::Claude,
+                None,
+                Some(level),
+                "",
+                None,
+                &[],
+                None,
+                &[],
+            );
+            assert!(
+                c.contains(&format!("--permission-mode {claude}")),
+                "claude {level:?}"
+            );
+            assert!(
+                !c.contains("--sandbox"),
+                "claude must not get a sandbox flag"
+            );
 
-            let x = build_command(ChatAgent::Codex, None, Some(level), "hi", None, &[], None, &[]);
-            assert!(x.contains(&format!("--sandbox {codex}")), "codex {level:?}");
-            assert!(!x.contains("--permission-mode"), "codex must not get a permission mode");
+            let x = build_command(
+                ChatAgent::Codex,
+                None,
+                Some(level),
+                "hi",
+                None,
+                &[],
+                None,
+                &[],
+            );
+            assert!(
+                x.contains(&format!("--sandbox {sandbox}")),
+                "codex {level:?}"
+            );
+            assert!(
+                x.contains(&format!("--ask-for-approval {approval}")),
+                "codex approval {level:?}"
+            );
+            assert!(
+                !x.contains("--permission-mode"),
+                "codex must not get a permission mode"
+            );
         }
+    }
+
+    #[test]
+    fn codex_resume_spells_both_halves_as_config_keys() {
+        // `codex exec resume` accepts neither --sandbox nor --ask-for-approval,
+        // so the same two settings have to travel as -c keys or a resumed chat
+        // silently falls back to whatever the user's own config says.
+        let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
+        let x = build_command(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Auto),
+            "hi",
+            Some(id),
+            &[],
+            None,
+            &[],
+        );
+        assert!(x.contains("-c sandbox_mode='workspace-write'"));
+        assert!(x.contains("-c approval_policy='on-request'"));
+        assert!(!x.contains("--sandbox"), "resume does not take --sandbox");
+        assert!(
+            !x.contains("--ask-for-approval"),
+            "resume does not take the flag form"
+        );
     }
 
     #[test]
@@ -950,33 +1082,105 @@ mod tests {
         // Claude's prompt goes over stdin, never on the command line.
         assert!(!c.contains(prompt));
 
-        let x = build_command(ChatAgent::Codex, None, None, "hi there", None, &[], None, &[]);
+        let x = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hi there",
+            None,
+            &[],
+            None,
+            &[],
+        );
         assert!(x.contains("codex exec --json"));
         assert!(x.ends_with("'hi there'"));
     }
 
     #[test]
     fn effort_is_an_allowlist_and_spelled_per_agent() {
-        let c = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("xhigh"), &[]);
+        let c = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            Some("xhigh"),
+            &[],
+        );
         assert!(c.contains("--effort xhigh"));
         // Codex supports it too, but only as a config override.
-        let x = build_command(ChatAgent::Codex, None, None, "hi", None, &[], Some("xhigh"), &[]);
+        let x = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hi",
+            None,
+            &[],
+            Some("xhigh"),
+            &[],
+        );
         assert!(x.contains("-c model_reasoning_effort='xhigh'"));
         assert!(!x.contains("--effort"));
 
         // Anything outside the set is dropped rather than forwarded.
-        let bad = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("turbo; id"), &[]);
+        let bad = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            Some("turbo; id"),
+            &[],
+        );
         assert!(!bad.contains("--effort"));
 
         // The levels are not the same on both sides: `max` is Claude's alone,
         // `minimal` is Codex's alone, and each is refused for the other.
-        let claude_max = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("max"), &[]);
+        let claude_max = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            Some("max"),
+            &[],
+        );
         assert!(claude_max.contains("--effort max"));
-        let codex_max = build_command(ChatAgent::Codex, None, None, "hi", None, &[], Some("max"), &[]);
+        let codex_max = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hi",
+            None,
+            &[],
+            Some("max"),
+            &[],
+        );
         assert!(!codex_max.contains("model_reasoning_effort"));
-        let codex_min = build_command(ChatAgent::Codex, None, None, "hi", None, &[], Some("minimal"), &[]);
+        let codex_min = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hi",
+            None,
+            &[],
+            Some("minimal"),
+            &[],
+        );
         assert!(codex_min.contains("model_reasoning_effort='minimal'"));
-        let claude_min = build_command(ChatAgent::Claude, None, None, "", None, &[], Some("minimal"), &[]);
+        let claude_min = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            Some("minimal"),
+            &[],
+        );
         assert!(!claude_min.contains("--effort"));
     }
 
@@ -1024,8 +1228,12 @@ mod tests {
 
     #[test]
     fn the_stdin_notice_codex_always_prints_is_not_a_notice() {
-        assert!(is_expected_chatter("Reading additional input from stdin..."));
-        assert!(is_expected_chatter("  Reading additional input from stdin... "));
+        assert!(is_expected_chatter(
+            "Reading additional input from stdin..."
+        ));
+        assert!(is_expected_chatter(
+            "  Reading additional input from stdin... "
+        ));
         // Anything else still reaches the user — that is the whole point of
         // surfacing stderr.
         assert!(!is_expected_chatter("Error loading config.toml"));
@@ -1035,7 +1243,16 @@ mod tests {
     #[test]
     fn codex_takes_images_as_files_and_claude_does_not() {
         let shots = vec!["/tmp/a shot.png".to_string(), "/tmp/b.webp".to_string()];
-        let x = build_command(ChatAgent::Codex, None, None, "look", None, &[], None, &shots);
+        let x = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "look",
+            None,
+            &[],
+            None,
+            &shots,
+        );
         // Quoted, so a space in the name stays one argument.
         assert!(x.contains("-i '/tmp/a shot.png'"));
         assert!(x.contains("-i '/tmp/b.webp'"));
@@ -1043,7 +1260,16 @@ mod tests {
         assert!(x.ends_with("'look'"));
 
         // Claude's images ride on stdin instead — see write_user_message.
-        let c = build_command(ChatAgent::Claude, None, None, "look", None, &[], None, &shots);
+        let c = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "look",
+            None,
+            &[],
+            None,
+            &shots,
+        );
         assert!(!c.contains("-i "));
     }
 
@@ -1059,10 +1285,7 @@ mod tests {
 
     #[test]
     fn a_projects_other_folders_are_added_for_both_agents() {
-        let dirs = vec![
-            "/Users/me/api".to_string(),
-            "/Users/me/my docs".to_string(),
-        ];
+        let dirs = vec!["/Users/me/api".to_string(), "/Users/me/my docs".to_string()];
         let c = build_command(ChatAgent::Claude, None, None, "", None, &dirs, None, &[]);
         assert!(c.contains("--add-dir '/Users/me/api'"));
         // A space in a folder name stays one argument.

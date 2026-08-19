@@ -38,29 +38,37 @@ export const MODELS: ModelChoice[] = [
  *  This is NOT a hidden default. A chat has no channel for answering a
  *  permission prompt, so whatever is chosen here is what the agent will do
  *  unattended — and that has to be on screen, next to the send button. */
-export type AccessLevel = "read" | "edit" | "full";
+export type AccessLevel = "read" | "auto" | "full";
 
 /* Each agent's OWN words for these.
  *
  * They were "Read only / Can edit / Full access" for both, which reads well
- * and matches neither. Claude Code calls them plan mode, auto-accept edits and
- * bypass permissions; Codex calls them read-only, workspace-write and
+ * and matches neither. Claude Code calls them plan mode, automatically approve
+ * and bypass permissions; Codex calls them read-only, workspace-write and
  * danger-full-access. Someone who has used either directly, or is reading its
  * docs, should not have to work out which of our three words maps to the thing
  * they already know — and Codex's own name for the last one carries the word
  * "danger", which is not ours to soften.
  *
+ * The middle one was "Auto-accept edits", Claude's `acceptEdits`. That mode
+ * auto-accepts file edits and NOTHING else, so every shell command still
+ * stopped — and a chat that stops is a chat that is stuck. Claude's `auto` is
+ * the real middle, and the one this app was built around: it runs unattended
+ * and stops only at what looks unsafe, which is precisely the question the
+ * permission hook carries back here for someone to answer.
+ *
  * The `id` stays generic: it is the wire value, and the backend maps it to
- * `--permission-mode` or `--sandbox`. Only what a person reads changes. */
+ * `--permission-mode` or `--sandbox` plus `--ask-for-approval`. Only what a
+ * person reads changes. */
 export const ACCESS: Record<Provider, { id: AccessLevel; label: string; hint: string }[]> = {
   claude: [
     { id: "read", label: "Plan mode", hint: "look and plan, change nothing" },
-    { id: "edit", label: "Auto-accept edits", hint: "edit files without asking" },
+    { id: "auto", label: "Automatically approve", hint: "runs on its own, asks if unsafe" },
     { id: "full", label: "Bypass permissions", hint: "run anything without asking" },
   ],
   codex: [
     { id: "read", label: "Read-only", hint: "sandboxed, no writes" },
-    { id: "edit", label: "Workspace write", hint: "write inside the project only" },
+    { id: "auto", label: "Workspace write", hint: "writes in the project, asks when unsure" },
     { id: "full", label: "Danger: full access", hint: "no sandbox, no approvals" },
   ],
 };

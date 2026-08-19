@@ -1,13 +1,17 @@
 //! Questions the agent is waiting on.
 //!
 //! `claude -p` cannot prompt. A permission it has not been granted is simply
-//! denied, and the only lever is `--permission-mode`, fixed when the process
-//! spawns — so a chat client is a choice between an agent that can do nothing
-//! and one that can do anything.
+//! denied, with no channel to ask down — so on its own, a chat client is a
+//! choice between an agent that can do nothing and one that can do anything.
 //!
-//! This is the middle. A PreToolUse hook (scripts/hooks/permission-ask.cjs)
+//! This is the channel. A PreToolUse hook (scripts/hooks/permission-ask.cjs)
 //! holds the tool call and asks here; this puts the question on the event bus,
 //! waits for a person to answer it in the UI, and hands the answer back.
+//!
+//! `--permission-mode auto` decides WHEN a question is worth raising — it runs
+//! unattended and stops at what looks unsafe. That pairing is the whole design:
+//! the mode picks the moments, this module carries them to someone. Without the
+//! hook, every one of `auto`'s stops would land as a flat denial instead.
 //!
 //! Three rules shape everything below:
 //!

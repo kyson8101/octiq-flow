@@ -172,14 +172,17 @@ export default function App() {
   const [access, setAccess] = useState<AccessLevel>(() => {
     const saved = localStorage.getItem(ACCESS_KEY);
     // Values written before this was one shared level, when it held Claude's
-    // own permission-mode names.
+    // own permission-mode names — plus "edit", the middle level's old id, from
+    // when it meant acceptEdits rather than auto. Anyone who picked the middle
+    // stays on the middle; dropping these would silently move them to "read".
     const legacy: Record<string, AccessLevel> = {
       plan: "read",
-      acceptEdits: "edit",
+      acceptEdits: "auto",
+      edit: "auto",
       bypassPermissions: "full",
     };
     if (saved && legacy[saved]) return legacy[saved];
-    return saved === "read" || saved === "edit" || saved === "full" ? saved : "read";
+    return saved === "read" || saved === "auto" || saved === "full" ? saved : "read";
   });
   // How hard the model thinks. Fixed on the agent's command line, so changing
   // it takes effect from the next message — see changeEffort.
