@@ -19,14 +19,29 @@ export type Question = {
 
 export function UserQuestion({
   question,
+  position,
   onAnswered,
 }: {
   question: Question;
+  /** Set only when more than one is waiting, so a single question is not
+   *  labelled "1 of 1". */
+  position?: { index: number; total: number };
   onAnswered: (id: string) => void;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const options = question.options ?? [];
+
+  /* Closing is an answer, not a disappearance.
+   *
+   * The agent is blocked on this call — dismissing the card without replying
+   * would leave it waiting out the full ten-minute timeout, having been told
+   * nothing. So the × sends this instead: it unblocks the agent at once and
+   * says plainly what happened, in the same voice as the timeout message, so it
+   * does not invent a preference you never expressed. */
+  const DECLINED =
+    "The user closed this question without answering. Do not assume an answer — " +
+    "say what you need and stop, or continue in a way that does not depend on it.";
 
   const answer = async (value: string) => {
     const said = value.trim();
@@ -45,6 +60,21 @@ export function UserQuestion({
       <div className="qa-head">
         <span className="qa-dot" aria-hidden="true" />
         <span className="qa-label">Claude is asking</span>
+        {position && (
+          <span className="qa-count">
+            {position.index} of {position.total}
+          </span>
+        )}
+        <button
+          className="qa-close"
+          type="button"
+          disabled={sending}
+          title="Close without answering"
+          aria-label="Close without answering"
+          onClick={() => void answer(DECLINED)}
+        >
+          ×
+        </button>
       </div>
 
       <p className="qa-question">{question.question}</p>

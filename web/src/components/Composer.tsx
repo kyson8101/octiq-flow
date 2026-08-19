@@ -170,6 +170,8 @@ export function Composer({
 }) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
+  /** The phone's stand-in for the three pickers: one sheet holding all of them. */
+  const [sheet, setSheet] = useState(false);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
   // Every option list depends on which provider is chosen: the two agents do
@@ -461,6 +463,11 @@ export function Composer({
           }}
         />
         <div className="composer-row">
+          {/* A phone fits one of these, not three. `display: contents` keeps
+              them as direct flex children on a wide screen, so wrapping them
+              costs the desktop layout nothing; the phone rule hides the lot and
+              shows `settings-toggle` in their place. */}
+          <div className="composer-settings">
           <div className="picker">
             <button
               className="picker-btn"
@@ -589,6 +596,24 @@ export function Composer({
               )}
             </div>
           )}
+          </div>
+
+          {/* The same three settings behind one button, for a bar that cannot
+              hold them side by side. It shows the model because that is the one
+              worth seeing without opening anything. */}
+          <button
+            className="picker-btn settings-toggle"
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={sheet}
+            title="Model, access and effort"
+            onClick={() => setSheet(true)}
+          >
+            {choice.model}
+            <span className="picker-caret" aria-hidden="true">
+              ▾
+            </span>
+          </button>
 
           {/* Two different things, which is why they are two buttons.
               The clip references a file that already lives on the MACHINE
@@ -668,6 +693,64 @@ export function Composer({
           </button>
           )}
         </div>
+
+        {/* Phone only. The same options as the three pickers, one under the
+            other, because a sheet has the room a 360px bar does not. */}
+        {sheet && (
+          <>
+            <div className="sheet-scrim" onClick={() => setSheet(false)} />
+            <div className="settings-sheet" role="dialog" aria-label="Chat settings">
+              <div className="sheet-group">
+                <div className="sheet-head">Model</div>
+                {MODELS.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`picker-item ${m.id === choice.id ? "is-on" : ""}`}
+                    onClick={() => onChoice(m)}
+                  >
+                    <span className="picker-name">{m.name}</span>
+                    <span className="picker-model">{m.model}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="sheet-group">
+                <div className="sheet-head">Access</div>
+                {accessList.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`picker-item ${p.id === access ? "is-on" : ""}`}
+                    onClick={() => onAccess(p.id)}
+                  >
+                    <span className="picker-name">{p.label}</span>
+                    <span className="picker-model">{p.hint}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="sheet-group">
+                <div className="sheet-head">Effort</div>
+                {effortList.map((e) => (
+                  <button
+                    key={e.id}
+                    type="button"
+                    className={`picker-item ${e.id === effort ? "is-on" : ""}`}
+                    onClick={() => onEffort(e.id)}
+                  >
+                    <span className="picker-name">{e.label}</span>
+                    <span className="picker-model">{e.hint}</span>
+                  </button>
+                ))}
+              </div>
+
+              <button className="sheet-done" type="button" onClick={() => setSheet(false)}>
+                Done
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

@@ -534,6 +534,92 @@ body {
   color: var(--fg-3);
 }
 
+/* Three pickers side by side on a wide bar; one sheet on a narrow one. The
+   wrapper is `display: contents` so it is invisible to the desktop layout —
+   the pickers stay direct flex children of the row. */
+.composer-settings {
+  display: contents;
+}
+
+.composer-row .settings-toggle {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  /* At 360px the three pickers, the attach buttons and Send needed 358px in a
+     334px box, and the overflow landed on Send — the one control that must
+     never move. They collapse into one button here. */
+  .composer-settings {
+    display: none;
+  }
+
+  .composer-row .settings-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  /* The hint stays. It already shrinks to nothing when the bar is tight, and
+     it is the spring that holds Send against the right edge — hiding it dropped
+     Send into the middle of the bar. It also still has something to say here:
+     "working…" and the activity line matter more on a phone, not less. */
+}
+
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+/* Anchored to the bottom, where a thumb is, and above the keyboard's own inset. */
+.settings-sheet {
+  position: fixed;
+  z-index: 41;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 78vh;
+  overflow-y: auto;
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+.sheet-group + .sheet-group {
+  margin-top: 12px;
+}
+
+.sheet-head {
+  padding: 2px 4px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.settings-sheet .picker-item {
+  width: 100%;
+}
+
+.sheet-done {
+  width: 100%;
+  margin-top: 14px;
+  padding: 11px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .send {
   display: inline-flex;
   align-items: center;
@@ -2694,7 +2780,39 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Pushes the close button to the far edge, away from the answer controls —
+     a mis-tap here costs the agent its answer. */
 }
+.qa-count {
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.qa-close {
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.qa-close:hover:not(:disabled) {
+  background: var(--bg-2, var(--bg-1));
+  color: var(--fg-1);
+}
+
+.qa-close:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 
 .qa-dot {
   flex: 0 0 auto;

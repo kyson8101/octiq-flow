@@ -1015,18 +1015,32 @@ export default function App() {
             />
           ))}
 
-          {(conversationId ? questions[conversationId] ?? [] : []).map((q) => (
-            <UserQuestion
-              key={q.id}
-              question={q}
-              onAnswered={(id) =>
-                setQuestions((prev) => ({
-                  ...prev,
-                  [conversationId!]: (prev[conversationId!] ?? []).filter((x) => x.id !== id),
-                }))
-              }
-            />
-          ))}
+          {/* One at a time, even when several arrive together.
+              
+              An agent can ask more than one thing in a single turn — Claude
+              batches independent tool calls — and every one of them blocks. Laid
+              out all at once they read as a form to fill in, and the later ones
+              often depend on the earlier answers ("what kind of frontend work?"
+              only makes sense once you have said frontend). So the queue is
+              shown one card deep: answer it, and the next takes its place. */}
+          {(() => {
+            const pending = conversationId ? questions[conversationId] ?? [] : [];
+            const q = pending[0];
+            if (!q) return null;
+            return (
+              <UserQuestion
+                key={q.id}
+                question={q}
+                position={pending.length > 1 ? { index: 1, total: pending.length } : undefined}
+                onAnswered={(id) =>
+                  setQuestions((prev) => ({
+                    ...prev,
+                    [conversationId!]: (prev[conversationId!] ?? []).filter((x) => x.id !== id),
+                  }))
+                }
+              />
+            );
+          })()}
 
           {termOpen && project && (
             <div className="drawer">
