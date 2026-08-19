@@ -36,6 +36,35 @@ pub struct Recorded {
     pub event: Value,
 }
 
+/// The folder chat records live in.
+///
+/// Overridable so tests write into a temporary directory. Without it they run
+/// against the real profile — and `reconcile` DELETES files there, which is
+/// not a thing a test should be able to do to someone's chats.
+pub(crate) fn chats_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = test_dir() {
+        let _ = fs::create_dir_all(&dir);
+        return Some(dir);
+    }
+    let dir = crate::profile::profile_dir().join("chats");
+    fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// A temporary directory, one per test binary, used instead of the profile.
+#[cfg(test)]
+fn test_dir() -> Option<PathBuf> {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    Some(
+        DIR.get_or_init(|| {
+            std::env::temp_dir().join(format!("octiq-test-chats-{}", std::process::id()))
+        })
+        .clone(),
+    )
+}
+
 /// Where a chat's record lives. `None` when the key is not a safe file name —
 /// keys come from a browser, so a key with a slash in it must never become a
 /// path somewhere else.
@@ -48,11 +77,9 @@ fn path_for(key: &str) -> Option<PathBuf> {
     if !safe {
         return None;
     }
-    let dir = crate::profile::profile_dir().join("chats");
-    fs::create_dir_all(&dir).ok()?;
     // ':' is legal on macOS but reads badly in a shell, and is the one
     // character our keys use that is not already file-safe everywhere.
-    Some(dir.join(format!("{}.jsonl", key.replace(':', "_"))))
+    Some(chats_dir()?.join(format!("{}.jsonl", key.replace(':', "_"))))
 }
 
 /// The next sequence number for each chat, so appending does not have to count.

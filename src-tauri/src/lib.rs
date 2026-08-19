@@ -76,6 +76,10 @@ pub async fn run_headless() {
         eprintln!("[server] {}", profile_lock::conflict_message(&owner));
         std::process::exit(1);
     }
+    // Once, before anything can be running: tidy away transcripts no chat
+    // points at any more.
+    chat_index::reconcile();
+
     let cfg = web::load_config();
     let services = dispatch::Services::load();
     println!("[server] OctiqFlow backend — no window, agents run here");
@@ -158,6 +162,10 @@ pub fn run() {
             let profile_taken = profile_lock::acquire("desktop").err();
             if let Some(owner) = &profile_taken {
                 eprintln!("[app] {}", profile_lock::conflict_message(owner));
+            }
+
+            if profile_taken.is_none() {
+                chat_index::reconcile();
             }
 
             let web_cfg = web::load_config();
