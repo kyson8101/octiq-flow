@@ -199,7 +199,9 @@ function Pill({
   }
 
   return (
-    <span className={`usage-pill ${stale ? "is-stale" : ""}`}>
+    <span
+      className={`usage-pill ${stale ? "is-stale" : ""} ${windows.length === 0 ? "is-empty" : ""}`}
+    >
       <span className="usage-tag">{label}</span>
       {windows.length === 0 ? (
         <span className="usage-val">—</span>

@@ -178,6 +178,14 @@ export function GitButton({
   onToggle: () => void;
 }) {
   const [summary, setSummary] = useState<GitStatus[]>([]);
+  /* The repo the CHAT is actually in. A project can group several repos, and
+   * until now the branch name only appeared when there happened to be exactly
+   * one — so on a two-repo project the button said "3" and nothing about where
+   * you were. The session runs in the project's primary path, so that is the
+   * branch worth naming, and naming it is what makes a worktree tell you it is
+   * a worktree. */
+  const [sessionRepo, setSessionRepo] = useState<GitStatus | null>(null);
+  const primaryPath = project?.primary_path ?? "";
   const folderKey = folderKeyOf(project);
   const folders = useMemo(() => (folderKey ? folderKey.split("\n") : []), [folderKey]);
 
@@ -191,7 +199,13 @@ export function GitButton({
       bridge
         .invoke<GitStatus[]>("git_status_summary", { paths: folders })
         .then((list) => {
-          if (live) setSummary(byRepo(list ?? []));
+          if (!live) return;
+          const all = list ?? [];
+          setSummary(byRepo(all));
+          // Matched on the folder asked about, not on the repo root: two of a
+          // project's folders can share a repo, and the one the chat starts in
+          // is the one that answers "where am I".
+          setSessionRepo(all.find((s) => s.is_repo && s.path === primaryPath) ?? null);
         })
         .catch(() => {
           if (live) setSummary([]);
@@ -207,24 +221,50 @@ export function GitButton({
       window.removeEventListener("focus", read);
       window.removeEventListener(CHANGED_EVENT, read);
     };
-  }, [folders]);
+  }, [folders, primaryPath]);
 
   const changed = summary.reduce((n, s) => n + s.changed, 0);
   const ahead = summary.reduce((n, s) => n + s.ahead, 0);
   const onlyRepo = summary.length === 1 ? summary[0] : null;
+  // The session's own repo when we could find it; otherwise the old behaviour,
+  // which named a branch only when the project held exactly one repo.
+  const here = sessionRepo ?? onlyRepo;
 
   return (
     <button
       className={`gitp-toggle ${open ? "is-on" : ""}`}
       type="button"
       aria-expanded={open}
+      // Spelled out because the two halves of this button mean different
+      // things: the branch is where THIS chat runs, the count is the whole
+      // project — which is what the panel it opens lists.
       title={
-        project ? `Git — ${project.name}${onlyRepo?.branch ? ` (${onlyRepo.branch})` : ""}` : "Git"
+        project
+          ? [
+              `Git — ${project.name}`,
+              here?.branch ? `this chat runs on ${here.branch}` : null,
+              changed > 0
+                ? `${changed} changed file${changed === 1 ? "" : "s"}${
+                    summary.length > 1 ? ` across ${summary.length} repos` : ""
+                  }`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")
+          : "Git"
       }
       onClick={onToggle}
     >
       <BranchIcon />
-      {onlyRepo?.branch && <span className="gitp-toggle-branch">{onlyRepo.branch}</span>}
+      {/* The <bdi> is load-bearing. The span is RTL so the ellipsis lands on the
+          LEFT, but that alone also reorders the text — `feature/a` draws as
+          `a/feature`. <bdi> isolates the run so it reads the right way round
+          inside a box that truncates from the wrong end. */}
+      {here?.branch && (
+        <span className="gitp-toggle-branch">
+          <bdi>{here.branch}</bdi>
+        </span>
+      )}
       {changed > 0 && <span className="gitp-badge">{changed}</span>}
       {changed === 0 && ahead > 0 && <span className="gitp-badge is-ahead">↑{ahead}</span>}
     </button>

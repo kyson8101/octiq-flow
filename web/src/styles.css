@@ -1965,6 +1965,12 @@ body {
   .usage-num:not(.is-tightest) {
     display: none;
   }
+
+  /* An agent reporting nothing draws as "CX —", which costs 30px to say it has
+     no numbers. On a phone that space is the project's name. */
+  .usage-pill.is-empty {
+    display: none;
+  }
 }
 
 .usage-btn {
@@ -3083,8 +3089,16 @@ body {
     display: none;
   }
 
+  /* Kept on a phone, where knowing which branch this chat is on matters most —
+     a worktree looks exactly like the main checkout until something names it.
+     Truncated from the LEFT: branch names share their prefix (`feature/`,
+     `security/`) and differ at the end, so the end is the half worth keeping. */
   .gitp-toggle-branch {
-    display: none;
+    max-width: 72px;
+    overflow: hidden;
+    white-space: nowrap;
+    direction: rtl;
+    text-overflow: ellipsis;
   }
 }
 
