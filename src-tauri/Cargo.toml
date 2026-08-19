@@ -80,3 +80,6 @@ strip = "symbols"
 #     loop, and there is no benchmark here to prove it does not regress, so the
 #     default (3) stands. Revisit with a measurement, not a guess.
 
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "time"] }

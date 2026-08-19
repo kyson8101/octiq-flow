@@ -210,6 +210,14 @@ fn build_command(
             if let Some(e) = effort.and_then(|e| safe_effort(agent, e)) {
                 cmd.push_str(&format!(" --effort {e}"));
             }
+            // The permission hook, so the agent can ask rather than being told
+            // in advance. Skipped silently if it could not be written.
+            if let Some(settings) = permission_settings() {
+                cmd.push_str(&format!(
+                    " --settings {}",
+                    sh_quote(&settings.to_string_lossy())
+                ));
+            }
             // A project can group several folders. The agent starts in one of
             // them (`cwd`) and can already read that one; every OTHER folder of
             // the project has to be named or the agent cannot touch it.
@@ -375,6 +383,9 @@ pub fn chat_start_impl(
         // "Reading additional input from stdin..." waiting for an end that
         // never comes. Its prompt is on the command line; there is nothing to
         // send it.
+        // The hook answers only for agents we started, and needs to know
+        // which chat is asking so the UI can attach the question to it.
+        .env("OCTIQ_CHAT_KEY", &key)
         .stdin(match agent {
             ChatAgent::Claude => Stdio::piped(),
             ChatAgent::Codex => Stdio::null(),
@@ -638,6 +649,46 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     guard.stdin.take();
     let _ = guard.child.kill();
     Ok(())
+}
+
+/// The hook that lets a chat ask the user for permission, and the settings
+/// file that carries it.
+///
+/// Passed with `--settings` to the agents WE start, never installed into
+/// `~/.claude/settings.json`. A hook in the global config would sit in the path
+/// of every Claude Code the user runs, including the terminal they are typing
+/// in right now — and one that blocks waiting for a browser would be a bad day.
+/// This way it applies to OctiqFlow chats and nothing else.
+const PERMISSION_HOOK: &str = include_str!("../../scripts/hooks/permission-ask.cjs");
+
+/// Write the hook and its settings file, and return the settings path.
+///
+/// Rewritten on every start so an upgraded OctiqFlow cannot leave an old hook
+/// behind. Best-effort: if any of it fails the chat starts without the hook,
+/// which is exactly how it behaved before this existed.
+fn permission_settings() -> Option<std::path::PathBuf> {
+    let dir = crate::paths::home_dir()?.join(".octiqflow").join("hooks");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    let script = dir.join("permission-ask.cjs");
+    std::fs::write(&script, PERMISSION_HOOK).ok()?;
+
+    let settings = dir.join("claude-permission.json");
+    let body = json!({
+        "hooks": {
+            "PreToolUse": [{
+                // No matcher: every tool asks. Which tools NEED asking is
+                // Claude's own decision — it only raises PreToolUse for calls
+                // that are not already permitted by the mode.
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("node {}", script.to_string_lossy()),
+                }]
+            }]
+        }
+    });
+    std::fs::write(&settings, serde_json::to_vec_pretty(&body).ok()?).ok()?;
+    Some(settings)
 }
 
 /// Where pasted images are kept. Under `~/.octiqflow` rather than in the

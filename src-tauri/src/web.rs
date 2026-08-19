@@ -59,8 +59,8 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State as AxumState};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -378,6 +378,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/auth", get(auth_handler))
             .route("/token", get(token_handler))
             .route("/file", get(file_handler))
+            .route("/hook/permission", post(permission_handler))
             .fallback(get(asset_handler))
             .with_state(ctx);
 
@@ -657,6 +658,24 @@ async fn ws_handler(
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     upgrade.on_upgrade(move |socket| client(ctx, socket))
+}
+
+/// A hook asking whether the agent may use a tool.
+///
+/// Called from `permission-ask.cjs`, which is holding a tool call open until
+/// this answers. It is on the same token as everything else, and only reachable
+/// from this machine in practice — the hook and the server are always the same
+/// host.
+async fn permission_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<TokenQuery>,
+    Json(request): Json<crate::permission::Request>,
+) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let answer = crate::permission::ask(request).await;
+    axum::Json(json!({ "decision": answer.decision, "reason": answer.reason })).into_response()
 }
 
 /// One connected browser: forward its invokes, stream events back.

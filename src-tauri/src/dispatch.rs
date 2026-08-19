@@ -217,6 +217,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "visible")?,
         )),
 
+        // ---- permissions --------------------------------------------------
+        // Answering a question an agent is currently blocked on.
+        "permission_decide" => {
+            let id: String = arg(&args, "id")?;
+            let decision: crate::permission::Decision = arg(&args, "decision")?;
+            Ok(json!(crate::permission::decide(&id, decision)))
+        }
+
         // ---- usage --------------------------------------------------------
         "usage_summary" => Ok(json!(crate::usage_limits::usage_summary())),
 

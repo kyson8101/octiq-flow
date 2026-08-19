@@ -22,6 +22,7 @@ mod git_ops;
 mod git_watch;
 mod notify_hook;
 mod paths;
+mod permission;
 mod proc;
 mod profile;
 mod profile_lock;

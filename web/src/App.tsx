@@ -42,6 +42,7 @@ import { Sidebar, type Project } from "./components/Sidebar";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
 import { TerminalPane } from "./components/Terminal";
+import { PermissionAsk, type Ask } from "./components/PermissionAsk";
 import { useConfirm } from "./components/Confirm";
 
 type Workspace = Project & { paths?: string[]; shelved?: boolean; description?: string };
@@ -84,6 +85,9 @@ export default function App() {
   // The shell drawer under the chat. Remembered, because someone who works
   // with it open wants it open next time too.
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
+  // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
+  // question belongs to the moment, not to the transcript.
+  const [asks, setAsks] = useState<Record<string, Ask[]>>({});
   // Which folders are open, kept between visits — a tree that forgets is a
   // tree you re-open every time.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -172,6 +176,30 @@ export default function App() {
         if (ids.length) setRunning(new Set(ids));
       })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const offAsk = bridge.on<Ask>("permission-ask", (ask) => {
+      const id = ask?.chatKey ? convOf(ask.chatKey) : null;
+      if (!id || !ask.id) return;
+      setAsks((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), ask] }));
+    });
+    // Nobody answered in time, so the server said no on our behalf. The card
+    // must go: leaving it would offer a choice that no longer exists.
+    const offGone = bridge.on<{ id: string }>("permission-expired", (gone) => {
+      if (!gone?.id) return;
+      setAsks((prev) => {
+        const next: Record<string, Ask[]> = {};
+        for (const [key, list] of Object.entries(prev)) {
+          next[key] = list.filter((a) => a.id !== gone.id);
+        }
+        return next;
+      });
+    });
+    return () => {
+      offAsk();
+      offGone();
+    };
   }, []);
 
   /** Apply a change to ONE conversation's chat, whether or not it is the one on
@@ -739,6 +767,19 @@ export default function App() {
               ))}
             </div>
           )}
+
+          {(conversationId ? asks[conversationId] ?? [] : []).map((ask) => (
+            <PermissionAsk
+              key={ask.id}
+              ask={ask}
+              onAnswered={(id) =>
+                setAsks((prev) => ({
+                  ...prev,
+                  [conversationId!]: (prev[conversationId!] ?? []).filter((a) => a.id !== id),
+                }))
+              }
+            />
+          ))}
 
           {termOpen && project && (
             <div className="drawer">
