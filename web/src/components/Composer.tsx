@@ -200,8 +200,24 @@ export function Composer({
       ? []
       : (commands ?? [])
           .filter((c) => c.toLowerCase().startsWith(slashQuery.toLowerCase()))
+          // A command you have typed in full sorts to the top, so it is the one
+          // highlighted. `/context` still matches `context`, so without this the
+          // menu stays up on a finished command and Enter "completes" it to
+          // itself — swallowing the send and making you press Enter twice.
+          .sort(
+            (a, b) =>
+              Number(b.toLowerCase() === slashQuery.toLowerCase()) -
+              Number(a.toLowerCase() === slashQuery.toLowerCase()),
+          )
           .slice(0, 40);
   const slashOpen = matches.length > 0;
+
+  /** The highlighted command is exactly what is typed: there is nothing left to
+   *  complete, so Enter should send it. Arrowing to a different one puts
+   *  completion back. */
+  const nothingToComplete =
+    slashQuery !== undefined &&
+    matches[pick]?.toLowerCase() === slashQuery.toLowerCase();
 
   // Keep the highlight inside the list as it narrows.
   useEffect(() => {
@@ -314,7 +330,8 @@ export function Composer({
       {slashOpen && (
         <div className="slash" role="listbox">
           <div className="slash-head">
-            {matches.length} command{matches.length === 1 ? "" : "s"} · Tab to complete
+            {matches.length} command{matches.length === 1 ? "" : "s"} ·{" "}
+            {nothingToComplete ? "Enter to send" : "Tab to complete"}
           </div>
           <ul className="slash-list">
             {matches.map((name, i) => (
@@ -399,7 +416,8 @@ export function Composer({
                 setPick((i) => (i - 1 + matches.length) % matches.length);
                 return;
               }
-              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+              // Tab always completes; Enter only when it would add something.
+              if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !nothingToComplete)) {
                 e.preventDefault();
                 complete(matches[pick]);
                 return;
