@@ -178,6 +178,7 @@ export function Composer({
   cwd,
   onTerminal,
   terminalOpen,
+  installed,
 }: {
   /** Which chat this is, so Up walks back through ITS input and no one else's.
    *  Absent for a chat that has not been saved yet. */
@@ -194,6 +195,15 @@ export function Composer({
    *  are fixed when the agent process spawns, so from here on picking another
    *  one opens a new chat — the menu says so rather than looking inert. */
   started?: boolean;
+  /** The agents whose CLI this machine actually has. An agent that is missing
+   *  cannot be picked: its chat would spawn a shell, print "command not found"
+   *  and die, which reads as the app being broken.
+   *
+   *  UNDEFINED means "we could not ask" — an older backend, or a socket that
+   *  was not up yet — and then everything stays offered, exactly as before this
+   *  existed. An EMPTY array is the opposite: we asked, and this machine has
+   *  none of them. */
+  installed?: Provider[];
   /** The slash commands this agent accepts, reported by the session itself.
    *  Empty until a chat has run at least once in this project. */
   commands?: string[];
@@ -241,6 +251,14 @@ export function Composer({
     setHistory(loadHistory(session));
     setRecall(-1);
   }, [session]);
+  /** Whether this machine is known NOT to have that agent. Undefined
+   *  `installed` is no answer rather than a negative one, so it says false for
+   *  everything and nothing is greyed out — see the prop. */
+  const missing = (agent: Provider) => installed !== undefined && !installed.includes(agent);
+  /** Asked, and nothing resolved. Worth saying out loud: every row is then
+   *  unpickable, and a menu of dead rows explaining nothing looks like a bug. */
+  const noAgents = installed !== undefined && installed.length === 0;
+
   // What was in the box before Up was first pressed, so Down can put it back
   // rather than leaving you with the last thing you sent.
   const draft = useRef("");
@@ -540,6 +558,11 @@ export function Composer({
               <>
                 <div className="picker-scrim" onClick={() => setMenu(false)} />
                 <div className="picker-menu" role="menu">
+                  {noAgents && (
+                    <div className="picker-note">
+                      No agent CLI found on this machine — a chat cannot start
+                    </div>
+                  )}
                   {started && (
                     <div className="picker-note">
                       Another {choice.name} model keeps this chat · the other agent starts a new one
@@ -551,13 +574,16 @@ export function Composer({
                       type="button"
                       role="menuitem"
                       className={`picker-item ${m.id === choice.id ? "is-on" : ""}`}
+                      disabled={missing(m.agent)}
                       onClick={() => {
                         onChoice(m);
                         setMenu(false);
                       }}
                     >
                       <span className="picker-name">{m.name}</span>
-                      <span className="picker-model">{m.model}</span>
+                      <span className="picker-model">
+                        {missing(m.agent) ? "not installed" : m.model}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -763,15 +789,23 @@ export function Composer({
             <div className="settings-sheet" role="dialog" aria-label="Chat settings">
               <div className="sheet-group">
                 <div className="sheet-head">Model</div>
+                {noAgents && (
+                  <div className="picker-note">
+                    No agent CLI found on this machine — a chat cannot start
+                  </div>
+                )}
                 {MODELS.map((m) => (
                   <button
                     key={m.id}
                     type="button"
                     className={`picker-item ${m.id === choice.id ? "is-on" : ""}`}
+                    disabled={missing(m.agent)}
                     onClick={() => onChoice(m)}
                   >
                     <span className="picker-name">{m.name}</span>
-                    <span className="picker-model">{m.model}</span>
+                    <span className="picker-model">
+                      {missing(m.agent) ? "not installed" : m.model}
+                    </span>
                   </button>
                 ))}
               </div>

@@ -385,8 +385,9 @@ pub const KNOWN_AGENTS: [&str; 2] = ["claude", "codex"];
 /// fresh install still shows up within a few minutes without a restart.
 const AGENT_PROBE_TTL: Duration = Duration::from_secs(300);
 
-/// Cached probe result: when it was taken, and what it found.
-static AGENT_PROBE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
+/// Cached probe result: when it was taken, and what it found — each hit as
+/// (agent name, the path the shell resolved it to).
+static AGENT_PROBE: Mutex<Option<(Instant, Vec<(String, String)>)>> = Mutex::new(None);
 
 /// The agents this machine can actually launch, in `KNOWN_AGENTS` order.
 ///
@@ -396,6 +397,94 @@ static AGENT_PROBE: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
 /// turns out to be missing.
 #[tauri::command]
 pub fn available_agents() -> Vec<String> {
+    probe_cached().into_iter().map(|(a, _)| a).collect()
+}
+
+/// One agent this app can start, and whether this machine has its CLI.
+///
+/// Every known agent gets a row, installed or not: the screen lists what the app
+/// CAN start, so "Codex — not installed" is the useful answer and a vanished row
+/// is not.
+#[derive(Clone, Serialize)]
+pub struct AgentInstall {
+    /// The id the chat backend takes (`ChatAgent`), which is also the binary
+    /// name: "claude" / "codex".
+    pub id: String,
+    /// What the CLI is called on screen.
+    pub name: String,
+    /// The command that starts it — the same string as `id`, named separately
+    /// because the screen shows it as a command, not as an id.
+    pub bin: String,
+    /// Whether the login shell resolves that command.
+    pub installed: bool,
+    /// Where it resolved, when the shell told us. `None` when the agent is
+    /// missing — and also when it is installed but the path could not be read,
+    /// which is why `installed` is its own field rather than `path.is_some()`.
+    pub path: Option<String>,
+}
+
+/// Every agent the app can start, each marked installed or not.
+///
+/// `refresh` forces the login shell to be asked again. Someone who has just
+/// installed an agent in a terminal and comes back to look is exactly the case
+/// the TTL gets wrong: without this, a "check again" button would return the
+/// same stale answer for five minutes and look broken.
+#[tauri::command]
+pub fn agent_installs(refresh: Option<bool>) -> Vec<AgentInstall> {
+    if refresh.unwrap_or(false) {
+        forget_probe();
+    }
+    install_rows(&probe_cached())
+}
+
+/// Drop the cached probe so the next read asks the shell again.
+fn forget_probe() {
+    if let Ok(mut cache) = AGENT_PROBE.lock() {
+        *cache = None;
+    }
+}
+
+/// Put a known answer in the cache so a test can call the command without
+/// starting a login shell — which would make the test slow, machine-dependent,
+/// and dependent on whatever the user's rc files do.
+#[cfg(test)]
+pub fn seed_probe_for_test(found: Vec<(String, String)>) {
+    if let Ok(mut cache) = AGENT_PROBE.lock() {
+        *cache = Some((Instant::now(), found));
+    }
+}
+
+/// Turn the probe's hits into one row per known agent. Pure, so the "a missing
+/// agent is still a row" rule is testable without a shell.
+fn install_rows(found: &[(String, String)]) -> Vec<AgentInstall> {
+    KNOWN_AGENTS
+        .iter()
+        .map(|a| {
+            let hit = found.iter().find(|(name, _)| name == a);
+            AgentInstall {
+                id: (*a).to_string(),
+                name: display_name(a).to_string(),
+                bin: (*a).to_string(),
+                installed: hit.is_some(),
+                path: hit.map(|(_, p)| p.clone()).filter(|p| !p.is_empty()),
+            }
+        })
+        .collect()
+}
+
+/// The name the CLI goes by, as opposed to the command it is typed as.
+fn display_name(agent: &str) -> &'static str {
+    match agent {
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        // Unreachable while KNOWN_AGENTS holds only those two; a new entry that
+        // forgets a name shows its command rather than nothing.
+        _ => "Agent",
+    }
+}
+
+/// The probe result, taken at most once per `AGENT_PROBE_TTL`.
+fn probe_cached() -> Vec<(String, String)> {
     if let Ok(cache) = AGENT_PROBE.lock() {
         if let Some((at, found)) = cache.as_ref() {
             if at.elapsed() < AGENT_PROBE_TTL {
@@ -410,14 +499,18 @@ pub fn available_agents() -> Vec<String> {
     found
 }
 
-/// Run the probe through a login shell and read back the names it found.
-fn probe_agents() -> Vec<String> {
+/// Run the probe through a login shell and read back what it found.
+fn probe_agents() -> Vec<(String, String)> {
     let mut cmd = probe_command();
     no_console(&mut cmd);
     match cmd.output() {
         Ok(out) => parse_probe_output(&String::from_utf8_lossy(&out.stdout)),
-        // Could not even start a shell — fail open (see available_agents).
-        Err(_) => KNOWN_AGENTS.iter().map(|a| a.to_string()).collect(),
+        // Could not even start a shell — fail open (see available_agents), with
+        // no path to show for any of them.
+        Err(_) => KNOWN_AGENTS
+            .iter()
+            .map(|a| ((*a).to_string(), String::new()))
+            .collect(),
     }
 }
 
@@ -425,12 +518,26 @@ fn probe_agents() -> Vec<String> {
 /// duplicates. A login shell prints whatever the user's rc files print (banners,
 /// version notices, fastfetch), so the output is filtered against the fixed list
 /// rather than trusted line by line.
-fn parse_probe_output(stdout: &str) -> Vec<String> {
-    let lines: Vec<&str> = stdout.lines().map(|l| l.trim()).collect();
+///
+/// Each line is `name<TAB>path`. The path is what the shell resolved and is
+/// shown as proof the agent is really there; a line carrying only the name
+/// still counts as installed, because the name IS the answer to "does this
+/// resolve" and the path is only the detail.
+fn parse_probe_output(stdout: &str) -> Vec<(String, String)> {
+    let lines: Vec<(&str, &str)> = stdout
+        .lines()
+        .map(|l| l.trim())
+        .map(|l| match l.split_once('\t') {
+            Some((name, path)) => (name.trim(), path.trim()),
+            None => (l, ""),
+        })
+        .collect();
     KNOWN_AGENTS
         .iter()
-        .filter(|a| lines.iter().any(|l| l == *a))
-        .map(|a| a.to_string())
+        .filter_map(|a| {
+            let (_, path) = lines.iter().find(|(name, _)| name == a)?;
+            Some(((*a).to_string(), (*path).to_string()))
+        })
         .collect()
 }
 
@@ -440,8 +547,10 @@ fn parse_probe_output(stdout: &str) -> Vec<String> {
 #[cfg(unix)]
 fn probe_command() -> Command {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    // `command -v` already prints the path it resolved, so the path costs
+    // nothing extra here — it is kept rather than thrown at /dev/null.
     let script = format!(
-        "for a in {}; do command -v \"$a\" >/dev/null 2>&1 && echo \"$a\"; done",
+        "for a in {}; do p=$(command -v \"$a\" 2>/dev/null) && printf '%s\\t%s\\n' \"$a\" \"$p\"; done",
         KNOWN_AGENTS.join(" ")
     );
     let mut cmd = Command::new(shell);
@@ -470,8 +579,10 @@ fn probe_command() -> Command {
         .map(|a| format!("'{a}'"))
         .collect::<Vec<_>>()
         .join(",");
+    // "`t" is PowerShell's tab escape — the same name<TAB>path shape the Unix
+    // probe prints, so one parser reads both.
     let script = format!(
-        "foreach ($a in {names}) {{ if (Get-Command $a -ErrorAction SilentlyContinue) {{ $a }} }}"
+        "foreach ($a in {names}) {{ $c = Get-Command $a -ErrorAction SilentlyContinue; if ($c) {{ \"$a`t$($c.Source)\" }} }}"
     );
     let mut cmd = Command::new("powershell.exe");
     cmd.args(["-NoLogo", "-Command", &script]);
@@ -497,19 +608,86 @@ mod tests {
         }
     }
 
+    /// `parse_probe_output` reads "name<TAB>path" lines. Only the names survive
+    /// the filter; this checks the name half.
+    fn names(stdout: &str) -> Vec<String> {
+        parse_probe_output(stdout)
+            .into_iter()
+            .map(|(a, _)| a)
+            .collect()
+    }
+
     #[test]
     fn probe_output_keeps_only_known_agents_in_menu_order() {
         // A login shell prints the user's own banners around our echoes, and
         // may print them in any order. Only the known names survive, and they
         // come back in KNOWN_AGENTS order, not in the order the shell printed.
-        let out = "Welcome to zsh!\ncodex\nnpm notice: update available\nclaude\n";
-        assert_eq!(parse_probe_output(out), vec!["claude", "codex"]);
+        let out = "Welcome to zsh!\ncodex\t/opt/homebrew/bin/codex\nnpm notice: update available\nclaude\t/Users/x/.local/bin/claude\n";
+        assert_eq!(names(out), vec!["claude", "codex"]);
         // One installed agent.
-        assert_eq!(parse_probe_output("claude\n"), vec!["claude"]);
+        assert_eq!(names("claude\t/usr/local/bin/claude\n"), vec!["claude"]);
         // Neither installed: banner noise alone yields nothing.
         assert!(parse_probe_output("some banner\n").is_empty());
         // A line that merely CONTAINS an agent name is not a hit.
         assert!(parse_probe_output("claude not found\n").is_empty());
+    }
+
+    #[test]
+    fn probe_output_reads_the_path_the_login_shell_resolved() {
+        // The path is the proof that the agent is really there — and it is the
+        // LOGIN shell's answer, which is the whole point of probing through one.
+        let found = parse_probe_output("claude\t/Users/x/.local/bin/claude\n");
+        assert_eq!(found[0].1, "/Users/x/.local/bin/claude");
+    }
+
+    #[test]
+    fn a_bare_name_with_no_path_still_counts_as_installed() {
+        // A shell that prints the name but no path (or a path we could not
+        // read) has still told us the agent resolves. Losing the row over a
+        // missing path would hide an agent that launches fine.
+        let found = parse_probe_output("claude\n");
+        assert_eq!(found, vec![("claude".to_string(), String::new())]);
+    }
+
+    #[test]
+    fn install_rows_name_every_known_agent_present_or_not() {
+        // The page lists what this app CAN start, so a missing agent is a row
+        // saying "not installed" — never a row that quietly vanishes.
+        let found = vec![("codex".to_string(), "/opt/homebrew/bin/codex".to_string())];
+        let rows = install_rows(&found);
+        assert_eq!(rows.len(), KNOWN_AGENTS.len());
+
+        assert_eq!(rows[0].id, "claude");
+        assert!(!rows[0].installed);
+        assert!(rows[0].path.is_none());
+
+        assert_eq!(rows[1].id, "codex");
+        assert_eq!(rows[1].name, "Codex");
+        assert!(rows[1].installed);
+        assert_eq!(rows[1].path.as_deref(), Some("/opt/homebrew/bin/codex"));
+    }
+
+    #[test]
+    fn forgetting_the_probe_makes_the_next_read_ask_again() {
+        // "Check again" exists for the person who just installed an agent in a
+        // terminal. Reading through the TTL would hand them the same stale
+        // answer for five minutes, so the forced path must clear the cache.
+        if let Ok(mut cache) = AGENT_PROBE.lock() {
+            *cache = Some((Instant::now(), vec![("claude".into(), "/stale".into())]));
+        }
+        forget_probe();
+        assert!(
+            AGENT_PROBE.lock().unwrap().is_none(),
+            "a forced check must drop the cached answer"
+        );
+    }
+
+    #[test]
+    fn install_rows_carry_a_name_for_the_screen() {
+        // "claude" is the binary; "Claude Code" is what the CLI is called.
+        let rows = install_rows(&[]);
+        assert_eq!(rows[0].name, "Claude Code");
+        assert_eq!(rows[0].bin, "claude");
     }
 
     /// The probe shell must be INTERACTIVE as well as a login shell. pty.rs

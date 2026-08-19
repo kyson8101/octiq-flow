@@ -277,6 +277,128 @@ body {
   color: var(--fg-3);
 }
 
+/* ---- Agents page --------------------------------------------------------
+   One row per agent the app can start. A row is the button, as the shelf
+   cards are: there is one thing you come here to do. The chosen one is marked
+   by a FILL and a tick, never a bar down its left edge. */
+.agent-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+}
+
+.agent-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-row:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.agent-row.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft, rgba(120, 170, 255, 0.12));
+}
+
+/* Not installed: still listed — the page is about what the app CAN start —
+   but plainly out of reach. */
+.agent-row.is-missing {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-row-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-name {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.agent-state {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.agent-row.is-missing .agent-state {
+  color: var(--fg-3);
+  font-weight: 400;
+}
+
+.agent-bin {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--fg-2);
+}
+
+/* Truncated from the LEFT: a path is identified by its end. */
+.agent-path {
+  direction: rtl;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.agent-path-missing {
+  direction: ltr;
+}
+
+.agent-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px calc(14px + env(safe-area-inset-bottom));
+}
+
+.agent-recheck {
+  align-self: flex-start;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-recheck:hover {
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+
+.agent-note {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.agent-waiting {
+  padding: 10px 14px 0;
+}
+
 .proj-list {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -890,9 +1012,16 @@ body {
   cursor: pointer;
 }
 
-.picker-item:hover {
+.picker-item:hover:not(:disabled) {
   background: var(--bg-2);
   color: var(--fg-0);
+}
+
+/* An agent whose CLI this machine does not have. Still listed — the list is
+   what the app can drive — but plainly unavailable. */
+.picker-item:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .picker-item.is-on {

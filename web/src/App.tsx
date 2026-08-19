@@ -36,9 +36,11 @@ import {
   effortFor,
   type ModelChoice,
   type AccessLevel,
+  type Provider,
 } from "./components/Composer";
 import { Connect } from "./components/Connect";
 import { Sidebar, type Project } from "./components/Sidebar";
+import { AgentsPage, loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
@@ -116,6 +118,10 @@ export default function App() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [shelved, setShelved] = useState<Workspace[]>([]);
   const [shelfOpen, setShelfOpen] = useState(false);
+  /** Which agent CLIs this machine has. Asked once on arrival: it decides what
+   *  the model picker may offer, so it is not only the Agents page's business. */
+  const [agents, setAgents] = useState<AgentInstall[]>([]);
+  const [agentsOpen, setAgentsOpen] = useState(false);
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
@@ -280,6 +286,42 @@ export default function App() {
   }, []);
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
+
+  /** Ask the backend which agent CLIs resolve on this machine.
+   *
+   *  Fails SOFT, to an empty list: a backend too old to know this command still
+   *  has to be usable, and "we could not ask" must never read as "nothing is
+   *  installed". Everything downstream treats an empty list as "no answer" and
+   *  offers every agent, exactly as it did before this page existed. */
+  const loadAgentList = useCallback((refresh?: boolean) => {
+    loadAgents(refresh === true)
+      .then((list) => setAgents(list ?? []))
+      .catch(() => setAgents([]));
+  }, []);
+
+  useEffect(loadAgentList, [loadAgentList]);
+
+  /** The agents this machine has, or undefined while we have no answer.
+   *  Undefined and empty mean different things downstream — "could not ask" vs
+   *  "asked, has none" — so they are kept apart rather than both being []. */
+  const installed: Provider[] | undefined = useMemo(
+    () => (agents.length > 0 ? agents.filter((a) => a.installed).map((a) => a.id) : undefined),
+    [agents],
+  );
+
+  /* A saved choice can name an agent this machine does not have — you picked
+   * Codex on the laptop, and this is the desktop that never had it. Left alone
+   * it starts a chat that spawns a shell, prints "command not found" and dies,
+   * which reads as the app being broken. So the choice moves to something that
+   * is actually here. Only the PICKER moves; no chat is touched. */
+  useEffect(() => {
+    if (!installed || installed.length === 0) return;
+    if (installed.includes(choice.agent)) return;
+    const next = MODELS.find((m) => installed.includes(m.agent));
+    if (!next) return;
+    setChoice(next);
+    localStorage.setItem(CHOICE_KEY, next.id);
+  }, [installed, choice.agent]);
 
   // The chat list lives on the server, so a chat started on the phone shows up
   // on the laptop. The local copy is a cache: it paints immediately, and the
@@ -938,6 +980,22 @@ export default function App() {
     [chat.messages.length, project, startBlank, effort, choice, conversationId, tellSession],
   );
 
+  /** Picking an agent on the Agents page.
+   *
+   *  Provider and model are one choice on the command line, so choosing an
+   *  agent means choosing one of its models: its first, which is the one the
+   *  picker would show. Everything else — carrying effort across, and the fact
+   *  that a started conversation cannot change provider in place — is already
+   *  `changeModel`'s job, so this only decides WHICH row and hands it over. */
+  const pickAgent = useCallback(
+    (agent: Provider) => {
+      if (agent === choice.agent) return;
+      const first = MODELS.find((m) => m.agent === agent);
+      if (first) changeModel(first);
+    },
+    [choice.agent, changeModel],
+  );
+
   /** Changing what the agent may do starts a new agent: the mode is fixed when
    *  the process spawns, so leaving the old one running would make the pill on
    *  screen a lie about the chat in front of you. */
@@ -1041,6 +1099,13 @@ export default function App() {
           projects={workspaces}
           shelved={shelved}
           onShowShelved={() => setShelfOpen(true)}
+          onShowAgents={() => {
+            // Read through the cache on open, so the page paints at once; the
+            // page's own "Check again" is the one that asks the shell afresh.
+            loadAgentList();
+            setAgentsOpen(true);
+          }}
+          agentName={agents.find((a) => a.id === choice.agent)?.name ?? choice.name}
           conversations={grouped}
           currentProject={projectId}
           currentConversation={conversationId}
@@ -1187,6 +1252,7 @@ export default function App() {
             onStop={stop}
             busy={chat.busy}
             disabled={!project}
+            installed={installed}
             commands={(projectId && commands[projectId]) || []}
             contextTokens={chat.contextTokens}
             contextWindow={chat.contextWindow}
@@ -1235,6 +1301,19 @@ export default function App() {
           <GitPanel project={project} open={gitOpen} onClose={() => showGit(false)} />
         )}
       </div>
+
+      {agentsOpen && (
+        <AgentsPage
+          agents={agents}
+          current={choice.agent}
+          onPick={(agent) => {
+            pickAgent(agent);
+            setAgentsOpen(false);
+          }}
+          onReload={() => loadAgentList(true)}
+          onClose={() => setAgentsOpen(false)}
+        />
+      )}
 
       {shelfOpen && (
         <ShelvedProjects

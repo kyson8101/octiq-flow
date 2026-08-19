@@ -287,6 +287,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // ---- usage --------------------------------------------------------
         "usage_summary" => Ok(json!(crate::usage_limits::usage_summary())),
 
+        // ---- agents -------------------------------------------------------
+        // Which agent CLIs this machine actually has. The browser needs it for
+        // the same reason the desktop menu does: offering an agent that is not
+        // installed only produces a chat that dies on its first line.
+        "agent_installs" => Ok(json!(crate::agents::agent_installs(arg(&args, "refresh")?))),
+
         // Anything else is a command the classic desktop UI owns. Saying so
         // beats a silent null, which would look like a bug in the client.
         _ => Err(format!(
@@ -328,6 +334,26 @@ mod tests {
         assert_eq!(snake("extraDirs"), "extra_dirs");
         assert_eq!(snake("dataBase64"), "data_base64");
         assert_eq!(snake("path"), "path");
+    }
+
+    /// The browser can only call what this table lists. Registering a command
+    /// in lib.rs and forgetting this row is the whole failure mode: the desktop
+    /// window works, the phone gets "needs the desktop app", and nothing about
+    /// the code looks wrong.
+    #[test]
+    fn a_browser_can_ask_which_agents_are_installed() {
+        crate::agents::seed_probe_for_test(vec![("codex".into(), "/opt/bin/codex".into())]);
+        let svc = Services::load();
+        let out = dispatch(&svc, "agent_installs", json!({})).expect("routed");
+        let rows = out.as_array().expect("an array of agents");
+        assert_eq!(rows.len(), crate::agents::KNOWN_AGENTS.len());
+        // Every agent is named, installed or not — that IS the answer the page
+        // renders, so a missing agent must not be a missing row.
+        assert_eq!(rows[0]["id"], "claude");
+        assert_eq!(rows[0]["installed"], false);
+        assert_eq!(rows[1]["id"], "codex");
+        assert_eq!(rows[1]["installed"], true);
+        assert_eq!(rows[1]["path"], "/opt/bin/codex");
     }
 
     #[test]

@@ -21,6 +21,8 @@ export function Sidebar({
   projects,
   shelved,
   onShowShelved,
+  onShowAgents,
+  agentName,
   conversations,
   currentProject,
   currentConversation,
@@ -42,6 +44,11 @@ export function Sidebar({
   shelved: Project[];
   /** Opens the modal that lists them, which is the only way back. */
   onShowShelved: () => void;
+  /** Opens the page that says which agent CLIs this machine has. */
+  onShowAgents: () => void;
+  /** The agent new chats start with, named on the button so the current answer
+   *  is visible without opening the page. */
+  agentName: string;
   conversations: Map<string, Conversation[]>;
   currentProject: string | null;
   currentConversation: string | null;
@@ -93,6 +100,13 @@ export function Sidebar({
           Shelved · {shelved.length}
         </button>
       )}
+
+      {/* Same quiet treatment as the shelf: not what you came to the sidebar
+          for, but the only route to the page — and it names the agent in use,
+          so the answer is on screen without opening anything. */}
+      <button className="shelf-open" type="button" onClick={onShowAgents}>
+        Agent · {agentName}
+      </button>
     </nav>
   );
 }

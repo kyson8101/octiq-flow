@@ -276,6 +276,7 @@ pub fn run() {
             agents::agent_procs,
             agents::agent_kill,
             agents::available_agents,
+            agents::agent_installs,
             appearance::system_accent,
             notify_hook::notify_hook_filter,
             workspaces::list_workspaces,
