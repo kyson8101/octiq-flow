@@ -2783,6 +2783,78 @@ body {
   /* Pushes the close button to the far edge, away from the answer controls —
      a mis-tap here costs the agent its answer. */
 }
+/* The answer you already gave, so stepping back does not look like starting
+   over. A fill, never an edge stripe. */
+.qa-option.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg, #fff);
+}
+
+.qa-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* Each row goes BACK to its question rather than editing a copy of the answer:
+   the wording of the question is half the decision. */
+.qa-review {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qa-review:hover:not(:disabled) {
+  background: var(--bg-1);
+}
+
+.qa-review-q {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.qa-review-a {
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.qa-review-a.is-empty {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--fg-3);
+}
+
+.qa-submit {
+  margin-top: 4px;
+}
+
+.qa-back {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.qa-back:hover:not(:disabled) {
+  color: var(--fg-1);
+}
+
 .qa-count {
   font-size: 11px;
   color: var(--fg-3);

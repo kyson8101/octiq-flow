@@ -392,7 +392,7 @@ mod tests {
         {
             return;
         }
-        let dir = std::env::temp_dir().join("octiq-search-test");
+        let dir = std::env::temp_dir().join(format!("octiq-search-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("needle.txt"), "nothing here\n").unwrap();
@@ -430,7 +430,7 @@ mod tests {
         {
             return;
         }
-        let dir = std::env::temp_dir().join("octiq-quickopen-test");
+        let dir = std::env::temp_dir().join(format!("octiq-quickopen-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "a").unwrap();
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn resolve_path_handles_absolute_relative_tilde_and_missing() {
-        let dir = std::env::temp_dir().join("octiq-resolve-path-test");
+        let dir = std::env::temp_dir().join(format!("octiq-resolve-path-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("hit.txt");
         std::fs::write(&file, "x").unwrap();

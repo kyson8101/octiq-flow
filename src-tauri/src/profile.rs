@@ -281,7 +281,7 @@ mod tests {
     /// A fresh temp dir keyed by test name (tests share the process, so the name
     /// keeps them from colliding). Cleared first so reruns start clean.
     fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("octiq-profile-test-{name}"));
+        let dir = std::env::temp_dir().join(format!("octiq-profile-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

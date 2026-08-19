@@ -1015,27 +1015,26 @@ export default function App() {
             />
           ))}
 
-          {/* One at a time, even when several arrive together.
-              
-              An agent can ask more than one thing in a single turn — Claude
-              batches independent tool calls — and every one of them blocks. Laid
-              out all at once they read as a form to fill in, and the later ones
-              often depend on the earlier answers ("what kind of frontend work?"
-              only makes sense once you have said frontend). So the queue is
-              shown one card deep: answer it, and the next takes its place. */}
+          {/* A whole batch as ONE card.
+
+              An agent can ask several things in a single turn — Claude batches
+              independent tool calls — and every one of them blocks. Shown side
+              by side they read as a form dumped on you at once, and the later
+              ones often depend on the earlier answers. The card pages through
+              them one at a time and sends the set together. */}
           {(() => {
             const pending = conversationId ? questions[conversationId] ?? [] : [];
-            const q = pending[0];
-            if (!q) return null;
+            if (pending.length === 0) return null;
             return (
               <UserQuestion
-                key={q.id}
-                question={q}
-                position={pending.length > 1 ? { index: 1, total: pending.length } : undefined}
-                onAnswered={(id) =>
+                key={pending.map((q) => q.id).join("|")}
+                questions={pending}
+                onDone={(ids) =>
                   setQuestions((prev) => ({
                     ...prev,
-                    [conversationId!]: (prev[conversationId!] ?? []).filter((x) => x.id !== id),
+                    [conversationId!]: (prev[conversationId!] ?? []).filter(
+                      (x) => !ids.includes(x.id),
+                    ),
                   }))
                 }
               />
