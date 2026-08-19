@@ -13,6 +13,7 @@ mod agent_resume;
 mod agents;
 mod appearance;
 mod canvas;
+mod chat_index;
 mod file_watch;
 mod focus;
 mod fonts;
@@ -206,6 +207,9 @@ pub fn run() {
             agent_chat::chat_list,
             agent_chat::chat_since,
             agent_chat::chat_forget,
+            agent_chat::chat_index_list,
+            agent_chat::chat_index_save,
+            agent_chat::chat_index_remove,
             agent_chat::save_attachment,
             pty::pty_agent_running,
             pty::pty_set_visible,

@@ -750,6 +750,25 @@ pub fn save_attachment(data_base64: String, extension: String) -> Result<String,
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// The chats that exist, newest first.
+#[tauri::command]
+pub fn chat_index_list() -> Vec<crate::chat_index::ChatMeta> {
+    crate::chat_index::list()
+}
+
+/// Record a chat, or update what is known about it.
+#[tauri::command]
+pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> {
+    crate::chat_index::upsert(meta)
+}
+
+/// Forget a chat entirely — its entry in the list and its transcript.
+#[tauri::command]
+pub fn chat_index_remove(id: String, key: String) -> Result<(), String> {
+    crate::transcript::forget(&key);
+    crate::chat_index::remove(&id)
+}
+
 /// Everything a chat said after `after`.
 ///
 /// How a client catches up. It remembers the highest seq it has seen and asks

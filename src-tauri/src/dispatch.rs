@@ -164,6 +164,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
             arg(&args, "after")?,
         ))),
+        "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
+        "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
+        "chat_index_remove" => unit(crate::agent_chat::chat_index_remove(
+            arg(&args, "id")?,
+            arg(&args, "key")?,
+        )),
         "chat_forget" => {
             crate::agent_chat::chat_forget(arg(&args, "key")?);
             Ok(Value::Null)

@@ -45,6 +45,15 @@ export type Message = {
   blocks: Block[];
   /** True while the agent is still writing it. */
   streaming: boolean;
+  /** For a USER turn: the uuid of the agent's own replay of it.
+   *
+   *  A user turn reaches the screen twice by two different routes — once
+   *  optimistically when you press send, and once when the agent echoes it back
+   *  (`--replay-user-messages`). Live, the echo is redundant. Rebuilt from the
+   *  record, the echo is the ONLY copy, because the optimistic one was never
+   *  written down. Stamping the echo's uuid onto the bubble is what lets both
+   *  routes end at one message instead of two. */
+  echo?: string;
 };
 
 export type ChatState = {
@@ -282,6 +291,51 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
         stopping: false,
         stoppedAt: last?.id,
         messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+      };
+    }
+
+    // The agent echoing back what you said. Live this is redundant — the
+    // bubble is already on screen — but when a conversation is rebuilt from
+    // the record it is the only copy there is, so it has to be able to create
+    // the bubble as well as recognise it.
+    const said = content
+      .filter((c) => asStr(asObj(c).type) === "text")
+      .map((c) => asStr(asObj(c).text))
+      .join("")
+      .trim();
+    const uuid = asStr(e.uuid);
+    if (said && !content.some((c) => asStr(asObj(c).type) === "tool_result")) {
+      // Already folded in — a catch-up overlapping what we saw live.
+      if (uuid && state.messages.some((m) => m.echo === uuid)) return state;
+
+      // The optimistic bubble from pressing send, not yet claimed by an echo.
+      const mine = [...state.messages]
+        .reverse()
+        .find(
+          (m) =>
+            m.role === "user" &&
+            !m.echo &&
+            m.blocks.some((b) => b.kind === "text" && b.text.trim() === said),
+        );
+      if (mine) {
+        return {
+          ...state,
+          messages: state.messages.map((m) => (m === mine ? { ...m, echo: uuid } : m)),
+        };
+      }
+      // Nothing to claim: this is a rebuild, so the echo becomes the message.
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: uuid || `u${state.messages.length}`,
+            role: "user",
+            blocks: [{ kind: "text", text: said }],
+            streaming: false,
+            echo: uuid,
+          },
+        ],
       };
     }
 

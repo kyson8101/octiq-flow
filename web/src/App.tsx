@@ -194,6 +194,47 @@ export default function App() {
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
 
+  // The chat list lives on the server, so a chat started on the phone shows up
+  // on the laptop. The local copy is a cache: it paints immediately, and the
+  // server's answer replaces it a moment later. Messages are NOT here — they
+  // are replayed from each chat's transcript when it is opened.
+  useEffect(() => {
+    bridge
+      .invoke<
+        {
+          id: string;
+          projectId: string;
+          title: string;
+          sessionId?: string;
+          modelId?: string;
+          access?: string;
+          createdAt: number;
+          updatedAt: number;
+        }[]
+      >("chat_index_list")
+      .then((remote) => {
+        if (!remote) return;
+        setConversations((local) => {
+          const byId = new Map(local.map((c) => [c.id, c]));
+          const merged = remote.map((r) => {
+            const cached = byId.get(r.id);
+            return {
+              ...r,
+              permission: r.access ?? cached?.permission,
+              // Keep the cached messages so the chat opens instantly; the
+              // transcript tops it up on open. A chat this device has never
+              // seen has none, and replays in full.
+              messages: cached?.messages ?? [],
+              seq: cached?.seq,
+            } as Conversation;
+          });
+          saveConversations(merged);
+          return merged;
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   // Adopt whatever is already running on the server. This is what the
   // conversation-derived key buys: a chat left working when the browser was
   // closed — or open in another tab — is recognised as belonging to a
@@ -330,6 +371,7 @@ export default function App() {
       setConversations((prev) => {
         let list = prev;
         let touched = false;
+        const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
           const info = meta.current[id];
           if (!info || s.messages.length === 0) continue;
@@ -350,10 +392,30 @@ export default function App() {
             seq: seen.current[keyFor(id)] ?? before?.seq,
           };
           list = [next, ...list.filter((c) => c.id !== id)];
+          changedIds.add(id);
           touched = true;
         }
         if (!touched) return prev;
         saveConversations(list);
+        // And to the server, so every device sees this chat exists. Metadata
+        // only — the messages are already in the transcript.
+        for (const c of list) {
+          if (!changedIds.has(c.id)) continue;
+          bridge
+            .invoke("chat_index_save", {
+              meta: {
+                id: c.id,
+                projectId: c.projectId,
+                title: c.title,
+                sessionId: c.sessionId ?? null,
+                modelId: c.modelId ?? null,
+                access: c.permission ?? null,
+                createdAt: c.createdAt,
+                updatedAt: c.updatedAt,
+              },
+            })
+            .catch(() => {});
+        }
         return list;
       });
     }, 700);
@@ -522,7 +584,7 @@ export default function App() {
       endSession(id);
       // The record on the server goes as well — the point of deleting a chat
       // is that it is gone, not that it is hidden on this device.
-      bridge.invoke("chat_forget", { key: keyFor(id) }).catch(() => {});
+      bridge.invoke("chat_index_remove", { id, key: keyFor(id) }).catch(() => {});
       delete seen.current[keyFor(id)];
       setConversations((prev) => {
         const list = prev.filter((c) => c.id !== id);
