@@ -463,6 +463,11 @@ fn serve_v2(rel: &str) -> Response {
         Some("svg") => "image/svg+xml",
         Some("png") => "image/png",
         Some("woff2") => "font/woff2",
+        // A manifest served as octet-stream is ignored rather than used, which
+        // is how the app would fail to install to a home screen while every
+        // file still returned 200.
+        Some("webmanifest") => "application/manifest+json",
+        Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
     };
 
@@ -529,6 +534,28 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
     }
 }
 
+/// Whether this request reached us through a reverse proxy.
+///
+/// The peer address stops meaning anything the moment something sits in front:
+/// `cloudflared` runs on this machine and connects to 127.0.0.1, so a request
+/// from the other side of the planet arrives looking exactly like a browser on
+/// this desk. Anything deciding trust from the peer address has to ask this
+/// first.
+///
+/// Presence is what matters, not the value — these headers can say anything,
+/// and none of them is here at all on a request that really came straight from
+/// a local browser.
+fn came_through_a_proxy(headers: &axum::http::HeaderMap) -> bool {
+    const FORWARDED: [&str; 5] = [
+        "cf-connecting-ip",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-real-ip",
+        "forwarded",
+    ];
+    FORWARDED.iter().any(|h| headers.contains_key(*h))
+}
+
 /// Hand the token to a browser running on THIS machine.
 ///
 /// A request from 127.0.0.1 already comes from something with the run of the
@@ -539,8 +566,12 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
 async fn token_handler(
     AxumState(ctx): AxumState<Ctx>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
-    if !peer.ip().is_loopback() {
+    // Order matters: the proxy check comes FIRST, because a forwarded request
+    // passes the loopback test. Exposing this through a tunnel without it would
+    // publish the token to anyone who asked for it.
+    if came_through_a_proxy(&headers) || !peer.ip().is_loopback() {
         return (StatusCode::FORBIDDEN, "not local").into_response();
     }
     let token = ctx
@@ -755,4 +786,37 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 
     pump.abort();
     crate::bus::client_left();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::came_through_a_proxy;
+
+    #[test]
+    fn a_request_forwarded_by_a_proxy_is_not_treated_as_local() {
+        // cloudflared runs on this machine and connects to 127.0.0.1, so every
+        // request through a tunnel arrives with a loopback peer address.
+        // Trusting that address would hand the token to the whole internet.
+        for header in [
+            "cf-connecting-ip",
+            "x-forwarded-for",
+            "x-forwarded-host",
+            "x-real-ip",
+            "forwarded",
+        ] {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(header, "203.0.113.7".parse().unwrap());
+            assert!(
+                came_through_a_proxy(&headers),
+                "{header} should mark the request as forwarded"
+            );
+        }
+    }
+
+    #[test]
+    fn a_direct_request_carries_no_proxy_headers() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("user-agent", "curl".parse().unwrap());
+        assert!(!came_through_a_proxy(&headers));
+    }
 }

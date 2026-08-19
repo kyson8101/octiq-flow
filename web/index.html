@@ -7,6 +7,23 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#1c1c1e" />
+
+    <!-- Relative hrefs, like the asset URLs: `base: "./"` in vite.config.ts is
+         there because the same bundle is served at / and under /v2/. An absolute
+         /favicon.ico would 404 under the prefix, which is what it was doing. -->
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" href="./icon-32.png" sizes="32x32" />
+
+    <!-- Reached from a phone through a tunnel, so it is meant to be added to a
+         home screen. iOS reads none of the manifest for that: it wants its own
+         icon, and it composites transparency onto black, so this one is already
+         flattened onto the app's own background. -->
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="OctiqFlow" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+
     <title>OctiqFlow</title>
   </head>
   <body>
