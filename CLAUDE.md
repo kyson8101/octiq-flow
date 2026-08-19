@@ -21,17 +21,40 @@ streams back as `pty-output` events and renders in xterm.js.
 Run everything from the repo root. **Rust + Node + pnpm are required.**
 
 ```bash
-pnpm install            # install the Tauri CLI (only JS dependency)
-pnpm tauri dev          # dev window with hot reload
-pnpm tauri build        # release: compiles Rust, bundles .app + .dmg
+pnpm install                                  # the Tauri CLI (only root JS dependency)
+pnpm --dir web build                          # the client → web/dist
+cd src-tauri && cargo build --release --bin octiq-server   # the backend
+./scripts/install-service.sh                  # install + restart the launchd service
+pnpm tauri dev                                # desktop window, only if you want one
 ```
 
-- **Releasing** is done by the `/ship` skill (commit → `npm run tauri build` →
-  print the `.dmg` folder). It never pushes, signs, or notarizes; builds are
-  unsigned, so macOS Gatekeeper warns on first open.
+- **Deploying** is done by the `/ship` skill (commit → test → build the client
+  AND `octiq-server` → ask, then restart the service → print the URL). It never
+  pushes, signs, or notarizes.
+- **The desktop app is no longer the product.** OctiqFlow ships as a headless
+  server plus a browser client; `pnpm tauri build` (`.app` + `.dmg`) still
+  works but is not part of the deploy path. The client is served at the **root**
+  (`http://127.0.0.1:1421/?token=…`); `/v2/` still answers for saved links.
+- **The two halves deploy separately, and that bites.** `web/dist` is read off
+  disk at runtime, so a client build reaches the browser on the next reload with
+  no restart — while the backend only changes when the service restarts. A
+  client-only deploy leaves a new page calling commands an old binary does not
+  have, which fails as `'<cmd>' is not available from a browser — it needs the
+  desktop app`. Ship both.
+- **Restarting the service stops every live agent chat.** `install-service.sh`
+  boots the launchd job out and back in; every `claude -p` / `codex exec` the
+  server owns dies with it. Transcripts survive and can be resumed; the running
+  turns cannot. Ask before doing it.
 - **Rust tests** (inline `#[cfg(test)]` in several modules): `cd src-tauri &&
-  cargo test`. There is **no JS/frontend test runner** — the web UI has no
-  automated tests.
+  cargo test`.
+- **Web tests**: `cd web && pnpm test` (vitest, node environment, no jsdom).
+  These cover `web/src/lib/` pure logic only — chiefly the `chat.ts` reducer,
+  replayed against **real captured agent streams** in
+  `web/src/lib/__fixtures__/*.jsonl`. Those fixtures are verbatim
+  `claude -p --output-format stream-json` output; re-record them with the same
+  flag set `build_command` uses (`agent_chat.rs`), never hand-edit them. There
+  is still no test runner for the vanilla-JS `src/` UI and no component
+  rendering tests anywhere.
 - **Format**: `cd src-tauri && cargo fmt`. There are no eslint/prettier/rustfmt
   config files; defaults apply.
 
