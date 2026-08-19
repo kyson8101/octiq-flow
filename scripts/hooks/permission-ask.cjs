@@ -44,26 +44,30 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 
+/* The one tool this hook APPROVES outright.
+ *
+ * Abstaining is not the same as allowing, and the difference matters here.
+ * Abstain means "no opinion", so the call falls through to the deny rules,
+ * the allow rules and the permission mode — and in plan mode, which is what
+ * "Read only" maps to, that is a denial. The agent then reports that it could
+ * not ask, and falls back to asking in prose.
+ *
+ * So the tool whose entire purpose is putting a question in front of the user
+ * has to be approved here, at the only step that runs before the mode.
+ */
+const ALWAYS_ALLOW = new Set(["mcp__octiq__ask_user"]);
+
 /* Tools this hook has no opinion about.
  *
- * PreToolUse runs BEFORE deny rules, allow rules and the permission mode — the
- * docs are explicit that hooks come first — so `--allowedTools` cannot exempt
- * anything from it. Abstaining here is the only way to let a tool through to
- * the policy the user actually chose.
- *
- * Two kinds are listed:
- *
- *   · ask_user itself. Asking permission to ask a question is absurd on its
- *     face, and worse, it costs the user two taps to answer one question.
- *   · Tools that only look. They change nothing, they are most of what an
- *     agent does, and a prompt for each would train someone to tap Allow
- *     without reading — which is the failure this whole feature exists to
- *     prevent.
+ * These only look. They change nothing, they are most of what an agent does,
+ * and a prompt for each would train someone to tap Allow without reading —
+ * the exact failure this feature exists to prevent. Abstaining is right for
+ * them because every permission mode already allows reading; there is nothing
+ * for this hook to add.
  *
  * Anything that writes, runs, or reaches outside is deliberately NOT here.
  */
 const NO_OPINION = new Set([
-  "mcp__octiq__ask_user",
   "ToolSearch",
   "Read",
   "Glob",
@@ -71,6 +75,7 @@ const NO_OPINION = new Set([
   "NotebookRead",
   "TodoWrite",
 ]);
+
 
 /** Give up and let the agent carry on as if this hook did not exist. */
 function noOpinion() {
@@ -142,6 +147,19 @@ async function main() {
   }
 
   if (NO_OPINION.has(input.tool_name)) noOpinion();
+
+  if (ALWAYS_ALLOW.has(input.tool_name)) {
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          permissionDecisionReason: "asking the user is what OctiqFlow is for",
+        },
+      }),
+    );
+    process.exit(0);
+  }
 
   let cfg;
   try {
