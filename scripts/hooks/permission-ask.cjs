@@ -44,6 +44,34 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 
+/* Tools this hook has no opinion about.
+ *
+ * PreToolUse runs BEFORE deny rules, allow rules and the permission mode — the
+ * docs are explicit that hooks come first — so `--allowedTools` cannot exempt
+ * anything from it. Abstaining here is the only way to let a tool through to
+ * the policy the user actually chose.
+ *
+ * Two kinds are listed:
+ *
+ *   · ask_user itself. Asking permission to ask a question is absurd on its
+ *     face, and worse, it costs the user two taps to answer one question.
+ *   · Tools that only look. They change nothing, they are most of what an
+ *     agent does, and a prompt for each would train someone to tap Allow
+ *     without reading — which is the failure this whole feature exists to
+ *     prevent.
+ *
+ * Anything that writes, runs, or reaches outside is deliberately NOT here.
+ */
+const NO_OPINION = new Set([
+  "mcp__octiq__ask_user",
+  "ToolSearch",
+  "Read",
+  "Glob",
+  "Grep",
+  "NotebookRead",
+  "TodoWrite",
+]);
+
 /** Give up and let the agent carry on as if this hook did not exist. */
 function noOpinion() {
   process.exit(0);
@@ -112,6 +140,8 @@ async function main() {
   } catch {
     noOpinion();
   }
+
+  if (NO_OPINION.has(input.tool_name)) noOpinion();
 
   let cfg;
   try {
