@@ -557,6 +557,44 @@ body {
   word-break: break-word;
 }
 
+/* ---- Subagents -------------------------------------------------------- */
+/* A Task card is not a tool call that returned a value — it holds another
+   agent's whole transcript — so it is marked as its own thing. */
+.tool-agent {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+/* A description is prose, and prose is read from its start. Only the shared
+   rule's path-truncation wants the other end. */
+.tool-agent .tool-detail {
+  direction: ltr;
+}
+
+.tool-steps {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+
+/* The subagent's own working. Indented behind a rule, because its tool cards
+   look exactly like the ones outside it and there would otherwise be nothing
+   on screen saying which agent ran them. */
+.subagent {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-left: 3px;
+  padding: 4px 0 4px 11px;
+  border-left: 2px solid var(--border);
+}
+
+/* Nested cards sit ON a card, so they need a shade of their own to read as
+   separate rather than as more of the same panel. */
+.subagent .tool {
+  background: var(--bg-0);
+}
+
 /* ---- Working indicator ------------------------------------------------ */
 .dots {
   width: 22px;

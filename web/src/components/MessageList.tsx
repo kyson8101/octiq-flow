@@ -3,6 +3,13 @@
 // Each assistant message is a stack of blocks in the order the agent produced
 // them: prose, the tool calls it made along the way, more prose. Thinking is
 // folded away — it is long, and it is not the answer.
+//
+// A subagent's messages are not part of that stack. They belong to the Task
+// call that started them, and they are drawn INSIDE its card — so they are
+// lifted out of the conversation here and handed to the card by id. The
+// alternative, which is what this did before it knew about them, is a reply
+// where a subagent's thinking, tool calls and prose all read as the main
+// agent's own.
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown from "react-markdown";
@@ -131,11 +138,61 @@ const MarkdownBlock = memo(function MarkdownBlock({
   );
 });
 
-function BlockView({ block, animate }: { block: Block; animate?: boolean }) {
+/** Subagent messages, by the `tool_use` id of the Task call that owns them. */
+type Kids = Map<string, Message[]>;
+
+function BlockView({ block, animate, kids }: { block: Block; animate?: boolean; kids: Kids }) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "thinking") return <Thinking text={block.text} />;
   if (block.kind === "compacted") return <Compacted />;
-  return <ToolCard tool={block} />;
+  const own = kids.get(block.id);
+  return (
+    <ToolCard
+      tool={block}
+      agent={own?.length ? { steps: own.length, body: <SubAgent messages={own} kids={kids} /> } : undefined}
+    />
+  );
+}
+
+/** A subagent's own working, shown inside the card that started it.
+ *
+ *  The same blocks as any reply — prose, thinking, its own tool cards, and its
+ *  own subagents if it started any. Not grouped into turns and not labelled with
+ *  a role: it is one agent working through one job, and the card above it
+ *  already says whose job. */
+function SubAgent({ messages, kids }: { messages: Message[]; kids: Kids }) {
+  const blocks = messages.flatMap((m) => m.blocks);
+  const streaming = messages.some((m) => m.streaming);
+  return (
+    <div className="subagent">
+      {blocks.map((block, i) => (
+        <BlockView
+          key={i}
+          block={block}
+          animate={streaming && i === blocks.length - 1}
+          kids={kids}
+        />
+      ))}
+      {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
+    </div>
+  );
+}
+
+/** A turn's messages plus every subagent message underneath them.
+ *
+ *  For the file list, which asks what this turn touched — and a file a subagent
+ *  edited was still edited by this turn. Nothing else wants this: the reply on
+ *  screen, and the text the copy button takes, are the main agent's alone. */
+function withDescendants(messages: Message[], kids: Kids): Message[] {
+  const out: Message[] = [];
+  const walk = (list: Message[]) => {
+    for (const m of list) {
+      out.push(m);
+      for (const b of m.blocks) if (b.kind === "tool") walk(kids.get(b.id) ?? []);
+    }
+  };
+  walk(messages);
+  return out;
 }
 
 /** Where the agent summarised its own history to make room.
@@ -161,11 +218,13 @@ function Compacted() {
  *  single turn, so the label appears once and the blocks flow in order. */
 function TurnView({
   messages,
+  kids,
   stopped,
   cwd,
   busy,
 }: {
   messages: Message[];
+  kids: Kids;
   stopped?: boolean;
   cwd?: string;
   /** Whether the chat is working. A turn can only be waiting its turn while
@@ -200,7 +259,7 @@ function TurnView({
       {role === "assistant" && <div className="msg-role">Claude</div>}
       <div className="msg-body">
         {blocks.map((block, i) => (
-          <BlockView key={i} block={block} animate={streaming && i === blocks.length - 1} />
+          <BlockView key={i} block={block} animate={streaming && i === blocks.length - 1} kids={kids} />
         ))}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
@@ -210,7 +269,7 @@ function TurnView({
         {/* Only once the turn is done: a list that grows while the agent is
             still working would rearrange itself under the reader. */}
         {role === "assistant" && !streaming && cwd !== undefined && (
-          <FileList messages={messages} cwd={cwd} />
+          <FileList messages={withDescendants(messages, kids)} cwd={cwd} />
         )}
       </div>
     </article>
@@ -396,13 +455,32 @@ export function MessageList({
   // Setting `scrollTop` moves this one element and nothing else, and the
   // observer already fires on every height change the stream produces.
 
+  // The conversation, minus the subagents — and the subagents, filed under the
+  // Task call each one belongs to. A subagent message never appears at this
+  // level: it is drawn inside that card, by `BlockView`.
+  const { turns, kids } = useMemo(() => {
+    const kids: Kids = new Map();
+    const top: Message[] = [];
+    for (const m of messages) {
+      if (!m.parent) {
+        top.push(m);
+        continue;
+      }
+      const own = kids.get(m.parent);
+      if (own) own.push(m);
+      else kids.set(m.parent, [m]);
+    }
+    return { turns: groupTurns(top), kids };
+  }, [messages]);
+
   return (
     <div className="msgs" ref={scrollerRef}>
       <div className="msgs-inner" ref={innerRef}>
-        {groupTurns(messages).map((turn) => (
+        {turns.map((turn) => (
           <TurnView
             key={turn[0].id}
             messages={turn}
+            kids={kids}
             stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
             cwd={cwd}
             busy={busy}

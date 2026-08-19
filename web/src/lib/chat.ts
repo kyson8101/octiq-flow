@@ -21,6 +21,18 @@
 // Streaming is what the UI renders, so a message already built from
 // stream_event ignores the whole `assistant` copy that follows. The copy is
 // still the fallback for an agent (or a version) that sends no partials.
+//
+// ## Subagents
+//
+// A subagent — the `Task` tool — writes on this SAME stream. Its events are
+// ordinary `assistant` / `user` / `stream_event` objects, told apart only by
+// `parent_tool_use_id`: the id of the Task call that started it. Ignore that
+// field and its work reads as the main agent's own, and two subagents running
+// at once interleave into one bubble, because "the message being written" is
+// no longer a single thing.
+//
+// So every message records the parent it came from, and every question about
+// what is currently being written is asked per parent.
 
 export type ToolState = "running" | "done" | "error";
 
@@ -58,6 +70,10 @@ export type Message = {
    *  written down. Stamping the echo's uuid onto the bubble is what lets both
    *  routes end at one message instead of two. */
   echo?: string;
+  /** The `tool_use` id of the Task call that owns this message, when a SUBAGENT
+   *  wrote it. Undefined for the main agent — which is most messages, and the
+   *  whole conversation when nothing has spawned one. */
+  parent?: string;
 };
 
 export type ChatState = {
@@ -214,12 +230,27 @@ function appendText(blocks: Block[], kind: "text" | "thinking", text: string): B
   return [...blocks, { kind, text } as Block];
 }
 
-/** The message being written, or a fresh one. A `stream_event` can arrive
- *  before `message_start` in principle, so this never assumes one exists. */
-function withCurrent(state: ChatState, fn: (m: Message) => Message): ChatState {
-  const idx = state.messages.map((m) => m.streaming).lastIndexOf(true);
+/** The message being written BY THIS WRITER, or a fresh one. A `stream_event`
+ *  can arrive before `message_start` in principle, so this never assumes one
+ *  exists.
+ *
+ *  Keyed on the parent, because "the last streaming message" is not one thing
+ *  once subagents are running: two of them stream at the same time, and the
+ *  main agent's own half-written message is still sitting above both. */
+function withCurrent(
+  state: ChatState,
+  parent: string | undefined,
+  fn: (m: Message) => Message,
+): ChatState {
+  const idx = state.messages.map((m) => m.streaming && m.parent === parent).lastIndexOf(true);
   if (idx < 0) {
-    const seeded: Message = { id: `m${state.messages.length}`, role: "assistant", blocks: [], streaming: true };
+    const seeded: Message = {
+      id: `m${state.messages.length}`,
+      role: "assistant",
+      blocks: [],
+      streaming: true,
+      parent,
+    };
     return { ...state, messages: [...state.messages, fn(seeded)] };
   }
   const next = [...state.messages];
@@ -231,6 +262,16 @@ function withCurrent(state: ChatState, fn: (m: Message) => Message): ChatState {
 export function reduceChat(state: ChatState, raw: unknown): ChatState {
   const e = asObj(raw);
   const type = asStr(e.type);
+  // Which writer this event belongs to: a Task call's id when a subagent wrote
+  // it, nothing when the main agent did.
+  const parent = asStr(e.parent_tool_use_id) || undefined;
+
+  // A subagent has its own session, its own model and its own status line, and
+  // none of them are this conversation's. Reporting them here is how a Task
+  // running Haiku used to rewrite the model label and the context meter for a
+  // conversation that was still on Opus. Its work still shows — as the
+  // messages below, nested in the card that started it.
+  if (parent && (type === "system" || type === "result")) return state;
 
   if (type === "system") {
     const subtype = asStr(e.subtype);
@@ -312,7 +353,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     return next;
   }
 
-  if (type === "stream_event") return reduceStream(state, asObj(e.event));
+  if (type === "stream_event") return reduceStream(state, asObj(e.event), parent);
 
   if (type === "assistant") {
     const msg = asObj(e.message);
@@ -327,12 +368,16 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     // real turn, 621,309 reported against 90,995 actually held — a new session
     // reading 67% full. The newest message alone is the size of the
     // conversation right now.
-    const used = contextFrom(msg.usage);
+    //
+    // From the MAIN agent only. A subagent holds a context of its own, usually
+    // a fraction of this one, and often on a different model — taking either
+    // from it describes a conversation nobody is having.
+    const used = parent ? undefined : contextFrom(msg.usage);
     if (used) state = { ...state, contextTokens: used };
     // Every assistant message names the model that wrote it, which is how a
     // mid-session `/model sonnet` becomes visible: init reported the model the
     // session STARTED on, and that is no longer the truth.
-    if (asStr(msg.model) && asStr(msg.model) !== state.model) {
+    if (!parent && asStr(msg.model) && asStr(msg.model) !== state.model) {
       state = { ...state, model: asStr(msg.model) };
     }
     if (aborted && state.messages.some((m) => m.id === id)) {
@@ -368,12 +413,21 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     if (!blocks.length) return state;
     return {
       ...state,
-      messages: [...state.messages, { id: id || `m${state.messages.length}`, role: "assistant", blocks, streaming: false }],
+      messages: [
+        ...state.messages,
+        { id: id || `m${state.messages.length}`, role: "assistant", blocks, streaming: false, parent },
+      ],
     };
   }
 
   if (type === "user") {
     const content = asArr(asObj(e.message).content);
+
+    // A subagent's user turns are not the user's. Its opening prompt is one —
+    // the main agent wrote it, and it is already on screen as the Task call's
+    // arguments — so a subagent only ever contributes tool results here, and
+    // the whole bubble path below is skipped.
+    if (parent) return foldToolResults(state, content);
 
     // The interrupt marker is the agent telling us the turn was cut short. Show
     // it as a state of that turn, not as a message the user typed.
@@ -433,34 +487,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
       };
     }
 
-    // Tool results come back as a user turn too. They belong ON the tool block
-    // that asked for them, not as a message of their own — that is the
-    // difference between a chat UI and a log.
-    let next = state;
-    for (const c of content) {
-      const block = asObj(c);
-      if (asStr(block.type) !== "tool_result") continue;
-      const toolId = asStr(block.tool_use_id);
-      const isError = block.is_error === true;
-      const text =
-        typeof block.content === "string"
-          ? block.content
-          : asArr(block.content)
-              .map((p) => asStr(asObj(p).text))
-              .join("");
-      next = {
-        ...next,
-        messages: next.messages.map((m) => ({
-          ...m,
-          blocks: m.blocks.map((b) =>
-            b.kind === "tool" && b.id === toolId
-              ? { ...b, result: text, state: isError ? "error" : "done" }
-              : b,
-          ),
-        })),
-      };
-    }
-    return next;
+    return foldToolResults(state, content);
   }
 
   if (type === "result") {
@@ -501,7 +528,42 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   return state;
 }
 
-function reduceStream(state: ChatState, ev: Json): ChatState {
+/** Put tool results ON the tool block that asked for them.
+ *
+ *  They arrive as a user turn, but they belong to the card, not to a message of
+ *  their own — that is the difference between a chat UI and a log. Every
+ *  message is searched rather than just the last one: a `tool_use` id is
+ *  unique, so a subagent's result lands on the subagent's own card wherever it
+ *  sits, and the main agent's on the main agent's. */
+function foldToolResults(state: ChatState, content: unknown[]): ChatState {
+  let next = state;
+  for (const c of content) {
+    const block = asObj(c);
+    if (asStr(block.type) !== "tool_result") continue;
+    const toolId = asStr(block.tool_use_id);
+    const isError = block.is_error === true;
+    const text =
+      typeof block.content === "string"
+        ? block.content
+        : asArr(block.content)
+            .map((p) => asStr(asObj(p).text))
+            .join("");
+    next = {
+      ...next,
+      messages: next.messages.map((m) => ({
+        ...m,
+        blocks: m.blocks.map((b) =>
+          b.kind === "tool" && b.id === toolId
+            ? { ...b, result: text, state: isError ? "error" : "done" }
+            : b,
+        ),
+      })),
+    };
+  }
+  return next;
+}
+
+function reduceStream(state: ChatState, ev: Json, parent: string | undefined): ChatState {
   switch (asStr(ev.type)) {
     case "message_start": {
       const id = asStr(asObj(ev.message).id) || `m${state.messages.length}`;
@@ -509,14 +571,14 @@ function reduceStream(state: ChatState, ev: Json): ChatState {
       return {
         ...state,
         busy: true,
-        messages: [...state.messages, { id, role: "assistant", blocks: [], streaming: true }],
+        messages: [...state.messages, { id, role: "assistant", blocks: [], streaming: true, parent }],
       };
     }
 
     case "content_block_start": {
       const block = asObj(ev.content_block);
       const kind = asStr(block.type);
-      return withCurrent(state, (m) => {
+      return withCurrent(state, parent, (m) => {
         if (kind === "tool_use") {
           return {
             ...m,
@@ -542,15 +604,15 @@ function reduceStream(state: ChatState, ev: Json): ChatState {
       const delta = asObj(ev.delta);
       const kind = asStr(delta.type);
       if (kind === "text_delta") {
-        return withCurrent(state, (m) => ({ ...m, blocks: appendText(m.blocks, "text", asStr(delta.text)) }));
+        return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "text", asStr(delta.text)) }));
       }
       if (kind === "thinking_delta") {
-        return withCurrent(state, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
+        return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
       }
       if (kind === "input_json_delta") {
         // A tool's arguments stream in as JSON text. Kept raw until the block
         // closes: half a JSON document does not parse.
-        return withCurrent(state, (m) => {
+        return withCurrent(state, parent, (m) => {
           const at = m.blocks.map((b) => b.kind).lastIndexOf("tool");
           if (at < 0) return m;
           const blocks = [...m.blocks];
@@ -564,7 +626,7 @@ function reduceStream(state: ChatState, ev: Json): ChatState {
     }
 
     case "content_block_stop": {
-      return withCurrent(state, (m) => ({
+      return withCurrent(state, parent, (m) => ({
         ...m,
         blocks: m.blocks.map((b) => {
           if (b.kind !== "tool" || b.args !== undefined || !b.argsJson) return b;
@@ -578,7 +640,15 @@ function reduceStream(state: ChatState, ev: Json): ChatState {
     }
 
     case "message_stop":
-      return { ...state, messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)) };
+      // This writer's message, not everyone's. Ending them all was what let the
+      // first subagent to finish close the bubble a second one was still
+      // writing into, sending the rest of its reply to a fresh bubble below.
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.streaming && m.parent === parent ? { ...m, streaming: false } : m,
+        ),
+      };
 
     default:
       return state;
