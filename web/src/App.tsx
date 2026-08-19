@@ -17,7 +17,7 @@
 // Chats run in PARALLEL. Switching to another one does not stop the one you
 // leave — its answer arrives, folds into its own transcript, and is saved,
 // whether or not it is the chat on screen.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./lib/chat";
 import {
@@ -47,6 +47,13 @@ import { PermissionAsk, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { useConfirm } from "./components/Confirm";
 
+/** The editor and its text-editing engine are a third of the app's code and
+ *  nobody who only ever chats should download them. Split off here, they arrive
+ *  the first time someone taps Files. */
+const EditorMode = lazy(() =>
+  import("./components/EditorMode").then((m) => ({ default: m.EditorMode })),
+);
+
 type Workspace = Project & { paths?: string[]; shelved?: boolean; description?: string };
 
 /** The process key for a conversation. Derived from the conversation id rather
@@ -68,6 +75,12 @@ const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 const TERM_KEY = "octiq.v2.terminalOpen";
 const GIT_KEY = "octiq.v2.gitOpen";
+const MODE_KEY = "octiq.v2.mode";
+
+/** The two top-level views. Chat is the conversation about the code; the editor
+ *  is the code. They share the project sidebar and the connection, and neither
+ *  stops when you look at the other. */
+type Mode = "chat" | "editor";
 
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
@@ -80,6 +93,13 @@ export default function App() {
   // The conversations with a live agent process behind them.
   const [running, setRunning] = useState<Set<string>>(() => new Set());
   const [drawer, setDrawer] = useState(false);
+  const [mode, setMode] = useState<Mode>(() =>
+    localStorage.getItem(MODE_KEY) === "editor" ? "editor" : "chat",
+  );
+  // Once the editor has been opened it stays MOUNTED behind the chat, hidden
+  // rather than unmounted. Its open files hold unsaved drafts, and a tap on
+  // "Chat" is not a decision to throw them away.
+  const [editorSeen, setEditorSeen] = useState(() => localStorage.getItem(MODE_KEY) === "editor");
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [conversationId, setConversationId] = useState<string | null>(null);
   // Which project's settings are open: an id, "new" while creating one, or
@@ -148,6 +168,12 @@ export default function App() {
   const seen = useRef<Record<string, number>>({});
 
   const confirm = useConfirm();
+
+  const pickMode = useCallback((next: Mode) => {
+    setMode(next);
+    if (next === "editor") setEditorSeen(true);
+    localStorage.setItem(MODE_KEY, next);
+  }, []);
 
   useEffect(() => bridge.onState(setConn), []);
 
@@ -855,6 +881,41 @@ export default function App() {
             its own, next to the project a new chat would belong to — a second
             one up here only raises the question of which project it means. */}
         <div className="topbar-title">{project?.name ?? "OctiqFlow"}</div>
+        {/* Marked by a filled pill, not an edge stripe: on a 48px-tall bar a
+            thin marker is a thing you squint at.
+
+            The words are dropped on a phone and the icons carry it, because the
+            usage pill to the right of this is wide and something has to give —
+            and a project name squeezed down to "o.." tells you less than an
+            icon does. */}
+        <div className="mode-switch" role="group" aria-label="View">
+          <button
+            className={`mode-btn ${mode === "chat" ? "is-on" : ""}`}
+            type="button"
+            aria-pressed={mode === "chat"}
+            aria-label="Chat"
+            title="Chat"
+            onClick={() => pickMode("chat")}
+          >
+            <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.6-4.7A8.4 8.4 0 0 1 3.6 11 8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z" />
+            </svg>
+            <span className="mode-label">Chat</span>
+          </button>
+          <button
+            className={`mode-btn ${mode === "editor" ? "is-on" : ""}`}
+            type="button"
+            aria-pressed={mode === "editor"}
+            aria-label="Files"
+            title="Files"
+            onClick={() => pickMode("editor")}
+          >
+            <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m8 17-4-5 4-5M16 7l4 5-4 5" />
+            </svg>
+            <span className="mode-label">Files</span>
+          </button>
+        </div>
         <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
         <Usage />
       </header>
@@ -879,7 +940,7 @@ export default function App() {
           onNewProject={() => setSettingsFor("new")}
         />
 
-        <main className="main">
+        <main className="main" hidden={mode !== "chat"}>
           {chat.messages.length === 0 ? (
             <div className="hero">
               <h1 className="hero-title">
@@ -1020,8 +1081,18 @@ export default function App() {
           )}
         </main>
 
-        {/* A sibling of <main>, not something laid over it: the chat gives up
-            width while this is open and takes it straight back when it closes. */}
+        {editorSeen && (
+          <div className="ws-host" hidden={mode !== "editor"}>
+            <Suspense fallback={<div className="dots" aria-label="loading" />}>
+              <EditorMode project={project} />
+            </Suspense>
+          </div>
+        )}
+
+        {/* A sibling of the views, not something laid over them: whichever view
+            is showing gives up width while this is open and takes it straight
+            back when it closes. It sits beside the editor too — reading a diff
+            next to the file it belongs to is the whole point. */}
         {gitOpen && <GitPanel project={project} onClose={() => showGit(false)} />}
       </div>
 
