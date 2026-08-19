@@ -245,6 +245,45 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "answer")?,
         ))),
 
+        // ---- git ----------------------------------------------------------
+        // No `_impl` split needed: git.rs and git_ops.rs never touch an
+        // AppHandle or managed state, so their `#[tauri::command]` functions are
+        // already plain functions and both callers share one body.
+        "git_status_summary" => to_value(crate::git::git_status_summary(arg(&args, "paths")?)),
+        "git_changed_files" => to_value(crate::git::git_changed_files(arg(&args, "paths")?)),
+        "git_file_diff" => to_value(crate::git::git_file_diff(
+            arg(&args, "root")?,
+            arg(&args, "file")?,
+            arg(&args, "untracked")?,
+            arg(&args, "oldPath")?,
+        )),
+        "git_local_branches" => to_value(crate::git::git_local_branches(arg(&args, "path")?)),
+
+        // Writes. Reachable from a browser, deliberately — doing this from a
+        // phone is the point of v2. Each is one git invocation whose own output
+        // is handed back verbatim rather than summarised away.
+        "git_commit" => to_value(crate::git_ops::git_commit(
+            arg(&args, "root")?,
+            arg(&args, "files")?,
+            arg(&args, "message")?,
+        )),
+        "git_push" => to_value(crate::git_ops::git_push(arg(&args, "root")?)),
+        "git_pull" => to_value(crate::git_ops::git_pull(
+            arg(&args, "root")?,
+            arg(&args, "mode")?,
+        )),
+        "git_switch_branch" => to_value(crate::git_ops::git_switch_branch(
+            arg(&args, "root")?,
+            arg(&args, "branch")?,
+        )),
+
+        // ---- finding files ------------------------------------------------
+        "search_files" => to_value(crate::fsbrowse::search_files(
+            arg(&args, "roots")?,
+            arg(&args, "query")?,
+        )),
+        "list_project_files" => to_value(crate::fsbrowse::list_project_files(arg(&args, "roots")?)),
+
         // ---- usage --------------------------------------------------------
         "usage_summary" => Ok(json!(crate::usage_limits::usage_summary())),
 

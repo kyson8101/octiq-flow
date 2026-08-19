@@ -376,7 +376,15 @@ mod tests {
     #[cfg(unix)]
     fn script(name: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir().join(format!("octiq-hook-test-{name}"));
+        // The pid is in the path because `temp_dir()` is shared by every
+        // process on the machine. Two `cargo test` runs at once — a second
+        // checkout, a worktree, a watcher — would otherwise write and rename the
+        // SAME script file, and one of them execs it mid-rename and reads the
+        // wrong body. Seen once: the uppercase hook returned the original title.
+        let dir = std::env::temp_dir().join(format!(
+            "octiq-hook-test-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::create_dir_all(&dir);
         let staged = dir.join("notify-hook.staged");
         let path = dir.join("notify-hook");
