@@ -13,6 +13,8 @@ import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
 import { FileList } from "./FileList";
+import { ContextReport } from "./ContextReport";
+import { parseContextReport } from "../lib/contextReport";
 import { copyText } from "../lib/clipboard";
 
 function Thinking({ text }: { text: string }) {
@@ -72,6 +74,17 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
  *  scrolling back never replays the conversation. */
 function Prose({ text, animate }: { text: string; animate: boolean }) {
   const shown = useTypewriter(text, animate);
+
+  // `/context` answers in a shape worth drawing rather than reading. Only once
+  // it has finished arriving: a half-parsed table would redraw the chart on
+  // every delta. Anything that does not parse falls through to the markdown it
+  // already was — a wrong chart is worse than an honest table.
+  const report = useMemo(
+    () => (animate ? null : parseContextReport(text)),
+    [text, animate],
+  );
+  if (report) return <ContextReport report={report} />;
+
   const caret = animate && shown.length < text.length;
 
   // Rendered a block at a time. Only the last one is still being written, so
@@ -150,10 +163,14 @@ function TurnView({
   messages,
   stopped,
   cwd,
+  busy,
 }: {
   messages: Message[];
   stopped?: boolean;
   cwd?: string;
+  /** Whether the chat is working. A turn can only be waiting its turn while
+   *  something else is having one. */
+  busy?: boolean;
 }) {
   const role = messages[0].role;
   const streaming = messages.some((m) => m.streaming);
@@ -173,7 +190,10 @@ function TurnView({
   // mid-answer is echoed only after the first turn's result. So an un-echoed
   // bubble is one sitting in the queue, and saying so is the difference between
   // "it is ignoring me" and "it will get to it".
-  const queued = role === "user" && messages.every((m) => !m.echo);
+  // Only while the chat is actually working. A slash command like /context is
+  // answered locally and is never echoed back at all, so "no echo" on its own
+  // would leave it marked queued forever — which is how this was first wrong.
+  const queued = !!busy && role === "user" && messages.every((m) => !m.echo);
 
   return (
     <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
@@ -367,6 +387,7 @@ export function MessageList({
             messages={turn}
             stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
             cwd={cwd}
+            busy={busy}
           />
         ))}
         {busy && !messages.some((m) => m.streaming) && <div className="dots" aria-label="working" />}

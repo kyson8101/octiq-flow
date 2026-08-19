@@ -297,6 +297,21 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     };
   }
 
+  // Codex reports its context as it goes, in its own shape. It gives totals
+  // only — no breakdown of what is filling them, so there is nothing here to
+  // draw the way Claude's `/context` can be drawn. The meter beside Send is
+  // the same one either way.
+  if (type === "token_count") {
+    const info = asObj(e.info);
+    const window = asObj(info).context_window ?? e.context_window;
+    const total = asObj(info).total_token_usage ?? e.total_token_usage;
+    const used = asObj(total).input_tokens;
+    const next = { ...state };
+    if (typeof window === "number" && window > 0) next.contextWindow = window;
+    if (typeof used === "number" && used > 0) next.contextTokens = used;
+    return next;
+  }
+
   if (type === "stream_event") return reduceStream(state, asObj(e.event));
 
   if (type === "assistant") {
