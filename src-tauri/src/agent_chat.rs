@@ -168,6 +168,20 @@ impl Access {
         }
     }
 
+    /// What the PreToolUse hook is told, in `OCTIQ_ACCESS`.
+    ///
+    /// The hook runs BEFORE `--permission-mode` is consulted — it is the first
+    /// step of the permission chain — so "run anything without asking" never
+    /// reaches it through that flag, and the hook went on asking about every
+    /// command on Full access. It has to be told separately.
+    fn as_env(self) -> &'static str {
+        match self {
+            Access::Read => "read",
+            Access::Edit => "edit",
+            Access::Full => "full",
+        }
+    }
+
     /// Codex's `--sandbox` value. `workspace-write` is the direct match for
     /// "edit files": writes inside the workspace, nothing outside it.
     fn codex(self) -> &'static str {
@@ -402,6 +416,11 @@ pub fn chat_start_impl(
         // The hook answers only for agents we started, and needs to know
         // which chat is asking so the UI can attach the question to it.
         .env("OCTIQ_CHAT_KEY", &key)
+        // What the person chose. The hook cannot read --permission-mode, and on
+        // Full access it must step aside rather than ask about every command.
+        // Unset means the most cautious of the three, not the most permissive:
+        // a missing value must never be the one that stops the asking.
+        .env("OCTIQ_ACCESS", access.map(Access::as_env).unwrap_or("read"))
         .stdin(match agent {
             ChatAgent::Claude => Stdio::piped(),
             ChatAgent::Codex => Stdio::null(),
@@ -847,6 +866,16 @@ pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn full_access_is_named_in_the_environment_the_hook_reads() {
+        // The PreToolUse hook runs BEFORE --permission-mode is consulted, so
+        // "run anything without asking" cannot reach it through that flag. It
+        // has to be told separately or it keeps asking on Full access.
+        assert_eq!(Access::Full.as_env(), "full");
+        assert_eq!(Access::Edit.as_env(), "edit");
+        assert_eq!(Access::Read.as_env(), "read");
+    }
     use super::*;
 
     #[test]

@@ -137,6 +137,21 @@ async function main() {
   // Rule 2: only for agents OctiqFlow started.
   if (!process.env.OCTIQ_CHAT_KEY) noOpinion();
 
+  /* Rule 4: the person has already answered.
+   *
+   * "Full access" means run anything without asking, and it is passed to the
+   * agent as --permission-mode bypassPermissions. But THIS HOOK RUNS FIRST —
+   * it is the opening step of the permission chain, before deny rules, allow
+   * rules and the mode — so that flag never got a say and every command still
+   * stopped here for approval. Choosing Full access and then being asked about
+   * `ls` is the setting visibly not working.
+   *
+   * Abstaining is right here, not allowing: with no opinion the call falls
+   * through to bypassPermissions, which is the answer the person already gave.
+   * On the other two levels the hook is the whole point and stays in the way.
+   */
+  if (process.env.OCTIQ_ACCESS === "full") noOpinion();
+
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
   let input;

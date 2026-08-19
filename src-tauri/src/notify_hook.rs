@@ -100,8 +100,8 @@ fn hook_path() -> Option<PathBuf> {
 
 /// Run `hook` over the JSON envelope and return whatever it wrote to stdout,
 /// or `None` for ANY failure (spawn error, non-zero exit, timeout, non-UTF-8
-/// output). A hook that outlives `HOOK_TIMEOUT` is killed.
-fn run_hook(hook: &PathBuf, envelope: &str) -> Option<String> {
+/// output). A hook that outlives `budget` is killed.
+fn run_hook(hook: &PathBuf, envelope: &str, budget: Duration) -> Option<String> {
     let mut child = Command::new(hook)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -122,7 +122,7 @@ fn run_hook(hook: &PathBuf, envelope: &str) -> Option<String> {
     // the hook is expected to finish in milliseconds, so a 10ms poll costs
     // nothing and keeps the kill path simple (`wait_with_output` would consume
     // the child and leave us no handle to kill).
-    let deadline = Instant::now() + HOOK_TIMEOUT;
+    let deadline = Instant::now() + budget;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -162,13 +162,24 @@ pub fn filter(alert: Alert) -> Option<Alert> {
 /// This is where the "best effort" promise is kept: EVERY failure mode falls
 /// through to `Some(alert)`, the original.
 fn filter_with(hook: Option<PathBuf>, alert: Alert) -> Option<Alert> {
+    filter_within(hook, alert, HOOK_TIMEOUT)
+}
+
+/// The same, with the deadline passed in.
+///
+/// Only the tests use this. Two seconds is right for a real alert — nobody
+/// wants a notification held longer than that by a misbehaving hook — but it is
+/// the wall clock, and a test machine busy compiling can take longer than that
+/// just to spawn `/bin/sh`. That flake looked like the hook silently doing
+/// nothing, which is also what a real failure looks like.
+fn filter_within(hook: Option<PathBuf>, alert: Alert, budget: Duration) -> Option<Alert> {
     let Some(hook) = hook else {
         return Some(alert); // no hook installed: the overwhelmingly common case
     };
     let Ok(envelope) = serde_json::to_string(&alert) else {
         return Some(alert);
     };
-    let Some(stdout) = run_hook(&hook, &envelope) else {
+    let Some(stdout) = run_hook(&hook, &envelope, budget) else {
         return Some(alert); // spawn failed, hung, crashed, or exited non-zero
     };
     match serde_json::from_str::<HookPatch>(stdout.trim()) {
@@ -228,6 +239,12 @@ pub async fn notify_hook_filter(
 
 #[cfg(test)]
 mod tests {
+    /// Long enough that a machine busy compiling still gets there. The real
+    /// deadline is two seconds and stays two seconds; this only stops a loaded
+    /// test runner from being mistaken for a hook that did nothing, which is
+    /// what these tests kept failing as.
+    const PATIENT: Duration = Duration::from_secs(30);
+
     use super::*;
 
     fn alert() -> Alert {
@@ -396,14 +413,14 @@ mod tests {
 
     #[test]
     fn no_hook_file_leaves_the_alert_unchanged() {
-        assert_eq!(filter_with(None, alert()), Some(alert()));
+        assert_eq!(filter_within(None, alert(), PATIENT), Some(alert()));
     }
 
     #[cfg(unix)]
     #[test]
     fn a_hook_that_uppercases_the_title_is_reflected() {
         let hook = script("upper", r#"printf '{"title":"CLAUDE"}'"#);
-        let out = filter_with(Some(hook), alert()).expect("not suppressed");
+        let out = filter_within(Some(hook), alert(), PATIENT).expect("not suppressed");
         assert_eq!(out.title, "CLAUDE");
         assert_eq!(out.body, "needs input");
     }
@@ -428,19 +445,22 @@ mod tests {
             source: "activity".into(),
             ..alert()
         };
-        assert_eq!(filter_with(Some(hook.clone()), activity), None);
+        assert_eq!(filter_within(Some(hook.clone()), activity, PATIENT), None);
         // An `osc` alert from the same hook survives untouched.
-        assert_eq!(filter_with(Some(hook), alert()), Some(alert()));
+        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
     }
 
     #[cfg(unix)]
     #[test]
     fn a_hook_that_hangs_is_killed_and_the_original_alert_shows() {
-        // Sleeps well past HOOK_TIMEOUT. filter_with must return the original
-        // alert, and must do so at roughly the timeout, not the sleep.
+        // Sleeps well past the deadline. The original alert must come back, and
+        // at roughly the deadline rather than after the sleep.
+        //
+        // The REAL timeout here, not PATIENT: enforcing the deadline is the
+        // whole claim of this test, so lengthening it would test nothing.
         let hook = script("hang", "sleep 30");
         let started = Instant::now();
-        assert_eq!(filter_with(Some(hook), alert()), Some(alert()));
+        assert_eq!(filter_within(Some(hook), alert(), HOOK_TIMEOUT), Some(alert()));
         let waited = started.elapsed();
         assert!(
             waited >= HOOK_TIMEOUT,
@@ -461,14 +481,14 @@ mod tests {
     fn a_hook_that_exits_non_zero_leaves_the_alert_unchanged() {
         // Its stdout is ignored entirely — a failed hook has no say.
         let hook = script("fail", r#"printf '{"suppress":true}'; exit 3"#);
-        assert_eq!(filter_with(Some(hook), alert()), Some(alert()));
+        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
     }
 
     #[cfg(unix)]
     #[test]
     fn a_hook_that_prints_garbage_leaves_the_alert_unchanged() {
         let hook = script("garbage", "printf 'not json at all'");
-        assert_eq!(filter_with(Some(hook), alert()), Some(alert()));
+        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
     }
 
     #[cfg(unix)]
@@ -476,7 +496,7 @@ mod tests {
     fn a_hook_that_prints_nothing_leaves_the_alert_unchanged() {
         // Exit 0 with empty stdout: nothing to apply, so nothing changes.
         let hook = script("silent", "exit 0");
-        assert_eq!(filter_with(Some(hook), alert()), Some(alert()));
+        assert_eq!(filter_within(Some(hook), alert(), PATIENT), Some(alert()));
     }
 
     #[cfg(unix)]
@@ -485,7 +505,7 @@ mod tests {
         // Our envelope write gets EPIPE. That is the hook's business, not ours;
         // its reply must still be honoured.
         let hook = script("no-stdin", r#"printf '{"body":"rewritten"}'"#);
-        let out = filter_with(Some(hook), alert()).expect("not suppressed");
+        let out = filter_within(Some(hook), alert(), PATIENT).expect("not suppressed");
         assert_eq!(out.body, "rewritten");
     }
 
@@ -493,6 +513,6 @@ mod tests {
     fn a_missing_hook_file_is_not_treated_as_a_hook() {
         let missing = std::env::temp_dir().join("octiq-hook-test-does-not-exist/notify-hook");
         // Spawn fails; the alert survives.
-        assert_eq!(filter_with(Some(missing), alert()), Some(alert()));
+        assert_eq!(filter_within(Some(missing), alert(), PATIENT), Some(alert()));
     }
 }
