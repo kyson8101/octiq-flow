@@ -26,6 +26,10 @@ export type ToolState = "running" | "done" | "error";
 
 export type Block =
   | { kind: "text"; text: string }
+  /** The agent summarised its own history here to make room. Everything above
+   *  this point is a summary, which is worth seeing: it explains why a detail
+   *  from earlier may no longer be recalled exactly. */
+  | { kind: "compacted"; text: string }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -68,6 +72,9 @@ export type ChatState = {
   commands?: string[];
   /** True between sending a turn and its `result`. */
   busy: boolean;
+  /** What the agent is doing when it is doing something other than writing —
+   *  compacting, so far. Shown in place of the generic "working…". */
+  activity?: string;
   /** From the last `result` event. */
   lastCostUsd?: number;
   lastDurationMs?: number;
@@ -196,7 +203,33 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   const type = asStr(e.type);
 
   if (type === "system") {
-    if (asStr(e.subtype) !== "init") return state; // hooks, token counters: noise
+    const subtype = asStr(e.subtype);
+
+    // Compaction. The agent rewrites its own history to make room, which can
+    // take a while and produces nothing to show — so the chat sat on
+    // "working…" with no sign of what it was working on. It is also worth
+    // recording where it happened: everything above the boundary is a summary
+    // now, which is why the agent may not recall a detail from earlier.
+    if (subtype.includes("compact")) {
+      if (subtype.includes("boundary")) {
+        return {
+          ...state,
+          activity: undefined,
+          messages: [
+            ...state.messages,
+            {
+              id: `compact-${state.messages.length}`,
+              role: "assistant",
+              blocks: [{ kind: "compacted", text: "" }],
+              streaming: false,
+            },
+          ],
+        };
+      }
+      return { ...state, activity: "Compacting the conversation to make room…" };
+    }
+
+    if (subtype !== "init") return state; // hooks, token counters: noise
     const commands = asArr(e.slash_commands).filter((c): c is string => typeof c === "string");
     return {
       ...state,
@@ -235,6 +268,17 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     const msg = asObj(e.message);
     const id = asStr(msg.id);
     const aborted = e.aborted === true;
+
+    // How much context this session is holding, taken from THIS message.
+    //
+    // Not from the turn's `result`, which sums the usage of every assistant
+    // message in it. Each of those carries the whole cached prefix, so a turn
+    // with ten tool calls counts the same context ten times: measured on one
+    // real turn, 621,309 reported against 90,995 actually held — a new session
+    // reading 67% full. The newest message alone is the size of the
+    // conversation right now.
+    const used = contextFrom(msg.usage);
+    if (used) state = { ...state, contextTokens: used };
     // Every assistant message names the model that wrote it, which is how a
     // mid-session `/model sonnet` becomes visible: init reported the model the
     // session STARTED on, and that is no longer the truth.
@@ -390,12 +434,15 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
       ...state,
       busy: false,
       stopping: false,
+      activity: undefined,
       failure: failed
         ? describeFailure("claude", asStr(e.result) || asStr(e.api_error_status) || subtype)
         : state.failure,
       lastCostUsd: typeof e.total_cost_usd === "number" ? e.total_cost_usd : state.lastCostUsd,
       lastDurationMs: typeof e.duration_ms === "number" ? e.duration_ms : state.lastDurationMs,
-      contextTokens: contextFrom(e.usage) ?? state.contextTokens,
+      // contextTokens deliberately NOT taken from here: see the assistant
+      // branch. Only the window comes from this event, and that is a constant
+      // for the model rather than something summed over the turn.
       contextWindow: window,
       messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
     };

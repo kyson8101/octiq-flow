@@ -121,7 +121,23 @@ const MarkdownBlock = memo(function MarkdownBlock({
 function BlockView({ block, animate }: { block: Block; animate?: boolean }) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "thinking") return <Thinking text={block.text} />;
+  if (block.kind === "compacted") return <Compacted />;
   return <ToolCard tool={block} />;
+}
+
+/** Where the agent summarised its own history to make room.
+ *
+ *  Worth showing rather than hiding: everything above this line is a summary
+ *  now, which is the explanation when the agent no longer recalls a detail
+ *  from earlier exactly. */
+function Compacted() {
+  return (
+    <div className="compacted">
+      <span className="compacted-line" aria-hidden="true" />
+      <span className="compacted-label">history summarised to make room</span>
+      <span className="compacted-line" aria-hidden="true" />
+    </div>
+  );
 }
 
 /** One TURN on screen.

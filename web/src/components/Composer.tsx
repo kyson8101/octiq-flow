@@ -108,6 +108,7 @@ export function Composer({
   commands,
   contextTokens,
   contextWindow,
+  activity,
   effort,
   onEffort,
   cwd,
@@ -134,6 +135,9 @@ export function Composer({
    *  its `result`. */
   contextTokens?: number;
   contextWindow?: number;
+  /** What the agent is doing when it is not writing — compacting, so far.
+   *  A long silent pause with "working…" under it tells you nothing. */
+  activity?: string;
   effort: Effort;
   onEffort: (e: Effort) => void;
   /** The project folder, so the file picker opens where the work is. */
@@ -552,7 +556,9 @@ export function Composer({
             </button>
           )}
 
-          <span className="composer-hint">{busy ? "working…" : "Enter to send"}</span>
+          <span className="composer-hint">
+            {activity ?? (busy ? "working…" : "Enter to send")}
+          </span>
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
 

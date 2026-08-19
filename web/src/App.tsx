@@ -975,6 +975,7 @@ export default function App() {
             commands={(projectId && commands[projectId]) || []}
             contextTokens={chat.contextTokens}
             contextWindow={chat.contextWindow}
+            activity={chat.activity}
             effort={effort}
             onEffort={changeEffort}
             cwd={project?.primary_path ?? ""}

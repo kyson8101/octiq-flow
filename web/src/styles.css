@@ -2753,3 +2753,25 @@ body {
 .qa-input:focus {
   border-color: var(--accent);
 }
+
+/* ---- Compaction boundary ----------------------------------------------
+   A quiet rule across the conversation. Everything above it is a summary now,
+   which is the answer to "why has it forgotten what I said earlier". */
+.compacted {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+}
+
+.compacted-line {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+.compacted-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
