@@ -71,14 +71,71 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
         });
     }
 
-    // Directories first, then files; within each group, case-insensitive A→Z.
+    // Directories first, then files; within each group, the order a person
+    // would count them in (see `natural_cmp`).
     entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
         (true, false) => std::cmp::Ordering::Less,
         (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        _ => natural_cmp(&a.name, &b.name),
     });
 
     Ok(entries)
+}
+
+/// Compare two names the way a person counts them, not the way bytes sort.
+///
+/// Plain lexicographic order puts `10` before `2`, so a project whose folders
+/// are `1-intake`, `2-review`, …, `11-ship` lists as 1, 10, 11, 2, 3 — every
+/// numbered folder scheme reads as scrambled. Digit runs are compared as
+/// numbers here and everything else case-insensitively.
+///
+/// The digits are never parsed into an integer: a run of forty digits is a
+/// legitimate file name and would overflow every integer type. Leading zeros
+/// are dropped and the runs compared by length first, then digit by digit,
+/// which orders any length correctly.
+fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let ac: Vec<char> = a.chars().collect();
+    let bc: Vec<char> = b.chars().collect();
+    let (mut i, mut j) = (0usize, 0usize);
+
+    while i < ac.len() && j < bc.len() {
+        if ac[i].is_ascii_digit() && bc[j].is_ascii_digit() {
+            let (si, sj) = (i, j);
+            while i < ac.len() && ac[i].is_ascii_digit() {
+                i += 1;
+            }
+            while j < bc.len() && bc[j].is_ascii_digit() {
+                j += 1;
+            }
+            let ra = &ac[si..i];
+            let rb = &bc[sj..j];
+            // `007` and `7` are the same number; the padding decides nothing
+            // here and is settled by the tie-break at the end.
+            let ta = &ra[ra.iter().position(|c| *c != '0').unwrap_or(ra.len())..];
+            let tb = &rb[rb.iter().position(|c| *c != '0').unwrap_or(rb.len())..];
+            let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        } else {
+            let ca = ac[i].to_lowercase().next().unwrap_or(ac[i]);
+            let cb = bc[j].to_lowercase().next().unwrap_or(bc[j]);
+            if ca != cb {
+                return ca.cmp(&cb);
+            }
+            i += 1;
+            j += 1;
+        }
+    }
+
+    // Whichever still has characters left sorts after. Names that compare equal
+    // this far differ only in case or zero-padding, so the raw string breaks the
+    // tie — without it the order of `007` and `7` would depend on the sort.
+    (ac.len() - i)
+        .cmp(&(bc.len() - j))
+        .then_with(|| a.cmp(b))
 }
 
 /// Open `path` (a project folder or a file) in VS Code.
@@ -278,6 +335,50 @@ fn resolve_path(path: String, cwd: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::natural_cmp;
+
+    #[test]
+    fn numbered_folders_sort_the_way_they_are_counted() {
+        let mut names = vec!["10-ten", "2-two", "1-one", "11-eleven", "3-three"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["1-one", "2-two", "3-three", "10-ten", "11-eleven"]);
+    }
+
+    #[test]
+    fn a_number_too_big_for_an_integer_still_orders() {
+        // Parsing would overflow every integer type; this must not fall back to
+        // "they are equal" or panic.
+        let huge_a = format!("f{}", "9".repeat(40));
+        let huge_b = format!("f1{}", "0".repeat(40));
+        assert_eq!(natural_cmp(&huge_a, &huge_b), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn padding_does_not_change_the_order_around_it() {
+        let mut names = vec!["s9", "s007", "s10", "s08"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["s007", "s08", "s9", "s10"]);
+    }
+
+    #[test]
+    fn letters_still_sort_case_insensitively() {
+        // Case does not decide the order: "Apple" before "banana", not after it
+        // the way a byte comparison would have it.
+        assert_eq!(natural_cmp("Apple", "banana"), std::cmp::Ordering::Less);
+        assert_eq!(natural_cmp("banana", "Apple"), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn names_differing_only_in_case_still_have_one_fixed_order() {
+        // Never Equal. Two names the comparison cannot separate would leave the
+        // sort's own stability to decide, and the list could come back in a
+        // different order each time it is read.
+        assert_ne!(natural_cmp("README.md", "readme.md"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            natural_cmp("README.md", "readme.md").reverse(),
+            natural_cmp("readme.md", "README.md"),
+        );
+    }
     use super::resolve_path;
 
     /// Search finds a file by NAME and by CONTENT, and reports the hit's line.
