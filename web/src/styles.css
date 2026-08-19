@@ -155,19 +155,14 @@ body {
   pointer-events: auto;
 }
 
-/* Shelved projects live below the list they were taken out of. Quiet by
-   design — the point of shelving is not to look at them — but present, because
-   the control that brings one back is inside its own settings. */
-.shelf {
+/* The way into the shelf. Quiet — the point of shelving is not to look at
+   these — but always present, because it is the only route back. */
+.shelf-open {
   flex: 0 0 auto;
-  padding: 4px 8px calc(8px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
-}
-
-.shelf-toggle {
-  width: 100%;
-  padding: 6px 8px;
-  border: 0;
+  width: calc(100% - 16px);
+  margin: 0 8px calc(8px + env(safe-area-inset-bottom));
+  padding: 7px 8px;
+  border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-3);
@@ -177,38 +172,103 @@ body {
   cursor: pointer;
 }
 
-.shelf-toggle:hover {
+.shelf-open:hover {
   background: var(--bg-1);
   color: var(--fg-1);
 }
 
-.shelf-list {
-  margin: 2px 0 0;
-  padding: 0;
-  max-height: 180px;
-  overflow-y: auto;
-  list-style: none;
+.shelf-sub {
+  font-size: 12px;
+  color: var(--fg-3);
 }
 
-.shelf-item {
-  width: 100%;
-  padding: 6px 8px;
-  border: 0;
+.shelf-error {
+  margin: 10px 14px 0;
+  padding: 8px 10px;
   border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-2);
-  font: inherit;
+  background: var(--danger-tint, rgba(255, 69, 58, 0.14));
+  color: var(--danger, #ff453a);
   font-size: 13px;
+}
+
+/* Cards, two across where there is room. Each card IS the button: there is one
+   thing you come here to do, so it does not hide behind a menu. */
+.shelf-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.shelf-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: inherit;
+  font: inherit;
   text-align: left;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 
-.shelf-item:hover {
-  background: var(--bg-1);
+.shelf-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-2, var(--bg-1));
+}
+
+.shelf-card:disabled {
+  cursor: default;
+}
+
+/* Restored ones stay on screen, marked. A card vanishing under your finger
+   reads as "did that work?". */
+.shelf-card.is-done {
+  opacity: 0.55;
+  border-color: var(--accent-soft-border, var(--border));
+}
+
+.shelf-card-name {
+  font-weight: 600;
   color: var(--fg-0);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Truncated from the LEFT: a path is identified by its end. */
+.shelf-card-path {
+  direction: rtl;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.shelf-card-desc {
+  font-size: 12px;
+  color: var(--fg-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.shelf-card-act {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.shelf-card.is-done .shelf-card-act {
+  color: var(--fg-3);
 }
 
 .proj-list {

@@ -39,6 +39,7 @@ import {
 } from "./components/Composer";
 import { Connect } from "./components/Connect";
 import { Sidebar, type Project } from "./components/Sidebar";
+import { ShelvedProjects } from "./components/ShelvedProjects";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
@@ -114,6 +115,7 @@ export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [shelved, setShelved] = useState<Workspace[]>([]);
+  const [shelfOpen, setShelfOpen] = useState(false);
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
@@ -1035,6 +1037,7 @@ export default function App() {
         <Sidebar
           projects={workspaces}
           shelved={shelved}
+          onShowShelved={() => setShelfOpen(true)}
           conversations={grouped}
           currentProject={projectId}
           currentConversation={conversationId}
@@ -1229,6 +1232,14 @@ export default function App() {
           <GitPanel project={project} open={gitOpen} onClose={() => showGit(false)} />
         )}
       </div>
+
+      {shelfOpen && (
+        <ShelvedProjects
+          projects={shelved}
+          onRestored={loadWorkspaces}
+          onClose={() => setShelfOpen(false)}
+        />
+      )}
 
       {settingsFor && (
         <ProjectSettings
