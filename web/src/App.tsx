@@ -133,9 +133,40 @@ export default function App() {
   const runningRef = useRef(running);
   runningRef.current = running;
 
+  // The last event we have seen for each chat, so a reconnect can ask for what
+  // it missed. The agent kept working while we were away — the record of it is
+  // on the server, and this is our place in it.
+  const seen = useRef<Record<string, number>>({});
+
   const confirm = useConfirm();
 
   useEffect(() => bridge.onState(setConn), []);
+
+  // Reconnected: ask each live chat for everything that happened while we were
+  // away. Without this, closing a laptop mid-answer loses the rest of it — the
+  // agent finished perfectly well, we simply were not listening.
+  useEffect(() => {
+    if (conn !== "open") return;
+    for (const id of runningRef.current) {
+      const key = keyFor(id);
+      bridge
+        .invoke<{ seq: number; event: unknown }[]>("chat_since", {
+          key,
+          after: seen.current[key] ?? 0,
+        })
+        .then((missed) => {
+          for (const item of missed ?? []) {
+            if (item.seq <= (seen.current[key] ?? 0)) continue;
+            seen.current[key] = item.seq;
+            patch(id, (st) => reduceChat(st, item.event));
+          }
+        })
+        .catch(() => {});
+    }
+    // `patch` is stable; running is read through the ref so a chat starting
+    // mid-reconnect does not restart this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn]);
 
   useEffect(() => {
     try {
@@ -211,9 +242,14 @@ export default function App() {
 
   useEffect(
     () =>
-      bridge.on<{ key: string; event: unknown }>("chat-event", (payload) => {
+      bridge.on<{ key: string; seq?: number; event: unknown }>("chat-event", (payload) => {
         const id = payload && convOf(payload.key);
         if (!id) return;
+        // Out of order, or one we already folded in during a catch-up.
+        if (typeof payload.seq === "number") {
+          if (payload.seq <= (seen.current[payload.key] ?? 0)) return;
+          seen.current[payload.key] = payload.seq;
+        }
         patch(id, (s) => reduceChat(s, payload.event));
       }),
     [patch],
@@ -311,6 +347,7 @@ export default function App() {
             // byProject in lib/store.ts.
             createdAt: before?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
+            seq: seen.current[keyFor(id)] ?? before?.seq,
           };
           list = [next, ...list.filter((c) => c.id !== id)];
           touched = true;
@@ -323,18 +360,17 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [chats]);
 
-  // Leaving the page ends every running process. The transcripts are already
-  // saved, and their session ids with them, so each conversation reopens and
-  // continues where it stopped.
-  useEffect(() => {
-    const stopAll = () => {
-      for (const id of runningRef.current) {
-        bridge.invoke("chat_stop", { key: keyFor(id) }).catch(() => {});
-      }
-    };
-    window.addEventListener("pagehide", stopAll);
-    return () => window.removeEventListener("pagehide", stopAll);
-  }, []);
+  // Leaving the page no longer stops anything.
+  //
+  // It used to, because the browser was the only record: an agent still working
+  // after you left was producing output nobody would ever see. Now the server
+  // writes every event down (transcript.rs), so closing a laptop mid-answer is
+  // a pause rather than a loss — you come back and ask for the rest.
+  //
+  // Killing on pagehide would throw away exactly what makes that possible: the
+  // long task you closed the lid on is the one you most want to survive. What
+  // is left running is adopted on the next load through chat_list, and stopping
+  // is a thing you ask for.
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -406,6 +442,22 @@ export default function App() {
     setChats((prev) =>
       prev[c.id] ? prev : { ...prev, [c.id]: { ...emptyChat(), messages: c.messages, sessionId: c.sessionId } },
     );
+
+    // Fill in anything this device has not seen. On the device that held the
+    // conversation that is the tail of an interrupted answer; on a device that
+    // has never seen it, `seq` is absent and this replays the whole thing.
+    const key = keyFor(c.id);
+    const from = seen.current[key] ?? c.seq ?? 0;
+    bridge
+      .invoke<{ seq: number; event: unknown }[]>("chat_since", { key, after: from })
+      .then((missed) => {
+        for (const item of missed ?? []) {
+          if (item.seq <= (seen.current[key] ?? 0)) continue;
+          seen.current[key] = item.seq;
+          patch(c.id, (st) => reduceChat(st, item.event));
+        }
+      })
+      .catch(() => {});
     setProjectId(c.projectId);
     setConversationId(c.id);
     if (c.modelId) {
@@ -414,7 +466,7 @@ export default function App() {
     }
     if (c.permission) setAccess(c.permission as AccessLevel);
     setDrawer(false);
-  }, []);
+  }, [patch]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
@@ -468,6 +520,10 @@ export default function App() {
       // Deleting the transcript with the agent still working on it would leave
       // a process nobody can reach, so it goes too.
       endSession(id);
+      // The record on the server goes as well — the point of deleting a chat
+      // is that it is gone, not that it is hidden on this device.
+      bridge.invoke("chat_forget", { key: keyFor(id) }).catch(() => {});
+      delete seen.current[keyFor(id)];
       setConversations((prev) => {
         const list = prev.filter((c) => c.id !== id);
         saveConversations(list);

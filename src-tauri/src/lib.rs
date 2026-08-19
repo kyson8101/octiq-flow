@@ -28,6 +28,7 @@ mod profile;
 mod profile_lock;
 mod pty;
 mod terminal_layout;
+mod transcript;
 mod bus;
 mod dispatch;
 mod usage_limits;
@@ -203,6 +204,8 @@ pub fn run() {
             agent_chat::chat_interrupt,
             agent_chat::chat_stop,
             agent_chat::chat_list,
+            agent_chat::chat_since,
+            agent_chat::chat_forget,
             agent_chat::save_attachment,
             pty::pty_agent_running,
             pty::pty_set_visible,

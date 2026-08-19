@@ -43,6 +43,11 @@ struct ChatEvent {
     /// The chat this came from (the frontend picks the key at start time, the
     /// same way it picks PTY ids).
     key: String,
+    /// Where this sits in the chat's record. A client remembers the highest it
+    /// has seen and asks for everything after it when it reconnects, which is
+    /// what stops a closed laptop losing the rest of an answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seq: Option<u64>,
     /// The agent's own JSON object, passed through untouched.
     event: Value,
 }
@@ -418,12 +423,20 @@ pub fn chat_start_impl(
                     continue;
                 }
                 match serde_json::from_str::<Value>(trimmed) {
-                    Ok(event) => crate::bus::emit("chat-event",
-                        ChatEvent {
-                            key: key.clone(),
-                            event,
-                        },
-                    ),
+                    Ok(event) => {
+                        // Recorded BEFORE it is sent, so a client that
+                        // reconnects can never be told about an event that was
+                        // not written down.
+                        let seq = crate::transcript::append(&key, &event);
+                        crate::bus::emit(
+                            "chat-event",
+                            ChatEvent {
+                                key: key.clone(),
+                                seq,
+                                event,
+                            },
+                        )
+                    }
                     // A non-JSON line means the agent printed something we did
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
@@ -735,6 +748,22 @@ pub fn save_attachment(data_base64: String, extension: String) -> Result<String,
     let path = attachments_dir()?.join(format!("{}.{ext}", uuid::Uuid::new_v4()));
     std::fs::write(&path, bytes).map_err(|e| format!("could not save the image: {e}"))?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Everything a chat said after `after`.
+///
+/// How a client catches up. It remembers the highest seq it has seen and asks
+/// for the rest — after a reconnect, a reload, or on a second device that has
+/// never seen this conversation at all.
+#[tauri::command]
+pub fn chat_since(key: String, after: u64) -> Vec<crate::transcript::Recorded> {
+    crate::transcript::since(&key, after)
+}
+
+/// Throw away a chat's record. Deleting a conversation should leave nothing.
+#[tauri::command]
+pub fn chat_forget(key: String) {
+    crate::transcript::forget(&key);
 }
 
 /// The keys of every running chat. A reconnecting browser uses this the way it

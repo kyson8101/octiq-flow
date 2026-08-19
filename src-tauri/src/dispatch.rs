@@ -160,6 +160,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
         )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
+        "chat_since" => Ok(json!(crate::agent_chat::chat_since(
+            arg(&args, "key")?,
+            arg(&args, "after")?,
+        ))),
+        "chat_forget" => {
+            crate::agent_chat::chat_forget(arg(&args, "key")?);
+            Ok(Value::Null)
+        }
         "save_attachment" => to_value(crate::agent_chat::save_attachment(
             arg(&args, "dataBase64")?,
             arg(&args, "extension")?,

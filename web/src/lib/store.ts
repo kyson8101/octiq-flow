@@ -34,6 +34,13 @@ export type Conversation = {
    *  cursor as you typed, so the chat you were reading moved. */
   createdAt: number;
   updatedAt: number;
+  /** How far into the server's record of this chat these messages go.
+   *
+   *  It is what makes the two halves fit together. Reopening on THIS device
+   *  seeds from here and asks the server for anything after `seq`. On another
+   *  device there is no local copy at all, so `seq` is absent, and the whole
+   *  conversation is replayed from the server instead. */
+  seq?: number;
 };
 
 const KEY = "octiq.v2.conversations";
