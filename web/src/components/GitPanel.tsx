@@ -225,55 +225,90 @@ export function GitButton({
 
   const changed = summary.reduce((n, s) => n + s.changed, 0);
   const ahead = summary.reduce((n, s) => n + s.ahead, 0);
-  const onlyRepo = summary.length === 1 ? summary[0] : null;
-  // The session's own repo when we could find it; otherwise the old behaviour,
-  // which named a branch only when the project held exactly one repo.
-  const here = sessionRepo ?? onlyRepo;
+
+  /* One chip per repo, because a project that spans several repos has several
+   * answers to "what branch am I on" and merging them into one number threw
+   * away the only part worth knowing. Real projects here hold up to four.
+   *
+   * The chat's own repo leads, since that is the one the agent is working in;
+   * the rest follow in the order the project lists them. */
+  const chips = useMemo(() => {
+    if (summary.length === 0) return [];
+    const rest = summary.filter((r) => r.repo_root !== sessionRepo?.repo_root);
+    return sessionRepo ? [sessionRepo, ...rest] : rest;
+  }, [summary, sessionRepo]);
 
   return (
     <button
       className={`gitp-toggle ${open ? "is-on" : ""}`}
       type="button"
       aria-expanded={open}
-      // Spelled out because the two halves of this button mean different
-      // things: the branch is where THIS chat runs, the count is the whole
-      // project — which is what the panel it opens lists.
+      // The full picture, since the chips are truncated and a phone shows only
+      // the first. Each repo on its own line, named, so nothing here is a
+      // number you cannot attribute.
       title={
         project
           ? [
               `Git — ${project.name}`,
-              here?.branch ? `this chat runs on ${here.branch}` : null,
-              changed > 0
-                ? `${changed} changed file${changed === 1 ? "" : "s"}${
-                    summary.length > 1 ? ` across ${summary.length} repos` : ""
-                  }`
-                : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")
+              ...chips.map((r, i) => {
+                const name = r.repo_root.split("/").pop() ?? r.repo_root;
+                const state = r.changed > 0 ? `${r.changed} changed` : "clean";
+                return `${name} · ${r.branch || "(detached)"} · ${state}${
+                  i === 0 && sessionRepo ? " — this chat" : ""
+                }`;
+              }),
+            ].join("\n")
           : "Git"
       }
       onClick={onToggle}
     >
       <BranchIcon />
-      {/* The <bdi> is load-bearing. The span is RTL so the ellipsis lands on the
-          LEFT, but that alone also reorders the text — `feature/a` draws as
-          `a/feature`. <bdi> isolates the run so it reads the right way round
-          inside a box that truncates from the wrong end. */}
-      {here?.branch && (
-        <span className="gitp-toggle-branch">
-          <bdi>{here.branch}</bdi>
+
+      {chips.map((repo, i) => (
+        <span
+          key={repo.repo_root}
+          // `is-first` is marked here rather than matched with :first-child,
+          // because the button's first child is the icon — no chip is ever the
+          // first child, and a phone rule keyed on that hid every one of them.
+          className={`gitp-chip ${i === 0 ? "is-first" : ""} ${
+            i === 0 && sessionRepo ? "is-here" : ""
+          }`}
+        >
+          {/* Named only when there is more than one, where a branch on its own
+              cannot say which repo it belongs to. */}
+          {chips.length > 1 && (
+            <span className="gitp-chip-repo">
+              <bdi>{repo.repo_root.split("/").pop()}</bdi>
+            </span>
+          )}
+          {/* The <bdi> is load-bearing. The span is RTL so the ellipsis lands on
+              the LEFT — branch names share their prefix and differ at the end —
+              but RTL alone also reorders the text, drawing `feature/a` as
+              `a/feature`. <bdi> isolates the run inside the box. */}
+          {repo.branch && (
+            <span className="gitp-toggle-branch">
+              <bdi>{repo.branch}</bdi>
+            </span>
+          )}
+          {repo.changed > 0 && <span className="gitp-badge">{repo.changed}</span>}
+          {repo.changed === 0 && repo.ahead > 0 && (
+            <span className="gitp-badge is-ahead">↑{repo.ahead}</span>
+          )}
         </span>
+      ))}
+
+      {/* A phone has room for the chat's own repo and nothing else, so the ones
+          the stylesheet hides are counted rather than silently dropped. */}
+      {chips.length > 1 && <span className="gitp-more">+{chips.length - 1}</span>}
+
+      {/* No repo at all: the old single badge still says whether there is work. */}
+      {chips.length === 0 && changed > 0 && <span className="gitp-badge">{changed}</span>}
+      {chips.length === 0 && changed === 0 && ahead > 0 && (
+        <span className="gitp-badge is-ahead">↑{ahead}</span>
       )}
-      {changed > 0 && <span className="gitp-badge">{changed}</span>}
-      {changed === 0 && ahead > 0 && <span className="gitp-badge is-ahead">↑{ahead}</span>}
     </button>
   );
 }
-
-// ---------------------------------------------------------------------------
-// The panel
-// ---------------------------------------------------------------------------
 
 export function GitPanel({
   project,

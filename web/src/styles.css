@@ -2942,6 +2942,65 @@ body {
    width from the chat and closing it gives the width back, so a reply stays
    readable while you stage a file. No scrim and no shadow: both would say this
    hovers above the page, and it does not. */
+/* One chip per repo. A project spanning several repos has several answers to
+   "what branch am I on", so they sit side by side rather than being summed. */
+.gitp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* The chat's own repo is the one the agent is working in. Marked by weight and
+   full-strength text; the others stay quieter. */
+.gitp-chip.is-here .gitp-toggle-branch {
+  color: var(--fg-1);
+  font-weight: 600;
+}
+
+.gitp-chip:not(.is-here) .gitp-toggle-branch {
+  color: var(--fg-3);
+}
+
+.gitp-chip + .gitp-chip::before {
+  content: "·";
+  color: var(--fg-3);
+  margin-right: 5px;
+}
+
+/* Capped off the phone too. A branch like `security/forwarded-headers-trust-gate`
+   is 36 characters, and four repos of them would push the bar past any window.
+   The end is kept for the same reason as on a phone; the tooltip has all of it. */
+.gitp-toggle-branch {
+  max-width: 150px;
+  overflow: hidden;
+  white-space: nowrap;
+  direction: rtl;
+  text-overflow: ellipsis;
+}
+
+/* The whole run of chips yields before the window does. */
+.gitp-toggle {
+  min-width: 0;
+}
+/* Truncated from the LEFT, like the branch beside it and for the same reason:
+   `Pandahrms_PerformanceApi` and `Pandahrms_Api` both cut from the right to
+   `Pandahrms_…`, so two different repos drew as the same label. */
+.gitp-chip-repo {
+  font-size: 10px;
+  color: var(--fg-3);
+  max-width: 74px;
+  overflow: hidden;
+  white-space: nowrap;
+  direction: rtl;
+  text-overflow: ellipsis;
+}
+
+/* Off the phone every repo is on screen, so there is nothing left to count. */
+.gitp-more {
+  display: none;
+}
+
 .gitp-toggle {
   display: flex;
   align-items: center;
@@ -3089,9 +3148,21 @@ body {
     display: none;
   }
 
-  /* Kept on a phone, where knowing which branch this chat is on matters most —
-     a worktree looks exactly like the main checkout until something names it.
-     Truncated from the LEFT: branch names share their prefix (`feature/`,
+  /* A phone bar fits one repo. The chat's own is the one kept — a worktree
+     looks exactly like the main checkout until something names it — and the
+     rest become a count, so none of them is silently dropped. */
+  .gitp-chip:not(.is-first),
+  .gitp-chip-repo {
+    display: none;
+  }
+
+  .gitp-more {
+    display: inline;
+    font-size: 10px;
+    color: var(--fg-3);
+  }
+
+  /* Truncated from the LEFT: branch names share their prefix (`feature/`,
      `security/`) and differ at the end, so the end is the half worth keeping. */
   .gitp-toggle-branch {
     max-width: 72px;
