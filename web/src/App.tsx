@@ -75,6 +75,9 @@ const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 const TERM_KEY = "octiq.v2.terminalOpen";
 const GIT_KEY = "octiq.v2.gitOpen";
+/** How long the panel's slide-out takes. Kept in step with the transition in
+ *  styles.css; it only decides when the closed panel leaves the DOM. */
+const GIT_SLIDE_MS = 220;
 const MODE_KEY = "octiq.v2.mode";
 
 /** The two top-level views. Chat is the conversation about the code; the editor
@@ -112,6 +115,10 @@ export default function App() {
   // panel because the button that opens it is in the top bar and the panel it
   // opens is a column in the body — two places, one piece of state.
   const [gitOpen, setGitOpen] = useState(() => localStorage.getItem(GIT_KEY) === "1");
+  /** Kept mounted while the panel slides away, so closing it on a phone is the
+   *  reverse of opening rather than the panel blinking out. Unmounting on
+   *  `gitOpen` alone would cut the animation off at its first frame. */
+  const [gitMounted, setGitMounted] = useState(gitOpen);
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
   const [asks, setAsks] = useState<Record<string, Ask[]>>({});
@@ -586,12 +593,22 @@ export default function App() {
    *  through here, so the stored flag cannot drift from what is on screen. */
   const showGit = useCallback((next: boolean) => {
     setGitOpen(next);
+    // Mount at once so the panel exists to slide IN; unmount only after it has
+    // finished sliding OUT. The delay matches the transform transition in
+    // styles.css — shorter and the panel disappears mid-slide.
+    if (next) setGitMounted(true);
     try {
       localStorage.setItem(GIT_KEY, next ? "1" : "0");
     } catch {
       /* storage blocked: it just forgets between visits */
     }
   }, []);
+
+  useEffect(() => {
+    if (gitOpen) return;
+    const timer = setTimeout(() => setGitMounted(false), GIT_SLIDE_MS);
+    return () => clearTimeout(timer);
+  }, [gitOpen]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
@@ -1089,11 +1106,15 @@ export default function App() {
           </div>
         )}
 
-        {/* A sibling of the views, not something laid over them: whichever view
-            is showing gives up width while this is open and takes it straight
-            back when it closes. It sits beside the editor too — reading a diff
-            next to the file it belongs to is the whole point. */}
-        {gitOpen && <GitPanel project={project} onClose={() => showGit(false)} />}
+        {/* On a wide screen a sibling of the views, not something laid over
+            them: whichever view is showing gives up width while this is open and
+            takes it straight back when it closes. It sits beside the editor too
+            — reading a diff next to the file it belongs to is the whole point.
+            On a phone the stylesheet turns the same element into a sheet that
+            slides in from the right. */}
+        {gitMounted && (
+          <GitPanel project={project} open={gitOpen} onClose={() => showGit(false)} />
+        )}
       </div>
 
       {settingsFor && (

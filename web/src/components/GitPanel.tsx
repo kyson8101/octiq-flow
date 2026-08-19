@@ -237,9 +237,14 @@ export function GitButton({
 
 export function GitPanel({
   project,
+  open,
   onClose,
 }: {
   project: GitProject | null;
+  /** False while it is sliding away. The parent keeps this mounted until the
+   *  slide finishes, so closing looks like the reverse of opening rather than
+   *  the panel simply vanishing. */
+  open: boolean;
   onClose: () => void;
 }) {
   const [repos, setRepos] = useState<RepoChanges[] | null>(null);
@@ -260,6 +265,17 @@ export function GitPanel({
    *  small. */
   const [chosen, setChosen] = useState(() => Number(localStorage.getItem(WIDTH_KEY)) || DEFAULT_W);
   const [, onViewportChange] = useState(0);
+  /* Mounted one frame in its off-screen position before it is told to open, so
+   * the phone rule has something to transition FROM. Mounting straight into the
+   * open position is already the finished state, and CSS has nothing to animate
+   * — the panel would appear instantly, which is the thing this exists to
+   * avoid. Off the phone this class changes nothing; the panel is a column. */
+  const [entered, setEntered] = useState(false);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setEntered(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
   const [pullMode, setPullMode] = useState<PullMode>(() => {
     const saved = localStorage.getItem(PULL_KEY);
     return PULL_MODES.includes(saved as PullMode) ? (saved as PullMode) : "rebase";
@@ -504,8 +520,18 @@ export function GitPanel({
   }, [message, targets, runOp]);
 
   return (
+    <>
+      {/* Phone only (the stylesheet hides it otherwise): tapping beside the
+          panel closes it, which is what every sheet on the device does. It sits
+          UNDER the project drawer's own scrim so opening that over this still
+          works. */}
+      <div
+        className={`gitp-scrim ${entered && open ? "is-open" : ""}`}
+        onClick={onClose}
+        aria-hidden="true"
+      />
     <aside
-      className="gitp-panel"
+      className={`gitp-panel ${entered && open ? "is-open" : ""}`}
       aria-label="Git"
       // A custom property, not `width`: the phone rule in styles.css has to be
       // able to drop the column width, and an inline `width` would outrank it.
@@ -610,6 +636,7 @@ export function GitPanel({
         </div>
       )}
     </aside>
+    </>
   );
 }
 

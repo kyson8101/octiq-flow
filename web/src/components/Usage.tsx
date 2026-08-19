@@ -189,16 +189,25 @@ function Pill({
   // Anthropic reports more. Named by the model so it is clear which is which.
   for (const m of provider?.models ?? []) windows.push({ label: m.name, window: m });
 
+  // The window closest to its limit. On a phone the top bar only has room for
+  // one number per agent, and this is the one worth having — the others are a
+  // tap away in the popup. It keeps its own label, so a lone number is never
+  // left standing for a window you cannot identify.
+  let tightest = -1;
+  for (let i = 0; i < windows.length; i += 1) {
+    if (tightest < 0 || windows[i].window.percent > windows[tightest].window.percent) tightest = i;
+  }
+
   return (
     <span className={`usage-pill ${stale ? "is-stale" : ""}`}>
       <span className="usage-tag">{label}</span>
       {windows.length === 0 ? (
         <span className="usage-val">—</span>
       ) : (
-        windows.map((w) => {
+        windows.map((w, i) => {
           const percent = Math.min(100, Math.max(0, w.window.percent));
           return (
-            <span className="usage-num" key={w.label}>
+            <span className={`usage-num ${i === tightest ? "is-tightest" : ""}`} key={w.label}>
               <span className="usage-num-label">{w.label}</span>
               <span className={`usage-val ${severity(percent)}`}>{Math.round(percent)}%</span>
             </span>

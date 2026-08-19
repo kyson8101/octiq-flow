@@ -113,6 +113,12 @@ body {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  /* The git sheet parks itself just off the RIGHT edge, and overflow to the
+     right is scrollable where overflow to the left is not — which is why the
+     sidebar has never needed this and the git panel does. `clip` rather than
+     `hidden` so this does not become a scroll container and steal the inner
+     panes' own scrolling. */
+  overflow-x: clip;
 }
 
 .sidebar {
@@ -1950,6 +1956,17 @@ body {
   flex: 0 0 auto;
 }
 
+/* A phone's top bar carries the project name, the view switch, the git toggle
+   and this. Something has to give, and three windows per agent is the part that
+   is not needed at a glance — only the tightest stays, still labelled, with the
+   rest one tap away in the popup. Without this the bar ran 19px past a 390px
+   screen and took the whole page into horizontal scroll with it. */
+@media (max-width: 700px) {
+  .usage-num:not(.is-tightest) {
+    display: none;
+  }
+}
+
 .usage-btn {
   display: flex;
   align-items: center;
@@ -3014,16 +3031,52 @@ body {
    the chat at 90px, so instead the panel IS the view while it is open — the
    chat stays mounted underneath, keeping its scroll, and comes back the moment
    this closes. Keep the width here in step with PHONE_W in GitPanel.tsx. */
+/* Off the phone the panel is a column and there is nothing to slide, so the
+   scrim does not exist. */
+.gitp-scrim {
+  display: none;
+}
+
 @media (max-width: 700px) {
+  /* Two columns stop fitting here — a 300px panel beside a 390px screen leaves
+     the chat at 90px — so the panel becomes a sheet that slides in from the
+     right edge, the way a sheet on the device does. It is anchored right rather
+     than filling the body: the strip of the view left showing is what says this
+     is on top of your work and will go away again. */
   .gitp-panel {
     position: absolute;
-    inset: 0;
-    /* Above <main>, and deliberately BELOW the project drawer (20) and its
+    inset: 0 0 0 auto;
+    width: min(88vw, 420px);
+    /* Above the views, and deliberately BELOW the project drawer (20) and its
        scrim (10): opening the drawer on top of the git panel has to work, and
-       tapping the scrim has to close it. */
+       tapping that scrim has to close it. */
     z-index: 5;
-    width: auto;
-    border-left: 0;
+    border-left: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transform: translateX(102%);
+    transition: transform 0.2s ease;
+  }
+
+  /* 102% rather than 100%: the shadow is drawn outside the box, and at exactly
+     100% a sliver of it stays on screen down the right edge. */
+  .gitp-panel.is-open {
+    transform: translateX(0);
+  }
+
+  .gitp-scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .gitp-scrim.is-open {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .gitp-resizer {
@@ -3032,6 +3085,15 @@ body {
 
   .gitp-toggle-branch {
     display: none;
+  }
+}
+
+/* Someone who asked the system for less movement gets the sheet without the
+   slide — it still appears and still dims what is behind it. */
+@media (prefers-reduced-motion: reduce) {
+  .gitp-panel,
+  .gitp-scrim {
+    transition: none;
   }
 }
 
