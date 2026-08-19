@@ -8,6 +8,6 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
-    "monaco-editor": "^0.55.1"
+    "monaco-editor": "^0.56.0"
   }
 }
