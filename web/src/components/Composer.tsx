@@ -98,26 +98,37 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 /** How many past messages Up can reach. Enough to find the thing you sent a
  *  few minutes ago, few enough to stay small in storage. */
 const HISTORY_MAX = 100;
-const HISTORY_KEY = "octiq.v2.history";
 
-function loadHistory(): string[] {
+/** Input history is PER CHAT.
+ *
+ *  One shared list meant pressing Up in a chat about the payroll migration
+ *  offered what you last typed at a novel — recall is only useful when what
+ *  comes back belongs to the conversation you are in. Chats with no id yet
+ *  (a new one, before it is saved) share a scratch list rather than writing
+ *  into somebody else's. */
+function historyKey(session?: string): string {
+  return `octiq.v2.history:${session || "new"}`;
+}
+
+function loadHistory(session?: string): string[] {
   try {
-    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    const raw = JSON.parse(localStorage.getItem(historyKey(session)) || "[]");
     return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
   } catch {
     return [];
   }
 }
 
-function saveHistory(list: string[]): void {
+function saveHistory(session: string | undefined, list: string[]): void {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+    localStorage.setItem(historyKey(session), JSON.stringify(list));
   } catch {
     /* storage blocked: history lasts this session only */
   }
 }
 
 export function Composer({
+  session,
   choice,
   onChoice,
   access,
@@ -137,6 +148,9 @@ export function Composer({
   onTerminal,
   terminalOpen,
 }: {
+  /** Which chat this is, so Up walks back through ITS input and no one else's.
+   *  Absent for a chat that has not been saved yet. */
+  session?: string;
   choice: ModelChoice;
   onChoice: (c: ModelChoice) => void;
   access: AccessLevel;
@@ -187,8 +201,15 @@ export function Composer({
   const [attachError, setAttachError] = useState<string | null>(null);
   // What you have sent before, newest first, and where Up has walked to.
   // -1 is "not browsing"; anything else is an index into `history`.
-  const [history, setHistory] = useState<string[]>(() => loadHistory());
+  const [history, setHistory] = useState<string[]>(() => loadHistory(session));
   const [recall, setRecall] = useState(-1);
+
+  // Switching chats swaps the list under you. Recall has to let go with it, or
+  // the next Up would index into the new chat's history at the old position.
+  useEffect(() => {
+    setHistory(loadHistory(session));
+    setRecall(-1);
+  }, [session]);
   // What was in the box before Up was first pressed, so Down can put it back
   // rather than leaving you with the last thing you sent.
   const draft = useRef("");
@@ -315,7 +336,7 @@ export function Composer({
     // not stack: two identical entries in a row make Up feel broken.
     setHistory((prev) => {
       const next = prev[0] === value ? prev : [value, ...prev].slice(0, HISTORY_MAX);
-      saveHistory(next);
+      saveHistory(session, next);
       return next;
     });
     setRecall(-1);

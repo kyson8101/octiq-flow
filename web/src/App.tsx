@@ -74,6 +74,30 @@ const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 const TERM_KEY = "octiq.v2.terminalOpen";
+/** What the address bar says you are looking at.
+ *
+ *  The hash rather than the path: the client is served under /v2/ with a
+ *  relative base, and `?token=…` already owns the query string (it is read once
+ *  and stripped). A hash needs no server route and survives a reload.
+ *
+ *  Shape: #/p/<projectId>/c/<chatId> — the chat half is dropped for a project
+ *  with nothing open yet. */
+function readLocation(): { project?: string; chat?: string } {
+  const m = /^#\/p\/([^/]+)(?:\/c\/([^/]+))?/.exec(location.hash);
+  return m ? { project: decodeURIComponent(m[1]), chat: m[2] && decodeURIComponent(m[2]) } : {};
+}
+
+function writeLocation(project: string | null, chat: string | null): void {
+  const next = project
+    ? `#/p/${encodeURIComponent(project)}${chat ? `/c/${encodeURIComponent(chat)}` : ""}`
+    : "";
+  if (next === location.hash) return;
+  // replaceState, not a hash assignment: switching chats is not navigation you
+  // want to walk back through one at a time, and assigning to location.hash
+  // would push an entry for every click.
+  history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
+}
+
 const GIT_KEY = "octiq.v2.gitOpen";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
@@ -89,6 +113,9 @@ export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
+  /** What the address bar asked for on arrival. Read once: after this the URL
+   *  follows the app, not the other way round. */
+  const opened = useRef(readLocation());
   // Every chat that is loaded or running, keyed by conversation id. Chats run
   // in PARALLEL: switching to another one leaves this one working, and its
   // answer lands in here whether or not you are looking at it.
@@ -227,7 +254,14 @@ export default function App() {
       .then((list) => {
         const active = (list ?? []).filter((w) => !w.shelved);
         setWorkspaces(active);
-        setProjectId((cur) => (cur && active.some((w) => w.id === cur) ? cur : active[0]?.id ?? null));
+        setProjectId((cur) => {
+          if (cur && active.some((w) => w.id === cur)) return cur;
+          // The link wins over "first in the list", but only if it still exists
+          // — a shelved or deleted project must not leave you on nothing.
+          const asked = opened.current.project;
+          if (asked && active.some((w) => w.id === asked)) return asked;
+          return active[0]?.id ?? null;
+        });
         // The project you land in is open; anything else keeps its saved state.
         if (active[0]) setExpanded((prev) => new Set(prev).add(active[0].id));
       })
@@ -492,6 +526,25 @@ export default function App() {
   // long task you closed the lid on is the one you most want to survive. What
   // is left running is adopted on the next load through chat_list, and stopping
   // is a thing you ask for.
+
+  // The address bar mirrors what you are looking at, so a link to this chat is
+  // just the URL — which is the only way to get back to one specific
+  // conversation from a phone's home screen or another device.
+  useEffect(() => {
+    writeLocation(projectId, conversationId);
+  }, [projectId, conversationId]);
+
+  // Open the chat the URL named, once, as soon as the list it lives in arrives.
+  // Cleared after one go: from then on the app drives the URL.
+  useEffect(() => {
+    const wanted = opened.current.chat;
+    if (!wanted) return;
+    const found = conversations.find((c) => c.id === wanted);
+    if (!found) return;
+    opened.current = {};
+    setProjectId(found.projectId);
+    setConversationId(found.id);
+  }, [conversations]);
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -1027,7 +1080,13 @@ export default function App() {
             if (pending.length === 0) return null;
             return (
               <UserQuestion
-                key={pending.map((q) => q.id).join("|")}
+                // Keyed on the FIRST question, not the whole list. Keying on
+                // the list meant a question arriving mid-batch changed the key,
+                // remounting the card and throwing away the answers already
+                // given and the page you were on. The first id is stable until
+                // the batch is submitted, which is exactly when a fresh card is
+                // wanted.
+                key={pending[0].id}
                 questions={pending}
                 onDone={(ids) =>
                   setQuestions((prev) => ({
@@ -1072,6 +1131,7 @@ export default function App() {
           )}
 
           <Composer
+            session={conversationId ?? undefined}
             choice={choice}
             onChoice={changeModel}
             started={chat.messages.length > 0}
