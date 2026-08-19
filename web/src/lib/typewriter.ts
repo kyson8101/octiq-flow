@@ -102,18 +102,3 @@ export function useTypewriter(target: string, active: boolean): string {
 
   return target.slice(0, shown);
 }
-
-/**
- * Make a half-written markdown string safe to render.
- *
- * Revealing text a few characters at a time means the parser regularly sees a
- * code fence that has opened and not closed, and renders the rest of the reply
- * as code until the closing fence arrives — the block flickers in and out as it
- * streams. Closing the fence ourselves keeps it stable; the real closer simply
- * replaces this one a moment later.
- */
-export function closeOpenFences(text: string): string {
-  const fences = (text.match(/^```/gm) ?? []).length;
-  if (fences % 2 === 0) return text;
-  return text.endsWith("\n") ? `${text}\`\`\`` : `${text}\n\`\`\``;
-}

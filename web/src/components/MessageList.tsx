@@ -3,13 +3,14 @@
 // Each assistant message is a stack of blocks in the order the agent produced
 // them: prose, the tool calls it made along the way, more prose. Thinking is
 // folded away — it is long, and it is not the answer.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
-import { closeOpenFences, useTypewriter } from "../lib/typewriter";
+import { useTypewriter } from "../lib/typewriter";
+import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
 import { FileList } from "./FileList";
 import { copyText } from "../lib/clipboard";
@@ -72,18 +73,50 @@ function CodeBlock({ children }: { children?: React.ReactNode }) {
 function Prose({ text, animate }: { text: string; animate: boolean }) {
   const shown = useTypewriter(text, animate);
   const caret = animate && shown.length < text.length;
+
+  // Rendered a block at a time. Only the last one is still being written, so
+  // everything above it is memoised and stops re-rendering — which is the
+  // whole cost of a long streaming reply.
+  const blocks = useMemo(() => splitBlocks(shown), [shown]);
+
   return (
     <div className={`prose ${caret ? "is-typing" : ""}`}>
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={animate ? [rehypeWordFade] : []}
-        components={{ pre: CodeBlock }}
-      >
-        {closeOpenFences(shown)}
-      </Markdown>
+      {blocks.map((block, i) => (
+        <MarkdownBlock
+          key={i}
+          text={block}
+          // Only the block currently arriving fades its words in; doing it to
+          // settled blocks would replay the whole reply on every tick.
+          animate={animate && i === blocks.length - 1}
+        />
+      ))}
     </div>
   );
 }
+
+/** One top-level markdown block.
+ *
+ *  Memoised on its own text: a settled block's text never changes again, so
+ *  React skips it entirely once the stream has moved past it. This is the
+ *  difference between re-parsing the whole answer on every delta and
+ *  re-parsing one paragraph. */
+const MarkdownBlock = memo(function MarkdownBlock({
+  text,
+  animate,
+}: {
+  text: string;
+  animate: boolean;
+}) {
+  return (
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={animate ? [rehypeWordFade] : []}
+      components={{ pre: CodeBlock }}
+    >
+      {closeFence(text)}
+    </Markdown>
+  );
+});
 
 function BlockView({ block, animate }: { block: Block; animate?: boolean }) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
