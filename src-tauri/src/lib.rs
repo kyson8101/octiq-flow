@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::{Emitter, Manager, WindowEvent};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_opener::OpenerExt;
 
 mod agent_chat;
 mod agent_resume;
@@ -87,6 +89,44 @@ pub async fn run_headless() {
     web::start_headless(cfg, services).await;
 }
 
+/// The app was opened while something else already owns the profile.
+///
+/// Both the app and the service keep the whole profile in memory and write it
+/// back whole, so whichever saves last silently reverts the other's work: add a
+/// project on your phone, open the app, touch anything, and the project is
+/// gone. Nothing crashes, which is what makes it nasty.
+///
+/// Sharing is not attempted, because the app would have to re-read before every
+/// write in four separate stores and would still race. It says where the running
+/// copy is and closes — the only outcome that cannot lose a project.
+fn defer_to_running_copy(app: &tauri::AppHandle, owner: &profile_lock::Owner) {
+    let url = format!("http://127.0.0.1:{}/v2/", web::load_config().port);
+    let handle = app.clone();
+    let opened = url.clone();
+    // Deliberately NOT `blocking_show`. This runs inside `setup`, before the
+    // event loop starts, and on macOS a blocking dialog there returns at once
+    // without drawing anything — the app then vanished on launch saying nothing,
+    // which is worse than the collision it was added to explain. The callback
+    // fires once the loop is up, so the window (configured hidden) simply never
+    // appears and the dialog is the only thing on screen.
+    app.dialog()
+        .message(format!(
+            "{}\n\nYour projects, chats and terminals are all there:\n{opened}",
+            profile_lock::conflict_message(owner)
+        ))
+        .title("OctiqFlow is already running")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Open in Browser".into(),
+            "Quit".into(),
+        ))
+        .show(move |open| {
+            if open {
+                let _ = handle.opener().open_url(&url, None::<&str>);
+            }
+            handle.exit(0);
+        });
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -98,6 +138,17 @@ pub fn run() {
         .plugin(tauri_plugin_macos_fps::init())
         .manage(CloseGuard(AtomicBool::new(false)))
         .setup(|app| {
+            // One owner per profile, decided BEFORE anything below runs: the
+            // migrations and every store that follows write to the profile, so
+            // a check further down would already be too late.
+            if let Err(owner) = profile_lock::acquire("desktop") {
+                defer_to_running_copy(app.handle(), &owner);
+                // Returning here is what makes this safe: not one line below
+                // runs, so no migration and no store ever writes to a profile
+                // we do not own. The exit happens when the dialog is answered.
+                return Ok(());
+            }
+
             // Seed the active profile from the old fixed `app_data_dir` locations
             // on first launch, BEFORE the stores below load — they now read from
             // the profile's data root, so the migrated files must be in place.
@@ -157,26 +208,24 @@ pub fn run() {
             // Events reach the window through the bus from here on, so producers need
             // no AppHandle — which is what lets the same code run headless.
             web::mirror_events_to_desktop(app.handle());
-            // The app is opened on purpose, so it does not refuse — but it
-            // says what is about to happen, and it does not open a second
-            // server on top of the service's port.
-            let profile_taken = profile_lock::acquire("desktop").err();
-            if let Some(owner) = &profile_taken {
-                eprintln!("[app] {}", profile_lock::conflict_message(owner));
-            }
-
-            if profile_taken.is_none() {
-                chat_index::reconcile();
-            }
+            // Reaching here means we own the profile — the alternative left
+            // above — so these no longer have to ask.
+            chat_index::reconcile();
 
             let web_cfg = web::load_config();
-            if web_cfg.enabled && profile_taken.is_none() {
+            if web_cfg.enabled {
                 // One WebState, shared by the Tauri commands that read it and
                 // by the server itself — the same shape the headless server
                 // builds for itself.
                 let state = std::sync::Arc::new(web::WebState::new(web_cfg.clone()));
                 app.manage(state.clone());
                 web::start(app.handle(), state, web_cfg);
+            }
+
+            // Configured hidden so that a refusal above never flashes a window.
+            // We own the profile, so this is a real launch: show it.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
             }
 
             Ok(())
