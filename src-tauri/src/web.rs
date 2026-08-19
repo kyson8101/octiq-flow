@@ -92,6 +92,10 @@ pub struct WebConfig {
     pub bind: String,
     #[serde(default)]
     pub token: String,
+    /// Signing in with Cloudflare Access instead of pasting the token. Empty
+    /// means off, and the token stays the only way in.
+    #[serde(default)]
+    pub access: crate::access::AccessConfig,
 }
 
 fn default_port() -> u16 {
@@ -109,6 +113,7 @@ impl Default for WebConfig {
             port: default_port(),
             bind: default_bind(),
             token: String::new(),
+            access: Default::default(),
         }
     }
 }
@@ -568,12 +573,45 @@ async fn token_handler(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    // Someone Cloudflare Access has already identified. They got past a sign-in
+    // to be here, which is a stronger claim than "this request came from
+    // 127.0.0.1" ever was — so they are handed the token and every later
+    // request looks like any other. This is what makes signing in replace
+    // pasting a token, rather than sit on top of it.
+    let cfg_access = ctx.state.cfg.lock().ok().map(|c| c.access.clone());
+    if let Some(access) = cfg_access.filter(|a| a.is_configured()) {
+        let assertion = headers
+            .get(crate::access::ASSERTION_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        match crate::access::verify(&access, assertion) {
+            Ok(who) => {
+                println!("[web] token issued to {} via Access", who.email);
+                return token_body(&ctx);
+            }
+            Err(why) if !assertion.is_empty() => {
+                // A header that does not verify is not a near miss; it is the
+                // shape an attempt takes.
+                eprintln!("[web] Access assertion refused: {why}");
+                return (StatusCode::FORBIDDEN, "not signed in").into_response();
+            }
+            // No header at all: not an Access request. Fall through to the
+            // local-browser rule below.
+            Err(_) => {}
+        }
+    }
+
     // Order matters: the proxy check comes FIRST, because a forwarded request
     // passes the loopback test. Exposing this through a tunnel without it would
     // publish the token to anyone who asked for it.
     if came_through_a_proxy(&headers) || !peer.ip().is_loopback() {
         return (StatusCode::FORBIDDEN, "not local").into_response();
     }
+    token_body(&ctx)
+}
+
+/// The token itself, for whichever of the two ways in got here.
+fn token_body(ctx: &Ctx) -> Response {
     let token = ctx
         .state
         .cfg

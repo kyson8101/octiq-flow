@@ -47,6 +47,12 @@ fontdb = "0.23"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
 futures-util = "0.3"
+# Cloudflare Access sign-in (access.rs): verify the JWT Access puts on every
+# request it lets through, so a browser that has signed in needs no token of
+# ours. `ureq` only ever fetches Cloudflare's public keys — a blocking call made
+# rarely and cached — which is why it is here instead of a full async client.
+jsonwebtoken = "9"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 
 # macOS-only: read the frontmost window's CoreGraphics id so the screenshot
 # hotkey captures the active window (vault.rs). CoreGraphics itself is linked

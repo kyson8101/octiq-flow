@@ -10,6 +10,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
+mod access;
 mod agent_chat;
 mod agent_resume;
 mod agents;
