@@ -322,10 +322,18 @@ export function MessageList({
     };
     const onScroll = () => {
       if (!gesture.current) return;
+      // A flick on a phone keeps scrolling long after the finger is gone —
+      // momentum runs for seconds, while the window above is 400ms. Letting it
+      // expire mid-glide was the mobile bug: the rest of the glide arrived
+      // unbelieved, `stick` never turned off, and the next height change yanked
+      // the reader back to the bottom they had just scrolled away from. The
+      // glide is still the reader's gesture, so it keeps the window open.
+      mark();
       stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("wheel", mark, { passive: true });
+    el.addEventListener("touchstart", mark, { passive: true });
     el.addEventListener("touchmove", mark, { passive: true });
     el.addEventListener("pointerdown", mark, { passive: true });
     el.addEventListener("keydown", mark);
@@ -333,6 +341,7 @@ export function MessageList({
       window.clearTimeout(until);
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", mark);
+      el.removeEventListener("touchstart", mark);
       el.removeEventListener("touchmove", mark);
       el.removeEventListener("pointerdown", mark);
       el.removeEventListener("keydown", mark);
@@ -374,9 +383,18 @@ export function MessageList({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    if (stick.current) endRef.current?.scrollIntoView({ block: "end" });
-  });
+  // There is deliberately no `scrollIntoView` pass here.
+  //
+  // One used to run after EVERY render, which during a stream means once per
+  // chunk — and it raced the observer above, two different scroll APIs writing
+  // the same position several times a frame. That is what made a reply look
+  // jumpy rather than smooth.
+  //
+  // `scrollIntoView` is also the wrong tool on a phone: it scrolls every
+  // scrollable ANCESTOR to bring the target into view, not just this list, so
+  // it would drag the whole app shell and take the composer off screen with it.
+  // Setting `scrollTop` moves this one element and nothing else, and the
+  // observer already fires on every height change the stream produces.
 
   return (
     <div className="msgs" ref={scrollerRef}>

@@ -54,6 +54,12 @@ body {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  /* Nothing may scroll the SHELL sideways. One over-wide descendant — a long
+     unbroken URL, a wide table, a code line — used to drag the entire app
+     across on a phone, taking the header and composer off screen with it.
+     Anything genuinely wide scrolls inside its own box instead (pre, table),
+     which is where a horizontal scroll belongs. */
+  overflow-x: hidden;
 }
 
 .conn-strip {
@@ -327,6 +333,9 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  /* The transcript scrolls one way only. A wide code block or table brings its
+     own horizontal scroll; the column of messages around it must not. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
 }
 
@@ -337,6 +346,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  /* A flex item's floor is its CONTENT width unless told otherwise, so one
+     long line inside a message would widen this whole column rather than
+     scroll within its own block. */
+  min-width: 0;
 }
 
 .msg-user {
