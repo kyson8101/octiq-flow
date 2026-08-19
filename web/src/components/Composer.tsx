@@ -95,6 +95,28 @@ export type Attachment = {
 
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 
+/** How many past messages Up can reach. Enough to find the thing you sent a
+ *  few minutes ago, few enough to stay small in storage. */
+const HISTORY_MAX = 100;
+const HISTORY_KEY = "octiq.v2.history";
+
+function loadHistory(): string[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+    return Array.isArray(raw) ? raw.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(list: string[]): void {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
+  } catch {
+    /* storage blocked: history lasts this session only */
+  }
+}
+
 export function Composer({
   choice,
   onChoice,
@@ -161,6 +183,13 @@ export function Composer({
   const [effMenu, setEffMenu] = useState(false);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  // What you have sent before, newest first, and where Up has walked to.
+  // -1 is "not browsing"; anything else is an index into `history`.
+  const [history, setHistory] = useState<string[]>(() => loadHistory());
+  const [recall, setRecall] = useState(-1);
+  // What was in the box before Up was first pressed, so Down can put it back
+  // rather than leaving you with the last thing you sent.
+  const draft = useRef("");
   const [filePicker, setFilePicker] = useState(false);
 
   // The slash menu is open while the WHOLE input is one `/word` — a slash
@@ -264,6 +293,15 @@ export function Composer({
     const value = text.trim();
     if ((!value && attached.length === 0) || disabled) return;
     onSend(value, attached);
+    // Remembered before the box is cleared. A repeat of the last message does
+    // not stack: two identical entries in a row make Up feel broken.
+    setHistory((prev) => {
+      const next = prev[0] === value ? prev : [value, ...prev].slice(0, HISTORY_MAX);
+      saveHistory(next);
+      return next;
+    });
+    setRecall(-1);
+    draft.current = "";
     setText("");
     // The message owns them now; these previews are done.
     forget(attached);
@@ -372,6 +410,32 @@ export function Composer({
                 return;
               }
             }
+            // Up walks back through what you have sent, the way a shell does.
+            // Only from the FIRST line, so it still moves the cursor inside a
+            // message you are part-way through writing.
+            const area = e.currentTarget;
+            const atStart = area.selectionStart === 0 && area.selectionEnd === 0;
+            const onFirstLine = !text.slice(0, area.selectionStart).includes("\n");
+            const onLastLine = !text.slice(area.selectionEnd).includes("\n");
+
+            if (e.key === "ArrowUp" && history.length && (recall >= 0 || (atStart && onFirstLine))) {
+              const next = Math.min(recall + 1, history.length - 1);
+              if (recall === -1) draft.current = text;
+              e.preventDefault();
+              setRecall(next);
+              setText(history[next]);
+              return;
+            }
+            if (e.key === "ArrowDown" && recall >= 0 && onLastLine) {
+              e.preventDefault();
+              const next = recall - 1;
+              setRecall(next);
+              setText(next < 0 ? draft.current : history[next]);
+              return;
+            }
+            // Typing anything else means you are writing, not browsing.
+            if (recall >= 0 && e.key.length === 1) setRecall(-1);
+
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send();

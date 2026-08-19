@@ -168,8 +168,15 @@ function TurnView({
     .join("\n\n")
     .trim();
 
+  // A user turn the agent has not picked up yet. It echoes a message back when
+  // it STARTS on it, not when it receives it — measured: a second message sent
+  // mid-answer is echoed only after the first turn's result. So an un-echoed
+  // bubble is one sitting in the queue, and saying so is the difference between
+  // "it is ignoring me" and "it will get to it".
+  const queued = role === "user" && messages.every((m) => !m.echo);
+
   return (
-    <article className={`msg msg-${role}`}>
+    <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
       {role === "assistant" && <div className="msg-role">Claude</div>}
       <div className="msg-body">
         {blocks.map((block, i) => (
@@ -177,6 +184,7 @@ function TurnView({
         ))}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
+        {queued && <div className="queued">queued</div>}
         {/* Only once the turn is done, and only when there is prose to take. */}
         {role === "assistant" && !streaming && answer && <CopyAnswer text={answer} />}
         {/* Only once the turn is done: a list that grows while the agent is

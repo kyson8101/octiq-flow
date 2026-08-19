@@ -149,6 +149,36 @@ export function describeFailure(agent: "claude" | "codex", raw: string): Failure
   return { title: "The agent stopped with an error", detail: text || undefined };
 }
 
+/** The agent's own status words, said the way a person would.
+ *
+ *  Only the ones worth interrupting the reader for. `streaming` and `tool_use`
+ *  are already visible — the text is appearing, the tool card is on screen —
+ *  so naming them again is noise. What matters is the states with nothing to
+ *  show: a compaction, a retry, a queue. */
+function describeStatus(status: string): string | undefined {
+  switch (status) {
+    case "compacting":
+      return "Compacting the conversation to make room…";
+    case "retrying":
+      return "Retrying…";
+    case "queued":
+      return "Queued behind another request…";
+    case "resuming":
+      return "Picking the session back up…";
+    case "starting":
+      return "Starting…";
+    case "waiting":
+      return "Waiting…";
+    case "requesting":
+      return "Thinking…";
+    case "thinking":
+      return "Thinking…";
+    default:
+      // streaming, tool_use, idle: already obvious from the screen.
+      return undefined;
+  }
+}
+
 type Json = Record<string, unknown>;
 
 const asObj = (v: unknown): Json => (v && typeof v === "object" ? (v as Json) : {});
@@ -205,28 +235,33 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
   if (type === "system") {
     const subtype = asStr(e.subtype);
 
-    // Compaction. The agent rewrites its own history to make room, which can
-    // take a while and produces nothing to show — so the chat sat on
-    // "working…" with no sign of what it was working on. It is also worth
-    // recording where it happened: everything above the boundary is a summary
-    // now, which is why the agent may not recall a detail from earlier.
-    if (subtype.includes("compact")) {
-      if (subtype.includes("boundary")) {
-        return {
-          ...state,
-          activity: undefined,
-          messages: [
-            ...state.messages,
-            {
-              id: `compact-${state.messages.length}`,
-              role: "assistant",
-              blocks: [{ kind: "compacted", text: "" }],
-              streaming: false,
-            },
-          ],
-        };
-      }
-      return { ...state, activity: "Compacting the conversation to make room…" };
+    // What the agent is doing right now.
+    //
+    // Guessed at first from names in the binary, which was wrong: compaction
+    // does not announce itself with its own event type. It comes through here,
+    // on the one channel that reports every state the agent passes through —
+    // requesting, thinking, tool_use, compacting, retrying, queued. Without it
+    // a long pause showed a motionless "working…" whatever was happening.
+    if (subtype === "status") {
+      const status = asStr(e.status);
+      return { ...state, activity: status ? describeStatus(status) : undefined };
+    }
+
+    // Where the agent summarised its own history. Everything above the line is
+    // a summary now, which is the answer to "why has it forgotten what I said".
+    if (subtype.includes("compact") && subtype.includes("boundary")) {
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `compact-${state.messages.length}`,
+            role: "assistant",
+            blocks: [{ kind: "compacted", text: "" }],
+            streaming: false,
+          },
+        ],
+      };
     }
 
     if (subtype !== "init") return state; // hooks, token counters: noise

@@ -2775,3 +2775,17 @@ body {
   font-size: 11px;
   color: var(--fg-3);
 }
+
+/* A message the agent has not started on yet. Dimmed rather than hidden: it
+   was sent, it just has not been picked up. */
+.msg.is-queued .msg-body {
+  opacity: 0.62;
+}
+
+.queued {
+  align-self: flex-end;
+  margin-top: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+}
