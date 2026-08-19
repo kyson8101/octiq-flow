@@ -13,6 +13,9 @@
 //      backend's `resolve_paths`, which answers with an absolute path only for
 //      the ones that EXIST. A word that merely looks like a filename never
 //      makes it into the list.
+//
+// Both sources collect everything, source files included. What the list SHOWS
+// before it is expanded is a smaller thing — see `isShown`.
 import type { Block, Message } from "./chat";
 
 /** Tool argument fields that hold a path. */
@@ -44,9 +47,45 @@ const RESULT_SCAN_LIMIT = 4000;
 
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
+/** The non-image files the list is willing to show.
+ *
+ *  A collapsed list is a footnote to an answer, not a record of the work. A
+ *  reply that edits twenty source files buries the one screenshot it made, and
+ *  the source files are the least useful part of it: they are already the
+ *  subject of the answer, and the tool cards above show them being written. So
+ *  the footnote holds what you would OPEN to LOOK at — a picture, a PDF, a
+ *  note. The rest is still there, one click into "show more".
+ *
+ *  Every extension here is one the app can actually display: an image or PDF in
+ *  the viewer, the rest as text in the side panel. Adding one neither of them
+ *  can render only buys a dead click. */
+const DOC_EXT = new Set(["pdf", "md", "markdown", "mdx", "txt", "csv", "tsv"]);
+
+function extension(path: string): string {
+  return path.split(".").pop()?.toLowerCase() ?? "";
+}
+
 export function isImage(path: string): boolean {
-  const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return IMAGE_EXT.has(ext);
+  return IMAGE_EXT.has(extension(path));
+}
+
+export function isPdf(path: string): boolean {
+  return extension(path) === "pdf";
+}
+
+/** Notes that pass the test above but do not earn the footnote. An agent reads
+ *  these at the start of almost every turn, so they would sit near the top of
+ *  almost every list without once being the thing the answer was about. Matched
+ *  on the name alone, so a README in any folder is caught. Like source files,
+ *  they come back when the list is expanded. */
+const NEVER_SHOWN = new Set(["claude.md", "readme.md", "agents.md"]);
+
+/** Whether a path earns a line in the COLLAPSED list under a reply.
+ *  Expanding shows every path, so this filters, it does not discard. */
+export function isShown(path: string): boolean {
+  if (NEVER_SHOWN.has(baseName(path).toLowerCase())) return false;
+  const ext = extension(path);
+  return IMAGE_EXT.has(ext) || DOC_EXT.has(ext);
 }
 
 export function baseName(path: string): string {
