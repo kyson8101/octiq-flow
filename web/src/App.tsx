@@ -41,6 +41,7 @@ import { Connect } from "./components/Connect";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
+import { GitButton, GitPanel } from "./components/GitPanel";
 import { TerminalPane } from "./components/Terminal";
 import { PermissionAsk, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
@@ -66,6 +67,7 @@ const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 const TERM_KEY = "octiq.v2.terminalOpen";
+const GIT_KEY = "octiq.v2.gitOpen";
 
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
@@ -86,6 +88,10 @@ export default function App() {
   // The shell drawer under the chat. Remembered, because someone who works
   // with it open wants it open next time too.
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
+  // The git column beside the chat. It lives up here rather than inside the
+  // panel because the button that opens it is in the top bar and the panel it
+  // opens is a column in the body — two places, one piece of state.
+  const [gitOpen, setGitOpen] = useState(() => localStorage.getItem(GIT_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
   const [asks, setAsks] = useState<Record<string, Ask[]>>({});
@@ -550,6 +556,17 @@ export default function App() {
     setDrawer(false);
   }, [patch]);
 
+  /** Show or hide the git column, and remember it — every way in and out goes
+   *  through here, so the stored flag cannot drift from what is on screen. */
+  const showGit = useCallback((next: boolean) => {
+    setGitOpen(next);
+    try {
+      localStorage.setItem(GIT_KEY, next ? "1" : "0");
+    } catch {
+      /* storage blocked: it just forgets between visits */
+    }
+  }, []);
+
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
       const next = new Set(s);
@@ -838,6 +855,7 @@ export default function App() {
             its own, next to the project a new chat would belong to — a second
             one up here only raises the question of which project it means. */}
         <div className="topbar-title">{project?.name ?? "OctiqFlow"}</div>
+        <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
         <Usage />
       </header>
 
@@ -1001,6 +1019,10 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {/* A sibling of <main>, not something laid over it: the chat gives up
+            width while this is open and takes it straight back when it closes. */}
+        {gitOpen && <GitPanel project={project} onClose={() => showGit(false)} />}
       </div>
 
       {settingsFor && (
