@@ -23,6 +23,11 @@ export type Question = {
   chatKey?: string;
   question: string;
   options?: string[];
+  /** Index into `options` of the one the agent would pick. Advisory only: it is
+   *  marked, never pre-selected, and closing without answering still sends
+   *  DECLINED rather than this. The agent having a view does not make the
+   *  decision less yours — it just saves you working out which one it meant. */
+  recommended?: number;
 };
 
 /** What it says when you close the card instead of answering.
@@ -115,17 +120,26 @@ export function UserQuestion({
 
           {(current.options ?? []).length > 0 && (
             <div className="qa-options">
-              {(current.options ?? []).map((option) => (
-                <button
-                  key={option}
-                  className={`qa-option ${answers[current.id] === option ? "is-on" : ""}`}
-                  type="button"
-                  disabled={sending}
-                  onClick={() => record(current, option)}
-                >
-                  {option}
-                </button>
-              ))}
+              {(current.options ?? []).map((option, i) => {
+                // Said in WORDS, not colour alone — the mark has to survive a
+                // screen reader and a colourblind reader, and "the blue one"
+                // is not an answer either of them gets.
+                const tip = i === current.recommended;
+                return (
+                  <button
+                    key={option}
+                    className={`qa-option ${answers[current.id] === option ? "is-on" : ""} ${
+                      tip ? "is-tip" : ""
+                    }`}
+                    type="button"
+                    disabled={sending}
+                    onClick={() => record(current, option)}
+                  >
+                    {option}
+                    {tip && <span className="qa-tip">Suggested</span>}
+                  </button>
+                );
+              })}
             </div>
           )}
 

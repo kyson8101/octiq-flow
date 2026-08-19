@@ -41,7 +41,7 @@ function serverConfig() {
 }
 
 /** Put a question to OctiqFlow and wait for the answer. */
-function askOctiq(question, options) {
+function askOctiq(question, options, recommended) {
   return new Promise((resolve) => {
     let cfg;
     try {
@@ -49,7 +49,7 @@ function askOctiq(question, options) {
     } catch {
       return resolve("OctiqFlow is not reachable, so the user could not be asked.");
     }
-    const body = JSON.stringify({ chatKey: CHAT_KEY, question, options });
+    const body = JSON.stringify({ chatKey: CHAT_KEY, question, options, recommended });
     const req = http.request(
       {
         host: "127.0.0.1",
@@ -106,6 +106,14 @@ const TOOL = {
         items: { type: "string" },
         description: "Two to four choices. Omit for a free-text answer.",
       },
+      recommended: {
+        type: "integer",
+        description:
+          "Index into options of the one you would pick, if you have a view. " +
+          "Shown as a hint next to that choice; it is not selected for them " +
+          "and does not become the answer if they say nothing. Omit when you " +
+          "genuinely have no preference — marking one anyway is noise.",
+      },
     },
     required: ["question"],
   },
@@ -142,10 +150,14 @@ async function handle(msg) {
         });
       }
       const args = msg.params.arguments || {};
-      const answer = await askOctiq(
-        String(args.question || "").trim(),
-        Array.isArray(args.options) ? args.options.map(String) : [],
-      );
+      const options = Array.isArray(args.options) ? args.options.map(String) : [];
+      // Only a whole number that actually names one of the options survives.
+      // A stray index would otherwise mark nothing and look like a bug in the
+      // UI rather than a bad argument here.
+      const pick = Number(args.recommended);
+      const recommended =
+        Number.isInteger(pick) && pick >= 0 && pick < options.length ? pick : undefined;
+      const answer = await askOctiq(String(args.question || "").trim(), options, recommended);
       return reply(msg.id, { content: [{ type: "text", text: answer }] });
     }
 

@@ -3072,6 +3072,27 @@ body {
   cursor: default;
 }
 
+/* The agent's suggestion. A faint OUTLINE and a word — never a fill, because a
+   fill is what `.is-on` uses to say "you chose this", and a suggestion that
+   looks chosen is a default wearing a disguise. Scoped away from `.is-on` so
+   that once you pick, your choice owns the look. */
+.qa-option.is-tip:not(.is-on) {
+  border-color: var(--accent-soft-border, var(--accent));
+  background: var(--accent-tint-faint, var(--bg-1));
+}
+
+.qa-tip {
+  margin-left: 7px;
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0.85;
+}
+
+.qa-option.is-on .qa-tip {
+  color: inherit;
+  opacity: 0.75;
+}
+
 .qa-free {
   display: flex;
   gap: 8px;

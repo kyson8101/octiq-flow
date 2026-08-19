@@ -1,11 +1,22 @@
 // The prompt box: type, pick a model, send.
 //
 // Enter sends and Shift+Enter makes a new line, the shape every agent chat
-// uses. The field is 16px because anything smaller makes iOS Safari zoom the
-// page the moment it takes focus.
+// uses — on a keyboard. A phone keyboard has no Shift+Enter, so that rule left
+// no way at all to type a second line: every Enter sent the message half
+// written. On a touch screen Enter is therefore a plain new line, and the send
+// button is how you send. The field is 16px because anything smaller makes iOS
+// Safari zoom the page the moment it takes focus.
+//
+// Detected from the POINTER, not the screen width: a narrow window on a desktop
+// still has a real keyboard and should still send on Enter.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { FolderPicker } from "./FolderPicker";
+
+const TYPES_ON_GLASS =
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(pointer: coarse)").matches;
 
 export type Provider = "claude" | "codex";
 
@@ -497,7 +508,10 @@ export function Composer({
             // Typing anything else means you are writing, not browsing.
             if (recall >= 0 && e.key.length === 1) setRecall(-1);
 
-            if (e.key === "Enter" && !e.shiftKey) {
+            // On glass, Enter is left alone so it does what the key says and
+            // breaks the line. There is no Shift to hold, so claiming Enter
+            // here would mean a multi-line prompt could not be typed at all.
+            if (e.key === "Enter" && !e.shiftKey && !TYPES_ON_GLASS) {
               e.preventDefault();
               send();
             }
@@ -705,25 +719,32 @@ export function Composer({
           )}
 
           <span className="composer-hint">
-            {activity ?? (busy ? "working…" : "Enter to send")}
+            {activity ?? (busy ? "working…" : TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send")}
           </span>
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
 
-          {busy ? (
-            // While a turn runs, the same spot stops it. A chat you cannot
-            // interrupt is a chat you have to kill, which costs the whole
-            // conversation.
+          {/* Stop and Send used to SHARE this spot, so while a turn ran there
+              was no send button at all — you could not add "and also check the
+              tests" without first killing the turn you were adding it to. The
+              backend never had that limit: chat_send writes to the agent's
+              stdin, which it reads continuously, so a second message mid-turn
+              is just the next thing it is told. Only the UI was in the way.
+
+              So while a turn runs, BOTH are here: stop it, or say something
+              else to it. Stop stays first — it is the one you want in a hurry,
+              and it must not move to make room for the other. */}
+          {busy && (
             <button className="send stop" type="button" title="Stop" onClick={onStop}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                 <rect x="5" y="5" width="14" height="14" rx="2.5" />
               </svg>
             </button>
-          ) : (
+          )}
           <button
             className="send"
             type="button"
-            title="Send"
+            title={busy ? "Send anyway" : "Send"}
             disabled={!text.trim() || !!disabled}
             onClick={send}
           >
@@ -732,7 +753,6 @@ export function Composer({
               <path d="M12 19V5" />
             </svg>
           </button>
-          )}
         </div>
 
         {/* Phone only. The same options as the three pickers, one under the

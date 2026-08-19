@@ -35,6 +35,19 @@ pub struct Question {
     /// text instead of showing buttons.
     #[serde(default)]
     pub options: Vec<String>,
+    /// Which option the agent would pick, as an INDEX into `options`.
+    ///
+    /// An index rather than a flag on each choice, because "recommended" is
+    /// singular by nature: a recommendation among three recommendations is not
+    /// one. An index cannot express two, so the shape enforces what a comment
+    /// would only ask for.
+    ///
+    /// This stays ADVISORY. It is not a default and must never become one — the
+    /// timeout still reports that nobody answered rather than taking this, for
+    /// the reason in the module header: a question has no safe default. It says
+    /// what the agent thinks, so you can disagree with it quickly.
+    #[serde(default)]
+    pub recommended: Option<usize>,
 }
 
 /// The question, once it has an id to answer against.
@@ -101,7 +114,33 @@ mod tests {
             chat_key: None,
             question: "Which database?".into(),
             options: vec!["Postgres".into(), "SQLite".into()],
+            recommended: Some(0),
         }
+    }
+
+    #[test]
+    fn a_recommendation_is_never_an_answer() {
+        // The whole point of the marker is that it is advisory. If it ever
+        // leaks into the answer path, a question the user ignored starts
+        // getting answered on their behalf — which is exactly what the module
+        // header says must not happen.
+        let q = question();
+        assert_eq!(q.recommended, Some(0));
+        // Serialising and reading it back must not turn it into a selection:
+        // the only fields that carry an answer are elsewhere entirely.
+        let json = serde_json::to_string(&q).expect("serialises");
+        assert!(json.contains("\"recommended\":0"));
+        assert!(!json.contains("answer"));
+    }
+
+    #[test]
+    fn a_question_without_a_view_simply_has_none() {
+        // Omitted by the agent, absent in the JSON, None here — no default
+        // creeping in at any layer.
+        let q: Question =
+            serde_json::from_str(r#"{"question":"Which one?","options":["a","b"]}"#)
+                .expect("parses without a recommendation");
+        assert_eq!(q.recommended, None);
     }
 
     #[tokio::test]
@@ -138,8 +177,11 @@ mod tests {
             chat_key: None,
             question: "What should the table be called?".into(),
             options: vec![],
+            // Nothing to point at, so nothing is pointed at.
+            recommended: None,
         };
         assert!(free.options.is_empty());
         assert!(!free.question.is_empty());
+        assert_eq!(free.recommended, None);
     }
 }
