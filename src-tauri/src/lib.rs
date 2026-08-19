@@ -28,6 +28,7 @@ mod proc;
 mod profile;
 mod profile_lock;
 mod pty;
+mod question;
 mod terminal_layout;
 mod transcript;
 mod bus;

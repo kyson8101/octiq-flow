@@ -239,6 +239,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             Ok(json!(crate::permission::decide(&id, decision)))
         }
 
+        // ---- questions ----------------------------------------------------
+        "question_answer" => Ok(json!(crate::question::answer(
+            &arg::<String>(&args, "id")?,
+            arg(&args, "answer")?,
+        ))),
+
         // ---- usage --------------------------------------------------------
         "usage_summary" => Ok(json!(crate::usage_limits::usage_summary())),
 

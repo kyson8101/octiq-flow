@@ -379,6 +379,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/token", get(token_handler))
             .route("/file", get(file_handler))
             .route("/hook/permission", post(permission_handler))
+            .route("/hook/ask", post(ask_handler))
             .fallback(get(asset_handler))
             .with_state(ctx);
 
@@ -676,6 +677,19 @@ async fn permission_handler(
     }
     let answer = crate::permission::ask(request).await;
     axum::Json(json!({ "decision": answer.decision, "reason": answer.reason })).into_response()
+}
+
+/// The agent asking the user something, through its `ask_user` MCP tool.
+async fn ask_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<TokenQuery>,
+    Json(question): Json<crate::question::Question>,
+) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let answer = crate::question::ask(question).await;
+    axum::Json(json!({ "answer": answer })).into_response()
 }
 
 /// One connected browser: forward its invokes, stream events back.

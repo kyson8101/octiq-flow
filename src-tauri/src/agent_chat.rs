@@ -223,6 +223,17 @@ fn build_command(
                     sh_quote(&settings.to_string_lossy())
                 ));
             }
+            // The ask-user tool, plus the sentence that makes the agent reach
+            // for it. It is pre-approved: a tool whose whole purpose is to ask
+            // the user must not itself raise a permission question.
+            if let Some(mcp) = ask_mcp_config() {
+                cmd.push_str(&format!(
+                    " --mcp-config {} --allowedTools {} --append-system-prompt {}",
+                    sh_quote(&mcp.to_string_lossy()),
+                    sh_quote("mcp__octiq__ask_user"),
+                    sh_quote(ASK_PROMPT),
+                ));
+            }
             // A project can group several folders. The agent starts in one of
             // them (`cwd`) and can already read that one; every OTHER folder of
             // the project has to be named or the agent cannot touch it.
@@ -674,6 +685,42 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
 /// This way it applies to OctiqFlow chats and nothing else.
 const PERMISSION_HOOK: &str = include_str!("../../scripts/hooks/permission-ask.cjs");
 
+/// An MCP server whose only tool lets the agent ask the user something.
+///
+/// Print mode is never offered `AskUserQuestion` — it has nobody to answer, so
+/// the tool never reaches the model. It does load MCP servers in full, so this
+/// hands it one of ours instead.
+const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
+
+/// Told to the agent so it knows the tool is there and when it is wanted.
+/// Without this it has a tool it never thinks to reach for.
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.";
+
+/// Write the ask-user MCP server and its config, and return the config path.
+///
+/// Rewritten on every start, like the hook, so an upgraded OctiqFlow cannot
+/// leave an old copy behind. Best-effort: without it the chat simply runs
+/// without the tool, which is how it behaved before this existed.
+fn ask_mcp_config() -> Option<std::path::PathBuf> {
+    let dir = crate::paths::home_dir()?.join(".octiqflow").join("mcp");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    let script = dir.join("octiq-ask.cjs");
+    std::fs::write(&script, ASK_MCP).ok()?;
+
+    let config = dir.join("octiq-ask.json");
+    let body = json!({
+        "mcpServers": {
+            "octiq": {
+                "command": "node",
+                "args": [script.to_string_lossy()],
+            }
+        }
+    });
+    std::fs::write(&config, serde_json::to_vec_pretty(&body).ok()?).ok()?;
+    Some(config)
+}
+
 /// Write the hook and its settings file, and return the settings path.
 ///
 /// Rewritten on every start so an upgraded OctiqFlow cannot leave an old hook
@@ -852,12 +899,27 @@ mod tests {
 
     #[test]
     fn claude_gets_a_two_way_stream_and_codex_gets_the_prompt() {
-        let c = build_command(ChatAgent::Claude, Some("opus"), Some(Access::Read), "hi", None, &[], None, &[]);
+        // A prompt that cannot appear by accident inside another word. The
+        // first version of this test used "hi", which is a substring of
+        // "which" — so it passed until an unrelated flag happened to contain
+        // that word, then failed for a reason that had nothing to do with the
+        // thing being tested.
+        let prompt = "zzq-prompt-marker";
+        let c = build_command(
+            ChatAgent::Claude,
+            Some("opus"),
+            Some(Access::Read),
+            prompt,
+            None,
+            &[],
+            None,
+            &[],
+        );
         assert!(c.contains("--input-format stream-json"));
         assert!(c.contains("--model 'opus'"));
         assert!(c.contains("--permission-mode plan"));
         // Claude's prompt goes over stdin, never on the command line.
-        assert!(!c.contains("hi"));
+        assert!(!c.contains(prompt));
 
         let x = build_command(ChatAgent::Codex, None, None, "hi there", None, &[], None, &[]);
         assert!(x.contains("codex exec --json"));

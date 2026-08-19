@@ -43,6 +43,7 @@ import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
 import { TerminalPane } from "./components/Terminal";
 import { PermissionAsk, type Ask } from "./components/PermissionAsk";
+import { UserQuestion, type Question } from "./components/UserQuestion";
 import { useConfirm } from "./components/Confirm";
 
 type Workspace = Project & { paths?: string[]; shelved?: boolean; description?: string };
@@ -88,6 +89,8 @@ export default function App() {
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
   const [asks, setAsks] = useState<Record<string, Ask[]>>({});
+  // Questions the agent is blocked on, by conversation.
+  const [questions, setQuestions] = useState<Record<string, Question[]>>({});
   // Which folders are open, kept between visits — a tree that forgets is a
   // tree you re-open every time.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -268,9 +271,26 @@ export default function App() {
         return next;
       });
     });
+    const offQuestion = bridge.on<Question>("user-question", (q) => {
+      const id = q?.chatKey ? convOf(q.chatKey) : null;
+      if (!id || !q.id) return;
+      setQuestions((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), q] }));
+    });
+    const offQuestionGone = bridge.on<{ id: string }>("question-expired", (gone) => {
+      if (!gone?.id) return;
+      setQuestions((prev) => {
+        const next: Record<string, Question[]> = {};
+        for (const [key, list] of Object.entries(prev)) {
+          next[key] = list.filter((q) => q.id !== gone.id);
+        }
+        return next;
+      });
+    });
     return () => {
       offAsk();
       offGone();
+      offQuestion();
+      offQuestionGone();
     };
   }, []);
 
@@ -894,6 +914,19 @@ export default function App() {
                 setAsks((prev) => ({
                   ...prev,
                   [conversationId!]: (prev[conversationId!] ?? []).filter((a) => a.id !== id),
+                }))
+              }
+            />
+          ))}
+
+          {(conversationId ? questions[conversationId] ?? [] : []).map((q) => (
+            <UserQuestion
+              key={q.id}
+              question={q}
+              onAnswered={(id) =>
+                setQuestions((prev) => ({
+                  ...prev,
+                  [conversationId!]: (prev[conversationId!] ?? []).filter((x) => x.id !== id),
                 }))
               }
             />

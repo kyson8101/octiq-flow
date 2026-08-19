@@ -2652,3 +2652,104 @@ body {
   font-size: 11.5px;
   color: var(--fg-3);
 }
+
+/* ---- A question from the agent -----------------------------------------
+   Blue rather than amber: a permission prompt is a risk to weigh, this is
+   simply a decision only you can make. */
+.qa-card {
+  flex: 0 0 auto;
+  max-width: 780px;
+  width: 100%;
+  margin: 0 auto 10px;
+  padding: 13px 15px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.qa-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qa-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chat-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qa-dot {
+    animation: none;
+  }
+}
+
+.qa-label {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.qa-question {
+  margin: 7px 0 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg-0);
+}
+
+.qa-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.qa-option {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.qa-option:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.qa-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.qa-free {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.qa-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font: inherit;
+  /* 16px so iOS does not zoom the page when it takes focus. */
+  font-size: 16px;
+  outline: none;
+}
+
+.qa-input:focus {
+  border-color: var(--accent);
+}
