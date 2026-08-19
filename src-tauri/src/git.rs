@@ -946,7 +946,8 @@ mod tests {
     /// A throwaway git repo with two subfolders and one changed file.
     /// Returns None when `git` is unavailable, so the test simply skips.
     fn temp_repo(name: &str) -> Option<std::path::PathBuf> {
-        let dir = std::env::temp_dir().join(format!("octiq-git-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octiq-git-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub-a")).ok()?;
         std::fs::create_dir_all(dir.join("sub-b")).ok()?;

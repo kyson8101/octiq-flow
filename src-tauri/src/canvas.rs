@@ -373,10 +373,7 @@ pub struct CanvasWatchState(Mutex<Option<RecommendedWatcher>>);
 /// is created first so there is always a real directory to watch. An empty key
 /// stops watching (e.g. when no project is selected).
 #[tauri::command]
-pub fn canvas_watch(
-    state: tauri::State<CanvasWatchState>,
-    key: String,
-) -> Result<(), String> {
+pub fn canvas_watch(state: tauri::State<CanvasWatchState>, key: String) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None; // drop the old watcher first; its debounce thread ends
     let trimmed = key.trim();

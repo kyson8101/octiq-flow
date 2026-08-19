@@ -63,14 +63,64 @@ fn path() -> Option<PathBuf> {
     Some(crate::transcript::chats_dir()?.join("index.json"))
 }
 
-fn read() -> Index {
+/// Why the index could not be read. The distinction matters exactly once, in
+/// `reconcile`: "there is no file yet" is a first run and says nothing is
+/// wrong, while "there is a file and it did not parse" means the list of chats
+/// is temporarily unknown — and acting on an unknown list as though it were an
+/// empty one deletes every transcript on the machine.
+#[derive(Debug)]
+struct Unreadable;
+
+/// The index at a given path, or `Unreadable` when a file is there and did not
+/// make sense. A missing file is not an error: it is an empty index, correctly.
+///
+/// Takes the path so the rule can be tested on a file of its own — the real one
+/// is shared by every test in this module, and a test that wrote nonsense into
+/// it would break the others.
+fn read_path(path: &std::path::Path) -> Result<Index, Unreadable> {
+    match fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|_| Unreadable),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index::default()),
+        Err(_) => Err(Unreadable),
+    }
+}
+
+fn read_checked() -> Result<Index, Unreadable> {
     let Some(path) = path() else {
-        return Index::default();
+        return Err(Unreadable);
     };
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+    read_path(&path)
+}
+
+fn read() -> Index {
+    read_checked().unwrap_or_default()
+}
+
+/// Move an index we could not parse out of the way, once, keeping whatever it
+/// held for recovery.
+///
+/// Without this the next `upsert` would write a fresh list straight over it:
+/// the unreadable file is treated as empty, so a single new chat would become
+/// the only chat there had ever been. Renaming costs one stray file and makes
+/// that unrecoverable case recoverable.
+fn preserve_unreadable() {
+    let Some(path) = path() else {
+        return;
+    };
+    if !path.exists() {
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let kept = path.with_file_name(format!("index.unreadable-{stamp}.json"));
+    if fs::rename(&path, &kept).is_ok() {
+        eprintln!(
+            "[chats] index.json could not be parsed; kept it as {} and started a new one",
+            kept.display()
+        );
+    }
 }
 
 /// Write the whole file. Through a temporary file and a rename, so a process
@@ -96,7 +146,13 @@ pub fn list() -> Vec<ChatMeta> {
 /// Add a chat or update the one with this id.
 pub fn upsert(meta: ChatMeta) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut index = read();
+    let mut index = match read_checked() {
+        Ok(index) => index,
+        Err(_) => {
+            preserve_unreadable();
+            Index::default()
+        }
+    };
     match index.chats.iter_mut().find(|c| c.id == meta.id) {
         // `created_at` is the one field a later save must not move: the sidebar
         // orders by it, and a list that re-sorts while you type moves the row
@@ -115,7 +171,10 @@ pub fn upsert(meta: ChatMeta) -> Result<(), String> {
 /// entry in the list.
 pub fn remove(id: &str) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let mut index = read();
+    // An index we cannot read is not a list to delete one entry from. Refuse,
+    // rather than writing an "everything except this one" that is really an
+    // empty file — the caller asked to forget one chat, not all of them.
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
     index.chats.retain(|c| c.id != id);
     write(&index)
 }
@@ -139,10 +198,31 @@ pub fn remove(id: &str) -> Result<(), String> {
 /// what was said. That is precisely the case for a chat this device has never
 /// opened.
 ///
+/// AN EMPTY LIST IS NEVER ACTED ON while transcripts exist. This is the one
+/// input that turns the rule above into "delete everything", and the two
+/// situations that produce it are not alike: a genuinely fresh machine has no
+/// transcripts to delete either, so nothing is lost by refusing. An index that
+/// is unreadable, or was written by a profile that has since been switched,
+/// reads as empty in exactly the same way — and there the refusal is the whole
+/// point. Whatever is unmatched stays on disk, which costs a little space and
+/// keeps the conversations.
+///
+/// May `reconcile` act on what it found?
+///
+/// Split out from `reconcile` so the rule can be checked directly: the tests in
+/// this module share one real index, and proving this by emptying it would
+/// break every other test that has a chat in there.
+fn may_delete_orphans(known: usize, transcripts: usize) -> bool {
+    known > 0 || transcripts == 0
+}
+
 /// Returns how many transcripts were removed.
 pub fn reconcile() -> usize {
-    let known: std::collections::HashSet<String> =
-        list().into_iter().map(|c| c.id).collect();
+    let Ok(index) = read_checked() else {
+        eprintln!("[chats] index unreadable; leaving every transcript alone");
+        return 0;
+    };
+    let known: std::collections::HashSet<String> = index.chats.into_iter().map(|c| c.id).collect();
 
     let Some(dir) = crate::transcript::chats_dir() else {
         return 0;
@@ -151,7 +231,11 @@ pub fn reconcile() -> usize {
         return 0;
     };
 
-    let mut removed = 0;
+    // Collect first, decide after. The empty-index check below needs to know
+    // whether there are any transcripts at all, and that cannot be answered
+    // halfway through deleting them.
+    let mut orphans = Vec::new();
+    let mut transcripts = 0usize;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         // Only files this app writes for chats. Anything else in the folder is
@@ -162,10 +246,29 @@ pub fn reconcile() -> usize {
         let Some(id) = rest.strip_suffix(".jsonl") else {
             continue;
         };
+        transcripts += 1;
         if known.contains(id) {
             continue;
         }
-        if fs::remove_file(entry.path()).is_ok() {
+        orphans.push(entry.path());
+    }
+
+    // An index with nothing in it, next to transcripts that plainly exist, is
+    // a disagreement too large to be the ordinary write-order race this
+    // function was written for. Every chat on the machine would be an orphan,
+    // and deleting them all on that reading has no upside: if the list really
+    // is empty, so is the disk, and there was nothing to tidy.
+    if !may_delete_orphans(known.len(), transcripts) {
+        eprintln!(
+            "[chats] index lists no chats but {transcripts} transcript(s) exist; \
+             leaving them alone rather than treating the list as complete"
+        );
+        return 0;
+    }
+
+    let mut removed = 0;
+    for path in orphans {
+        if fs::remove_file(path).is_ok() {
             removed += 1;
         }
     }
@@ -273,5 +376,63 @@ mod tests {
     fn removing_a_chat_that_is_not_there_is_not_an_error() {
         // The client can delete on two devices; the second must not fail.
         assert!(remove("test-index-never-existed").is_ok());
+    }
+
+    /// A directory of this test's own, so writing a broken index here cannot
+    /// disturb the shared one every other test in this module uses.
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("octiq-test-index-{}-{name}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        dir.join("index.json")
+    }
+
+    #[test]
+    fn a_missing_index_reads_as_empty_not_as_an_error() {
+        // First run. There is nothing wrong, there is simply nothing yet.
+        let path = scratch("missing");
+        let _ = fs::remove_file(&path);
+        let index = read_path(&path).expect("a missing file is an empty index");
+        assert!(index.chats.is_empty());
+    }
+
+    #[test]
+    fn an_index_that_does_not_parse_is_an_error_not_an_empty_list() {
+        // The distinction the whole guard rests on: unreadable must never be
+        // reported as "this machine has no chats".
+        let path = scratch("corrupt");
+        fs::write(&path, b"{ this is not json").unwrap();
+        assert!(read_path(&path).is_err());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_half_written_index_is_an_error_too() {
+        // What a process killed mid-write used to leave behind. It parses as
+        // far as it goes and then stops, which serde rejects — as it should.
+        let path = scratch("truncated");
+        fs::write(&path, br#"{"chats":[{"id":"a","projec"#).unwrap();
+        assert!(read_path(&path).is_err());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn reconcile_will_not_delete_every_transcript_when_the_index_reads_as_empty() {
+        // The case that cost a conversation: an index that lists nothing, next
+        // to transcripts that plainly exist. Every one of them looks like an
+        // orphan, and deleting them all is the wrong answer.
+        assert!(!may_delete_orphans(0, 3));
+    }
+
+    #[test]
+    fn reconcile_still_tidies_when_the_index_has_something_in_it() {
+        // The ordinary case must keep working: a real list, one stray file.
+        assert!(may_delete_orphans(2, 3));
+    }
+
+    #[test]
+    fn an_empty_index_with_no_transcripts_is_nothing_to_argue_about() {
+        // A genuinely fresh machine. Allowed, and there is nothing to delete.
+        assert!(may_delete_orphans(0, 0));
     }
 }

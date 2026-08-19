@@ -10,6 +10,10 @@
 // to guess is how people end up granting everything.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
+import { fileDiff } from "../lib/diff";
+import { toolLook } from "../lib/toolKind";
+import { DiffView } from "./DiffView";
+import { ToolIcon } from "./ToolIcon";
 
 export type Ask = {
   id: string;
@@ -50,7 +54,15 @@ function detail(ask: Ask): { label: string; body: string } | null {
 export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: string) => void }) {
   const [sending, setSending] = useState<"allow" | "deny" | null>(null);
   const path = target(ask);
-  const extra = detail(ask);
+  // The same drawing the card will show once the edit has run — asked BEFORE
+  // it runs, so it has no line numbers to give. That is the honest half: what
+  // is being decided here is the change, not where in the file it lands.
+  const diff = fileDiff(ask.toolName ?? "", ask.toolInput);
+  const extra = diff ? null : detail(ask);
+  // The same icon and the same name the chat's own tool cards use. The question
+  // is about a call that is one second away from appearing there, so it should
+  // already look like it.
+  const look = toolLook(ask.toolName ?? "", ask.toolInput);
 
   const answer = async (decision: "allow" | "deny") => {
     setSending(decision);
@@ -67,14 +79,25 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
     <div className="ask-card" role="alertdialog" aria-label="Permission needed">
       <div className="ask-card-head">
         <span className="ask-card-dot" aria-hidden="true" />
+        <span className="tool-icon" data-kind={look.kind} aria-hidden="true">
+          <ToolIcon kind={look.kind} />
+        </span>
         <span className="ask-card-title">
-          Claude wants to use <strong>{ask.toolName ?? "a tool"}</strong>
+          Claude wants to use <strong>{ask.toolName ? look.label : "a tool"}</strong>
+          {look.scope && <span className="tool-scope">{look.scope}</span>}
         </span>
       </div>
 
       {path && (
         <div className="ask-card-path" title={path}>
           <bdi>{path}</bdi>
+        </div>
+      )}
+
+      {diff && (
+        <div className="ask-card-detail">
+          <div className="ask-card-label">{diff.kind === "create" ? "writing" : "changing"}</div>
+          <DiffView diff={diff} />
         </div>
       )}
 

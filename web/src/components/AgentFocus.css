@@ -1,0 +1,186 @@
+/* One agent read on its own — the panel the rail opens. */
+
+/* Laid OVER the transcript, which stays mounted underneath so the back arrow
+   returns the reader to where they were rather than to the bottom. Opaque, so
+   nothing shows through. */
+.focus {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-0);
+}
+
+.chat-main {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+
+.focus-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.focus-back {
+  background: none;
+  border: none;
+  padding: 0.25rem 0.5rem;
+  margin-left: -0.5rem;
+  border-radius: var(--r-sm);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.focus-back:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.focus-status {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--fg-3);
+}
+
+.focus-status.is-running {
+  color: var(--accent);
+}
+
+.focus-status.is-failed {
+  color: var(--danger);
+}
+
+.focus-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  padding: 1rem;
+  max-width: 780px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.focus-title {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.focus-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  padding-bottom: 0.875rem;
+  margin-bottom: 0.875rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.focus-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.focus-stat-label {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+}
+
+.focus-stat-value {
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  color: var(--fg-1);
+}
+
+.focus-note,
+.focus-muted {
+  color: var(--fg-3);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  margin: 0 0 0.875rem;
+}
+
+.focus-heading {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+
+.focus-workers {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.focus-worker {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+
+.focus-worker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.focus-worker-label {
+  font-size: 0.8125rem;
+  color: var(--fg-1);
+}
+
+.focus-worker-cost {
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
+.focus-worker-result {
+  margin-top: 0.375rem;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The saved output is arbitrary text, often wide. It scrolls inside its own
+   block so the panel around it never scrolls sideways. */
+.focus-output {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+}

@@ -178,18 +178,12 @@ impl WorkspaceState {
 
 /// Return all workspaces in their stored order.
 #[tauri::command]
-pub fn list_workspaces(
-    state: State<Arc<WorkspaceState>>,
-) -> Result<Vec<Workspace>, String> {
-    list_workspaces_impl(
-        &state,
-    )
+pub fn list_workspaces(state: State<Arc<WorkspaceState>>) -> Result<Vec<Workspace>, String> {
+    list_workspaces_impl(&state)
 }
 
 /// The Tauri-free half of `list_workspaces`.
-pub fn list_workspaces_impl(
-    state: &WorkspaceState,
-) -> Result<Vec<Workspace>, String> {
+pub fn list_workspaces_impl(state: &WorkspaceState) -> Result<Vec<Workspace>, String> {
     let data = state.data.lock().map_err(|e| e.to_string())?;
     Ok(data.workspaces.clone())
 }
@@ -215,11 +209,7 @@ pub fn add_workspace(
     name: String,
     primary_path: String,
 ) -> Result<Workspace, String> {
-    add_workspace_impl(
-        &state,
-        name,
-        primary_path,
-    )
+    add_workspace_impl(&state, name, primary_path)
 }
 
 /// The Tauri-free half of `add_workspace`.
@@ -268,11 +258,7 @@ pub fn set_primary_path(
     id: String,
     path: String,
 ) -> Result<(), String> {
-    set_primary_path_impl(
-        &state,
-        id,
-        path,
-    )
+    set_primary_path_impl(&state, id, path)
 }
 
 /// The Tauri-free half of `set_primary_path`.
@@ -302,11 +288,7 @@ pub fn rename_workspace(
     id: String,
     name: String,
 ) -> Result<(), String> {
-    rename_workspace_impl(
-        &state,
-        id,
-        name,
-    )
+    rename_workspace_impl(&state, id, name)
 }
 
 /// The Tauri-free half of `rename_workspace`.
@@ -331,21 +313,12 @@ pub fn rename_workspace_impl(
 
 /// Delete a workspace and all of its paths.
 #[tauri::command]
-pub fn delete_workspace(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-) -> Result<(), String> {
-    delete_workspace_impl(
-        &state,
-        id,
-    )
+pub fn delete_workspace(state: State<Arc<WorkspaceState>>, id: String) -> Result<(), String> {
+    delete_workspace_impl(&state, id)
 }
 
 /// The Tauri-free half of `delete_workspace`.
-pub fn delete_workspace_impl(
-    state: &WorkspaceState,
-    id: String,
-) -> Result<(), String> {
+pub fn delete_workspace_impl(state: &WorkspaceState, id: String) -> Result<(), String> {
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.workspaces.retain(|w| w.id != id);
     state.save(&data)
@@ -370,11 +343,7 @@ pub fn add_workspace_path(
     id: String,
     path: String,
 ) -> Result<(), String> {
-    add_workspace_path_impl(
-        &state,
-        id,
-        path,
-    )
+    add_workspace_path_impl(&state, id, path)
 }
 
 /// The Tauri-free half of `add_workspace_path`.
@@ -402,11 +371,7 @@ pub fn remove_workspace_path(
     id: String,
     path: String,
 ) -> Result<(), String> {
-    remove_workspace_path_impl(
-        &state,
-        id,
-        path,
-    )
+    remove_workspace_path_impl(&state, id, path)
 }
 
 /// The Tauri-free half of `remove_workspace_path`.
@@ -635,11 +600,7 @@ pub fn set_description(
     id: String,
     description: String,
 ) -> Result<(), String> {
-    set_description_impl(
-        &state,
-        id,
-        description,
-    )
+    set_description_impl(&state, id, description)
 }
 
 /// The Tauri-free half of `set_description`.
@@ -733,11 +694,7 @@ pub fn set_workspace_shelved(
     id: String,
     shelved: bool,
 ) -> Result<(), String> {
-    set_workspace_shelved_impl(
-        &state,
-        id,
-        shelved,
-    )
+    set_workspace_shelved_impl(&state, id, shelved)
 }
 
 /// The Tauri-free half of `set_workspace_shelved`.

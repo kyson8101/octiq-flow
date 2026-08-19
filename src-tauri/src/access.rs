@@ -59,14 +59,20 @@ impl AccessConfig {
     fn certs_url(&self) -> String {
         format!(
             "https://{}/cdn-cgi/access/certs",
-            self.team_domain.trim().trim_start_matches("https://").trim_end_matches('/')
+            self.team_domain
+                .trim()
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
         )
     }
 
     fn issuer(&self) -> String {
         format!(
             "https://{}",
-            self.team_domain.trim().trim_start_matches("https://").trim_end_matches('/')
+            self.team_domain
+                .trim()
+                .trim_start_matches("https://")
+                .trim_end_matches('/')
         )
     }
 }

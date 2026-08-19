@@ -83,7 +83,13 @@ pub async fn ask(question: Question) -> String {
     let (tx, rx) = oneshot::channel();
     with_pending(|p| p.insert(id.clone(), tx));
 
-    crate::bus::emit("user-question", Asked { id: id.clone(), question });
+    crate::bus::emit(
+        "user-question",
+        Asked {
+            id: id.clone(),
+            question,
+        },
+    );
 
     match tokio::time::timeout(ANSWER_TIMEOUT, rx).await {
         Ok(Ok(answer)) => answer,
@@ -137,9 +143,8 @@ mod tests {
     fn a_question_without_a_view_simply_has_none() {
         // Omitted by the agent, absent in the JSON, None here — no default
         // creeping in at any layer.
-        let q: Question =
-            serde_json::from_str(r#"{"question":"Which one?","options":["a","b"]}"#)
-                .expect("parses without a recommendation");
+        let q: Question = serde_json::from_str(r#"{"question":"Which one?","options":["a","b"]}"#)
+            .expect("parses without a recommendation");
         assert_eq!(q.recommended, None);
     }
 

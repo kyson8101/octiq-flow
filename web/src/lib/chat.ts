@@ -52,8 +52,85 @@ export type Block =
       argsJson: string;
       args: unknown;
       result?: string;
+      /** The tool's STRUCTURED result, when it sends one: `tool_use_result` on
+       *  the same envelope as the text. For a file edit it holds the patch the
+       *  agent applied — real hunks with real line numbers — which is the
+       *  difference between a card that can draw the change and one that can
+       *  only quote the arguments back. Left as `unknown`; the shapes differ
+       *  per tool and only the reader of a given tool knows its own. */
+      details?: unknown;
       state: ToolState;
     };
+
+/** One phase of a dynamic workflow's script, in script order. */
+export type WorkflowPhase = { index: number; title: string };
+
+/** One agent inside a dynamic workflow.
+ *
+ *  A workflow agent runs in its own process, so unlike a `Task` subagent it
+ *  sends NO transcript on this stream. Everything anyone can know about it is
+ *  here, plus the file the whole run wrote at the end. */
+export type WorkflowAgent = {
+  /** `agentId` — the stable key. NOT `index`, which restarts inside each phase
+   *  and so collides across them. */
+  id: string;
+  index: number;
+  label: string;
+  phaseIndex: number;
+  model?: string;
+  /** The workflow only ever reports these two. A failed agent shows up on the
+   *  parent run's own status, not here. */
+  state: "start" | "done";
+  /** Queued before started means it waited on the concurrency cap. */
+  queuedAt?: number;
+  startedAt?: number;
+  /** Above 1 means it was retried, which is what explains a long phase. */
+  attempt?: number;
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+  promptPreview?: string;
+  resultPreview?: string;
+};
+
+/** One agent this conversation started: a `Task` subagent, or a whole dynamic
+ *  workflow run.
+ *
+ *  Both arrive on the same channel — `system` events keyed by `task_id` — and
+ *  are told apart by `kind`. A row is created by `task_started` and never
+ *  removed: the rail is this conversation's run history, so a finished agent
+ *  stays readable with what it cost. */
+export type AgentRun = {
+  /** `task_id`, stable for the whole run. */
+  id: string;
+  /** The tool call that started it, so the rail can reach the card it belongs
+   *  to. Absent only if the agent never reported one. */
+  toolUseId?: string;
+  /** What to call it: the caller's own short description of the job. */
+  label: string;
+  /** `local_agent` for a Task subagent, `local_workflow` for a workflow run. */
+  kind: string;
+  /** The subagent type for a Task, the script name for a workflow. */
+  detail?: string;
+  status: "running" | "completed" | "failed";
+  /** When we first saw it start, so a running row can count up. The stream
+   *  carries no start timestamp for a run — only an `end_time` when it is over —
+   *  so this is stamped on arrival. */
+  startedAt?: number;
+  /** Set once the run reports them, on `task_notification`. */
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+  /** The run's own one-line account of what it did. */
+  summary?: string;
+  /** Where the full result was written. A workflow agent has no transcript on
+   *  the stream, so this file is the only place its whole answer exists. */
+  outputFile?: string;
+  /** A dynamic workflow's own progress tree. Only `local_workflow` sends one;
+   *  a Task subagent has neither, and the rail shows it as a single row. */
+  phases?: WorkflowPhase[];
+  workers?: WorkflowAgent[];
+};
 
 export type Message = {
   id: string;
@@ -74,10 +151,17 @@ export type Message = {
    *  wrote it. Undefined for the main agent — which is most messages, and the
    *  whole conversation when nothing has spawned one. */
   parent?: string;
+  /** True when `message_start` opened this message, i.e. its partials are
+   *  streaming into it. Such a message ends on `message_stop` and on nothing
+   *  else — see the `assistant` merge, which must not close it early. */
+  partial?: boolean;
 };
 
 export type ChatState = {
   messages: Message[];
+  /** Every agent this conversation has started, oldest first. Empty until one
+   *  does, which is how the rail knows to stay hidden. */
+  agents: AgentRun[];
   /** Set once system/init arrives. */
   sessionId?: string;
   model?: string;
@@ -91,6 +175,25 @@ export type ChatState = {
   /** What the agent is doing when it is doing something other than writing —
    *  compacting, so far. Shown in place of the generic "working…". */
   activity?: string;
+  /** The agent's own word for what it is doing right now — `requesting`,
+   *  `thinking`, `tool_use`, `compacting`, … — straight off its status events.
+   *  `activity` is this said in words, and only for the states worth saying;
+   *  the raw word is kept because thinking and a slow tool call look like the
+   *  same silence, and the status line has to tell them apart. */
+  status?: string;
+  /** When the turn now running started, so the status line can count it up.
+   *  A conversation joined mid-turn counts from when we joined: nothing in the
+   *  stream says when a turn already in progress began. */
+  turnStartedAt?: number;
+  /** Output tokens this turn, settled: the sum of what each message that has
+   *  FINISHED reported in its own `usage`. Subagents included — their writing
+   *  is this turn's work too. */
+  turnTokens?: number;
+  /** The message still being written, which nothing counts until it closes: the
+   *  agent's own running estimate of the thinking so far, plus four characters
+   *  a token for the prose and tool arguments streaming in. An estimate, and it
+   *  gives way to the real number the moment the message ends. */
+  turnDraft?: number;
   /** From the last `result` event. */
   lastCostUsd?: number;
   lastDurationMs?: number;
@@ -128,6 +231,7 @@ export type Failure = {
 
 export const emptyChat = (): ChatState => ({
   messages: [],
+  agents: [],
   busy: false,
   notices: [],
   stopping: false,
@@ -170,7 +274,11 @@ export function describeFailure(agent: "claude" | "codex", raw: string): Failure
  *  Only the ones worth interrupting the reader for. `streaming` and `tool_use`
  *  are already visible — the text is appearing, the tool card is on screen —
  *  so naming them again is noise. What matters is the states with nothing to
- *  show: a compaction, a retry, a queue. */
+ *  show: a compaction, a retry, a queue.
+ *
+ *  Thinking is not here, though it has nothing to show either: the status line
+ *  says it better, with the elapsed time, the tokens and the effort level
+ *  attached (see `workingLine`). A word here would only repeat it. */
 function describeStatus(status: string): string | undefined {
   switch (status) {
     case "compacting":
@@ -185,11 +293,8 @@ function describeStatus(status: string): string | undefined {
       return "Starting…";
     case "waiting":
       return "Waiting…";
-    case "requesting":
-      return "Thinking…";
-    case "thinking":
-      return "Thinking…";
     default:
+      // requesting, thinking: the status line's own job.
       // streaming, tool_use, idle: already obvious from the screen.
       return undefined;
   }
@@ -258,8 +363,176 @@ function withCurrent(
   return { ...state, messages: next };
 }
 
-/** Fold one agent event into the conversation. Pure: the caller owns the state. */
-export function reduceChat(state: ChatState, raw: unknown): ChatState {
+/** True while the model is reasoning rather than writing — the stretch with
+ *  nothing on screen at all, which is exactly when the status line has to say
+ *  something.
+ *
+ *  Read from two places, because neither is enough alone. The status word rules
+ *  out the waits that are NOT the model thinking: a tool running, a compaction,
+ *  a queue. (`requesting` counts as thinking — the request is out and the model
+ *  is working on it, there is simply no first token yet.) But it does not flip
+ *  when the reply starts: a whole message streams under one `requesting`. So
+ *  what actually ends the wait is the block being written — nothing yet, or
+ *  thinking, and the moment prose appears the reader can see for themselves. */
+export const isThinking = (s: ChatState): boolean => {
+  if (!s.busy) return false;
+  if (s.status && s.status !== "thinking" && s.status !== "requesting") return false;
+  const writing = [...s.messages].reverse().find((m) => m.streaming);
+  if (!writing) return true;
+  const last = writing.blocks[writing.blocks.length - 1];
+  return !last || last.kind === "thinking";
+};
+
+/** How much the agent has written this turn: what is counted plus what is
+ *  still being written. */
+export const turnOutput = (s: ChatState): number => (s.turnTokens ?? 0) + (s.turnDraft ?? 0);
+
+/** Four characters a token, the usual rough English rule. Only ever used for
+ *  the message in flight, and only until its real count arrives. */
+const asTokens = (text: string): number => text.length / 4;
+
+/** Nothing is running: every meter the status line reads goes quiet together. */
+const turnOver = {
+  turnStartedAt: undefined,
+  turnTokens: undefined,
+  turnDraft: undefined,
+  status: undefined,
+  activity: undefined,
+} as const;
+
+/** Two blocks say the same thing, so the second is a copy rather than news.
+ *
+ *  A tool is identified by its `tool_use` id; prose by its text. This is what
+ *  lets an `assistant` event be merged onto a message the partials already
+ *  built without doubling every block. */
+function sameBlock(a: Block, b: Block): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "tool") return b.kind === "tool" && a.id === b.id;
+  return "text" in a && "text" in b && a.text === b.text;
+}
+
+/** A `task_started` event: a new agent joins the roster, running.
+ *
+ *  Re-running the same id is a no-op rather than a duplicate row — a replayed
+ *  event log hands the reducer the same start twice. */
+function agentStarted(state: ChatState, e: Json, now: number): ChatState {
+  const id = asStr(e.task_id);
+  if (!id || state.agents.some((a) => a.id === id)) return state;
+  const run: AgentRun = {
+    id,
+    toolUseId: asStr(e.tool_use_id) || undefined,
+    label: asStr(e.description) || asStr(e.workflow_name) || "agent",
+    kind: asStr(e.task_type) || "local_agent",
+    // A Task names its subagent type; a workflow names its script. Same slot:
+    // both answer "what KIND of thing is this", which is what the rail shows
+    // under the label.
+    detail: asStr(e.subagent_type) || asStr(e.workflow_name) || undefined,
+    status: "running",
+    startedAt: now,
+  };
+  return { ...state, agents: [...state.agents, run] };
+}
+
+/** Apply a change to one agent, leaving the rest of the roster and the rest of
+ *  that agent's own fields alone. Order is never touched: a rail that reordered
+ *  as agents finished would move rows under the reader. */
+function patchAgent(state: ChatState, id: string, patch: Partial<AgentRun>): ChatState {
+  if (!id || !state.agents.some((a) => a.id === id)) return state;
+  return { ...state, agents: state.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)) };
+}
+
+/** `task_updated` carries a PATCH, not a row. Merging is the whole point:
+ *  a patch that says only `{status}` must not erase the label. */
+function agentPatched(state: ChatState, e: Json): ChatState {
+  return patchAgent(state, asStr(e.task_id), agentStatus(asObj(e.patch).status));
+}
+
+/** `task_notification`: the run is over and reports what it cost. */
+function agentFinished(state: ChatState, e: Json): ChatState {
+  const usage = asObj(e.usage);
+  const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+  return patchAgent(state, asStr(e.task_id), {
+    ...agentStatus(e.status),
+    toolUseId: asStr(e.tool_use_id) || undefined,
+    tokens: num(usage.total_tokens),
+    toolCalls: num(usage.tool_uses),
+    durationMs: num(usage.duration_ms),
+    summary: asStr(e.summary) || undefined,
+    outputFile: asStr(e.output_file) || undefined,
+  });
+}
+
+/** `task_progress`: how far along a run is. Workflow runs only.
+ *
+ *  Two things arrive here and they must be handled differently. `usage` is on
+ *  EVERY event and always current. `workflow_progress` is on only SOME of them
+ *  — 3 of 4 in a captured run — so assigning it unconditionally would blank the
+ *  tree on the events that omit it, several times a second, and the rail would
+ *  strobe. It is written only when it is actually there.
+ *
+ *  Progress never ends a run either: it says how far along, not that it
+ *  finished. Only `task_updated` / `task_notification` may move the status. */
+function agentProgressed(state: ChatState, e: Json): ChatState {
+  const usage = asObj(e.usage);
+  const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+  const patch: Partial<AgentRun> = {
+    tokens: num(usage.total_tokens),
+    toolCalls: num(usage.tool_uses),
+    durationMs: num(usage.duration_ms),
+  };
+  const tree = e.workflow_progress;
+  if (Array.isArray(tree)) {
+    patch.phases = workflowPhases(tree);
+    patch.workers = workflowAgents(tree);
+  }
+  return patchAgent(state, asStr(e.task_id), patch);
+}
+
+/** The phase list, in the script's own order rather than in the order agents
+ *  happened to be seen. */
+function workflowPhases(tree: unknown[]): WorkflowPhase[] {
+  return tree
+    .map(asObj)
+    .filter((n) => asStr(n.type) === "workflow_phase")
+    .map((n) => ({ index: Number(n.index) || 0, title: asStr(n.title) }))
+    .sort((a, b) => a.index - b.index);
+}
+
+function workflowAgents(tree: unknown[]): WorkflowAgent[] {
+  const num = (v: unknown) => (typeof v === "number" ? v : undefined);
+  return tree
+    .map(asObj)
+    .filter((n) => asStr(n.type) === "workflow_agent")
+    .map((n) => ({
+      id: asStr(n.agentId),
+      index: Number(n.index) || 0,
+      label: asStr(n.label),
+      phaseIndex: Number(n.phaseIndex) || 0,
+      model: asStr(n.model) || undefined,
+      state: asStr(n.state) === "done" ? ("done" as const) : ("start" as const),
+      queuedAt: num(n.queuedAt),
+      startedAt: num(n.startedAt),
+      attempt: num(n.attempt),
+      tokens: num(n.tokens),
+      toolCalls: num(n.toolCalls),
+      durationMs: num(n.durationMs),
+      promptPreview: asStr(n.promptPreview) || undefined,
+      resultPreview: asStr(n.resultPreview) || undefined,
+    }));
+}
+
+/** The agent's own status word, narrowed to the three the rail can draw.
+ *  Anything unrecognised leaves the status alone rather than inventing one. */
+function agentStatus(raw: unknown): Partial<AgentRun> {
+  const status = asStr(raw);
+  if (status === "completed" || status === "failed" || status === "running") return { status };
+  return {};
+}
+
+/** Fold one agent event into the conversation. Pure: the caller owns the state,
+ *  and the clock is an argument so a replay of a captured stream lands on the
+ *  same numbers every time. */
+export function reduceChat(state: ChatState, raw: unknown, now: number = Date.now()): ChatState {
   const e = asObj(raw);
   const type = asStr(e.type);
   // Which writer this event belongs to: a Task call's id when a subagent wrote
@@ -285,7 +558,20 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     // a long pause showed a motionless "working…" whatever was happening.
     if (subtype === "status") {
       const status = asStr(e.status);
-      return { ...state, activity: status ? describeStatus(status) : undefined };
+      return {
+        ...state,
+        status: status || undefined,
+        activity: status ? describeStatus(status) : undefined,
+      };
+    }
+
+    // The agent counting its own thinking as it thinks. It is the only number
+    // that moves during a long silence — the real one arrives with the message
+    // and is a whole reply too late to be progress.
+    if (subtype === "thinking_tokens") {
+      const grew = e.estimated_tokens_delta;
+      if (typeof grew !== "number" || grew <= 0) return state;
+      return { ...state, turnDraft: (state.turnDraft ?? 0) + grew };
     }
 
     // Where the agent summarised its own history. Everything above the line is
@@ -304,6 +590,19 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
         ],
       };
     }
+
+    // Agents this conversation started. A `Task` subagent and a whole dynamic
+    // workflow both report here, keyed by `task_id` and told apart by
+    // `task_type`, and none of it appears anywhere else in the stream.
+    if (subtype === "task_started") return agentStarted(state, e, now);
+    if (subtype === "task_updated") return agentPatched(state, e);
+    if (subtype === "task_progress") return agentProgressed(state, e);
+    if (subtype === "task_notification") return agentFinished(state, e);
+    // `background_tasks_changed` is deliberately NOT read as the roster. It
+    // reports what is RUNNING, so the last one of a finished run is an empty
+    // list — building rows from it would erase every agent the moment it
+    // succeeded. One captured Task run omitted it entirely, too. `task_started`
+    // is the row's only source.
 
     if (subtype !== "init") return state; // hooks, token counters: noise
     const commands = asArr(e.slash_commands).filter((c): c is string => typeof c === "string");
@@ -331,6 +630,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     const message = asStr(e.message) || asStr(asObj(e.error).message);
     return {
       ...state,
+      ...turnOver,
       busy: false,
       stopping: false,
       failure: describeFailure("codex", message),
@@ -353,7 +653,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     return next;
   }
 
-  if (type === "stream_event") return reduceStream(state, asObj(e.event), parent);
+  if (type === "stream_event") return reduceStream(state, asObj(e.event), parent, now);
 
   if (type === "assistant") {
     const msg = asObj(e.message);
@@ -383,15 +683,12 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     if (aborted && state.messages.some((m) => m.id === id)) {
       return {
         ...state,
+        ...turnOver,
         busy: false,
         stopping: false,
         stoppedAt: id,
         messages: state.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)),
       };
-    }
-    // Already rendered from the partials — the whole copy adds nothing.
-    if (state.messages.some((m) => m.id === id)) {
-      return { ...state, messages: state.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)) };
     }
     const blocks: Block[] = [];
     for (const b of asArr(msg.content)) {
@@ -410,6 +707,43 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
         });
       }
     }
+    // A repeat message id is NOT always a redundant copy.
+    //
+    // For the MAIN agent it usually is: its partials already built the message,
+    // so the `assistant` copy that follows adds nothing. That is what the old
+    // early return here was for. But a SUBAGENT sends no partials at all —
+    // parented `stream_event` count is zero in every captured stream — and one
+    // of its messages arrives as SEVERAL `assistant` events sharing one id:
+    // `thinking` first, the reply after. Returning early threw the reply away,
+    // so the Task card showed a subagent thinking and never answering.
+    //
+    // Merging instead of choosing covers both, and covers the no-partials
+    // fallback this module's header promises. Matching by content is what keeps
+    // it idempotent: a block the partials already wrote is recognised and
+    // skipped rather than doubled.
+    const seen = state.messages.find((m) => m.id === id);
+    if (seen) {
+      const fresh = blocks.filter((b) => !seen.blocks.some((had) => sameBlock(had, b)));
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.id === id
+            ? {
+                ...m,
+                blocks: fresh.length ? [...m.blocks, ...fresh] : m.blocks,
+                // A partial-built message ends on `message_stop`, never here.
+                // The agent sends one `assistant` event PER CONTENT BLOCK of
+                // the same message id, so ending it on the first one left the
+                // deltas of every later block with no message in flight:
+                // `withCurrent` seeded a phantom message for them, and the
+                // `assistant` event that followed wrote the same block onto
+                // the real one. That is the reply rendering twice.
+                streaming: m.partial ? m.streaming : false,
+              }
+            : m,
+        ),
+      };
+    }
     if (!blocks.length) return state;
     return {
       ...state,
@@ -427,7 +761,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
     // the main agent wrote it, and it is already on screen as the Task call's
     // arguments — so a subagent only ever contributes tool results here, and
     // the whole bubble path below is skipped.
-    if (parent) return foldToolResults(state, content);
+    if (parent) return foldToolResults(state, content, e);
 
     // The interrupt marker is the agent telling us the turn was cut short. Show
     // it as a state of that turn, not as a message the user typed.
@@ -435,6 +769,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
       const last = state.messages[state.messages.length - 1];
       return {
         ...state,
+        ...turnOver,
         busy: false,
         stopping: false,
         stoppedAt: last?.id,
@@ -487,7 +822,7 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
       };
     }
 
-    return foldToolResults(state, content);
+    return foldToolResults(state, content, e);
   }
 
   if (type === "result") {
@@ -509,9 +844,9 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
       e.is_error === true && subtype !== "error_during_execution" && !state.stopping;
     return {
       ...state,
+      ...turnOver,
       busy: false,
       stopping: false,
-      activity: undefined,
       failure: failed
         ? describeFailure("claude", asStr(e.result) || asStr(e.api_error_status) || subtype)
         : state.failure,
@@ -535,8 +870,17 @@ export function reduceChat(state: ChatState, raw: unknown): ChatState {
  *  message is searched rather than just the last one: a `tool_use` id is
  *  unique, so a subagent's result lands on the subagent's own card wherever it
  *  sits, and the main agent's on the main agent's. */
-function foldToolResults(state: ChatState, content: unknown[]): ChatState {
+function foldToolResults(state: ChatState, content: unknown[], envelope: Json): ChatState {
   let next = state;
+  // The structured result sits on the MESSAGE, not on the block, so it can only
+  // be handed to a block when the message carries exactly one — which is what
+  // the agent sends. Two results in one turn and it is no longer possible to
+  // say whose patch this is, so neither gets it. (`tool_use_result` is the
+  // stream's name for it; a transcript read back from disk spells it
+  // `toolUseResult`.)
+  const results = content.filter((c) => asStr(asObj(c).type) === "tool_result");
+  const details =
+    results.length === 1 ? (envelope.tool_use_result ?? envelope.toolUseResult) : undefined;
   for (const c of content) {
     const block = asObj(c);
     if (asStr(block.type) !== "tool_result") continue;
@@ -554,7 +898,7 @@ function foldToolResults(state: ChatState, content: unknown[]): ChatState {
         ...m,
         blocks: m.blocks.map((b) =>
           b.kind === "tool" && b.id === toolId
-            ? { ...b, result: text, state: isError ? "error" : "done" }
+            ? { ...b, result: text, details, state: isError ? "error" : "done" }
             : b,
         ),
       })),
@@ -563,7 +907,7 @@ function foldToolResults(state: ChatState, content: unknown[]): ChatState {
   return next;
 }
 
-function reduceStream(state: ChatState, ev: Json, parent: string | undefined): ChatState {
+function reduceStream(state: ChatState, ev: Json, parent: string | undefined, now: number): ChatState {
   switch (asStr(ev.type)) {
     case "message_start": {
       const id = asStr(asObj(ev.message).id) || `m${state.messages.length}`;
@@ -571,7 +915,15 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined): C
       return {
         ...state,
         busy: true,
-        messages: [...state.messages, { id, role: "assistant", blocks: [], streaming: true, parent }],
+        // Only if the turn is not already timed. `addUserTurn` starts the clock
+        // when you press send, which is the honest start — this is for the turn
+        // nobody here started: a resumed session, or a catch-up on a chat that
+        // kept working while the browser was away.
+        turnStartedAt: state.turnStartedAt ?? now,
+        messages: [
+          ...state.messages,
+          { id, role: "assistant", blocks: [], streaming: true, parent, partial: true },
+        ],
       };
     }
 
@@ -604,14 +956,20 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined): C
       const delta = asObj(ev.delta);
       const kind = asStr(delta.type);
       if (kind === "text_delta") {
-        return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "text", asStr(delta.text)) }));
+        const text = asStr(delta.text);
+        state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(text) };
+        return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "text", text) }));
       }
       if (kind === "thinking_delta") {
+        // Not counted here: the agent counts its own thinking on the
+        // `thinking_tokens` channel, and counting the characters too would say
+        // every reasoned token twice.
         return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
       }
       if (kind === "input_json_delta") {
         // A tool's arguments stream in as JSON text. Kept raw until the block
         // closes: half a JSON document does not parse.
+        state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(asStr(delta.partial_json)) };
         return withCurrent(state, parent, (m) => {
           const at = m.blocks.map((b) => b.kind).lastIndexOf("tool");
           if (at < 0) return m;
@@ -639,6 +997,15 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined): C
       }));
     }
 
+    case "message_delta": {
+      // The first honest count of what this message cost, and it only comes
+      // when the message is over. It REPLACES the estimate rather than adding
+      // to it — the two describe the same writing.
+      const written = asObj(ev.usage).output_tokens;
+      if (typeof written !== "number") return state;
+      return { ...state, turnTokens: (state.turnTokens ?? 0) + written, turnDraft: 0 };
+    }
+
     case "message_stop":
       // This writer's message, not everyone's. Ending them all was what let the
       // first subagent to finish close the bubble a second one was still
@@ -657,12 +1024,18 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined): C
 
 /** Add the user's own turn. The agent echoes it back (--replay-user-messages),
  *  but showing it immediately is what makes the UI feel like a chat. */
-export function addUserTurn(state: ChatState, text: string): ChatState {
+export function addUserTurn(state: ChatState, text: string, now: number = Date.now()): ChatState {
   return {
     ...state,
     busy: true,
     stopping: false,
     stoppedAt: undefined,
+    // A second message sent MID-TURN joins the turn already running rather than
+    // restarting its clock — the agent reads it as the next thing it is told,
+    // and the time and tokens so far are still this turn's.
+    turnStartedAt: state.busy ? state.turnStartedAt : now,
+    turnTokens: state.busy ? state.turnTokens : 0,
+    turnDraft: state.busy ? state.turnDraft : 0,
     // The last failure belonged to the last turn; asking again clears it.
     failure: undefined,
     messages: [

@@ -72,6 +72,10 @@ pub struct Request {
     /// attached to the exact call that raised it.
     pub tool_use_id: Option<String>,
     pub cwd: Option<String>,
+    /// The level the hook was STARTED with, from `OCTIQ_ACCESS`. Reported, not
+    /// obeyed: it is only the fallback for a chat this server has no live
+    /// record of. See `current_access`.
+    pub access: Option<String>,
 }
 
 /// The question as it goes out to the UI.
@@ -98,8 +102,47 @@ fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, oneshot::Sender<Decision>
     f(guard.get_or_insert_with(HashMap::new))
 }
 
+/// What the asking chat may do at this moment.
+///
+/// The live record first, the hook's own starting value second. The hook can
+/// only ever see the environment its process was born with, and the level can
+/// change part-way through a chat — so a hook that decided for itself decided
+/// from a stale value, which is how "Bypass permissions" ended up still asking
+/// about every command.
+fn current_access(request: &Request) -> crate::agent_chat::Access {
+    request
+        .chat_key
+        .as_deref()
+        .and_then(crate::agent_chat::access_now)
+        .or_else(|| {
+            request
+                .access
+                .as_deref()
+                .map(crate::agent_chat::Access::from_env)
+        })
+        // Neither: the most cautious of the three. A missing value must never
+        // be the one that stops the asking.
+        .unwrap_or(crate::agent_chat::Access::Read)
+}
+
 /// Ask, and wait for an answer.
 pub async fn ask(request: Request) -> Answer {
+    // The person has already answered. The most permissive level means run
+    // anything without asking, and this hook is the FIRST step of the
+    // permission chain — before deny rules, allow rules and the mode — so
+    // without this, choosing Full access and then being asked about `ls` is the
+    // setting visibly not working.
+    //
+    // Abstaining is right here, not allowing: with no opinion the call falls
+    // through to `bypassPermissions`, which is the answer the person gave. On
+    // the other two levels this hook is the whole point and stays in the way.
+    if current_access(&request) == crate::agent_chat::Access::Full {
+        return Answer {
+            decision: Decision::Abstain.as_str(),
+            reason: "you chose to run anything without asking".into(),
+        };
+    }
+
     // Nobody is watching: do not hold the agent up for a question that would go
     // unseen. This is what keeps an unattended run behaving normally.
     if !crate::bus::clients_connected() {
@@ -171,9 +214,63 @@ mod tests {
             tool_input: None,
             tool_use_id: None,
             cwd: None,
+            access: None,
         })
         .await;
         assert_eq!(answer.decision, "abstain");
+    }
+
+    fn asking_about(chat_key: Option<&str>, access: Option<&str>) -> Request {
+        Request {
+            chat_key: chat_key.map(str::to_string),
+            session_id: None,
+            tool_name: Some("Bash".into()),
+            tool_input: None,
+            tool_use_id: None,
+            cwd: None,
+            access: access.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_most_permissive_level_is_answered_without_asking_anyone() {
+        // Full access means run anything without asking. This hook is the first
+        // step of the permission chain, so if it does not stand aside here, the
+        // level the person chose never gets a say.
+        let answer = ask(asking_about(None, Some("full"))).await;
+        assert_eq!(answer.decision, "abstain");
+        assert_eq!(answer.reason, "you chose to run anything without asking");
+    }
+
+    #[test]
+    fn the_live_level_beats_the_one_the_hook_was_started_with() {
+        // The whole point: a chat that STARTED on full and has since been dialled
+        // back has to be asked about, whatever the hook's environment still says.
+        crate::agent_chat::remember_access("chat-a", crate::agent_chat::Access::Auto);
+        let request = asking_about(Some("chat-a"), Some("full"));
+        assert_eq!(current_access(&request), crate::agent_chat::Access::Auto);
+    }
+
+    #[test]
+    fn the_started_level_is_used_when_the_chat_is_not_known() {
+        // A chat the server has no record of — the only case the hook's own
+        // value still decides.
+        let request = asking_about(Some("chat-never-started"), Some("full"));
+        assert_eq!(current_access(&request), crate::agent_chat::Access::Full);
+    }
+
+    #[test]
+    fn neither_a_live_level_nor_a_reported_one_is_the_cautious_one() {
+        // A missing or unreadable value must never be the one that stops the
+        // asking.
+        assert_eq!(
+            current_access(&asking_about(None, None)),
+            crate::agent_chat::Access::Read
+        );
+        assert_eq!(
+            current_access(&asking_about(None, Some("nonsense"))),
+            crate::agent_chat::Access::Read
+        );
     }
 
     #[test]

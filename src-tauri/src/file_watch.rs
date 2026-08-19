@@ -11,8 +11,8 @@
 // save. Watching the containing folder non-recursively keeps working, and the
 // event path tells us which watched file it was.
 use std::collections::{BTreeSet, HashSet};
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,17 +40,11 @@ pub fn file_watch_paths(
     state: State<Arc<FileWatchState>>,
     paths: Vec<String>,
 ) -> Result<(), String> {
-    file_watch_paths_impl(
-        &state,
-        paths,
-    )
+    file_watch_paths_impl(&state, paths)
 }
 
 /// The Tauri-free half of `file_watch_paths`.
-pub fn file_watch_paths_impl(
-    state: &FileWatchState,
-    paths: Vec<String>,
-) -> Result<(), String> {
+pub fn file_watch_paths_impl(state: &FileWatchState, paths: Vec<String>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None; // drop the old watcher first; its debounce thread ends
     if paths.is_empty() {

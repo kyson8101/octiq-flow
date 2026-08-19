@@ -137,21 +137,19 @@ async function main() {
   // Rule 2: only for agents OctiqFlow started.
   if (!process.env.OCTIQ_CHAT_KEY) noOpinion();
 
-  /* Rule 4: the person has already answered.
+  /* Rule 4 — the person has already answered — is NOT decided here.
    *
-   * The most permissive level means run anything without asking, and it is
-   * passed to the agent as --permission-mode bypassPermissions (Claude's own
-   * name for it, which the picker now uses too). But THIS HOOK RUNS FIRST —
-   * it is the opening step of the permission chain, before deny rules, allow
-   * rules and the mode — so that flag never got a say and every command still
-   * stopped here for approval. Choosing Full access and then being asked about
-   * `ls` is the setting visibly not working.
+   * It used to be: OCTIQ_ACCESS === "full" meant run anything without asking,
+   * so the hook stepped aside rather than stopping every command. But that
+   * variable is written into this process's environment when the AGENT is
+   * spawned, and nothing can rewrite it afterwards — so changing the level
+   * part-way through a chat left this deciding for the level the chat started
+   * on, in both directions.
    *
-   * Abstaining is right here, not allowing: with no opinion the call falls
-   * through to bypassPermissions, which is the answer the person already gave.
-   * On the other two levels the hook is the whole point and stays in the way.
+   * So the level travels with the question instead, as the value this hook was
+   * handed, and the server prefers its own live record of it. The answer comes
+   * back as an abstain, which is the same thing this used to do.
    */
-  if (process.env.OCTIQ_ACCESS === "full") noOpinion();
 
   let raw = "";
   for await (const chunk of process.stdin) raw += chunk;
@@ -192,6 +190,9 @@ async function main() {
       toolInput: input.tool_input,
       toolUseId: input.tool_use_id,
       cwd: input.cwd,
+      // The level this hook was started with — the server's fallback for a
+      // chat it has no live record of.
+      access: process.env.OCTIQ_ACCESS,
     },
     cfg,
   );

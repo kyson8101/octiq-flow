@@ -387,7 +387,8 @@ mod tests {
     /// A throwaway repo with one commit and a `user.*` identity, so `git commit`
     /// works on a machine with no global git config.
     fn temp_repo(name: &str) -> Option<std::path::PathBuf> {
-        let dir = std::env::temp_dir().join(format!("octiq-gitops-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octiq-gitops-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).ok()?;
         let git = |args: &[&str]| {

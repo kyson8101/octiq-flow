@@ -16,6 +16,8 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
+import { ToolGroup } from "./ToolGroup";
+import { groupRows } from "../lib/toolGroups";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
@@ -154,6 +156,34 @@ function BlockView({ block, animate, kids }: { block: Block; animate?: boolean; 
   );
 }
 
+/** A stack of blocks, with long runs of tool calls folded into one row.
+ *
+ *  Only the LAST row can still be arriving, so only it is allowed to animate —
+ *  and a row knows where it ended in the original list, which is why grouping
+ *  hands back that position rather than just the calls. */
+function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boolean; kids: Kids }) {
+  // A card that has picked up a subagent transcript is never folded away, even
+  // when its name is not one of the ones that says so.
+  const rows = useMemo(() => groupRows(blocks, (tool) => kids.has(tool.id)), [blocks, kids]);
+  const last = blocks.length - 1;
+  return (
+    <>
+      {rows.map((row) =>
+        row.kind === "group" ? (
+          <ToolGroup key={row.tools[0].id} tools={row.tools} />
+        ) : (
+          <BlockView
+            key={row.index}
+            block={row.block}
+            animate={streaming && row.index === last}
+            kids={kids}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
 /** A subagent's own working, shown inside the card that started it.
  *
  *  The same blocks as any reply — prose, thinking, its own tool cards, and its
@@ -165,14 +195,7 @@ function SubAgent({ messages, kids }: { messages: Message[]; kids: Kids }) {
   const streaming = messages.some((m) => m.streaming);
   return (
     <div className="subagent">
-      {blocks.map((block, i) => (
-        <BlockView
-          key={i}
-          block={block}
-          animate={streaming && i === blocks.length - 1}
-          kids={kids}
-        />
-      ))}
+      <Blocks blocks={blocks} streaming={streaming} kids={kids} />
       {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
     </div>
   );
@@ -258,9 +281,7 @@ function TurnView({
     <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
       {role === "assistant" && <div className="msg-role">Claude</div>}
       <div className="msg-body">
-        {blocks.map((block, i) => (
-          <BlockView key={i} block={block} animate={streaming && i === blocks.length - 1} kids={kids} />
-        ))}
+        <Blocks blocks={blocks} streaming={streaming} kids={kids} />
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
         {queued && <div className="queued">queued</div>}
@@ -491,4 +512,27 @@ export function MessageList({
       </div>
     </div>
   );
+}
+
+/** One subagent's whole transcript, on its own.
+ *
+ *  The agent rail's focus view: the same blocks the Task card nests, lifted out
+ *  and shown alone so several long runs can be read one at a time. It reuses
+ *  `SubAgent` rather than re-rendering blocks itself — a second block renderer
+ *  is a second place for prose, thinking and tool cards to drift apart.
+ *
+ *  `parent` is the `tool_use` id of the Task call. Returns null when that call
+ *  produced no transcript, which happens: a subagent's messages are not
+ *  guaranteed to reach this stream at all. */
+export function AgentTranscript({ messages, parent }: { messages: Message[]; parent: string }) {
+  const kids: Kids = new Map();
+  for (const m of messages) {
+    if (!m.parent) continue;
+    const own = kids.get(m.parent);
+    if (own) own.push(m);
+    else kids.set(m.parent, [m]);
+  }
+  const own = kids.get(parent);
+  if (!own?.length) return null;
+  return <SubAgent messages={own} kids={kids} />;
 }

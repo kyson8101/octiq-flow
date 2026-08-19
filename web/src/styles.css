@@ -23,7 +23,10 @@
   --r-lg: 14px;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  /* Menlo first where it exists — it is what the terminal draws, so code in
+     the chat and code in the terminal are the same shapes. Everything else
+     falls back to the Apple system font. */
+  --mono: Menlo, ui-monospace, SFMono-Regular, "SF Mono", monospace;
 
   color-scheme: dark;
 }
@@ -450,6 +453,258 @@ body {
   font-family: var(--mono);
 }
 
+/* ---- Resuming an earlier agent session --------------------------------- */
+/* Shown under the hero, on the page where a new chat would otherwise start
+   from nothing. Closed it is one quiet line; open it is a search field over
+   every session Claude Code and Codex remember. */
+.resume-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 22px;
+  padding: 7px 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.resume-open:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.resume-count {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resume {
+  width: 100%;
+  max-width: 560px;
+  margin-top: 22px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.resume-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+
+.resume-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  /* 16px or iOS zooms the whole page when the field takes focus. */
+  font-size: 16px;
+}
+
+.resume-input::placeholder {
+  color: var(--fg-3);
+}
+
+.resume-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.resume-close {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.resume-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.resume-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.resume-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.resume-chip:hover {
+  color: var(--fg-0);
+}
+
+.resume-chip.is-on {
+  border-color: transparent;
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.resume-chip.is-scope {
+  margin-left: auto;
+}
+
+.resume-list {
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  -webkit-overflow-scrolling: touch;
+}
+
+.resume-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* The row under the cursor is filled, not edged. A bar down one side of a row
+   is the pattern this project does not use anywhere. */
+.resume-row.is-on {
+  background: var(--bg-2);
+}
+
+.resume-tag {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.resume-row.is-on .resume-tag {
+  background: var(--bg-1);
+}
+
+.resume-tag.is-claude {
+  color: #ff9d6b;
+}
+
+.resume-tag.is-codex {
+  color: #8fd3ff;
+}
+
+.resume-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.resume-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-0);
+  font-size: 13px;
+}
+
+.resume-mark {
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.resume-where {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.resume-dot {
+  margin: 0 5px;
+}
+
+.resume-when {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.resume-msg {
+  padding: 14px 12px;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+
+.resume-msg.is-bad {
+  color: var(--warn);
+}
+
+.resume-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.resume-foot > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.resume-link {
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (min-width: 621px) {
+  .resume-input {
+    font-size: 13px;
+  }
+}
+
 /* ---- Messages --------------------------------------------------------- */
 .msgs {
   flex: 1 1 auto;
@@ -581,6 +836,13 @@ body {
   cursor: pointer;
 }
 
+/* The icon leads the row, so the row needs a little more air around it than a
+   line of text does, and the caret has moved to the far end. */
+.tool-head {
+  gap: 8px;
+  padding: 7px 9px 7px 7px;
+}
+
 .thinking-head:hover,
 .tool-head:hover {
   background: var(--bg-1);
@@ -597,9 +859,12 @@ body {
 }
 
 .tool-caret {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
   transition: transform 0.12s ease;
   font-size: 10px;
+  color: var(--fg-3);
 }
 
 .tool-caret.is-open {
@@ -618,6 +883,71 @@ body {
   border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
 }
 
+/* The icon badge. One tint per family of call, stated here and nowhere else:
+   the icon takes it as its stroke, the badge as a wash behind it. A tint is
+   never the ONLY thing carrying a meaning — the name is right beside it — so
+   the colours can stay quiet. */
+.tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--tint) 15%, transparent);
+  color: var(--tint);
+  --tint: var(--fg-2);
+}
+
+.tool-icon[data-kind="read"] {
+  --tint: #64d2ff;
+}
+.tool-icon[data-kind="edit"] {
+  --tint: #ff9f0a;
+}
+.tool-icon[data-kind="run"] {
+  --tint: #30d158;
+}
+.tool-icon[data-kind="search"] {
+  --tint: #7d7aff;
+}
+.tool-icon[data-kind="web"] {
+  --tint: #0a84ff;
+}
+.tool-icon[data-kind="agent"] {
+  --tint: #0a84ff;
+}
+.tool-icon[data-kind="skill"] {
+  --tint: #bf5af3;
+}
+.tool-icon[data-kind="mcp"] {
+  --tint: #66d4cf;
+}
+.tool-icon[data-kind="plan"] {
+  --tint: #ff375f;
+}
+
+/* While a call is in flight its icon breathes, so a long-running row is
+   findable in a scrolled-past reply without reading a word of it. */
+.tool-running .tool-icon {
+  animation: tool-breathe 1.6s ease-in-out infinite;
+}
+
+@keyframes tool-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.tool-error .tool-icon {
+  --tint: var(--danger);
+}
+
 .tool-name {
   flex: 0 0 auto;
   font-family: var(--mono);
@@ -625,8 +955,23 @@ body {
   color: var(--fg-1);
 }
 
+/* Where a call came from — the plugin behind a skill, the server behind an MCP
+   tool. Second in the row and quieter than the name, because it answers a
+   question the reader only sometimes has. */
+.tool-scope {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
 .tool-detail {
-  flex: 1 1 auto;
+  /* Sized to its text, shrinking to an ellipsis only when the row runs out —
+     the spacer beside it, not this, is what fills a short row. */
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -639,18 +984,52 @@ body {
   color: var(--fg-3);
 }
 
+.tool-gap {
+  flex: 1 1 auto;
+}
+
 .tool-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-3);
 }
 
-.tool-running .tool-state {
+.tool-state.is-running {
   color: var(--accent);
 }
 
-.tool-error .tool-state {
+.tool-state.is-error {
   color: var(--danger);
+}
+
+/* A ring with one quarter drawn, turning. Small enough to sit on a 12px row
+   without pushing it taller. */
+.tool-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: tool-spin 0.7s linear infinite;
+}
+
+@keyframes tool-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Everything that moves stops for a reader who asked for that. */
+@media (prefers-reduced-motion: reduce) {
+  .tool-spinner {
+    animation: none;
+  }
+  .tool-running .tool-icon {
+    animation: none;
+  }
 }
 
 .tool-body {
@@ -679,6 +1058,163 @@ body {
   word-break: break-word;
 }
 
+/* ---- File diffs ------------------------------------------------------- */
+/* An Edit or a Write, drawn as the change it is.
+
+   TWO number columns. A unified diff numbers an added line against the file as
+   it will be and a removed one against the file as it was; put both in one
+   column and a correct diff reads as a viewer that lost count. Each line fills
+   the column it belongs to and leaves the other blank.
+
+   The rows are `display: contents`, so every cell is a grid item of the body
+   and the columns line up down the whole diff. It is also what makes a row's
+   background reach the end of the LONGEST line rather than the end of the box:
+   the last track is `minmax(max-content, 1fr)`, so it never sizes below the
+   widest line, and the body scrolls sideways instead of wrapping code. */
+.diff {
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  overflow: hidden;
+}
+
+.diff-body {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(max-content, 1fr);
+  align-items: baseline;
+  max-height: 360px;
+  overflow: auto;
+  padding: 5px 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  tab-size: 2;
+}
+
+/* No patch yet, so no gutter: the two number columns simply are not there. */
+.diff.is-plain .diff-body {
+  grid-template-columns: auto minmax(max-content, 1fr);
+}
+
+.diff-row {
+  display: contents;
+}
+
+.diff-n {
+  padding-right: 8px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+
+.diff-row > .diff-n:first-child {
+  padding-left: 11px;
+}
+
+.diff-mark {
+  padding: 0 5px 0 3px;
+  color: var(--fg-3);
+  user-select: none;
+}
+
+.diff.is-plain .diff-row > .diff-mark {
+  padding-left: 11px;
+}
+
+.diff-text {
+  padding-right: 12px;
+  color: var(--fg-1);
+  white-space: pre;
+}
+
+/* The tint sits on the cells, not the row — a `display: contents` row has no
+   box of its own to paint. */
+.diff-row.is-add > * {
+  background: color-mix(in srgb, var(--ok) 14%, transparent);
+}
+
+.diff-row.is-del > * {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.diff-row.is-add > .diff-mark {
+  color: var(--ok);
+}
+
+.diff-row.is-del > .diff-mark {
+  color: var(--danger);
+}
+
+.diff-row.is-add > .diff-text,
+.diff-row.is-del > .diff-text {
+  color: var(--fg-0);
+}
+
+/* The lines nobody changed, counted rather than printed. */
+.diff-row.is-gap > * {
+  grid-column: 1 / -1;
+  padding: 2px 11px;
+  margin: 2px 0;
+  background: color-mix(in srgb, var(--fg-3) 7%, transparent);
+  color: var(--fg-3);
+  font-size: 10.5px;
+}
+
+.diff-more {
+  display: block;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sunken);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.diff-more:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.diff-none {
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+/* `+46 −1` on the collapsed row: the size of the change, for a card nobody has
+   opened yet. */
+.diff-stat {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.diff-stat-add {
+  color: var(--ok);
+}
+
+.diff-stat-del {
+  color: var(--danger);
+}
+
+/* A note beside a section label, in the label's own quiet voice but not
+   shouting in capitals with it. */
+.tool-note {
+  margin-left: 7px;
+  color: var(--fg-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 /* ---- Subagents -------------------------------------------------------- */
 /* A Task card is not a tool call that returned a value — it holds another
    agent's whole transcript — so it is marked as its own thing. */
@@ -688,8 +1224,29 @@ body {
 
 /* A description is prose, and prose is read from its start. Only the shared
    rule's path-truncation wants the other end. */
-.tool-agent .tool-detail {
+.tool-agent .tool-detail,
+.tool-skill .tool-detail {
   direction: ltr;
+}
+
+/* ---- Skills ----------------------------------------------------------- */
+/* A skill call is not one action — it is a set of instructions the agent has
+   just taken on, and everything after it reads differently because of it. So
+   it is marked like the Task card is, in its own colour. */
+.tool-skill {
+  border-color: color-mix(in srgb, #bf5af3 32%, var(--border));
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, #bf5af3 7%, var(--bg-sunken)),
+    var(--bg-sunken) 60%
+  );
+}
+
+/* The skill's own name is the point of the row, so it is the one tool name
+   that is not left at the weight of everything else. */
+.tool-skill .tool-name {
+  color: var(--fg-0);
+  font-weight: 600;
 }
 
 .tool-steps {
@@ -1038,6 +1595,466 @@ body {
   font-size: 11.5px;
   line-height: 1.35;
   color: var(--fg-3);
+}
+
+/* ---- Effort meter -------------------------------------------------------
+   Effort is a SCALE, and it used to be a dropdown — the one control that hides
+   a scale. You saw the word you were on and nothing about what sat above it,
+   and moving two levels meant opening a menu and aiming at a row.
+
+   So the button IS a meter (bars filled to the level, readable from the bar
+   without opening anything) and what opens is a slider along the rungs: one
+   drag crosses the whole range, arrow keys step it, and every level stays
+   named on screen the entire time. */
+.eff-btn {
+  gap: 5px;
+  /* The meter and its word are one reading; a bar tight enough to break
+     "Very high" in half should shrink something else. */
+  white-space: nowrap;
+}
+
+.eff-bars rect {
+  fill: var(--fg-3);
+  transition: fill 0.15s ease;
+}
+
+.eff-bars rect.is-lit {
+  fill: var(--fg-2);
+}
+
+.picker-btn:hover .eff-bars rect.is-lit {
+  fill: var(--fg-0);
+}
+
+/* Auto: every bar lit, none of them a claim about how hard it will think. */
+.eff-bars.is-auto rect.is-lit {
+  fill: var(--accent);
+}
+
+.picker-menu.is-effort {
+  min-width: 256px;
+  max-width: 292px;
+  gap: 0;
+  padding: 8px;
+}
+
+.eff {
+  --eff-thumb: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The level in full, and what it costs you. A tick label under the track can
+   carry "V.high"; only this line can carry "for problems worth the wait". */
+.eff-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 2px 9px;
+}
+
+.eff-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--fg-0);
+}
+
+.eff-hint {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+.eff-slide {
+  position: relative;
+  height: var(--eff-thumb);
+}
+
+/* The track is drawn HERE, not by the input: the input's own track paints over
+   everything under it, which would swallow the rung dots. The input is left
+   holding only the thumb. Inset by half a thumb on each side — that is exactly
+   how far the thumb's centre travels. */
+.eff-track {
+  position: absolute;
+  left: calc(var(--eff-thumb) / 2);
+  right: calc(var(--eff-thumb) / 2);
+  top: 50%;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+
+.eff-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.12s ease, background 0.15s ease;
+}
+
+/* One per rung, so the track reads as steps rather than a continuous dial —
+   which is what it is. */
+.eff-stop {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: var(--fg-3);
+}
+
+.eff-stop.is-past {
+  background: var(--bg-0);
+  opacity: 0.55;
+}
+
+.eff-range {
+  position: relative;
+  width: 100%;
+  height: var(--eff-thumb);
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.eff-range:focus {
+  outline: none;
+}
+
+.eff-range::-webkit-slider-runnable-track {
+  height: var(--eff-thumb);
+  background: transparent;
+}
+
+.eff-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--eff-thumb);
+  height: var(--eff-thumb);
+  border: 0;
+  border-radius: 50%;
+  background: var(--fg-0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.eff-range::-moz-range-track {
+  height: var(--eff-thumb);
+  border: 0;
+  background: transparent;
+}
+
+.eff-range::-moz-range-thumb {
+  width: var(--eff-thumb);
+  height: var(--eff-thumb);
+  border: 0;
+  border-radius: 50%;
+  background: var(--fg-0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+}
+
+.eff-range:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.eff-range:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Every rung named, at its own position, and clickable: the ends of a scale
+   are where you most often want to land, and dragging there is slower than
+   saying so. The two ends align to the edges instead of centring on their
+   stop — a centred "Ultra" would hang off the panel. */
+.eff-marks {
+  position: relative;
+  height: 15px;
+  margin: 5px calc(var(--eff-thumb) / 2) 0;
+}
+
+.eff-mark {
+  position: absolute;
+  top: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.eff-mark:hover {
+  color: var(--fg-1);
+}
+
+.eff-mark.is-on {
+  color: var(--fg-0);
+  font-weight: 500;
+}
+
+/* While Auto is on the slider still shows a level — the one turning Auto off
+   returns to — so it has to look like a memory rather than the current answer. */
+.eff.is-auto .eff-fill {
+  background: var(--fg-3);
+}
+
+.eff.is-auto .eff-range::-webkit-slider-thumb {
+  background: var(--fg-2);
+}
+
+.eff.is-auto .eff-range::-moz-range-thumb {
+  background: var(--fg-2);
+}
+
+/* Not a rung, so not on the slider: every other level says how hard to think,
+   this one says stop deciding. Putting it at an end of the scale would claim
+   it is the least or the most of something. */
+.eff-auto {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.eff-auto:hover {
+  background: var(--bg-2);
+}
+
+.eff-auto-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.eff-switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  transition: background 0.15s ease;
+}
+
+.eff-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.eff-auto.is-on .eff-switch {
+  background: var(--accent);
+}
+
+.eff-auto.is-on .eff-switch::after {
+  transform: translateX(12px);
+  background: #fff;
+}
+
+/* A 14px thumb is a mouse target, not a thumb one. */
+@media (pointer: coarse) {
+  .eff {
+    --eff-thumb: 22px;
+  }
+
+  .eff-mark {
+    font-size: 11px;
+  }
+}
+
+/* ---- Model picker: a tab per agent, a tile per model ------------------
+   Replaces a seven-row list that spent its left column repeating the agent's
+   name. The agent lives in the tabs now, so the panel holds only the thing
+   being picked: the models, as a grid read in one pass instead of a column
+   walked down. */
+.picker-menu.is-models {
+  min-width: 304px;
+  max-width: 340px;
+  gap: 8px;
+  padding: 8px;
+}
+
+.mp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* A segmented control, not two more rows: there are exactly two agents, and
+   they are a choice BETWEEN, not a list of. */
+.mp-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+}
+
+.mp-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.mp-tab:hover:not(:disabled) {
+  color: var(--fg-0);
+}
+
+.mp-tab.is-on {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.mp-tab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.mp-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.mp-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Lit = this machine has the CLI. Hollow = it does not, which is also why that
+   tab is unpickable. */
+.mp-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.mp-dot.is-off {
+  background: transparent;
+  border: 1px solid var(--fg-3);
+}
+
+/* Which agent the chat is on, readable from the other tab too. */
+.mp-tab-now {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.mp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 6px;
+}
+
+.mp-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.mp-card:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+}
+
+.mp-card:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A full outline plus a tick, never an edge strip. */
+.mp-card.is-on {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.mp-card:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.mp-card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.mp-card-tick {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.mp-note {
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+.mp-note.is-warn {
+  color: var(--warn);
 }
 
 /* ---- Status line ------------------------------------------------------ */
@@ -3012,6 +4029,10 @@ body {
 }
 
 .ask-card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
   font-size: 13.5px;
   color: var(--fg-0);
 }
@@ -4574,4 +5595,100 @@ body {
   .ws-tab-btn {
     max-width: 200px;
   }
+}
+
+/* ---- Tool groups ------------------------------------------------------ */
+/* A run of calls folded into one row. It is a card like any other tool card,
+   with a second line: the row says how much ran and where it got to, the line
+   under it says what ran. */
+.tool-group-head {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+
+.tool-group-head .tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Indented past the icon, so it reads as a note under the name rather than as
+   a second row of its own. */
+.tool-tally {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 30px;
+  overflow: hidden;
+}
+
+.tool-tally-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
+.tool-tally-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-2);
+}
+
+.tool-tally-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The count leads the row, so it gets the figures that line up in a column. */
+.tool-group .tool-name {
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 10px 10px;
+}
+
+/* Cards inside a card need a shade of their own to read as separate, the same
+   way a subagent's do. */
+.tool-group-body .tool {
+  background: var(--bg-0);
+}
+
+/* Folded, the card says it is more than one card: a second edge behind it.
+   Opened, the cards themselves say it, and the hint would just be a line under
+   the last one. */
+.tool-group {
+  position: relative;
+  overflow: visible;
+}
+
+.tool-group::after {
+  content: "";
+  position: absolute;
+  right: 9px;
+  bottom: -4px;
+  left: 9px;
+  height: 4px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  background: var(--bg-sunken);
+}
+
+.tool-group.is-open::after {
+  display: none;
 }

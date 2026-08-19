@@ -40,12 +40,38 @@
 //! active profile dir:
 //!
 //! ```json
-//! { "enabled": true, "port": 1421, "bind": "0.0.0.0", "token": "…" }
+//! { "enabled": true, "port": 1421, "bind": "0.0.0.0", "token": "…",
+//!   "local_token": true }
 //! ```
 //!
-//! A missing token is generated and written back on first start. Static files
-//! are not gated (they are just the UI); the WebSocket — the part that can do
-//! anything — requires the token.
+//! A missing token is generated and written back on first start. The file is
+//! written `0600` inside a `0700` folder, because what it holds is not a
+//! password to a document: it opens the socket, and the socket can start a
+//! shell. Static files are not gated (they are just the UI); the WebSocket —
+//! the part that can do anything — requires the token.
+//!
+//! ## What guards what
+//!
+//! The token is the only thing standing between a request and this machine, so
+//! three rules sit around it:
+//!
+//! * **The token is compared in constant time** (`ct_eq`). `==` stops at the
+//!   first byte that differs, and that timing is an oracle.
+//! * **`/token` answers only a browser that typed a loopback address**
+//!   (`host_is_local`). A loopback peer address is not enough on its own: a page
+//!   can point its own hostname at `127.0.0.1` and become same-origin with this
+//!   server, at which point asking for the token is all it has to do. The `Host`
+//!   header is the one part of that request the attacker cannot rewrite.
+//! * **The socket refuses a page we did not serve** (`origin_ok`). A WebSocket
+//!   handshake is exempt from the same-origin policy, so `Origin` is the only
+//!   place the browser says who is calling. Clients that are not browsers send
+//!   none and are unaffected — the token is what gates them.
+//!
+//! `local_token: false` switches the first of those off entirely, for a setup
+//! where something forwards to this server WITHOUT adding a proxy header
+//! (`ssh -L`, `socat`, an nginx `proxy_pass` with no `proxy_set_header`). Those
+//! arrive indistinguishable from a browser on this desk, so the endpoint has to
+//! be closed by hand rather than detected.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -96,6 +122,21 @@ pub struct WebConfig {
     /// means off, and the token stays the only way in.
     #[serde(default)]
     pub access: crate::access::AccessConfig,
+    /// Whether a browser on this machine may ask for the token (`GET /token`).
+    ///
+    /// On by default, because the usual case is a browser on the same desk and
+    /// the token is already readable on the same disk. Turn it OFF when
+    /// something sits in front of this server that does NOT add a forwarding
+    /// header — an `ssh -L` tunnel, `socat`, an nginx `proxy_pass` with no
+    /// `proxy_set_header`. Those arrive looking exactly like a local browser,
+    /// and `came_through_a_proxy` cannot see them, so the endpoint would hand
+    /// the token to whoever reached the far end.
+    #[serde(default = "default_local_token")]
+    pub local_token: bool,
+}
+
+fn default_local_token() -> bool {
+    true
 }
 
 fn default_port() -> u16 {
@@ -114,6 +155,7 @@ impl Default for WebConfig {
             bind: default_bind(),
             token: String::new(),
             access: Default::default(),
+            local_token: default_local_token(),
         }
     }
 }
@@ -137,6 +179,15 @@ pub fn load_config() -> WebConfig {
     if cfg.token.trim().is_empty() {
         cfg.token = uuid::Uuid::new_v4().to_string();
         save_config(&cfg);
+    } else {
+        // An install made before the permissions were tightened still has a
+        // world-readable token sitting there. Nothing rewrites this file on a
+        // normal run, so the fix has to happen on the read.
+        let path = config_path();
+        if let Some(dir) = path.parent() {
+            private_dir(dir);
+        }
+        private_file(&path);
     }
 
     if let Ok(v) = std::env::var("OCTIQ_WEB") {
@@ -160,11 +211,45 @@ pub fn save_config(cfg: &WebConfig) {
     let path = config_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
+        private_dir(dir);
     }
     if let Ok(raw) = serde_json::to_string_pretty(cfg) {
-        let _ = std::fs::write(path, raw);
+        if std::fs::write(&path, raw).is_ok() {
+            private_file(&path);
+        }
     }
 }
+
+/// Take the group and world bits off a file we just wrote.
+///
+/// `web.json` holds the token, and the token is not a password to a document —
+/// it opens the socket, and the socket can start a shell. Written under the
+/// default umask this file lands `0644`, so on a machine with more than one
+/// account every one of them can read it. The point of this app is to run on a
+/// machine that stays on; that is exactly the machine most likely to have other
+/// logins on it.
+///
+/// Applied after the write rather than before: a file is only briefly readable
+/// this way, and doing it in that order means a failed write leaves nothing
+/// behind to tighten. No-op off Unix, where the ACL model is not this one.
+#[cfg(unix)]
+fn private_file(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn private_file(_path: &std::path::Path) {}
+
+/// The same for the folder around it: a directory nobody else may list.
+#[cfg(unix)]
+fn private_dir(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(not(unix))]
+fn private_dir(_path: &std::path::Path) {}
 
 // ---------------------------------------------------------------------------
 // State
@@ -198,7 +283,6 @@ impl WebState {
 
 /// Whether any browser is attached right now. `false` when the web server was
 /// never started, so the desktop-only path is untouched.
-
 
 /// Send every event this app emits to the desktop window as well.
 ///
@@ -353,7 +437,8 @@ pub fn start(app: &AppHandle, state: Arc<WebState>, cfg: WebConfig) {
 }
 
 /// Serve with no Tauri app at all: commands run through the dispatch table and
-/// only `/v2` is served, because the classic UI's assets live in the bundle.
+/// the client comes from `web/dist`, because the classic UI's assets live in
+/// the bundle this process does not have.
 pub async fn start_headless(cfg: WebConfig, services: crate::dispatch::Services) {
     let ctx = Ctx {
         state: Arc::new(WebState::new(cfg.clone())),
@@ -376,7 +461,6 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
     };
 
     let token = cfg.token.clone();
-    let desktop = matches!(ctx.invoke, Invoker::Webview(_));
     Some(async move {
         let router = Router::new()
             .route("/ws", get(ws_handler))
@@ -400,13 +484,10 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
         // people would have to go hunting for. It is the user's own machine and
         // their own terminal; the usability is worth more than the secrecy of a
         // value that already sits in plain text on the same disk.
-        println!("[web] OctiqFlow v2:      http://{addr}/v2/?token={token}");
-        // Only the desktop app can serve the classic UI: its assets live in the
-        // Tauri bundle and its commands need a webview. Printing that URL from
-        // a headless server would send people to a 404.
-        if desktop {
-            println!("[web] OctiqFlow classic: http://{addr}/?token={token}");
-        }
+        println!("[web] OctiqFlow: http://{addr}/?token={token}");
+        // The old path still answers, and people have it saved. Said once here
+        // so nobody has to wonder whether their bookmark went stale.
+        println!("[web] (the older /v2/ URL still works)");
         let service = router.into_make_service_with_connect_info::<SocketAddr>();
         if let Err(e) = axum::serve(listener, service).await {
             eprintln!("[web] server stopped: {e}");
@@ -414,11 +495,11 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
     })
 }
 
-/// Where the built v2 client lives. Tried in order:
+/// Where the built client lives. Tried in order:
 ///   · next to the app bundle's resources (a shipped build)
 ///   · the repo's `web/dist` (running from a checkout)
-/// Returns None when v2 has not been built, which simply means `/v2` 404s and
-/// the classic UI at `/` is unaffected.
+/// Returns None when it has not been built, which is the one case where the
+/// classic UI is still served at `/`.
 fn v2_root() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -434,30 +515,30 @@ fn v2_root() -> Option<PathBuf> {
     dev.join("index.html").is_file().then_some(dev)
 }
 
-/// Serve one file of the v2 client. Any unknown path inside `/v2/` falls back
-/// to its index.html, the usual single-page-app rule.
+/// Serve one file of the client. Any unknown path falls back to its
+/// index.html, the usual single-page-app rule.
 fn serve_v2(rel: &str) -> Response {
     let Some(root) = v2_root() else {
         return (
             StatusCode::NOT_FOUND,
-            "the v2 client is not built — run `pnpm --dir web build`",
+            "the client is not built — run `pnpm --dir web build`",
         )
             .into_response();
     };
 
     // Refuse anything that tries to climb out of the served folder. The only
-    // paths we serve are ones that stay inside it.
-    let clean = rel.trim_start_matches('/');
-    let unsafe_path = clean.split('/').any(|seg| seg == ".." || seg == ".");
-    let file = if clean.is_empty() || unsafe_path {
-        root.join("index.html")
-    } else {
-        let candidate = root.join(clean);
-        if candidate.is_file() {
-            candidate
-        } else {
-            root.join("index.html")
+    // paths we serve are ones that stay inside it; everything else falls back
+    // to the page, the same as any address this client does not have a file for.
+    let file = match safe_relative_path(rel) {
+        Some(safe) => {
+            let candidate = root.join(safe);
+            if candidate.is_file() {
+                candidate
+            } else {
+                root.join("index.html")
+            }
         }
+        None => root.join("index.html"),
     };
 
     let mime = match file.extension().and_then(|e| e.to_str()) {
@@ -487,17 +568,25 @@ fn serve_v2(rel: &str) -> Response {
     }
 }
 
-/// Serve the app's own frontend — the very files the desktop window loads, read
-/// through Tauri's asset resolver, so there is one copy of the UI and no build
-/// step to keep in step.
+/// Serve the client.
 ///
-/// `/v2` and below come from the built React client instead (web/dist).
+/// The v2 React client is THE client, and it answers at the root: someone given
+/// a URL should reach the app, not a path they have to know to append. `/v2/`
+/// still works and always will — it is in home-screen shortcuts, in bookmarks,
+/// and in the tokened URL this server has been printing since the day it was
+/// written; changing where something lives is no reason to break the links
+/// people already keep.
+///
+/// The classic UI (the desktop window's own files, read through Tauri's asset
+/// resolver) is now only a fallback, for a checkout where v2 has not been
+/// built. A headless server has no bundle to read it from at all.
 async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
     let raw = uri.path().trim_start_matches('/');
 
     // The v2 bundle's asset URLs are RELATIVE (vite `base: "./"`), so the page
     // must be served from a path ending in a slash or the browser resolves
-    // `./assets/…` against the parent and misses.
+    // `./assets/…` against the parent and misses. At the root that is already
+    // true; `/v2` alone is the one spelling that is not.
     if raw == "v2" {
         return Response::builder()
             .status(StatusCode::TEMPORARY_REDIRECT)
@@ -509,15 +598,22 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
         return serve_v2(rest);
     }
 
+    // Everything else is v2 as well, whenever it is built. Its own routing is
+    // in the URL's HASH (`#/p/…/c/…`), so every path that reaches here is
+    // either an asset or a page, and `serve_v2` answers both.
+    if v2_root().is_some() {
+        return serve_v2(raw);
+    }
+
     let path = if raw.is_empty() { "index.html" } else { raw };
 
     let Invoker::Webview(app) = &ctx.invoke else {
-        // Headless: the classic UI's assets live inside the Tauri bundle, which
-        // this process does not have. v2 is served above and is the whole point
-        // of running without a window.
+        // Headless with no v2 build: there is nothing to serve. The classic
+        // UI's assets live inside the Tauri bundle, which this process does
+        // not have.
         return (
             StatusCode::NOT_FOUND,
-            "this server serves /v2 — the classic UI needs the desktop app",
+            "the client is not built — run `pnpm --dir web build`",
         )
             .into_response();
     };
@@ -561,6 +657,164 @@ fn came_through_a_proxy(headers: &axum::http::HeaderMap) -> bool {
     FORWARDED.iter().any(|h| headers.contains_key(*h))
 }
 
+/// Whether the browser typed OUR OWN address into the bar, rather than a name
+/// that merely points here.
+///
+/// This is the DNS-rebinding gate, and it exists because the peer address
+/// cannot answer the question. A page on `evil.example` can give its own
+/// hostname a second DNS answer of `127.0.0.1`, wait for the browser to switch
+/// to it, and from then on its scripts are same-origin with this server: it can
+/// read replies, so `GET /token` hands it the token and the socket behind it.
+/// Nothing about that request looks remote — the connection really does come
+/// from loopback.
+///
+/// The one thing the attacker cannot forge is this header. A browser writes
+/// `Host` from the URL it was given, so a rebound request still says
+/// `evil.example`. Insisting the header spells a loopback address is therefore
+/// the whole defence, and it costs a real local browser nothing: it got here by
+/// typing one.
+fn host_is_local(headers: &axum::http::HeaderMap) -> bool {
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+    else {
+        // Every browser sends one. Something that does not is not the local
+        // browser this rule is here to recognise.
+        return false;
+    };
+    matches!(
+        hostname_of(host).as_deref(),
+        Some("localhost" | "127.0.0.1" | "::1")
+    )
+}
+
+/// The name out of a `host:port`, with an IPv6 literal's brackets removed.
+/// `None` when there is nothing left, which is not a host.
+fn hostname_of(value: &str) -> Option<String> {
+    let value = value.trim();
+    // `[::1]:1421` and `[::1]` — the colons inside the brackets are part of the
+    // address, so the port can only be what follows the closing one.
+    let name = if let Some(rest) = value.strip_prefix('[') {
+        rest.split(']').next().unwrap_or_default()
+    } else {
+        value.split(':').next().unwrap_or_default()
+    };
+    (!name.is_empty()).then(|| name.to_ascii_lowercase())
+}
+
+/// Whether a browser page, if one sent this, is a page WE served.
+///
+/// A WebSocket handshake is not held to the same-origin policy: any page may
+/// open a socket to any host, and the browser will attach the user's cookies
+/// while it is at it. `Origin` is what the browser adds so a server can refuse,
+/// and refusing is what this does — the socket runs commands, so a page from
+/// somewhere else has no business on it even if it somehow learned the token.
+///
+/// No header at all means no browser: the permission hook, `curl`, the
+/// desktop window. Those are allowed through, because Origin was never what
+/// gated them — the token is.
+///
+/// A page already ON this machine is allowed even when its port differs. That
+/// is not a concession, it is the dev server: `pnpm dev` serves the client from
+/// `localhost:5273` and points it at the backend on `1421`, and the desktop
+/// webview's own origin is not a port at all. What this rule is for is a page
+/// somewhere ELSE, and no rebound hostname can spell itself `localhost` — the
+/// browser writes Origin from the address it loaded, the same as Host.
+fn origin_ok(headers: &axum::http::HeaderMap) -> bool {
+    let Some(origin) = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return true;
+    };
+    let origin_authority = origin
+        .split("://")
+        .nth(1)
+        .unwrap_or(origin)
+        .trim_end_matches('/');
+    if origin_authority.is_empty() {
+        return false;
+    }
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if origin_authority.eq_ignore_ascii_case(host) {
+        return true;
+    }
+    // Different port, same machine. Both ends have to be loopback for this to
+    // apply, so it never widens anything for a request that arrived over a
+    // network or through a tunnel.
+    let loopback = |value: &str| {
+        matches!(
+            hostname_of(value).as_deref(),
+            Some("localhost" | "127.0.0.1" | "::1")
+        )
+    };
+    loopback(origin_authority) && loopback(host)
+}
+
+/// Compare two secrets in time that does not depend on where they differ.
+///
+/// `==` on a `str` stops at the first byte that differs, so the time it takes
+/// says how much of the guess was right — feed it a token one byte at a time
+/// and the answer falls out in a few hundred tries instead of 2^122. The margin
+/// is tiny and the network noise is large, so this is not the likeliest way in;
+/// it is simply not worth leaving open for the sake of one operator.
+///
+/// An empty expected value matches nothing: a config with no token must refuse
+/// everyone rather than accept everyone.
+fn ct_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Turn a request path into a relative path that cannot leave the folder it is
+/// joined to, or `None` when it was never going to be one.
+///
+/// The trap `Path::join` sets is that it does not join at all when handed
+/// something absolute — it throws the base away and returns the argument, so
+/// `root.join("/etc/passwd")` IS `/etc/passwd`. Splitting the string on `/` and
+/// looking for `..` misses that, and misses `..\..` as well, because on Windows
+/// the backslash is a separator too and a drive letter is its own kind of
+/// absolute. Walking the parsed components instead asks the platform what the
+/// path means rather than guessing from its spelling: anything that is not a
+/// plain name — a root, a prefix, a parent — ends it.
+fn safe_relative_path(rel: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let rel = rel.trim_start_matches('/');
+    if rel.is_empty() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in std::path::Path::new(rel).components() {
+        let Component::Normal(name) = part else {
+            // CurDir is harmless but only ever arrives as noise; the rest —
+            // RootDir, Prefix, ParentDir — are the ways out.
+            return None;
+        };
+        // Components are parsed for the platform this was COMPILED for, so a
+        // Unix build reads `..\..\x` as one ordinary filename and a drive
+        // letter as an ordinary folder. Both are traversals once the same
+        // request reaches a Windows build, and neither spelling belongs in the
+        // name of a bundled asset — so they are refused everywhere, and the
+        // rule does not change shape depending on where it runs.
+        let name = name.to_string_lossy();
+        if name.contains('\\') || name.contains(':') {
+            return None;
+        }
+        out.push(name.as_ref());
+    }
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
 /// Hand the token to a browser running on THIS machine.
 ///
 /// A request from 127.0.0.1 already comes from something with the run of the
@@ -601,10 +855,21 @@ async fn token_handler(
         }
     }
 
+    // Turned off for the setups this cannot see: a tunnel that adds no
+    // forwarding header arrives indistinguishable from a browser on this desk.
+    if !ctx.state.cfg.lock().map(|c| c.local_token).unwrap_or(true) {
+        return (StatusCode::FORBIDDEN, "not local").into_response();
+    }
+
     // Order matters: the proxy check comes FIRST, because a forwarded request
     // passes the loopback test. Exposing this through a tunnel without it would
     // publish the token to anyone who asked for it.
-    if came_through_a_proxy(&headers) || !peer.ip().is_loopback() {
+    //
+    // The host check is the other half. A loopback peer address proves the
+    // connection came from this machine and NOT that the browser meant to talk
+    // to this machine — a rebound hostname gives an attacker's page both. Only
+    // an address typed as loopback gets an answer.
+    if came_through_a_proxy(&headers) || !peer.ip().is_loopback() || !host_is_local(&headers) {
         return (StatusCode::FORBIDDEN, "not local").into_response();
     }
     token_body(&ctx)
@@ -640,7 +905,16 @@ fn token_body(ctx: &Ctx) -> Response {
 /// This reads anything the app's user can read, which sounds broad until you
 /// remember what is next door: the same socket can start a shell. It is gated
 /// on the same token, and on nothing else.
-async fn file_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<FileQuery>) -> Response {
+async fn file_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<FileQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // This reads any file on the machine, so the same origin rule as the socket
+    // applies. An `<img src>` sends no Origin at all and is unaffected.
+    if !origin_ok(&headers) {
+        return (StatusCode::FORBIDDEN, "wrong origin").into_response();
+    }
     if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
@@ -652,7 +926,11 @@ async fn file_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<FileQuery>
     // phone's memory.
     match std::fs::metadata(&path) {
         Ok(meta) if meta.len() > 32 * 1024 * 1024 => {
-            return (StatusCode::PAYLOAD_TOO_LARGE, "file is too large to preview").into_response();
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "file is too large to preview",
+            )
+                .into_response();
         }
         Err(_) => return (StatusCode::NOT_FOUND, "not a file").into_response(),
         _ => {}
@@ -705,7 +983,7 @@ async fn auth_handler(AxumState(ctx): AxumState<Ctx>, Query(q): Query<TokenQuery
     }
 }
 
-/// Constant-ish token check shared by /auth and /ws.
+/// Constant-time token check shared by /auth, /ws, /file and the hooks.
 fn token_ok(ctx: &Ctx, given: &str) -> bool {
     let expected = ctx
         .state
@@ -714,14 +992,22 @@ fn token_ok(ctx: &Ctx, given: &str) -> bool {
         .ok()
         .map(|c| c.token.clone())
         .unwrap_or_default();
-    !expected.is_empty() && given == expected
+    ct_eq(&expected, given)
 }
 
 async fn ws_handler(
     AxumState(ctx): AxumState<Ctx>,
     Query(q): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    // A handshake is exempt from the same-origin policy, so "which page is
+    // opening this" is a question only the Origin header answers. A page we did
+    // not serve is refused before the token is even looked at: the socket runs
+    // commands, and no other site has business on it.
+    if !origin_ok(&headers) {
+        return (StatusCode::FORBIDDEN, "wrong origin").into_response();
+    }
     // The socket is the whole attack surface — it can start shells. Everything
     // past this line has already proved it knows the token.
     if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
@@ -775,7 +1061,13 @@ async fn client(ctx: Ctx, socket: WebSocket) {
         loop {
             match events.recv().await {
                 Ok(text) => {
-                    if out.lock().await.send(Message::Text(text.into())).await.is_err() {
+                    if out
+                        .lock()
+                        .await
+                        .send(Message::Text(text.into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -828,7 +1120,179 @@ async fn client(ctx: Ctx, socket: WebSocket) {
 
 #[cfg(test)]
 mod tests {
-    use super::came_through_a_proxy;
+    use super::*;
+
+    /// Build a HeaderMap from `(name, value)` pairs, for the tests below.
+    fn headers(pairs: &[(&str, &str)]) -> axum::http::HeaderMap {
+        use axum::http::header::HeaderName;
+        let mut map = axum::http::HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                value.parse().unwrap(),
+            );
+        }
+        map
+    }
+
+    // ---- host_is_local: the DNS-rebinding gate ----------------------------
+
+    #[test]
+    fn the_loopback_spellings_a_browser_can_send_are_local() {
+        for host in [
+            "localhost",
+            "localhost:1421",
+            "127.0.0.1",
+            "127.0.0.1:1421",
+            "[::1]",
+            "[::1]:1421",
+        ] {
+            assert!(
+                host_is_local(&headers(&[("host", host)])),
+                "{host} should count as local"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rebound_hostname_is_not_local_however_it_resolves() {
+        // The whole DNS-rebinding trick: `rebind.evil.com` is made to resolve to
+        // 127.0.0.1, so the request arrives on loopback and the peer address
+        // says nothing. What the attacker CANNOT change is the Host header —
+        // the browser copies it from the URL, and that still names their domain.
+        for host in [
+            "rebind.evil.com",
+            "rebind.evil.com:1421",
+            "octiq.example.com",
+            "127.0.0.1.nip.io:1421",
+        ] {
+            assert!(
+                !host_is_local(&headers(&[("host", host)])),
+                "{host} must not count as local"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_with_no_host_header_is_not_local() {
+        // Every browser sends one. Something that does not is not the local
+        // browser this endpoint exists for.
+        assert!(!host_is_local(&headers(&[])));
+    }
+
+    // ---- origin_ok: no cross-site page may open the socket -----------------
+
+    #[test]
+    fn a_client_that_sends_no_origin_is_allowed() {
+        // curl, the permission hook, any non-browser caller. They still have to
+        // know the token; Origin is not what gates them.
+        assert!(origin_ok(&headers(&[("host", "localhost:1421")])));
+    }
+
+    #[test]
+    fn a_page_on_our_own_origin_is_allowed() {
+        assert!(origin_ok(&headers(&[
+            ("host", "localhost:1421"),
+            ("origin", "http://localhost:1421"),
+        ])));
+        assert!(origin_ok(&headers(&[
+            ("host", "octiq.example.com"),
+            ("origin", "https://octiq.example.com"),
+        ])));
+    }
+
+    #[test]
+    fn a_page_on_another_origin_is_refused() {
+        assert!(!origin_ok(&headers(&[
+            ("host", "localhost:1421"),
+            ("origin", "http://evil.example"),
+        ])));
+        // A page served through the tunnel may not reach for another host.
+        assert!(!origin_ok(&headers(&[
+            ("host", "octiq.example.com"),
+            ("origin", "http://localhost:5273"),
+        ])));
+    }
+
+    #[test]
+    fn a_rebound_page_is_stopped_by_the_host_rule_not_the_origin_one() {
+        // Worth stating because the two rules answer different questions. Once
+        // rebound, the attacker's page IS same-origin with this server — Origin
+        // and Host both say `rebind.evil.com`, so the origin rule sees nothing
+        // wrong and should not pretend otherwise.
+        let rebound = headers(&[
+            ("host", "rebind.evil.com:1421"),
+            ("origin", "http://rebind.evil.com:1421"),
+        ]);
+        assert!(origin_ok(&rebound), "same origin is same origin");
+        // What stops it is that the address was never ours, which is the rule
+        // /token is guarded by.
+        assert!(!host_is_local(&rebound));
+    }
+
+    #[test]
+    fn the_dev_server_on_another_local_port_is_allowed() {
+        // `pnpm dev` serves the client from 5273 and points it at the backend
+        // on 1421. Both ends are loopback, so this is a page already on this
+        // machine — which is not what the origin rule is guarding against.
+        assert!(origin_ok(&headers(&[
+            ("host", "127.0.0.1:1421"),
+            ("origin", "http://localhost:5273"),
+        ])));
+        // The desktop webview's own origin, which has no port at all.
+        assert!(origin_ok(&headers(&[
+            ("host", "127.0.0.1:1421"),
+            ("origin", "tauri://localhost"),
+        ])));
+    }
+
+    // ---- ct_eq: the token compare must not leak its answer in time ---------
+
+    #[test]
+    fn ct_eq_matches_only_an_identical_string() {
+        assert!(ct_eq("a-token", "a-token"));
+        assert!(!ct_eq("a-token", "a-tokeN"));
+        assert!(!ct_eq("a-token", "a-token-longer"));
+        assert!(!ct_eq("", ""), "an empty expected token matches nothing");
+    }
+
+    // ---- safe_relative_path: no climbing out of the served folder ----------
+
+    #[test]
+    fn an_ordinary_asset_path_is_kept() {
+        assert_eq!(
+            safe_relative_path("assets/index-abc123.js"),
+            Some(std::path::PathBuf::from("assets/index-abc123.js"))
+        );
+    }
+
+    #[test]
+    fn nothing_that_climbs_or_reroots_survives() {
+        for bad in [
+            "../secrets",
+            "a/../../secrets",
+            // `\` is a separator on Windows, so a guard that splits on `/`
+            // alone lets this through and `join` then climbs.
+            r"..\..\secrets",
+            // A drive letter is its own kind of absolute, and an absolute path
+            // REPLACES the base in `Path::join` rather than joining to it.
+            r"C:\Windows\win.ini",
+            "C:/Windows/win.ini",
+        ] {
+            assert_eq!(safe_relative_path(bad), None, "{bad} must be refused");
+        }
+    }
+
+    #[test]
+    fn a_leading_slash_is_url_shape_not_an_escape() {
+        // `GET /etc/passwd` asks for `etc/passwd` INSIDE the served folder,
+        // which is an ordinary miss, not a traversal. The leading slash is how
+        // every URL path is spelled; stripping it is not a concession.
+        assert_eq!(
+            safe_relative_path("/etc/passwd"),
+            Some(std::path::PathBuf::from("etc/passwd"))
+        );
+    }
 
     #[test]
     fn a_request_forwarded_by_a_proxy_is_not_treated_as_local() {

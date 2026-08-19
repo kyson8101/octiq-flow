@@ -398,10 +398,8 @@ mod tests {
         // checkout, a worktree, a watcher — would otherwise write and rename the
         // SAME script file, and one of them execs it mid-rename and reads the
         // wrong body. Seen once: the uppercase hook returned the original title.
-        let dir = std::env::temp_dir().join(format!(
-            "octiq-hook-test-{name}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("octiq-hook-test-{name}-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let staged = dir.join("notify-hook.staged");
         let path = dir.join("notify-hook");
@@ -460,7 +458,10 @@ mod tests {
         // whole claim of this test, so lengthening it would test nothing.
         let hook = script("hang", "sleep 30");
         let started = Instant::now();
-        assert_eq!(filter_within(Some(hook), alert(), HOOK_TIMEOUT), Some(alert()));
+        assert_eq!(
+            filter_within(Some(hook), alert(), HOOK_TIMEOUT),
+            Some(alert())
+        );
         let waited = started.elapsed();
         assert!(
             waited >= HOOK_TIMEOUT,
@@ -513,6 +514,9 @@ mod tests {
     fn a_missing_hook_file_is_not_treated_as_a_hook() {
         let missing = std::env::temp_dir().join("octiq-hook-test-does-not-exist/notify-hook");
         // Spawn fails; the alert survives.
-        assert_eq!(filter_within(Some(missing), alert(), PATIENT), Some(alert()));
+        assert_eq!(
+            filter_within(Some(missing), alert(), PATIENT),
+            Some(alert())
+        );
     }
 }

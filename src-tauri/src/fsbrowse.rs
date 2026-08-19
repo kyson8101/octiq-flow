@@ -4,9 +4,9 @@
 // comes back as `Err(message)` so the browser panel can show it to the user.
 // The frontend opens a file with the opener plugin, not here.
 use std::fs;
-use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::State;
@@ -133,9 +133,7 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     // Whichever still has characters left sorts after. Names that compare equal
     // this far differ only in case or zero-padding, so the raw string breaks the
     // tie — without it the order of `007` and `7` would depend on the sort.
-    (ac.len() - i)
-        .cmp(&(bc.len() - j))
-        .then_with(|| a.cmp(b))
+    (ac.len() - i).cmp(&(bc.len() - j)).then_with(|| a.cmp(b))
 }
 
 /// Open `path` (a project folder or a file) in VS Code.
@@ -373,7 +371,10 @@ mod tests {
         // Never Equal. Two names the comparison cannot separate would leave the
         // sort's own stability to decide, and the list could come back in a
         // different order each time it is read.
-        assert_ne!(natural_cmp("README.md", "readme.md"), std::cmp::Ordering::Equal);
+        assert_ne!(
+            natural_cmp("README.md", "readme.md"),
+            std::cmp::Ordering::Equal
+        );
         assert_eq!(
             natural_cmp("README.md", "readme.md").reverse(),
             natural_cmp("readme.md", "README.md"),
@@ -451,7 +452,8 @@ mod tests {
 
     #[test]
     fn resolve_path_handles_absolute_relative_tilde_and_missing() {
-        let dir = std::env::temp_dir().join(format!("octiq-resolve-path-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octiq-resolve-path-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("hit.txt");
         std::fs::write(&file, "x").unwrap();
@@ -679,11 +681,7 @@ pub fn write_file(
     path: String,
     content: String,
 ) -> Result<(), String> {
-    write_file_impl(
-        &state,
-        path,
-        content,
-    )
+    write_file_impl(&state, path, content)
 }
 
 /// The Tauri-free half of `write_file`.

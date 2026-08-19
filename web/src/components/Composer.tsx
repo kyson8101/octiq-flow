@@ -11,6 +11,7 @@
 // still has a real keyboard and should still send on Enter.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { workingLine } from "../lib/working";
 import { FolderPicker } from "./FolderPicker";
 
 const TYPES_ON_GLASS =
@@ -35,9 +36,37 @@ export const MODELS: ModelChoice[] = [
   { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku" },
   { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable" },
   { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "" },
-  { id: "codex:gpt5", agent: "codex", name: "Codex", model: "GPT-5.6", flag: "gpt-5.6-sol" },
+  // Codex's three GPT-5.6 models, in the order its own model list puts them:
+  // Sol is the frontier one, Terra the everyday balance, Luna the fast and
+  // cheap one. The tile shows the short name because the tab above it already
+  // says Codex — the flag carries the full slug.
+  { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol" },
+  { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra" },
+  { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna" },
   { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "" },
 ];
+
+/** The saved choice, if it is still one of the rows above.
+ *
+ *  Ids change when a lineup does — `codex:gpt5` became `codex:sol` the day
+ *  Codex shipped three models instead of one — and a saved id nobody claims
+ *  used to drop the whole choice back to the first row, which silently moved a
+ *  Codex user onto Claude. Falling back to the AGENT's first model keeps the
+ *  half of the choice that is still true. */
+export function modelFromId(id: string | null): ModelChoice | undefined {
+  if (!id) return undefined;
+  const exact = MODELS.find((m) => m.id === id);
+  if (exact) return exact;
+  const agent = id.split(":")[0];
+  return MODELS.find((m) => m.agent === agent);
+}
+
+/** Each agent's name, taken from its own rows so there is one spelling of it. */
+export const AGENT_NAME: Record<Provider, string> =
+  MODELS.reduce((acc, m) => {
+    acc[m.agent] = m.name;
+    return acc;
+  }, {} as Record<Provider, string>);
 
 /** How much the agent may do without asking.
  *
@@ -87,26 +116,44 @@ export const ACCESS: Record<Provider, { id: AccessLevel; label: string; hint: st
 /** How hard the model thinks before answering.
  *
  *  Both agents have this and neither has the same levels: Codex has a `minimal`
- *  Claude lacks, Claude has a `max` Codex lacks. So the list is per provider,
- *  and the backend refuses anything outside the one it is given. */
-export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+ *  Claude lacks, Claude has a `max` and an `ultracode` Codex lacks. So the list
+ *  is per provider, and the backend refuses anything outside the one it is
+ *  given. */
+export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode" | "auto";
 
-export const EFFORTS: Record<Provider, { id: Effort; label: string; hint: string }[]> = {
+/** `short` is what fits under a slider stop; `label` is what a sentence uses. */
+export const EFFORTS: Record<Provider, { id: Effort; label: string; short: string; hint: string }[]> = {
   claude: [
-    { id: "low", label: "Low", hint: "quick answers, least thinking" },
-    { id: "medium", label: "Medium", hint: "the usual balance" },
-    { id: "high", label: "High", hint: "thinks longer, costs more" },
-    { id: "xhigh", label: "Very high", hint: "for problems worth the wait" },
-    { id: "max", label: "Max", hint: "everything it has" },
+    { id: "low", label: "Low", short: "Low", hint: "quick answers, least thinking" },
+    { id: "medium", label: "Medium", short: "Med", hint: "the usual balance" },
+    { id: "high", label: "High", short: "High", hint: "thinks longer, costs more" },
+    { id: "xhigh", label: "Very high", short: "V.high", hint: "for problems worth the wait" },
+    { id: "max", label: "Max", short: "Max", hint: "everything it has" },
+    { id: "ultracode", label: "Ultracode", short: "Ultra", hint: "max, and it fans work out to subagents" },
+    { id: "auto", label: "Auto", short: "Auto", hint: "it picks the level itself, per turn" },
   ],
+  // No `minimal`, and a `max`: Codex's own model list says the GPT-5.6 models
+  // take low / medium / high / xhigh / max, and dropped minimal. (Sol and
+  // Terra also take an `ultra`, Luna does not — that one is per MODEL, not per
+  // agent, so it waits until this list can be asked per model.)
   codex: [
-    { id: "minimal", label: "Minimal", hint: "barely reasons, fastest" },
-    { id: "low", label: "Low", hint: "quick answers" },
-    { id: "medium", label: "Medium", hint: "the usual balance" },
-    { id: "high", label: "High", hint: "thinks longer, costs more" },
-    { id: "xhigh", label: "Very high", hint: "for problems worth the wait" },
+    { id: "low", label: "Low", short: "Low", hint: "quick answers" },
+    { id: "medium", label: "Medium", short: "Med", hint: "the usual balance" },
+    { id: "high", label: "High", short: "High", hint: "thinks longer, costs more" },
+    { id: "xhigh", label: "Very high", short: "V.high", hint: "for problems worth the wait" },
+    { id: "max", label: "Max", short: "Max", hint: "everything it has" },
   ],
 };
+
+/** The rungs of the meter: every level except `auto`.
+ *
+ *  `auto` is not a rung. Every other level says how hard to think; `auto` says
+ *  stop deciding and let the model judge each turn — which is a different kind
+ *  of answer, and putting it at one end of a scale would claim it is either
+ *  the least or the most of something. It gets its own switch instead. */
+export function effortSteps(provider: Provider) {
+  return EFFORTS[provider].filter((e) => e.id !== "auto");
+}
 
 /** The effort to use for a provider, given what is currently chosen. Falls back
  *  to Medium — which both offer — when the level does not exist over there. */
@@ -173,6 +220,9 @@ export function Composer({
   contextTokens,
   contextWindow,
   activity,
+  turnStartedAt,
+  turnTokens,
+  thinking,
   effort,
   onEffort,
   cwd,
@@ -215,6 +265,15 @@ export function Composer({
   /** What the agent is doing when it is not writing — compacting, so far.
    *  A long silent pause with "working…" under it tells you nothing. */
   activity?: string;
+  /** When the running turn started, and how much the agent has written since.
+   *  The two halves of the same answer to "is this going anywhere?" — a turn
+   *  four minutes in with 16k tokens written is working; the same four minutes
+   *  with nothing written is not. */
+  turnStartedAt?: number;
+  turnTokens?: number;
+  /** True while the model is reasoning rather than typing, which is when the
+   *  effort level is worth naming: it is the setting that chose this wait. */
+  thinking?: boolean;
   effort: Effort;
   onEffort: (e: Effort) => void;
   /** The project folder, so the file picker opens where the work is. */
@@ -233,6 +292,7 @@ export function Composer({
   // not offer the same access wording or the same effort levels.
   const accessList = ACCESS[choice.agent];
   const effortList = EFFORTS[choice.agent];
+  const effSteps = effortSteps(choice.agent);
   const perm = accessList.find((p) => p.id === access) ?? accessList[0];
   const eff = effortList.find((e) => e.id === effort) ?? effortList[Math.floor(effortList.length / 2)];
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -557,35 +617,17 @@ export function Composer({
             {menu && (
               <>
                 <div className="picker-scrim" onClick={() => setMenu(false)} />
-                <div className="picker-menu" role="menu">
-                  {noAgents && (
-                    <div className="picker-note">
-                      No agent CLI found on this machine — a chat cannot start
-                    </div>
-                  )}
-                  {started && (
-                    <div className="picker-note">
-                      Another {choice.name} model keeps this chat · the other agent starts a new one
-                    </div>
-                  )}
-                  {MODELS.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      role="menuitem"
-                      className={`picker-item ${m.id === choice.id ? "is-on" : ""}`}
-                      disabled={missing(m.agent)}
-                      onClick={() => {
-                        onChoice(m);
-                        setMenu(false);
-                      }}
-                    >
-                      <span className="picker-name">{m.name}</span>
-                      <span className="picker-model">
-                        {missing(m.agent) ? "not installed" : m.model}
-                      </span>
-                    </button>
-                  ))}
+                <div className="picker-menu is-models" role="dialog" aria-label="Model">
+                  <ModelPicker
+                    choice={choice}
+                    onChoice={(m) => {
+                      onChoice(m);
+                      setMenu(false);
+                    }}
+                    missing={missing}
+                    noAgents={noAgents}
+                    started={!!started}
+                  />
                 </div>
               </>
             )}
@@ -629,54 +671,49 @@ export function Composer({
             )}
           </div>
 
-          {/* Claude only: Codex has no effort flag, so offering one here would
-              be a setting that does nothing. */}
-          {(
-            <div className="picker">
-              <button
-                className="picker-btn"
-                type="button"
-                aria-haspopup="menu"
-                aria-expanded={effMenu}
-                title={`Effort: ${eff.hint}`}
-                onClick={() => setEffMenu((v) => !v)}
-              >
-                {eff.label}
-                <span className="picker-caret" aria-hidden="true">
-                  ▾
-                </span>
-              </button>
-              {effMenu && (
-                <>
-                  <div className="picker-scrim" onClick={() => setEffMenu(false)} />
-                  <div className="picker-menu" role="menu">
-                    {started && (
-                      <div className="picker-note">
-                        {choice.agent === "claude"
-                          ? "Changes this chat straight away"
-                          : "Applies from your next message"}
-                      </div>
-                    )}
-                    {effortList.map((e) => (
-                      <button
-                        key={e.id}
-                        type="button"
-                        role="menuitem"
-                        className={`picker-item ${e.id === effort ? "is-on" : ""}`}
-                        onClick={() => {
-                          onEffort(e.id);
-                          setEffMenu(false);
-                        }}
-                      >
-                        <span className="picker-name">{e.label}</span>
-                        <span className="picker-model">{e.hint}</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+          {/* The effort meter. The button is the meter — bars filled to the
+              level, so the scale is readable without opening anything — and
+              what opens is the slider that moves along it. */}
+          <div className="picker">
+            <button
+              className="picker-btn eff-btn"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={effMenu}
+              title={`Effort: ${eff.label} — ${eff.hint}`}
+              onClick={() => setEffMenu((v) => !v)}
+            >
+              {/* Read off `eff`, not off `effort`: mid-switch the chosen level
+                  can be one the new agent does not have, and `eff` is already
+                  the fallback the word beside it is using. Off `effort` the
+                  bars would empty while the word said Medium. */}
+              <EffortBars
+                at={effSteps.findIndex((e) => e.id === eff.id)}
+                of={effSteps.length}
+                auto={eff.id === "auto"}
+              />
+              {eff.label}
+            </button>
+            {effMenu && (
+              <>
+                <div className="picker-scrim" onClick={() => setEffMenu(false)} />
+                {/* No close on pick: a slider is dragged THROUGH levels, and a
+                    menu that shut on the first one would end the drag before
+                    you reached the level you were heading for. The scrim
+                    closes it, the same as anywhere else. */}
+                <div className="picker-menu is-effort" role="dialog" aria-label="Effort">
+                  {started && (
+                    <div className="picker-note">
+                      {choice.agent === "claude"
+                        ? "Changes this chat straight away"
+                        : "Applies from your next message"}
+                    </div>
+                  )}
+                  <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
+                </div>
+              </>
+            )}
+          </div>
           </div>
 
           {/* The same three settings behind one button, for a bar that cannot
@@ -745,7 +782,17 @@ export function Composer({
           )}
 
           <span className="composer-hint">
-            {activity ?? (busy ? "working…" : TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send")}
+            {busy ? (
+              <Working
+                since={turnStartedAt}
+                tokens={turnTokens}
+                activity={activity}
+                thinking={thinking}
+                effort={eff.label.toLowerCase()}
+              />
+            ) : (
+              activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send")
+            )}
           </span>
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
@@ -789,25 +836,13 @@ export function Composer({
             <div className="settings-sheet" role="dialog" aria-label="Chat settings">
               <div className="sheet-group">
                 <div className="sheet-head">Model</div>
-                {noAgents && (
-                  <div className="picker-note">
-                    No agent CLI found on this machine — a chat cannot start
-                  </div>
-                )}
-                {MODELS.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    className={`picker-item ${m.id === choice.id ? "is-on" : ""}`}
-                    disabled={missing(m.agent)}
-                    onClick={() => onChoice(m)}
-                  >
-                    <span className="picker-name">{m.name}</span>
-                    <span className="picker-model">
-                      {missing(m.agent) ? "not installed" : m.model}
-                    </span>
-                  </button>
-                ))}
+                <ModelPicker
+                  choice={choice}
+                  onChoice={onChoice}
+                  missing={missing}
+                  noAgents={noAgents}
+                  started={!!started}
+                />
               </div>
 
               <div className="sheet-group">
@@ -827,17 +862,7 @@ export function Composer({
 
               <div className="sheet-group">
                 <div className="sheet-head">Effort</div>
-                {effortList.map((e) => (
-                  <button
-                    key={e.id}
-                    type="button"
-                    className={`picker-item ${e.id === effort ? "is-on" : ""}`}
-                    onClick={() => onEffort(e.id)}
-                  >
-                    <span className="picker-name">{e.label}</span>
-                    <span className="picker-model">{e.hint}</span>
-                  </button>
-                ))}
+                <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
               </div>
 
               <button className="sheet-done" type="button" onClick={() => setSheet(false)}>
@@ -851,6 +876,124 @@ export function Composer({
   );
 }
 
+/** Choosing a model: one tab per agent, then a tile each.
+ *
+ *  This was a flat list of seven rows, five of them starting with the word
+ *  "Claude" — the agent's name written out over and over, and the model's name
+ *  pushed to the right of it. The agent moves up into a tab, so it is written
+ *  twice instead of seven times, and what is left is the only thing being
+ *  chosen: the model, as a grid of tiles you read in one pass.
+ *
+ *  Picking a TAB changes nothing — it only looks — because switching agent is
+ *  the one choice here that can end the chat you are in. Only a tile commits.
+ */
+function ModelPicker({
+  choice,
+  onChoice,
+  missing,
+  noAgents,
+  started,
+}: {
+  choice: ModelChoice;
+  onChoice: (m: ModelChoice) => void;
+  /** True when this machine is known NOT to have that agent. */
+  missing: (agent: Provider) => boolean;
+  /** Asked, and nothing at all resolved. */
+  noAgents: boolean;
+  /** This conversation already has turns in it. */
+  started: boolean;
+}) {
+  const [tab, setTab] = useState<Provider>(choice.agent);
+  // Choosing elsewhere — the Agents page, or restoring a chat — moves the tab
+  // to whatever is now in use, so reopening this never shows the wrong shelf.
+  useEffect(() => setTab(choice.agent), [choice.agent]);
+
+  const agents = Object.keys(AGENT_NAME) as Provider[];
+  const list = MODELS.filter((m) => m.agent === tab);
+  const gone = missing(tab);
+
+  return (
+    <div className="mp">
+      <div className="mp-tabs" role="tablist" aria-label="Agent">
+        {agents.map((p) => (
+          <button
+            key={p}
+            type="button"
+            role="tab"
+            aria-selected={tab === p}
+            className={`mp-tab ${tab === p ? "is-on" : ""}`}
+            disabled={missing(p)}
+            onClick={() => setTab(p)}
+          >
+            <span className={`mp-dot ${missing(p) ? "is-off" : ""}`} aria-hidden="true" />
+            <span className="mp-tab-name">{AGENT_NAME[p]}</span>
+            {choice.agent === p && <span className="mp-tab-now">in use</span>}
+          </button>
+        ))}
+      </div>
+
+      <div className="mp-grid" role="tabpanel" aria-label={AGENT_NAME[tab]}>
+        {list.map((m) => {
+          const on = m.id === choice.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              className={`mp-card ${on ? "is-on" : ""}`}
+              aria-pressed={on}
+              disabled={gone}
+              onClick={() => onChoice(m)}
+            >
+              <span className="mp-card-name">{m.model}</span>
+              {on && (
+                <span className="mp-card-tick" aria-hidden="true">
+                  ✓
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <ModelNote tab={tab} choice={choice} gone={gone} noAgents={noAgents} started={started} />
+    </div>
+  );
+}
+
+/** The one line under the tiles. There is always at most one thing worth
+ *  saying, and saying two of them at once is how the old menu ended up with a
+ *  paragraph sitting on top of a list. */
+function ModelNote({
+  tab,
+  choice,
+  gone,
+  noAgents,
+  started,
+}: {
+  tab: Provider;
+  choice: ModelChoice;
+  gone: boolean;
+  noAgents: boolean;
+  started: boolean;
+}) {
+  if (noAgents) {
+    return <div className="mp-note is-warn">No agent CLI on this machine — a chat cannot start</div>;
+  }
+  if (gone) {
+    return (
+      <div className="mp-note is-warn">
+        {AGENT_NAME[tab]} is not on this machine — install it to use these
+      </div>
+    );
+  }
+  if (!started) return null;
+  return tab === choice.agent ? (
+    <div className="mp-note">Another {AGENT_NAME[tab]} model keeps this chat going</div>
+  ) : (
+    <div className="mp-note">{AGENT_NAME[tab]} is a different program — it starts a new chat</div>
+  );
+}
+
 /** How full this session's context is, next to the send button.
  *
  *  A conversation has a ceiling, and running into it is the thing that ends a
@@ -860,6 +1003,172 @@ export function Composer({
  *
  *  The ring fills as the context does, and turns amber then red. That is the
  *  whole message; the exact numbers are in the tooltip for when you want them. */
+/** The meter itself: bars rising left to right, lit up to the chosen level.
+ *
+ *  It sits ON the button, so how hard the agent is set to think is readable
+ *  from the composer bar without opening anything — which a word alone never
+ *  was. "High" tells you nothing about whether anything sits above it.
+ *
+ *  Auto lights every bar at half strength: not a level, but not off either. */
+function EffortBars({ at, of, auto }: { at: number; of: number; auto?: boolean }) {
+  const PITCH = 3.4;
+  const BAR = 2.2;
+  const H = 11;
+  const w = of * PITCH - (PITCH - BAR);
+  return (
+    <svg
+      className={`eff-bars ${auto ? "is-auto" : ""}`}
+      width={w}
+      height={H}
+      viewBox={`0 0 ${w} ${H}`}
+      aria-hidden="true"
+    >
+      {Array.from({ length: of }, (_, i) => {
+        const h = 3 + (i * (H - 3)) / Math.max(1, of - 1);
+        return (
+          <rect
+            key={i}
+            className={auto || i <= at ? "is-lit" : ""}
+            x={i * PITCH}
+            y={H - h}
+            width={BAR}
+            height={h}
+            rx={1}
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
+/** Effort as a slider along its rungs, with Auto as its own switch.
+ *
+ *  This was a dropdown, which is the one control that hides a scale: you saw
+ *  the word you were on and nothing about what lay above or below it, and
+ *  moving two levels meant opening a menu and aiming at a row. Effort is
+ *  ordered — that is its whole shape — so it is a slider: one drag crosses the
+ *  range, arrow keys step it, and the rungs are on screen the entire time.
+ *
+ *  Every level names itself under the track. The one you are on is spelled out
+ *  in full above it, with the sentence saying what it costs you, because that
+ *  is the part a short tick label cannot carry. */
+function EffortSlider({
+  agent,
+  effort,
+  onEffort,
+}: {
+  agent: Provider;
+  effort: Effort;
+  onEffort: (e: Effort) => void;
+}) {
+  const steps = effortSteps(agent);
+  const isAuto = effort === "auto";
+  const autoRow = EFFORTS[agent].find((e) => e.id === "auto");
+  /** The middle when the level belongs to the OTHER agent — the same fallback
+   *  the button makes, so the two never disagree while a switch is in flight. */
+  const idxOf = (id: Effort) => {
+    const i = steps.findIndex((e) => e.id === id);
+    return i < 0 ? Math.floor(steps.length / 2) : i;
+  };
+  /** Where the slider rests while Auto is on. Auto has no rung, and leaving the
+   *  thumb wherever it happened to be would make turning Auto off a surprise —
+   *  this is the level it goes back to, shown the whole time. */
+  const [held, setHeld] = useState(() => idxOf(effort));
+  const at = isAuto ? held : idxOf(effort);
+  useEffect(() => {
+    if (!isAuto) setHeld(idxOf(effort));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effort, isAuto, agent]);
+
+  const cur = isAuto && autoRow ? autoRow : steps[at];
+  const last = steps.length - 1;
+  const pct = (i: number) => (i / Math.max(1, last)) * 100;
+
+  /** Dragging while Auto is on turns Auto off at that level, rather than
+   *  refusing to move: a dead control is a worse answer than an obvious one. */
+  const pickAt = (i: number) => {
+    setHeld(i);
+    onEffort(steps[i].id);
+  };
+
+  return (
+    <div className={`eff ${isAuto ? "is-auto" : ""}`}>
+      <div className="eff-head">
+        <span className="eff-name">{cur.label}</span>
+        <span className="eff-hint">{cur.hint}</span>
+      </div>
+
+      <div className="eff-slide">
+        <div className="eff-track" aria-hidden="true">
+          <span className="eff-fill" style={{ width: `${pct(at)}%` }} />
+          {steps.map((e, i) => (
+            <span
+              key={e.id}
+              className={`eff-stop ${!isAuto && i <= at ? "is-past" : ""}`}
+              style={{ left: `${pct(i)}%` }}
+            />
+          ))}
+        </div>
+        <input
+          className="eff-range"
+          type="range"
+          min={0}
+          max={last}
+          step={1}
+          value={at}
+          aria-label="Effort"
+          aria-valuetext={cur.label}
+          onChange={(ev) => pickAt(Number(ev.target.value))}
+        />
+      </div>
+
+      {/* Also the click targets: the ends of a scale are where you most often
+          want to land, and dragging to one is slower than saying so. */}
+      <div className="eff-marks">
+        {steps.map((e, i) => (
+          <button
+            key={e.id}
+            type="button"
+            className={`eff-mark ${!isAuto && i === at ? "is-on" : ""}`}
+            style={
+              i === 0
+                ? { left: 0 }
+                : i === last
+                  ? { right: 0 }
+                  : { left: `${pct(i)}%`, transform: "translateX(-50%)" }
+            }
+            title={`${e.label} — ${e.hint}`}
+            onClick={() => pickAt(i)}
+          >
+            {e.short}
+          </button>
+        ))}
+      </div>
+
+      {autoRow && (
+        <button
+          type="button"
+          className={`eff-auto ${isAuto ? "is-on" : ""}`}
+          role="switch"
+          aria-checked={isAuto}
+          onClick={() => onEffort(isAuto ? steps[held].id : "auto")}
+        >
+          <span className="eff-auto-text">
+            <span className="picker-name">{autoRow.label}</span>
+            {/* Off, it has to say what it does. On, the line above already
+                said that — so it answers the question the greyed-out slider
+                raises instead: what happens when you switch this back. */}
+            <span className="picker-model">
+              {isAuto ? `on — off goes back to ${steps[held].label}` : autoRow.hint}
+            </span>
+          </span>
+          <span className="eff-switch" aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ContextMeter({ tokens, window }: { tokens?: number; window?: number }) {
   if (!tokens || !window) return null;
   const percent = Math.min(100, Math.round((tokens / window) * 100));
@@ -890,6 +1199,45 @@ function ContextMeter({ tokens, window }: { tokens?: number; window?: number }) 
       </svg>
       <span className="ctx-val">{percent}%</span>
     </span>
+  );
+}
+
+/** The status line while a turn runs: how long, how much, how hard.
+ *
+ *  It keeps its own second hand rather than being handed an elapsed time, so
+ *  the clock advances between agent events — a turn can go a whole minute
+ *  without one. The interval lives and dies with the component, and the
+ *  component only exists while the chat is busy, so an idle chat ticks nothing.
+ *  Nothing above it re-renders either: the second belongs to this span. */
+function Working({
+  since,
+  tokens,
+  activity,
+  thinking,
+  effort,
+}: {
+  since?: number;
+  tokens?: number;
+  activity?: string;
+  thinking?: boolean;
+  effort: string;
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <>
+      {workingLine({
+        elapsedMs: since === undefined ? undefined : Date.now() - since,
+        tokens,
+        activity,
+        thinking,
+        effort,
+      })}
+    </>
   );
 }
 

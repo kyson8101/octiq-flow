@@ -107,7 +107,11 @@ pub fn append(key: &str, event: &Value) -> Option<u64> {
         None => count(&path) + 1,
     };
 
-    let mut file = OpenOptions::new().create(true).append(true).open(&path).ok()?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
     // Only claim the number once the line is actually on disk, so a failed
     // write cannot leave a gap that `since` would read straight past.
     writeln!(file, "{line}").ok()?;
@@ -136,7 +140,11 @@ pub fn since(key: &str, after: u64) -> Vec<Recorded> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for (index, line) in BufReader::new(file).lines().map_while(Result::ok).enumerate() {
+    for (index, line) in BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .enumerate()
+    {
         let seq = index as u64 + 1;
         if seq <= after {
             continue;

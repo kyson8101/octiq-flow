@@ -12,11 +12,14 @@ use tauri_plugin_opener::OpenerExt;
 
 mod access;
 mod agent_chat;
+mod agent_history;
 mod agent_resume;
 mod agents;
 mod appearance;
+mod bus;
 mod canvas;
 mod chat_index;
+mod dispatch;
 mod file_watch;
 mod focus;
 mod fonts;
@@ -34,8 +37,6 @@ mod pty;
 mod question;
 mod terminal_layout;
 mod transcript;
-mod bus;
-mod dispatch;
 mod usage_limits;
 mod vault;
 mod web;
@@ -262,6 +263,7 @@ pub fn run() {
             agent_chat::chat_start,
             agent_chat::chat_send,
             agent_chat::chat_interrupt,
+            agent_chat::chat_set_access,
             agent_chat::chat_stop,
             agent_chat::chat_list,
             agent_chat::chat_since,
@@ -270,6 +272,7 @@ pub fn run() {
             agent_chat::chat_index_save,
             agent_chat::chat_index_remove,
             agent_chat::save_attachment,
+            agent_history::agent_history_list,
             pty::pty_agent_running,
             pty::pty_set_visible,
             pty::pty_set_status_scan,

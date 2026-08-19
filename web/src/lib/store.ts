@@ -41,6 +41,14 @@ export type Conversation = {
    *  device there is no local copy at all, so `seq` is absent, and the whole
    *  conversation is replayed from the server instead. */
   seq?: number;
+  /** Whether the server's chat index has ever listed this conversation.
+   *
+   *  It is how "the server has not heard of this chat yet" is told apart from
+   *  "this chat was deleted on another device" — two states that look identical
+   *  in a list that simply lacks it. A chat that was never confirmed is kept
+   *  when the server does not list it; one that WAS confirmed and has since
+   *  disappeared is taken as deleted, and goes here too. */
+  synced?: boolean;
 };
 
 const KEY = "octiq.v2.conversations";
@@ -77,13 +85,20 @@ export function saveConversations(list: Conversation[]): void {
   }
 }
 
-/** A short name for the conversation, from the first thing the user asked. */
-export function titleFrom(messages: Message[]): string {
-  const first = messages.find((m) => m.role === "user");
-  const text = first?.blocks.map((b) => ("text" in b ? b.text : "")).join(" ") ?? "";
+/** A short name from a line of prose. Split out from `titleFrom` because the
+ *  chat is now named the moment it starts, when the only thing to name it after
+ *  is the raw text on its way to the agent — one rule, so the name does not
+ *  change under you when the message lands. */
+export function shortTitle(text: string): string {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return "New chat";
   return clean.length > 48 ? `${clean.slice(0, 48)}…` : clean;
+}
+
+/** A short name for the conversation, from the first thing the user asked. */
+export function titleFrom(messages: Message[]): string {
+  const first = messages.find((m) => m.role === "user");
+  return shortTitle(first?.blocks.map((b) => ("text" in b ? b.text : "")).join(" ") ?? "");
 }
 
 /** Group conversations under their project, newest chat first.

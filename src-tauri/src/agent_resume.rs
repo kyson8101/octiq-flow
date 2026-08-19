@@ -1117,7 +1117,8 @@ mod tests {
     /// A throwaway store file path. Each test gets its own, so the shared
     /// `store_cache` (keyed by path) cannot leak between them.
     fn temp_store(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("octiq-store-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("octiq-store-test-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.join("agent-sessions.json")

@@ -65,6 +65,9 @@ struct ChatStatus {
 struct ChatSession {
     child: Child,
     stdin: Option<ChildStdin>,
+    /// Which program this is. Only Claude has a control channel, so a setting
+    /// changed part-way through a chat has to know before it writes one.
+    agent: ChatAgent,
 }
 
 #[derive(Default)]
@@ -99,6 +102,18 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+/// One TOML basic string, quoted and escaped.
+///
+/// `sh_quote` makes a value safe to sit on a command line and nothing more. A
+/// couple of Codex settings are TOML written by hand (`-c key=value`), and a
+/// value going in there passes through TWO parsers: the shell's, then Codex's
+/// TOML. A folder named `a", evil = "yes` survives the first untouched and
+/// closes the string in the second, after which the rest of the path is read as
+/// further config. So the TOML layer gets its own escaping, applied first.
+fn toml_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
+}
+
 /// Model aliases we will pass on. An unknown value is dropped rather than
 /// forwarded: the model name reaches a command line, so it is an allowlist, not
 /// an escaping problem.
@@ -126,17 +141,24 @@ fn safe_session_id(id: &str) -> Option<String> {
 ///
 /// Both support the idea and neither spells it the same way: Claude takes
 /// `--effort`, Codex takes a config override. The levels differ too — Codex has
-/// a `minimal` that Claude does not, Claude has a `max` that Codex does not —
-/// so the UI offers each agent its own list and this refuses anything else.
-/// Same reasoning as the model allowlist: it reaches a command line.
+/// a `minimal` that Claude does not, Claude has a `max` and an `ultracode` that
+/// Codex does not — so the UI offers each agent its own list and this refuses
+/// anything else. Same reasoning as the model allowlist: it reaches a command
+/// line.
+///
+/// `auto` is the one level with no flag behind it. Claude takes it from the
+/// `/effort` command inside a running session, but NOT on the command line —
+/// `claude --effort auto` warns and falls back — and it means the agent picks
+/// the level itself, which is exactly what passing no `--effort` at all does.
+/// So it maps to None: no flag, same as an unknown value, and by design.
 fn safe_effort(agent: ChatAgent, level: &str) -> Option<&'static str> {
     match (agent, level) {
         (_, "low") => Some("low"),
         (_, "medium") => Some("medium"),
         (_, "high") => Some("high"),
         (_, "xhigh") => Some("xhigh"),
-        (ChatAgent::Claude, "max") => Some("max"),
-        (ChatAgent::Codex, "minimal") => Some("minimal"),
+        (_, "max") => Some("max"),
+        (ChatAgent::Claude, "ultracode") => Some("ultracode"),
         _ => None,
     }
 }
@@ -218,6 +240,56 @@ impl Access {
             Access::Full => "never",
         }
     }
+}
+
+impl Access {
+    /// Read back what `as_env` wrote, for the hook reporting the level it was
+    /// started with. An unknown word is the most cautious level, not the most
+    /// permissive — the same rule the spawn side follows.
+    pub fn from_env(word: &str) -> Access {
+        match word {
+            "auto" => Access::Auto,
+            "full" => Access::Full,
+            _ => Access::Read,
+        }
+    }
+}
+
+/// The level each running chat is on RIGHT NOW, by chat key.
+///
+/// `OCTIQ_ACCESS` is written once, into the environment of a process that has
+/// already been spawned, so a level changed part-way through a chat can never
+/// reach it — nothing can rewrite the environment of a running process from
+/// outside. The permission hook used to decide from that variable alone, which
+/// meant it answered for the level the chat STARTED on: pick Bypass permissions
+/// halfway through and it went on stopping every command, dial back down from
+/// it and it stood aside from the very asking that level is for.
+///
+/// So the hook no longer decides. It reports the level it was handed and this
+/// is consulted first — see `permission::ask`.
+///
+/// Entries are written by `chat_start` and `chat_set_access` and dropped by
+/// `chat_stop`. A chat that ends on its own leaves its entry behind on purpose:
+/// removing it from the reaper thread would race a restart under the same key
+/// and delete the NEW level. A stale entry costs nothing — the only reader is a
+/// hook belonging to that chat, and a chat that is gone has none.
+static ACCESS: Mutex<Option<HashMap<String, Access>>> = Mutex::new(None);
+
+fn with_access<T>(f: impl FnOnce(&mut HashMap<String, Access>) -> T) -> T {
+    let mut guard = ACCESS.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// What a chat may do at this moment, or None when no chat by that key is known.
+pub fn access_now(key: &str) -> Option<Access> {
+    with_access(|a| a.get(key).copied())
+}
+
+/// Pretend a chat by this key is running at this level. Tests only: the real
+/// recorders are `chat_start` and `chat_set_access`, and both want a process.
+#[cfg(test)]
+pub(crate) fn remember_access(key: &str, access: Access) {
+    with_access(|a| a.insert(key.to_string(), access));
 }
 
 /// Build the agent's command line.
@@ -332,7 +404,7 @@ fn build_command(
                     // `--add-dir` is not offered on resume; the config key is.
                     cmd.push_str(&format!(
                         " -c sandbox_workspace_write.writable_roots={}",
-                        sh_quote(&format!("[\"{dir}\"]"))
+                        sh_quote(&format!("[{}]", toml_string(dir)))
                     ));
                 } else {
                     cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
@@ -475,12 +547,19 @@ pub fn chat_start_impl(
         .ok_or("no stderr on the agent process")?;
     let stdin = child.stdin.take();
 
-    let session = Arc::new(Mutex::new(ChatSession { child, stdin }));
+    let session = Arc::new(Mutex::new(ChatSession {
+        child,
+        stdin,
+        agent,
+    }));
     manager
         .sessions
         .lock()
         .map_err(|e| e.to_string())?
         .insert(key.clone(), session.clone());
+    // The level the hook will be answered with, from here until it changes.
+    // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
+    with_access(|a| a.insert(key.clone(), access.unwrap_or(Access::Read)));
 
     // stdout: one JSON object per line, passed through as-is.
     {
@@ -495,6 +574,22 @@ pub fn chat_start_impl(
                 }
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(event) => {
+                        // The one line this module reads rather than passes on:
+                        // the answer to a request WE sent, not something the
+                        // agent said. A refused mode change has to be known
+                        // here or the picker would promise a level the agent is
+                        // not on. See `chat_set_access`.
+                        if let Some(error) = refused_access_change(&event) {
+                            crate::bus::emit(
+                                "chat-status",
+                                ChatStatus {
+                                    key: key.clone(),
+                                    kind: "access-refused".into(),
+                                    text: error,
+                                    code: None,
+                                },
+                            );
+                        }
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.
@@ -723,6 +818,101 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
     stdin.flush().map_err(|e| e.to_string())
 }
 
+/// Marks a control request as ours, so its answer can be told apart from every
+/// other one on the wire. Claude echoes the id back on the `control_response`.
+const ACCESS_REQUEST_ID: &str = "octiq-access-";
+
+/// Was this line Claude refusing a mode change we asked for? The error text if
+/// so, and None for every other line — including our own successful answers.
+fn refused_access_change(event: &Value) -> Option<String> {
+    if event.get("type")?.as_str()? != "control_response" {
+        return None;
+    }
+    let response = event.get("response")?;
+    if response.get("subtype")?.as_str()? != "error" {
+        return None;
+    }
+    if !response
+        .get("request_id")?
+        .as_str()?
+        .starts_with(ACCESS_REQUEST_ID)
+    {
+        return None;
+    }
+    Some(
+        response
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("the agent refused the change")
+            .to_string(),
+    )
+}
+
+/// Change what a RUNNING chat may do, WITHOUT ending it.
+///
+/// The mode is on the command line, so changing it used to mean killing the
+/// process and letting the next message start a new one. That threw away a turn
+/// in flight and said nothing about why the answer had stopped half-written.
+/// Claude takes a `set_permission_mode` control request down the same stdin the
+/// prompts go down — the way `chat_interrupt` takes `interrupt` — so the session
+/// and its context survive the change.
+///
+/// The hook is told separately, through `ACCESS`. It runs BEFORE
+/// `--permission-mode` is consulted, so the control request on its own would
+/// leave it answering for the level the chat started on.
+///
+/// Not every change can be made this way, and the agent is the one that says
+/// so: `bypassPermissions` is refused unless the process was launched with
+/// `--dangerously-skip-permissions`, and `auto` is refused by models that do not
+/// have it. Those answers arrive on stdout and go out as an `access-refused`
+/// status (see `refused_access_change`); the UI falls back to a restart. The
+/// recorded level is deliberately NOT rolled back when that happens — every
+/// combination of "hook thinks X, agent is on Y" the failure can leave behind
+/// ends in the agent asking or refusing, never in it acting unasked.
+///
+/// Codex has no such channel and needs none: every `codex exec` turn is its own
+/// process and takes the new `--sandbox` on its command line, so recording the
+/// level is the whole job.
+#[tauri::command]
+pub fn chat_set_access(
+    manager: State<Arc<ChatManager>>,
+    key: String,
+    access: Access,
+) -> Result<(), String> {
+    chat_set_access_impl(&manager, key, access)
+}
+
+/// The Tauri-free half of `chat_set_access`.
+pub fn chat_set_access_impl(
+    manager: &ChatManager,
+    key: String,
+    access: Access,
+) -> Result<(), String> {
+    let session = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.get(&key).cloned().ok_or("no such chat")?
+    };
+    // Written before the request goes out: a tool call already on its way to
+    // the hook must not be answered under the level being left behind.
+    with_access(|a| a.insert(key, access));
+
+    let mut guard = session.lock().map_err(|e| e.to_string())?;
+    if guard.agent != ChatAgent::Claude {
+        return Ok(());
+    }
+    let payload = json!({
+        "type": "control_request",
+        "request_id": format!("{ACCESS_REQUEST_ID}{}", uuid::Uuid::new_v4()),
+        "request": { "subtype": "set_permission_mode", "mode": access.claude() }
+    });
+    let stdin = guard
+        .stdin
+        .as_mut()
+        .ok_or("this chat does not take more input")?;
+    writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
 #[tauri::command]
@@ -736,6 +926,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(&key)
     };
+    with_access(|a| a.remove(&key));
     let Some(session) = session else {
         return Ok(());
     };
@@ -929,6 +1120,38 @@ mod tests {
         assert_eq!(Access::Read.as_env(), "read");
     }
     use super::*;
+
+    #[test]
+    fn a_folder_name_cannot_break_out_of_the_toml_string_it_lands_in() {
+        // `writable_roots` is a TOML array built by hand, so the path inside it
+        // has to survive TOML as well as the shell. sh_quote covers the shell
+        // and nothing else: a `"` in a folder name would close the string and
+        // whatever follows would be read as more config.
+        assert_eq!(toml_string(r#"/tmp/plain"#), r#""/tmp/plain""#);
+        assert_eq!(
+            toml_string(r#"/tmp/a", evil = "yes"#),
+            r#""/tmp/a\", evil = \"yes""#
+        );
+        assert_eq!(toml_string(r"/tmp/back\slash"), r#""/tmp/back\\slash""#);
+    }
+
+    #[test]
+    fn a_codex_resume_puts_the_folder_in_the_config_key_safely() {
+        let line = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hello",
+            Some("abc-123"),
+            &[r#"/tmp/a", evil = "yes"#.to_string()],
+            None,
+            &[],
+        );
+        assert!(
+            line.contains(r#"["/tmp/a\", evil = \"yes"]"#),
+            "the folder must arrive escaped: {line}"
+        );
+    }
 
     #[test]
     fn quotes_close_the_hole() {
@@ -1136,8 +1359,10 @@ mod tests {
         );
         assert!(!bad.contains("--effort"));
 
-        // The levels are not the same on both sides: `max` is Claude's alone,
-        // `minimal` is Codex's alone, and each is refused for the other.
+        // `max` is BOTH agents': Codex's own model list gives it to every
+        // GPT-5.6 model (`supported_reasoning_levels` in
+        // `~/.codex/models_cache.json`), so refusing it here dropped a level
+        // the agent would have taken.
         let claude_max = build_command(
             ChatAgent::Claude,
             None,
@@ -1159,7 +1384,10 @@ mod tests {
             Some("max"),
             &[],
         );
-        assert!(!codex_max.contains("model_reasoning_effort"));
+        assert!(codex_max.contains("model_reasoning_effort='max'"));
+
+        // `minimal` is nobody's any more. The same model list dropped it from
+        // every GPT-5.6 model, and Claude never had it.
         let codex_min = build_command(
             ChatAgent::Codex,
             None,
@@ -1170,7 +1398,7 @@ mod tests {
             Some("minimal"),
             &[],
         );
-        assert!(codex_min.contains("model_reasoning_effort='minimal'"));
+        assert!(!codex_min.contains("model_reasoning_effort"));
         let claude_min = build_command(
             ChatAgent::Claude,
             None,
@@ -1182,6 +1410,47 @@ mod tests {
             &[],
         );
         assert!(!claude_min.contains("--effort"));
+
+        // `ultracode` is Claude's top rung. It is missing from `--help`, but the
+        // flag takes it: an unknown value warns and falls back, and this one
+        // does not.
+        let ultra = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            Some("ultracode"),
+            &[],
+        );
+        assert!(ultra.contains("--effort ultracode"));
+        let codex_ultra = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hi",
+            None,
+            &[],
+            Some("ultracode"),
+            &[],
+        );
+        assert!(!codex_ultra.contains("model_reasoning_effort"));
+
+        // `auto` deliberately reaches the command line as nothing at all: the
+        // flag rejects it, and no flag IS "the agent picks". The UI then sends
+        // `/effort auto` to the running session, which does take it.
+        let auto = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            Some("auto"),
+            &[],
+        );
+        assert!(!auto.contains("--effort"));
     }
 
     #[test]
@@ -1295,5 +1564,65 @@ mod tests {
         let x = build_command(ChatAgent::Codex, None, None, "hi", None, &dirs, None, &[]);
         assert!(x.contains("--add-dir '/Users/me/api'"));
         assert!(x.contains("--add-dir '/Users/me/my docs'"));
+    }
+}
+
+#[cfg(test)]
+mod access_tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_of_our_own_mode_change_is_picked_out_of_the_stream() {
+        let refused = json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "error",
+                "request_id": format!("{ACCESS_REQUEST_ID}1"),
+                "error": "Cannot set permission mode to bypassPermissions \
+                          because the session was not launched with \
+                          --dangerously-skip-permissions"
+            }
+        });
+        assert!(refused_access_change(&refused)
+            .expect("a refusal")
+            .contains("bypassPermissions"));
+    }
+
+    #[test]
+    fn nothing_else_on_the_wire_is_mistaken_for_one() {
+        // Our own success, somebody else's control request, and an ordinary
+        // message. None of these means the picker is lying about the level.
+        let ours_worked = json!({
+            "type": "control_response",
+            "response": { "subtype": "success", "request_id": format!("{ACCESS_REQUEST_ID}1") }
+        });
+        let someone_elses = json!({
+            "type": "control_response",
+            "response": { "subtype": "error", "request_id": "int-1", "error": "no" }
+        });
+        let a_message = json!({ "type": "assistant", "message": { "content": [] } });
+        assert!(refused_access_change(&ours_worked).is_none());
+        assert!(refused_access_change(&someone_elses).is_none());
+        assert!(refused_access_change(&a_message).is_none());
+    }
+
+    #[test]
+    fn a_level_survives_the_round_trip_through_the_hook_environment() {
+        for level in [Access::Read, Access::Auto, Access::Full] {
+            assert_eq!(Access::from_env(level.as_env()), level);
+        }
+        // And an unknown word is the cautious one, not the permissive one.
+        assert_eq!(Access::from_env("bypassPermissions"), Access::Read);
+        assert_eq!(Access::from_env(""), Access::Read);
+    }
+
+    #[test]
+    fn each_level_names_a_mode_claude_will_actually_take() {
+        // Verified against the CLI's own control channel: `plan` and `auto` are
+        // accepted mid-session, `bypassPermissions` only when the process was
+        // launched for it — which is why a switch UP to Full still restarts.
+        assert_eq!(Access::Read.claude(), "plan");
+        assert_eq!(Access::Auto.claude(), "auto");
+        assert_eq!(Access::Full.claude(), "bypassPermissions");
     }
 }

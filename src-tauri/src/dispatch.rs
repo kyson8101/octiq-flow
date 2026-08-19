@@ -155,6 +155,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.chats,
             arg(&args, "key")?,
         )),
+        "chat_set_access" => unit(crate::agent_chat::chat_set_access_impl(
+            &svc.chats,
+            arg(&args, "key")?,
+            arg(&args, "access")?,
+        )),
         "chat_stop" => unit(crate::agent_chat::chat_stop_impl(
             &svc.chats,
             arg(&args, "key")?,
@@ -165,6 +170,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "after")?,
         ))),
         "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
+        // The agents' OWN past sessions, for the search that resumes one.
+        "agent_history_list" => Ok(json!(crate::agent_history::agent_history_list(arg(
+            &args, "limit"
+        )?))),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
         "chat_index_remove" => unit(crate::agent_chat::chat_index_remove(
             arg(&args, "id")?,
@@ -354,6 +363,18 @@ mod tests {
         assert_eq!(rows[1]["id"], "codex");
         assert_eq!(rows[1]["installed"], true);
         assert_eq!(rows[1]["path"], "/opt/bin/codex");
+    }
+
+    /// Same failure mode as the row above, and the one the search on the empty
+    /// chat page depends on: a phone with no route here shows no history at all.
+    /// The machine running the test may have no agent sessions on it, so this
+    /// asserts the SHAPE of the answer rather than anything in it.
+    #[test]
+    fn a_browser_can_ask_for_the_agents_own_past_sessions() {
+        let svc = Services::load();
+        let out = dispatch(&svc, "agent_history_list", json!({ "limit": 5 })).expect("routed");
+        let rows = out.as_array().expect("an array of sessions");
+        assert!(rows.len() <= 5, "the limit is respected: {}", rows.len());
     }
 
     #[test]

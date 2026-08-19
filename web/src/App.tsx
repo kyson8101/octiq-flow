@@ -19,18 +19,24 @@
 // whether or not it is the chat on screen.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
-import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./lib/chat";
+import { addUserTurn, emptyChat, isThinking, reduceChat, turnOutput, type ChatState } from "./lib/chat";
 import {
   byProject,
   loadConversations,
   saveConversations,
+  shortTitle,
   titleFrom,
   type Conversation,
 } from "./lib/store";
+import { forgetIndexEntry, saveIndexEntry } from "./lib/chatIndex";
+import { AgentFocus } from "./components/AgentFocus";
+import { AgentRail } from "./components/AgentRail";
 import { MessageList } from "./components/MessageList";
 import {
+  ACCESS,
   Composer,
   MODELS,
+  modelFromId,
   type Attachment,
   type Effort,
   effortFor,
@@ -39,6 +45,8 @@ import {
   type Provider,
 } from "./components/Composer";
 import { Connect } from "./components/Connect";
+import { SessionSearch } from "./components/SessionSearch";
+import { isUnder, type HistorySession } from "./lib/history";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { AgentsPage, loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
@@ -141,6 +149,14 @@ export default function App() {
   const [editorSeen, setEditorSeen] = useState(() => localStorage.getItem(MODE_KEY) === "editor");
   const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  /** Which agent the rail has opened, by `task_id`, or null for the whole
+   *  conversation. View state, not chat state: it is about what this person is
+   *  reading, and it must not survive into another conversation. */
+  const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
+  // Switching conversations closes the focus panel. Without this the next
+  // conversation opens showing "conversation" as a back arrow over a blank
+  // panel until something is clicked.
+  useEffect(() => setFocusedAgent(null), [conversationId]);
   // Which project's settings are open: an id, "new" while creating one, or
   // null for closed.
   const [settingsFor, setSettingsFor] = useState<string | "new" | null>(null);
@@ -171,7 +187,7 @@ export default function App() {
     }
   });
   const [choice, setChoice] = useState<ModelChoice>(
-    () => MODELS.find((m) => m.id === localStorage.getItem(CHOICE_KEY)) ?? MODELS[0],
+    () => modelFromId(localStorage.getItem(CHOICE_KEY)) ?? MODELS[0],
   );
   // What the agent may do unattended. Defaults to the cautious end: a chat has
   // no way to answer a permission prompt, so this is the whole of the answer.
@@ -196,6 +212,11 @@ export default function App() {
     () => (localStorage.getItem(EFFORT_KEY) as Effort | null) ?? "medium",
   );
 
+  // Chats that were picked up from an agent's own history, by conversation id.
+  // Only so the empty page can say WHICH session it is about to continue —
+  // "continuing an earlier session" on its own asks you to take it on trust.
+  const [resumed, setResumed] = useState<Record<string, HistorySession>>({});
+
   // What each loaded conversation belongs to and was started with. A background
   // chat still has to be saved when it answers, and by then the pickers on
   // screen may be showing something else entirely — so the facts travel with
@@ -207,6 +228,15 @@ export default function App() {
   // it changes.
   const runningRef = useRef(running);
   runningRef.current = running;
+
+  // The level each chat was last asked to change to. An agent that will not
+  // take the change says so on its own event, well after the tap, so this is
+  // what names the change it is refusing — for a background chat as much as
+  // the one on screen.
+  const wantedAccess = useRef<Record<string, AccessLevel>>({});
+  // And the fallback to run when that refusal arrives. Held in a ref because
+  // the listener below is set up long before `endSession` exists to build it.
+  const onAccessRefused = useRef<(id: string, why: string) => void>(() => {});
 
   // The last event we have seen for each chat, so a reconnect can ask for what
   // it missed. The agent kept working while we were away — the record of it is
@@ -325,8 +355,17 @@ export default function App() {
 
   // The chat list lives on the server, so a chat started on the phone shows up
   // on the laptop. The local copy is a cache: it paints immediately, and the
-  // server's answer replaces it a moment later. Messages are NOT here — they
+  // server's answer FOLDS INTO it a moment later. Messages are NOT here — they
   // are replayed from each chat's transcript when it is opened.
+  //
+  // Folds into, rather than replaces. Replacing meant the server's list was the
+  // only list: a chat the server had not heard of was dropped from state AND
+  // written out of storage on the same tick, so one reload deleted it for good.
+  // That is not a rare shape — `chat_index_save` is sent 700ms after the last
+  // message and its failure is swallowed, so a backend that restarts, or a tab
+  // closed early, leaves a chat this browser has and the server does not.
+  // The browser's own chats are now kept, and the next save re-offers them to
+  // the index.
   useEffect(() => {
     bridge
       .invoke<
@@ -342,7 +381,12 @@ export default function App() {
         }[]
       >("chat_index_list")
       .then((remote) => {
-        if (!remote) return;
+        // An EMPTY answer is not news, it is the absence of news. `index.json`
+        // missing, unreadable, or belonging to a profile that was switched all
+        // read back as zero chats, and treating that as the truth would wipe
+        // every conversation this browser holds. A server that genuinely has
+        // none has nothing to tell us either, so ignoring it costs nothing.
+        if (!remote || remote.length === 0) return;
         setConversations((local) => {
           const byId = new Map(local.map((c) => [c.id, c]));
           const merged = remote.map((r) => {
@@ -355,10 +399,25 @@ export default function App() {
               // seen has none, and replays in full.
               messages: cached?.messages ?? [],
               seq: cached?.seq,
+              // Listed by the server, so from now on its absence means
+              // something: see `synced` in lib/store.ts.
+              synced: true,
             } as Conversation;
           });
-          saveConversations(merged);
-          return merged;
+          // Chats this browser has that the server did not list.
+          //
+          // Kept when the server has NEVER listed them — that is an index write
+          // that has not landed, and dropping it here deleted the conversation
+          // from storage on the same tick, which is how a reload used to lose a
+          // chat outright.
+          //
+          // Dropped when the server HAS listed them before, because then the
+          // list is authoritative and the chat was deleted on another device.
+          const known = new Set(remote.map((r) => r.id));
+          const mine = local.filter((c) => !known.has(c.id) && !c.synced);
+          const all = [...merged, ...mine];
+          saveConversations(all);
+          return all;
         });
       })
       .catch(() => {});
@@ -449,6 +508,12 @@ export default function App() {
         (payload) => {
           const id = payload && convOf(payload.key);
           if (!id) return;
+          if (payload.kind === "access-refused") {
+            // The running agent will not make this change. Fall back to the way
+            // it worked before there was a control channel to ask down.
+            onAccessRefused.current(id, payload.text);
+            return;
+          }
           if (payload.kind === "exit") {
             // The process is gone, so nothing can be sent to it. The transcript
             // stays: speaking again resumes the session by its id.
@@ -536,6 +601,9 @@ export default function App() {
             createdAt: before?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
             seq: seen.current[keyFor(id)] ?? before?.seq,
+            // Carried, not recomputed. Rewriting the row must not forget that
+            // the server has already vouched for this chat.
+            synced: before?.synced,
           };
           list = [next, ...list.filter((c) => c.id !== id)];
           changedIds.add(id);
@@ -544,23 +612,21 @@ export default function App() {
         if (!touched) return prev;
         saveConversations(list);
         // And to the server, so every device sees this chat exists. Metadata
-        // only — the messages are already in the transcript.
+        // only — the messages are already in the transcript. Through
+        // saveIndexEntry, which keeps trying: an entry that does not land is
+        // what makes the server delete the transcript at its next start.
         for (const c of list) {
           if (!changedIds.has(c.id)) continue;
-          bridge
-            .invoke("chat_index_save", {
-              meta: {
-                id: c.id,
-                projectId: c.projectId,
-                title: c.title,
-                sessionId: c.sessionId ?? null,
-                modelId: c.modelId ?? null,
-                access: c.permission ?? null,
-                createdAt: c.createdAt,
-                updatedAt: c.updatedAt,
-              },
-            })
-            .catch(() => {});
+          saveIndexEntry({
+            id: c.id,
+            projectId: c.projectId,
+            title: c.title,
+            sessionId: c.sessionId ?? null,
+            modelId: c.modelId ?? null,
+            access: c.permission ?? null,
+            createdAt: c.createdAt,
+            updatedAt: c.updatedAt,
+          });
         }
         return list;
       });
@@ -607,6 +673,11 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  // The agent the rail opened, resolved against THIS conversation. Looking it
+  // up rather than storing the object keeps it live: a running agent's focus
+  // view updates as its events arrive. It resolves to nothing after switching
+  // conversations, which is what closes the panel.
+  const focused = focusedAgent ? chat.agents.find((a) => a.id === focusedAgent) : undefined;
 
   // Follow the model the AGENT reports. A `/model sonnet` typed into the chat
   // changes the model for real, and the picker saying "Opus" after that is
@@ -655,6 +726,66 @@ export default function App() {
       setDrawer(false);
     },
     [choice.id, access],
+  );
+
+  /** Carry on a session the AGENT remembers — one from ~/.claude or ~/.codex,
+   *  found through the search on the empty-chat page (components/SessionSearch).
+   *
+   *  Nothing is started here. A conversation is only prepared: the agent's
+   *  session id is put on it, so the first thing said goes out as `--resume
+   *  <id>` and comes back with its context rather than as a stranger. That is
+   *  the same path a chat of our own takes when it is reopened.
+   *
+   *  Three things travel WITH the session rather than being taken from the
+   *  pickers on screen:
+   *
+   *    - the agent, because a Claude session means nothing to Codex,
+   *    - the model and effort it was last recorded under, so picking up
+   *      yesterday's work does not quietly move it to a different model,
+   *    - the folder, because a session's memory is of a particular project;
+   *      resuming it somewhere else would leave the agent talking about files
+   *      that are not there.
+   *
+   *  A model we do not offer (the agent may be on one this app has no entry
+   *  for) falls back to that agent's default rather than to something from the
+   *  other family. */
+  const resumeHistory = useCallback(
+    (session: HistorySession) => {
+      const home = workspaces.find(
+        (w) =>
+          (w.primary_path && isUnder(session.cwd, w.primary_path)) ||
+          (w.paths ?? []).some((p) => isUnder(session.cwd, p)),
+      );
+      const forProject = home?.id ?? projectId;
+      if (!forProject) return;
+
+      const model =
+        MODELS.find((m) => m.agent === session.agent && m.flag && session.model?.includes(m.flag)) ??
+        MODELS.find((m) => m.agent === session.agent && !m.flag) ??
+        MODELS[0];
+      const kept = effortFor(session.agent, (session.effort as Effort) ?? effort);
+
+      // The blank chat already on screen is the one to use — it is what the
+      // person was looking at when they searched. A conversation that has been
+      // spoken in gets a new row instead, so nothing is written over.
+      const blank = conversationId && (chats[conversationId]?.messages.length ?? 0) === 0;
+      const id = blank ? conversationId! : crypto.randomUUID();
+
+      meta.current[id] = { projectId: forProject, modelId: model.id, access };
+      setChoice(model);
+      setEffort(kept);
+      try {
+        localStorage.setItem(EFFORT_KEY, kept);
+      } catch {
+        /* storage blocked: the effort holds for this session only */
+      }
+      setResumed((prev) => ({ ...prev, [id]: session }));
+      patch(id, (s) => ({ ...s, sessionId: session.sessionId }));
+      setProjectId(forProject);
+      setConversationId(id);
+      setDrawer(false);
+    },
+    [workspaces, projectId, conversationId, chats, access, effort, patch],
   );
 
   const openConversation = useCallback((c: Conversation) => {
@@ -769,7 +900,10 @@ export default function App() {
       // a process nobody can reach, so it goes too.
       endSession(id);
       // The record on the server goes as well — the point of deleting a chat
-      // is that it is gone, not that it is hidden on this device.
+      // is that it is gone, not that it is hidden on this device. Drop any
+      // unsent index entry first, or a retry still in the queue would put the
+      // chat back moments after it was removed.
+      forgetIndexEntry(id);
       bridge.invoke("chat_index_remove", { id, key: keyFor(id) }).catch(() => {});
       delete seen.current[keyFor(id)];
       setConversations((prev) => {
@@ -840,6 +974,31 @@ export default function App() {
         access,
       };
       patch(id, (s) => addUserTurn(s, text));
+
+      // Put the chat in the index NOW, before the agent is even started —
+      // rather than leaving it to the debounced save 700ms later.
+      //
+      // The transcript starts filling the moment the agent speaks, and
+      // `chat_index::reconcile` deletes, at every backend start, any transcript
+      // no index entry points at. The gap between "the agent is talking" and
+      // "the index has heard of this chat" is therefore a window in which a
+      // restart destroys the conversation. Writing the entry first closes it:
+      // an entry with no transcript is the harmless direction, and reconcile
+      // keeps it on purpose.
+      const held = conversations.find((c) => c.id === id);
+      const startedAt = Date.now();
+      saveIndexEntry({
+        id,
+        projectId: project.id,
+        // A chat is named after the FIRST thing asked in it, so an existing one
+        // keeps the name it already has.
+        title: held?.title ?? shortTitle(text),
+        sessionId: chats[id]?.sessionId ?? held?.sessionId ?? null,
+        modelId: choice.id,
+        access,
+        createdAt: held?.createdAt ?? startedAt,
+        updatedAt: startedAt,
+      });
 
       const fail = (err: unknown) =>
         patch(id, (s) => ({
@@ -996,9 +1155,6 @@ export default function App() {
     [choice.agent, changeModel],
   );
 
-  /** Changing what the agent may do starts a new agent: the mode is fixed when
-   *  the process spawns, so leaving the old one running would make the pill on
-   *  screen a lie about the chat in front of you. */
   /** Effort is fixed on the agent's command line, the same as permission mode.
    *  Ending the process rather than the conversation means the next message
    *  starts a fresh agent on the SAME session, under the new setting. */
@@ -1017,15 +1173,77 @@ export default function App() {
     [conversationId, endSession, choice.agent, tellSession],
   );
 
+  /** What a level is called, in the words of the agent THAT chat runs — the one
+   *  on screen may by then be showing another. */
+  const accessLabel = useCallback((id: string, level: AccessLevel) => {
+    const agent = modelFromId(meta.current[id]?.modelId ?? null)?.agent ?? "claude";
+    return ACCESS[agent].find((a) => a.id === level)?.label ?? level;
+  }, []);
+
+  /** The fallback for a change the running agent will not take: end its process
+   *  and SAY SO.
+   *
+   *  The transcript stays, so the next message resumes the same session under
+   *  the new level. A turn in flight is lost, though — and a chat that stops
+   *  mid-answer with nothing on screen to explain it is the thing this whole
+   *  path exists to avoid, so the reason goes up as a notice. */
+  const restartForAccess = useCallback(
+    (id: string, why: string) => {
+      endSession(id);
+      const level = wantedAccess.current[id];
+      const what = level ? accessLabel(id, level) : "That access level";
+      patch(id, (s) => ({
+        ...s,
+        notices: [
+          ...s.notices,
+          `${what} needs a fresh agent: ${why}. The conversation is kept — say anything to carry on.`,
+        ].slice(-8),
+      }));
+    },
+    [endSession, patch, accessLabel],
+  );
+  onAccessRefused.current = restartForAccess;
+
+  /** Changing what the agent may do, WITHOUT throwing the conversation away.
+   *
+   *  The mode is fixed on the agent's command line, so this used to kill the
+   *  process and let the next message start a new one. That lost whatever the
+   *  agent was in the middle of and put nothing on screen to say why the answer
+   *  had stopped half-written.
+   *
+   *  Claude takes the change on the same control channel `chat_interrupt` uses,
+   *  so the running turn carries on under the new level instead — and the hook
+   *  is told separately by the backend, because it decides BEFORE the mode does
+   *  (see agent_chat.rs). Codex needs no channel: its next turn is a new
+   *  process and takes the new sandbox on its command line.
+   *
+   *  Not every change can be made in place — the agent refuses to turn its own
+   *  permissions off part-way, and says so — so `restartForAccess` is still
+   *  there for the ones that cannot. Nothing running is the easy case: the next
+   *  message starts an agent on the new level anyway. */
   const changeAccess = useCallback(
     (p: AccessLevel) => {
       setAccess(p);
       localStorage.setItem(ACCESS_KEY, p);
-      // Ending this conversation's process, not the transcript: the next thing
-      // you say starts a fresh agent on the SAME session, under the new mode.
-      if (conversationId) endSession(conversationId);
+      if (!conversationId) return;
+      if (meta.current[conversationId]) meta.current[conversationId].access = p;
+      if (!runningRef.current.has(conversationId)) return;
+      wantedAccess.current[conversationId] = p;
+      const id = conversationId;
+      bridge
+        .invoke("chat_set_access", { key: keyFor(id), access: p })
+        .catch((err) => {
+          const why = String((err as Error).message ?? err);
+          // The process ended between the tap and the ask. Nothing to change
+          // and nothing to restart: the next message starts one on the new
+          // level, which is what a restart would have arranged anyway.
+          if (why.includes("no such chat")) return;
+          // Otherwise the backend is too old to know the command, or the write
+          // failed. Either way the change cannot be made in place.
+          restartForAccess(id, why);
+        });
     },
-    [conversationId, endSession],
+    [conversationId, restartForAccess],
   );
 
   if (conn === "unauthorized") return <Connect />;
@@ -1127,16 +1345,45 @@ export default function App() {
               <h1 className="hero-title">
                 What do you want to do{project ? ` in ${project.name}` : ""}?
               </h1>
-              {chat.sessionId && <p className="hero-sub">continuing an earlier session</p>}
+              {chat.sessionId &&
+                (conversationId && resumed[conversationId] ? (
+                  <p className="hero-sub">
+                    continuing “{resumed[conversationId].title}” ·{" "}
+                    {resumed[conversationId].agent === "claude" ? "Claude" : "Codex"}
+                  </p>
+                ) : (
+                  <p className="hero-sub">continuing an earlier session</p>
+                ))}
+              {project && <SessionSearch projectPath={project.primary_path} onResume={resumeHistory} />}
             </div>
           ) : (
-            <MessageList
-              messages={chat.messages}
-              busy={chat.busy}
-              stoppedAt={chat.stoppedAt}
-              cwd={project?.primary_path ?? ""}
-              conversationId={conversationId ?? undefined}
-            />
+            // The transcript and the agent rail sit side by side. The rail
+            // draws nothing at all until this conversation starts an agent, so
+            // the row collapses back to the plain transcript on its own.
+            <div className="chat-body">
+              {/* The transcript stays MOUNTED behind the focus panel rather
+                  than being swapped out for it. Unmounting would throw away
+                  where the reader was, and the list scrolls itself to the
+                  bottom on mount — so the back arrow would always land at the
+                  end of the conversation instead of where they left. */}
+              <div className="chat-main">
+                <MessageList
+                  messages={chat.messages}
+                  busy={chat.busy}
+                  stoppedAt={chat.stoppedAt}
+                  cwd={project?.primary_path ?? ""}
+                  conversationId={conversationId ?? undefined}
+                />
+                {focused && (
+                  <AgentFocus
+                    run={focused}
+                    messages={chat.messages}
+                    onBack={() => setFocusedAgent(null)}
+                  />
+                )}
+              </div>
+              <AgentRail agents={chat.agents} onOpen={setFocusedAgent} />
+            </div>
           )}
 
           {chat.failure && (
@@ -1257,6 +1504,9 @@ export default function App() {
             contextTokens={chat.contextTokens}
             contextWindow={chat.contextWindow}
             activity={chat.activity}
+            turnStartedAt={chat.turnStartedAt}
+            turnTokens={turnOutput(chat)}
+            thinking={isThinking(chat)}
             effort={effort}
             onEffort={changeEffort}
             cwd={project?.primary_path ?? ""}

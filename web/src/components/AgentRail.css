@@ -1,0 +1,195 @@
+/* The agent rail. Kept in its own file rather than in styles.css so it can be
+   read next to the component it dresses. */
+
+.rail {
+  flex: 0 0 auto;
+  width: 13.5rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.rail-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.5rem;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.rail-run {
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--r-sm);
+}
+
+/* A workflow's phases and the agents under them. Indented behind a rule, the
+   same idea as a subagent's working inside its Task card. */
+.rail-tree,
+.rail-sub {
+  margin: 0.125rem 0 0.25rem 0.5rem;
+  padding: 0 0 0 0.5rem;
+  list-style: none;
+  border-left: 1px solid var(--border);
+}
+
+.rail-phase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem 0.125rem;
+}
+
+.rail-phase-title {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+
+.rail-phase-count,
+.rail-retry {
+  font-family: var(--mono);
+  font-size: 0.625rem;
+  color: var(--fg-3);
+}
+
+.rail-retry {
+  color: var(--warn);
+}
+
+.rail-row.is-worker .rail-label {
+  font-size: 0.75rem;
+}
+
+.rail-dot {
+  flex: 0 0 auto;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: 50%;
+  background: var(--fg-3);
+  /* Nudged down so it optically centres on the label's first line rather than
+     sitting on its baseline. */
+  transform: translateY(-0.0625rem);
+}
+
+.rail-run.is-running .rail-dot,
+.rail-row.is-running .rail-dot {
+  background: var(--accent);
+  animation: rail-pulse 1.4s ease-in-out infinite;
+}
+
+.rail-run.is-completed .rail-dot,
+.rail-row.is-completed .rail-dot {
+  background: var(--fg-3);
+}
+
+.rail-run.is-failed .rail-dot {
+  background: var(--danger);
+}
+
+@keyframes rail-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-run.is-running .rail-dot,
+  .rail-row.is-running .rail-dot {
+    animation: none;
+  }
+}
+
+.rail-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.0625rem;
+}
+
+.rail-label {
+  color: var(--fg-1);
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  /* Two lines, then ellipsis: a job description is a phrase, not a word, and
+     one line truncates most of them into uselessness. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.rail-run.is-running > .rail-row .rail-label,
+.rail-row.is-worker.is-running .rail-label {
+  color: var(--fg-0);
+}
+
+.rail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  font-size: 0.6875rem;
+  color: var(--fg-3);
+}
+
+.rail-stats,
+.rail-live {
+  font-family: var(--mono);
+}
+
+.rail-foot {
+  flex: 0 0 auto;
+  padding: 0.5rem 0.875rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.6875rem;
+  color: var(--fg-3);
+}
+
+/* The transcript and the rail as one row. The transcript keeps its own
+   scroller, the rail keeps its own; only this row is shared. */
+.chat-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+/* The row is a button now. Strip the browser's chrome and keep the layout the
+   plain row had. */
+button.rail-row {
+  width: 100%;
+  border: none;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+}
+
+button.rail-row:hover {
+  background: var(--bg-2);
+}
+
+button.rail-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
