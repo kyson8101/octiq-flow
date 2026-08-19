@@ -19,6 +19,7 @@ const SHOW_AT_FIRST = 5;
 
 export function Sidebar({
   projects,
+  shelved,
   conversations,
   currentProject,
   currentConversation,
@@ -34,6 +35,10 @@ export function Sidebar({
   onNewProject,
 }: {
   projects: Project[];
+  /** Put away, not deleted. Listed behind a fold so they are reachable — the
+   *  control that brings one back lives behind its own gear, so a shelved
+   *  project that renders nowhere can never be unshelved. */
+  shelved: Project[];
   conversations: Map<string, Conversation[]>;
   currentProject: string | null;
   currentConversation: string | null;
@@ -79,7 +84,50 @@ export function Sidebar({
           />
         ))}
       </ul>
+
+      {shelved.length > 0 && <ShelvedProjects projects={shelved} onSettings={onSettings} />}
     </nav>
+  );
+}
+
+/** The way back.
+ *
+ *  Shelving takes a project out of the list above, and "Bring back" lives in
+ *  that project's own settings — so without somewhere to show it, shelving was
+ *  a door that only opened one way. Folded shut by default: the whole point of
+ *  shelving is not to look at these. */
+function ShelvedProjects({
+  projects,
+  onSettings,
+}: {
+  projects: Project[];
+  onSettings: (projectId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="shelf">
+      <button className="shelf-toggle" type="button" onClick={() => setOpen((v) => !v)}>
+        {open ? "Hide" : "Shelved"} · {projects.length}
+      </button>
+      {open && (
+        <ul className="shelf-list">
+          {projects.map((p) => (
+            <li key={p.id}>
+              {/* Straight to its settings, where Bring back is — there is
+                  nothing else you would open a shelved project to do. */}
+              <button
+                className="shelf-item"
+                type="button"
+                title="Open settings to bring it back"
+                onClick={() => onSettings(p.id)}
+              >
+                {p.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

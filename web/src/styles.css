@@ -155,6 +155,62 @@ body {
   pointer-events: auto;
 }
 
+/* Shelved projects live below the list they were taken out of. Quiet by
+   design — the point of shelving is not to look at them — but present, because
+   the control that brings one back is inside its own settings. */
+.shelf {
+  flex: 0 0 auto;
+  padding: 4px 8px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+
+.shelf-toggle {
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.shelf-toggle:hover {
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+
+.shelf-list {
+  margin: 2px 0 0;
+  padding: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.shelf-item {
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.shelf-item:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
 .proj-list {
   flex: 1 1 auto;
   overflow-y: auto;

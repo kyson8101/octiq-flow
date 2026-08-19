@@ -113,6 +113,7 @@ export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [shelved, setShelved] = useState<Workspace[]>([]);
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
@@ -254,6 +255,11 @@ export default function App() {
       .then((list) => {
         const active = (list ?? []).filter((w) => !w.shelved);
         setWorkspaces(active);
+        // Kept separately rather than dropped. Shelving used to remove a project
+        // from the only list that renders it, and the control that brings it
+        // back lives behind that project's own gear — so a shelved project was
+        // a one-way door.
+        setShelved((list ?? []).filter((w) => w.shelved));
         setProjectId((cur) => {
           if (cur && active.some((w) => w.id === cur)) return cur;
           // The link wins over "first in the list", but only if it still exists
@@ -748,6 +754,39 @@ export default function App() {
       }
       const id = conversationId ?? crypto.randomUUID();
       if (!conversationId) setConversationId(id);
+
+      /* `/clear` empties the conversation here as well as in the agent.
+       *
+       * The agent handles it locally and answers with nothing, so without this
+       * the agent forgets the conversation while the screen still shows every
+       * word of it — the two disagree about what has been said, which is worse
+       * than either state on its own.
+       *
+       * The transcript goes too, or a reload brings it all back. Resetting
+       * `seen` is not optional: `transcript::forget` drops the server's
+       * sequence counter to zero, and a client still holding the old high
+       * number would discard every event after this as already seen. */
+      if (text.trim() === "/clear") {
+        const key = keyFor(id);
+        if (runningRef.current.has(id)) {
+          bridge.invoke("chat_send", { key, text }).catch(() => undefined);
+        }
+        bridge.invoke("chat_forget", { key }).catch(() => undefined);
+        seen.current[key] = 0;
+        patch(id, (s) => ({ ...emptyChat(), sessionId: s.sessionId }));
+        // The saved copy has to be emptied here rather than left to the sync
+        // effect, which skips any chat with no messages — that guard is what
+        // stops a brand-new chat being saved, and it also meant a cleared one
+        // kept its old messages on disk and got them all back on reload.
+        setConversations((prev) => {
+          const list = prev.map((c) =>
+            c.id === id ? { ...c, messages: [], seq: 0, updatedAt: Date.now() } : c,
+          );
+          saveConversations(list);
+          return list;
+        });
+        return;
+      }
       meta.current[id] = {
         projectId: project.id,
         modelId: choice.id,
@@ -995,6 +1034,7 @@ export default function App() {
 
         <Sidebar
           projects={workspaces}
+          shelved={shelved}
           conversations={grouped}
           currentProject={projectId}
           currentConversation={conversationId}
@@ -1193,7 +1233,12 @@ export default function App() {
       {settingsFor && (
         <ProjectSettings
           project={
-            settingsFor === "new" ? null : workspaces.find((w) => w.id === settingsFor) ?? null
+            // Shelved ones are looked up too, or the dialog opened from the
+            // shelf would find nothing — and its Bring back button is the only
+            // reason to open it.
+            settingsFor === "new"
+              ? null
+              : [...workspaces, ...shelved].find((w) => w.id === settingsFor) ?? null
           }
           onChanged={loadWorkspaces}
           onClose={() => setSettingsFor(null)}
