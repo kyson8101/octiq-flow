@@ -247,6 +247,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
 
         // ---- permissions --------------------------------------------------
+        // What is waiting on a person right now. Asked by a browser as it
+        // connects: a permission is announced once, over a broadcast with no
+        // replay, so without this a reload lost the card and left the agent
+        // waiting out its timeout on a question nobody could still see.
+        "permission_pending" => Ok(json!(crate::permission::pending())),
         // Answering a question an agent is currently blocked on.
         "permission_decide" => {
             let id: String = arg(&args, "id")?;
@@ -261,6 +266,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
 
         // ---- questions ----------------------------------------------------
+        // The same, for `ask_user`. Its wait is ten minutes, so a question
+        // stranded by a reload was the longest a chat could sit looking dead.
+        "question_pending" => Ok(json!(crate::question::pending())),
         "question_answer" => Ok(json!(crate::question::answer(
             &arg::<String>(&args, "id")?,
             arg(&args, "answer")?,

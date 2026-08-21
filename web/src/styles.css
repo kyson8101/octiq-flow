@@ -200,6 +200,18 @@ body {
   .topbar .gitp-toggle-branch {
     max-width: 9ch;
   }
+
+  /* Files becomes a plain round button. The count is the first thing to go: on
+     a phone the panel is one tap away and tells you the number itself, and the
+     35px it costs come straight out of the project name beside it. */
+  .topbar .sfp-toggle {
+    width: 32px;
+    padding: 0;
+  }
+
+  .topbar .sfp-count {
+    display: none;
+  }
 }
 
 /* Where the view switch and the usage meter go instead. The switch leads the
@@ -2986,9 +2998,10 @@ body {
   background: var(--accent);
 }
 
-/* A session that is up but idle: solid green, no movement. */
+/* A session that is up but idle: solid grey, no movement. Green is reserved
+   for a chat that is actually working, so the eye only goes to real activity. */
 .chat.is-live .chat-mark {
-  background: var(--ok);
+  background: var(--fg-2);
 }
 
 /* Still working. The pulse is the only moving thing in the sidebar, which is
@@ -3069,31 +3082,11 @@ body {
   }
 }
 
-/* ---- Files touched by a reply ----------------------------------------- */
-/* The right-hand half of the reply's footer row. It takes the space Copy does
-   not, so its toggle sits at the far right and the list, when opened, runs
-   underneath at the width that is left. */
-.files {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 2px;
-}
-
-.files-list {
-  width: 100%;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-/* Tight rows. This is a footnote to the answer, and it sits between one reply
-   and the next — every pixel it takes is pixels of the conversation. */
+/* ---- One file's row ---------------------------------------------------- */
+/* Used by the session files panel. It used to hang under each reply, indented
+   by the width of the Copy button it shared a row with — which is what made a
+   list of files look like it started in the middle of nowhere. In a column of
+   its own it starts where every other row in that column starts. */
 .file {
   display: flex;
   align-items: baseline;
@@ -3151,15 +3144,66 @@ body {
   color: var(--fg-3);
 }
 
-.file-action {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--fg-3);
-  opacity: 0;
+/* ---- Session files panel ----------------------------------------------- */
+/* The column itself borrows the git panel's layout, phone sheet and resizer —
+   see `.gitp-panel`, which names both. Only what is different lives here. */
+
+/* The bar button. Wider than a plain icon button because it carries a count,
+   and sized to sit level with the git toggle beside it. */
+.sfp-toggle {
+  width: auto;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  color: var(--fg-1);
 }
 
-.file:hover .file-action {
-  opacity: 1;
+.sfp-toggle.is-on {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.sfp-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sfp-filter {
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sfp-filter input {
+  width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 12px;
+}
+
+.sfp-filter input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Tighter than the git panel's body: these are single-line rows, and padding
+   sized for a file's diff wastes most of a phone screen on air. */
+.sfp-body {
+  padding: 6px;
+}
+
+.sfp-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 /* ---- Image viewer ------------------------------------------------------ */
@@ -3292,28 +3336,6 @@ body {
 .slash-item.is-on {
   background: var(--accent-tint);
   color: var(--fg-0);
-}
-
-/* Past a handful of files the list folds; this opens it. */
-/* Sized like the Copy button it shares the row with, so the two read as one
-   line of controls rather than a button and a paragraph. */
-.files-more {
-  order: -1;
-  align-self: flex-end;
-  padding: 4px 9px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-3);
-  font: inherit;
-  font-size: 11.5px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.files-more:hover {
-  background: var(--bg-1);
-  color: var(--fg-1);
 }
 
 /* ---- File panel (slides out from the right) --------------------------- */
@@ -4060,9 +4082,8 @@ body {
    Sits under the answer it belongs to. Quiet until the turn is hovered, but
    never hidden — a touch screen has no hover, and this is the only way to take
    a reply with you. */
-/* One row under a reply: Copy on the left, the files it touched on the right.
-   Aligned to the TOP, so opening the file list grows it downwards and leaves
-   Copy where it was. */
+/* One row under a reply, holding Copy. The files the turn touched used to share
+   it; they are a whole-session question now and live in their own column. */
 .msg-foot {
   display: flex;
   align-items: flex-start;
@@ -5112,7 +5133,8 @@ body {
    a first visit gets. The dividing line is the panel's own edge, the same way
    the sidebar has one — it marks where the layout splits, and marks nothing as
    selected. */
-.gitp-panel {
+.gitp-panel,
+.sfp-panel {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -5159,7 +5181,8 @@ body {
      right edge, the way a sheet on the device does. It is anchored right rather
      than filling the body: the strip of the view left showing is what says this
      is on top of your work and will go away again. */
-  .gitp-panel {
+  .gitp-panel,
+  .sfp-panel {
     position: absolute;
     inset: 0 0 0 auto;
     width: min(88vw, 420px);
@@ -5175,7 +5198,8 @@ body {
 
   /* 102% rather than 100%: the shadow is drawn outside the box, and at exactly
      100% a sliver of it stays on screen down the right edge. */
-  .gitp-panel.is-open {
+  .gitp-panel.is-open,
+  .sfp-panel.is-open {
     transform: translateX(0);
   }
 
@@ -5228,6 +5252,7 @@ body {
    slide — it still appears and still dims what is behind it. */
 @media (prefers-reduced-motion: reduce) {
   .gitp-panel,
+  .sfp-panel,
   .gitp-scrim {
     transition: none;
   }

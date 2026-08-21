@@ -24,6 +24,17 @@ use tokio::sync::oneshot;
 /// something you have to think about, and it holds up nothing but its own turn.
 pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How long a break in the connection may be before it counts as leaving.
+///
+/// A page reload drops the socket for a second or two. Reading that as "nobody
+/// is watching" is how a question asked at the wrong moment came back answered
+/// before the user ever saw it — and it is the same gap that used to strand a
+/// question already on screen. Generous on purpose: a phone rejoining a network
+/// takes longer than a laptop, and the cost of waiting a few extra seconds for
+/// somebody who has genuinely gone is far smaller than the cost of speaking for
+/// somebody who has not.
+pub const RELOAD_GRACE: Duration = Duration::from_secs(20);
+
 /// What the agent wants to know.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -53,17 +64,38 @@ pub struct Question {
 /// The question, once it has an id to answer against.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Asked {
+pub struct Asked {
     id: String,
     #[serde(flatten)]
     question: Question,
 }
 
-static PENDING: Mutex<Option<HashMap<String, oneshot::Sender<String>>>> = Mutex::new(None);
+/// One question, and the channel its answer goes back down.
+///
+/// The question is kept beside the channel rather than being dropped once it
+/// has been announced. It is announced ONCE, over a broadcast nobody can replay
+/// — so a browser that reloads mid-question had no way to learn the question
+/// existed, while the agent went on waiting ten minutes for an answer to
+/// something no longer on anyone's screen. `pending` is how it gets it back.
+struct Waiting {
+    tx: oneshot::Sender<String>,
+    asked: Asked,
+}
 
-fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, oneshot::Sender<String>>) -> T) -> T {
+static PENDING: Mutex<Option<HashMap<String, Waiting>>> = Mutex::new(None);
+
+fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, Waiting>) -> T) -> T {
     let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Every question still waiting on an answer.
+///
+/// Asked by a browser as soon as it connects, which is what makes a reload — or
+/// arriving on a second device — pick up a question already in flight instead
+/// of staring at a chat that looks stuck.
+pub fn pending() -> Vec<Asked> {
+    with_pending(|p| p.values().map(|w| w.asked.clone()).collect())
 }
 
 /// Put the question in front of the user and wait.
@@ -73,7 +105,7 @@ fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, oneshot::Sender<String>>)
 /// answer must never be reported as an answer, because the agent will act on
 /// whatever it is given.
 pub async fn ask(question: Question) -> String {
-    if !crate::bus::clients_connected() {
+    if !crate::bus::watched_within(RELOAD_GRACE) {
         return "Nobody is watching OctiqFlow, so this question could not be asked. \
                 Proceed without it, or say what you would need to know."
             .into();
@@ -81,26 +113,43 @@ pub async fn ask(question: Question) -> String {
 
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
-    with_pending(|p| p.insert(id.clone(), tx));
+    let asked = Asked {
+        id: id.clone(),
+        question,
+    };
+    with_pending(|p| {
+        p.insert(
+            id.clone(),
+            Waiting {
+                tx,
+                asked: asked.clone(),
+            },
+        )
+    });
 
-    crate::bus::emit(
-        "user-question",
-        Asked {
-            id: id.clone(),
-            question,
+    crate::bus::emit("user-question", asked);
+
+    // Three ways this ends, and they are not the same thing to tell an agent.
+    //
+    // The watcher is why a reload is survivable. A gap in the connection no
+    // longer decides anything: the question stays up, the browser coming back
+    // asks for it through `pending`, and only somebody who is really gone —
+    // away for `RELOAD_GRACE` without returning — releases the turn.
+    let outcome = tokio::select! {
+        answered = tokio::time::timeout(ANSWER_TIMEOUT, rx) => match answered {
+            Ok(Ok(answer)) => return answer,
+            _ => "The user did not answer in time. Do not assume an answer — say what \
+                  you need and stop, or continue in a way that does not depend on it.",
         },
-    );
-
-    match tokio::time::timeout(ANSWER_TIMEOUT, rx).await {
-        Ok(Ok(answer)) => answer,
-        _ => {
-            with_pending(|p| p.remove(&id));
-            crate::bus::emit("question-expired", serde_json::json!({ "id": id }));
-            "The user did not answer in time. Do not assume an answer — say what \
-             you need and stop, or continue in a way that does not depend on it."
-                .into()
+        _ = crate::bus::once_unwatched(RELOAD_GRACE) => {
+            "Nobody is watching OctiqFlow any more, so this question went unanswered. \
+             Proceed without it, or say what you would need to know."
         }
-    }
+    };
+
+    with_pending(|p| p.remove(&id));
+    crate::bus::emit("question-expired", serde_json::json!({ "id": id }));
+    outcome.into()
 }
 
 /// Answer a waiting question. `false` when it is already gone.
@@ -113,10 +162,10 @@ pub async fn ask(question: Question) -> String {
 /// It says one thing, "this question is over"; how it ended is the agent's news
 /// to give, in the answer it is now free to act on.
 pub fn answer(id: &str, choice: String) -> bool {
-    let Some(tx) = with_pending(|p| p.remove(id)) else {
+    let Some(waiting) = with_pending(|p| p.remove(id)) else {
         return false;
     };
-    let delivered = tx.send(choice).is_ok();
+    let delivered = waiting.tx.send(choice).is_ok();
     crate::bus::emit("question-expired", serde_json::json!({ "id": id }));
     delivered
 }
@@ -167,6 +216,39 @@ mod tests {
         assert!(reply.contains("Nobody is watching"), "{reply}");
     }
 
+    #[tokio::test]
+    async fn a_waiting_question_can_be_asked_for_again() {
+        // What a reloaded page reads. The question is announced once, on a
+        // broadcast with no replay, so a browser that was not attached at that
+        // moment — or was mid-refresh — has no other way to learn it exists,
+        // and the agent is meanwhile holding its turn open for ten minutes.
+        let id = "q-pending".to_string();
+        let (tx, _rx) = oneshot::channel();
+        with_pending(|p| {
+            p.insert(
+                id.clone(),
+                Waiting {
+                    tx,
+                    asked: Asked {
+                        id: id.clone(),
+                        question: question(),
+                    },
+                },
+            )
+        });
+
+        let waiting = pending();
+        assert!(
+            waiting.iter().any(|a| a.id == id),
+            "a question still waiting has to be findable"
+        );
+
+        // And it stops being offered the moment it is answered, or the reloaded
+        // page would draw a card for something already decided.
+        assert!(answer(&id, "SQLite".into()));
+        assert!(!pending().iter().any(|a| a.id == id));
+    }
+
     #[test]
     fn answering_an_unknown_question_is_refused() {
         assert!(!answer("no-such-id", "Postgres".into()));
@@ -176,7 +258,18 @@ mod tests {
     async fn an_answer_reaches_the_waiting_agent_once() {
         let id = "q-once".to_string();
         let (tx, rx) = oneshot::channel();
-        with_pending(|p| p.insert(id.clone(), tx));
+        with_pending(|p| {
+            p.insert(
+                id.clone(),
+                Waiting {
+                    tx,
+                    asked: Asked {
+                        id: id.clone(),
+                        question: question(),
+                    },
+                },
+            )
+        });
 
         assert!(answer(&id, "SQLite".into()));
         assert_eq!(rx.await.unwrap(), "SQLite");

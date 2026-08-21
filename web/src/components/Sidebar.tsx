@@ -211,8 +211,8 @@ function ProjectNode({
                   .join(" ")}
               >
                 {/* State in front of the title, where the eye starts: a dot for
-                    the chat you are in, a green one for a session that is up,
-                    and a pulsing green one for a chat still working — which is
+                    the chat you are in, a grey one for a session that is up but
+                    idle, and a pulsing green one for a chat still working — which is
                     the whole point of leaving them running. It sits in the
                     indent, so the titles stay lined up under the project name
                     whether or not a row has a mark. */}

@@ -16,6 +16,10 @@ dist-ssr
 __pycache__/
 *.pyc
 
+# Scratch: throwaway spike pages and screenshots kept at the repo root
+/_spike*
+/*.png
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

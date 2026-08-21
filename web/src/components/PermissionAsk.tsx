@@ -1,14 +1,18 @@
 // The agent is waiting on you.
 //
 // `claude -p` cannot prompt, so a permission it was not granted in advance is
-// simply denied. A PreToolUse hook on the server holds the tool call open and
-// asks here instead — which is why this is the one thing in the app that is
-// worth interrupting for. Until it is answered, nothing else in that chat moves.
+// simply denied. The agent asks the server over its own control channel
+// instead, and the server asks here — which is why this is the one thing in the
+// app that is worth interrupting for. Until it is answered, nothing else in
+// that chat moves.
 //
 // It shows what the terminal's y/n cannot: the tool, the file, and the content
 // it is about to write. The answer you would give depends on those, and having
-// to guess is how people end up granting everything.
+// to guess is how people end up granting everything. The plan `ExitPlanMode`
+// asks you to approve arrives here too, and is the clearest case of it: there
+// is nothing else on the card to judge it by.
 import { useState } from "react";
+import { askDetail } from "../lib/askDetail";
 import { bridge } from "../lib/bridge";
 import { fileDiff } from "../lib/diff";
 import { toolLook } from "../lib/toolKind";
@@ -35,22 +39,6 @@ function target(ask: Ask): string | null {
   return null;
 }
 
-/** The part of a tool call worth reading before deciding. A command in full —
- *  the whole point is what it runs — and the start of anything being written. */
-function detail(ask: Ask): { label: string; body: string } | null {
-  const input = ask.toolInput ?? {};
-  if (typeof input.command === "string" && input.command) {
-    return { label: "command", body: input.command };
-  }
-  if (typeof input.content === "string" && input.content) {
-    return { label: "content", body: input.content };
-  }
-  if (typeof input.new_string === "string") {
-    return { label: "replacing with", body: input.new_string };
-  }
-  return null;
-}
-
 export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: string) => void }) {
   const [sending, setSending] = useState<"allow" | "deny" | "always" | null>(null);
   const path = target(ask);
@@ -58,7 +46,7 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
   // it runs, so it has no line numbers to give. That is the honest half: what
   // is being decided here is the change, not where in the file it lands.
   const diff = fileDiff(ask.toolName ?? "", ask.toolInput);
-  const extra = diff ? null : detail(ask);
+  const extra = diff ? null : askDetail(ask.toolInput);
   // The same icon and the same name the chat's own tool cards use. The question
   // is about a call that is one second away from appearing there, so it should
   // already look like it.
@@ -111,7 +99,7 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
       {extra && (
         <div className="ask-card-detail">
           <div className="ask-card-label">{extra.label}</div>
-          <pre className="ask-card-body">{extra.body.slice(0, 1200)}</pre>
+          <pre className="ask-card-body">{extra.body.slice(0, extra.limit)}</pre>
         </div>
       )}
 

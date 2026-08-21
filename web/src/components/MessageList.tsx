@@ -24,7 +24,6 @@ import { groupRows } from "../lib/toolGroups";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
-import { FileList } from "./FileList";
 import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
 import { copyText } from "../lib/clipboard";
@@ -191,23 +190,6 @@ function SubAgent({ messages, kids }: { messages: Message[]; kids: Kids }) {
   );
 }
 
-/** A turn's messages plus every subagent message underneath them.
- *
- *  For the file list, which asks what this turn touched — and a file a subagent
- *  edited was still edited by this turn. Nothing else wants this: the reply on
- *  screen, and the text the copy button takes, are the main agent's alone. */
-function withDescendants(messages: Message[], kids: Kids): Message[] {
-  const out: Message[] = [];
-  const walk = (list: Message[]) => {
-    for (const m of list) {
-      out.push(m);
-      for (const b of m.blocks) if (b.kind === "tool") walk(kids.get(b.id) ?? []);
-    }
-  };
-  walk(messages);
-  return out;
-}
-
 /** Where the agent summarised its own history to make room.
  *
  *  Worth showing rather than hiding: everything above this line is a summary
@@ -233,13 +215,14 @@ function TurnView({
   messages,
   kids,
   stopped,
-  cwd,
+  last,
   busy,
 }: {
   messages: Message[];
   kids: Kids;
   stopped?: boolean;
-  cwd?: string;
+  /** The turn at the bottom — the only one a running agent can still add to. */
+  last?: boolean;
   /** Whether the chat is working. A turn can only be waiting its turn while
    *  something else is having one. */
   busy?: boolean;
@@ -288,18 +271,22 @@ function TurnView({
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
         {queued && <div className="queued">queued</div>}
-        {/* Copy and the files the turn touched, on ONE row: copy on the left,
-            the files on the right. They are both footnotes to the answer, and
-            stacked they took more height between two replies than some replies
-            take themselves.
+        {/* Copy, once the turn is over and there is prose worth taking.
+            (The files the turn touched used to sit on this row too. They are a
+            whole-session question now — see components/SessionFiles.)
 
-            Only once the turn is done — a list that grows while the agent is
-            still working would rearrange itself under the reader — and only
-            when there is prose worth taking. */}
-        {role === "assistant" && !streaming && (answer || cwd !== undefined) && (
+            "Over" is not the same as "not streaming", and getting that wrong is
+            what made this blink. A turn is a RUN of assistant messages, and the
+            agent ends one message and starts another at every tool call — so
+            mid-turn there are gaps, several a minute, where nothing is
+            streaming and the footer would draw itself and then vanish again. A
+            permission dialog holds one of those gaps open for as long as it
+            takes to answer, which is how the flicker became impossible to
+            miss. The bottom turn is the only one a working agent can still add
+            to, so that is the one that has to wait for it to stop. */}
+        {role === "assistant" && !streaming && !(busy && last) && answer && (
           <div className="msg-foot">
-            {answer && <CopyAnswer text={answer} />}
-            {cwd !== undefined && <FileList messages={withDescendants(messages, kids)} cwd={cwd} />}
+            <CopyAnswer text={answer} />
           </div>
         )}
       </div>
@@ -366,15 +353,11 @@ export function MessageList({
   messages,
   busy,
   stoppedAt,
-  cwd,
   conversationId,
 }: {
   messages: Message[];
   busy: boolean;
   stoppedAt?: string;
-  /** The project folder, for turning a relative path in the reply into a real
-   *  one. Without it only absolute paths can be listed. */
-  cwd?: string;
   /** Which conversation is on screen. This component is REUSED across chats
    *  rather than remounted — a remount would restart the typewriter on a chat
    *  that is still streaming — so it needs telling when the content underneath
@@ -507,13 +490,13 @@ export function MessageList({
   return (
     <div className="msgs" ref={scrollerRef}>
       <div className="msgs-inner" ref={innerRef}>
-        {turns.map((turn) => (
+        {turns.map((turn, i) => (
           <TurnView
             key={turn[0].id}
             messages={turn}
             kids={kids}
             stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
-            cwd={cwd}
+            last={i === turns.length - 1}
             busy={busy}
           />
         ))}

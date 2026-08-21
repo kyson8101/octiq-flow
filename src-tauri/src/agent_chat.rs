@@ -373,6 +373,26 @@ fn build_command(
             // it. It is what `@anthropic-ai/claude-agent-sdk` passes when a
             // `canUseTool` callback is supplied; the literal string is `stdio`.
             cmd.push_str(" --permission-prompt-tool stdio");
+            // The tool that flag turns on behind our back.
+            //
+            // `--permission-prompt-tool` reads as though it only says WHERE a
+            // permission question goes. It also decides which tools the model
+            // is shown: with it, print mode offers `AskUserQuestion`, which
+            // without it it never does.
+            //
+            // We cannot answer that one. It does not arrive as a `can_use_tool`
+            // request — permission passes, and the CLI then runs the tool
+            // itself, looking for the interactive prompt a `-p` process has no
+            // way to draw. It gives up immediately and hands the agent "The
+            // user did not answer the questions", so a question the user never
+            // saw comes back looking like one they refused.
+            //
+            // `ask_user` is the one that reaches them, so it is left as the
+            // only way to ask. Not conditional on the MCP config below: if that
+            // could not be written there is no way to ask at all, which is what
+            // this command line did before the flag existed — better than a
+            // tool that fails every time it is used.
+            cmd.push_str(" --disallowedTools AskUserQuestion");
             // Our own two tools, plus the sentences that make the agent reach
             // for them. Both are pre-approved: a tool whose whole purpose is to
             // talk to the user must not itself raise a permission question, and
@@ -949,7 +969,10 @@ fn can_use_tool(event: &Value) -> Option<(String, Value)> {
     if request.get("subtype")?.as_str()? != "can_use_tool" {
         return None;
     }
-    Some((event.get("request_id")?.as_str()?.to_string(), request.clone()))
+    Some((
+        event.get("request_id")?.as_str()?.to_string(),
+        request.clone(),
+    ))
 }
 
 /// Was this line the agent answering our handshake?
@@ -1011,7 +1034,10 @@ fn answer_permission(
     rt.spawn(async move {
         eprintln!("[perm] {key} asking about {tool}");
         let answer = crate::permission::ask(ask).await;
-        eprintln!("[perm] {key} {tool} -> {} ({})", answer.decision, answer.reason);
+        eprintln!(
+            "[perm] {key} {tool} -> {} ({})",
+            answer.decision, answer.reason
+        );
         // `allow` is the only yes. Everything else — a refusal, a timeout,
         // nobody watching — is a no WITH ITS REASON, which the agent repeats to
         // the user. "Abstain" has no meaning here: the chain has already decided
@@ -1036,7 +1062,9 @@ fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, r
             "response": response,
         }
     });
-    let Ok(mut guard) = session.lock() else { return };
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
     let Some(stdin) = guard.stdin.as_mut() else {
         return;
     };
@@ -1362,6 +1390,38 @@ mod tests {
             &[],
         );
         assert!(line.contains("--permission-prompt-tool stdio"));
+    }
+
+    #[test]
+    fn the_question_tool_the_agent_cannot_be_answered_on_is_taken_back() {
+        // `--permission-prompt-tool stdio` does not only route permissions. It
+        // also hands the model `AskUserQuestion`, which plain print mode never
+        // offered: measured on the same CLI, 30 built-in tools without the flag
+        // and 33 with it, the three being `AskUserQuestion`, `EnterPlanMode`
+        // and `ExitPlanMode`. The flag alone does it; the handshake is not
+        // involved.
+        //
+        // That tool is not ours to answer. It is not a `can_use_tool` request —
+        // permission is granted and the CLI then runs the tool itself, looking
+        // for an interactive prompt that a `-p` process does not have. It gives
+        // up at once and tells the agent "The user did not answer the
+        // questions", which reads as a refusal nobody made.
+        //
+        // So it is taken back, and `ask_user` is left as the only way to ask —
+        // the one that reaches a phone. Unconditional on purpose: when the MCP
+        // config could not be written there is no `ask_user` either, and no
+        // question at all is what this command line did before the flag arrived.
+        let line = build_command(
+            ChatAgent::Claude,
+            None,
+            Some(Access::Auto),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+        );
+        assert!(line.contains("--disallowedTools AskUserQuestion"));
     }
 
     #[test]

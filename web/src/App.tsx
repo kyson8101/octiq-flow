@@ -64,6 +64,7 @@ import { ShelvedProjects } from "./components/ShelvedProjects";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
+import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
 import { TerminalPane } from "./components/Terminal";
 import { PermissionAsk, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
@@ -123,6 +124,7 @@ function writeLocation(project: string | null, chat: string | null): void {
 /** The chat that was on screen when the page was last left. */
 const LAST_KEY = "octiq.v2.lastChat";
 const GIT_KEY = "octiq.v2.gitOpen";
+const FILES_KEY = "octiq.v2.filesOpen";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
@@ -187,6 +189,11 @@ export default function App() {
    *  reverse of opening rather than the panel blinking out. Unmounting on
    *  `gitOpen` alone would cut the animation off at its first frame. */
   const [gitMounted, setGitMounted] = useState(gitOpen);
+  // The files column, on the same terms as the git one beside it: the button
+  // that opens it is in the top bar, the panel it opens is a column in the
+  // body, and only one piece of state joins them.
+  const [filesOpen, setFilesOpen] = useState(() => localStorage.getItem(FILES_KEY) === "1");
+  const [filesMounted, setFilesMounted] = useState(filesOpen);
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
   const [asks, setAsks] = useState<Record<string, Ask[]>>({});
@@ -461,11 +468,55 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // What is waiting on YOU right now, asked for rather than waited for.
+  //
+  // A permission card and an `ask_user` question are announced ONCE, on a
+  // broadcast with no replay, and they live only in this page's memory. So a
+  // reload used to lose them outright — while the server went on holding the
+  // agent's turn open, three minutes for a permission and ten for a question,
+  // for an answer that could no longer be given. The chat just sat there, and
+  // the way out was to send something and start a fresh turn.
+  //
+  // The server is the one that knows what is still waiting, so it is asked, on
+  // every connect. Its answer REPLACES what is here: a card this page is still
+  // drawing that the server no longer lists was decided somewhere else, or
+  // timed out while we were away, and a card that cannot be answered is worse
+  // than no card at all.
+  useEffect(() => {
+    if (conn !== "open") return;
+    const byConversation = <T extends { chatKey?: string }>(list: T[] | null) => {
+      const out: Record<string, T[]> = {};
+      for (const item of list ?? []) {
+        const id = item.chatKey ? convOf(item.chatKey) : null;
+        if (!id) continue;
+        (out[id] ??= []).push(item);
+      }
+      return out;
+    };
+    bridge
+      .invoke<Ask[]>("permission_pending")
+      .then((list) => setAsks(byConversation(list)))
+      .catch(() => {
+        /* an older server has no such command: the live events still work */
+      });
+    bridge
+      .invoke<Question[]>("question_pending")
+      .then((list) => setQuestions(byConversation(list)))
+      .catch(() => {});
+  }, [conn]);
+
   useEffect(() => {
     const offAsk = bridge.on<Ask>("permission-ask", (ask) => {
       const id = ask?.chatKey ? convOf(ask.chatKey) : null;
       if (!id || !ask.id) return;
-      setAsks((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), ask] }));
+      // Guarded against arriving twice: an ask raised in the moment between the
+      // refill above being answered and this listener seeing it comes down both
+      // routes, and two cards for one question can only be answered once.
+      setAsks((prev) =>
+        prev[id]?.some((a) => a.id === ask.id)
+          ? prev
+          : { ...prev, [id]: [...(prev[id] ?? []), ask] },
+      );
     });
     // Nobody answered in time, so the server said no on our behalf. The card
     // must go: leaving it would offer a choice that no longer exists.
@@ -482,7 +533,11 @@ export default function App() {
     const offQuestion = bridge.on<Question>("user-question", (q) => {
       const id = q?.chatKey ? convOf(q.chatKey) : null;
       if (!id || !q.id) return;
-      setQuestions((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), q] }));
+      setQuestions((prev) =>
+        prev[id]?.some((x) => x.id === q.id)
+          ? prev
+          : { ...prev, [id]: [...(prev[id] ?? []), q] },
+      );
     });
     const offQuestionGone = bridge.on<{ id: string }>("question-expired", (gone) => {
       if (!gone?.id) return;
@@ -695,6 +750,15 @@ export default function App() {
   const chat = (conversationId && chats[conversationId]) || EMPTY;
   /** The newest plan this chat wrote down — see lib/todos. */
   const todos = useMemo(() => latestTodos(chat.messages), [chat.messages]);
+  /** Every file this chat has touched. Read once up here rather than twice
+   *  below: the button needs the count and the panel needs the list, and
+   *  scanning the transcript for each of them would do the same work twice. */
+  const sessionFiles = useSessionFiles(
+    chat.messages,
+    project?.primary_path ?? "",
+    filesOpen,
+    chat.busy,
+  );
   // The agent the rail opened, resolved against THIS conversation. Looking it
   // up rather than storing the object keeps it live: a running agent's focus
   // view updates as its events arrive. It resolves to nothing after switching
@@ -917,19 +981,46 @@ export default function App() {
     openConversation(found);
   }, [conversations, conversationId, openConversation]);
 
+  /** Remember whether a side column is open. Split out because two of them do
+   *  the same thing, and a flag that drifts from what is on screen is a panel
+   *  that comes back closed. */
+  const remember = (key: string, next: boolean) => {
+    try {
+      localStorage.setItem(key, next ? "1" : "0");
+    } catch {
+      /* storage blocked: it just forgets between visits */
+    }
+  };
+
   /** Show or hide the git column, and remember it — every way in and out goes
-   *  through here, so the stored flag cannot drift from what is on screen. */
+   *  through here, so the stored flag cannot drift from what is on screen.
+   *
+   *  Opening it puts the files column away. They are alternatives, not a pair:
+   *  side by side they leave the chat a strip too narrow to read, and on a
+   *  phone they are both full sheets, where the second one drawn over the first
+   *  just loses you. */
   const showGit = useCallback((next: boolean) => {
     setGitOpen(next);
     // Mount at once so the panel exists to slide IN; unmount only after it has
     // finished sliding OUT. The delay matches the transform transition in
     // styles.css — shorter and the panel disappears mid-slide.
-    if (next) setGitMounted(true);
-    try {
-      localStorage.setItem(GIT_KEY, next ? "1" : "0");
-    } catch {
-      /* storage blocked: it just forgets between visits */
+    if (next) {
+      setGitMounted(true);
+      setFilesOpen(false);
+      remember(FILES_KEY, false);
     }
+    remember(GIT_KEY, next);
+  }, []);
+
+  /** The same, for the files column. */
+  const showFiles = useCallback((next: boolean) => {
+    setFilesOpen(next);
+    if (next) {
+      setFilesMounted(true);
+      setGitOpen(false);
+      remember(GIT_KEY, false);
+    }
+    remember(FILES_KEY, next);
   }, []);
 
   useEffect(() => {
@@ -937,6 +1028,12 @@ export default function App() {
     const timer = setTimeout(() => setGitMounted(false), GIT_SLIDE_MS);
     return () => clearTimeout(timer);
   }, [gitOpen]);
+
+  useEffect(() => {
+    if (filesOpen) return;
+    const timer = setTimeout(() => setFilesMounted(false), GIT_SLIDE_MS);
+    return () => clearTimeout(timer);
+  }, [filesOpen]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
@@ -1420,6 +1517,17 @@ export default function App() {
         {/* The plan: a count on the bar, the list one tap under it. */}
         <Todos todos={todos} />
 
+        {/* The files the chat has touched: a count on the bar, the column one
+            tap under it. Beside Git because they are the same kind of thing —
+            a column about the code, opened from the bar — and because they take
+            turns, so having them next to each other is what makes that read as
+            a switch rather than as one closing on its own. */}
+        <FilesButton
+          count={sessionFiles.length}
+          open={filesOpen}
+          onToggle={() => showFiles(!filesOpen)}
+        />
+
         <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
 
         {/* A new chat in the project named on the left. Last, at the thumb end
@@ -1515,7 +1623,6 @@ export default function App() {
                   messages={chat.messages}
                   busy={chat.busy}
                   stoppedAt={chat.stoppedAt}
-                  cwd={project?.primary_path ?? ""}
                   conversationId={conversationId ?? undefined}
                 />
                 {focused && (
@@ -1702,6 +1809,14 @@ export default function App() {
             slides in from the right. */}
         {gitMounted && (
           <GitPanel project={project} open={gitOpen} onClose={() => showGit(false)} />
+        )}
+
+        {filesMounted && (
+          <SessionFilesPanel
+            paths={sessionFiles}
+            open={filesOpen}
+            onClose={() => showFiles(false)}
+          />
         )}
       </div>
 

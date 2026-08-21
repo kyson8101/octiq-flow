@@ -88,7 +88,7 @@ pub struct Request {
 /// The question as it goes out to the UI.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Asked {
+pub struct Asked {
     id: String,
     #[serde(flatten)]
     request: Request,
@@ -107,6 +107,9 @@ struct Waiting {
     /// Chat key and signature. None when there is nothing to key a grant by —
     /// a call with no chat behind it has no "this chat" to be scoped to.
     remember: Option<(String, String)>,
+    /// The question as the UI was shown it, kept so it can be shown again. See
+    /// `pending`.
+    asked: Asked,
 }
 
 /// Questions waiting on a person, by id.
@@ -115,6 +118,16 @@ static PENDING: Mutex<Option<HashMap<String, Waiting>>> = Mutex::new(None);
 fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, Waiting>) -> T) -> T {
     let mut guard = PENDING.lock().unwrap_or_else(|e| e.into_inner());
     f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Every permission still waiting on a person.
+///
+/// A browser asks for this the moment it connects. Until it could, a reload
+/// during a permission prompt lost the prompt for good: the card was only ever
+/// in the page's memory, the agent went on waiting three minutes for it, and
+/// the chat sat there looking broken.
+pub fn pending() -> Vec<Asked> {
+    with_pending(|p| p.values().map(|w| w.asked.clone()).collect())
 }
 
 /// Grants made with "Always", as `chat key` + NUL + `signature`.
@@ -224,9 +237,7 @@ fn is_env_assignment(word: &str) -> bool {
     match word.split_once('=') {
         Some((name, _)) => {
             !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                 && !name.starts_with(|c: char| c.is_ascii_digit())
         }
         None => false,
@@ -265,7 +276,10 @@ pub async fn ask(request: Request) -> Answer {
 
     // Nobody is watching: do not hold the agent up for a question that would go
     // unseen. This is what keeps an unattended run behaving normally.
-    if !crate::bus::clients_connected() {
+    //
+    // Through the grace window, not the raw count: a page mid-reload has a
+    // count of zero and a person in front of it.
+    if !crate::bus::watched_within(crate::question::RELOAD_GRACE) {
         return Answer {
             decision: Decision::Abstain.as_str(),
             reason: "nobody is watching OctiqFlow".into(),
@@ -274,47 +288,59 @@ pub async fn ask(request: Request) -> Answer {
 
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
+    let asked = Asked {
+        id: id.clone(),
+        request,
+    };
     with_pending(|p| {
         p.insert(
             id.clone(),
             Waiting {
                 tx,
                 remember: grant,
+                asked: asked.clone(),
             },
         )
     });
 
-    crate::bus::emit(
-        "permission-ask",
-        Asked {
-            id: id.clone(),
-            request,
-        },
-    );
+    crate::bus::emit("permission-ask", asked);
 
     // The reason travels to the agent, which repeats it to the user. A refusal
     // and a timeout are both a Deny, but they are not the same thing to the
     // person reading the answer — reporting "timed out" to someone who pressed
     // Deny is simply a lie about what happened.
-    match tokio::time::timeout(ANSWER_TIMEOUT, rx).await {
-        Ok(Ok(decision)) => Answer {
-            decision: decision.as_str(),
-            reason: match decision {
-                Decision::Allow => "you allowed it".into(),
-                Decision::Deny => "you denied it".into(),
-                Decision::Abstain => "no opinion".into(),
-            },
+    //
+    // The third arm is the reload. A break in the connection used to end this
+    // question by itself — the card lived only in the page, so a refresh took
+    // it away and left the agent waiting out the full timeout for an answer
+    // nobody could give. Now the question survives the gap (`pending` hands it
+    // back), and only a person who has actually gone releases it.
+    let (decision, reason) = tokio::select! {
+        answered = tokio::time::timeout(ANSWER_TIMEOUT, rx) => match answered {
+            Ok(Ok(decision)) => (
+                decision,
+                match decision {
+                    Decision::Allow => "you allowed it",
+                    Decision::Deny => "you denied it",
+                    Decision::Abstain => "no opinion",
+                },
+            ),
+            // Nobody answered, or the waiter was dropped. Silence is not
+            // consent: the agent is told no and carries on.
+            _ => (Decision::Deny, "nobody answered in time"),
         },
-        // Nobody answered, or the waiter was dropped. Silence is not consent:
-        // the agent is told no and carries on.
-        _ => {
-            with_pending(|p| p.remove(&id));
-            crate::bus::emit("permission-expired", serde_json::json!({ "id": id }));
-            Answer {
-                decision: Decision::Deny.as_str(),
-                reason: "nobody answered in time".into(),
-            }
+        // Everyone left while it was up. Not a refusal — the same abstain an
+        // unattended run gets, so the chain decides as though we never asked.
+        _ = crate::bus::once_unwatched(crate::question::RELOAD_GRACE) => {
+            (Decision::Abstain, "nobody is watching OctiqFlow any more")
         }
+    };
+
+    with_pending(|p| p.remove(&id));
+    crate::bus::emit("permission-expired", serde_json::json!({ "id": id }));
+    Answer {
+        decision: decision.as_str(),
+        reason: reason.into(),
     }
 }
 
@@ -361,6 +387,19 @@ mod tests {
         })
         .await;
         assert_eq!(answer.decision, "abstain");
+    }
+
+    /// A `Waiting` for the tests below. The `asked` copy is what a reconnecting
+    /// browser is handed, so it has to be built here too.
+    fn waiting_on(id: &str, tx: oneshot::Sender<Decision>) -> Waiting {
+        Waiting {
+            tx,
+            remember: None,
+            asked: Asked {
+                id: id.to_string(),
+                request: asking_about(None, None),
+            },
+        }
     }
 
     fn asking_about(chat_key: Option<&str>, access: Option<&str>) -> Request {
@@ -412,9 +451,33 @@ mod tests {
         // not what anybody thinks they are allowing when they tap Always.
         assert_eq!(command_head("pnpm test --watch"), Some("pnpm test".into()));
         assert_eq!(command_head("/usr/bin/sed -n 1,5p x"), Some("sed".into()));
-        assert_eq!(command_head("CI=true cargo build"), Some("cargo build".into()));
+        assert_eq!(
+            command_head("CI=true cargo build"),
+            Some("cargo build".into())
+        );
         assert_eq!(command_head("cd /tmp && rm -rf x"), None);
         assert_eq!(command_head("cat a | sh"), None);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_permission_can_be_asked_for_again() {
+        // The reload case. A permission card lives only in the page it was drawn
+        // in, and it is announced once over a broadcast with no replay — so
+        // without this a refresh took the card away for good while the agent
+        // went on waiting out its three minutes for an answer.
+        let id = "p-pending".to_string();
+        let (tx, _rx) = oneshot::channel();
+        with_pending(|p| p.insert(id.clone(), waiting_on(&id, tx)));
+
+        assert!(
+            pending().iter().any(|a| a.id == id),
+            "a permission still waiting has to be findable"
+        );
+
+        // Deciding it takes it off the list, so a page arriving afterwards does
+        // not offer a choice that has already been made.
+        assert!(decide(&id, Decision::Allow, false));
+        assert!(!pending().iter().any(|a| a.id == id));
     }
 
     #[test]
@@ -426,15 +489,7 @@ mod tests {
     async fn a_question_can_only_be_answered_once() {
         let id = "only-once".to_string();
         let (tx, _rx) = oneshot::channel();
-        with_pending(|p| {
-            p.insert(
-                id.clone(),
-                Waiting {
-                    tx,
-                    remember: None,
-                },
-            )
-        });
+        with_pending(|p| p.insert(id.clone(), waiting_on(&id, tx)));
 
         assert!(decide(&id, Decision::Allow, false));
         // The second tap — a double click, or two devices — finds nothing.
@@ -447,15 +502,7 @@ mod tests {
         // deliberate refusal a timeout misinforms the person who pressed it.
         let id = "explicit".to_string();
         let (tx, rx) = oneshot::channel();
-        with_pending(|p| {
-            p.insert(
-                id.clone(),
-                Waiting {
-                    tx,
-                    remember: None,
-                },
-            )
-        });
+        with_pending(|p| p.insert(id.clone(), waiting_on(&id, tx)));
         assert!(decide(&id, Decision::Deny, false));
 
         let answered = rx.await.expect("the decision should arrive");
