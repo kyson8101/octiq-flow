@@ -1124,6 +1124,29 @@ function EffortBars({ at, of, auto }: { at: number; of: number; auto?: boolean }
   );
 }
 
+/** How long the ultracode quake runs. The CSS animation is the same length,
+ *  and the two have to agree: taking the class off is what ends it. */
+const QUAKE_MS = 2000;
+
+let quakeTimer = 0;
+
+/** Ultracode sits at the top of the scale, so landing on it is an event, not
+ *  one more step: for two seconds the app shakes and its colours run.
+ *
+ *  The class goes on `body` and the CSS moves everything under it EXCEPT the
+ *  slider — the control under your finger has to hold still, or the level you
+ *  were aiming at becomes a moving target. */
+function quake(): void {
+  const body = document.body;
+  body.classList.remove("is-ultra");
+  // A reflow between off and on, so arriving again restarts the animation
+  // instead of being ignored as "that class is already there".
+  void body.offsetWidth;
+  body.classList.add("is-ultra");
+  window.clearTimeout(quakeTimer);
+  quakeTimer = window.setTimeout(() => body.classList.remove("is-ultra"), QUAKE_MS);
+}
+
 /** Effort as a slider along its rungs, with Auto as its own switch.
  *
  *  This was a dropdown, which is the one control that hides a scale: you saw
@@ -1134,7 +1157,12 @@ function EffortBars({ at, of, auto }: { at: number; of: number; auto?: boolean }
  *
  *  Every level names itself under the track. The one you are on is spelled out
  *  in full above it, with the sentence saying what it costs you, because that
- *  is the part a short tick label cannot carry. */
+ *  is the part a short tick label cannot carry.
+ *
+ *  The slider only PROPOSES a level; the button under it applies it. Dragging
+ *  crosses every rung on the way, and each one used to reach the agent — one
+ *  decision left five `/effort` turns in the transcript and restarted the
+ *  process five times. Now nothing is sent until you say so. */
 function EffortSlider({
   agent,
   effort,
@@ -1145,7 +1173,6 @@ function EffortSlider({
   onEffort: (e: Effort) => void;
 }) {
   const steps = effortSteps(agent);
-  const isAuto = effort === "auto";
   const autoRow = EFFORTS[agent].find((e) => e.id === "auto");
   /** The middle when the level belongs to the OTHER agent — the same fallback
    *  the button makes, so the two never disagree while a switch is in flight. */
@@ -1153,29 +1180,51 @@ function EffortSlider({
     const i = steps.findIndex((e) => e.id === id);
     return i < 0 ? Math.floor(steps.length / 2) : i;
   };
+
+  /** What the slider is showing, which is not yet what the chat is running. */
+  const [draft, setDraft] = useState<Effort>(effort);
+  /** The same value, readable the instant it changes. React batches state, so
+   *  two moves in one tick would both see the OLD draft — and the quake, which
+   *  fires on ARRIVING at Ultracode, would miss or repeat. */
+  const shown = useRef<Effort>(effort);
+  // The chosen level can change from outside — another agent, a resumed
+  // session, the confirm below landing. The draft follows it back.
+  useEffect(() => {
+    setDraft(effort);
+    shown.current = effort;
+  }, [effort, agent]);
+
+  const isAuto = draft === "auto";
   /** Where the slider rests while Auto is on. Auto has no rung, and leaving the
    *  thumb wherever it happened to be would make turning Auto off a surprise —
    *  this is the level it goes back to, shown the whole time. */
   const [held, setHeld] = useState(() => idxOf(effort));
-  const at = isAuto ? held : idxOf(effort);
+  const at = isAuto ? held : idxOf(draft);
   useEffect(() => {
-    if (!isAuto) setHeld(idxOf(effort));
+    if (draft !== "auto") setHeld(idxOf(draft));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effort, isAuto, agent]);
+  }, [draft, agent]);
 
   const cur = isAuto && autoRow ? autoRow : steps[at];
+  /** What the chat is running right now, for the button that offers to change
+   *  it. Absent only while a provider switch is mid-flight. */
+  const live = EFFORTS[agent].find((e) => e.id === effort);
+  const dirty = draft !== effort;
   const last = steps.length - 1;
   const pct = (i: number) => (i / Math.max(1, last)) * 100;
 
   /** Dragging while Auto is on turns Auto off at that level, rather than
    *  refusing to move: a dead control is a worse answer than an obvious one. */
   const pickAt = (i: number) => {
+    const id = steps[i].id;
+    if (id === "ultracode" && shown.current !== "ultracode") quake();
+    shown.current = id;
     setHeld(i);
-    onEffort(steps[i].id);
+    setDraft(id);
   };
 
   return (
-    <div className={`eff ${isAuto ? "is-auto" : ""}`}>
+    <div className={`eff ${isAuto ? "is-auto" : ""} ${dirty ? "is-draft" : ""}`}>
       <div className="eff-head">
         <span className="eff-name">{cur.label}</span>
         <span className="eff-hint">{cur.hint}</span>
@@ -1234,7 +1283,11 @@ function EffortSlider({
           className={`eff-auto ${isAuto ? "is-on" : ""}`}
           role="switch"
           aria-checked={isAuto}
-          onClick={() => onEffort(isAuto ? steps[held].id : "auto")}
+          onClick={() => {
+            const id = isAuto ? steps[held].id : "auto";
+            shown.current = id;
+            setDraft(id);
+          }}
         >
           <span className="eff-auto-text">
             <span className="picker-name">{autoRow.label}</span>
@@ -1248,6 +1301,13 @@ function EffortSlider({
           <span className="eff-switch" aria-hidden="true" />
         </button>
       )}
+
+      {/* The one thing here that reaches the agent. Off, it names the level
+          the chat is actually on, so a slider parked somewhere else is never
+          read as the answer. */}
+      <button type="button" className="eff-apply" disabled={!dirty} onClick={() => onEffort(draft)}>
+        {dirty ? `Change to ${cur.label}` : `${live?.label ?? cur.label} is on`}
+      </button>
     </div>
   );
 }

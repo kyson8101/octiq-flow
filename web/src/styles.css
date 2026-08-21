@@ -2337,6 +2337,240 @@ body {
   }
 }
 
+
+/* The only control here that reaches the agent. Full width and named after
+   the level it will set, because a slider that changed nothing yet needs one
+   obvious place to say "that one". Disabled, it is the receipt: the level the
+   chat is running on right now. */
+.eff-apply {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+}
+
+.eff-apply:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.eff-apply:disabled {
+  background: transparent;
+  color: var(--fg-3);
+  cursor: default;
+}
+
+/* An unconfirmed slider must not read as the setting. The fill goes hollow
+   until the button above is pressed. */
+.eff.is-draft .eff-fill {
+  background: var(--accent-tint);
+}
+
+.eff.is-draft .eff-mark.is-on {
+  color: var(--fg-0);
+  background: var(--accent-tint);
+}
+
+
+/* ---- Ultracode: the quake ---------------------------------------------
+   Pulling the effort slider all the way to Ultracode is the biggest thing
+   this control can do, so for two seconds the app says so: it shakes, and
+   its palette runs through six colours before settling back.
+
+   Two rules make it survivable. The shake is translate ONLY — no rotate, no
+   scale — and the palette moves through the custom properties rather than a
+   filter, so BOTH can be undone exactly for one subtree. That subtree is the
+   slider: the control your finger is on holds still and keeps its real
+   colours while everything around it comes loose. `ultra-still` is
+   `ultra-quake` negated frame for frame, and `.eff` sets the palette back to
+   the base values by hand. The two animations start in the same frame, so
+   they stay in step. */
+@keyframes ultra-quake {
+  0% { transform: translate3d(0px, 0px, 0); }
+  4.17% { transform: translate3d(11.68px, -8.73px, 0); }
+  8.33% { transform: translate3d(-7.35px, -4.17px, 0); }
+  12.5% { transform: translate3d(-5.87px, 6.58px, 0); }
+  16.67% { transform: translate3d(9.18px, 1.76px, 0); }
+  20.83% { transform: translate3d(-3.41px, -6.54px, 0); }
+  25% { transform: translate3d(-10.1px, -1.98px, 0); }
+  29.17% { transform: translate3d(6.58px, 6.45px, 0); }
+  33.33% { transform: translate3d(1.88px, -0.47px, 0); }
+  37.5% { transform: translate3d(-7.39px, -3.82px, 0); }
+  41.67% { transform: translate3d(2.44px, 0.1px, 0); }
+  45.83% { transform: translate3d(6.37px, 3.12px, 0); }
+  50% { transform: translate3d(-4.12px, -1.03px, 0); }
+  54.17% { transform: translate3d(-1.91px, -3.81px, 0); }
+  58.33% { transform: translate3d(4.26px, 1.3px, 0); }
+  62.5% { transform: translate3d(-2.46px, 2.51px, 0); }
+  66.67% { transform: translate3d(-2.19px, -1px, 0); }
+  70.83% { transform: translate3d(2.83px, -2.13px, 0); }
+  75% { transform: translate3d(-0.39px, 0.48px, 0); }
+  79.17% { transform: translate3d(-1.71px, 0.98px, 0); }
+  83.33% { transform: translate3d(0.73px, -0.48px, 0); }
+  87.5% { transform: translate3d(0.55px, -0.6px, 0); }
+  91.67% { transform: translate3d(-0.49px, 0.32px, 0); }
+  95.83% { transform: translate3d(-0.02px, 0.13px, 0); }
+  100% { transform: translate3d(0px, 0px, 0); }
+}
+
+@keyframes ultra-still {
+  0% { transform: translate3d(-0px, -0px, 0); }
+  4.17% { transform: translate3d(-11.68px, 8.73px, 0); }
+  8.33% { transform: translate3d(7.35px, 4.17px, 0); }
+  12.5% { transform: translate3d(5.87px, -6.58px, 0); }
+  16.67% { transform: translate3d(-9.18px, -1.76px, 0); }
+  20.83% { transform: translate3d(3.41px, 6.54px, 0); }
+  25% { transform: translate3d(10.1px, 1.98px, 0); }
+  29.17% { transform: translate3d(-6.58px, -6.45px, 0); }
+  33.33% { transform: translate3d(-1.88px, 0.47px, 0); }
+  37.5% { transform: translate3d(7.39px, 3.82px, 0); }
+  41.67% { transform: translate3d(-2.44px, -0.1px, 0); }
+  45.83% { transform: translate3d(-6.37px, -3.12px, 0); }
+  50% { transform: translate3d(4.12px, 1.03px, 0); }
+  54.17% { transform: translate3d(1.91px, 3.81px, 0); }
+  58.33% { transform: translate3d(-4.26px, -1.3px, 0); }
+  62.5% { transform: translate3d(2.46px, -2.51px, 0); }
+  66.67% { transform: translate3d(2.19px, 1px, 0); }
+  70.83% { transform: translate3d(-2.83px, 2.13px, 0); }
+  75% { transform: translate3d(0.39px, -0.48px, 0); }
+  79.17% { transform: translate3d(1.71px, -0.98px, 0); }
+  83.33% { transform: translate3d(-0.73px, 0.48px, 0); }
+  87.5% { transform: translate3d(-0.55px, 0.6px, 0); }
+  91.67% { transform: translate3d(0.49px, -0.32px, 0); }
+  95.83% { transform: translate3d(0.02px, -0.13px, 0); }
+  100% { transform: translate3d(-0px, -0px, 0); }
+}
+
+/* Everything moves... */
+body.is-ultra #root {
+  animation: ultra-quake 2s linear 1 both;
+  will-change: transform;
+}
+
+body.is-ultra {
+  animation: ultra-hue 2s linear 1 both;
+}
+
+/* ...except the slider, which is put back exactly where it was. */
+body.is-ultra .eff {
+  animation: ultra-still 2s linear 1 both;
+  --accent: #0a84ff;
+  --accent-tint: rgba(10, 132, 255, 0.16);
+  --bg-0: #1c1c1e;
+  --bg-1: #2c2c2e;
+  --bg-2: #3a3a3c;
+  --bg-sunken: #232325;
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --danger: #ff453a;
+}
+
+/* Asked for less motion, the colours still run — that is the part that says
+   which level you landed on — and the shaking does not happen at all. */
+@media (prefers-reduced-motion: reduce) {
+  body.is-ultra #root,
+  body.is-ultra .eff {
+    animation: none;
+  }
+}
+
+@keyframes ultra-hue {
+  0% {
+    --accent: #0a84ff;
+    --accent-tint: rgba(10, 132, 255, 0.16);
+    --bg-0: #1c1c1e;
+    --bg-1: #2c2c2e;
+    --bg-2: #3a3a3c;
+    --bg-sunken: #232325;
+    --ok: #30d158;
+    --warn: #ff9f0a;
+    --danger: #ff453a;
+  }
+  14% {
+    --accent: #ff2d95;
+    --accent-tint: rgba(255, 45, 149, 0.22);
+    --bg-0: #2a0f2b;
+    --bg-1: #3d1440;
+    --bg-2: #552060;
+    --bg-sunken: #33123a;
+    --ok: #ff5ec7;
+    --warn: #ff2d95;
+    --danger: #ff8a3d;
+  }
+  30% {
+    --accent: #00e5ff;
+    --accent-tint: rgba(0, 229, 255, 0.22);
+    --bg-0: #04222b;
+    --bg-1: #06333f;
+    --bg-2: #0a4657;
+    --bg-sunken: #052832;
+    --ok: #5cffd8;
+    --warn: #00e5ff;
+    --danger: #4dd2ff;
+  }
+  46% {
+    --accent: #ffb000;
+    --accent-tint: rgba(255, 176, 0, 0.22);
+    --bg-0: #2b1c00;
+    --bg-1: #3d2800;
+    --bg-2: #553800;
+    --bg-sunken: #332000;
+    --ok: #ffe14d;
+    --warn: #ffb000;
+    --danger: #ff7a00;
+  }
+  62% {
+    --accent: #a05cff;
+    --accent-tint: rgba(160, 92, 255, 0.22);
+    --bg-0: #170f3d;
+    --bg-1: #221656;
+    --bg-2: #301f75;
+    --bg-sunken: #1b1246;
+    --ok: #c79bff;
+    --warn: #a05cff;
+    --danger: #ff5cf0;
+  }
+  78% {
+    --accent: #30ff9a;
+    --accent-tint: rgba(48, 255, 154, 0.22);
+    --bg-0: #052a1c;
+    --bg-1: #083d29;
+    --bg-2: #0b5539;
+    --bg-sunken: #063221;
+    --ok: #30ff9a;
+    --warn: #b6ff30;
+    --danger: #00e5ff;
+  }
+  90% {
+    --accent: #ff453a;
+    --accent-tint: rgba(255, 69, 58, 0.22);
+    --bg-0: #2b0d0b;
+    --bg-1: #3d1210;
+    --bg-2: #551a16;
+    --bg-sunken: #330f0d;
+    --ok: #ff9f0a;
+    --warn: #ff453a;
+    --danger: #ff453a;
+  }
+  100% {
+    --accent: #0a84ff;
+    --accent-tint: rgba(10, 132, 255, 0.16);
+    --bg-0: #1c1c1e;
+    --bg-1: #2c2c2e;
+    --bg-2: #3a3a3c;
+    --bg-sunken: #232325;
+    --ok: #30d158;
+    --warn: #ff9f0a;
+    --danger: #ff453a;
+  }
+}
+
 /* ---- Model picker: a tab per agent, a tile per model ------------------
    Replaces a seven-row list that spent its left column repeating the agent's
    name. The agent lives in the tabs now, so the panel holds only the thing
