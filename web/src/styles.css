@@ -3144,6 +3144,21 @@ body {
   color: var(--fg-3);
 }
 
+/* When the file was last written. Fixed to the row's right edge, so a column
+   of stamps lines up and can be read down rather than hunted for; tabular
+   figures keep the digits from shuffling as the times change. It never
+   shrinks — the folder beside it is the part that gives way, because a
+   half-drawn date is worth less than a half-drawn path. */
+.file-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+
 /* ---- Session files panel ----------------------------------------------- */
 /* The column itself borrows the git panel's layout, phone sheet and resizer —
    see `.gitp-panel`, which names both. Only what is different lives here. */
@@ -3169,14 +3184,19 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* The name box and the type dropdown share one row. The box takes what is
+   left, because a folder path needs the room and a type is four characters. */
 .sfp-filter {
   flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
 
 .sfp-filter input {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 6px 9px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
@@ -3186,9 +3206,39 @@ body {
   font-size: 12px;
 }
 
-.sfp-filter input:focus {
+.sfp-filter input:focus,
+.sfp-type:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Capped so a long list of kinds cannot push the name box out of the panel,
+   and floored so ".yaml (12)" still fits without the native arrow sitting on
+   top of it. */
+.sfp-type {
+  flex: 0 1 auto;
+  max-width: 42%;
+  min-width: 96px;
+  padding: 6px 4px 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* The way back out of a filter that hid everything, offered where the missing
+   rows would have been. */
+.sfp-clear {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 /* Tighter than the git panel's body: these are single-line rows, and padding

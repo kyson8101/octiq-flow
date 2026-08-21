@@ -1815,6 +1815,7 @@ export default function App() {
           <SessionFilesPanel
             paths={sessionFiles}
             open={filesOpen}
+            busy={chat.busy}
             onClose={() => showFiles(false)}
           />
         )}

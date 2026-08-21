@@ -331,9 +331,50 @@ fn resolve_path(path: String, cwd: &str) -> Option<String> {
     }
 }
 
+/// The modified time of every path, in milliseconds since the epoch, `None`
+/// per path that does not exist or cannot be stat'd — one call for a whole
+/// list, the same batching `resolve_paths` does for the same reason.
+///
+/// The session files panel shows this beside each name, so "which of these did
+/// the last change touch" is answered without opening any of them. Paths are
+/// expected to be absolute here: they come back from `resolve_paths`, which has
+/// already expanded and confirmed them.
+#[tauri::command]
+pub fn stat_paths(paths: Vec<String>) -> Vec<Option<i64>> {
+    paths.into_iter().map(|p| modified_ms(&p)).collect()
+}
+
+/// One path's mtime in epoch milliseconds. A file stamped before 1970 (a bad
+/// clock, a restored archive) comes back negative rather than being dropped,
+/// which keeps the panel showing SOMETHING for it.
+fn modified_ms(path: &str) -> Option<i64> {
+    let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    match modified.duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => Some(d.as_millis() as i64),
+        Err(e) => Some(-(e.duration().as_millis() as i64)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::natural_cmp;
+
+    #[test]
+    fn stat_paths_reports_a_modified_time_only_for_files_that_exist() {
+        let dir = std::env::temp_dir().join(format!("octiq-stat-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("stamped.txt");
+        std::fs::write(&file, "x").unwrap();
+        let file_s = file.to_string_lossy().into_owned();
+        let missing = dir.join("nope.txt").to_string_lossy().into_owned();
+
+        let out = super::stat_paths(vec![file_s, missing]);
+        assert_eq!(out.len(), 2);
+        // A file just written is stamped somewhere after 2020 and not in the future.
+        let stamped = out[0].expect("an existing file has a modified time");
+        assert!(stamped > 1_577_836_800_000);
+        assert_eq!(out[1], None, "a missing file has no modified time");
+    }
 
     #[test]
     fn numbered_folders_sort_the_way_they_are_counted() {

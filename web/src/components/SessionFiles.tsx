@@ -21,10 +21,30 @@
 // asked about once and the answer is kept, so the list only ever grows: a
 // re-scan cannot blank it, and a session that mentions the same file in thirty
 // turns costs one existence check, not thirty.
+//
+// A long session's list gets long, so there are two ways to cut it down and one
+// way to tell the rows apart at a glance:
+//
+//   * a text box, matched against the whole path, so a folder narrows it too;
+//   * a TYPE dropdown, built from the extensions actually present with a count
+//     each — the two compose as an AND;
+//   * and each row's MODIFIED time, read from disk rather than from the
+//     transcript, so "which of these did the last change touch" is answered
+//     without opening any of them.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { bridge } from "../lib/bridge";
-import { baseName, candidatePaths, isImage, isPdf } from "../lib/files";
+import {
+  baseName,
+  candidatePaths,
+  fileExt,
+  fileTypes,
+  formatModified,
+  isImage,
+  isPdf,
+  modifiedTitle,
+  typeLabel,
+} from "../lib/files";
 import { Viewer } from "./Viewer";
 import { FilePanel } from "./FilePanel";
 import type { Message } from "../lib/chat";
@@ -45,8 +65,14 @@ const CHAT_MIN_W = 340;
  *  costs nothing. */
 const LIVE_MS = 1200;
 
-/** Below this many files the filter box is more chrome than help. */
+/** Below this many files the filter row is more chrome than help: a list this
+ *  short is entirely on screen already, and reading it beats narrowing it. */
 const FILTER_AT = 8;
+
+/** The type filter's "everything" option. A sentinel rather than the empty
+ *  string, because "" is a real answer here — the files with no extension at
+ *  all, which are a bucket you can pick. */
+const ALL_TYPES = "*";
 
 function clampWidth(px: number): number {
   const sidebar = window.innerWidth >= 860 ? 260 : 0;
@@ -164,6 +190,54 @@ export function useSessionFiles(
   return paths;
 }
 
+/** When each of these files was last written, in epoch milliseconds — `null`
+ *  for one the backend could not stat, and missing entirely until the first
+ *  answer comes back.
+ *
+ *  Asked in ONE call for the whole list, the same batching the existence check
+ *  uses. Unlike that check the answers are NOT cached forever, because a stamp
+ *  is the one thing here that goes stale while the list stays identical: the
+ *  agent rewrites a file it edited an hour ago and the path does not change at
+ *  all. So it is re-read whenever the list changes and whenever a turn ENDS —
+ *  a stat taken mid-turn is out of date by the next tool call anyway, so the
+ *  moment worth reading is the one the work stops at.
+ *
+ *  Only while the panel is open. There is nothing to keep fresh behind a shut
+ *  door, and this is a filesystem call per turn. */
+function useModified(
+  paths: string[],
+  active: boolean,
+  busy: boolean,
+): Map<string, number | null> {
+  const [times, setTimes] = useState<Map<string, number | null>>(new Map());
+  // The list as one string, so the effect re-runs when its CONTENTS change and
+  // not merely when the scan handed back a new array of the same paths.
+  const joined = paths.join("\n");
+
+  useEffect(() => {
+    if (!active || paths.length === 0) return;
+    let alive = true;
+    bridge
+      .invoke<(number | null)[]>("stat_paths", { paths })
+      .then((stamps) => {
+        if (!alive) return;
+        setTimes(new Map(paths.map((path, i) => [path, stamps?.[i] ?? null])));
+      })
+      .catch(() => {
+        // A client newer than the server it is talking to has no `stat_paths`
+        // to call — the two halves deploy separately. The rows simply show no
+        // time, which is a column short of ideal and nothing worse.
+      });
+    return () => {
+      alive = false;
+    };
+    // `paths` is read through `joined`; see above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joined, active, busy]);
+
+  return times;
+}
+
 // ---------------------------------------------------------------------------
 // The toolbar button
 // ---------------------------------------------------------------------------
@@ -208,15 +282,21 @@ export function FilesButton({
 export function SessionFilesPanel({
   paths,
   open,
+  busy,
   onClose,
 }: {
   paths: string[];
   open: boolean;
+  /** Whether the chat is mid-turn — the cue to re-read the modified times once
+   *  it stops. See `useModified`. */
+  busy: boolean;
   onClose: () => void;
 }) {
   const [viewing, setViewing] = useState<string | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [type, setType] = useState(ALL_TYPES);
+  const modified = useModified(paths, open, busy);
 
   /* What the drag handle was left at, kept apart from the width actually used
    * below: a narrow window squeezes the panel, and a wide one has to give the
@@ -273,13 +353,27 @@ export function SessionFilesPanel({
     [width],
   );
 
+  /** The kinds on offer, counted over the WHOLE list rather than what the text
+   *  box has left of it. A dropdown that reshuffles itself as you type is a
+   *  dropdown you cannot aim at. */
+  const types = useMemo(() => fileTypes(paths), [paths]);
+
   // Matched on the WHOLE path, so "src/lib" finds a folder and "png" finds a
-  // kind, not just names that happen to contain it.
+  // kind, not just names that happen to contain it. The two filters are an AND:
+  // pick .ts, then type "lib", and you get the TypeScript under lib.
   const needle = filter.trim().toLowerCase();
-  const shown = useMemo(
-    () => (needle ? paths.filter((p) => p.toLowerCase().includes(needle)) : paths),
-    [paths, needle],
-  );
+  const shown = useMemo(() => {
+    let out = paths;
+    if (type !== ALL_TYPES) out = out.filter((p) => fileExt(p) === type);
+    if (needle) out = out.filter((p) => p.toLowerCase().includes(needle));
+    return out;
+  }, [paths, needle, type]);
+
+  /* A chosen type that the current list has none of — the panel stays mounted
+   * across a conversation switch, so the .rs you picked in one chat can outlive
+   * every .rs file. Kept as an option so the select is never blank, and the
+   * body says plainly that nothing matches. */
+  const orphanType = type !== ALL_TYPES && !types.some((t) => t.ext === type);
 
   return (
     <>
@@ -309,7 +403,12 @@ export function SessionFilesPanel({
         <header className="gitp-head">
           <span className="gitp-title">Files</span>
           <span className="gitp-project">
-            {paths.length} in this chat
+            {/* Once a filter is on, the count has to say what it is counting —
+                "12 in this chat" over a list of three is a lie you have to
+                count the rows to catch. */}
+            {shown.length === paths.length
+              ? `${paths.length} in this chat`
+              : `${shown.length} of ${paths.length}`}
           </span>
           <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
             ✕
@@ -325,6 +424,27 @@ export function SessionFilesPanel({
               aria-label="Filter files"
               onChange={(e) => setFilter(e.target.value)}
             />
+            {/* A dropdown rather than a row of chips: this column is 340px by
+                default, and a session touches a dozen kinds of file — chips
+                would wrap into four rows of buttons above a list they exist to
+                shorten. Absent when everything here is the same kind, which is
+                a filter with one setting. */}
+            {types.length > 1 && (
+              <select
+                className="sfp-type"
+                value={type}
+                aria-label="Filter by file type"
+                onChange={(e) => setType(e.target.value)}
+              >
+                <option value={ALL_TYPES}>All types ({paths.length})</option>
+                {types.map((t) => (
+                  <option key={t.ext} value={t.ext}>
+                    {typeLabel(t.ext)} ({t.count})
+                  </option>
+                ))}
+                {orphanType && <option value={type}>{typeLabel(type)} (0)</option>}
+              </select>
+            )}
           </div>
         )}
 
@@ -333,7 +453,14 @@ export function SessionFilesPanel({
             <div className="gitp-note">Nothing yet. Files show up here as the chat touches them.</div>
           )}
           {paths.length > 0 && shown.length === 0 && (
-            <div className="gitp-note">No file here matches that.</div>
+            <div className="gitp-note">
+              No file here matches that.{" "}
+              {type !== ALL_TYPES && (
+                <button className="sfp-clear" type="button" onClick={() => setType(ALL_TYPES)}>
+                  Show every type
+                </button>
+              )}
+            </div>
           )}
 
           <ul className="sfp-list">
@@ -353,6 +480,13 @@ export function SessionFilesPanel({
                   <span className="file-name">{baseName(path)}</span>
                   <span className="file-dir">
                     <bdi>{path.slice(0, path.length - baseName(path).length)}</bdi>
+                  </span>
+                  {/* Last written. A clock time today, a date before that —
+                      see `formatModified`. Its own title, so hovering the stamp
+                      gives the whole thing back rather than the path the rest
+                      of the row shows. */}
+                  <span className="file-time" title={modifiedTitle(modified.get(path))}>
+                    {formatModified(modified.get(path))}
                   </span>
                 </button>
               </li>

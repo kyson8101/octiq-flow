@@ -14,8 +14,11 @@
 //      the ones that EXIST. A word that merely looks like a filename never
 //      makes it into the list.
 //
-// Both sources collect everything, source files included. Filtering is the
-// panel's business, not this file's — see components/SessionFiles.
+// Both sources collect everything, source files included. WHICH of them to show
+// is the panel's business, not this file's — see components/SessionFiles. What
+// does live here is the vocabulary that panel filters and labels with: a file's
+// type, the types present in a list, and how a modified time is written short
+// enough to fit beside a name.
 import type { Block, Message } from "./chat";
 
 /** Tool argument fields that hold a path. */
@@ -47,20 +50,99 @@ const RESULT_SCAN_LIMIT = 4000;
 
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
-function extension(path: string): string {
-  return path.split(".").pop()?.toLowerCase() ?? "";
+export function baseName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+/** A file's kind, lowercased and without the dot: `main.rs` → `rs`.
+ *
+ *  Read off the NAME rather than the whole path, so a dot in a folder
+ *  (`~/.config/octiq/notes`) is not mistaken for one. A leading dot is a
+ *  dotfile, not an extension — `.gitignore` has no type, the same answer every
+ *  other tool gives for it. Empty string means "no type", which is a bucket the
+ *  filter offers rather than a failure. */
+export function fileExt(path: string): string {
+  const name = baseName(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
 export function isImage(path: string): boolean {
-  return IMAGE_EXT.has(extension(path));
+  return IMAGE_EXT.has(fileExt(path));
 }
 
 export function isPdf(path: string): boolean {
-  return extension(path) === "pdf";
+  return fileExt(path) === "pdf";
 }
 
-export function baseName(path: string): string {
-  return path.split("/").filter(Boolean).pop() ?? path;
+/** Every kind present in a list of paths, with how many there are of it.
+ *
+ *  Commonest first, because the type worth filtering to is usually the one the
+ *  session is full of, and a list ordered by name puts `.css` above `.ts` for
+ *  no reason anybody cares about. Ties break by name so the order is fixed. The
+ *  typeless bucket sorts last whatever its count: it is a leftovers pile, not a
+ *  kind of file. */
+export function fileTypes(paths: string[]): { ext: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const path of paths) {
+    const ext = fileExt(path);
+    counts.set(ext, (counts.get(ext) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([ext, count]) => ({ ext, count }))
+    .sort((a, b) => {
+      if ((a.ext === "") !== (b.ext === "")) return a.ext === "" ? 1 : -1;
+      return b.count - a.count || a.ext.localeCompare(b.ext);
+    });
+}
+
+/** What to call a kind in the filter. A bare `ts` reads as a word; `.ts` reads
+ *  as a file type. */
+export function typeLabel(ext: string): string {
+  return ext === "" ? "no extension" : `.${ext}`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function pad(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** When a file was last written, short enough for a column 340px wide.
+ *
+ *  Today it is a clock time, because within a working day the hour is the thing
+ *  that separates "the file we just changed" from "the file we opened this
+ *  morning". Any other day it is a date, even when that date was forty minutes
+ *  ago at 23:59 — a bare "23:59" sitting under a row that says "14:40" would be
+ *  read as later today. A different year gets the year, since "31 Dec" alone is
+ *  a date two Decembers share.
+ *
+ *  `now` is a parameter so this is testable without freezing the clock. */
+export function formatModified(ms: number | null | undefined, now: Date = new Date()): string {
+  if (ms == null) return "";
+  const at = new Date(ms);
+  if (Number.isNaN(at.getTime())) return "";
+
+  const sameDay =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate();
+  if (sameDay) return `${pad(at.getHours())}:${pad(at.getMinutes())}`;
+
+  const date = `${at.getDate()} ${MONTHS[at.getMonth()]}`;
+  return at.getFullYear() === now.getFullYear() ? date : `${date} ${at.getFullYear()}`;
+}
+
+/** The whole stamp, for the row's hover text — the short form above drops the
+ *  year, the date or the clock time, and hovering is how you get them back. */
+export function modifiedTitle(ms: number | null | undefined): string {
+  if (ms == null) return "";
+  const at = new Date(ms);
+  if (Number.isNaN(at.getTime())) return "";
+  return (
+    `Modified ${at.getDate()} ${MONTHS[at.getMonth()]} ${at.getFullYear()}` +
+    ` at ${pad(at.getHours())}:${pad(at.getMinutes())}`
+  );
 }
 
 /** Every path-looking string in a turn, in the order it was mentioned, without

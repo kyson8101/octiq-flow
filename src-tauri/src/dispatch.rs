@@ -206,6 +206,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "paths")?,
             arg(&args, "cwd")?,
         ))),
+        "stat_paths" => Ok(json!(crate::fsbrowse::stat_paths(arg(&args, "paths")?))),
         "file_watch_paths" => unit(crate::file_watch::file_watch_paths_impl(
             &svc.watch,
             arg(&args, "paths")?,
