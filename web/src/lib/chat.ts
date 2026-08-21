@@ -251,6 +251,13 @@ export const emptyChat = (): ChatState => ({
  *  marker, not something the user said, so it never becomes a bubble. */
 const INTERRUPT_MARKER = "[Request interrupted by user]";
 
+/** The note Claude Code writes when it has to shrink a picture before sending
+ *  it — "[Image: original 2660x642, displayed at 2000x483. Multiply coordinates
+ *  by 1.33 …]". It rides back on the replayed user turn as a text block of its
+ *  own, so without this it becomes a bubble of words nobody typed. The CLI is
+ *  talking to the model about the attachment; it is not part of the message. */
+const IMAGE_NOTE = /\[Image:[^\]]*\]/g;
+
 /** Turn an agent's error text into something worth reading.
  *
  *  Running out of quota is the failure that actually happens, and both agents
@@ -825,9 +832,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       .filter((c) => asStr(asObj(c).type) === "text")
       .map((c) => asStr(asObj(c).text))
       .join("")
+      .replace(IMAGE_NOTE, "")
       .trim();
     const uuid = asStr(e.uuid);
-    if (said && !content.some((c) => asStr(asObj(c).type) === "tool_result")) {
+    // A picture on its own is a message too. Without this the echo of a
+    // wordless screenshot matched nothing, so its bubble was never claimed and
+    // sat marked "queued" for the rest of the turn.
+    const sentPictures = content.some((c) => asStr(asObj(c).type) === "image");
+    if ((said || sentPictures) && !content.some((c) => asStr(asObj(c).type) === "tool_result")) {
       // Already folded in — a catch-up overlapping what we saw live.
       if (uuid && state.messages.some((m) => m.echo === uuid)) return state;
 

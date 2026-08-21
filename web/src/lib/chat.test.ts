@@ -30,6 +30,7 @@ import taskStream from "./__fixtures__/task-subagent.jsonl?raw";
 import workflowStream from "./__fixtures__/workflow.jsonl?raw";
 
 import {
+  addUserTurn,
   emptyChat,
   isThinking,
   reduceChat,
@@ -606,5 +607,63 @@ describe("a message the agent sends in several pieces", () => {
     // agent's own -- it was numbered from the list length. None should exist.
     const state = replay("task-subagent.jsonl");
     expect(state.messages.filter((m) => m.role === "assistant" && /^m\d+$/.test(m.id))).toEqual([]);
+  });
+});
+
+describe("a turn that carried a picture", () => {
+  // Claude Code shrinks a big pasted image and says so in a text block of its
+  // own, which comes back on the replayed user turn. It is the CLI talking, not
+  // the person typing, so it must never read as something they said.
+  const NOTE =
+    "[Image: original 2660x642, displayed at 2000x483." +
+    " Multiply coordinates by 1.33 to map to original image.]";
+
+  const echo = (text: string, uuid = "u-1") => ({
+    type: "user",
+    uuid,
+    message: {
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBOR" } },
+        { type: "text", text: NOTE },
+        { type: "text", text },
+      ],
+    },
+  });
+
+  const words = (m: Message) =>
+    m.blocks
+      .filter((b) => b.kind === "text")
+      .map((b) => (b as { text: string }).text)
+      .join("");
+
+  it("does not put the resize note on screen as the user's words", () => {
+    const sent = addUserTurn(emptyChat(), "what is this", [
+      { path: "/tmp/a.png", name: "a.png", isImage: true },
+    ]);
+    const after = reduceChat(sent, echo("what is this"));
+
+    expect(after.messages).toHaveLength(1);
+    expect(after.messages[0].echo).toBe("u-1");
+    expect(words(after.messages[0])).toBe("what is this");
+    expect(JSON.stringify(after.messages)).not.toContain("Multiply coordinates");
+  });
+
+  it("claims the bubble of a picture sent with no words at all", () => {
+    const sent = addUserTurn(emptyChat(), "", [
+      { path: "/tmp/a.png", name: "a.png", isImage: true },
+    ]);
+    const after = reduceChat(sent, echo(""));
+
+    expect(after.messages).toHaveLength(1);
+    expect(after.messages[0].echo).toBe("u-1");
+    expect(words(after.messages[0])).toBe("");
+  });
+
+  it("rebuilds the turn from the record without the note", () => {
+    const after = reduceChat(emptyChat(), echo("what is this"));
+
+    expect(after.messages).toHaveLength(1);
+    expect(words(after.messages[0])).toBe("what is this");
   });
 });
