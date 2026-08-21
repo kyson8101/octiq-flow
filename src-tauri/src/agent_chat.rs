@@ -349,14 +349,30 @@ fn build_command(
             if let Some(e) = effort.and_then(|e| safe_effort(agent, e)) {
                 cmd.push_str(&format!(" --effort {e}"));
             }
-            // The permission hook, so the agent can ask rather than being told
-            // in advance. Skipped silently if it could not be written.
-            if let Some(settings) = permission_settings() {
-                cmd.push_str(&format!(
-                    " --settings {}",
-                    sh_quote(&settings.to_string_lossy())
-                ));
-            }
+            // How the agent asks the user for permission.
+            //
+            // `stdio` means: send the question down this process's own stdout as
+            // a `can_use_tool` control request, and wait for a `control_response`
+            // on stdin. Both directions are channels this module already owns —
+            // see the stdout loop in `chat_start` and `write_control_response`.
+            //
+            // This replaced a PreToolUse hook, and the difference is WHEN it
+            // fires. A hook is the FIRST step of the permission chain: it runs
+            // before the deny rules, before the allow rules, and before
+            // `--permission-mode`, so it has to answer for calls the chain was
+            // about to wave through on its own. It cannot tell them apart, so it
+            // asked about everything — including reads, and including a user's
+            // own `Bash(git commit:*)` allow rule, which it never gets to see.
+            //
+            // This fires LAST, only once the chain has decided that a person has
+            // to answer. Auto is as quiet here as it is in a terminal, every
+            // rule in the user's settings.json counts again, and the questions
+            // that do reach the phone are the ones Claude genuinely stopped for.
+            //
+            // The flag is real but undocumented — `claude --help` does not list
+            // it. It is what `@anthropic-ai/claude-agent-sdk` passes when a
+            // `canUseTool` callback is supplied; the literal string is `stdio`.
+            cmd.push_str(" --permission-prompt-tool stdio");
             // Our own two tools, plus the sentences that make the agent reach
             // for them. Both are pre-approved: a tool whose whole purpose is to
             // talk to the user must not itself raise a permission question, and
@@ -590,9 +606,39 @@ pub fn chat_start_impl(
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     with_access(|a| a.insert(key.clone(), access.unwrap_or(Access::Read)));
 
+    // Say hello, or never be asked anything.
+    //
+    // `--permission-prompt-tool stdio` alone is not enough: without this the
+    // agent decides there is nobody on the other end and denies outright rather
+    // than asking — measured, not assumed. It is the first thing the Agent SDK
+    // writes, and the agent answers it with its own capabilities before any
+    // conversation starts.
+    //
+    // Claude only. Codex has no stdin at all here (see the pipe above).
+    if agent == ChatAgent::Claude {
+        let hello = json!({
+            "type": "control_request",
+            "request_id": format!("{HELLO_REQUEST_ID}{}", uuid::Uuid::new_v4()),
+            "request": { "subtype": "initialize" }
+        });
+        if let Ok(mut guard) = session.lock() {
+            if let Some(stdin) = guard.stdin.as_mut() {
+                let _ = writeln!(stdin, "{hello}");
+                let _ = stdin.flush();
+            }
+        }
+    }
+
     // stdout: one JSON object per line, passed through as-is.
     {
         let key = key.clone();
+        let asking = session.clone();
+        // The runtime the answer will be waited on. Captured HERE, on the thread
+        // that still has one: `chat_start` is called from an async handler, the
+        // reader below is a plain thread, and `Handle::current()` panics there.
+        // Absent only on the desktop build, which has no server runtime — see
+        // `answer_permission`.
+        let rt = tokio::runtime::Handle::try_current().ok();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
             for line in reader.lines() {
@@ -603,6 +649,46 @@ pub fn chat_start_impl(
                 }
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(event) => {
+                        // Anything the agent asks US, named in the log first.
+                        //
+                        // This whole path is invisible otherwise: a
+                        // `can_use_tool` never reaches the transcript, so the
+                        // only symptom of one going unanswered was a chat that
+                        // sat still. One line per control request is the
+                        // difference between diagnosing that in a minute and
+                        // guessing at it across three restarts.
+                        if event.get("type").and_then(Value::as_str) == Some("control_request") {
+                            eprintln!(
+                                "[perm] {key} <- {}",
+                                event
+                                    .get("request")
+                                    .and_then(|r| r.get("subtype"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("?")
+                            );
+                        }
+                        if let Some((id, request)) = can_use_tool(&event) {
+                            answer_permission(&asking, &key, rt.as_ref(), id, request);
+                            continue;
+                        }
+                        // The answer to our hello. It is the agent listing its
+                        // own commands and capabilities — several kilobytes of
+                        // it — and it is not conversation, so it goes no further
+                        // than here rather than into the transcript.
+                        if answered_hello(&event) {
+                            // Whether it WORKED is worth a line: the agent only
+                            // asks over stdio once this is accepted, and a
+                            // rejected handshake is otherwise silent.
+                            eprintln!(
+                                "[perm] {key} handshake {}",
+                                event
+                                    .get("response")
+                                    .and_then(|r| r.get("subtype"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("?")
+                            );
+                            continue;
+                        }
                         // The one line this module reads rather than passes on:
                         // the answer to a request WE sent, not something the
                         // agent said. A refused mode change has to be known
@@ -847,9 +933,124 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
     stdin.flush().map_err(|e| e.to_string())
 }
 
+/// Is this line the agent asking whether it may use a tool? Its request id and
+/// the request itself if so.
+///
+/// Control requests travel in BOTH directions on this channel. The ones we send
+/// — `interrupt`, `set_permission_mode` — are answered by the agent with a
+/// `control_response`. This is the other way round: `--permission-prompt-tool
+/// stdio` makes the agent send `can_use_tool`, and the response is ours to
+/// write.
+fn can_use_tool(event: &Value) -> Option<(String, Value)> {
+    if event.get("type")?.as_str()? != "control_request" {
+        return None;
+    }
+    let request = event.get("request")?;
+    if request.get("subtype")?.as_str()? != "can_use_tool" {
+        return None;
+    }
+    Some((event.get("request_id")?.as_str()?.to_string(), request.clone()))
+}
+
+/// Was this line the agent answering our handshake?
+fn answered_hello(event: &Value) -> bool {
+    event.get("type").and_then(Value::as_str) == Some("control_response")
+        && event
+            .get("response")
+            .and_then(|r| r.get("request_id"))
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with(HELLO_REQUEST_ID))
+}
+
+/// Put the question to the person, then write the answer back to the agent.
+///
+/// The agent is BLOCKED until that answer arrives, so nothing here may be
+/// skipped: every path writes exactly one `control_response`. A question that
+/// went unanswered used to be a chat that sat still with nothing on screen
+/// explaining why.
+fn answer_permission(
+    session: &Arc<Mutex<ChatSession>>,
+    key: &str,
+    rt: Option<&tokio::runtime::Handle>,
+    request_id: String,
+    request: Value,
+) {
+    let field = |name: &str| {
+        request
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let ask = crate::permission::Request {
+        chat_key: Some(key.to_string()),
+        session_id: field("session_id"),
+        tool_name: field("tool_name"),
+        tool_input: request.get("input").cloned(),
+        tool_use_id: field("tool_use_id"),
+        cwd: None,
+        // Only the hook had a stale copy of the level to report. This arrives
+        // from the live process, so there is nothing to fall back to.
+        access: None,
+    };
+
+    let tool = ask.tool_name.clone().unwrap_or_default();
+    let Some(rt) = rt else {
+        // No runtime to wait on — the desktop build. Deny rather than leave the
+        // agent parked on a question that will never be put to anyone.
+        eprintln!("[perm] {key} no runtime to ask on; denying {tool}");
+        write_control_response(
+            session,
+            &request_id,
+            json!({ "behavior": "deny", "message": "OctiqFlow could not ask anyone." }),
+        );
+        return;
+    };
+
+    let session = session.clone();
+    let key = key.to_string();
+    rt.spawn(async move {
+        eprintln!("[perm] {key} asking about {tool}");
+        let answer = crate::permission::ask(ask).await;
+        eprintln!("[perm] {key} {tool} -> {} ({})", answer.decision, answer.reason);
+        // `allow` is the only yes. Everything else — a refusal, a timeout,
+        // nobody watching — is a no WITH ITS REASON, which the agent repeats to
+        // the user. "Abstain" has no meaning here: the chain has already decided
+        // it wants a person, so there is nothing left to defer to.
+        let response = if answer.decision == "allow" {
+            json!({ "behavior": "allow" })
+        } else {
+            json!({ "behavior": "deny", "message": answer.reason })
+        };
+        write_control_response(&session, &request_id, response);
+    });
+}
+
+/// Write one `control_response` back to the agent. Best-effort: a chat whose
+/// stdin has gone is a chat that is no longer waiting for this.
+fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, response: Value) {
+    let payload = json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": response,
+        }
+    });
+    let Ok(mut guard) = session.lock() else { return };
+    let Some(stdin) = guard.stdin.as_mut() else {
+        return;
+    };
+    let _ = writeln!(stdin, "{payload}");
+    let _ = stdin.flush();
+}
+
 /// Marks a control request as ours, so its answer can be told apart from every
 /// other one on the wire. Claude echoes the id back on the `control_response`.
 const ACCESS_REQUEST_ID: &str = "octiq-access-";
+
+/// The same, for the handshake. Its answer carries the agent's own capabilities
+/// and is of no use to the UI, so it is recognised here and dropped.
+const HELLO_REQUEST_ID: &str = "octiq-hello-";
 
 /// Was this line Claude refusing a mode change we asked for? The error text if
 /// so, and None for every other line — including our own successful answers.
@@ -969,16 +1170,6 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     Ok(())
 }
 
-/// The hook that lets a chat ask the user for permission, and the settings
-/// file that carries it.
-///
-/// Passed with `--settings` to the agents WE start, never installed into
-/// `~/.claude/settings.json`. A hook in the global config would sit in the path
-/// of every Claude Code the user runs, including the terminal they are typing
-/// in right now — and one that blocks waiting for a browser would be a bad day.
-/// This way it applies to OctiqFlow chats and nothing else.
-const PERMISSION_HOOK: &str = include_str!("../../scripts/hooks/permission-ask.cjs");
-
 /// An MCP server carrying the two tools print mode has no answer for: asking
 /// the user something, and keeping a TODO list on their screen.
 ///
@@ -1014,36 +1205,6 @@ fn ask_mcp_config() -> Option<std::path::PathBuf> {
     });
     std::fs::write(&config, serde_json::to_vec_pretty(&body).ok()?).ok()?;
     Some(config)
-}
-
-/// Write the hook and its settings file, and return the settings path.
-///
-/// Rewritten on every start so an upgraded OctiqFlow cannot leave an old hook
-/// behind. Best-effort: if any of it fails the chat starts without the hook,
-/// which is exactly how it behaved before this existed.
-fn permission_settings() -> Option<std::path::PathBuf> {
-    let dir = crate::paths::home_dir()?.join(".octiqflow").join("hooks");
-    std::fs::create_dir_all(&dir).ok()?;
-
-    let script = dir.join("permission-ask.cjs");
-    std::fs::write(&script, PERMISSION_HOOK).ok()?;
-
-    let settings = dir.join("claude-permission.json");
-    let body = json!({
-        "hooks": {
-            "PreToolUse": [{
-                // No matcher: every tool asks. Which tools NEED asking is
-                // Claude's own decision — it only raises PreToolUse for calls
-                // that are not already permitted by the mode.
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("node {}", script.to_string_lossy()),
-                }]
-            }]
-        }
-    });
-    std::fs::write(&settings, serde_json::to_vec_pretty(&body).ok()?).ok()?;
-    Some(settings)
 }
 
 /// Where pasted images are kept. Under `~/.octiqflow` rather than in the
@@ -1143,16 +1304,65 @@ pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
+
     #[test]
     fn full_access_is_named_in_the_environment_the_hook_reads() {
-        // The PreToolUse hook runs BEFORE --permission-mode is consulted, so
-        // "run anything without asking" cannot reach it through that flag. It
-        // has to be told separately or it keeps asking under bypassPermissions.
         assert_eq!(Access::Full.as_env(), "full");
         assert_eq!(Access::Auto.as_env(), "auto");
         assert_eq!(Access::Read.as_env(), "read");
     }
-    use super::*;
+
+    #[test]
+    fn the_agents_permission_question_is_recognised_and_nothing_else_is() {
+        // The shape is measured, not guessed: it is what `claude -p
+        // --permission-prompt-tool stdio` actually wrote when asked to run a
+        // command it needed approval for.
+        let asking = json!({
+            "type": "control_request",
+            "request_id": "req-1",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "display_name": "Bash",
+                "input": { "command": "mkfifo /tmp/x.fifo" },
+                "permission_suggestions": [{
+                    "type": "addRules",
+                    "rules": [{ "toolName": "Bash", "ruleContent": "mkfifo /tmp/x.fifo" }]
+                }]
+            }
+        });
+        let (id, request) = can_use_tool(&asking).expect("the question");
+        assert_eq!(id, "req-1");
+        assert_eq!(request["tool_name"], "Bash");
+
+        // Control requests travel BOTH ways on this channel. Ours must not be
+        // mistaken for the agent's, or setting the mode would raise a question.
+        let ours = json!({
+            "type": "control_request",
+            "request_id": "octiq-access-1",
+            "request": { "subtype": "set_permission_mode", "mode": "auto" }
+        });
+        assert!(can_use_tool(&ours).is_none());
+        assert!(can_use_tool(&json!({ "type": "assistant" })).is_none());
+    }
+
+    #[test]
+    fn the_agent_is_told_to_ask_us_rather_than_deny() {
+        // Without this flag an `ask` decision in print mode is terminal: the
+        // call is denied, nobody is asked, and the chat says nothing about why.
+        let line = build_command(
+            ChatAgent::Claude,
+            None,
+            Some(Access::Auto),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+        );
+        assert!(line.contains("--permission-prompt-tool stdio"));
+    }
 
     #[test]
     fn a_folder_name_cannot_break_out_of_the_toml_string_it_lands_in() {
