@@ -42,6 +42,35 @@ mkdir -p "${INSTALL_DIR}" "${LOG_DIR}" "$(dirname "${PLIST}")"
 # cannot pull the binary out from under a running service.
 cp "${BUILT}" "${INSTALL_DIR}/octiq-server"
 
+# Sign it, so macOS stops asking for the same folder after every build.
+#
+# A privacy prompt ("… would like to access files in your Downloads folder") is
+# remembered against the binary's code signature. Cargo leaves an AD-HOC one,
+# which is a hash of the contents — so every rebuild is a different program to
+# macOS, the old grant does not apply, and the prompt comes back. Worse, the
+# prompt is attributed to this process rather than to `claude`, because TCC
+# blames the RESPONSIBLE process, and a launchd job is the responsible process
+# for everything it spawns. Answered on a desktop nobody is watching, it stalls
+# a chat with no card and nothing in the log.
+#
+# `--identifier` is pinned deliberately: cargo's default identifier carries a
+# hash (`octiq_server-759ccb88730a5c8d`) and the grant is keyed on the
+# identifier as well as the signer.
+#
+# Best-effort. There is no signing identity on a fresh machine and this must
+# not stop an install — an ad-hoc binary works fine, it just asks more often.
+SIGN_ID="${OCTIQ_SIGN_ID:-optiqFlow}"
+if security find-identity -p codesigning 2>/dev/null | grep -q "\"${SIGN_ID}\""; then
+  codesign --force --sign "${SIGN_ID}" \
+    --identifier net.pandaworks.octiqflow.server \
+    "${INSTALL_DIR}/octiq-server" >/dev/null 2>&1 &&
+    echo "Signed as ${SIGN_ID}." ||
+    echo "Could not sign; carrying on unsigned." >&2
+else
+  echo "No '${SIGN_ID}' signing identity — leaving the binary ad-hoc signed." >&2
+  echo "  (macOS will re-ask for folder access after every rebuild.)" >&2
+fi
+
 # PATH matters: launchd starts with a bare one, and the agents are found
 # through it. The login shell fixes this up for the agent processes themselves,
 # but the server looks up `claude` and `codex` to report what is installed.
