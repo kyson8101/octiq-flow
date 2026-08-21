@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 
 use crate::agent_chat::ChatManager;
 use crate::file_watch::FileWatchState;
+use crate::git_watch::GitWatchState;
 use crate::pty::PtyManager;
 use crate::workspaces::WorkspaceState;
 
@@ -35,6 +36,8 @@ pub struct Services {
     pub workspaces: Arc<WorkspaceState>,
     pub chats: Arc<ChatManager>,
     pub watch: Arc<FileWatchState>,
+    /// The fs watcher behind the live git counts and branch chips.
+    pub git_watch: Arc<GitWatchState>,
     pub ptys: Arc<PtyManager>,
 }
 
@@ -45,6 +48,7 @@ impl Services {
             workspaces: Arc::new(WorkspaceState::load()),
             chats: Arc::new(ChatManager::default()),
             watch: Arc::new(FileWatchState::default()),
+            git_watch: Arc::new(GitWatchState::default()),
             ptys: Arc::new(PtyManager::default()),
         }
     }
@@ -291,6 +295,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "oldPath")?,
         )),
         "git_local_branches" => to_value(crate::git::git_local_branches(arg(&args, "path")?)),
+        // Live git state. Without this the browser only ever re-read on focus,
+        // so an agent switching branch mid-turn left the toolbar naming the
+        // branch you were on before it did.
+        "git_watch_paths" => unit(crate::git_watch::git_watch_paths_impl(
+            &svc.git_watch,
+            arg(&args, "paths")?,
+        )),
 
         // Writes. Reachable from a browser, deliberately — doing this from a
         // phone is the point of v2. Each is one git invocation whose own output

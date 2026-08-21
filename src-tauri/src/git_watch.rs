@@ -40,6 +40,13 @@ pub fn git_watch_paths(
     state: tauri::State<GitWatchState>,
     paths: Vec<String>,
 ) -> Result<(), String> {
+    git_watch_paths_impl(&state, paths)
+}
+
+/// The Tauri-free half of `git_watch_paths`, so the browser client can install
+/// the watcher too (dispatch.rs). The events it produces already go out over
+/// the bus, which reaches every attached browser — only the way IN was missing.
+pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None; // drop the old watcher first; its debounce thread ends
     if paths.is_empty() {
@@ -215,6 +222,65 @@ fn is_relevant(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A branch switch reaches an attached browser.
+    ///
+    /// This is the whole path the web client depends on: install the watcher
+    /// through the Tauri-free `_impl` (which is what dispatch.rs calls), rewrite
+    /// `.git/HEAD` the way `git switch` does, and read the frame back off the
+    /// bus that every socket is fed from. Before this existed the browser could
+    /// not install a watcher at all, so the toolbar kept naming the branch the
+    /// agent had just left.
+    #[test]
+    fn a_head_rewrite_reaches_the_bus() {
+        let root = std::env::temp_dir().join(format!("octiq-gitwatch-{}", std::process::id()));
+        let git = root.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let mut rx = crate::bus::events().subscribe();
+        let state = GitWatchState::default();
+        git_watch_paths_impl(&state, vec![root.to_string_lossy().into_owned()]).unwrap();
+
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/v2\n").unwrap();
+
+        // QUIET + MAX_COALESCE, plus room for the platform's own fs latency.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut got = None;
+        while Instant::now() < deadline && got.is_none() {
+            match rx.try_recv() {
+                Ok(text) => {
+                    let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if frame["event"] == "git-status-changed" {
+                        got = Some(frame);
+                    }
+                }
+                // The bus is process-global: other tests emit onto it too, and a
+                // slow reader can be lagged past their frames. Neither is this
+                // test's failure — keep waiting for our own.
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+                | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
+
+        let frame = got.expect("no git-status-changed frame arrived for a HEAD rewrite");
+        let roots = frame["payload"]
+            .as_array()
+            .expect("payload is a list of roots");
+        // Either the root we watched, or the empty "rescan everything" payload.
+        assert!(
+            roots.is_empty()
+                || roots
+                    .iter()
+                    .any(|r| r.as_str() == Some(&root.to_string_lossy())),
+            "unexpected payload: {}",
+            frame["payload"]
+        );
+    }
 
     #[test]
     fn working_tree_paths_are_relevant() {

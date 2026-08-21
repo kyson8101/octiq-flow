@@ -28,10 +28,13 @@
 //     arguments going the other way are camelCase (`oldPath`), because
 //     dispatch.rs names those itself. Mixed, and checked against the running
 //     server rather than guessed.
-//   * **Nothing pushes git changes at us.** `git_watch_paths` is a desktop-only
-//     command and its `git-status-changed` event never reaches a browser, so
-//     both halves of this file refresh on their own terms: when the panel opens,
-//     when the window regains focus, after every write, and on Refresh.
+//   * **Git state is now pushed at us.** `git_watch_paths` points the backend's
+//     fs watcher (git_watch.rs) at the project's folders, and its debounced
+//     `git-status-changed` event comes back over the same socket the chat uses.
+//     Anything that moves `git status` — an agent switching branch mid-turn, a
+//     commit in a terminal, an edit from another machine — repaints the toolbar
+//     without the window having to be re-focused. The older refreshes are still
+//     there as a floor: on open, on focus, after every write, and on Refresh.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
@@ -211,15 +214,33 @@ export function GitButton({
           if (live) setSummary([]);
         });
     };
-    read();
-    // The usual reason a count is wrong is that the work happened in a terminal
-    // while this tab sat in the background.
+    // The usual reason a count is wrong is that the work happened somewhere this
+    // tab cannot see — a terminal, another machine, or the agent's own shell.
     window.addEventListener("focus", read);
     window.addEventListener(CHANGED_EVENT, read);
+
+    // Live updates. The watcher lives in the SERVER's memory, so it is installed
+    // per connection rather than once: a reconnect or a restarted service has
+    // no watcher at all, and a read on every fresh socket also catches whatever
+    // changed while we were away.
+    const offState = bridge.onState((state) => {
+      if (state !== "open") return;
+      bridge.invoke("git_watch_paths", { paths: folders }).catch(() => {});
+      read();
+    });
+    // One refresh path, not two: the backend event is turned into the same
+    // window event a write already fires, so the button and the open panel both
+    // refresh from it and neither has to know where it came from.
+    const offWatch = bridge.on("git-status-changed", () => {
+      window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
+    });
+
     return () => {
       live = false;
       window.removeEventListener("focus", read);
       window.removeEventListener(CHANGED_EVENT, read);
+      offState();
+      offWatch();
     };
   }, [folders, primaryPath]);
 
@@ -443,6 +464,23 @@ export function GitPanel({
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // The same refresh the toolbar button takes: the button turns the backend's
+  // `git-status-changed` into this window event, so an agent that switches
+  // branch or commits mid-turn repaints the open panel too — branch name, file
+  // list and all — instead of it going stale until Refresh is pressed.
+  //
+  // Skipped while one of our own git commands is running: that command reloads
+  // when it finishes, and its writes to `.git` are exactly what set the event
+  // off in the first place.
+  useEffect(() => {
+    const onChanged = () => {
+      if (busyRef.current) return;
+      void load();
+    };
+    window.addEventListener(CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(CHANGED_EVENT, onChanged);
   }, [load]);
 
   // Shrinking the window must not leave the chat with nothing, so the applied
