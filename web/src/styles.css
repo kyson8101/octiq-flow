@@ -886,6 +886,15 @@ body {
   color: var(--fg-0);
 }
 
+/* What you typed, laid out the way you typed it. Enter makes a new line in the
+   composer, so a message can arrive with real line breaks in it — and markdown
+   turns a single newline into a space, which would run the lines together.
+   Only YOUR bubble: the agent writes markdown on purpose, and its own wrapping
+   is not something to preserve. */
+.msg-user .prose p {
+  white-space: pre-wrap;
+}
+
 .msg-role {
   margin-bottom: 4px;
   font-size: 11px;
@@ -4294,6 +4303,9 @@ body {
   font-size: 13px;
   line-height: 1.5;
   color: var(--fg-2);
+  /* Callers pass a whole sentence, sometimes two paragraphs of consequence.
+     Keep the breaks they wrote. */
+  white-space: pre-wrap;
 }
 
 .ask-buttons {
@@ -4733,11 +4745,13 @@ body {
 .qa-review-q {
   font-size: 12px;
   color: var(--fg-3);
+  white-space: pre-wrap;
 }
 
 .qa-review-a {
   font-weight: 600;
   color: var(--fg-0);
+  white-space: pre-wrap;
 }
 
 .qa-review-a.is-empty {
@@ -4824,6 +4838,9 @@ body {
   font-size: 14px;
   line-height: 1.5;
   color: var(--fg-0);
+  /* The agent writes these as prose, and a question with a list in it arrives
+     with real newlines. HTML would collapse them into one run-on line. */
+  white-space: pre-wrap;
 }
 
 .qa-options {

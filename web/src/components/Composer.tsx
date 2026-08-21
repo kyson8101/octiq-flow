@@ -1,14 +1,15 @@
 // The prompt box: type, pick a model, send.
 //
-// Enter sends and Shift+Enter makes a new line, the shape every agent chat
-// uses — on a keyboard. A phone keyboard has no Shift+Enter, so that rule left
-// no way at all to type a second line: every Enter sent the message half
-// written. On a touch screen Enter is therefore a plain new line, and the send
-// button is how you send. The field is 16px because anything smaller makes iOS
-// Safari zoom the page the moment it takes focus.
+// Enter makes a new line and Shift+Enter sends. A prompt worth writing is
+// usually several lines, and the usual Enter-sends rule fires the message half
+// written the first time you reach for a second one — so sending is the key you
+// have to mean. A phone keyboard has no Shift+Enter at all, so on a touch
+// screen Enter is a plain new line and the send button is how you send. The
+// field is 16px because anything smaller makes iOS Safari zoom the page the
+// moment it takes focus.
 //
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
-// still has a real keyboard and should still send on Enter.
+// still has a real keyboard, so it still gets the keyboard hint.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
@@ -417,7 +418,7 @@ export function Composer({
           // A command you have typed in full sorts to the top, so it is the one
           // highlighted. `/context` still matches `context`, so without this the
           // menu stays up on a finished command and Enter "completes" it to
-          // itself — swallowing the send and making you press Enter twice.
+          // itself instead of breaking the line.
           .sort(
             (a, b) =>
               Number(b.toLowerCase() === slashQuery.toLowerCase()) -
@@ -427,8 +428,8 @@ export function Composer({
   const slashOpen = matches.length > 0;
 
   /** The highlighted command is exactly what is typed: there is nothing left to
-   *  complete, so Enter should send it. Arrowing to a different one puts
-   *  completion back. */
+   *  complete, so Enter goes back to being a new line. Arrowing to a different
+   *  one puts completion back. */
   const nothingToComplete =
     slashQuery !== undefined &&
     matches[pick]?.toLowerCase() === slashQuery.toLowerCase();
@@ -561,7 +562,7 @@ export function Composer({
             effort={eff.label.toLowerCase()}
           />
         ) : (
-          activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send")
+          activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Shift+Enter to send")
         )}
       </div>
 
@@ -569,7 +570,7 @@ export function Composer({
         <div className="slash" role="listbox">
           <div className="slash-head">
             {matches.length} command{matches.length === 1 ? "" : "s"} ·{" "}
-            {nothingToComplete ? "Enter to send" : "Tab to complete"}
+            {nothingToComplete ? "Shift+Enter to send" : "Tab to complete"}
           </div>
           <ul className="slash-list">
             {matches.map((name, i) => (
@@ -692,10 +693,10 @@ export function Composer({
             // Typing anything else means you are writing, not browsing.
             if (recall >= 0 && e.key.length === 1) setRecall(-1);
 
-            // On glass, Enter is left alone so it does what the key says and
-            // breaks the line. There is no Shift to hold, so claiming Enter
-            // here would mean a multi-line prompt could not be typed at all.
-            if (e.key === "Enter" && !e.shiftKey && !TYPES_ON_GLASS) {
+            // Enter is left alone so it does what the key says and breaks the
+            // line; Shift+Enter is the one that sends. On glass there is no
+            // Shift to hold, so this never fires and the send button sends.
+            if (e.key === "Enter" && e.shiftKey) {
               e.preventDefault();
               send();
             }
