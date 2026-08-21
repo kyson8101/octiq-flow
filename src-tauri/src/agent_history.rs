@@ -38,7 +38,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Files parsed per agent, newest first. Well past what anyone scrolls, and it
 /// bounds the worst case on a machine with years of sessions on it.
@@ -103,6 +103,214 @@ pub fn agent_history_list(limit: Option<usize>) -> Vec<HistorySession> {
     all.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
     all.truncate(limit.unwrap_or(600));
     all
+}
+
+// ---- reading one session back --------------------------------------------
+
+/// How many messages one session hands back.
+///
+/// A transcript runs to megabytes and this crosses a WebSocket to a phone, so
+/// there has to be a limit. It falls on the OLDEST messages: someone picking a
+/// session back up is looking for where they left off, so the end of the file
+/// is the part worth keeping.
+const READ_MAX_EVENTS: usize = 600;
+
+/// How much of a file is read looking for those messages. Generous next to the
+/// list's budget — this is one file, asked for deliberately, not a few hundred
+/// scanned on every keystroke.
+const READ_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Bookkeeping lines in a Claude session file. Everything here is the agent
+/// talking to itself about the session — what mode it is in, which hook ran,
+/// what the file looked like — rather than something a person or the model
+/// said. Unknown types join them: a new one this app has never seen is far more
+/// likely to be more bookkeeping than a new kind of speech.
+fn is_claude_message(kind: &str) -> bool {
+    matches!(kind, "user" | "assistant")
+}
+
+/// A Claude session file's text, as events the frontend reducer already reads.
+///
+/// This is a FILTER, not a translation. Claude writes each turn as
+/// `{"type":"user"|"assistant","message":{"role","content"}}`, which is the
+/// very shape `chat.ts::reduceChat` folds a LIVE stream into — so the history
+/// can go through the same tested reducer as a running chat, and neither side
+/// has to learn a second message format.
+fn claude_events(contents: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // A torn line is what a file being appended to RIGHT NOW looks like.
+        // Skipping it keeps the good lines around it; stopping would lose them.
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if !value["type"].as_str().is_some_and(is_claude_message) {
+            continue;
+        }
+        // A sidechain entry is a SUBAGENT's own transcript, written into the
+        // same file. It is not part of this conversation, and showing it would
+        // interleave a second speaker in with no way to tell them apart.
+        if value["isSidechain"] == Value::Bool(true) {
+            continue;
+        }
+        if value["message"].is_null() {
+            continue;
+        }
+        out.push(normalise_content(value));
+    }
+    // Keep the TAIL. `drain` rather than a reversed collect so the messages
+    // stay in the order they were said.
+    if out.len() > READ_MAX_EVENTS {
+        out.drain(..out.len() - READ_MAX_EVENTS);
+    }
+    out
+}
+
+/// Make `message.content` ALWAYS a block list.
+///
+/// Claude writes a plain user turn as a bare string — `"content":"fix the bug"`
+/// — and a turn with anything else in it as a list of blocks. A LIVE stream only
+/// ever sends the list, so the frontend reducer only ever learned the list: it
+/// reads `content` through an as-array helper that answers empty for a string,
+/// and a whole session's user turns went missing without a word.
+///
+/// Fixing it here rather than in the reducer is deliberate. The reducer is on
+/// the path of every running chat and is the most-tested thing in the app;
+/// widening it to serve history would put live conversations at risk for a
+/// shape only history has. This is the seam that owes the reducer a clean
+/// contract, so it pays it: one shape, always.
+fn normalise_content(mut value: Value) -> Value {
+    if let Some(text) = value["message"]["content"].as_str() {
+        let blocks = json!([{ "type": "text", "text": text }]);
+        value["message"]["content"] = blocks;
+    }
+    value
+}
+
+/// A Codex rollout file's text, as the SAME events `claude_events` returns.
+///
+/// Codex writes nothing like Claude does, and this is exactly why the
+/// normalising lives in the backend: the frontend then has one message format
+/// and one reducer, instead of a second parser for a second agent.
+///
+/// Codex records each turn twice — once as an `event_msg` (what the CLI printed)
+/// and once as a `response_item` (what went to the model). Only the first is
+/// read; taking both would show every turn double. The `response_item` side also
+/// carries the `developer` system prompt, which is kilobytes of instructions
+/// nobody typed.
+fn codex_events(contents: &str) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if value["type"].as_str() != Some("event_msg") {
+            continue;
+        }
+        let payload = &value["payload"];
+        let role = match payload["type"].as_str() {
+            Some("user_message") => "user",
+            Some("agent_message") => "assistant",
+            // task_started / task_complete / token_count and the rest are the
+            // run's bookkeeping, not speech.
+            _ => continue,
+        };
+        let Some(text) = payload["message"].as_str() else {
+            continue;
+        };
+        out.push(json!({
+            "type": role,
+            "message": { "role": role, "content": [{ "type": "text", "text": text }] },
+        }));
+    }
+    if out.len() > READ_MAX_EVENTS {
+        out.drain(..out.len() - READ_MAX_EVENTS);
+    }
+    out
+}
+
+/// Read one past session back, as events the frontend reducer understands.
+///
+/// The list (`agent_history_list`) says which sessions exist; this says what
+/// was said in one of them, so it can be READ before it is picked up. Nothing
+/// is started here and nothing is resumed — the session id stays on the
+/// conversation, and the first thing typed still goes out as `--resume <id>`.
+#[tauri::command]
+pub fn agent_history_read(agent: String, session_id: String) -> Result<Vec<Value>, String> {
+    // The id reaches the filesystem, so it is checked before anything is
+    // opened. `agent_chat` already owns this rule and the two must not drift.
+    let id = crate::agent_chat::safe_session_id(&session_id)
+        .ok_or_else(|| format!("not a usable session id: {session_id:?}"))?;
+
+    let path = match agent.as_str() {
+        "claude" => find_claude_file(&id),
+        "codex" => find_codex_file(&id),
+        // Falling through to one of the two would read the wrong folder
+        // entirely, so an agent this app does not speak for is an error.
+        other => return Err(format!("no such agent: {other:?}")),
+    }
+    .ok_or_else(|| format!("no {agent} session on this machine with id {id}"))?;
+
+    let contents = read_capped(&path)?;
+    Ok(match agent.as_str() {
+        "codex" => codex_events(&contents),
+        _ => claude_events(&contents),
+    })
+}
+
+/// The file's text, up to the byte budget. Reading whole is fine at this size
+/// and far simpler than streaming; the budget is what keeps it fine.
+fn read_capped(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let file = File::open(path).map_err(|e| format!("cannot open that session: {e}"))?;
+    let mut text = String::new();
+    BufReader::new(file.take(READ_MAX_BYTES))
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read that session: {e}"))?;
+    Ok(text)
+}
+
+/// `~/.claude/projects/<any>/<session-id>.jsonl`. The folder is the encoded
+/// working directory, which cannot be reconstructed from the id, so the one
+/// level of folders is looked through rather than guessed at.
+fn find_claude_file(id: &str) -> Option<PathBuf> {
+    let root = claude_root()?;
+    let name = format!("{id}.jsonl");
+    for entry in fs::read_dir(root).ok()?.flatten() {
+        let candidate = entry.path().join(&name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<session-id>.jsonl`.
+///
+/// The id is a SUFFIX of the file name, not the whole of it, and the dated
+/// folders have to be walked — so this reuses the same depth-limited walk the
+/// list uses rather than growing a second one.
+fn find_codex_file(id: &str) -> Option<PathBuf> {
+    let root = codex_root()?;
+    let mut files = Vec::new();
+    jsonl_files(&root, 3, &mut files);
+    let suffix = format!("-{id}.jsonl");
+    files
+        .into_iter()
+        .find(|(path, _, _)| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(&suffix))
+        })
+        .map(|(path, _, _)| path)
 }
 
 // ---- finding the files ---------------------------------------------------
@@ -653,5 +861,240 @@ mod tests {
         let long = "x".repeat(TITLE_MAX + 50);
         assert!(clip(&long).chars().count() <= TITLE_MAX + 1);
         assert_eq!(clip("  two   spaces  "), "two spaces");
+    }
+
+    // ---- reading one session back --------------------------------------
+
+    /// The whole design of the read in one test: what comes back is what the
+    /// FRONTEND REDUCER already understands, so nothing has to learn a second
+    /// message format. A Claude file's `user`/`assistant` lines are already
+    /// that shape, so reading one is a FILTER — keep those two, drop the
+    /// bookkeeping around them.
+    #[test]
+    fn a_claude_session_reads_back_only_what_was_said() {
+        let body = concat!(
+            r#"{"type":"last-prompt","leafUuid":"x"}"#,
+            "\n",
+            r#"{"type":"mode","mode":"normal"}"#,
+            "\n",
+            r#"{"type":"permission-mode","permissionMode":"auto"}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"fix the login bug"}}"#,
+            "\n",
+            r#"{"type":"attachment","attachment":{"type":"hook_success"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"on it"}]}}"#,
+            "\n",
+            r#"{"type":"file-history-snapshot","snapshot":{}}"#,
+            "\n",
+        );
+        let out = claude_events(body);
+        let kinds: Vec<&str> = out.iter().filter_map(|e| e["type"].as_str()).collect();
+        assert_eq!(kinds, vec!["user", "assistant"], "kept: {kinds:?}");
+        // Claude writes a plain user turn as a bare STRING and everything else
+        // as a block list. What leaves here is always the list — see
+        // `normalise_content` for why the reducer must not have to know that.
+        assert_eq!(out[0]["message"]["content"][0]["type"], "text");
+        assert_eq!(out[0]["message"]["content"][0]["text"], "fix the login bug");
+        assert_eq!(out[1]["message"]["content"][0]["text"], "on it");
+    }
+
+    /// The shape a live stream never sends, and the one a session file is full
+    /// of. It went missing silently before `normalise_content`.
+    #[test]
+    fn a_plain_user_turn_written_as_a_bare_string_still_arrives_as_blocks() {
+        let out =
+            claude_events(r#"{"type":"user","message":{"role":"user","content":"just words"}}"#);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0]["message"]["content"],
+            json!([{ "type": "text", "text": "just words" }])
+        );
+    }
+
+    /// A turn that ALREADY is a block list is left exactly as it was — tool
+    /// calls and thinking blocks included, since the reducer reads those too.
+    #[test]
+    fn a_turn_that_is_already_blocks_is_left_alone() {
+        let out = claude_events(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hm"},{"type":"tool_use","id":"t1","name":"Read"}]}}"#,
+        );
+        assert_eq!(out[0]["message"]["content"][0]["type"], "thinking");
+        assert_eq!(out[0]["message"]["content"][1]["name"], "Read");
+    }
+
+    /// A sidechain entry is a SUBAGENT's private transcript. It is written into
+    /// the same file, but it is not part of this conversation, and showing it
+    /// would interleave a second speaker into the history with no way to tell
+    /// which was which.
+    #[test]
+    fn a_subagents_own_transcript_is_not_part_of_the_conversation() {
+        let body = concat!(
+            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"go and look"}}"#,
+            "\n",
+            r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"found it"}]}}"#,
+            "\n",
+            r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":"and mine"}}"#,
+            "\n",
+        );
+        let out = claude_events(body);
+        assert_eq!(out.len(), 1, "only the main conversation: {out:?}");
+        assert_eq!(out[0]["message"]["content"][0]["text"], "and mine");
+    }
+
+    /// A torn last line is what a file being written to right now looks like.
+    /// It must not hide the good lines above it.
+    #[test]
+    fn a_half_written_line_does_not_lose_the_rest() {
+        let body = concat!(
+            r#"{"type":"user","message":{"role":"user","content":"one"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":"two"}}"#,
+            "\n",
+        );
+        let out = claude_events(body);
+        assert_eq!(out.len(), 2, "the torn line is skipped, not fatal");
+    }
+
+    /// A transcript runs to megabytes and crosses a WebSocket to a phone. The
+    /// cap falls on the END of the file, not the start: the last thing said is
+    /// what someone picking a session back up is looking for.
+    #[test]
+    fn a_huge_transcript_is_cut_to_its_most_recent_messages() {
+        let one = r#"{"type":"user","message":{"role":"user","content":"x"}}"#;
+        let mut body = String::new();
+        for i in 0..(READ_MAX_EVENTS + 40) {
+            body.push_str(&one.replace("\"x\"", &format!("\"line {i}\"")));
+            body.push('\n');
+        }
+        let out = claude_events(&body);
+        assert_eq!(out.len(), READ_MAX_EVENTS, "capped");
+        assert_eq!(
+            out.last().unwrap()["message"]["content"][0]["text"],
+            format!("line {}", READ_MAX_EVENTS + 39),
+            "the cap keeps the NEWEST messages"
+        );
+    }
+
+    /// The id reaches the filesystem, so it is checked before anything is
+    /// opened. `agent_chat` already owns that rule; this must not grow a
+    /// second, more forgiving one.
+    #[test]
+    fn a_session_id_that_could_climb_out_of_the_folder_is_refused() {
+        for bad in ["../../etc/passwd", "..", "a/b", "a b", ""] {
+            assert!(
+                agent_history_read("claude".into(), bad.into()).is_err(),
+                "should refuse {bad:?}"
+            );
+        }
+        // A real id is not refused by the guard. (It has no file here, so it
+        // fails LATER, on the read — which is a different error.)
+        let real = agent_history_read(
+            "claude".into(),
+            "4749ea34-190b-4520-8a92-4a961cd4729b".into(),
+        );
+        if let Err(e) = real {
+            assert!(!e.contains("session id"), "guard should have passed: {e}");
+        }
+    }
+
+    /// An agent this app does not speak for must not fall through to one it
+    /// does — that would read the wrong folder entirely.
+    #[test]
+    fn an_unknown_agent_is_refused_rather_than_guessed() {
+        assert!(agent_history_read("gemini".into(), "abc-123".into()).is_err());
+    }
+
+    // ---- card 59: the same door, for Codex -----------------------------
+
+    /// Codex's file is shaped nothing like Claude's, which is the whole reason
+    /// the normalising happens HERE: what comes out is the same `user` /
+    /// `assistant` shape, so the frontend keeps one reducer and one format.
+    #[test]
+    fn a_codex_session_is_normalised_into_the_same_shape() {
+        let body = concat!(
+            r#"{"type":"session_meta","payload":{"session_id":"abc","cwd":"/w"}}"#,
+            "\n",
+            r#"{"type":"turn_context","payload":{}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"reply with OK"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"OK"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{}}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}"#,
+            "\n",
+        );
+        let out = codex_events(body);
+        let kinds: Vec<&str> = out.iter().filter_map(|e| e["type"].as_str()).collect();
+        assert_eq!(kinds, vec!["user", "assistant"], "kept: {kinds:?}");
+        assert_eq!(out[0]["message"]["role"], "user");
+        assert_eq!(out[0]["message"]["content"][0]["type"], "text");
+        assert_eq!(out[0]["message"]["content"][0]["text"], "reply with OK");
+        assert_eq!(out[1]["message"]["role"], "assistant");
+        assert_eq!(out[1]["message"]["content"][0]["text"], "OK");
+    }
+
+    /// The `developer` message is the SYSTEM PROMPT — kilobytes of instructions
+    /// nobody typed. Showing it as the first thing said would bury the actual
+    /// conversation.
+    #[test]
+    fn the_codex_system_prompt_is_not_something_anybody_said() {
+        let body = concat!(
+            r#"{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<skills_instructions>…"}]}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}"#,
+            "\n",
+        );
+        let out = codex_events(body);
+        assert_eq!(out.len(), 1, "only the human turn: {out:?}");
+        assert_eq!(out[0]["message"]["content"][0]["text"], "hello");
+    }
+
+    /// Codex writes each turn TWICE — once as the `event_msg` this reads, and
+    /// once as a `response_item` carrying the same words. Taking both would
+    /// show the whole conversation double.
+    #[test]
+    fn a_codex_turn_recorded_twice_is_shown_once() {
+        let body = concat!(
+            r#"{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"hi"}}"#,
+            "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}"#,
+            "\n",
+        );
+        let out = codex_events(body);
+        let kinds: Vec<&str> = out.iter().filter_map(|e| e["type"].as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "assistant"],
+            "said once each: {kinds:?}"
+        );
+    }
+
+    /// The same tail rule as Claude's, for the same reason.
+    #[test]
+    fn a_huge_codex_transcript_is_cut_to_its_most_recent_messages() {
+        let mut body = String::new();
+        for i in 0..(READ_MAX_EVENTS + 25) {
+            body.push_str(&format!(
+                r#"{{"type":"event_msg","payload":{{"type":"user_message","message":"line {i}"}}}}"#
+            ));
+            body.push('\n');
+        }
+        let out = codex_events(&body);
+        assert_eq!(out.len(), READ_MAX_EVENTS);
+        assert_eq!(
+            out.last().unwrap()["message"]["content"][0]["text"],
+            format!("line {}", READ_MAX_EVENTS + 24)
+        );
     }
 }

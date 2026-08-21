@@ -9,6 +9,7 @@
 // back would cut the real file down to the part we happened to be shown. So
 // saving is refused outright for those, rather than warned about.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { bridge } from "../lib/bridge";
@@ -154,7 +155,9 @@ export function FilePanel({ path, onClose }: { path: string; onClose: () => void
     onClose();
   }
 
-  return (
+  // On the page, not inside the message it was opened from — see the Viewer for
+  // why `position: fixed` alone was not enough.
+  return createPortal(
     <>
       <div className="panel-scrim" onClick={() => void requestClose()} />
       <aside className="panel" role="dialog" aria-label={baseName(path)}>
@@ -233,6 +236,7 @@ export function FilePanel({ path, onClose }: { path: string; onClose: () => void
           )}
         </div>
       </aside>
-    </>
+    </>,
+    document.body,
   );
 }

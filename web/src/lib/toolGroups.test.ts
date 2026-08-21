@@ -8,12 +8,15 @@ function tool(name: string, id = name + Math.random()): Block {
   return { kind: "tool", id, name, argsJson: "", args: {}, state: "done" };
 }
 const text = (t: string): Block => ({ kind: "text", text: t });
+const thought = (t: string): Block => ({ kind: "thinking", text: t });
 
-/** A row list, as "Bash|Bash|Bash" for a group and "Read" for a lone block. */
+/** A row list. A group is "Bash|Bash+Bash": the folded run, then `+`, then the
+ *  newest call — the one drawn whole on the bottom half of the same box. A lone
+ *  block is just its name. */
 function shape(rows: Row[]): string[] {
   return rows.map((r) =>
     r.kind === "group"
-      ? r.tools.map((t) => t.name).join("|")
+      ? `${r.tools.map((t) => t.name).join("|")}+${r.newest.name}`
       : r.block.kind === "tool"
         ? r.block.name
         : r.block.kind,
@@ -25,9 +28,12 @@ describe("groupRows", () => {
     expect(shape(groupRows([tool("Bash"), tool("Bash")]))).toEqual(["Bash", "Bash"]);
   });
 
-  it("folds three or more into one group", () => {
+  it("folds three or more, and leaves the newest of them out", () => {
+    // The newest call is the one being watched — while a turn runs it is what
+    // is happening right now, and when the turn is over it is where the run got
+    // to. It never goes inside the fold.
     expect(shape(groupRows([tool("Bash"), tool("Bash"), tool("Bash")]))).toEqual([
-      "Bash|Bash|Bash",
+      "Bash|Bash+Bash",
     ]);
   });
 
@@ -40,16 +46,16 @@ describe("groupRows", () => {
       ...Array.from({ length: 3 }, () => tool("Bash")),
     ];
     expect(shape(groupRows(blocks))).toEqual([
-      "Bash|Bash|Bash|Bash|Bash",
+      "Bash|Bash|Bash|Bash+Bash",
       "Write",
       "Edit",
-      "Bash|Bash|Bash",
+      "Bash|Bash+Bash",
     ]);
   });
 
   it("mixes kinds in one group when they run together", () => {
     expect(shape(groupRows([tool("Bash"), tool("Read"), tool("Grep")]))).toEqual([
-      "Bash|Read|Grep",
+      "Bash|Read+Grep",
     ]);
   });
 
@@ -62,7 +68,7 @@ describe("groupRows", () => {
       tool("Bash"),
       tool("Bash"),
     ];
-    expect(shape(groupRows(blocks))).toEqual(["Bash", "Bash", "text", "Bash|Bash|Bash"]);
+    expect(shape(groupRows(blocks))).toEqual(["Bash", "Bash", "text", "Bash|Bash+Bash"]);
   });
 
   it("leaves a failed call where the reader can see it", () => {
@@ -75,7 +81,7 @@ describe("groupRows", () => {
       state: "error",
     };
     const blocks = [tool("Bash"), tool("Bash"), failed, tool("Bash"), tool("Bash"), tool("Bash")];
-    expect(shape(groupRows(blocks))).toEqual(["Bash", "Bash", "Bash", "Bash|Bash|Bash"]);
+    expect(shape(groupRows(blocks))).toEqual(["Bash", "Bash", "Bash", "Bash|Bash+Bash"]);
   });
 
   it("never folds a subagent card away", () => {
@@ -93,6 +99,30 @@ describe("groupRows", () => {
       "Bash",
       "Bash",
     ]);
+  });
+
+  it("folds a run the agent thought its way through", () => {
+    // What an interleaved-thinking turn actually looks like: look, think, look
+    // again. Breaking the run on every thought left a wall of single cards.
+    const blocks = [tool("Bash"), thought("a"), tool("Bash"), thought("b"), tool("Bash")];
+    expect(shape(groupRows(blocks))).toEqual(["Bash|Bash+Bash"]);
+  });
+
+  it("leaves thinking out of the transcript altogether", () => {
+    // Thinking is shown live above the composer while it happens, and nowhere
+    // else. In the transcript it is a row that opens onto the agent talking to
+    // itself, between the reader and the work.
+    const blocks = [thought("a"), tool("Bash"), thought("b"), text("done")];
+    expect(shape(groupRows(blocks))).toEqual(["Bash", "text"]);
+  });
+
+  it("never lets a thought stand between two calls", () => {
+    const blocks = [tool("Bash"), tool("Bash"), tool("Bash"), thought("a"), text("done")];
+    expect(shape(groupRows(blocks))).toEqual(["Bash|Bash+Bash", "text"]);
+  });
+
+  it("still leaves two calls with a thought between them as two rows", () => {
+    expect(shape(groupRows([tool("Bash"), thought("a"), tool("Bash")]))).toEqual(["Bash", "Bash"]);
   });
 
   it("carries each row's position in the original block list", () => {

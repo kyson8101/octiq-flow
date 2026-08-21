@@ -130,7 +130,7 @@ fn safe_model(model: &str) -> Option<String> {
 
 /// Session ids are uuids the agent gave us. Checked, not escaped: like the
 /// model name it lands on a command line, so the shape is the guard.
-fn safe_session_id(id: &str) -> Option<String> {
+pub(crate) fn safe_session_id(id: &str) -> Option<String> {
     let ok = id.len() <= 64
         && !id.is_empty()
         && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
@@ -172,19 +172,29 @@ fn safe_effort(agent: ChatAgent, level: &str) -> Option<&'static str> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {
-    /// Look and plan, change nothing.
+    /// Look and plan, change nothing. Claude's `plan`.
     Read,
-    /// Get on with it, and ask when something looks unsafe.
+    /// Ask before every change. Claude's `manual`.
     ///
-    /// This was `Edit`, mapped to Claude's `acceptEdits`. That mode auto-accepts
-    /// FILE EDITS and nothing else, so every shell command still stopped — which
-    /// is not what a chat wants, and not what the label promised. `auto` is the
-    /// mode that actually describes the middle: run unattended, stop only at
-    /// what looks risky. It is also the one this app was already built for — the
-    /// PreToolUse hook in `permission.rs` exists to carry exactly those stops
-    /// back to the UI.
+    /// The PreToolUse hook does the asking, as it does on every level below
+    /// Full — the difference is only how much it is asked about.
+    Manual,
+    /// File edits go through; everything else still asks. Claude's `acceptEdits`.
+    ///
+    /// The mode name is Claude's and so is the behaviour, but the FLAG cannot
+    /// deliver it here on its own: the hook runs before `--permission-mode` is
+    /// consulted, so an edit would be stopped by the hook before the mode ever
+    /// got the chance to accept it. `permission::ask` knows about this level and
+    /// stands aside for the edit tools — see EDIT_TOOLS there.
+    Edits,
+    /// Get on with it, and ask when something looks unsafe. Claude's `auto`.
+    ///
+    /// This was once `Edit`, mapped to `acceptEdits`, and was the middle rung on
+    /// its own: that auto-accepted FILE EDITS and nothing else, so every shell
+    /// command still stopped — not what a chat wants, and not what the label
+    /// promised. Both rungs exist now, which is what Claude itself offers.
     Auto,
-    /// Run anything without asking.
+    /// Run anything without asking. Claude's `bypassPermissions`.
     Full,
 }
 
@@ -193,6 +203,8 @@ impl Access {
     fn claude(self) -> &'static str {
         match self {
             Access::Read => "plan",
+            Access::Manual => "manual",
+            Access::Edits => "acceptEdits",
             Access::Auto => "auto",
             Access::Full => "bypassPermissions",
         }
@@ -207,6 +219,8 @@ impl Access {
     fn as_env(self) -> &'static str {
         match self {
             Access::Read => "read",
+            Access::Manual => "manual",
+            Access::Edits => "edits",
             Access::Auto => "auto",
             Access::Full => "full",
         }
@@ -218,12 +232,17 @@ impl Access {
     fn codex(self) -> &'static str {
         match self {
             Access::Read => "read-only",
-            Access::Auto => "workspace-write",
+            // Codex has no per-change asking and no edits-only mode: its sandbox
+            // says what a command may TOUCH, not what may happen unasked. Both
+            // middle rungs are therefore the same sandbox here — the difference
+            // between them is Claude's, and the Codex picker does not offer
+            // them (see ACCESS in Composer.tsx, which is per provider).
+            Access::Manual | Access::Edits | Access::Auto => "workspace-write",
             Access::Full => "danger-full-access",
         }
     }
 
-    /// Codex's `--ask-for-approval` value — whether a command RUNS unasked.
+    /// Codex's `approval_policy` value — whether a command RUNS unasked.
     ///
     /// Codex splits in two what Claude answers with one flag, and only the
     /// sandbox half was ever set. Left alone, the approval policy fell back to
@@ -236,7 +255,7 @@ impl Access {
             // The sandbox already refuses the write; asking on top of it is a
             // question whose only honest answer is "it would fail regardless".
             Access::Read => "never",
-            Access::Auto => "on-request",
+            Access::Manual | Access::Edits | Access::Auto => "on-request",
             Access::Full => "never",
         }
     }
@@ -248,6 +267,8 @@ impl Access {
     /// permissive — the same rule the spawn side follows.
     pub fn from_env(word: &str) -> Access {
         match word {
+            "manual" => Access::Manual,
+            "edits" => Access::Edits,
             "auto" => Access::Auto,
             "full" => Access::Full,
             _ => Access::Read,
@@ -336,14 +357,16 @@ fn build_command(
                     sh_quote(&settings.to_string_lossy())
                 ));
             }
-            // The ask-user tool, plus the sentence that makes the agent reach
-            // for it. It is pre-approved: a tool whose whole purpose is to ask
-            // the user must not itself raise a permission question.
+            // Our own two tools, plus the sentences that make the agent reach
+            // for them. Both are pre-approved: a tool whose whole purpose is to
+            // talk to the user must not itself raise a permission question, and
+            // a TODO list that had to be approved item by item would be worse
+            // than none.
             if let Some(mcp) = ask_mcp_config() {
                 cmd.push_str(&format!(
                     " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                     sh_quote(&mcp.to_string_lossy()),
-                    sh_quote("mcp__octiq__ask_user"),
+                    sh_quote("mcp__octiq__ask_user mcp__octiq__todo_write"),
                     sh_quote(ASK_PROMPT),
                 ));
             }
@@ -378,17 +401,23 @@ fn build_command(
             // says what a command may touch, the approval policy says whether it
             // runs without being asked. Both are needed — a sandbox alone leaves
             // the asking to whatever the user's own config happens to say.
+            //
+            // The approval half travels as a CONFIG KEY on both forms.
+            // `--ask-for-approval` survives only on the interactive `codex`;
+            // `codex exec` dropped it (0.147.0 answers the flag with "error:
+            // unexpected argument '--ask-for-approval' found" and refuses to
+            // start), and `codex exec resume` never took it. `-c
+            // approval_policy=` is the one spelling both accept.
             if let Some(a) = access {
                 if resuming.is_some() {
                     cmd.push_str(&format!(" -c sandbox_mode={}", sh_quote(a.codex())));
-                    cmd.push_str(&format!(
-                        " -c approval_policy={}",
-                        sh_quote(a.codex_approval())
-                    ));
                 } else {
                     cmd.push_str(&format!(" --sandbox {}", a.codex()));
-                    cmd.push_str(&format!(" --ask-for-approval {}", a.codex_approval()));
                 }
+                cmd.push_str(&format!(
+                    " -c approval_policy={}",
+                    sh_quote(a.codex_approval())
+                ));
             }
             // Effort has no flag of its own on either form: it is a config key.
             // The value comes from the allowlist, so it is a bare word — which
@@ -922,6 +951,9 @@ pub fn chat_stop(manager: State<Arc<ChatManager>>, key: String) -> Result<(), St
 
 /// The Tauri-free half of `chat_stop`.
 pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    // Anything the person allowed "always" was allowed for THIS piece of work.
+    // Outliving it would be a permission nobody remembers giving.
+    crate::permission::forget_chat(&key);
     let session = {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(&key)
@@ -947,16 +979,17 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
 /// This way it applies to OctiqFlow chats and nothing else.
 const PERMISSION_HOOK: &str = include_str!("../../scripts/hooks/permission-ask.cjs");
 
-/// An MCP server whose only tool lets the agent ask the user something.
+/// An MCP server carrying the two tools print mode has no answer for: asking
+/// the user something, and keeping a TODO list on their screen.
 ///
-/// Print mode is never offered `AskUserQuestion` — it has nobody to answer, so
-/// the tool never reaches the model. It does load MCP servers in full, so this
-/// hands it one of ours instead.
+/// Print mode is never offered `AskUserQuestion` or `TodoWrite` — there is
+/// nobody to answer and nowhere to draw, so neither tool reaches the model. It
+/// does load MCP servers in full, so this hands it ours instead.
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 
 /// Told to the agent so it knows the tool is there and when it is wanted.
 /// Without this it has a tool it never thinks to reach for.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.";
 
 /// Write the ask-user MCP server and its config, and return the config path.
 ///
@@ -1246,8 +1279,12 @@ mod tests {
                 "codex {level:?}"
             );
             assert!(
-                x.contains(&format!("--ask-for-approval {approval}")),
+                x.contains(&format!("-c approval_policy='{approval}'")),
                 "codex approval {level:?}"
+            );
+            assert!(
+                !x.contains("--ask-for-approval"),
+                "codex exec dropped the flag form; it only takes the config key"
             );
             assert!(
                 !x.contains("--permission-mode"),

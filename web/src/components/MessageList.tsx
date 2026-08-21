@@ -2,7 +2,9 @@
 //
 // Each assistant message is a stack of blocks in the order the agent produced
 // them: prose, the tool calls it made along the way, more prose. Thinking is
-// folded away — it is long, and it is not the answer.
+// not here at all: it is watched live above the composer while it happens (see
+// Composer), and a transcript of what the agent said to itself is not what
+// anybody scrolls back through — `groupRows` drops those blocks.
 //
 // A subagent's messages are not part of that stack. They belong to the Task
 // call that started them, and they are drawn INSIDE its card — so they are
@@ -14,9 +16,10 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Block, Message } from "../lib/chat";
+import type { Attached, Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
+import { SentFiles } from "./Thumb";
 import { groupRows } from "../lib/toolGroups";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
@@ -25,21 +28,6 @@ import { FileList } from "./FileList";
 import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
 import { copyText } from "../lib/clipboard";
-
-function Thinking({ text }: { text: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="thinking">
-      <button className="thinking-head" onClick={() => setOpen((v) => !v)} type="button">
-        <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
-          ▸
-        </span>
-        thought for a moment
-      </button>
-      {open && <div className="thinking-body">{text}</div>}
-    </div>
-  );
-}
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -145,8 +133,10 @@ type Kids = Map<string, Message[]>;
 
 function BlockView({ block, animate, kids }: { block: Block; animate?: boolean; kids: Kids }) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
-  if (block.kind === "thinking") return <Thinking text={block.text} />;
   if (block.kind === "compacted") return <Compacted />;
+  // Thinking is watched live above the composer and left out of the transcript;
+  // `groupRows` drops it, so this is only ever the belt to that braces.
+  if (block.kind === "thinking") return null;
   const own = kids.get(block.id);
   return (
     <ToolCard
@@ -170,7 +160,7 @@ function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boole
     <>
       {rows.map((row) =>
         row.kind === "group" ? (
-          <ToolGroup key={row.tools[0].id} tools={row.tools} />
+          <ToolGroup key={row.tools[0].id} tools={row.tools} newest={row.newest} />
         ) : (
           <BlockView
             key={row.index}
@@ -277,20 +267,40 @@ function TurnView({
   // would leave it marked queued forever — which is how this was first wrong.
   const queued = !!busy && role === "user" && messages.every((m) => !m.echo);
 
+  // What was attached to this turn. Taken across the messages the turn is made
+  // of, and de-duplicated by path: the agent echoes a user turn back, so the
+  // same file can arrive twice by two routes.
+  const files = useMemo(() => {
+    const seen = new Map<string, Attached>();
+    for (const m of messages) for (const a of m.attachments ?? []) seen.set(a.path, a);
+    return [...seen.values()];
+  }, [messages]);
+
   return (
     <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
       {role === "assistant" && <div className="msg-role">Claude</div>}
       <div className="msg-body">
+        {/* Above the words, the way they sit above the box while you attach
+            them — and because a message whose words are "look at this" makes no
+            sense until you have seen the picture it came with. */}
+        <SentFiles files={files} />
         <Blocks blocks={blocks} streaming={streaming} kids={kids} />
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {stopped && <div className="stopped">Stopped</div>}
         {queued && <div className="queued">queued</div>}
-        {/* Only once the turn is done, and only when there is prose to take. */}
-        {role === "assistant" && !streaming && answer && <CopyAnswer text={answer} />}
-        {/* Only once the turn is done: a list that grows while the agent is
-            still working would rearrange itself under the reader. */}
-        {role === "assistant" && !streaming && cwd !== undefined && (
-          <FileList messages={withDescendants(messages, kids)} cwd={cwd} />
+        {/* Copy and the files the turn touched, on ONE row: copy on the left,
+            the files on the right. They are both footnotes to the answer, and
+            stacked they took more height between two replies than some replies
+            take themselves.
+
+            Only once the turn is done — a list that grows while the agent is
+            still working would rearrange itself under the reader — and only
+            when there is prose worth taking. */}
+        {role === "assistant" && !streaming && (answer || cwd !== undefined) && (
+          <div className="msg-foot">
+            {answer && <CopyAnswer text={answer} />}
+            {cwd !== undefined && <FileList messages={withDescendants(messages, kids)} cwd={cwd} />}
+          </div>
         )}
       </div>
     </article>

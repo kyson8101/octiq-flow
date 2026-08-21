@@ -139,6 +139,11 @@ export function Usage() {
 
   if (!data.claude && !data.codex) return null;
 
+  // A phone's top bar has room for ONE of these, so the one it shows is the
+  // agent closest to its limit — the other is a tap away in the popup, with
+  // every window it has. Off the phone both are on the bar as before.
+  const lead = worstOf(data.claude) >= worstOf(data.codex) ? "claude" : "codex";
+
   return (
     <div className="usage">
       <button
@@ -150,8 +155,8 @@ export function Usage() {
           void refresh(true);
         }}
       >
-        <Pill label="CL" provider={data.claude} stale={stale.claude} />
-        <Pill label="CX" provider={data.codex} stale={stale.codex} />
+        <Pill label="CL" provider={data.claude} stale={stale.claude} lead={lead === "claude"} />
+        <Pill label="CX" provider={data.codex} stale={stale.codex} lead={lead === "codex"} />
       </button>
 
       {open && (
@@ -173,14 +178,25 @@ export function Usage() {
  *  Numbers only. A bar has to be wide enough to read, and three of them per
  *  agent would take the whole top bar to say what three numbers say — with the
  *  colour still carrying the "how bad is it" signal on its own. */
+/** How close this agent is to its nearest limit, or -1 when it reports nothing.
+ *  -1 keeps an agent with no numbers from ever winning the one slot a phone
+ *  has: a blank pill would be the whole readout. */
+function worstOf(p: Provider | null): number {
+  const windows = [p?.fiveHour, p?.weekly, ...(p?.models ?? [])].filter(Boolean) as Window[];
+  return windows.reduce((n, w) => Math.max(n, w.percent), -1);
+}
+
 function Pill({
   label,
   provider,
   stale,
+  lead,
 }: {
   label: string;
   provider: Provider | null;
   stale: boolean;
+  /** The one a phone keeps — see `worstOf`. Marked here, hidden in CSS. */
+  lead?: boolean;
 }) {
   const windows: { label: string; window: Window }[] = [];
   if (provider?.fiveHour) windows.push({ label: "5h", window: provider.fiveHour });
@@ -200,7 +216,9 @@ function Pill({
 
   return (
     <span
-      className={`usage-pill ${stale ? "is-stale" : ""} ${windows.length === 0 ? "is-empty" : ""}`}
+      className={`usage-pill ${stale ? "is-stale" : ""} ${windows.length === 0 ? "is-empty" : ""} ${
+        lead ? "is-lead" : ""
+      }`}
     >
       <span className="usage-tag">{label}</span>
       {windows.length === 0 ? (

@@ -29,7 +29,14 @@ import { describe, expect, it } from "vitest";
 import taskStream from "./__fixtures__/task-subagent.jsonl?raw";
 import workflowStream from "./__fixtures__/workflow.jsonl?raw";
 
-import { emptyChat, isThinking, reduceChat, type ChatState, type Message } from "./chat";
+import {
+  emptyChat,
+  isThinking,
+  reduceChat,
+  thinkingNow,
+  type ChatState,
+  type Message,
+} from "./chat";
 
 const FIXTURES: Record<string, string> = {
   "task-subagent.jsonl": taskStream,
@@ -269,6 +276,25 @@ describe("the meter on a turn in flight", () => {
     expect(isThinking(writing.state)).toBe(false);
   });
 
+  it("hands out the thought being written, and only while it is", () => {
+    // What the strip above the composer reads. It is live: once prose starts,
+    // the thought is over and there is nothing to watch.
+    const deltas = steps.filter(
+      (s) => ((s.event.event as Record<string, unknown>)?.delta as Record<string, unknown>)?.type,
+    );
+    const kindOf = (s: (typeof steps)[number]) =>
+      (((s.event.event as Record<string, unknown>).delta as Record<string, unknown>).type as string);
+
+    const reasoning = [...deltas].reverse().find((s) => kindOf(s) === "thinking_delta")!;
+    expect(thinkingNow(reasoning.state).length).toBeGreaterThan(0);
+
+    const writing = deltas.find((s) => kindOf(s) === "text_delta")!;
+    expect(thinkingNow(writing.state)).toBe("");
+
+    const ended = steps.find((s) => s.event.type === "result")!;
+    expect(thinkingNow(ended.state)).toBe("");
+  });
+
   it("keeps the agent's own word for what it is doing", () => {
     // `activity` is the states worth interrupting the reader for; the raw word
     // is what tells thinking apart from a tool call, which the two of them read
@@ -282,6 +308,21 @@ describe("the meter on a turn in flight", () => {
 
 
 describe("the agent roster", () => {
+  it("leaves a tracked shell command off the rail", () => {
+    // `task_started` is not only for agents: a Bash call the harness decides to
+    // track arrives on the same channel as `local_bash`. The rail is a list of
+    // agents, and a command is not one — it has its own tool card.
+    const after = reduceChat(emptyChat(), {
+      type: "system",
+      subtype: "task_started",
+      task_id: "bb53ogzpu",
+      task_type: "local_bash",
+      tool_use_id: "toolu_01",
+      description: "python3 - <<'PY' …",
+    });
+    expect(after.agents).toEqual([]);
+  });
+
   it("turns a Task subagent into one finished row", () => {
     const { agents } = replay("task-subagent.jsonl");
 

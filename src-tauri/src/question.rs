@@ -104,11 +104,21 @@ pub async fn ask(question: Question) -> String {
 }
 
 /// Answer a waiting question. `false` when it is already gone.
+///
+/// Every attached browser was shown this question, and answering it on one of
+/// them leaves the card sitting on all the others — still asking something that
+/// has already been decided, and still tappable, which is worse: the second tap
+/// finds nothing to answer and does nothing at all, with no way to tell that
+/// from a tap that failed. So the same event a timeout sends goes out here too.
+/// It says one thing, "this question is over"; how it ended is the agent's news
+/// to give, in the answer it is now free to act on.
 pub fn answer(id: &str, choice: String) -> bool {
     let Some(tx) = with_pending(|p| p.remove(id)) else {
         return false;
     };
-    tx.send(choice).is_ok()
+    let delivered = tx.send(choice).is_ok();
+    crate::bus::emit("question-expired", serde_json::json!({ "id": id }));
+    delivered
 }
 
 #[cfg(test)]

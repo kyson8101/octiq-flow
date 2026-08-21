@@ -14,6 +14,7 @@ vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
 import {
   folderName,
   isUnder,
+  replaySession,
   searchSessions,
   whenLabel,
   type HistorySession,
@@ -142,5 +143,50 @@ describe("whenLabel", () => {
     expect(whenLabel(NOW - 5 * 60 * 60_000, NOW)).toBe("5h ago");
     expect(whenLabel(NOW - 1.5 * DAY, NOW)).toBe("yesterday");
     expect(whenLabel(NOW - 3 * DAY, NOW)).toBe("3d ago");
+  });
+});
+
+// The point of `replaySession` is that there is NO second message format: the
+// backend hands back the same events a live agent sends, and they fold through
+// the very same reducer. These say so.
+describe("replaySession", () => {
+  /** A message's words, from whichever blocks carry any. */
+  const textOf = (m: { blocks: { kind: string; text?: string }[] }) =>
+    m.blocks
+      .filter((b) => b.kind === "text")
+      .map((b) => b.text ?? "")
+      .join("");
+
+  // Content is ALWAYS a block list here. Claude's own file writes a plain user
+  // turn as a bare string, but `agent_history.rs::normalise_content` widens it
+  // before it leaves the backend, precisely so this side never has to know.
+  const said = (role: "user" | "assistant", text: string) => ({
+    type: role,
+    message: { role, content: [{ type: "text", text }] },
+  });
+
+  it("folds a past session into readable messages, in the order they were said", () => {
+    const chat = replaySession([
+      said("user", "fix the login bug"),
+      said("assistant", "on it"),
+      said("user", "thanks"),
+    ]);
+    expect(chat.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(textOf(chat.messages[0])).toContain("fix the login bug");
+    expect(textOf(chat.messages[1])).toContain("on it");
+  });
+
+  it("is not left waiting for an answer that already came", () => {
+    // A live turn ends on `result`, which a FILE never has — the session simply
+    // stops. Without this the chat would show the working spinner for a
+    // conversation that finished days ago.
+    const chat = replaySession([said("user", "hello"), said("assistant", "hi")]);
+    expect(chat.busy).toBe(false);
+  });
+
+  it("survives an empty session and a line the reducer knows nothing about", () => {
+    expect(replaySession([]).messages).toEqual([]);
+    const chat = replaySession([{ type: "nonsense-nobody-writes" }, said("user", "hi")]);
+    expect(chat.messages).toHaveLength(1);
   });
 });

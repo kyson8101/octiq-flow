@@ -34,7 +34,8 @@ pnpm tauri dev                                # desktop window, only if you want
 - **The desktop app is no longer the product.** OctiqFlow ships as a headless
   server plus a browser client; `pnpm tauri build` (`.app` + `.dmg`) still
   works but is not part of the deploy path. The client is served at the **root**
-  (`http://127.0.0.1:1421/?token=…`); `/v2/` still answers for saved links.
+  (`http://127.0.0.1:1421/?token=…`) and only there; `/v2/` is no longer served
+  and redirects to the root, query intact, so saved links keep working.
 - **The two halves deploy separately, and that bites.** `web/dist` is read off
   disk at runtime, so a client build reaches the browser on the next reload with
   no restart — while the backend only changes when the service restarts. A

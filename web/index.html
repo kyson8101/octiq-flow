@@ -8,9 +8,9 @@
     />
     <meta name="theme-color" content="#1c1c1e" />
 
-    <!-- Relative hrefs, like the asset URLs: `base: "./"` in vite.config.ts is
-         there because the same bundle is served at / and under /v2/. An absolute
-         /favicon.ico would 404 under the prefix, which is what it was doing. -->
+    <!-- Relative hrefs, like the asset URLs: `base: "./"` in vite.config.ts
+         keeps the bundle working wherever it is mounted, and these follow the
+         same rule so nothing depends on the page sitting at the root. -->
     <link rel="icon" href="./favicon.ico" sizes="any" />
     <link rel="icon" type="image/png" href="./icon-32.png" sizes="32x32" />
 

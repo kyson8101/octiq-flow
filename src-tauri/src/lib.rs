@@ -102,7 +102,7 @@ pub async fn run_headless() {
 /// write in four separate stores and would still race. It says where the running
 /// copy is and closes — the only outcome that cannot lose a project.
 fn defer_to_running_copy(app: &tauri::AppHandle, owner: &profile_lock::Owner) {
-    let url = format!("http://127.0.0.1:{}/v2/", web::load_config().port);
+    let url = format!("http://127.0.0.1:{}/", web::load_config().port);
     let handle = app.clone();
     let opened = url.clone();
     // Deliberately NOT `blocking_show`. This runs inside `setup`, before the
@@ -273,6 +273,7 @@ pub fn run() {
             agent_chat::chat_index_remove,
             agent_chat::save_attachment,
             agent_history::agent_history_list,
+            agent_history::agent_history_read,
             pty::pty_agent_running,
             pty::pty_set_visible,
             pty::pty_set_status_scan,

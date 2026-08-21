@@ -85,14 +85,56 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* The project name, which is also the way into the drawer. It shrinks before
+   anything else on the bar does, and it is the only thing here that is allowed
+   to. */
 .topbar-title {
-  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-0);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.topbar-title:disabled {
+  padding-left: 2px;
+  cursor: default;
+}
+
+.topbar-title:not(:disabled):hover {
+  background: var(--bg-1);
+}
+
+.topbar-name {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-weight: 600;
-  color: var(--fg-0);
+}
+
+.topbar-caret {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+/* No caret when the drawer is not a drawer. */
+.topbar-title:disabled .topbar-caret {
+  display: none;
+}
+
+/* Everything after this is pushed to the right end of the bar. */
+.topbar-gap {
+  flex: 1 1 auto;
+  min-width: 4px;
 }
 
 .icon-btn {
@@ -114,6 +156,93 @@ body {
 .icon-btn:hover {
   background: var(--bg-2);
   color: var(--fg-0);
+}
+
+/* A phone's top bar has to carry six things: the drawer, the project, a new
+   chat, the view switch, git, and plan usage. At 390px they wanted about 450px
+   between them, so the project name was squeezed to "octi…" and the branch to
+   "2". Nothing is dropped here — everything gives a little instead:
+   tighter gaps, smaller round buttons, one usage meter rather than two (the
+   busier agent; the other is a tap away), and a git chip that keeps its branch
+   whole while the project name takes the shrinking. */
+/* The phone bar carries FOUR things and nothing else: where you are (which is
+   also the way to everywhere else), how far through the plan, git, and a new
+   chat. The view switch and the usage meter moved into the drawer — see
+   `head` and `foot` in Sidebar.tsx — because at 390px six controls left the
+   project name at "octi…" and the branch at "2", which is not a bar, it is a
+   list of things that did not fit. */
+@media (max-width: 700px) {
+  .topbar {
+    gap: 3px;
+    padding: 0 max(4px, env(safe-area-inset-right)) 0 max(4px, env(safe-area-inset-left));
+  }
+
+  .topbar .icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .topbar-title {
+    font-size: 14px;
+  }
+
+  /* The branch keeps its own width; the project name is what yields. A branch
+     cut to one character says less than no branch at all. */
+  .topbar .gitp-chip {
+    flex: 0 0 auto;
+  }
+
+  .topbar .gitp-toggle {
+    gap: 4px;
+    padding: 0 5px;
+  }
+
+  .topbar .gitp-toggle-branch {
+    max-width: 9ch;
+  }
+}
+
+/* Where the view switch and the usage meter go instead. The switch leads the
+   drawer, since choosing Chat or Files is the same kind of choice as choosing
+   a project; the meter sits at the bottom with the other quiet readouts. */
+.sidebar-slot {
+  flex: 0 0 auto;
+  padding: 8px 10px 4px;
+}
+
+.sidebar-slot.is-foot {
+  padding: 2px 4px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-slot .mode-switch {
+  width: 100%;
+}
+
+.sidebar-slot .mode-btn {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+/* In the drawer there is room for words, and the icons alone were only ever a
+   concession to the top bar. */
+.sidebar-slot .mode-label {
+  display: inline;
+}
+
+.sidebar-slot .mode-icon {
+  display: inline;
+}
+
+/* Both agents' meters, with their labels: the drawer is not short of width the
+   way the bar was. */
+.sidebar-slot .usage-pill:not(.is-lead) {
+  display: flex;
+}
+
+.sidebar-slot .usage-btn {
+  width: 100%;
+  justify-content: space-between;
 }
 
 /* ---- Body: drawer + main --------------------------------------------- */
@@ -451,6 +580,13 @@ body {
   font-size: 12px;
   color: var(--fg-3);
   font-family: var(--mono);
+}
+
+/* The session was picked up, but its transcript could not be read back. Not a
+   failure of the conversation — typing still resumes it — so this is a warmer
+   note on the same line, not an error block. */
+.hero-warn {
+  color: var(--warn, #d08b3c);
 }
 
 /* ---- Resuming an earlier agent session --------------------------------- */
@@ -1327,6 +1463,285 @@ body {
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
 }
 
+/* A call joining the group above it. The group takes the drop: it swells for a
+   moment where the card landed and settles back, the way a surface does. The
+   origin is the BOTTOM edge because that is the side the new call comes from —
+   it is the row directly below. */
+@keyframes tool-merge {
+  0% {
+    transform: scaleY(1.055) scaleX(0.992);
+  }
+  38% {
+    transform: scaleY(0.972) scaleX(1.006);
+  }
+  70% {
+    transform: scaleY(1.012) scaleX(0.998);
+  }
+  100% {
+    transform: scaleY(1) scaleX(1);
+  }
+}
+
+@keyframes tool-merge-glow {
+  0% {
+    background: var(--accent-tint);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+/* Only the TOP half moves, and only a little. The box itself must not scale:
+   it is the one thing on screen holding its size while the run grows, and a
+   box that squashes every few seconds is the jumpiness this shape exists to
+   remove. */
+.tool-group.is-merging .tool-group-head {
+  transform-origin: bottom center;
+  animation: tool-merge 420ms cubic-bezier(0.34, 1.4, 0.5, 1),
+    tool-merge-glow 520ms ease-out;
+}
+
+/* Anyone who has asked not to be moved gets the colour and none of the wobble. */
+@media (prefers-reduced-motion: reduce) {
+  .tool-group.is-merging .tool-group-head {
+    animation: tool-merge-glow 520ms ease-out;
+  }
+}
+
+/* ---- The right column: the plan, then the agents ----------------------- */
+/* One column, two panels. The rail brought its own border and fill when it was
+   the only thing here; inside the column those belong to the column. */
+/* Cards that look like they are floating, in a column that holds its own
+   space. Not `position: fixed` and not a float: the column is a real column and
+   the conversation ends where it begins — nothing is ever underneath these.
+   What makes them read as floating is that they are inset from the edges, on
+   the page's own background, with a shadow under each. */
+.side {
+  flex: 0 0 auto;
+  width: 14.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 8px 8px 8px 0;
+  background: transparent;
+}
+
+.side > * {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  overflow: hidden;
+}
+
+.side .rail {
+  width: auto;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+}
+
+.side .rail {
+  flex: 1 1 auto;
+}
+
+/* On a phone the column cannot be a column: 14.5rem of a 24rem screen is the
+   conversation. So `.side` stops being a box at all — its children lay out as
+   direct children of the stack, which is how the rail behaved before the
+   column existed. */
+@media (max-width: 700px) {
+  .side {
+    display: contents;
+  }
+
+  .side .rail {
+    background: var(--bg-sunken);
+  }
+}
+
+/* ---- The plan, as a dropdown from the top bar -------------------------- */
+.plan {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.plan-btn {
+  width: auto;
+  min-width: 34px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-btn.is-on {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Finished: still there, still countable, no longer asking to be watched. */
+.plan-btn.is-done .plan-count {
+  color: var(--fg-3);
+}
+
+.plan-count {
+  transition: color 0.5s ease;
+}
+
+/* One item further on. A fade, not a bang: worth noticing, not worth jumping
+   at. */
+.plan-count.is-moved {
+  color: var(--accent);
+  transition: none;
+}
+
+.plan-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+}
+
+/* Jelly: it overshoots, squashes past the line, and settles. The origin is the
+   top right because that is the button it comes out of — a pop-out that grows
+   from anywhere else reads as a thing that arrived rather than a thing that
+   opened. */
+@keyframes plan-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.78, 0.62) translateY(-6px);
+  }
+  45% {
+    opacity: 1;
+    transform: scale(1.04, 1.07) translateY(0);
+  }
+  68% {
+    transform: scale(0.985, 0.965);
+  }
+  85% {
+    transform: scale(1.008, 1.012);
+  }
+  100% {
+    transform: scale(1, 1);
+  }
+}
+
+.plan-pop {
+  position: absolute;
+  z-index: 141;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(320px, calc(100vw - 20px));
+  max-height: min(60vh, 26rem);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  transform-origin: top right;
+  animation: plan-pop 340ms cubic-bezier(0.22, 1.2, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plan-pop {
+    animation: none;
+  }
+}
+
+.plan-pop-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 9px 12px 7px;
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-pop-title {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.plan-pop-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+}
+
+.todos-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 6px 12px 10px;
+  list-style: none;
+}
+
+.todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+
+/* The mark carries the state, so the row does not have to say it in words: an
+   empty ring not started, a filled accent ring the one in hand, a solid
+   tick-green dot done. */
+.todo-mark {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border: 1.5px solid var(--fg-3);
+  border-radius: 999px;
+}
+
+.todo.is-in_progress .todo-mark {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+
+.todo.is-completed .todo-mark {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+
+.todo.is-completed .todo-text {
+  color: var(--fg-3);
+  text-decoration: line-through;
+}
+
+.todo.is-in_progress .todo-text {
+  color: var(--fg-0);
+}
+
+/* ---- The thought, while it is being had ------------------------------- */
+/* Two lines of it, pinned to the newest words: `column-reverse` puts the end
+   of the text at the bottom of the box and lets the older lines run off the
+   top, where the mask fades them out rather than cutting them. */
+.think-live {
+  display: flex;
+  flex-direction: column-reverse;
+  max-width: 780px;
+  max-height: 32px;
+  margin: 0 auto 6px;
+  padding: 0 12px;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(to bottom, transparent, #000 14px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 14px);
+}
+
 .composer-box {
   max-width: 780px;
   margin: 0 auto;
@@ -1370,14 +1785,25 @@ body {
   margin-top: 4px;
 }
 
+/* Above the box, not in the button row: it is a sentence, and a sentence in a
+   row of 36px buttons gets whatever is left, which on a phone was eight
+   characters and an ellipsis. */
 .composer-hint {
-  flex: 1 1 auto;
-  min-width: 0;
+  max-width: 780px;
+  margin: 0 auto 5px;
+  padding: 0 13px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--fg-3);
+}
+
+/* Holds the place the status line used to take in the row, so Send stays at
+   the right end of it. */
+.composer-gap {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* Three pickers side by side on a wide bar; one sheet on a narrow one. The
@@ -2075,6 +2501,12 @@ body {
     display: none;
   }
 
+  /* The sidebar is a column here, and every project row in it carries its own
+     +. A second one in the top bar would be the same button twice. */
+  .new-chat {
+    display: none;
+  }
+
   .sidebar {
     position: static;
     transform: none;
@@ -2253,12 +2685,57 @@ body {
   color: var(--fg-2);
 }
 
-.picker-btn.perm-edit {
+/* The ladder, in colour: quiet at the cautious end, warm through the middle,
+   red where the asking stops. */
+.picker-btn.perm-manual {
+  color: var(--fg-2);
+}
+
+.picker-btn.perm-edit,
+.picker-btn.perm-edits {
+  color: var(--warn);
+}
+
+.picker-btn.perm-auto {
   color: var(--warn);
 }
 
 .picker-btn.perm-full {
   color: var(--danger);
+}
+
+/* The bypass row is not another rung, so it does not look like one: a rule
+   above it, and a word on the right that says what tapping it does. */
+.picker-item.is-bypass {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.picker-item.is-bypass .picker-name {
+  color: var(--fg-1);
+}
+
+.picker-item.is-bypass.is-on .picker-name {
+  color: var(--danger);
+}
+
+.picker-switch {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 11px;
+}
+
+.picker-item.is-bypass.is-on .picker-switch {
+  background: var(--danger);
+  color: #fff;
 }
 
 /* A caret on the paragraph still being written, so a pause in the stream reads
@@ -2593,20 +3070,20 @@ body {
 }
 
 /* ---- Files touched by a reply ----------------------------------------- */
+/* The right-hand half of the reply's footer row. It takes the space Copy does
+   not, so its toggle sits at the far right and the list, when opened, runs
+   underneath at the width that is left. */
 .files {
-  margin-top: 4px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
-}
-
-.files-head {
-  margin-bottom: 4px;
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  color: var(--fg-3);
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
 }
 
 .files-list {
+  width: 100%;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -2615,18 +3092,20 @@ body {
   gap: 1px;
 }
 
+/* Tight rows. This is a footnote to the answer, and it sits between one reply
+   and the next — every pixel it takes is pixels of the conversation. */
 .file {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 6px 8px;
+  padding: 3px 8px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-1);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
@@ -2816,18 +3295,19 @@ body {
 }
 
 /* Past a handful of files the list folds; this opens it. */
+/* Sized like the Copy button it shares the row with, so the two read as one
+   line of controls rather than a button and a paragraph. */
 .files-more {
-  display: block;
-  width: 100%;
-  margin-top: 2px;
-  padding: 6px 8px;
+  order: -1;
+  align-self: flex-end;
+  padding: 4px 9px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-3);
   font: inherit;
   font-size: 11.5px;
-  text-align: left;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -3580,11 +4060,21 @@ body {
    Sits under the answer it belongs to. Quiet until the turn is hovered, but
    never hidden — a touch screen has no hover, and this is the only way to take
    a reply with you. */
+/* One row under a reply: Copy on the left, the files it touched on the right.
+   Aligned to the TOP, so opening the file list grows it downwards and leaves
+   Copy where it was. */
+.msg-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 7px;
+}
+
 .msg-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 10px;
+  flex: 0 0 auto;
 }
 
 .msg-copy {
@@ -3803,10 +4293,24 @@ body {
   gap: 6px;
   max-width: 220px;
   padding: 3px 4px 3px 3px;
+  border: 0;
   border-radius: var(--r-sm);
   background: var(--bg-2);
+  font: inherit;
   font-size: 12px;
   color: var(--fg-1);
+  text-align: left;
+}
+
+/* On a sent message the chip is a button — the picture on it is a thumbnail of
+   something you may well want to see full size. */
+.sent-files .chip {
+  cursor: pointer;
+}
+
+.sent-files .chip:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
 }
 
 .chip svg {
@@ -3828,6 +4332,15 @@ body {
   border-radius: 4px;
   object-fit: cover;
   background: var(--bg-0);
+}
+
+/* The files a SENT message carried, above its words. Wraps, because a message
+   can go out with a handful of screenshots. */
+.sent-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
 }
 
 .chip-name {
@@ -5601,10 +6114,16 @@ body {
 /* A run of calls folded into one row. It is a card like any other tool card,
    with a second line: the row says how much ran and where it got to, the line
    under it says what ran. */
+/* The top half. `min-height` is doing real work: a run of one kind of call
+   shows no tally line (it would only repeat the name), and without a floor the
+   box would grow by a line the moment a second kind of call joined the run. It
+   is a box that holds its height or it is nothing. */
 .tool-group-head {
   flex-direction: column;
   align-items: stretch;
+  justify-content: center;
   gap: 5px;
+  min-height: 52px;
 }
 
 .tool-group-head .tool-row {
@@ -5662,33 +6181,37 @@ body {
   padding: 2px 10px 10px;
 }
 
+/* The bottom half: the newest call, whole. Divided from the summary by a line
+   rather than a gap, because the two halves are one box — the run so far, and
+   where it is now.
+
+   The card in it is stripped of its own frame. It had one — inset, with its own
+   border and fill — and that inset put its icon seven pixels to the right of
+   the icon in the summary directly above it, so the box read as a card with a
+   smaller card sitting crookedly inside it. One box, two halves, one left
+   edge: the two rows line up because they are the same row twice. */
+.tool-group-now {
+  border-top: 1px solid var(--border);
+}
+
+.tool-group-now > .tool {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 /* Cards inside a card need a shade of their own to read as separate, the same
    way a subagent's do. */
 .tool-group-body .tool {
   background: var(--bg-0);
 }
 
-/* Folded, the card says it is more than one card: a second edge behind it.
-   Opened, the cards themselves say it, and the hint would just be a line under
-   the last one. */
+/* There used to be a second edge peeking out below the card here, to say the
+   card was really several. It is gone, and not because it was hard to draw:
+   the box now has a summary on top, a rule across the middle and a card
+   underneath, which says "more than one" in a way a 5px sliver never did — and
+   the sliver hung below the rounded corners, so the bottom of the box read as
+   broken however carefully its own radius was cut. */
 .tool-group {
   position: relative;
-  overflow: visible;
-}
-
-.tool-group::after {
-  content: "";
-  position: absolute;
-  right: 9px;
-  bottom: -4px;
-  left: 9px;
-  height: 4px;
-  border: 1px solid var(--border);
-  border-top: 0;
-  border-radius: 0 0 var(--r-md) var(--r-md);
-  background: var(--bg-sunken);
-}
-
-.tool-group.is-open::after {
-  display: none;
 }

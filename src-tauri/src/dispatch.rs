@@ -174,6 +174,12 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "agent_history_list" => Ok(json!(crate::agent_history::agent_history_list(arg(
             &args, "limit"
         )?))),
+        // What was SAID in one of them, so it can be read before it is picked
+        // up. The events come back in the shape the chat reducer already folds.
+        "agent_history_read" => Ok(json!(crate::agent_history::agent_history_read(
+            arg(&args, "agent")?,
+            arg(&args, "sessionId")?,
+        )?)),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
         "chat_index_remove" => unit(crate::agent_chat::chat_index_remove(
             arg(&args, "id")?,
@@ -245,7 +251,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "permission_decide" => {
             let id: String = arg(&args, "id")?;
             let decision: crate::permission::Decision = arg(&args, "decision")?;
-            Ok(json!(crate::permission::decide(&id, decision)))
+            // "Always" is an allow that is kept for the rest of this chat.
+            // Absent means once, which is what every older client sends.
+            let remember = args
+                .get("remember")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            Ok(json!(crate::permission::decide(&id, decision, remember)))
         }
 
         // ---- questions ----------------------------------------------------

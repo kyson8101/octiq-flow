@@ -157,9 +157,10 @@ actually answers:
    grep 'OctiqFlow:' ~/.octiqflow/logs/server.log | tail -1
    ```
 
-   The client is served at the **root** (`http://127.0.0.1:1421/?token=…`). The
-   older `/v2/` path still works, for links and home-screen shortcuts people
-   already saved. Mention the tunnel URL too if the user reaches it that way;
+   The client is served at the **root** (`http://127.0.0.1:1421/?token=…`) and
+   only there. The older `/v2/` path redirects to the root with its query
+   intact, so links and home-screen shortcuts people already saved still land
+   on the app. Mention the tunnel URL too if the user reaches it that way;
    the token does not change across restarts, so their saved link keeps working.
 
 ## Rules

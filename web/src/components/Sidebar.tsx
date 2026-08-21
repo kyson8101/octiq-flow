@@ -8,7 +8,7 @@
 // — the indent already says what they are — and any state they have is a mark
 // on the RIGHT, where it can be scanned down the edge of the list without
 // breaking the line of text.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Conversation } from "../lib/store";
 
 export type Project = { id: string; name: string; primary_path?: string };
@@ -36,6 +36,8 @@ export function Sidebar({
   onDelete,
   onSettings,
   onNewProject,
+  head,
+  foot,
 }: {
   projects: Project[];
   /** Put away, not deleted. Listed behind a fold so they are reachable — the
@@ -64,9 +66,18 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
+  /** Controls with nowhere else to be on a phone. The top bar holds four things
+   *  at 390px, so the view switch (`head`) and the plan-usage meter (`foot`)
+   *  come in here instead — passed in rather than rendered twice, because the
+   *  meter polls an endpoint that rate-limits per account. Both are absent on a
+   *  wide screen, where the bar has room for them. */
+  head?: ReactNode;
+  foot?: ReactNode;
 }) {
   return (
     <nav className="sidebar">
+      {head && <div className="sidebar-slot">{head}</div>}
+
       <div className="sidebar-head">
         <span className="sidebar-title">Projects</span>
         <button className="sidebar-add" type="button" title="New project" onClick={onNewProject}>
@@ -107,6 +118,8 @@ export function Sidebar({
       <button className="shelf-open" type="button" onClick={onShowAgents}>
         Agent · {agentName}
       </button>
+
+      {foot && <div className="sidebar-slot is-foot">{foot}</div>}
     </nav>
   );
 }

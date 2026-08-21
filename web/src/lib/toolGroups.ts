@@ -10,6 +10,13 @@
 // go quiet. Open it and the cards are exactly the cards that would have been
 // there.
 //
+// The NEWEST call of a run never folds, and it rides INSIDE the same box: a
+// group is two sections, the run so far on top and the newest call underneath.
+// That is what stops the screen jumping. Each new call pushes the one before it
+// into the summary above, so the box is exactly as tall with eleven calls in it
+// as with three — nothing is added to the page and nothing is taken away, and a
+// run that finishes leaves the box the height it already was.
+//
 // Three kinds of call never fold away:
 //   - an edit (Write / Edit / MultiEdit), because a change to a file is the
 //     thing the reader is checking, not the noise around it;
@@ -19,6 +26,13 @@
 //     stopped working.
 // They also BREAK a run, which is what makes `Bash x5, Write x2, Bash x3` read
 // as a group, two edits, and another group.
+//
+// THINKING is not drawn here at all — it is watched live above the composer
+// while it happens (see Composer's thinking strip) and left out of the
+// transcript afterwards. It does not break a run either: an agent with
+// interleaved thinking thinks between its calls, so a run of eight calls used
+// to arrive as eight lone cards with "thought for a moment" between each pair —
+// the wall this whole file exists to prevent.
 import type { Block } from "./chat";
 import { toolDetail, toolLook, type ToolKind } from "./toolKind";
 
@@ -30,9 +44,13 @@ export const MIN_RUN = 3;
 
 const NEVER_FOLD: ReadonlySet<ToolKind> = new Set<ToolKind>(["edit", "agent"]);
 
-/** One thing to draw: a block on its own, or a run of calls as a group. */
+/** One thing to draw: a block on its own, or a run of calls as a group.
+ *
+ *  `tools` is the run so far, summarised on the group's top half. `newest` is
+ *  the call that has not folded yet, drawn whole on the bottom half. */
 export type Row =
-  { kind: "block"; block: Block; index: number } | { kind: "group"; tools: Tool[]; index: number };
+  | { kind: "block"; block: Block; index: number }
+  | { kind: "group"; tools: Tool[]; newest: Tool; index: number };
 
 /**
  * Fold consecutive tool calls into groups.
@@ -50,7 +68,17 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
 
   const flush = () => {
     if (run.length >= MIN_RUN) {
-      rows.push({ kind: "group", tools: run.map((r) => r.tool), index: run[run.length - 1].index });
+      // Everything but the newest is folded. `folded` is never empty here:
+      // MIN_RUN is 3, so there are at least two left to fold.
+      const folded = run.slice(0, -1);
+      const newest = run[run.length - 1];
+      rows.push({
+        kind: "group",
+        tools: folded.map((r) => r.tool),
+        newest: newest.tool,
+        // The row ENDS at the newest call, because that is what it draws last.
+        index: newest.index,
+      });
     } else {
       for (const r of run) rows.push({ kind: "block", block: r.tool, index: r.index });
     }
@@ -62,8 +90,11 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
       run.push({ tool: block, index });
       return;
     }
-    // Anything else — prose, thinking, an edit, a subagent — ends the run where
-    // it stands. Moving a call past it would put the reply in the wrong order.
+    // Thinking draws nothing, so it decides nothing: it neither takes a row of
+    // its own nor cuts the run it landed in the middle of.
+    if (block.kind === "thinking") return;
+    // Anything else — prose, an edit, a subagent — ends the run where it
+    // stands. Moving a call past it would put the reply in the wrong order.
     flush();
     rows.push({ kind: "block", block, index });
   });

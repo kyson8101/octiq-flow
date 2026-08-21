@@ -1,15 +1,23 @@
 #!/usr/bin/env node
 /*
- * OctiqFlow — an MCP server whose only tool is asking you something.
+ * OctiqFlow — an MCP server for the two things a chat client needs and print
+ * mode does not have: asking you something, and showing you a plan.
  *
  * `claude -p` is never offered `AskUserQuestion`: print mode has nobody to
  * answer, so the tool is not put in front of the model at all. That is the one
  * thing a chat client cannot do without — an agent that cannot ask which of two
  * ways you want something either guesses or stops.
  *
- * It loads MCP servers in full, though, so we can hand it a tool of our own.
+ * It loads MCP servers in full, though, so we can hand it tools of our own.
  * `ask_user` blocks, the question appears wherever you are — a phone will do —
  * and your answer comes back as the tool result.
+ *
+ * `todo_write` is the other half: the agent writes down what it is about to do
+ * and keeps it up to date, so the person waiting can see their request was
+ * understood and watch it being worked through. It does NOT call back into the
+ * server — the call itself travels down the chat stream, and the client reads
+ * the list straight off it. So this tool answers instantly and can never hold
+ * a turn up.
  *
  * Speaks MCP over stdio: newline-delimited JSON-RPC, three methods. Written by
  * hand rather than with the SDK because it is ~100 lines and adding a
@@ -119,6 +127,49 @@ const TOOL = {
   },
 };
 
+const TODO_TOOL = {
+  name: "todo_write",
+  description:
+    "Write or update the visible TODO list for this chat. The list is pinned " +
+    "on the user's screen, so it is how they see that a task was understood " +
+    "and how far through it you are. Call it as soon as you take on work worth " +
+    "more than one step, and again each time an item starts or finishes — " +
+    "exactly one item should be in_progress at a time. Send the WHOLE list " +
+    "every time; it replaces the one on screen. Returns immediately: it asks " +
+    "nothing of the user and never blocks a turn.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      todos: {
+        type: "array",
+        description: "The whole list, in the order it will be worked through.",
+        items: {
+          type: "object",
+          properties: {
+            content: {
+              type: "string",
+              description: "The task, as an imperative: \"Fix the mobile top bar\".",
+            },
+            status: {
+              type: "string",
+              enum: ["pending", "in_progress", "completed"],
+              description: "Where this one is. Exactly one item may be in_progress.",
+            },
+            activeForm: {
+              type: "string",
+              description:
+                "The same task said as what you are doing right now: " +
+                "\"Fixing the mobile top bar\". Shown while it is in progress.",
+            },
+          },
+          required: ["content", "status"],
+        },
+      },
+    },
+    required: ["todos"],
+  },
+};
+
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
@@ -140,9 +191,20 @@ async function handle(msg) {
     case "tools/list":
       // Inert outside OctiqFlow: with no chat to answer into, offering the
       // tool would only give the agent something that always fails.
-      return reply(msg.id, { tools: CHAT_KEY ? [TOOL] : [] });
+      return reply(msg.id, { tools: CHAT_KEY ? [TOOL, TODO_TOOL] : [] });
 
     case "tools/call": {
+      // Nothing to do but say yes. The list the client draws is the call
+      // itself, which is already on its way down the chat stream by the time
+      // this runs — so there is nobody to tell and nothing to wait for.
+      if (msg.params?.name === "todo_write") {
+        const todos = Array.isArray(msg.params.arguments?.todos)
+          ? msg.params.arguments.todos.length
+          : 0;
+        return reply(msg.id, {
+          content: [{ type: "text", text: `The list on screen now has ${todos} item(s).` }],
+        });
+      }
       if (msg.params?.name !== "ask_user") {
         return reply(msg.id, {
           content: [{ type: "text", text: `No tool called ${msg.params?.name}.` }],

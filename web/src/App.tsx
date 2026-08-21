@@ -19,7 +19,15 @@
 // whether or not it is the chat on screen.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
-import { addUserTurn, emptyChat, isThinking, reduceChat, turnOutput, type ChatState } from "./lib/chat";
+import {
+  addUserTurn,
+  emptyChat,
+  isThinking,
+  reduceChat,
+  thinkingNow,
+  turnOutput,
+  type ChatState,
+} from "./lib/chat";
 import {
   byProject,
   loadConversations,
@@ -31,6 +39,9 @@ import {
 import { forgetIndexEntry, saveIndexEntry } from "./lib/chatIndex";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail } from "./components/AgentRail";
+import { Todos } from "./components/Todos";
+import { latestTodos } from "./lib/todos";
+import { useMedia, WIDE } from "./lib/media";
 import { MessageList } from "./components/MessageList";
 import {
   ACCESS,
@@ -46,7 +57,7 @@ import {
 } from "./components/Composer";
 import { Connect } from "./components/Connect";
 import { SessionSearch } from "./components/SessionSearch";
-import { isUnder, type HistorySession } from "./lib/history";
+import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { AgentsPage, loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
@@ -87,9 +98,9 @@ const EFFORT_KEY = "octiq.v2.effort";
 const TERM_KEY = "octiq.v2.terminalOpen";
 /** What the address bar says you are looking at.
  *
- *  The hash rather than the path: the client is served under /v2/ with a
- *  relative base, and `?token=…` already owns the query string (it is read once
- *  and stripped). A hash needs no server route and survives a reload.
+ *  The hash rather than the path: every path is served the same page, and
+ *  `?token=…` already owns the query string (it is read once and stripped).
+ *  A hash needs no server route and survives a reload.
  *
  *  Shape: #/p/<projectId>/c/<chatId> — the chat half is dropped for a project
  *  with nothing open yet. */
@@ -109,6 +120,8 @@ function writeLocation(project: string | null, chat: string | null): void {
   history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
 }
 
+/** The chat that was on screen when the page was last left. */
+const LAST_KEY = "octiq.v2.lastChat";
 const GIT_KEY = "octiq.v2.gitOpen";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
@@ -153,6 +166,9 @@ export default function App() {
    *  conversation. View state, not chat state: it is about what this person is
    *  reading, and it must not survive into another conversation. */
   const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
+  /** Wide enough for a sidebar column — and so for a top bar that can hold the
+   *  view switch and the usage meter. Below it those live in the drawer. */
+  const wide = useMedia(WIDE);
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
@@ -199,12 +215,16 @@ export default function App() {
     // stays on the middle; dropping these would silently move them to "read".
     const legacy: Record<string, AccessLevel> = {
       plan: "read",
+      // `acceptEdits` is a level of its own again — but a value written under
+      // the old scheme meant "the middle one", which was `auto`. Reading it as
+      // `edits` now would quietly TAKE AWAY permission somebody already has.
       acceptEdits: "auto",
       edit: "auto",
       bypassPermissions: "full",
     };
     if (saved && legacy[saved]) return legacy[saved];
-    return saved === "read" || saved === "auto" || saved === "full" ? saved : "read";
+    const known: AccessLevel[] = ["read", "manual", "edits", "auto", "full"];
+    return known.includes(saved as AccessLevel) ? (saved as AccessLevel) : "read";
   });
   // How hard the model thinks. Fixed on the agent's command line, so changing
   // it takes effect from the next message — see changeEffort.
@@ -215,7 +235,10 @@ export default function App() {
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
   // "continuing an earlier session" on its own asks you to take it on trust.
-  const [resumed, setResumed] = useState<Record<string, HistorySession>>({});
+  /** Past sessions picked up this visit, by conversation id. `problem` is set
+   *  when the transcript could not be read — the chat still works, so this is a
+   *  note beside the caption rather than a failure of the conversation. */
+  const [resumed, setResumed] = useState<Record<string, HistorySession & { problem?: string }>>({});
 
   // What each loaded conversation belongs to and was started with. A background
   // chat still has to be saved when it answers, and by then the pickers on
@@ -651,19 +674,16 @@ export default function App() {
   // conversation from a phone's home screen or another device.
   useEffect(() => {
     writeLocation(projectId, conversationId);
+    // And in storage, because the URL is not always there to carry it. The app
+    // is opened from a saved link and from a home-screen icon, and both are the
+    // ORIGINAL address with no `#/p/…/c/…` on the end — so a reload from one of
+    // those had nothing to say which chat you were in.
+    try {
+      if (conversationId) localStorage.setItem(LAST_KEY, conversationId);
+    } catch {
+      /* storage blocked: the URL is still the way back */
+    }
   }, [projectId, conversationId]);
-
-  // Open the chat the URL named, once, as soon as the list it lives in arrives.
-  // Cleared after one go: from then on the app drives the URL.
-  useEffect(() => {
-    const wanted = opened.current.chat;
-    if (!wanted) return;
-    const found = conversations.find((c) => c.id === wanted);
-    if (!found) return;
-    opened.current = {};
-    setProjectId(found.projectId);
-    setConversationId(found.id);
-  }, [conversations]);
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -673,6 +693,8 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  /** The newest plan this chat wrote down — see lib/todos. */
+  const todos = useMemo(() => latestTodos(chat.messages), [chat.messages]);
   // The agent the rail opened, resolved against THIS conversation. Looking it
   // up rather than storing the object keeps it live: a running agent's focus
   // view updates as its events arrive. It resolves to nothing after switching
@@ -781,6 +803,35 @@ export default function App() {
       }
       setResumed((prev) => ({ ...prev, [id]: session }));
       patch(id, (s) => ({ ...s, sessionId: session.sessionId }));
+
+      // ...and READ it, so the history can be looked at rather than merely
+      // pointed at. Picking a session used to leave a blank page with one line
+      // of caption on it, which is indistinguishable from nothing happening.
+      //
+      // Asynchronous on purpose: everything above is what makes the chat usable
+      // and must not wait on a file that may be megabytes. The transcript
+      // arrives after, into `id` — which is the conversation that was picked,
+      // not whichever one is on screen by then.
+      void readSession(session)
+        .then((events) => {
+          const past = replaySession(events);
+          if (past.messages.length === 0) return;
+          patch(id, (s) =>
+            // Anything said in the meantime WINS. The agent answers into this
+            // same state, and a slow read landing on top of a live turn would
+            // wipe it. Seeding is only for a conversation still untouched.
+            s.messages.length > 0
+              ? s
+              : { ...s, messages: past.messages, agents: past.agents },
+          );
+        })
+        .catch((err: unknown) => {
+          // Say so rather than leaving the same blank page this change exists
+          // to fix. The chat still works: the session id is already on it, so
+          // typing resumes the real session even when its file cannot be read.
+          const problem = err instanceof Error ? err.message : String(err);
+          setResumed((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], problem } } : prev));
+        });
       setProjectId(forProject);
       setConversationId(id);
       setDrawer(false);
@@ -825,6 +876,46 @@ export default function App() {
     if (c.permission) setAccess(c.permission as AccessLevel);
     setDrawer(false);
   }, [patch]);
+
+  // Go back to the chat you were last in, once the list it lives in arrives.
+  //
+  // Through `openConversation`, which is the ONLY thing that puts a stored
+  // transcript back on screen: it seeds the messages and asks the server for
+  // anything it missed. This used to set the project and conversation ids by
+  // hand instead, which named the chat in the title bar and left the page
+  // blank underneath — a reload looked exactly like a conversation that had
+  // been thrown away.
+  //
+  // The URL wins, since it is a link to one particular chat; the remembered one
+  // is the fallback for an address that names none. Once only: from then on the
+  // app drives the URL, and a restore landing later would drag you out of
+  // whatever you had already started.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    if (conversationId) {
+      restored.current = true;
+      return;
+    }
+    let last: string | null = null;
+    try {
+      last = localStorage.getItem(LAST_KEY);
+    } catch {
+      /* storage blocked: the URL is the only way back */
+    }
+    const wanted = opened.current.chat ?? last;
+    if (!wanted) {
+      restored.current = true;
+      return;
+    }
+    // Not here YET is not the same as gone: the server's list folds in a moment
+    // after the cached one, so this waits rather than giving up.
+    const found = conversations.find((c) => c.id === wanted);
+    if (!found) return;
+    restored.current = true;
+    opened.current = {};
+    openConversation(found);
+  }, [conversations, conversationId, openConversation]);
 
   /** Show or hide the git column, and remember it — every way in and out goes
    *  through here, so the stored flag cannot drift from what is on screen. */
@@ -973,7 +1064,16 @@ export default function App() {
         modelId: choice.id,
         access,
       };
-      patch(id, (s) => addUserTurn(s, text));
+      // The same files the agent is given, kept on the bubble so the message
+      // shows what was sent with it. The object URLs are dropped: they are this
+      // page's copy of the bytes, and a stored one points at nothing.
+      patch(id, (s) =>
+        addUserTurn(
+          s,
+          text,
+          attachments.map((a) => ({ path: a.path, name: a.name, isImage: !!a.isImage })),
+        ),
+      );
 
       // Put the chat in the index NOW, before the agent is even started —
       // rather than leaving it to the debounced save 700ms later.
@@ -1248,6 +1348,37 @@ export default function App() {
 
   if (conn === "unauthorized") return <Connect />;
 
+  /* Chat or Files. Marked by a filled pill, not an edge stripe: on a 48px-tall
+     bar a thin marker is a thing you squint at. */
+  const viewSwitch = (
+    <div className="mode-switch" role="group" aria-label="View">
+      <button
+        className={`mode-btn ${mode === "chat" ? "is-on" : ""}`}
+        type="button"
+        aria-pressed={mode === "chat"}
+        title="Chat"
+        onClick={() => pickMode("chat")}
+      >
+        <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.6-4.7A8.4 8.4 0 0 1 3.6 11 8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z" />
+        </svg>
+        <span className="mode-label">Chat</span>
+      </button>
+      <button
+        className={`mode-btn ${mode === "editor" ? "is-on" : ""}`}
+        type="button"
+        aria-pressed={mode === "editor"}
+        title="Files"
+        onClick={() => pickMode("editor")}
+      >
+        <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m8 17-4-5 4-5M16 7l4 5-4 5" />
+        </svg>
+        <span className="mode-label">Files</span>
+      </button>
+    </div>
+  );
+
   return (
     <div className={`app ${drawer ? "drawer-open" : ""}`}>
       {conn !== "open" && (
@@ -1257,57 +1388,58 @@ export default function App() {
       )}
 
       <header className="topbar">
+        {/* The project name IS the way into the drawer.
+            A hamburger beside a project name is two controls saying "projects"
+            where one will do, and on a phone the bar has four things to carry
+            and 390px to carry them in. Off the phone the sidebar is always
+            open, so this stops being a button and is just the title. */}
         <button
-          className="icon-btn menu"
+          className="topbar-title"
           type="button"
-          aria-label="Projects"
+          aria-label="Projects and chats"
+          aria-expanded={drawer}
           onClick={() => setDrawer((v) => !v)}
+          disabled={wide}
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-            <path d="M4 7h16M4 12h16M4 17h16" />
-          </svg>
+          <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
+          <span className="topbar-caret" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </span>
         </button>
-        {/* No "new chat" button here. Every project row in the sidebar carries
-            its own, next to the project a new chat would belong to — a second
-            one up here only raises the question of which project it means. */}
-        <div className="topbar-title">{project?.name ?? "OctiqFlow"}</div>
-        {/* Marked by a filled pill, not an edge stripe: on a 48px-tall bar a
-            thin marker is a thing you squint at.
 
-            The words are dropped on a phone and the icons carry it, because the
-            usage pill to the right of this is wide and something has to give —
-            and a project name squeezed down to "o.." tells you less than an
-            icon does. */}
-        <div className="mode-switch" role="group" aria-label="View">
-          <button
-            className={`mode-btn ${mode === "chat" ? "is-on" : ""}`}
-            type="button"
-            aria-pressed={mode === "chat"}
-            aria-label="Chat"
-            title="Chat"
-            onClick={() => pickMode("chat")}
-          >
-            <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.6-4.7A8.4 8.4 0 0 1 3.6 11 8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z" />
-            </svg>
-            <span className="mode-label">Chat</span>
-          </button>
-          <button
-            className={`mode-btn ${mode === "editor" ? "is-on" : ""}`}
-            type="button"
-            aria-pressed={mode === "editor"}
-            aria-label="Files"
-            title="Files"
-            onClick={() => pickMode("editor")}
-          >
-            <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="m8 17-4-5 4-5M16 7l4 5-4 5" />
-            </svg>
-            <span className="mode-label">Files</span>
-          </button>
-        </div>
+        <span className="topbar-gap" />
+
+        {/* The view switch and the usage meter are HERE only on a wide screen.
+            On a phone they are in the drawer — see the Sidebar below. Both are
+            rendered once, in one place or the other, rather than twice with one
+            hidden: the meter polls an endpoint that rate-limits per account. */}
+        {wide && viewSwitch}
+
+        {/* The plan: a count on the bar, the list one tap under it. */}
+        <Todos todos={todos} />
+
         <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
-        <Usage />
+
+        {/* A new chat in the project named on the left. Last, at the thumb end
+            of the bar, because it is the one thing here you press rather than
+            read. */}
+        {project && (
+          <button
+            className="icon-btn new-chat"
+            type="button"
+            aria-label={`New chat in ${project.name}`}
+            title="New chat"
+            onClick={() => startBlank(project.id)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
+
+        {wide && <Usage />}
       </header>
 
       <div className="body">
@@ -1337,6 +1469,8 @@ export default function App() {
           onDelete={deleteConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
+          head={wide ? undefined : viewSwitch}
+          foot={wide ? undefined : <Usage />}
         />
 
         <main className="main" hidden={mode !== "chat"}>
@@ -1350,6 +1484,16 @@ export default function App() {
                   <p className="hero-sub">
                     continuing “{resumed[conversationId].title}” ·{" "}
                     {resumed[conversationId].agent === "claude" ? "Claude" : "Codex"}
+                    {resumed[conversationId].problem && (
+                      // The transcript could not be read. Saying so beats the
+                      // blank page that looks like the click did nothing —
+                      // typing still resumes the real session.
+                      <span className="hero-warn">
+                        {" "}
+                        · could not read it back ({resumed[conversationId].problem}). Typing still
+                        carries on the session.
+                      </span>
+                    )}
                   </p>
                 ) : (
                   <p className="hero-sub">continuing an earlier session</p>
@@ -1382,7 +1526,15 @@ export default function App() {
                   />
                 )}
               </div>
-              <AgentRail agents={chat.agents} onOpen={setFocusedAgent} />
+              {/* The right column: the agents this chat started, as a card
+                  that looks like it is floating but keeps its own space — the
+                  conversation ends where the column begins, so nothing is ever
+                  underneath it. Drawn only when there is an agent to list. */}
+              {chat.agents.length > 0 && (
+                <aside className="side">
+                  <AgentRail agents={chat.agents} onOpen={setFocusedAgent} />
+                </aside>
+              )}
             </div>
           )}
 
@@ -1507,6 +1659,7 @@ export default function App() {
             turnStartedAt={chat.turnStartedAt}
             turnTokens={turnOutput(chat)}
             thinking={isThinking(chat)}
+            thought={thinkingNow(chat)}
             effort={effort}
             onEffort={changeEffort}
             cwd={project?.primary_path ?? ""}

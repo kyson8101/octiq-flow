@@ -6,7 +6,7 @@
 //!
 //! What it does NOT serve is the classic terminal UI: those assets live inside
 //! the Tauri bundle, and its commands (PTYs above all) exist only inside Tauri.
-//! This serves `/v2`, which is the chat client and needs neither.
+//! This serves the chat client, at the root, and it needs neither.
 //!
 //!     cargo run --bin octiq-server
 //!     OCTIQ_WEB_BIND=127.0.0.1 OCTIQ_WEB_PORT=1421 octiq-server

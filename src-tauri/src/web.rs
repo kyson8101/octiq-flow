@@ -485,9 +485,10 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
         // their own terminal; the usability is worth more than the secrecy of a
         // value that already sits in plain text on the same disk.
         println!("[web] OctiqFlow: http://{addr}/?token={token}");
-        // The old path still answers, and people have it saved. Said once here
-        // so nobody has to wonder whether their bookmark went stale.
-        println!("[web] (the older /v2/ URL still works)");
+        // The app is served here and nowhere else now. Said once so nobody has
+        // to wonder whether the bookmark they kept went stale — it does not, it
+        // lands here, token and all.
+        println!("[web] (the older /v2/ URL redirects to this one)");
         let service = router.into_make_service_with_connect_info::<SocketAddr>();
         if let Err(e) = axum::serve(listener, service).await {
             eprintln!("[web] server stopped: {e}");
@@ -568,37 +569,46 @@ fn serve_v2(rel: &str) -> Response {
     }
 }
 
+/// Where a request for the old `/v2` address belongs, if it is one.
+///
+/// The client is served at the root and nowhere else. `/v2/` was its address
+/// for long enough to reach bookmarks and home-screen shortcuts, so those are
+/// sent to the root rather than broken — and the query goes with them, because
+/// what a saved link carries is the token. Only `/v2` and `/v2/…` count;
+/// `v2x` and `assets/v2/…` are ordinary paths that merely start the same way.
+fn legacy_root_redirect(raw: &str, query: Option<&str>) -> Option<String> {
+    let rest = raw.strip_prefix("v2")?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None;
+    }
+    Some(match query {
+        Some(q) if !q.is_empty() => format!("/?{q}"),
+        _ => "/".to_string(),
+    })
+}
+
 /// Serve the client.
 ///
-/// The v2 React client is THE client, and it answers at the root: someone given
-/// a URL should reach the app, not a path they have to know to append. `/v2/`
-/// still works and always will — it is in home-screen shortcuts, in bookmarks,
-/// and in the tokened URL this server has been printing since the day it was
-/// written; changing where something lives is no reason to break the links
-/// people already keep.
+/// The React client is THE client, and it answers at the root and only there:
+/// someone given a URL should reach the app, not a path they have to know to
+/// append. `/v2/` used to be that path; it now redirects to the root, so links
+/// people already saved keep working without the app being served twice.
 ///
 /// The classic UI (the desktop window's own files, read through Tauri's asset
-/// resolver) is now only a fallback, for a checkout where v2 has not been
-/// built. A headless server has no bundle to read it from at all.
+/// resolver) is now only a fallback, for a checkout where the client has not
+/// been built. A headless server has no bundle to read it from at all.
 async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
     let raw = uri.path().trim_start_matches('/');
 
-    // The v2 bundle's asset URLs are RELATIVE (vite `base: "./"`), so the page
-    // must be served from a path ending in a slash or the browser resolves
-    // `./assets/…` against the parent and misses. At the root that is already
-    // true; `/v2` alone is the one spelling that is not.
-    if raw == "v2" {
+    if let Some(target) = legacy_root_redirect(raw, uri.query()) {
         return Response::builder()
             .status(StatusCode::TEMPORARY_REDIRECT)
-            .header(header::LOCATION, "/v2/")
+            .header(header::LOCATION, target)
             .body(Body::empty())
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
     }
-    if let Some(rest) = raw.strip_prefix("v2/") {
-        return serve_v2(rest);
-    }
 
-    // Everything else is v2 as well, whenever it is built. Its own routing is
+    // Everything else is the client, whenever it is built. Its own routing is
     // in the URL's HASH (`#/p/…/c/…`), so every path that reaches here is
     // either an asset or a page, and `serve_v2` answers both.
     if v2_root().is_some() {
@@ -1320,5 +1330,34 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("user-agent", "curl".parse().unwrap());
         assert!(!came_through_a_proxy(&headers));
+    }
+
+    // ---- legacy_root_redirect: the old /v2 address ------------------------
+
+    #[test]
+    fn the_old_v2_address_lands_on_the_root_with_its_query_intact() {
+        assert_eq!(legacy_root_redirect("v2", None).as_deref(), Some("/"));
+        assert_eq!(legacy_root_redirect("v2/", None).as_deref(), Some("/"));
+        // The token rides along. Dropping it would send a saved link to a page
+        // that immediately asks for a token the link was carrying all along.
+        assert_eq!(
+            legacy_root_redirect("v2/", Some("token=abc")).as_deref(),
+            Some("/?token=abc")
+        );
+        assert_eq!(
+            legacy_root_redirect("v2/assets/index.js", Some("token=abc")).as_deref(),
+            Some("/?token=abc")
+        );
+    }
+
+    #[test]
+    fn a_path_that_merely_starts_with_v2_is_not_the_old_address() {
+        for raw in ["", "v2x", "v20/thing", "assets/v2/index.js", "index.html"] {
+            assert_eq!(
+                legacy_root_redirect(raw, Some("token=abc")),
+                None,
+                "{raw} should be served, not redirected"
+            );
+        }
     }
 }

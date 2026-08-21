@@ -132,10 +132,20 @@ export type AgentRun = {
   workers?: WorkflowAgent[];
 };
 
+/** A file that went with a message: what is worth writing down about it.
+ *
+ *  No object URL — that is the browser's copy of the bytes for the few minutes
+ *  the composer holds them, and a stored one points at nothing after a reload.
+ *  The path is enough: the picture is fetched back through `/file`. */
+export type Attached = { path: string; name: string; isImage: boolean };
+
 export type Message = {
   id: string;
   role: "user" | "assistant";
   blocks: Block[];
+  /** Files sent with this turn — drawn under it, so a message that was three
+   *  screenshots and no words is not an empty bubble. USER turns only. */
+  attachments?: Attached[];
   /** True while the agent is still writing it. */
   streaming: boolean;
   /** For a USER turn: the uuid of the agent's own replay of it.
@@ -383,6 +393,23 @@ export const isThinking = (s: ChatState): boolean => {
   return !last || last.kind === "thinking";
 };
 
+/** The thought the model is writing RIGHT NOW, or "" when it is not thinking.
+ *
+ *  Thinking is not in the transcript any more — a fold-out row of the agent
+ *  talking to itself, between every pair of tool cards, is a timeline nobody
+ *  reads. It is worth watching WHILE it happens, though: that is the stretch of
+ *  a turn with nothing else on screen. So it is shown live above the composer
+ *  and then let go of.
+ *
+ *  It is live only: the moment a tool call or a word of prose opens after it,
+ *  the block being written is no longer the thought and this goes quiet. */
+export const thinkingNow = (s: ChatState): string => {
+  if (!s.busy) return "";
+  const writing = [...s.messages].reverse().find((m) => m.streaming);
+  const last = writing?.blocks[writing.blocks.length - 1];
+  return last?.kind === "thinking" ? last.text : "";
+};
+
 /** How much the agent has written this turn: what is counted plus what is
  *  still being written. */
 export const turnOutput = (s: ChatState): number => (s.turnTokens ?? 0) + (s.turnDraft ?? 0);
@@ -411,6 +438,12 @@ function sameBlock(a: Block, b: Block): boolean {
   return "text" in a && "text" in b && a.text === b.text;
 }
 
+/** The task types that are actually an agent: a `Task` subagent, and a whole
+ *  dynamic workflow run. Everything else the harness tracks on this channel —
+ *  `local_bash` today — is not one. An event with no type at all is taken as a
+ *  subagent, which is what it meant before the field existed. */
+const AGENT_TASKS: ReadonlySet<string> = new Set(["local_agent", "local_workflow"]);
+
 /** A `task_started` event: a new agent joins the roster, running.
  *
  *  Re-running the same id is a no-op rather than a duplicate row — a replayed
@@ -418,6 +451,13 @@ function sameBlock(a: Block, b: Block): boolean {
 function agentStarted(state: ChatState, e: Json, now: number): ChatState {
   const id = asStr(e.task_id);
   if (!id || state.agents.some((a) => a.id === id)) return state;
+  // Not everything on this channel is an agent. A shell command the harness
+  // decides to track arrives here too, as `local_bash` — and a rail titled
+  // "every agent this conversation started" listing `sed -n '1,80p' foo.ts`
+  // says something untrue about the turn. It already has a tool card of its
+  // own; that is where a command belongs.
+  const type = asStr(e.task_type);
+  if (type && !AGENT_TASKS.has(type)) return state;
   const run: AgentRun = {
     id,
     toolUseId: asStr(e.tool_use_id) || undefined,
@@ -1024,7 +1064,12 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined, no
 
 /** Add the user's own turn. The agent echoes it back (--replay-user-messages),
  *  but showing it immediately is what makes the UI feel like a chat. */
-export function addUserTurn(state: ChatState, text: string, now: number = Date.now()): ChatState {
+export function addUserTurn(
+  state: ChatState,
+  text: string,
+  attachments: Attached[] = [],
+  now: number = Date.now(),
+): ChatState {
   return {
     ...state,
     busy: true,
@@ -1040,7 +1085,13 @@ export function addUserTurn(state: ChatState, text: string, now: number = Date.n
     failure: undefined,
     messages: [
       ...state.messages,
-      { id: `u${state.messages.length}`, role: "user", blocks: [{ kind: "text", text }], streaming: false },
+      {
+        id: `u${state.messages.length}`,
+        role: "user",
+        blocks: [{ kind: "text", text }],
+        streaming: false,
+        ...(attachments.length ? { attachments } : {}),
+      },
     ],
   };
 }

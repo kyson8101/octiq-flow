@@ -173,6 +173,27 @@
   align-items: stretch;
 }
 
+/* On a phone the row has to become a stack.
+   `.rail` is a FIXED 13.5rem and does not shrink, which is right beside a
+   transcript with room to spare and wrong on a 24rem screen: it took more than
+   half the width and squeezed the conversation into a gutter about 10rem wide.
+   Width is the scarce thing on a phone and height is not, so below this the
+   rail goes UNDER the transcript, full width, capped so it can never take the
+   screen — its own list still scrolls inside that cap. */
+@media (max-width: 700px) {
+  .chat-body {
+    flex-direction: column;
+  }
+
+  .rail {
+    width: auto;
+    max-height: 9rem;
+    /* The divider follows the rail: it sits above now, not beside. */
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+}
+
 /* The row is a button now. Strip the browser's chrome and keep the layout the
    plain row had. */
 button.rail-row {

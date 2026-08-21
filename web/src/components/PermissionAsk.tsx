@@ -52,7 +52,7 @@ function detail(ask: Ask): { label: string; body: string } | null {
 }
 
 export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: string) => void }) {
-  const [sending, setSending] = useState<"allow" | "deny" | null>(null);
+  const [sending, setSending] = useState<"allow" | "deny" | "always" | null>(null);
   const path = target(ask);
   // The same drawing the card will show once the edit has run — asked BEFORE
   // it runs, so it has no line numbers to give. That is the honest half: what
@@ -64,10 +64,17 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
   // already look like it.
   const look = toolLook(ask.toolName ?? "", ask.toolInput);
 
-  const answer = async (decision: "allow" | "deny") => {
-    setSending(decision);
+  const answer = async (choice: "allow" | "deny" | "always") => {
+    setSending(choice);
     try {
-      await bridge.invoke("permission_decide", { id: ask.id, decision });
+      await bridge.invoke("permission_decide", {
+        id: ask.id,
+        decision: choice === "always" ? "allow" : choice,
+        // Kept for the rest of THIS chat, and keyed by the program rather than
+        // the exact line: someone who allows `pnpm test` means pnpm, not that
+        // string. The backend drops the lot when the chat stops.
+        remember: choice === "always",
+      });
     } catch {
       // The question expired while the tap was in flight. Either way it is no
       // longer ours to answer, so it leaves the screen.
@@ -118,6 +125,19 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
           {sending === "deny" ? "Denying…" : "Deny"}
         </button>
         <button
+          className="ask-btn"
+          type="button"
+          disabled={!!sending}
+          title={
+            ask.toolName?.toLowerCase() === "bash"
+              ? "Stop asking about this program for the rest of this chat"
+              : "Stop asking about this tool for the rest of this chat"
+          }
+          onClick={() => void answer("always")}
+        >
+          {sending === "always" ? "Allowing…" : "Always"}
+        </button>
+        <button
           className="ask-btn is-primary"
           type="button"
           disabled={!!sending}
@@ -129,6 +149,7 @@ export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: 
 
       <p className="ask-card-note">
         The agent is paused until you answer. No answer within three minutes counts as Deny.
+        “Always” lasts until this chat is stopped.
       </p>
     </div>
   );

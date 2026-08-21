@@ -11,6 +11,7 @@
 // a millisecond here. It also means the ranking can be changed without touching
 // the backend at all.
 import { bridge } from "./bridge";
+import { emptyChat, reduceChat, type ChatState } from "./chat";
 
 /** One past session, exactly as `agent_history_list` returns it. */
 export type HistorySession = {
@@ -79,6 +80,41 @@ function explain(err: unknown): string {
 export function refreshHistory(): Promise<HistorySession[]> {
   inflight = null;
   return loadHistory();
+}
+
+/** What was SAID in one past session, as events the chat reducer folds.
+ *
+ *  Deliberately not cached: the list is asked for on every open and is worth
+ *  keeping, but a transcript is read once, when a session is picked, and can be
+ *  megabytes. Holding them all would be paying for the many to save the one. */
+export function readSession(session: HistorySession): Promise<unknown[]> {
+  return bridge
+    .invoke<unknown[]>("agent_history_read", {
+      agent: session.agent,
+      sessionId: session.sessionId,
+    })
+    .then((events) => events ?? [])
+    .catch((err: unknown) => {
+      throw new Error(explain(err));
+    });
+}
+
+/** Fold a past session's events into a chat, exactly the way a live one folds.
+ *
+ *  There is no second message format anywhere in this app, and this function is
+ *  why: the backend normalises both agents' session files into the same events
+ *  a running agent sends, so the history goes through `reduceChat` — the one
+ *  reducer, with the one set of tests behind it — rather than a parallel parser
+ *  that would drift from it. */
+export function replaySession(events: unknown[], now = Date.now()): ChatState {
+  let state = emptyChat();
+  for (const event of events) {
+    state = reduceChat(state, event, now);
+  }
+  // A live turn ends on `result`. A FILE has none — the session simply stops —
+  // so the reducer is still holding the turn open, and the chat would show the
+  // working spinner for a conversation that finished days ago.
+  return { ...state, busy: false, status: undefined, activity: undefined };
 }
 
 /** The last folder of a path — what the folder is called, rather than where it

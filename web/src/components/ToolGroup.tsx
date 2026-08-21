@@ -1,15 +1,21 @@
-// A run of tool calls, as one row you can open.
+// A run of tool calls, as ONE BOX of two halves.
 //
-// The row has to answer three things without being opened, because most of the
-// time it will not be: how much happened (`12 × Bash`), what happened
-// (`git status ×4 · cargo ×3`), and where it has got to — the newest call in
-// the run stays on the row, so a turn that is still working does not look like
-// a turn that has stopped.
+// The top half is the run so far, folded: how much happened (`12 × Bash`) and
+// what happened (`git status ×4 · cargo ×3`). The bottom half is the newest
+// call, drawn whole — while a turn runs that is what is happening right now,
+// and when it is over it is where the run got to.
 //
-// Opened, it is exactly the cards that would have been on screen anyway. This
-// component draws no tool of its own; it only decides how many of them the
+// The point of the two halves is that the box does not change height. A new
+// call pushes the one before it into the summary above, so a run of eleven is
+// exactly as tall as a run of three: nothing joins the page and nothing leaves
+// it. The old shape — a group row with the newest card as a separate row below
+// — grew by a card and then shrank by three every time a run folded, and the
+// whole conversation lurched each time.
+//
+// Open the top half and it is exactly the cards that would have been there.
+// This component draws no tool of its own; it only decides how many of them the
 // reader has to look at.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { groupLook, groupTally, type Tool } from "../lib/toolGroups";
 import { toolLook } from "../lib/toolKind";
 import { ToolCard } from "./ToolCard";
@@ -39,8 +45,31 @@ function Chevron() {
   );
 }
 
-export function ToolGroup({ tools }: { tools: Tool[] }) {
+/** How long the drop takes to settle. Kept in step with `tool-merge` in
+ *  styles.css — it only decides when the class comes back off. */
+const MERGE_MS = 460;
+
+
+export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
   const [open, setOpen] = useState(false);
+
+  // A call folding into the summary above it. Nothing moves — that is the whole
+  // point of the two halves — so the merge needs something else to say it
+  // happened: the top half takes the drop and settles, the way a surface does
+  // when something joins it.
+  const [merging, setMerging] = useState(false);
+  const count = useRef(tools.length);
+  useEffect(() => {
+    if (tools.length <= count.current) {
+      count.current = tools.length;
+      return;
+    }
+    count.current = tools.length;
+    setMerging(true);
+    const timer = setTimeout(() => setMerging(false), MERGE_MS);
+    return () => clearTimeout(timer);
+  }, [tools.length]);
+
   const look = groupLook(tools);
   const tally = groupTally(tools);
   const shown = tally.slice(0, TALLY_SHOWN);
@@ -55,7 +84,11 @@ export function ToolGroup({ tools }: { tools: Tool[] }) {
     tally[0].label === toolLook(tools[0].name, tools[0].args).label;
 
   return (
-    <div className={`tool tool-group tool-${look.state} ${open ? "is-open" : ""}`}>
+    <div
+      className={`tool tool-group tool-${look.state} ${open ? "is-open" : ""} ${
+        merging ? "is-merging" : ""
+      }`}
+    >
       <button
         className="tool-head tool-group-head"
         onClick={() => setOpen((v) => !v)}
@@ -68,13 +101,9 @@ export function ToolGroup({ tools }: { tools: Tool[] }) {
             <ToolIcon kind={look.kind} />
           </span>
           <span className="tool-name">{look.label}</span>
-          {look.detail && (
-            <span className="tool-detail">
-              {/* Right-to-left, so a long command or path keeps its useful end;
-                  the <bdi> keeps the characters themselves in order. */}
-              <bdi>{look.detail}</bdi>
-            </span>
-          )}
+          {/* No detail line here. It used to carry the newest call in the run,
+              which is now the card directly below — the same command said twice
+              in two different ways, six pixels apart. */}
           <span className="tool-gap" />
           <ToolState state={look.state} />
           <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
@@ -105,6 +134,13 @@ export function ToolGroup({ tools }: { tools: Tool[] }) {
           ))}
         </div>
       )}
+
+      {/* The bottom half: the call that has not folded yet. Keyed by its id, so
+          each new call REPLACES the last rather than being drawn on top of a
+          card that is still holding the previous one's open/closed state. */}
+      <div className="tool-group-now">
+        <ToolCard key={newest.id} tool={newest} />
+      </div>
     </div>
   );
 }

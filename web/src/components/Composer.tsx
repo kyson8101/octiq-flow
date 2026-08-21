@@ -11,6 +11,7 @@
 // still has a real keyboard and should still send on Enter.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { Thumb } from "./Thumb";
 import { workingLine } from "../lib/working";
 import { FolderPicker } from "./FolderPicker";
 
@@ -78,33 +79,53 @@ export const AGENT_NAME: Record<Provider, string> =
  *  This is NOT a hidden default. A chat has no channel for answering a
  *  permission prompt, so whatever is chosen here is what the agent will do
  *  unattended — and that has to be on screen, next to the send button. */
-export type AccessLevel = "read" | "auto" | "full";
+export type AccessLevel = "read" | "manual" | "edits" | "auto" | "full";
 
-/* Each agent's OWN words for these.
+/* Each agent's OWN words for these, and its own number of them.
  *
- * They were "Read only / Can edit / Full access" for both, which reads well
- * and matches neither. Claude Code calls them plan mode, automatically approve
- * and bypass permissions; Codex calls them read-only, workspace-write and
- * danger-full-access. Someone who has used either directly, or is reading its
- * docs, should not have to work out which of our three words maps to the thing
- * they already know — and Codex's own name for the last one carries the word
+ * They were "Read only / Can edit / Full access" for both, which reads well and
+ * matches neither. Someone who has used either agent directly, or is reading
+ * its docs, should not have to work out which of our words maps to the thing
+ * they already know — and Codex's own name for its last one carries the word
  * "danger", which is not ours to soften.
  *
- * The middle one was "Auto-accept edits", Claude's `acceptEdits`. That mode
- * auto-accepts file edits and NOTHING else, so every shell command still
- * stopped — and a chat that stops is a chat that is stuck. Claude's `auto` is
- * the real middle, and the one this app was built around: it runs unattended
- * and stops only at what looks unsafe, which is precisely the question the
- * permission hook carries back here for someone to answer.
+ * So the two lists no longer match each other: Claude offers the four modes its
+ * own app offers plus the bypass switch, and Codex its three sandbox policies.
+ * That is not an inconsistency to tidy up — the agents genuinely differ, and
+ * one shared shape would have to lie about one of them.
  *
- * The `id` stays generic: it is the wire value, and the backend maps it to
- * `--permission-mode` or `--sandbox` plus `--ask-for-approval`. Only what a
- * person reads changes. */
-export const ACCESS: Record<Provider, { id: AccessLevel; label: string; hint: string }[]> = {
+ * The `id` is the wire value, and the backend maps it to `--permission-mode` or
+ * to `--sandbox` plus `approval_policy` (see `Access` in agent_chat.rs). Only
+ * what a person reads changes. */
+export const ACCESS: Record<
+  Provider,
+  { id: AccessLevel; label: string; hint: string; bypass?: boolean }[]
+> = {
   claude: [
-    { id: "read", label: "Plan mode", hint: "look and plan, change nothing" },
-    { id: "auto", label: "Automatically approve", hint: "runs on its own, asks if unsafe" },
-    { id: "full", label: "Bypass permissions", hint: "run anything without asking" },
+    // Claude's own modes, in Claude's own words — `--permission-mode` takes
+    // exactly these, and the backend passes them straight through (see `Access`
+    // in agent_chat.rs). Anyone who has used Claude anywhere already knows what
+    // each one means, and a second vocabulary for the same switch is how a
+    // label ends up saying the opposite of the flag under it.
+    //
+    // Ordered as a ladder, least allowed first, which is not the order the
+    // desktop app lists them in — a menu you scan for "how much am I giving it"
+    // is easier to read when that is the axis. The last one is a SWITCH rather
+    // than a rung, again like the desktop: it is not more of the same thing,
+    // it is stepping out of the system.
+    //
+    // `dontAsk` is the sixth mode the CLI accepts and is deliberately not here,
+    // for the same reason the desktop leaves it out.
+    { id: "read", label: "Plan", hint: "create a plan before making changes" },
+    { id: "manual", label: "Manual", hint: "always ask before making changes" },
+    { id: "edits", label: "Accept edits", hint: "automatically accept all file edits" },
+    { id: "auto", label: "Auto", hint: "Claude handles permission decisions" },
+    {
+      id: "full",
+      label: "Bypass permissions",
+      hint: "run anything without asking",
+      bypass: true,
+    },
   ],
   codex: [
     { id: "read", label: "Read-only", hint: "sandboxed, no writes" },
@@ -112,6 +133,61 @@ export const ACCESS: Record<Provider, { id: AccessLevel; label: string; hint: st
     { id: "full", label: "Danger: full access", hint: "no sandbox, no approvals" },
   ],
 };
+
+/** The access list: modes as rows, and `bypass` as the switch under them.
+ *
+ *  Drawn in two places — the dropdown on a wide screen and the settings sheet
+ *  on a phone — and the switch has enough behaviour of its own (turning it OFF
+ *  has to land somewhere) that keeping two copies of it was asking for them to
+ *  drift. */
+function AccessList({
+  list,
+  access,
+  onPick,
+}: {
+  list: { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
+  access: AccessLevel;
+  onPick: (a: AccessLevel) => void;
+}) {
+  const modes = list.filter((p) => !p.bypass);
+  const bypass = list.find((p) => p.bypass);
+  // Where turning the switch off goes back to. The mode you were last ON, not a
+  // fixed one: someone who was planning, flipped bypass to get one thing done,
+  // and flipped it back meant to go back to planning.
+  const before = useRef<AccessLevel>(access === bypass?.id ? modes[modes.length - 1].id : access);
+  if (access !== bypass?.id) before.current = access;
+
+  return (
+    <>
+      {modes.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          role="menuitem"
+          className={`picker-item ${p.id === access ? "is-on" : ""}`}
+          onClick={() => onPick(p.id)}
+        >
+          <span className="picker-name">{p.label}</span>
+          <span className="picker-model">{p.hint}</span>
+        </button>
+      ))}
+
+      {bypass && (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={access === bypass.id}
+          className={`picker-item is-bypass ${access === bypass.id ? "is-on" : ""}`}
+          title={bypass.hint}
+          onClick={() => onPick(access === bypass.id ? before.current : bypass.id)}
+        >
+          <span className="picker-name">{bypass.label}</span>
+          <span className="picker-switch">{access === bypass.id ? "Enabled" : "Enable"}</span>
+        </button>
+      )}
+    </>
+  );
+}
 
 /** How hard the model thinks before answering.
  *
@@ -223,6 +299,7 @@ export function Composer({
   turnStartedAt,
   turnTokens,
   thinking,
+  thought,
   effort,
   onEffort,
   cwd,
@@ -274,6 +351,11 @@ export function Composer({
   /** True while the model is reasoning rather than typing, which is when the
    *  effort level is worth naming: it is the setting that chose this wait. */
   thinking?: boolean;
+  /** The thought being written right now, or "" — see `thinkingNow` in
+   *  lib/chat. Watched here and nowhere else: it is left out of the transcript
+   *  entirely, because a fold-out row of the agent talking to itself between
+   *  every pair of tool cards is a timeline nobody reads back. */
+  thought?: string;
   effort: Effort;
   onEffort: (e: Effort) => void;
   /** The project folder, so the file picker opens where the work is. */
@@ -459,6 +541,30 @@ export function Composer({
 
   return (
     <div className="composer">
+      {/* Everything ABOUT the turn sits above the box: the thought being had,
+          and under it how long this has taken and how much has been written.
+          Both are lines of text, and a line of text in a row of buttons gets
+          eight characters and an ellipsis. */}
+      {!!thought?.trim() && (
+        <div className="think-live" aria-live="off">
+          <span className="think-live-text">{thought}</span>
+        </div>
+      )}
+
+      <div className="composer-hint">
+        {busy ? (
+          <Working
+            since={turnStartedAt}
+            tokens={turnTokens}
+            activity={activity}
+            thinking={thinking}
+            effort={eff.label.toLowerCase()}
+          />
+        ) : (
+          activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send")
+        )}
+      </div>
+
       {slashOpen && (
         <div className="slash" role="listbox">
           <div className="slash-head">
@@ -651,21 +757,14 @@ export function Composer({
               <>
                 <div className="picker-scrim" onClick={() => setPermMenu(false)} />
                 <div className="picker-menu" role="menu">
-                  {accessList.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      role="menuitem"
-                      className={`picker-item ${p.id === access ? "is-on" : ""}`}
-                      onClick={() => {
-                        onAccess(p.id);
-                        setPermMenu(false);
-                      }}
-                    >
-                      <span className="picker-name">{p.label}</span>
-                      <span className="picker-model">{p.hint}</span>
-                    </button>
-                  ))}
+                  <AccessList
+                    list={accessList}
+                    access={access}
+                    onPick={(a) => {
+                      onAccess(a);
+                      setPermMenu(false);
+                    }}
+                  />
                 </div>
               </>
             )}
@@ -781,19 +880,12 @@ export function Composer({
             </button>
           )}
 
-          <span className="composer-hint">
-            {busy ? (
-              <Working
-                since={turnStartedAt}
-                tokens={turnTokens}
-                activity={activity}
-                thinking={thinking}
-                effort={eff.label.toLowerCase()}
-              />
-            ) : (
-              activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send")
-            )}
-          </span>
+          {/* What used to be the status line stood here, between the buttons
+              and Send, and took whatever width was left — which on a phone was
+              about eight characters of it. It is a line of text, so it is on a
+              line of its own now, above the box. This holds its place in the
+              row and keeps Send at the right end. */}
+          <span className="composer-gap" />
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
 
@@ -847,17 +939,7 @@ export function Composer({
 
               <div className="sheet-group">
                 <div className="sheet-head">Access</div>
-                {accessList.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    className={`picker-item ${p.id === access ? "is-on" : ""}`}
-                    onClick={() => onAccess(p.id)}
-                  >
-                    <span className="picker-name">{p.label}</span>
-                    <span className="picker-model">{p.hint}</span>
-                  </button>
-                ))}
+                <AccessList list={accessList} access={access} onPick={onAccess} />
               </div>
 
               <div className="sheet-group">
@@ -1273,42 +1355,6 @@ function ClipIcon() {
       <path d="M21.4 11.05 12.25 20.2a5.5 5.5 0 0 1-7.78-7.78l9.2-9.19a3.67 3.67 0 0 1 5.18 5.18l-9.2 9.2a1.83 1.83 0 0 1-2.6-2.6l8.5-8.48" />
     </svg>
   );
-}
-
-/** The little picture on an image chip.
- *
- *  A name like `image.png` says nothing about which screenshot you pasted, and
- *  when two are attached it says even less. The bytes are already in the page
- *  for a paste or an upload; a file picked on the machine is fetched instead —
- *  through the bridge's `/file` route, so the access token stays out of the
- *  markup. Falls back to the icon if either is unavailable. */
-function Thumb({ attachment }: { attachment: Attachment }) {
-  const [url, setUrl] = useState<string | null>(attachment.url ?? null);
-
-  useEffect(() => {
-    if (attachment.url) {
-      setUrl(attachment.url);
-      return;
-    }
-    let alive = true;
-    let made: string | null = null;
-    bridge
-      .fetchFile(attachment.path)
-      .then((blob) => {
-        if (!alive) return;
-        made = URL.createObjectURL(blob);
-        setUrl(made);
-      })
-      .catch(() => alive && setUrl(null));
-    return () => {
-      alive = false;
-      // Only ours to revoke — the one on the attachment belongs to the composer.
-      if (made) URL.revokeObjectURL(made);
-    };
-  }, [attachment.path, attachment.url]);
-
-  if (!url) return <ImageIcon />;
-  return <img className="chip-thumb" src={url} alt="" />;
 }
 
 function TerminalIcon() {
