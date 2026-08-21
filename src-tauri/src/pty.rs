@@ -52,6 +52,21 @@ pub fn pty_set_status_scan(enabled: bool) {
 /// would have scrolled out of its own buffer anyway.
 const HIDDEN_RING_CAP: usize = 1024 * 1024;
 
+/// Upper bound on the rolling tail kept for EVERY session, hidden or NOT
+/// (card 64).
+///
+/// The ring above only fills while a terminal is hidden, and a browser is never
+/// hidden — `pty_set_visible_impl` refuses to hide while a client is attached,
+/// because the browser may be looking straight at it. So a browser that closed
+/// the terminal drawer and came back got a blank xterm over a shell that had
+/// been printing the whole time. This is what it gets handed instead.
+///
+/// Smaller than the ring because it is held for every LIVE terminal rather than
+/// only the hidden ones. 256 KiB is still several times xterm's own 5000-line
+/// scrollback at any realistic width, so what falls off the front is output the
+/// pane would have dropped anyway.
+const TAIL_CAP: usize = 256 * 1024;
+
 /// Longest alert title / body we keep from an OSC sequence, in CHARACTERS
 /// (card 25). Any program that can print to a terminal can forge an attention
 /// alert with a title and body of its choosing; without a bound, a megabyte of
@@ -88,6 +103,29 @@ struct OutBuf {
     /// True once the ring has overflowed and dropped output. The frontend draws
     /// a "[octiq: output trimmed]" marker above the restored tail.
     trimmed: bool,
+    /// The last `TAIL_CAP` bytes this terminal printed, kept whatever the
+    /// visibility, so a client attaching to a shell that has been running for
+    /// an hour has something to draw (card 64).
+    tail: String,
+    /// The tail's own overflow flag. Separate from `trimmed`: the ring is
+    /// emptied on every reveal, the tail never is.
+    tail_trimmed: bool,
+}
+
+/// Drop bytes from the FRONT of `buf` until it fits `cap`, moving the cut up to
+/// the next char boundary — a cut on a raw byte index can land inside a
+/// multi-byte glyph, and a `String` cannot hold that. Says whether it dropped
+/// anything.
+fn trim_front(buf: &mut String, cap: usize) -> bool {
+    if buf.len() <= cap {
+        return false;
+    }
+    let cut = buf.len() - cap;
+    let cut = (cut..=buf.len())
+        .find(|&k| buf.is_char_boundary(k))
+        .unwrap_or(buf.len());
+    buf.drain(..cut);
+    true
 }
 
 impl OutBuf {
@@ -98,23 +136,32 @@ impl OutBuf {
             visible: true,
             ring: String::new(),
             trimmed: false,
+            tail: String::new(),
+            tail_trimmed: false,
         }
     }
 
     /// Append hidden output, dropping the oldest bytes once the cap is passed.
-    /// The cut is moved to the next char boundary so `drain` can never split a
-    /// multi-byte glyph (`ring` must stay valid UTF-8).
     fn push_hidden(&mut self, chunk: &str) {
         self.ring.push_str(chunk);
-        if self.ring.len() <= HIDDEN_RING_CAP {
-            return;
+        if trim_front(&mut self.ring, HIDDEN_RING_CAP) {
+            self.trimmed = true;
         }
-        let cut = self.ring.len() - HIDDEN_RING_CAP;
-        let cut = (cut..=self.ring.len())
-            .find(|&k| self.ring.is_char_boundary(k))
-            .unwrap_or(self.ring.len());
-        self.ring.drain(..cut);
-        self.trimmed = true;
+    }
+
+    /// Append to the rolling tail. Called for EVERY chunk, visible or not.
+    fn push_tail(&mut self, chunk: &str) {
+        self.tail.push_str(chunk);
+        if trim_front(&mut self.tail, TAIL_CAP) {
+            self.tail_trimmed = true;
+        }
+    }
+
+    /// The tail as it stands. CLONED rather than taken, unlike the ring: the
+    /// tail is not one client's backlog, it is what this terminal has on its
+    /// screen, and a second browser attaching later needs the same thing.
+    fn tail(&self) -> (String, bool) {
+        (self.tail.clone(), self.tail_trimmed)
     }
 
     /// Take everything buffered while hidden, resetting the ring.
@@ -823,6 +870,10 @@ pub fn pty_spawn_impl(
             let Ok(mut out) = emit_out_state.lock() else {
                 break;
             };
+            // Before the visibility question, and on both answers: the tail is
+            // what a client re-attaching later is given, and a terminal nobody
+            // is watching is exactly the one with output worth keeping.
+            out.push_tail(&batch);
             if out.visible {
                 crate::bus::emit(
                     "pty-output",
@@ -1049,6 +1100,60 @@ pub fn pty_set_visible_impl(manager: &PtyManager, id: String, visible: bool) -> 
     Ok(())
 }
 
+/// Hand a client that has just (re-)attached the output this terminal already
+/// printed (card 64).
+///
+/// A browser that closed the terminal drawer and came back has a BRAND NEW
+/// xterm with an empty screen, while the shell behind it never stopped. This
+/// replays the rolling tail into it as one `pty-restore` — the same event a
+/// reveal uses, so the frontend needs no second code path.
+///
+/// Emitted while the out gate is held, exactly as `pty_set_visible` does: the
+/// emitter thread cannot send a `pty-output` for this session until it can take
+/// the same lock, so the restored block always lands BEFORE the stream resumes.
+/// That ordering is the whole reason the client can drop `pty-output` until the
+/// restore arrives without losing a byte — anything it drops is already inside
+/// the tail it is about to be given.
+///
+/// It therefore emits ALWAYS, even for an empty tail and even for an id with no
+/// session: the event is the client's go-ahead, not only its data, and a client
+/// still waiting for one would sit there dropping output forever.
+#[tauri::command]
+pub fn pty_attach(manager: State<Arc<PtyManager>>, id: String) -> Result<(), String> {
+    pty_attach_impl(&manager, id)
+}
+
+/// The Tauri-free half of `pty_attach`.
+pub fn pty_attach_impl(manager: &PtyManager, id: String) -> Result<(), String> {
+    // Clone the Arc out from under the sessions map and release the map lock
+    // before taking the per-session gate — the emit below happens under that
+    // gate, and holding the global map across it would block every other
+    // terminal's commands.
+    let out = {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        sessions.get(&id).map(|session| session.out.clone())
+    };
+    // No session — the terminal may have just closed. Still answer, so a client
+    // holding back its output for the go-ahead stops holding it back.
+    let Some(out) = out else {
+        crate::bus::emit(
+            "pty-restore",
+            RestoreEvent {
+                id,
+                data: String::new(),
+                trimmed: false,
+            },
+        );
+        return Ok(());
+    };
+    let guard = out.lock().map_err(|e| e.to_string())?;
+    let (data, trimmed) = guard.tail();
+    // Emitted while `guard` is still held: see the ordering note above.
+    crate::bus::emit("pty-restore", RestoreEvent { id, data, trimmed });
+    drop(guard);
+    Ok(())
+}
+
 /// Write raw text into one session's PTY input. The shell cannot tell this from
 /// real typing. Append "\r" to submit a line. Unknown id is an error.
 ///
@@ -1201,6 +1306,7 @@ mod tests {
     use super::{
         decode_base64, decode_utf8_stream, parse_osc99, resolve_home, resolve_shell,
         sanitize_alert_text, scan_attention, OutBuf, HIDDEN_RING_CAP, MAX_ALERT_TEXT_CHARS,
+        TAIL_CAP,
     };
 
     /// Convenience: scan a string and return just the hits (drop `keep_from`).
@@ -1536,6 +1642,68 @@ mod tests {
         assert!(data.ends_with("xx"));
         assert!(data.len() <= HIDDEN_RING_CAP);
         assert!(data.starts_with(glyph), "cut must land on a glyph boundary");
+    }
+
+    // ---- OutBuf: the always-on tail (card 64) -------------------------------
+    // The ring above only fills while a terminal is HIDDEN, and a browser is
+    // never hidden — `pty_set_visible_impl` refuses to hide while a client is
+    // attached. So re-opening the drawer drew a blank pane over a shell that
+    // was still working. The tail is kept whatever the visibility, and handed
+    // back on re-attach.
+
+    #[test]
+    fn tail_keeps_output_even_while_visible() {
+        let mut out = OutBuf::new();
+        assert!(out.visible, "this is the case the ring does NOT cover");
+        out.push_tail("hello ");
+        out.push_tail("world");
+        let (data, trimmed) = out.tail();
+        assert_eq!(data, "hello world");
+        assert!(!trimmed);
+    }
+
+    #[test]
+    fn reading_the_tail_does_not_consume_it() {
+        // Unlike the ring's `take`. Two browsers can attach to one terminal,
+        // and the second must not find it emptied by the first.
+        let mut out = OutBuf::new();
+        out.push_tail("still here");
+        assert_eq!(out.tail().0, "still here");
+        assert_eq!(out.tail().0, "still here");
+    }
+
+    #[test]
+    fn tail_drops_oldest_output_and_flags_trimmed() {
+        let mut out = OutBuf::new();
+        out.push_tail(&"a".repeat(TAIL_CAP));
+        assert!(!out.tail_trimmed, "exactly at the cap must not trim");
+        out.push_tail("TAIL");
+        let (data, trimmed) = out.tail();
+        assert!(trimmed);
+        assert_eq!(data.len(), TAIL_CAP);
+        assert!(data.ends_with("TAIL"));
+    }
+
+    #[test]
+    fn tail_trim_never_splits_a_multibyte_glyph() {
+        // Same trap as the ring: a cut on a byte index inside a multi-byte char
+        // would panic on a String.
+        let mut out = OutBuf::new();
+        let glyph = "\u{2502}"; // 3 bytes
+        out.push_tail(&glyph.repeat(TAIL_CAP / 3));
+        out.push_tail("xx");
+        let (data, trimmed) = out.tail();
+        assert!(trimmed);
+        assert!(data.ends_with("xx"));
+        assert!(data.len() <= TAIL_CAP);
+        assert!(data.starts_with(glyph), "cut must land on a glyph boundary");
+    }
+
+    #[test]
+    fn tail_is_smaller_than_the_hidden_ring() {
+        // The ring exists only while a tab is hidden; the tail is held for
+        // EVERY live terminal, so it has to be the cheaper of the two.
+        assert!(TAIL_CAP < HIDDEN_RING_CAP);
     }
 
     #[test]

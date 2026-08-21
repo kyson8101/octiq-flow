@@ -276,6 +276,7 @@ pub fn run() {
             agent_history::agent_history_read,
             pty::pty_agent_running,
             pty::pty_set_visible,
+            pty::pty_attach,
             pty::pty_set_status_scan,
             agents::agent_procs,
             agents::agent_kill,

@@ -94,17 +94,54 @@ export function TerminalPane({ id, cwd }: { id: string; cwd: string }) {
       bridge.invoke("pty_write", { id, data }).catch(() => {});
     });
 
+    // The shell is OLDER than this pane. A dev server started an hour ago is
+    // still printing into a PTY whose xterm was thrown away and built again —
+    // by closing the drawer, switching tab or project, or reloading the page.
+    // So the backend replays what the terminal has already printed, and until
+    // that lands the live stream is held back.
+    //
+    // Dropped, not queued: the backend emits the restore while holding the same
+    // lock the output stream takes (`pty_attach` in pty.rs), so anything
+    // arriving before it is already inside the block about to arrive.
+    let restored = false;
+
     // Output comes back on the shared event stream, addressed by id.
     const off = bridge.on<{ id: string; chunk: string }>("pty-output", (payload) => {
-      if (payload?.id === id) term.write(payload.chunk);
+      if (payload?.id === id && restored) term.write(payload.chunk);
     });
 
+    // The replay. It is a broadcast, so a SECOND browser attaching to this same
+    // terminal sends one of these too — ignored here, because this pane is no
+    // longer waiting for one and its screen is already right.
+    const offRestore = bridge.on<{ id: string; data: string; trimmed: boolean }>(
+      "pty-restore",
+      (payload) => {
+        if (payload?.id !== id || restored) return;
+        if (payload.trimmed) {
+          term.write("\r\n\x1b[2m[octiq: output trimmed]\x1b[0m\r\n");
+        }
+        if (payload.data) term.write(payload.data);
+        restored = true;
+      },
+    );
+
     // Start the shell only once the size is known, so its first prompt is drawn
-    // at the right width rather than at xterm's 80x24 default.
+    // at the right width rather than at xterm's 80x24 default. `pty_spawn` is
+    // idempotent by id, so on a re-attach this finds the running shell rather
+    // than starting a second one.
     bridge
       .invoke("pty_spawn", { id, cwd })
-      .then(() => sendSize())
+      .then(() => {
+        sendSize();
+        // A backend older than this client does not have `pty_attach` and
+        // rejects. Go live rather than sit here dropping every byte — the two
+        // halves deploy separately, so this pairing really happens.
+        return bridge.invoke("pty_attach", { id }).catch(() => {
+          restored = true;
+        });
+      })
       .catch((e: Error) => {
+        restored = true;
         term.writeln(`\r\n\x1b[31mCould not start a shell: ${e.message}\x1b[0m`);
       });
 
@@ -123,6 +160,7 @@ export function TerminalPane({ id, cwd }: { id: string; cwd: string }) {
       window.removeEventListener("resize", onResize);
       typed.dispose();
       off();
+      offRestore();
       term.dispose();
       termRef.current = null;
       // The shell is NOT killed here. Closing the drawer, or switching project,

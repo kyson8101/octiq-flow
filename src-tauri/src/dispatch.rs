@@ -246,6 +246,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "id")?,
             arg(&args, "visible")?,
         )),
+        // Re-attaching: replay what this terminal already printed, so coming
+        // back to a running dev server is not a blank pane (card 64).
+        "pty_attach" => unit(crate::pty::pty_attach_impl(&svc.ptys, arg(&args, "id")?)),
 
         // ---- permissions --------------------------------------------------
         // What is waiting on a person right now. Asked by a browser as it

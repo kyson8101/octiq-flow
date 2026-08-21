@@ -4572,6 +4572,120 @@ body {
   color: var(--fg-0);
 }
 
+/* The terminal tab strip: one shell per package in a monorepo (card 65). */
+.term-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding: 4px 6px 0;
+  background: var(--bg-sunken);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.term-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.term-tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  color: var(--fg-3);
+}
+
+/* The tab you are looking at, marked by a fill that runs into the pane below
+   it and a heavier label. */
+.term-tab.is-active {
+  background: var(--bg-0);
+  color: var(--fg-0);
+}
+
+.term-tab > button:first-child {
+  max-width: 140px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 5px 4px 5px 9px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.term-tab.is-active > button:first-child {
+  font-weight: 600;
+}
+
+.term-tab-close,
+.term-tab-add {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+
+.term-tab-close {
+  width: 16px;
+  height: 16px;
+  margin-right: 5px;
+  font-size: 10px;
+  /* Out of the way until wanted: this one ENDS what is running in the tab, and
+     a row of ✕s is a row of things to hit by accident. */
+  opacity: 0;
+}
+
+.term-tab:hover .term-tab-close,
+.term-tab.is-active .term-tab-close,
+.term-tab-close:focus-visible {
+  opacity: 1;
+}
+
+/* No hover on a touch screen, so hiding it there hides it for good. */
+@media (pointer: coarse) {
+  .term-tab-close {
+    opacity: 1;
+  }
+}
+
+.term-tab-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.term-tab-add {
+  width: 22px;
+  height: 22px;
+  margin-left: 2px;
+  font-size: 13px;
+}
+
+.term-tab-add:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Renaming in place, so `web` and `api` are told apart at a glance. */
+.term-tab-name {
+  flex: 0 0 auto;
+  width: 110px;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font-family: var(--mono);
+  font-size: 11px;
+  outline: none;
+}
+
 .term {
   flex: 1 1 auto;
   min-height: 0;

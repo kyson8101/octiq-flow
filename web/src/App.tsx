@@ -65,7 +65,7 @@ import { ProjectSettings } from "./components/ProjectSettings";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
-import { TerminalPane } from "./components/Terminal";
+import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { useConfirm } from "./components/Confirm";
@@ -1717,34 +1717,18 @@ export default function App() {
             );
           })()}
 
+          {/* Keyed by project: switching project gets that project's own
+              terminals, and coming back reattaches to them rather than
+              starting a second set. */}
           {termOpen && project && (
-            <div className="drawer">
-              <div className="drawer-head">
-                <span className="drawer-title">Terminal · {project.name}</span>
-                <span className="drawer-path" title={project.primary_path}>
-                  <bdi>{project.primary_path}</bdi>
-                </span>
-                <button
-                  className="drawer-close"
-                  type="button"
-                  title="Hide the terminal (the shell keeps running)"
-                  onClick={() => {
-                    setTermOpen(false);
-                    localStorage.setItem(TERM_KEY, "0");
-                  }}
-                >
-                  ✕
-                </button>
-              </div>
-              {/* Keyed by project: switching project gets that project's own
-                  shell, and coming back reattaches to it rather than starting
-                  a second one. */}
-              <TerminalPane
-                key={project.id}
-                id={`term:${project.id}`}
-                cwd={project.primary_path ?? ""}
-              />
-            </div>
+            <TerminalDrawer
+              key={project.id}
+              project={project}
+              onHide={() => {
+                setTermOpen(false);
+                localStorage.setItem(TERM_KEY, "0");
+              }}
+            />
           )}
 
           <Composer
