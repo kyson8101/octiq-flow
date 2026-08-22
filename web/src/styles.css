@@ -83,8 +83,20 @@ body {
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
-  height: 48px;
-  padding: 0 max(8px, env(safe-area-inset-left)) 0 max(8px, env(safe-area-inset-right));
+  /* Installed to a home screen the page starts at the very top of the display,
+     under the clock: `apple-mobile-web-app-status-bar-style` is
+     black-translucent and the viewport is `viewport-fit=cover`, which together
+     hand us the whole screen INCLUDING the status bar. So the bar is 48px of
+     content plus however tall that bar is — grown rather than padded, because
+     `box-sizing: border-box` would otherwise take the inset out of the 48px and
+     squash the row instead of moving it down.
+
+     The left and right insets were the wrong way round here: the shorthand runs
+     top-right-bottom-left, so `-left` was being applied on the right. Both are
+     0 in portrait, which is why it never showed. */
+  height: calc(48px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) max(8px, env(safe-area-inset-right)) 0
+    max(8px, env(safe-area-inset-left));
   background: var(--bg-sunken);
   border-bottom: 1px solid var(--border);
 }
@@ -3847,7 +3859,10 @@ body.is-ultra .eff {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px calc(10px + env(safe-area-inset-top));
+  /* Three-value shorthand is top / left-right / bottom, so the status bar's
+     height was being added BELOW this bar rather than above it — the row sat
+     under the clock and carried the dead space underneath. */
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
 }
 
 .viewer-name {
