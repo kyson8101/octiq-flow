@@ -34,6 +34,7 @@ mod proc;
 mod profile;
 mod profile_lock;
 mod pty;
+mod push;
 mod question;
 mod terminal_layout;
 mod transcript;

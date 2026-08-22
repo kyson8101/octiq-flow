@@ -744,6 +744,21 @@ pub fn chat_start_impl(
                                 },
                             );
                         }
+                        // A turn that ended, to whatever is not open.
+                        //
+                        // `result` is the agent's own full stop, and it carries
+                        // the closing words — which is the line the banner
+                        // wants, without having to walk the transcript back
+                        // looking for the last turn that actually said
+                        // something. An errored turn still ended, and being
+                        // told so matters more than being told it went well.
+                        if event.get("type").and_then(|t| t.as_str()) == Some("result") {
+                            let said = event
+                                .get("result")
+                                .and_then(|r| r.as_str())
+                                .unwrap_or_default();
+                            crate::push::notify_chat(Some(&key), "done", said);
+                        }
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.

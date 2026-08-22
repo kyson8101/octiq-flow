@@ -53,6 +53,8 @@ futures-util = "0.3"
 # rarely and cached — which is why it is here instead of a full async client.
 jsonwebtoken = "9"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+web-push = { version = "0.11.0", default-features = false }
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 
 # macOS-only: read the frontmost window's CoreGraphics id so the screenshot
 # hotkey captures the active window (vault.rs). CoreGraphics itself is linked

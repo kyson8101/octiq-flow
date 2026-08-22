@@ -362,6 +362,30 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // installed only produces a chat that dies on its first line.
         "agent_installs" => Ok(json!(crate::agents::agent_installs(arg(&args, "refresh")?))),
 
+        // ---- web push -----------------------------------------------------
+        //
+        // The notifications that arrive with nothing open. Only the browser
+        // ever calls these — a desktop window raises its own banners and has no
+        // push service to register with — so they live here and have no Tauri
+        // command beside them.
+        "push_key" => match crate::push::public_key() {
+            Some(key) => Ok(json!({ "key": key })),
+            None => Err("could not read or create the push key".into()),
+        },
+        "push_subscribe" => {
+            crate::push::subscribe(crate::push::Subscription {
+                endpoint: arg(&args, "endpoint")?,
+                p256dh: arg(&args, "p256dh")?,
+                auth: arg(&args, "auth")?,
+            });
+            Ok(Value::Null)
+        }
+        "push_unsubscribe" => {
+            let endpoint: String = arg(&args, "endpoint")?;
+            crate::push::unsubscribe(&endpoint);
+            Ok(Value::Null)
+        }
+
         // Anything else is a command the classic desktop UI owns. Saying so
         // beats a silent null, which would look like a bug in the client.
         _ => Err(format!(

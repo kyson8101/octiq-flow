@@ -127,7 +127,14 @@ pub async fn ask(question: Question) -> String {
         )
     });
 
-    crate::bus::emit("user-question", asked);
+    crate::bus::emit("user-question", asked.clone());
+    // Ten minutes to answer this one, and the agent is stopped until it is
+    // answered — so it goes to the phone as well as to any open browser.
+    crate::push::notify_chat(
+        asked.question.chat_key.as_deref(),
+        "question",
+        &asked.question.question,
+    );
 
     // Three ways this ends, and they are not the same thing to tell an agent.
     //

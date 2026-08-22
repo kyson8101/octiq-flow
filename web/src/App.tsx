@@ -47,6 +47,7 @@ import {
   show as showNotice,
   type NoticeKind,
 } from "./lib/notify";
+import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail } from "./components/AgentRail";
 import { Todos } from "./components/Todos";
@@ -305,12 +306,31 @@ export default function App() {
   // three moments (a permission, a question) time out. The rule for what counts
   // as "not looking" lives in lib/notify.ts; here is only what fires it.
   const [notifyOn, setNotifyOn] = useState(notifyIsOn);
+  // Whether the SERVER is doing the announcing. When it is, this page must not
+  // announce as well — the same moment would draw a banner from each — and it
+  // is the server's that survives the page being closed, which is the whole
+  // point on a phone. Asked of the browser rather than remembered, because the
+  // browser is what can quietly drop a subscription.
+  const [pushOn, setPushOn] = useState(false);
+  useEffect(() => {
+    void push.isOn().then(setPushOn);
+  }, []);
   // Everything `announce` needs, read at the moment it fires rather than closed
   // over. The listeners that raise notices are registered ONCE, and neither the
   // switch changing nor opening another chat may tear them down and rebuild
   // them — the same reason `runningRef` exists.
-  const notifying = useRef({ on: notifyOn, reading: conversationId, list: conversations });
-  notifying.current = { on: notifyOn, reading: conversationId, list: conversations };
+  const notifying = useRef({
+    on: notifyOn,
+    push: pushOn,
+    reading: conversationId,
+    list: conversations,
+  });
+  notifying.current = {
+    on: notifyOn,
+    push: pushOn,
+    reading: conversationId,
+    list: conversations,
+  };
   // Set long before `openConversation` exists, like `onAccessRefused` below.
   const onOpenChat = useRef<(id: string) => void>(() => {});
   // Answered ids, so one ask does not announce twice. It reaches this page down
@@ -320,7 +340,10 @@ export default function App() {
 
   /** Put one moment on the desktop, unless it is already in front of you. */
   const announce = useCallback((kind: NoticeKind, id: string, detail: string) => {
-    const { on, reading, list } = notifying.current;
+    const { on, push: viaPush, reading, list } = notifying.current;
+    // The server has this covered, and its banner arrives whether or not this
+    // page is still here. Raising one too would only double it.
+    if (viaPush) return;
     if (!owed({ enabled: on, permission: permissionNow() }, focusNow(reading), id)) return;
     const notice = noticeFor({
       kind,
@@ -1034,6 +1057,37 @@ export default function App() {
     const found = notifying.current.list.find((c) => c.id === id);
     if (found) openConversation(found);
   };
+
+  // The same, for a banner the SERVICE WORKER raised. It cannot reach into the
+  // page, so tapping one only brings the window forward and posts the chat it
+  // came from; this is the half that opens it.
+  useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (data?.type === "open-chat" && typeof data.conversationId === "string") {
+        onOpenChat.current(data.conversationId);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", onMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
+
+  // Keep the worker told which chat is on screen, so it can stay quiet about
+  // that one. It is killed and restarted freely and forgets — hence also on
+  // focus and visibility, not only when the chat changes.
+  useEffect(() => {
+    const tell = () => push.setReading(document.hidden ? null : conversationId);
+    tell();
+    window.addEventListener("focus", tell);
+    window.addEventListener("blur", tell);
+    document.addEventListener("visibilitychange", tell);
+    return () => {
+      window.removeEventListener("focus", tell);
+      window.removeEventListener("blur", tell);
+      document.removeEventListener("visibilitychange", tell);
+    };
+  }, [conversationId]);
 
   // Go back to the chat you were last in, once the list it lives in arrives.
   //
@@ -1939,7 +1993,10 @@ export default function App() {
           current={themeId}
           onPick={setThemeId}
           notify={notifyOn}
-          onNotify={setNotifyOn}
+          onNotify={(on, viaPush) => {
+            setNotifyOn(on);
+            setPushOn(on && viaPush);
+          }}
           onClose={() => setAppSettings(false)}
         />
       )}

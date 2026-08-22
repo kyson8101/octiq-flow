@@ -85,6 +85,23 @@ pub struct Request {
     pub access: Option<String>,
 }
 
+/// One line naming what is being asked for: the tool, and the path when it
+/// names one. The Rust half of `askSummary` in `PermissionAsk.tsx`, kept in
+/// step with it so a banner reads the same whichever route raised it.
+fn tool_summary(request: &Request) -> String {
+    let tool = request.tool_name.as_deref().unwrap_or("A tool");
+    let path = request.tool_input.as_ref().and_then(|input| {
+        ["file_path", "filePath", "path", "notebook_path"]
+            .iter()
+            .find_map(|key| input.get(key).and_then(|v| v.as_str()))
+            .filter(|s| !s.is_empty())
+    });
+    match path {
+        Some(path) => format!("{tool} — {path}"),
+        None => tool.to_string(),
+    }
+}
+
 /// The question as it goes out to the UI.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -303,7 +320,15 @@ pub async fn ask(request: Request) -> Answer {
         )
     });
 
-    crate::bus::emit("permission-ask", asked);
+    // To the browsers that are attached…
+    crate::bus::emit("permission-ask", asked.clone());
+    // …and to the phone in a pocket, which is attached to nothing. This one
+    // times out in three minutes, so it is the moment most worth carrying.
+    crate::push::notify_chat(
+        asked.request.chat_key.as_deref(),
+        "permission",
+        &tool_summary(&asked.request),
+    );
 
     // The reason travels to the agent, which repeats it to the user. A refusal
     // and a timeout are both a Deny, but they are not the same thing to the
