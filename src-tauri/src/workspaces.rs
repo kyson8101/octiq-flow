@@ -200,6 +200,27 @@ fn default_primary_path() -> String {
         .unwrap_or_else(|| "/".to_string())
 }
 
+/// Make sure a folder a project points at is really there, creating it (and
+/// any missing parent) when it is not. Used by every folder field: the main
+/// folder, the extra ones, and the docs root.
+///
+/// The folder picker can hand back a path that does not exist yet — you can
+/// type one into its box — and a project pointed at a missing folder is broken
+/// in a quiet way: every chat and terminal it opens fails to `cd` there. So the
+/// folder is created at the moment the project claims it, rather than left to
+/// fail later. An existing FILE at that path is still an error: nothing can
+/// turn it into a folder.
+fn ensure_folder(path: &str) -> Result<(), String> {
+    let target = std::path::Path::new(path);
+    if target.is_dir() {
+        return Ok(());
+    }
+    if target.exists() {
+        return Err(format!("{path} is not a folder"));
+    }
+    fs::create_dir_all(target).map_err(|e| format!("could not create {path}: {e}"))
+}
+
 /// Create a new workspace and return it. A name is required. The primary path
 /// is the main folder the workspace runs in; when it is empty the user's home
 /// folder is used, so a project can be created without picking a folder first.
@@ -228,6 +249,7 @@ pub fn add_workspace_impl(
     } else {
         primary_path
     };
+    ensure_folder(&primary_path)?;
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     let workspace = Workspace {
         id: Uuid::new_v4().to_string(),
@@ -271,6 +293,7 @@ pub fn set_primary_path_impl(
     if path.is_empty() {
         return Err("primary path is required".into());
     }
+    ensure_folder(&path)?;
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     let ws = data
         .workspaces
@@ -352,6 +375,7 @@ pub fn add_workspace_path_impl(
     id: String,
     path: String,
 ) -> Result<(), String> {
+    ensure_folder(&path)?;
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     let ws = data
         .workspaces
@@ -398,6 +422,7 @@ pub fn set_docs_path(state: State<WorkspaceState>, id: String, path: String) -> 
     if path.is_empty() {
         return Err("docs path is required".into());
     }
+    ensure_folder(&path)?;
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     let ws = data
         .workspaces
@@ -796,7 +821,103 @@ pub async fn pick_folder(app: AppHandle) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_hex_color, is_valid_initial};
+    use super::{
+        add_workspace_impl, add_workspace_path_impl, is_hex_color, is_valid_initial,
+        set_primary_path_impl, WorkspaceData, WorkspaceState,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// A store backed by a throwaway file, plus a folder path inside a temp dir
+    /// that does NOT exist yet. `label` keeps parallel tests off each other.
+    fn scratch(label: &str) -> (WorkspaceState, std::path::PathBuf) {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let unique = format!(
+            "octiqflow-ws-{}-{}-{}",
+            label,
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        let root = std::env::temp_dir().join(unique);
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("temp root");
+        let state = WorkspaceState {
+            data: Mutex::new(WorkspaceData::default()),
+            file: root.join("workspaces.json"),
+        };
+        (state, root.join("new").join("nested"))
+    }
+
+    #[test]
+    fn creates_the_main_folder_when_it_does_not_exist() {
+        let (state, missing) = scratch("create");
+        assert!(!missing.exists(), "the test folder must start missing");
+
+        let ws = add_workspace_impl(
+            &state,
+            "demo".into(),
+            missing.to_string_lossy().into_owned(),
+        )
+        .expect("create the project");
+
+        assert!(missing.is_dir(), "the main folder should have been created");
+        assert_eq!(ws.primary_path, missing.to_string_lossy());
+    }
+
+    #[test]
+    fn changing_the_main_folder_creates_it_too() {
+        let (state, missing) = scratch("change");
+        let ws = add_workspace_impl(&state, "demo".into(), String::new()).expect("create");
+
+        set_primary_path_impl(&state, ws.id, missing.to_string_lossy().into_owned())
+            .expect("point it at a new folder");
+
+        assert!(
+            missing.is_dir(),
+            "the new main folder should have been created"
+        );
+    }
+
+    #[test]
+    fn adding_an_extra_folder_creates_it_too() {
+        let (state, missing) = scratch("extra");
+        let ws = add_workspace_impl(&state, "demo".into(), String::new()).expect("create");
+
+        add_workspace_path_impl(&state, ws.id, missing.to_string_lossy().into_owned())
+            .expect("add another folder");
+
+        assert!(
+            missing.is_dir(),
+            "the extra folder should have been created"
+        );
+    }
+
+    #[test]
+    fn refuses_an_extra_folder_that_is_a_file() {
+        let (state, missing) = scratch("extra-file");
+        std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
+        std::fs::write(&missing, b"not a folder").unwrap();
+        let ws = add_workspace_impl(&state, "demo".into(), String::new()).expect("create");
+
+        let err = add_workspace_path_impl(&state, ws.id, missing.to_string_lossy().into_owned())
+            .expect_err("a file is not a folder");
+        assert!(err.contains("not a folder"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn refuses_a_main_folder_that_is_a_file() {
+        let (state, missing) = scratch("file");
+        std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
+        std::fs::write(&missing, b"not a folder").unwrap();
+
+        let err = add_workspace_impl(
+            &state,
+            "demo".into(),
+            missing.to_string_lossy().into_owned(),
+        )
+        .expect_err("a file is not a folder");
+        assert!(err.contains("not a folder"), "unexpected error: {err}");
+    }
 
     #[test]
     fn accepts_valid_six_digit_hex() {
