@@ -17,10 +17,12 @@
 //           --model claude-haiku-4-5-20251001 --permission-mode auto \
 //           --allowedTools=Workflow        # workflow fixture only
 //
-// Two traps when re-recording. `--allowedTools` is variadic, so the space form
-// swallows the positional prompt — use the `=` form. And a dynamic workflow is
+// Three traps when re-recording. `--allowedTools` is variadic, so the space form
+// swallows the positional prompt — use the `=` form. A dynamic workflow is
 // refused outright in -p mode ("Review dynamic workflow before running") unless
-// it is named in --allowedTools.
+// it is named in --allowedTools. And `/config key=value` WRITES the recorder's
+// own settings.json — record that one under a throwaway `CLAUDE_CONFIG_DIR` or
+// it changes the machine it was captured on.
 import { describe, expect, it } from "vitest";
 
 // Loaded through Vite's `?raw`, not node:fs — this is a browser tsconfig with
@@ -43,6 +45,11 @@ import skillCallStream from "./__fixtures__/skill-call.jsonl?raw";
 // Recorded on `--model opus` so the switch is visible, with the two prompts
 // piped in on stdin one after the other.
 import modelSwitchStream from "./__fixtures__/model-switch.jsonl?raw";
+// A live stream of the user typing `/config` and then `/config verbose=true`.
+// Both are answered by the CLI itself, so the two turns are the shape a local
+// command has: no echo of what was typed, and one `<synthetic>` assistant
+// message carrying the answer as plain text.
+import configStream from "./__fixtures__/config-command.jsonl?raw";
 
 import {
   addUserTurn,
@@ -61,6 +68,7 @@ const FIXTURES: Record<string, string> = {
   "skill-brief-from-disk.jsonl": skillBriefLines,
   "skill-call.jsonl": skillCallStream,
   "model-switch.jsonl": modelSwitchStream,
+  "config-command.jsonl": configStream,
 };
 
 /** Fold a captured stream through the reducer, the way App.tsx does live: one
@@ -184,6 +192,62 @@ describe("a /model typed into the chat", () => {
   it("takes the full name from the next turn, which is the agent's own word", () => {
     const s = replay("model-switch.jsonl", addUserTurn(emptyChat(), "/model haiku"));
     expect(s.model).toBe("claude-haiku-4-5-20251001");
+  });
+});
+
+describe("a /config typed into the chat", () => {
+  // `/config` is the CLI's own settings command, and print mode answers it as
+  // fully as a terminal does: bare it prints the key list, `key=value` sets one
+  // and says so. Every answer is the CLI writing rather than the model —
+  // stamped `<synthetic>`, costing nothing, and never echoed back.
+  //
+  // The stream is three turns: `/config`, `/config model=haiku`, `/config
+  // verbose=true`. The third is there for its `init`, which is where the model
+  // the second turn changed finally appears — an `init` opens a turn BEFORE the
+  // command in it is read, so the one after `/config model=haiku` still names
+  // the model the session started on.
+  const afterTurn = (n: number) => {
+    let seen = 0;
+    return (e: Record<string, unknown>) => e.type === "result" && ++seen === n;
+  };
+
+  it("shows the key list the CLI prints for a bare /config", () => {
+    const s = replay("config-command.jsonl", addUserTurn(emptyChat(), "/config"), afterTurn(1));
+    const [, answer] = s.messages;
+    expect(answer.role).toBe("assistant");
+    expect(text(answer)).toContain("Usage: /config key=value");
+    expect(text(answer)).toContain("verbose=true|false");
+  });
+
+  it("shows what a /config key=value changed", () => {
+    const s = replay("config-command.jsonl", addUserTurn(emptyChat(), "/config"));
+    expect(text(s.messages[s.messages.length - 1])).toBe("Set Verbose output to true");
+  });
+
+  it("leaves the turn finished, not waiting on an echo that never comes", () => {
+    const s = replay("config-command.jsonl", addUserTurn(emptyChat(), "/config"), afterTurn(1));
+    expect(s.busy).toBe(false);
+  });
+
+  it("follows the model a /config model=… asks for, at once", () => {
+    // `/config model=haiku` is `/model haiku` said the other way — it moves the
+    // RUNNING session, measured: the next turn's init names the new model. The
+    // picker must not go on claiming Opus in between.
+    let s = replay("config-command.jsonl", addUserTurn(emptyChat(), "/config"), afterTurn(1));
+    s = addUserTurn(s, "/config model=haiku");
+    expect(s.model).toBe("haiku");
+  });
+
+  it("takes the full name from the next turn, which is the agent's own word", () => {
+    let s = replay("config-command.jsonl", addUserTurn(emptyChat(), "/config"), afterTurn(1));
+    s = addUserTurn(s, "/config model=haiku");
+    s = replay("config-command.jsonl", s, afterTurn(3));
+    expect(s.model).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("never takes <synthetic> for the session's model", () => {
+    const s = replay("config-command.jsonl", addUserTurn(emptyChat(), "/config"), afterTurn(1));
+    expect(s.model).toBe("claude-opus-5");
   });
 });
 

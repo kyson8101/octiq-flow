@@ -302,8 +302,15 @@ const SYNTHETIC_MODEL = "<synthetic>";
  *  moved to until the NEXT turn opens with a fresh `init`. Reading the name
  *  off the command is what lets the label follow it now rather than one
  *  message later. It is what was ASKED for, so a name the agent turns down
- *  ("Model 'xxx' not found") is corrected by that same init. */
+ *  ("Model 'xxx' not found") is corrected by that same init.
+ *
+ *  `/config model=<name>` is the same act said the other way, and it moves the
+ *  RUNNING session just as `/model` does — measured: the turn after it opens on
+ *  the new model. It is the whole `/config` line, so `key=value` pairs beside it
+ *  are allowed; the model may be any of them, and nothing else in the line
+ *  changes anything this reads. */
 const MODEL_COMMAND = /^\/model\s+(\S+)\s*$/;
+const CONFIG_MODEL = /^\/config\s+(?:\S+\s+)*?model=(\S+)/;
 
 /** The note Claude Code writes when it has to shrink a picture before sending
  *  it — "[Image: original 2660x642, displayed at 2000x483. Multiply coordinates
@@ -1271,7 +1278,8 @@ export function addUserTurn(
   // say so until the next turn — see MODEL_COMMAND. The picker reads this
   // field, so a label that only caught up one message later was simply wrong
   // in between.
-  const asked = MODEL_COMMAND.exec(text.trim())?.[1];
+  const line = text.trim();
+  const asked = (MODEL_COMMAND.exec(line) ?? CONFIG_MODEL.exec(line))?.[1];
   return {
     ...state,
     ...(asked ? { model: asked, modelAsked: true } : {}),
