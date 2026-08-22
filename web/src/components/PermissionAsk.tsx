@@ -39,6 +39,15 @@ function target(ask: Ask): string | null {
   return null;
 }
 
+/** One line naming what is being asked for: the tool, and the path when it
+ *  names one. Written for the desktop notification, which gets one line and no
+ *  diff — but it is the same question this card draws in full. */
+export function askSummary(ask: Ask): string {
+  const path = target(ask);
+  const tool = ask.toolName || "A tool";
+  return path ? `${tool} — ${path}` : tool;
+}
+
 export function PermissionAsk({ ask, onAnswered }: { ask: Ask; onAnswered: (id: string) => void }) {
   const [sending, setSending] = useState<"allow" | "deny" | "always" | null>(null);
   const path = target(ask);

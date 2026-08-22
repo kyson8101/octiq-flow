@@ -37,6 +37,16 @@ import {
   type Conversation,
 } from "./lib/store";
 import { forgetIndexEntry, saveIndexEntry } from "./lib/chatIndex";
+import {
+  focusNow,
+  isOn as notifyIsOn,
+  lastSaid,
+  noticeFor,
+  owed,
+  permissionNow,
+  show as showNotice,
+  type NoticeKind,
+} from "./lib/notify";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail } from "./components/AgentRail";
 import { Todos } from "./components/Todos";
@@ -68,7 +78,7 @@ import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
 import { TerminalDrawer } from "./components/TerminalDrawer";
-import { PermissionAsk, type Ask } from "./components/PermissionAsk";
+import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { useConfirm } from "./components/Confirm";
 
@@ -287,6 +297,49 @@ export default function App() {
   // it missed. The agent kept working while we were away — the record of it is
   // on the server, and this is our place in it.
   const seen = useRef<Record<string, number>>({});
+
+  // Desktop notifications, for the chats you are NOT looking at.
+  //
+  // Chats run in parallel, so the moment worth acting on lands in a window
+  // behind an editor or in a conversation you left an hour ago — and two of the
+  // three moments (a permission, a question) time out. The rule for what counts
+  // as "not looking" lives in lib/notify.ts; here is only what fires it.
+  const [notifyOn, setNotifyOn] = useState(notifyIsOn);
+  // Everything `announce` needs, read at the moment it fires rather than closed
+  // over. The listeners that raise notices are registered ONCE, and neither the
+  // switch changing nor opening another chat may tear them down and rebuild
+  // them — the same reason `runningRef` exists.
+  const notifying = useRef({ on: notifyOn, reading: conversationId, list: conversations });
+  notifying.current = { on: notifyOn, reading: conversationId, list: conversations };
+  // Set long before `openConversation` exists, like `onAccessRefused` below.
+  const onOpenChat = useRef<(id: string) => void>(() => {});
+  // Answered ids, so one ask does not announce twice. It reaches this page down
+  // two routes — the live broadcast and the refill on connect — and the second
+  // arrival is the same question, not a new one.
+  const announced = useRef<Set<string>>(new Set());
+
+  /** Put one moment on the desktop, unless it is already in front of you. */
+  const announce = useCallback((kind: NoticeKind, id: string, detail: string) => {
+    const { on, reading, list } = notifying.current;
+    if (!owed({ enabled: on, permission: permissionNow() }, focusNow(reading), id)) return;
+    const notice = noticeFor({
+      kind,
+      conversationId: id,
+      chatTitle: list.find((c) => c.id === id)?.title ?? "",
+      detail,
+    });
+    showNotice(notice, (open) => onOpenChat.current(open));
+  }, []);
+
+  /** The same, for something with an id that must only ever be announced once. */
+  const announceOnce = useCallback(
+    (key: string, kind: NoticeKind, id: string, detail: string) => {
+      if (announced.current.has(key)) return;
+      announced.current.add(key);
+      announce(kind, id, detail);
+    },
+    [announce],
+  );
 
   const confirm = useConfirm();
 
@@ -524,6 +577,7 @@ export default function App() {
     const offAsk = bridge.on<Ask>("permission-ask", (ask) => {
       const id = ask?.chatKey ? convOf(ask.chatKey) : null;
       if (!id || !ask.id) return;
+      announceOnce(ask.id, "permission", id, askSummary(ask));
       // Guarded against arriving twice: an ask raised in the moment between the
       // refill above being answered and this listener seeing it comes down both
       // routes, and two cards for one question can only be answered once.
@@ -548,6 +602,7 @@ export default function App() {
     const offQuestion = bridge.on<Question>("user-question", (q) => {
       const id = q?.chatKey ? convOf(q.chatKey) : null;
       if (!id || !q.id) return;
+      announceOnce(q.id, "question", id, q.question ?? "");
       setQuestions((prev) =>
         prev[id]?.some((x) => x.id === q.id)
           ? prev
@@ -570,7 +625,7 @@ export default function App() {
       offQuestion();
       offQuestionGone();
     };
-  }, []);
+  }, [announceOnce]);
 
   /** Apply a change to ONE conversation's chat, whether or not it is the one on
    *  screen. Every update goes through here, which is what makes a background
@@ -805,6 +860,22 @@ export default function App() {
     return out;
   }, [running, chats]);
 
+  // A turn that ended, announced to the desktop.
+  //
+  // Read off `busy` going true → false rather than off any one event: a turn
+  // ends several ways — a final result, an error, the process exiting — and all
+  // of them come down to the same thing here. A chat whose `busy` was never
+  // seen true has no transition, so seeding a stored transcript on load, or
+  // adopting a session already running on the server, announces nothing.
+  const wasBusy = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    for (const [id, s] of Object.entries(chats)) {
+      const before = wasBusy.current[id];
+      wasBusy.current[id] = s.busy;
+      if (before && !s.busy) announce("done", id, lastSaid(s.messages));
+    }
+  }, [chats, announce]);
+
   /** End ONE conversation's process for good. Only ever on purpose — deleting
    *  the conversation, or asking for the session to end. Switching away does
    *  not come through here: that is the whole point of running in parallel. */
@@ -955,6 +1026,14 @@ export default function App() {
     if (c.permission) setAccess(c.permission as AccessLevel);
     setDrawer(false);
   }, [patch]);
+
+  // Clicking a desktop notification brings the window forward — this is what
+  // then puts the chat it came from on screen, so the banner lands you on the
+  // thing it was about rather than wherever you left off.
+  onOpenChat.current = (id) => {
+    const found = notifying.current.list.find((c) => c.id === id);
+    if (found) openConversation(found);
+  };
 
   // Go back to the chat you were last in, once the list it lives in arrives.
   //
@@ -1859,6 +1938,8 @@ export default function App() {
         <Settings
           current={themeId}
           onPick={setThemeId}
+          notify={notifyOn}
+          onNotify={setNotifyOn}
           onClose={() => setAppSettings(false)}
         />
       )}

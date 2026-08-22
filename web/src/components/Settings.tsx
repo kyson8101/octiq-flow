@@ -7,19 +7,50 @@
 // Choosing applies at once and there is no Save. That is the same rule the
 // project sheet follows: on a phone, a Save button you can lose by swiping is
 // worse than a change you can undo by choosing again.
+import { useState } from "react";
+
+import { askPermission, permissionNow, setOn, supported } from "../lib/notify";
 import { applyTheme, preview, THEMES } from "../lib/themeStore";
 
-export function Settings({ current, onPick, onClose }: {
+export function Settings({ current, onPick, notify, onNotify, onClose }: {
   /** The chosen theme's id. Held by App so the sheet can close and reopen
    *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
   current: string;
   onPick: (id: string) => void;
+  /** Whether desktop notifications are switched on. Held by App for the same
+   *  reason as the theme: the thing that FIRES them has to read it too. */
+  notify: boolean;
+  onNotify: (on: boolean) => void;
   onClose: () => void;
 }) {
   const choose = (id: string) => {
     applyTheme(id);
     onPick(id);
   };
+
+  // What the browser has decided, re-read after each ask. Not derived from
+  // `notify`: a switch that is on and a browser that says "denied" is exactly
+  // the state worth telling somebody about, and one boolean cannot say it.
+  const [permission, setPermission] = useState(permissionNow);
+
+  /** Turning it ON is the gesture that asks the browser. `requestPermission`
+   *  needs a real click, and a prompt on first load is the one people block. */
+  const toggleNotify = async () => {
+    if (notify) {
+      setOn(false);
+      onNotify(false);
+      return;
+    }
+    const decided = await askPermission();
+    setPermission(decided);
+    // Left off when the browser said no: a switch that reads "on" while nothing
+    // can ever appear is a lie you only find out about by missing something.
+    if (decided !== "granted") return;
+    setOn(true);
+    onNotify(true);
+  };
+
+  const on = notify && permission === "granted";
 
   return (
     <>
@@ -37,6 +68,35 @@ export function Settings({ current, onPick, onClose }: {
         </header>
 
         <div className="panel-body set-body">
+          {supported() && (
+            <div className="set-field">
+              <span className="set-label">Notifications</span>
+              <p className="set-hint">
+                A desktop banner when a chat you are not watching finishes its
+                turn, needs permission, or asks you something. Nothing appears
+                for the chat on screen in front of you.
+              </p>
+
+              <button
+                className={`set-switch${on ? " is-on" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={on}
+                onClick={toggleNotify}
+              >
+                <span className="set-switch-track" aria-hidden="true" />
+                <span className="set-switch-text">{on ? "On" : "Off"}</span>
+              </button>
+
+              {permission === "denied" && (
+                <p className="set-warn">
+                  This browser is blocking notifications for OctiqFlow. Allow
+                  them in the site settings and come back.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="set-field">
             <span className="set-label">Theme</span>
             <p className="set-hint">

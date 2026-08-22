@@ -4292,6 +4292,69 @@ body.is-ultra .eff {
   color: var(--fg-2);
 }
 
+/* An on/off row, built like the effort switch it borrows its shape from
+   (.eff-switch) so the two read as the same control in two places. */
+.set-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  align-self: flex-start;
+  padding: 7px 12px 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.set-switch:hover {
+  background: var(--bg-2);
+}
+
+.set-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  transition: background 0.15s ease;
+}
+
+.set-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-3);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.set-switch.is-on .set-switch-track {
+  background: var(--accent);
+}
+
+.set-switch.is-on .set-switch-track::after {
+  transform: translateX(12px);
+  background: var(--accent-fg);
+}
+
+.set-switch.is-on .set-switch-text {
+  color: var(--fg-0);
+}
+
+.set-warn {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--warn);
+}
+
 .set-input {
   width: 100%;
   padding: 9px 11px;
