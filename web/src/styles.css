@@ -5905,14 +5905,179 @@ body.is-ultra .eff {
   border-color: var(--accent);
 }
 
+/* ---- A question that takes a set ---------------------------------------
+   Some questions want several answers — which files, which checks — and the
+   agent says so per question. The controls have to look different BEFORE the
+   first tap, because they behave differently: one choice answers on the spot,
+   a tick waits to be sent. */
+.qa-hint {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+
+.qa-option.is-many {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* An empty box until it is ticked, so a set reads as a set at a glance and the
+   label never shifts sideways when the mark appears. */
+.qa-tick {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.qa-option.is-on .qa-tick {
+  border-color: currentColor;
+}
+
+/* ---- The card, put aside -----------------------------------------------
+   The answer is usually in the conversation the card is sitting on top of, and
+   with the agent blocked the only other way back to it was to close the card —
+   which is itself an answer. So it collapses to a strip: still clearly waiting,
+   but out of the way. Nothing is sent and nothing is lost. */
+.qa-head .qa-min-btn {
+  /* The pair sits at the far edge together. Without this both buttons would
+     claim the free space and drift apart. */
+  margin-left: auto;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.qa-head .qa-min-btn + .qa-close {
+  margin-left: 0;
+}
+
+.qa-head .qa-min-btn:hover:not(:disabled) {
+  background: var(--bg-2, var(--bg-1));
+  color: var(--fg-1);
+}
+
+.qa-head .qa-min-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.qa-card.is-min {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* The whole strip is the way back, not a small target at one end of it. */
+.qa-restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 13px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.qa-restore:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* One line of the question, cut where it runs out of room: enough to know
+   which question is waiting, never enough to take the screen back. */
+.qa-min-q {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--fg-1);
+}
+
+.qa-min-cue {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+/* The label is the first thing to go on a narrow screen: the pulsing dot and
+   the question itself already say what this is. */
+@media (max-width: 520px) {
+  .qa-restore .qa-label {
+    display: none;
+  }
+}
+
+/* ---- A compaction, start to end ---------------------------------------
+   One shape for both halves of the same event: the rule that runs while the
+   agent rewrites its own history IS the rule it leaves behind afterwards, in
+   the same place, so nothing appears, vanishes, or jumps when it finishes.
+   While it runs the rules travel — the agent reports no progress, only a start
+   and an end, so there is no percentage to draw and none is faked. */
+.compacted-line.is-running {
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    var(--accent) 45%,
+    var(--border) 90%
+  );
+  background-size: 220% 100%;
+  animation: compacting-run 1.6s linear infinite;
+}
+
+@keyframes compacting-run {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+.compacted.is-running .compacted-label {
+  color: var(--fg-2);
+}
+
+/* A machine that says it prefers less movement gets a still rule rather than
+   none: the row still has to read as work in progress. */
+@media (prefers-reduced-motion: reduce) {
+  .compacted-line.is-running {
+    background: var(--accent);
+    opacity: 0.5;
+    animation: none;
+  }
+}
+
 /* ---- Compaction boundary ----------------------------------------------
    A quiet rule across the conversation. Everything above it is a summary now,
    which is the answer to "why has it forgotten what I said earlier". */
 .compacted {
+  margin: 6px 0;
+}
+
+.compacted-bar {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 6px 0;
 }
 
 .compacted-line {

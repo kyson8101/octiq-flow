@@ -49,7 +49,7 @@ function serverConfig() {
 }
 
 /** Put a question to OctiqFlow and wait for the answer. */
-function askOctiq(question, options, recommended) {
+function askOctiq(question, options, recommended, multiple) {
   return new Promise((resolve) => {
     let cfg;
     try {
@@ -57,7 +57,7 @@ function askOctiq(question, options, recommended) {
     } catch {
       return resolve("OctiqFlow is not reachable, so the user could not be asked.");
     }
-    const body = JSON.stringify({ chatKey: CHAT_KEY, question, options, recommended });
+    const body = JSON.stringify({ chatKey: CHAT_KEY, question, options, recommended, multiple });
     const req = http.request(
       {
         host: "127.0.0.1",
@@ -101,7 +101,9 @@ const TOOL = {
     "approaches to take, what something should be called, whether an assumption " +
     "is right. Prefer it over guessing, and over stopping to ask in prose. " +
     "Offer options when the choice is between a few known answers; leave options " +
-    "empty when any answer will do.",
+    "empty when any answer will do. Set multiple when the answer is a SET rather " +
+    "than a choice — which files to include, which checks to run — and they can " +
+    "then tick as many as they like.",
   inputSchema: {
     type: "object",
     properties: {
@@ -121,6 +123,14 @@ const TOOL = {
           "Shown as a hint next to that choice; it is not selected for them " +
           "and does not become the answer if they say nothing. Omit when you " +
           "genuinely have no preference — marking one anyway is noise.",
+      },
+      multiple: {
+        type: "boolean",
+        description:
+          "True when several options may be picked at once, and the answer " +
+          "comes back as all of them. Leave it out for an either/or question: " +
+          "offering two ticks where you can only act on one answer invites a " +
+          "reply you cannot use. Needs options.",
       },
     },
     required: ["question"],
@@ -219,7 +229,16 @@ async function handle(msg) {
       const pick = Number(args.recommended);
       const recommended =
         Number.isInteger(pick) && pick >= 0 && pick < options.length ? pick : undefined;
-      const answer = await askOctiq(String(args.question || "").trim(), options, recommended);
+      // Several answers only where there are several things to pick. Asked of
+      // a free-text question the flag means nothing, and passing it on would
+      // draw a card promising ticks it has none of.
+      const multiple = args.multiple === true && options.length > 0;
+      const answer = await askOctiq(
+        String(args.question || "").trim(),
+        options,
+        recommended,
+        multiple,
+      );
       return reply(msg.id, { content: [{ type: "text", text: answer }] });
     }
 

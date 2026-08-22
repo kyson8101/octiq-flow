@@ -59,6 +59,15 @@ pub struct Question {
     /// what the agent thinks, so you can disagree with it quickly.
     #[serde(default)]
     pub recommended: Option<usize>,
+    /// Whether more than one of `options` may be picked.
+    ///
+    /// Off unless the agent asks for it, and asked for per question rather than
+    /// offered on every one: "which database?" takes exactly one answer, and a
+    /// UI that let you tick both would be inviting an answer the agent cannot
+    /// act on. The agent knows which of its questions is a set and which is a
+    /// choice; nothing else does.
+    #[serde(default)]
+    pub multiple: bool,
 }
 
 /// The question, once it has an id to answer against.
@@ -187,6 +196,7 @@ mod tests {
             question: "Which database?".into(),
             options: vec!["Postgres".into(), "SQLite".into()],
             recommended: Some(0),
+            multiple: false,
         }
     }
 
@@ -203,6 +213,24 @@ mod tests {
         let json = serde_json::to_string(&q).expect("serialises");
         assert!(json.contains("\"recommended\":0"));
         assert!(!json.contains("answer"));
+    }
+
+    #[test]
+    fn several_answers_are_allowed_only_when_the_agent_asks_for_them() {
+        // One answer is the safe reading of a question, so it is the one you
+        // get by saying nothing: "which database?" must never come back with
+        // two just because the UI could send two.
+        let one: Question =
+            serde_json::from_str(r#"{"question":"Which database?","options":["a","b"]}"#)
+                .expect("parses without the flag");
+        assert!(!one.multiple);
+
+        // And a question that genuinely takes a set says so itself.
+        let many: Question = serde_json::from_str(
+            r#"{"question":"Which of these?","options":["a","b"],"multiple":true}"#,
+        )
+        .expect("parses with the flag");
+        assert!(many.multiple);
     }
 
     #[test]
@@ -294,6 +322,8 @@ mod tests {
             options: vec![],
             // Nothing to point at, so nothing is pointed at.
             recommended: None,
+            // And nothing to pick several of either.
+            multiple: false,
         };
         assert!(free.options.is_empty());
         assert!(!free.question.is_empty());

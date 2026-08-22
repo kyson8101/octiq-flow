@@ -14,9 +14,16 @@
 //
 // Options when there are options, a text box when there are not — "which of
 // these two" and "what should it be called" are different questions and a
-// single control would serve one of them badly.
+// single control would serve one of them badly. A question the agent marks as
+// taking a SET is a third: its options tick on and off and are sent together.
+//
+// And the card can be put aside. The answer is often in the conversation the
+// card is sitting on top of — what the agent just did, what it just read — and
+// with the agent blocked the only other way back to it was to close the card,
+// which is itself an answer. Minimising decides nothing.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
+import { composeAnswer, togglePick } from "../lib/questionAnswer";
 
 export type Question = {
   id: string;
@@ -28,6 +35,9 @@ export type Question = {
    *  DECLINED rather than this. The agent having a view does not make the
    *  decision less yours — it just saves you working out which one it meant. */
   recommended?: number;
+  /** Whether several of `options` may be picked at once. The agent asks for it
+   *  per question: it is the only one that knows whether it can act on a set. */
+  multiple?: boolean;
 };
 
 /** What it says when you close the card instead of answering.
@@ -49,8 +59,13 @@ export function UserQuestion({
 }) {
   const [page, setPage] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  /** Ticks so far, per question. Kept apart from `answers` because a set is not
+   *  an answer until it is confirmed — and stepping back to a question has to
+   *  find its ticks where they were, not a sentence to re-read. */
+  const [picks, setPicks] = useState<Record<string, string[]>>({});
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [minimised, setMinimised] = useState(false);
 
   const total = questions.length;
   // One page per question, plus a summary — but a single question needs no
@@ -59,6 +74,15 @@ export function UserQuestion({
   const onSummary = page === summaryPage;
   const current = onSummary ? undefined : questions[page];
   const answered = questions.filter((q) => answers[q.id]).length;
+
+  const options = current?.options ?? [];
+  // A set needs something to make a set of. Marked as taking several with no
+  // options to tick, the question is a text box like any other.
+  const many = !!current?.multiple && options.length > 0;
+  const ticked = current ? picks[current.id] ?? [] : [];
+  // What the current page would send: the ticks and anything typed beside them
+  // for a set, the typed line on its own otherwise.
+  const pending = many ? composeAnswer(options, ticked, text) : text.trim();
 
   const record = (q: Question, value: string) => {
     const said = value.trim();
@@ -92,6 +116,31 @@ export function UserQuestion({
     onDone(ids);
   };
 
+  // Put aside. The card shrinks to a strip naming what is waiting, and the
+  // transcript underneath — usually where the answer is — comes back into view.
+  // Nothing is sent and nothing is lost: the ticks, the typed line and the page
+  // are all still here when the strip is pressed.
+  if (minimised) {
+    return (
+      <div className="qa-card is-min">
+        <button
+          className="qa-restore"
+          type="button"
+          title="Back to the question"
+          onClick={() => setMinimised(false)}
+        >
+          <span className="qa-dot" aria-hidden="true" />
+          <span className="qa-label">Claude is asking</span>
+          <span className="qa-min-q">{current?.question ?? "for your answers"}</span>
+          {/* A second question can arrive while the card is put aside, and the
+              strip is then the only thing saying so. */}
+          {total > 1 && <span className="qa-count">{`${page + 1} of ${total}`}</span>}
+          <span className="qa-min-cue">{onSummary ? "Review" : "Answer"}</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="qa-card" role="alertdialog" aria-label="The agent has a question">
       <div className="qa-head">
@@ -102,6 +151,18 @@ export function UserQuestion({
             {onSummary ? "Review" : `${page + 1} of ${total}`}
           </span>
         )}
+        {/* Not a close. The agent is blocked, so closing is an answer — and
+            the answer is often in the conversation this card is covering. */}
+        <button
+          className="qa-min-btn"
+          type="button"
+          disabled={sending}
+          title="Hide while you read"
+          aria-label="Hide this question while you read the conversation"
+          onClick={() => setMinimised(true)}
+        >
+          –
+        </button>
         <button
           className="qa-close"
           type="button"
@@ -118,23 +179,44 @@ export function UserQuestion({
         <>
           <p className="qa-question">{current.question}</p>
 
-          {(current.options ?? []).length > 0 && (
-            <div className="qa-options">
-              {(current.options ?? []).map((option, i) => {
+          {/* Said before the first tap, because the two behave differently:
+              one choice answers on the spot, a set waits to be sent. */}
+          {many && <p className="qa-hint">Pick as many as you like</p>}
+
+          {options.length > 0 && (
+            <div className="qa-options" role={many ? "group" : undefined}>
+              {options.map((option, i) => {
                 // Said in WORDS, not colour alone — the mark has to survive a
                 // screen reader and a colourblind reader, and "the blue one"
                 // is not an answer either of them gets.
                 const tip = i === current.recommended;
+                const on = many ? ticked.includes(option) : answers[current.id] === option;
                 return (
                   <button
                     key={option}
-                    className={`qa-option ${answers[current.id] === option ? "is-on" : ""} ${
-                      tip ? "is-tip" : ""
+                    className={`qa-option ${on ? "is-on" : ""} ${tip ? "is-tip" : ""} ${
+                      many ? "is-many" : ""
                     }`}
                     type="button"
+                    // A tick is a checkbox, and saying so is what tells a
+                    // screen reader that pressing it decides nothing yet.
+                    role={many ? "checkbox" : undefined}
+                    aria-checked={many ? on : undefined}
                     disabled={sending}
-                    onClick={() => record(current, option)}
+                    onClick={() =>
+                      many
+                        ? setPicks((prev) => ({
+                            ...prev,
+                            [current.id]: togglePick(prev[current.id] ?? [], option),
+                          }))
+                        : record(current, option)
+                    }
                   >
+                    {many && (
+                      <span className="qa-tick" aria-hidden="true">
+                        {on ? "✓" : ""}
+                      </span>
+                    )}
                     {option}
                     {tip && <span className="qa-tip">Suggested</span>}
                   </button>
@@ -149,20 +231,27 @@ export function UserQuestion({
             className="qa-free"
             onSubmit={(e) => {
               e.preventDefault();
-              record(current, text);
+              record(current, pending);
             }}
           >
             <input
               className="qa-input"
               value={text}
-              autoFocus={(current.options ?? []).length === 0}
+              autoFocus={options.length === 0}
               placeholder={
-                (current.options ?? []).length > 0 ? "…or say something else" : "Your answer…"
+                options.length === 0
+                  ? "Your answer…"
+                  : many
+                    ? "…and anything else"
+                    : "…or say something else"
               }
               disabled={sending}
               onChange={(e) => setText(e.target.value)}
             />
-            <button className="ask-btn" type="submit" disabled={sending || !text.trim()}>
+            {/* A set is sent by this button and not by the ticks, so it stays
+                pressable on ticks alone — with nothing typed there would
+                otherwise be no way to send what you picked. */}
+            <button className="ask-btn" type="submit" disabled={sending || !pending}>
               {page + 1 === total && summaryPage < 0 ? "Answer" : "Next"}
             </button>
           </form>
