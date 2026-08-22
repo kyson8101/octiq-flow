@@ -7,6 +7,30 @@ import { MANAGED, mapTokens, parseThemeCss, type Theme } from "./theme";
 import candyland from "./themes/candyland.css?raw";
 import bubblegum from "./themes/bubblegum.css?raw";
 import mono from "./themes/mono.css?raw";
+import midnight from "./themes/midnight.css?raw";
+import aurora from "./themes/aurora.css?raw";
+import ember from "./themes/ember.css?raw";
+import orchid from "./themes/orchid.css?raw";
+import moss from "./themes/moss.css?raw";
+import cobalt from "./themes/cobalt.css?raw";
+import rosewood from "./themes/rosewood.css?raw";
+import graphite from "./themes/graphite.css?raw";
+import saffron from "./themes/saffron.css?raw";
+import glacier from "./themes/glacier.css?raw";
+import vineyard from "./themes/vineyard.css?raw";
+import harbour from "./themes/harbour.css?raw";
+import cinder from "./themes/cinder.css?raw";
+import lagoon from "./themes/lagoon.css?raw";
+import lilacAsh from "./themes/lilac-ash.css?raw";
+import copper from "./themes/copper.css?raw";
+import neon from "./themes/neon.css?raw";
+import sage from "./themes/sage.css?raw";
+import ultraviolet from "./themes/ultraviolet.css?raw";
+import clay from "./themes/clay.css?raw";
+import brutalism from "./themes/brutalism.css?raw";
+import neumorphism from "./themes/neumorphism.css?raw";
+import liquidGlass from "./themes/liquid-glass.css?raw";
+import metronic from "./themes/metronic.css?raw";
 
 /** Adding a theme is two steps: drop the pasted file in `themes/`, add a line
  *  here. Nothing else in the app needs to know it exists. */
@@ -14,6 +38,30 @@ const PASTED: Array<{ id: string; name: string; css: string }> = [
   { id: "candyland", name: "Candyland", css: candyland },
   { id: "bubblegum", name: "Bubblegum", css: bubblegum },
   { id: "mono", name: "Mono", css: mono },
+  { id: "midnight", name: "Midnight", css: midnight },
+  { id: "aurora", name: "Aurora", css: aurora },
+  { id: "ember", name: "Ember", css: ember },
+  { id: "orchid", name: "Orchid", css: orchid },
+  { id: "moss", name: "Moss", css: moss },
+  { id: "cobalt", name: "Cobalt", css: cobalt },
+  { id: "rosewood", name: "Rosewood", css: rosewood },
+  { id: "graphite", name: "Graphite", css: graphite },
+  { id: "saffron", name: "Saffron", css: saffron },
+  { id: "glacier", name: "Glacier", css: glacier },
+  { id: "vineyard", name: "Vineyard", css: vineyard },
+  { id: "harbour", name: "Harbour", css: harbour },
+  { id: "cinder", name: "Cinder", css: cinder },
+  { id: "lagoon", name: "Lagoon", css: lagoon },
+  { id: "lilac-ash", name: "Lilac Ash", css: lilacAsh },
+  { id: "copper", name: "Copper", css: copper },
+  { id: "neon", name: "Neon", css: neon },
+  { id: "sage", name: "Sage", css: sage },
+  { id: "ultraviolet", name: "Ultraviolet", css: ultraviolet },
+  { id: "clay", name: "Clay", css: clay },
+  { id: "brutalism", name: "Brutalism", css: brutalism },
+  { id: "neumorphism", name: "Neumorphism", css: neumorphism },
+  { id: "liquid-glass", name: "Liquid Glass", css: liquidGlass },
+  { id: "metronic", name: "Metronic", css: metronic },
 ];
 
 /** The built-in theme has no tokens because it does not need any: it is what
