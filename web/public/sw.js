@@ -80,7 +80,10 @@ self.addEventListener("push", (event) => {
         tag: (notice && notice.tag) || "octiq",
         icon: "./icon-192.png",
         badge: "./icon-192.png",
-        data: { conversationId: id ?? null },
+        data: {
+          conversationId: id ?? null,
+          projectId: (notice && notice.projectId) || null,
+        },
         // Work that is BLOCKED on you should sit there until it is seen; a
         // turn that merely ended can go away by itself. Honoured on desktop
         // Chrome, ignored elsewhere, harmless either way.
@@ -95,7 +98,9 @@ self.addEventListener("push", (event) => {
 // copies of a chat and no idea which is live.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const id = event.notification.data && event.notification.data.conversationId;
+  const data = event.notification.data || {};
+  const id = data.conversationId;
+  const project = data.projectId;
 
   event.waitUntil(
     (async () => {
@@ -106,17 +111,23 @@ self.addEventListener("notificationclick", (event) => {
       if (windows.length > 0) {
         const client = windows[0];
         await client.focus();
-        // The page opens the chat; it owns the conversation list and the
-        // routing. Told after focus, so it acts on a window already in front.
+        // A page that is already running owns the conversation list and the
+        // routing, so it only needs the chat id. Told after focus, so it acts
+        // on a window already in front.
         if (id) client.postMessage({ type: "open-chat", conversationId: id });
         return;
       }
-      // Nothing open. Start the app, naming the chat in the URL — the token is
-      // already in the page's own storage, so `openWindow` on our own scope is
-      // enough to get back in.
-      if (self.clients.openWindow) {
-        await self.clients.openWindow(id ? `./?chat=${encodeURIComponent(id)}` : "./");
-      }
+      // Nothing open, so there is no page to ask — the whole address has to be
+      // built here. The app reads `#/p/<project>/c/<chat>`, which is why the
+      // notice carries the project as well as the chat; without both halves it
+      // launches and lands wherever it left off, which is the one thing a
+      // tapped banner must not do. The token is already in the page's own
+      // storage, so our own scope is enough to get back in.
+      const to =
+        id && project
+          ? `./#/p/${encodeURIComponent(project)}/c/${encodeURIComponent(id)}`
+          : "./";
+      if (self.clients.openWindow) await self.clients.openWindow(to);
     })(),
   );
 });

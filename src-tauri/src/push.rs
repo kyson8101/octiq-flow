@@ -76,6 +76,14 @@ pub struct Notice {
     pub kind: String,
     #[serde(rename = "conversationId")]
     pub conversation_id: String,
+    /// The project the chat belongs to.
+    ///
+    /// Carried only so a tapped banner can open the chat from a COLD start.
+    /// The app routes on `#/p/<project>/c/<chat>` and a running page can be
+    /// told the chat id alone — but a launch has no page to ask, so the worker
+    /// has to build the whole address itself.
+    #[serde(rename = "projectId")]
+    pub project_id: String,
     pub title: String,
     pub body: String,
     /// One live banner per chat per kind — a later one replaces the earlier.
@@ -136,16 +144,20 @@ pub fn notice_for(chat_key: Option<&str>, kind: &str, detail: &str) -> Option<No
         _ if detail.is_empty() => "Finished.".to_string(),
         _ => detail,
     };
-    let title = crate::chat_index::list()
-        .into_iter()
-        .find(|c| c.id == id)
+    // One lookup for both: the title the banner is named after, and the project
+    // the tap has to land in.
+    let meta = crate::chat_index::list().into_iter().find(|c| c.id == id);
+    let title = meta
+        .as_ref()
         .map(|c| c.title.trim().to_string())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "OctiqFlow".to_string());
+    let project_id = meta.map(|c| c.project_id).unwrap_or_default();
 
     Some(Notice {
         kind: kind.to_string(),
         conversation_id: id.to_string(),
+        project_id,
         title,
         body,
         tag: format!("octiq:{id}:{kind}"),
@@ -368,12 +380,43 @@ mod tests {
             "nothing subscribed — turn Notifications on in Settings first"
         );
 
+        // Built for a REAL chat. A made-up id would still prove a banner
+        // arrives and still leave the half that matters untested: tapping it
+        // has to land in the chat it came from, which needs an id and a project
+        // that actually exist.
+        //
+        // Read off disk rather than through `chat_index::list()`, because under
+        // `cfg(test)` that is redirected to an empty temp directory — as it
+        // should be, since a test has no business reading the real record. This
+        // one does: it is the real record the phone is about to be sent.
+        let index = crate::profile::profile_dir()
+            .join("chats")
+            .join("index.json");
+        let raw = fs::read_to_string(&index).unwrap_or_default();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+        let newest = parsed["chats"]
+            .as_array()
+            .and_then(|chats| {
+                chats
+                    .iter()
+                    .max_by_key(|c| c["updatedAt"].as_i64().unwrap_or(0))
+            })
+            .expect("no chats in the index yet — start one first")
+            .clone();
+
+        let id = newest["id"].as_str().unwrap_or_default().to_string();
+        let project_id = newest["projectId"].as_str().unwrap_or_default().to_string();
+        let title = newest["title"].as_str().unwrap_or("OctiqFlow").to_string();
+        assert!(!project_id.is_empty(), "no project to open the chat in");
+        println!("  about: {title} ({id})");
+
         let notice = Notice {
             kind: "done".into(),
-            conversation_id: "test".into(),
-            title: "OctiqFlow".into(),
-            body: "If you can read this, push works.".into(),
-            tag: "octiq:test:done".into(),
+            conversation_id: id.clone(),
+            project_id,
+            title,
+            body: "Push works. Tapping this should open this chat.".into(),
+            tag: format!("octiq:{id}:done"),
         };
         let body = serde_json::to_vec(&notice).unwrap();
 
@@ -453,6 +496,7 @@ mod tests {
         let notice = Notice {
             kind: "permission".into(),
             conversation_id: "c1".into(),
+            project_id: "p1".into(),
             title: "Fix the top bar".into(),
             body: "Needs permission: Edit".into(),
             tag: "octiq:c1:permission".into(),
@@ -460,6 +504,8 @@ mod tests {
         let value: serde_json::Value = serde_json::to_value(&notice).unwrap();
         // camelCase on the wire, because the client half is TypeScript.
         assert_eq!(value["conversationId"], "c1");
+        // Both halves of the address a cold launch has to build.
+        assert_eq!(value["projectId"], "p1");
         assert_eq!(value["kind"], "permission");
         assert_eq!(value["tag"], "octiq:c1:permission");
     }
