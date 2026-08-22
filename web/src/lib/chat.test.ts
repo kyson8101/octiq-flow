@@ -999,3 +999,82 @@ describe("a turn the user stopped", () => {
     expect(after.stoppedAt).toBeUndefined();
   });
 });
+
+// ---- A compaction ---------------------------------------------------------
+//
+// Not from a fixture: a compaction only happens on a conversation big enough to
+// fill a context window, which is not something a captured stream can carry.
+// The shapes below are the ones the CLI emits — checked against the binary,
+// where `compact_boundary` carries `compact_metadata` and the summary comes
+// back as a synthetic user turn.
+describe("a compaction", () => {
+  const boundary = (meta: Record<string, unknown>) => ({
+    type: "system",
+    subtype: "compact_boundary",
+    compact_metadata: { trigger: "auto", pre_tokens: 168345, ...meta },
+  });
+  const summary = (text: string, synthetic = true) => ({
+    type: "user",
+    isSynthetic: synthetic,
+    message: { role: "user", content: [{ type: "text", text }] },
+  });
+  const PREAMBLE =
+    "This session is being continued from a previous conversation that ran out of context.";
+  const line = (s: ChatState) =>
+    s.messages.flatMap((m) => m.blocks).find((b) => b.kind === "compacted")!;
+
+  it("keeps what the compaction cost", () => {
+    const after = reduceChat(emptyChat(), boundary({ post_tokens: 21400, duration_ms: 12000 }));
+    const mark = line(after);
+
+    expect(mark).toMatchObject({
+      kind: "compacted",
+      trigger: "auto",
+      preTokens: 168345,
+      postTokens: 21400,
+      durationMs: 12000,
+    });
+  });
+
+  it("puts the summary on the boundary line, not in a bubble", () => {
+    let state = reduceChat(emptyChat(), boundary({}));
+    state = reduceChat(state, summary(`${PREAMBLE}\n\nSummary: it built a theme picker.`));
+
+    expect(state.messages.filter((m) => m.role === "user")).toHaveLength(0);
+    expect(line(state).text).toContain("theme picker");
+  });
+
+  // A rebuilt conversation gets the summary with no boundary in front of it.
+  // Drawn as typed it is a page of text the reader never wrote.
+  it("recognises the summary on its own when the boundary is long gone", () => {
+    const after = reduceChat(emptyChat(), summary(`${PREAMBLE}\n\nSummary: earlier work.`, false));
+
+    expect(after.messages.filter((m) => m.role === "user")).toHaveLength(0);
+    expect(line(after).text).toContain("earlier work");
+  });
+
+  // The flag alone must never claim a turn: a compaction that produced no
+  // summary would otherwise swallow whatever was typed next.
+  it("leaves an ordinary message alone after a boundary", () => {
+    let state = reduceChat(emptyChat(), boundary({}));
+    state = reduceChat(state, summary("carry on where you left off", false));
+
+    expect(state.messages.some((m) => m.role === "user")).toBe(true);
+    expect(line(state).text).toBe("");
+  });
+
+  it("starts a clock while it runs and stops it at the boundary", () => {
+    const started = reduceChat(
+      emptyChat(),
+      { type: "system", subtype: "status", status: "compacting" },
+      1000,
+    );
+    expect(started.compactingSince).toBe(1000);
+
+    // Later status events must not restart it — it only happened once.
+    const again = reduceChat(started, { type: "system", subtype: "status", status: "compacting" }, 9000);
+    expect(again.compactingSince).toBe(1000);
+
+    expect(reduceChat(again, boundary({})).compactingSince).toBeUndefined();
+  });
+});

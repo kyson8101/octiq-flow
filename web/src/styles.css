@@ -5922,9 +5922,63 @@ body.is-ultra .eff {
 }
 
 .compacted-label {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
   font-size: 11px;
   color: var(--fg-3);
+}
+
+/* The whole label is the handle: a 10px chevron is not something you can hit
+   on a phone. */
+.compacted-label.is-button {
+  cursor: pointer;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  font: inherit;
+  color: var(--fg-3);
+  text-align: left;
+}
+
+.compacted-label.is-button:hover,
+.compacted.is-open .compacted-label.is-button {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+
+.compacted-facts {
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.compacted-chev {
+  flex: 0 0 auto;
+  transition: transform 0.12s ease;
+}
+
+.compacted-chev.is-open {
+  transform: rotate(90deg);
+}
+
+/* The summary itself. Capped and scrollable: it is a page of text sitting
+   between two turns, and the reader came here to check one thing in it. */
+.compacted-body {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  max-height: 46vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  font-size: 13px;
+  color: var(--fg-2);
 }
 
 /* A message the agent has not started on yet. Dimmed rather than hidden: it

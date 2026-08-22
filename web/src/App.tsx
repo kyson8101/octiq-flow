@@ -1784,6 +1784,7 @@ export default function App() {
                   messages={chat.messages}
                   busy={chat.busy}
                   stoppedAt={chat.stoppedAt}
+                  compactingSince={chat.compactingSince}
                   conversationId={conversationId ?? undefined}
                 />
                 {focused && (

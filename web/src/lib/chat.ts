@@ -46,8 +46,22 @@ export type Block =
   | { kind: "text"; text: string }
   /** The agent summarised its own history here to make room. Everything above
    *  this point is a summary, which is worth seeing: it explains why a detail
-   *  from earlier may no longer be recalled exactly. */
-  | { kind: "compacted"; text: string }
+   *  from earlier may no longer be recalled exactly.
+   *
+   *  `text` is the summary ITSELF — the agent replays it as a user message
+   *  right after the boundary, and it belongs on this line, not in a bubble
+   *  the user never typed. The numbers come off the boundary's own metadata:
+   *  what the conversation weighed before, what it weighs now, and how long
+   *  the summarising took. */
+  | {
+      kind: "compacted";
+      text: string;
+      /** `auto` when the context filled up, `manual` when `/compact` asked. */
+      trigger?: string;
+      preTokens?: number;
+      postTokens?: number;
+      durationMs?: number;
+    }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -215,6 +229,14 @@ export type ChatState = {
    *  the raw word is kept because thinking and a slow tool call look like the
    *  same silence, and the status line has to tell them apart. */
   status?: string;
+  /** When the agent started summarising its own history, or absent when it is
+   *  not. A compaction shows nothing at all while it runs — no text, no tool
+   *  card, no token count — so this is the only thing the UI can count. */
+  compactingSince?: number;
+  /** True from a compaction boundary until the summary it produced arrives.
+   *  The agent replays that summary as a USER message, so without this it read
+   *  as a wall of text the user had typed. */
+  awaitingSummary?: boolean;
   /** When the turn now running started, so the status line can count it up.
    *  A conversation joined mid-turn counts from when we joined: nothing in the
    *  stream says when a turn already in progress began. */
@@ -493,6 +515,10 @@ const turnOver = {
   turnDraft: undefined,
   status: undefined,
   activity: undefined,
+  // A compaction cannot outlive the turn it happened in, and neither can the
+  // summary it owes: whatever the next turn brings, it is not that.
+  compactingSince: undefined,
+  awaitingSummary: undefined,
 } as const;
 
 /** Two blocks say the same thing, so the second is a copy rather than news.
@@ -666,10 +692,16 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // a long pause showed a motionless "working…" whatever was happening.
     if (subtype === "status") {
       const status = asStr(e.status);
+      // A compaction is the one wait with no second hand of its own: nothing
+      // streams while it runs, so the bar over the composer needs to know when
+      // it began. The agent never says it a second time, so the first
+      // `compacting` starts the clock and anything else stops it.
+      const compacting = status === "compacting";
       return {
         ...state,
         status: status || undefined,
         activity: status ? describeStatus(status) : undefined,
+        compactingSince: compacting ? (state.compactingSince ?? now) : undefined,
       };
     }
 
@@ -685,17 +717,36 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // Where the agent summarised its own history. Everything above the line is
     // a summary now, which is the answer to "why has it forgotten what I said".
     if (subtype.includes("compact") && subtype.includes("boundary")) {
+      // What it cost, in the agent's own numbers. `pre_tokens` is always there;
+      // `post_tokens` and `duration_ms` are newer, so the card draws whatever
+      // arrived and says nothing about the rest.
+      const meta = asObj(e.compact_metadata);
+      const num = (v: unknown) => (typeof v === "number" && v > 0 ? v : undefined);
       return {
         ...state,
+        // The compaction is over: the boundary IS its end, and the status event
+        // that says so does not always come.
+        compactingSince: undefined,
         messages: [
           ...state.messages,
           {
             id: `compact-${state.messages.length}`,
             role: "assistant",
-            blocks: [{ kind: "compacted", text: "" }],
+            blocks: [
+              {
+                kind: "compacted",
+                text: "",
+                trigger: asStr(meta.trigger) || undefined,
+                preTokens: num(meta.pre_tokens),
+                postTokens: num(meta.post_tokens),
+                durationMs: num(meta.duration_ms),
+              },
+            ],
             streaming: false,
           },
         ],
+        // The summary is the next user turn on the stream. Claimed there.
+        awaitingSummary: true,
       };
     }
 
@@ -920,6 +971,19 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // user turn — the transcript marks the envelope `origin.kind:
     // "task-notification"`, the live stream marks nothing — so read as typed it
     // put the reader's own name on a block of XML they never wrote.
+    // The summary a compaction just wrote. It comes back as a user turn — the
+    // agent handing itself the shortened history — and it belongs on the
+    // boundary line above it, folded away, rather than in a bubble.
+    // Claimed on the agent's own marking — `isSynthetic` is how it says a turn
+    // is machinery rather than typing — or on the summary's opening line, which
+    // is all a REBUILT conversation has. Never on the flag alone: a compaction
+    // that produced no summary would otherwise swallow whatever the user typed
+    // next.
+    if (isCompactSummary(spoken) || (state.awaitingSummary && e.isSynthetic === true)) {
+      const folded = foldCompactSummary(state, spoken);
+      if (folded) return folded;
+    }
+
     const notice = parseTaskNotice(spoken);
     if (notice) return foldTaskNotice(state, notice);
 
@@ -1086,6 +1150,66 @@ function findTool(state: ChatState, id: string): Extract<Block, { kind: "tool" }
     for (const b of m.blocks) if (b.kind === "tool" && b.id === id) return b;
   }
   return undefined;
+}
+
+/** The opening line the agent writes on a compaction summary. Recognised on
+ *  its own so a chat RESUMED past a compaction — where the boundary event is
+ *  long gone — still reads as a summary rather than as something typed. */
+const COMPACT_PREAMBLE = /^this session is being continued from a previous conversation/i;
+
+function isCompactSummary(text: string): boolean {
+  return COMPACT_PREAMBLE.test(text.trim());
+}
+
+/** Put a compaction's summary on the boundary line that produced it.
+ *
+ *  Returns null when there is nothing to fold — an empty turn, a tool result —
+ *  so the caller can carry on treating it as an ordinary message. When there is
+ *  no boundary line to fold onto (a resumed chat that begins mid-story) one is
+ *  made: the summary IS the boundary as far as the reader is concerned. */
+function foldCompactSummary(state: ChatState, text: string): ChatState | null {
+  const body = text.trim();
+  if (!body) return null;
+
+  let at = -1;
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    if (state.messages[i].blocks.some((b) => b.kind === "compacted")) {
+      at = i;
+      break;
+    }
+  }
+  if (at === -1) {
+    if (!isCompactSummary(body)) return null;
+    return {
+      ...state,
+      awaitingSummary: false,
+      messages: [
+        ...state.messages,
+        {
+          id: `compact-${state.messages.length}`,
+          role: "assistant",
+          blocks: [{ kind: "compacted", text: body }],
+          streaming: false,
+        },
+      ],
+    };
+  }
+
+  const line = state.messages[at];
+  // A second summary onto the same line would be a different compaction whose
+  // own boundary we missed. Leave the first alone and let this one be a message.
+  if (line.blocks.some((b) => b.kind === "compacted" && b.text)) {
+    return isCompactSummary(body) ? { ...state, awaitingSummary: false } : null;
+  }
+  return {
+    ...state,
+    awaitingSummary: false,
+    messages: state.messages.map((m, i) =>
+      i === at
+        ? { ...m, blocks: m.blocks.map((b) => (b.kind === "compacted" ? { ...b, text: body } : b)) }
+        : m,
+    ),
+  };
 }
 
 /** Put a background task's ending on the call that started it.

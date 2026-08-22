@@ -134,7 +134,7 @@ type Kids = Map<string, Message[]>;
 
 function BlockView({ block, animate, kids }: { block: Block; animate?: boolean; kids: Kids }) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
-  if (block.kind === "compacted") return <Compacted />;
+  if (block.kind === "compacted") return <Compacted block={block} />;
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
@@ -196,14 +196,134 @@ function SubAgent({ messages, kids }: { messages: Message[]; kids: Kids }) {
  *
  *  Worth showing rather than hiding: everything above this line is a summary
  *  now, which is the explanation when the agent no longer recalls a detail
- *  from earlier exactly. */
-function Compacted() {
+ *  from earlier exactly. The line says what it cost — what the conversation
+ *  weighed before and after, and who asked — and OPENS onto the summary
+ *  itself, which is the one place the reader can check what survived.
+ *
+ *  Shut by default. The summary is a page of text nobody wants between two
+ *  turns, and it is only ever read when something has gone missing. */
+function Compacted({ block }: { block: Extract<Block, { kind: "compacted" }> }) {
+  const [open, setOpen] = useState(false);
+  const has = !!block.text.trim();
+  const facts = [
+    block.trigger === "manual" ? "you asked" : block.trigger ? "context filled up" : "",
+    block.preTokens && block.postTokens
+      ? `${tokens(block.preTokens)} → ${tokens(block.postTokens)} tokens`
+      : block.preTokens
+        ? `${tokens(block.preTokens)} tokens summarised`
+        : "",
+    block.durationMs ? `${Math.max(1, Math.round(block.durationMs / 1000))}s` : "",
+  ].filter(Boolean);
+
   return (
-    <div className="compacted">
-      <span className="compacted-line" aria-hidden="true" />
-      <span className="compacted-label">history summarised to make room</span>
-      <span className="compacted-line" aria-hidden="true" />
+    <div className={`compacted ${open ? "is-open" : ""}`}>
+      <CompactRule>
+        {has ? (
+          <button
+            type="button"
+            className="compacted-label is-button"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+          >
+            <Chevron open={open} />
+            history summarised to make room
+            {facts.length > 0 && <span className="compacted-facts"> · {facts.join(" · ")}</span>}
+          </button>
+        ) : (
+          <span className="compacted-label">
+            history summarised to make room
+            {facts.length > 0 && <span className="compacted-facts"> · {facts.join(" · ")}</span>}
+          </span>
+        )}
+      </CompactRule>
+      {open && has && (
+        <div className="compacted-body">
+          <Prose text={block.text} animate={false} />
+        </div>
+      )}
     </div>
+  );
+}
+
+/** The rule a compaction draws across the conversation.
+ *
+ *  Shared by the compaction that is RUNNING and the one that has finished, on
+ *  purpose: it is one event, and it should look like one thing that settles
+ *  rather than a bar in one place that disappears and a rule in another that
+ *  appears. Same row, same position, same type — only the words change, and
+ *  the movement stops. */
+function CompactRule({
+  children,
+  running,
+}: {
+  children: React.ReactNode;
+  running?: boolean;
+}) {
+  const line = `compacted-line ${running ? "is-running" : ""}`;
+  return (
+    <div className="compacted-bar">
+      <span className={line} aria-hidden="true" />
+      {children}
+      <span className={line} aria-hidden="true" />
+    </div>
+  );
+}
+
+/** A compaction while it is still running.
+ *
+ *  The longest wait in the app with nothing to show for it: the agent is
+ *  rewriting its own history, and none of that writing reaches the stream. The
+ *  CLI tracks its progress internally but drops those events before the JSON we
+ *  read, so there is no percentage to draw and none is invented — the rule
+ *  simply moves, which answers the only question anyone has ("is this still
+ *  going?"), and the seconds beside it are the honest number.
+ *
+ *  It keeps its own clock: nothing arrives while a compaction runs, so no
+ *  re-render would ever come. */
+function Compacting({ since }: { since: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const secs = Math.max(0, Math.round((Date.now() - since) / 1000));
+
+  return (
+    <div className="compacted is-running" role="status">
+      <CompactRule running>
+        <span className="compacted-label">
+          summarising history to make room
+          <span className="compacted-facts"> · {secs}s</span>
+        </span>
+      </CompactRule>
+    </div>
+  );
+}
+
+/** 168345 → "168k". The size of a conversation is only ever read as a rough
+ *  one: the difference between 168k and 21k is the whole point, the digits
+ *  under it are not. */
+function tokens(n: number): string {
+  if (n >= 1000) return `${Math.round(n / 1000)}k`;
+  return String(n);
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={`compacted-chev ${open ? "is-open" : ""}`}
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m9 6 6 6-6 6" />
+    </svg>
   );
 }
 
@@ -415,11 +535,17 @@ export function MessageList({
   messages,
   busy,
   stoppedAt,
+  compactingSince,
   conversationId,
 }: {
   messages: Message[];
   busy: boolean;
   stoppedAt?: string;
+  /** When a compaction started, or absent when none is running. It is drawn
+   *  at the foot of the conversation, in the SAME line the finished boundary
+   *  leaves behind — one thing that starts, runs, and settles in place, rather
+   *  than a bar somewhere else that vanishes and is replaced by a rule here. */
+  compactingSince?: number;
   /** Which conversation is on screen. This component is REUSED across chats
    *  rather than remounted — a remount would restart the typewriter on a chat
    *  that is still streaming — so it needs telling when the content underneath
@@ -561,7 +687,13 @@ export function MessageList({
             {!!stoppedAt && turn.some((m) => m.id === stoppedAt) && <StopMark />}
           </Fragment>
         ))}
-        {busy && !messages.some((m) => m.streaming) && <div className="dots" aria-label="working" />}
+        {compactingSince !== undefined && <Compacting since={compactingSince} />}
+        {/* Not while compacting: the line above already says what the silence
+            is, and two "something is happening" marks under each other say it
+            twice. */}
+        {busy && compactingSince === undefined && !messages.some((m) => m.streaming) && (
+          <div className="dots" aria-label="working" />
+        )}
         <div ref={endRef} />
       </div>
     </div>
