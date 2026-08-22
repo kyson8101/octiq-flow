@@ -1829,6 +1829,29 @@ body {
   color: var(--fg-2);
 }
 
+/* Hidden until the phone, where the list covers the screen it used to float
+   over. On a wide screen the pointer can leave it and the scrim behind it can
+   be clicked, so there is nothing here for an × to do. */
+.plan-pop-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+.plan-pop-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
 .todos-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -1878,6 +1901,81 @@ body {
 
 .todo.is-in_progress .todo-text {
   color: var(--fg-0);
+}
+
+/* Phone: the plan IS the screen, the way the file panel is. A 320px card over
+   a 390px screen leaves a 35px rim of chat that can be neither read nor
+   tapped — it costs the plan its width and gives nothing back, and a plan is a
+   column of sentences, so a step that wrapped at four words now does not.
+   Close is the × in the head, since the scrim it used to be dismissed by is
+   underneath it now. */
+@keyframes plan-sheet {
+  from {
+    opacity: 0.4;
+    transform: translateY(-14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 700px) {
+  .plan-pop {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    background: var(--bg-0);
+    box-shadow: none;
+    /* Down from the bar it came out of — the jelly pop is a small thing
+       overshooting, and a whole screen doing that is a lurch. */
+    animation: plan-sheet 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  /* A bar of its own, the same colour as the top bar it replaces, clear of the
+     notch. `center` rather than `baseline` because the × has no text to sit
+     on. */
+  .plan-pop-head {
+    align-items: center;
+    padding: 11px 8px 11px 16px;
+    padding-top: calc(11px + env(safe-area-inset-top));
+    background: var(--bg-sunken);
+  }
+
+  .plan-pop-count {
+    font-size: 13px;
+  }
+
+  .plan-pop-close {
+    display: inline-flex;
+  }
+
+  .todos-list {
+    padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  /* Room to breathe, now that there is room: a full screen of nine 12.5px
+     lines packed at 4px apart reads as a wall. */
+  .todo {
+    padding: 8px 0;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .todo-mark {
+    width: 10px;
+    height: 10px;
+    margin-top: 6px;
+  }
+}
+
+@media (max-width: 700px) and (prefers-reduced-motion: reduce) {
+  .plan-pop {
+    animation: none;
+  }
 }
 
 /* ---- The thought, while it is being had ------------------------------- */

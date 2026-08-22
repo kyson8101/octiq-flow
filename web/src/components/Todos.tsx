@@ -10,6 +10,10 @@
 // column of its own said the same five characters and cost 14rem of the screen
 // to say them, and on a phone there is no column to give.
 //
+// Open on a phone, though, that dropdown takes the whole screen: a 320px card
+// over a 390px one leaves a rim of chat too thin to read or tap, so the width
+// it costs buys nothing, and the plan is a column of sentences that wants it.
+//
 // It costs no round trip. The agent's `todo_write` call travels down the chat
 // stream like any other tool call, and this reads the newest one back out of
 // the transcript — so it survives a reload the way the transcript does.
@@ -36,6 +40,11 @@ export function Todos({ todos }: { todos: Todo[] }) {
     const timer = setTimeout(() => setMoved(false), 900);
     return () => clearTimeout(timer);
   }, [look.done]);
+
+  const close = () => {
+    setOpen(false);
+    setPinned(false);
+  };
 
   if (todos.length === 0) return null;
 
@@ -67,19 +76,21 @@ export function Todos({ todos }: { todos: Todo[] }) {
         <>
           {/* Tapping anywhere off it puts it away — the only way out on a
               touchscreen, where there is no pointer to leave. */}
-          <div
-            className="plan-scrim"
-            onClick={() => {
-              setOpen(false);
-              setPinned(false);
-            }}
-          />
+          <div className="plan-scrim" onClick={close} />
           <div className="plan-pop" role="dialog" aria-label="The plan">
             <div className="plan-pop-head">
               <span className="plan-pop-title">The plan</span>
               <span className="plan-pop-count">
                 {look.done}/{look.total}
               </span>
+              {/* On a phone the list takes the whole screen, so there is no
+                  scrim left to tap and no pointer to leave — this × is the only
+                  way out. Off the phone it is hidden; see styles.css. */}
+              <button className="plan-pop-close" type="button" aria-label="Close" onClick={close}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
             </div>
             <ol className="todos-list">
               {todos.map((t, i) => (
