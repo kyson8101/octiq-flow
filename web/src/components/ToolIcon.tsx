@@ -99,9 +99,10 @@ export function ToolIcon({ kind }: { kind: ToolKind }) {
 /** How a call ended, in the smallest mark that says it.
  *
  *  A finished call is the common case and the boring one — a whole column of
- *  the word "done" is noise, so it gets a tick and nothing else. Running and
- *  failed keep their words: those are the rows a reader is looking for. */
-export function ToolState({ state }: { state: "running" | "done" | "error" }) {
+ *  the word "done" is noise, so it gets a tick and nothing else. Running,
+ *  failed and stopped keep their words: those are the rows a reader is looking
+ *  for. */
+export function ToolState({ state }: { state: "running" | "done" | "error" | "stopped" }) {
   if (state === "running") {
     return (
       <span className="tool-state is-running">
@@ -111,6 +112,9 @@ export function ToolState({ state }: { state: "running" | "done" | "error" }) {
     );
   }
   if (state === "error") return <span className="tool-state is-error">failed</span>;
+  // The turn was stopped before this call could answer. Said plainly and left
+  // quiet: nothing went wrong here, the reader ended it on purpose.
+  if (state === "stopped") return <span className="tool-state is-stopped">stopped</span>;
   return (
     <span className="tool-state" aria-label="done">
       <svg

@@ -11,8 +11,15 @@
 // The drawer in App.tsx does that, calling `pty_spawn` / `pty_close` as tabs
 // come and go.
 
-/** One terminal: a PTY id, and what the tab strip calls it. */
-export type Term = { id: string; name: string };
+/** One terminal: a PTY id, what the tab strip calls it, and — for a tab opened
+ *  from one of the project's saved commands — the command it was opened to run.
+ *
+ *  The command is kept, not thrown away after the shell starts, because the
+ *  shell is the shorter-lived of the two: `pty_spawn` is idempotent by id, so a
+ *  live shell is never disturbed, but one the server restarted out from under us
+ *  is started again on the next attach — and a tab called "dev" that comes back
+ *  empty is not the tab you left. */
+export type Term = { id: string; name: string; cmd?: string };
 
 /** One project's terminals. `seq` is the id counter — see `addTab`. */
 export type Tabs = { tabs: Term[]; active: string; seq: number };
@@ -38,6 +45,20 @@ function nextName(tabs: Term[]): string {
   }
 }
 
+/** `base`, or the first free `base N` after it.
+ *
+ *  Running one saved command twice is ordinary — two branches, two ports — and
+ *  two tabs both called "dev" is not: the tab strip is the only thing telling
+ *  them apart. */
+function uniqueName(base: string, tabs: Term[]): string {
+  const taken = new Set(tabs.map((t) => t.name));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) {
+    const name = `${base} ${n}`;
+    if (!taken.has(name)) return name;
+  }
+}
+
 /** This project's terminals, creating the first one if it has none.
  *
  *  "None" covers both a project never opened and one whose every tab was
@@ -54,20 +75,29 @@ export function tabsFor(store: Store, projectId: string): Tabs {
   return { tabs: [{ id, name: "sh 1" }], active: id, seq: saved?.seq ?? 1 };
 }
 
-/** Open another terminal, and look at it.
+/** Open another terminal, and look at it. `open` names it and gives it a command
+ *  to run — that is a tab opened from one of the project's saved commands; with
+ *  neither it is a plain `sh N` shell.
  *
  *  The id comes off a counter that only ever goes up, never off the tab count.
  *  Closing a terminal and opening one must not hand back the id just released:
  *  `pty_close` drops the session from the map, but the shell it killed is being
  *  reaped on another thread, and a `pty_spawn` on that same id in the gap is a
  *  race nobody wants to debug. */
-export function addTab(tabs: Tabs, projectId: string): Tabs {
+export function addTab(
+  tabs: Tabs,
+  projectId: string,
+  open: { name?: string; cmd?: string } = {},
+): Tabs {
   const id = `term:${projectId}:${tabs.seq}`;
-  return {
-    tabs: [...tabs.tabs, { id, name: nextName(tabs.tabs) }],
-    active: id,
-    seq: tabs.seq + 1,
+  const label = (open.name ?? "").trim();
+  const cmd = (open.cmd ?? "").trim();
+  const term: Term = {
+    id,
+    name: label ? uniqueName(label, tabs.tabs) : nextName(tabs.tabs),
   };
+  if (cmd) term.cmd = cmd;
+  return { tabs: [...tabs.tabs, term], active: id, seq: tabs.seq + 1 };
 }
 
 /** Close one terminal. The caller kills its shell; this only forgets it.
@@ -115,9 +145,11 @@ function asTabs(value: unknown): Tabs | null {
   const tabs: Term[] = [];
   for (const entry of v.tabs) {
     if (!entry || typeof entry !== "object") return null;
-    const { id, name } = entry as { id?: unknown; name?: unknown };
+    const { id, name, cmd } = entry as { id?: unknown; name?: unknown; cmd?: unknown };
     if (typeof id !== "string" || !id || typeof name !== "string") return null;
-    tabs.push({ id, name });
+    // A command that is not a string is dropped on its own rather than taking
+    // the tab with it: the shell is still reachable, it simply opens bare.
+    tabs.push(typeof cmd === "string" && cmd ? { id, name, cmd } : { id, name });
   }
   return {
     tabs,

@@ -28,6 +28,21 @@ import { describe, expect, it } from "vitest";
 // them in for two string reads.
 import taskStream from "./__fixtures__/task-subagent.jsonl?raw";
 import workflowStream from "./__fixtures__/workflow.jsonl?raw";
+// A skill run, both ways it happens. `skill-call` is a live stream in which the
+// agent called the Skill tool itself (prompt: "Use the Skill tool to run the
+// skill named chinese-mode, then reply with one short line."). `command-echo`
+// is a live stream of the user TYPING `/list-all-branches`. `skill-brief-from-
+// disk` is not a stream: it is three consecutive lines, verbatim, of a
+// transcript read back off disk by `agent_history_read` — the Skill call, its
+// result, and the replayed prompt — kept because the on-disk record names the
+// call (`sourceToolUseID`) where the live stream does not.
+import commandEchoStream from "./__fixtures__/command-echo.jsonl?raw";
+import skillBriefLines from "./__fixtures__/skill-brief-from-disk.jsonl?raw";
+import skillCallStream from "./__fixtures__/skill-call.jsonl?raw";
+// A live stream of the user typing `/model haiku` and then asking one thing.
+// Recorded on `--model opus` so the switch is visible, with the two prompts
+// piped in on stdin one after the other.
+import modelSwitchStream from "./__fixtures__/model-switch.jsonl?raw";
 
 import {
   addUserTurn,
@@ -42,14 +57,27 @@ import {
 const FIXTURES: Record<string, string> = {
   "task-subagent.jsonl": taskStream,
   "workflow.jsonl": workflowStream,
+  "command-echo.jsonl": commandEchoStream,
+  "skill-brief-from-disk.jsonl": skillBriefLines,
+  "skill-call.jsonl": skillCallStream,
+  "model-switch.jsonl": modelSwitchStream,
 };
 
 /** Fold a captured stream through the reducer, the way App.tsx does live: one
  *  parsed object per line, in order. A line that is not JSON is skipped rather
- *  than thrown on — the real stream carries stderr text too. */
-function replay(fixture: string): ChatState {
+ *  than thrown on — the real stream carries stderr text too.
+ *
+ *  `start` is the state the stream lands on — an empty chat, or one with the
+ *  bubble pressing send already put on screen. `stopAfter` folds a PREFIX of
+ *  the stream, for the questions whose answer is what the screen showed part
+ *  way through rather than at the end. */
+function replay(
+  fixture: string,
+  start: ChatState = emptyChat(),
+  stopAfter?: (event: Record<string, unknown>) => boolean,
+): ChatState {
   const text = FIXTURES[fixture];
-  let state = emptyChat();
+  let state = start;
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -60,6 +88,7 @@ function replay(fixture: string): ChatState {
       continue;
     }
     state = reduceChat(state, event);
+    if (stopAfter?.(event as Record<string, unknown>)) break;
   }
   return state;
 }
@@ -76,6 +105,87 @@ const text = (m: Message) =>
     .filter((b): b is Extract<typeof b, { kind: "text" }> => b.kind === "text")
     .map((b) => b.text)
     .join("");
+
+describe("a skill run", () => {
+  const briefLine = (fixture: string) =>
+    JSON.parse(FIXTURES[fixture].split("\n").find((l) => l.includes("Base directory for this skill"))!);
+
+  it("keeps the skill's prompt on the Skill card, not in a bubble of the user's", () => {
+    const s = replay("skill-call.jsonl");
+    // The one thing the user said. The prompt the skill replayed is not here.
+    expect(s.messages.filter((m) => m.role === "user").map(text)).toEqual([
+      "Use the Skill tool to run the skill named chinese-mode, then reply with one short line.",
+    ]);
+    const skill = tools(s.messages).find((t) => t.name === "Skill")!;
+    expect(skill.state).toBe("done");
+    expect(skill.brief?.startsWith("Base directory for this skill: ")).toBe(true);
+    expect(skill.brief).toContain("# Chinese Mode");
+  });
+
+  it("does the same for a transcript read back off disk, by the call it names", () => {
+    const s = replay("skill-brief-from-disk.jsonl");
+    expect(s.messages.some((m) => m.role === "user")).toBe(false);
+    const [skill] = tools(s.messages);
+    expect(skill.id).toBe("toolu_01XJNtfPJaEP4u4AD8NDmeWr");
+    expect(skill.brief).toContain("# Ship");
+  });
+
+  it("folds a prompt in once, however many times a catch-up replays it", () => {
+    const s = replay("skill-call.jsonl");
+    expect(reduceChat(s, briefLine("skill-call.jsonl"))).toEqual(s);
+  });
+
+  it("gives a prompt with no call to hang on a card of its own", () => {
+    const s = reduceChat(emptyChat(), briefLine("skill-brief-from-disk.jsonl"));
+    expect(s.messages.map((m) => m.role)).toEqual(["assistant"]);
+    const [skill] = tools(s.messages);
+    expect(skill).toMatchObject({ name: "Skill", args: { skill: "ship" }, state: "done" });
+    expect(skill.brief).toContain("# Ship");
+  });
+});
+
+describe("a slash command the user typed", () => {
+  // The echo is not what was typed: it comes back as
+  // `<command-message>…</command-message>\n<command-name>/list-all-branches</command-name>`.
+  it("is claimed by the bubble pressing send put on screen", () => {
+    const s = replay("command-echo.jsonl", addUserTurn(emptyChat(), "/list-all-branches"));
+    const users = s.messages.filter((m) => m.role === "user");
+    expect(users.map(text)).toEqual(["/list-all-branches"]);
+    expect(users[0].echo).toBeTruthy();
+  });
+
+  it("rebuilds from the record as what was typed, not as the tags around it", () => {
+    const s = replay("command-echo.jsonl");
+    expect(s.messages.filter((m) => m.role === "user").map(text)).toEqual(["/list-all-branches"]);
+  });
+});
+
+describe("a /model typed into the chat", () => {
+  // `/model` is a LOCAL command. It never reaches the model, so the stream
+  // carries no echo of it, and the session does not report the model it moved
+  // to until the NEXT turn opens. All that arrives at the time is one message
+  // the CLI wrote itself — "Set model to Haiku 4.5 for this session only" —
+  // stamped `<synthetic>` where a model name goes.
+  const turnOne = (e: Record<string, unknown>) => e.type === "result";
+
+  it("follows the model as soon as the command is answered", () => {
+    const s = replay("model-switch.jsonl", addUserTurn(emptyChat(), "/model haiku"), turnOne);
+    // The name the picker matches on. Left on the model the session started on,
+    // the picker went on claiming Opus for a session now answering as Haiku.
+    expect(s.model).toBe("haiku");
+  });
+
+  it("never takes <synthetic> for a model", () => {
+    // The same stream with nobody typing: a transcript read back off disk.
+    const s = replay("model-switch.jsonl", emptyChat(), turnOne);
+    expect(s.model).toBe("claude-opus-5");
+  });
+
+  it("takes the full name from the next turn, which is the agent's own word", () => {
+    const s = replay("model-switch.jsonl", addUserTurn(emptyChat(), "/model haiku"));
+    expect(s.model).toBe("claude-haiku-4-5-20251001");
+  });
+});
 
 describe("a Task subagent", () => {
   const state = replay("task-subagent.jsonl");
@@ -665,5 +775,163 @@ describe("a turn that carried a picture", () => {
 
     expect(after.messages).toHaveLength(1);
     expect(words(after.messages[0])).toBe("what is this");
+  });
+});
+
+describe("a background task reporting back", () => {
+  // Work the agent leaves running reports its end by injecting a user turn:
+  // `<task-notification>` with the outcome in it. The transcript marks the
+  // envelope `origin.kind: "task-notification"`, but the live stream is read
+  // for the text alone — which is what actually reached the screen, as a bubble
+  // of XML the reader was told they had typed.
+  const notice = (body: string, uuid = "n-1") => ({
+    type: "user",
+    uuid,
+    message: { role: "user", content: `<task-notification>\n${body}\n</task-notification>` },
+  });
+
+  const COMMAND =
+    "<task-id>ba0qlummq</task-id>\n" +
+    "<tool-use-id>toolu_bg</tool-use-id>\n" +
+    "<output-file>/tmp/tasks/ba0qlummq.output</output-file>\n" +
+    "<status>completed</status>\n" +
+    '<summary>Background command "Launch Codex" completed (exit code 0)</summary>';
+
+  /** A conversation with one background command already on screen: the call,
+   *  and the answer it gave the moment it STARTED. */
+  const started = (): ChatState =>
+    reduceChat(emptyChat(), {
+      type: "assistant",
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "toolu_bg",
+            name: "Bash",
+            input: { command: "codex exec …", run_in_background: true },
+          },
+        ],
+      },
+    });
+
+  it("never becomes a bubble of the user's", () => {
+    const after = reduceChat(started(), notice(COMMAND));
+
+    expect(after.messages.some((m) => m.role === "user")).toBe(false);
+    expect(JSON.stringify(after.messages)).not.toContain("<task-notification>");
+  });
+
+  it("lands on the card of the call that started the work", () => {
+    const after = reduceChat(started(), notice(COMMAND));
+    const [call] = tools(after.messages);
+
+    expect(call.id).toBe("toolu_bg");
+    expect(call.finish).toEqual({
+      taskId: "ba0qlummq",
+      toolUseId: "toolu_bg",
+      outputFile: "/tmp/tasks/ba0qlummq.output",
+      status: "completed",
+      summary: 'Background command "Launch Codex" completed (exit code 0)',
+    });
+  });
+
+  it("folds the same report in once, however many times a catch-up replays it", () => {
+    const once = reduceChat(started(), notice(COMMAND));
+    const twice = reduceChat(once, notice(COMMAND));
+
+    expect(twice).toBe(once);
+  });
+
+  it("drops a report that names no call, which the agent rail already has", () => {
+    // A Task subagent's notice carries no `tool-use-id`. Its card holds the
+    // subagent's own answer and its row on the rail holds the ending, so a
+    // third copy is worth no bubble.
+    const after = reduceChat(
+      started(),
+      notice(
+        "<task-id>aa78c1bd</task-id>\n<status>completed</status>\n" +
+          '<summary>Agent "Find the logic" finished</summary>',
+      ),
+    );
+
+    expect(after.messages.some((m) => m.role === "user")).toBe(false);
+    expect(tools(after.messages)[0].finish).toBeUndefined();
+  });
+
+  it("leaves a message that only talks about one alone", () => {
+    const asked = reduceChat(started(), {
+      type: "user",
+      uuid: "u-9",
+      message: { role: "user", content: "what does <task-notification> mean" },
+    });
+
+    expect(text(asked.messages[asked.messages.length - 1])).toBe(
+      "what does <task-notification> mean",
+    );
+  });
+});
+
+describe("a turn the user stopped", () => {
+  /** An answer caught mid-tool: prose, then a call that never answers. */
+  const midTool = (): ChatState =>
+    reduceChat(emptyChat(), {
+      type: "assistant",
+      message: {
+        id: "msg_stop",
+        role: "assistant",
+        model: "claude-opus-5",
+        content: [
+          { type: "text", text: "Let me look at that file." },
+          { type: "tool_use", id: "toolu_stop", name: "Read", input: { file_path: "/tmp/a.ts" } },
+        ],
+      },
+    });
+
+  /** What the agent injects when the stop lands. A user turn in shape only. */
+  const marker = (text: string) => ({
+    type: "user",
+    uuid: "u-stop",
+    message: { role: "user", content: [{ type: "text", text }] },
+  });
+
+  // 69 of these in the transcripts on this machine against 158 of the plain
+  // one, and only the plain one was read — so a stop landing on a tool call,
+  // which is most of them, arrived as a bubble of the reader saying
+  // "[Request interrupted by user for tool use]" to their own agent.
+  it("reads the marker a stop mid-call sends, not just the plain one", () => {
+    const after = reduceChat(midTool(), marker("[Request interrupted by user for tool use]"));
+
+    expect(after.messages.some((m) => m.role === "user")).toBe(false);
+    expect(after.stoppedAt).toBe("msg_stop");
+    expect(after.busy).toBe(false);
+  });
+
+  it("still reads the plain marker", () => {
+    const after = reduceChat(midTool(), marker("[Request interrupted by user]"));
+
+    expect(after.messages.some((m) => m.role === "user")).toBe(false);
+    expect(after.stoppedAt).toBe("msg_stop");
+  });
+
+  // The call was cut off, so its result is never coming. Left running it spins
+  // for the rest of the conversation, which reads as work still in flight.
+  it("stops the call that was in flight rather than leaving it running", () => {
+    const after = reduceChat(midTool(), marker("[Request interrupted by user for tool use]"));
+
+    expect(tools(after.messages)[0].state).toBe("stopped");
+  });
+
+  it("leaves a message that only quotes the marker alone", () => {
+    const after = reduceChat(
+      emptyChat(),
+      marker("why does [Request interrupted by user] show up twice"),
+    );
+
+    expect(text(after.messages[after.messages.length - 1])).toBe(
+      "why does [Request interrupted by user] show up twice",
+    );
+    expect(after.stoppedAt).toBeUndefined();
   });
 });

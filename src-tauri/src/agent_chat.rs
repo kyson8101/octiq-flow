@@ -593,6 +593,25 @@ pub fn chat_start_impl(
         // Unset means the most cautious of the three, not the most permissive:
         // a missing value must never be the one that stops the asking.
         .env("OCTIQ_ACCESS", access.map(Access::as_env).unwrap_or("read"))
+        // The Artifact tool, which print mode hides from itself.
+        //
+        // Claude Code decides whether to offer `Artifact` by ENTRYPOINT, and it
+        // refuses for `-p`, for the SDKs, for the GitHub action and for `mcp` —
+        // so a chat agent here is never shown it, no matter what it is asked
+        // for. A truthy `CLAUDE_CODE_ARTIFACT` skips that check, and nothing
+        // else about the tool needs arranging: the call goes through the same
+        // `--permission-prompt-tool stdio` chain as every other tool, so the
+        // person still approves it.
+        //
+        // Unlike `AskUserQuestion` above, the tool WORKS without a terminal to
+        // draw in — it publishes an HTML/Markdown file the agent has already
+        // written to disk as a private page on claude.ai and hands back a URL.
+        // So it needs the network and a claude.ai login; on any other auth the
+        // CLI keeps the tool hidden and this var changes nothing. `disableArtifact`
+        // in the user's settings still wins, which is how they turn it back off.
+        //
+        // Harmless for Codex, which shares this spawn and has never read it.
+        .env("CLAUDE_CODE_ARTIFACT", "1")
         .stdin(match agent {
             ChatAgent::Claude => Stdio::piped(),
             ChatAgent::Codex => Stdio::null(),

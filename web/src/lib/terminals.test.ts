@@ -83,6 +83,30 @@ describe("adding and switching", () => {
   });
 });
 
+describe("a tab opened for a saved command", () => {
+  it("is named after the command and remembers what to run", () => {
+    const tabs = addTab(tabsFor({}, PID), PID, { name: "dev", cmd: "pnpm dev" });
+    const opened = tabs.tabs[tabs.tabs.length - 1];
+    expect(opened.name).toBe("dev");
+    expect(opened.cmd).toBe("pnpm dev");
+    expect(tabs.active).toBe(opened.id);
+  });
+
+  it("numbers a second tab of the same command rather than showing two 'dev'", () => {
+    // Running `pnpm dev` twice is a real thing to do — two branches, two
+    // ports. Two tabs with one name is not.
+    let tabs = addTab(tabsFor({}, PID), PID, { name: "dev", cmd: "pnpm dev" });
+    tabs = addTab(tabs, PID, { name: "dev", cmd: "pnpm dev" });
+    expect(tabs.tabs.map((t) => t.name)).toEqual(["sh 1", "dev", "dev 2"]);
+  });
+
+  it("falls back to a plain shell name when the label is blank", () => {
+    const tabs = addTab(tabsFor({}, PID), PID, { name: "   ", cmd: "" });
+    expect(tabs.tabs[1].name).toBe("sh 2");
+    expect(tabs.tabs[1].cmd).toBeUndefined();
+  });
+});
+
 describe("closing one terminal", () => {
   it("moves focus to a neighbour when the active one goes", () => {
     const tabs = addTab(addTab(tabsFor({}, PID), PID), PID);
@@ -126,6 +150,17 @@ describe("what was saved last time", () => {
   it("reads back a store it wrote", () => {
     const store = { [PID]: tabsFor({}, PID) };
     expect(parseStore(JSON.stringify(store))).toEqual(store);
+  });
+
+  it("keeps each command tab's command, and shrugs off a broken one", () => {
+    // The command is what makes the tab worth re-opening: a shell the server
+    // restarted out from under us runs it again on the next attach.
+    const kept = parseStore(
+      '{"p":{"tabs":[{"id":"a","name":"dev","cmd":"pnpm dev"}],"active":"a","seq":1}}',
+    );
+    expect(kept.p.tabs[0].cmd).toBe("pnpm dev");
+    const junk = parseStore('{"p":{"tabs":[{"id":"a","name":"dev","cmd":7}],"active":"a","seq":1}}');
+    expect(junk.p.tabs[0]).toEqual({ id: "a", name: "dev" });
   });
 
   it("treats nothing, junk, and the wrong shape as no store at all", () => {

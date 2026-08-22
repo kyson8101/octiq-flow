@@ -62,6 +62,8 @@ import { Sidebar, type Project } from "./components/Sidebar";
 import { AgentsPage, loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { ProjectSettings } from "./components/ProjectSettings";
+import { Settings } from "./components/Settings";
+import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
@@ -77,7 +79,14 @@ const EditorMode = lazy(() =>
   import("./components/EditorMode").then((m) => ({ default: m.EditorMode })),
 );
 
-type Workspace = Project & { paths?: string[]; shelved?: boolean; description?: string };
+type Workspace = Project & {
+  paths?: string[];
+  shelved?: boolean;
+  description?: string;
+  /** The project's saved commands, straight from the store. Read through
+   *  `parseCommands` where they are drawn — see the terminal drawer. */
+  actions?: unknown;
+};
 
 /** The process key for a conversation. Derived from the conversation id rather
  *  than random, so an event coming back from the server says which conversation
@@ -180,6 +189,12 @@ export default function App() {
   const [settingsFor, setSettingsFor] = useState<string | "new" | null>(null);
   // The shell drawer under the chat. Remembered, because someone who works
   // with it open wants it open next time too.
+  // The app's own settings sheet, and the theme it is showing as chosen.
+  // `main.tsx` has already applied this one; the state is here only so the
+  // tick in the sheet has something to read.
+  const [appSettings, setAppSettings] = useState(false);
+  const [themeId, setThemeId] = useState(savedThemeId);
+
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
   // The git column beside the chat. It lives up here rather than inside the
   // panel because the button that opens it is in the top bar and the panel it
@@ -1530,6 +1545,19 @@ export default function App() {
 
         <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
 
+        <button
+          className="icon-btn"
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          onClick={() => setAppSettings(true)}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+
         {/* A new chat in the project named on the left. Last, at the thumb end
             of the bar, because it is the one thing here you press rather than
             read. */}
@@ -1724,6 +1752,7 @@ export default function App() {
             <TerminalDrawer
               key={project.id}
               project={project}
+              onCommandsChanged={loadWorkspaces}
               onHide={() => {
                 setTermOpen(false);
                 localStorage.setItem(TERM_KEY, "0");
@@ -1823,6 +1852,14 @@ export default function App() {
           projects={shelved}
           onRestored={loadWorkspaces}
           onClose={() => setShelfOpen(false)}
+        />
+      )}
+
+      {appSettings && (
+        <Settings
+          current={themeId}
+          onPick={setThemeId}
+          onClose={() => setAppSettings(false)}
         />
       )}
 

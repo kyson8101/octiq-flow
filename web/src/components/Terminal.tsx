@@ -14,32 +14,22 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 import { bridge } from "../lib/bridge";
+import { THEME_EVENT } from "../lib/themeStore";
+import { xtermTheme } from "../lib/xtermTheme";
 
-/** Matches the app's own palette, so a shell does not look pasted in. */
-const THEME = {
-  background: "#1c1c1e",
-  foreground: "#d8d8dc",
-  cursor: "#f5f5f7",
-  selectionBackground: "rgba(10, 132, 255, 0.35)",
-  black: "#3a3a3c",
-  red: "#ff453a",
-  green: "#30d158",
-  yellow: "#ff9f0a",
-  blue: "#0a84ff",
-  magenta: "#bf5af2",
-  cyan: "#64d2ff",
-  white: "#d8d8dc",
-  brightBlack: "#636366",
-  brightRed: "#ff6961",
-  brightGreen: "#5de37d",
-  brightYellow: "#ffd426",
-  brightBlue: "#4da3ff",
-  brightMagenta: "#da8fff",
-  brightCyan: "#8be9ff",
-  brightWhite: "#f5f5f7",
-};
-
-export function TerminalPane({ id, cwd }: { id: string; cwd: string }) {
+export function TerminalPane({
+  id,
+  cwd,
+  cmd,
+}: {
+  id: string;
+  cwd: string;
+  /** For a tab opened from one of the project's saved commands: the command to
+   *  run in it. Passed on every mount, not only the first — `pty_spawn` is
+   *  idempotent by id, so a shell that is already running is left alone and
+   *  only a genuinely new one (the server restarted) starts it again. */
+  cmd?: string;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -53,12 +43,23 @@ export function TerminalPane({ id, cwd }: { id: string; cwd: string }) {
       .catch(() => {});
   }, [id]);
 
+  // A theme change repaints the terminal in place. It deliberately does not
+  // live in the effect below — that one owns the shell, and re-running it to
+  // change a colour would throw away the scrollback.
+  useEffect(() => {
+    const repaint = () => {
+      if (termRef.current) termRef.current.options.theme = xtermTheme();
+    };
+    window.addEventListener(THEME_EVENT, repaint);
+    return () => window.removeEventListener(THEME_EVENT, repaint);
+  }, []);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
     const term = new Xterm({
-      theme: THEME,
+      theme: xtermTheme(),
       fontFamily:
         'ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace',
       fontSize: 12.5,
@@ -130,7 +131,7 @@ export function TerminalPane({ id, cwd }: { id: string; cwd: string }) {
     // idempotent by id, so on a re-attach this finds the running shell rather
     // than starting a second one.
     bridge
-      .invoke("pty_spawn", { id, cwd })
+      .invoke("pty_spawn", { id, cwd, startCmd: cmd })
       .then(() => {
         sendSize();
         // A backend older than this client does not have `pty_attach` and
@@ -167,7 +168,7 @@ export function TerminalPane({ id, cwd }: { id: string; cwd: string }) {
       // should leave a running build running — it is reattached by id when the
       // pane comes back.
     };
-  }, [id, cwd, sendSize]);
+  }, [id, cwd, cmd, sendSize]);
 
   return <div className="term" ref={hostRef} />;
 }

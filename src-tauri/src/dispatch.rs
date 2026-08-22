@@ -135,6 +135,31 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "shelved")?,
         )),
 
+        // ---- saved commands -----------------------------------------------
+        // A project's own commands — `pnpm dev`, `cargo test` — kept on the
+        // backend rather than in a browser's storage, because the folder they
+        // run in is the backend's and the phone that opens the project later
+        // should offer the same list as the laptop that wrote it. They come
+        // back with the project itself, on `list_workspaces`.
+        "add_action" => to_value(crate::workspaces::add_action_impl(
+            &svc.workspaces,
+            arg(&args, "workspaceId")?,
+            arg(&args, "label")?,
+            arg(&args, "command")?,
+        )),
+        "update_action" => unit(crate::workspaces::update_action_impl(
+            &svc.workspaces,
+            arg(&args, "workspaceId")?,
+            arg(&args, "actionId")?,
+            arg(&args, "label")?,
+            arg(&args, "command")?,
+        )),
+        "delete_action" => unit(crate::workspaces::delete_action_impl(
+            &svc.workspaces,
+            arg(&args, "workspaceId")?,
+            arg(&args, "actionId")?,
+        )),
+
         // ---- chats --------------------------------------------------------
         "chat_start" => unit(crate::agent_chat::chat_start_impl(
             svc.chats.clone(),

@@ -429,6 +429,18 @@ pub fn add_action(
     label: String,
     command: String,
 ) -> Result<Action, String> {
+    add_action_impl(&state, workspace_id, label, command)
+}
+
+/// The Tauri-free half of `add_action`. A browser reaches it through
+/// `dispatch.rs`: the saved commands are a project's own, so they must not be
+/// desktop-only the way they were when only the vanilla UI could edit them.
+pub fn add_action_impl(
+    state: &WorkspaceState,
+    workspace_id: String,
+    label: String,
+    command: String,
+) -> Result<Action, String> {
     let label = label.trim().to_string();
     let command = command.trim().to_string();
     if label.is_empty() || command.is_empty() {
@@ -459,6 +471,17 @@ pub fn update_action(
     label: String,
     command: String,
 ) -> Result<(), String> {
+    update_action_impl(&state, workspace_id, action_id, label, command)
+}
+
+/// The Tauri-free half of `update_action`.
+pub fn update_action_impl(
+    state: &WorkspaceState,
+    workspace_id: String,
+    action_id: String,
+    label: String,
+    command: String,
+) -> Result<(), String> {
     let label = label.trim().to_string();
     let command = command.trim().to_string();
     if label.is_empty() || command.is_empty() {
@@ -484,6 +507,15 @@ pub fn update_action(
 #[tauri::command]
 pub fn delete_action(
     state: State<WorkspaceState>,
+    workspace_id: String,
+    action_id: String,
+) -> Result<(), String> {
+    delete_action_impl(&state, workspace_id, action_id)
+}
+
+/// The Tauri-free half of `delete_action`.
+pub fn delete_action_impl(
+    state: &WorkspaceState,
     workspace_id: String,
     action_id: String,
 ) -> Result<(), String> {

@@ -15,6 +15,10 @@
   --border-strong: #48484a;
   --accent: #0a84ff;
   --accent-tint: rgba(10, 132, 255, 0.16);
+  /* What is legible ON the fills above. White is right for the built-in
+     palette; a theme whose accent is pale sets its own. */
+  --accent-fg: #fff;
+  --danger-fg: #fff;
   --ok: #30d158;
   --warn: #ff9f0a;
   --danger: #ff453a;
@@ -68,7 +72,7 @@ body {
 .conn-strip {
   padding: 5px 10px;
   background: var(--warn);
-  color: #1c1c1e;
+  color: var(--bg-0);
   font-size: 12px;
   text-align: center;
 }
@@ -895,6 +899,38 @@ body {
   white-space: pre-wrap;
 }
 
+/* A long message of yours — a pasted log, a pasted json — kept to a readable
+   head with the rest one click away. The cut itself is made on the text (see
+   lib/clip), so the button only ever appears when there really is more. */
+.clip {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* The last line fades out rather than stopping dead: that is what says "this
+   goes on" before you have read the button. */
+.clip.is-cut .prose {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+}
+
+.clip-more {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.clip-more:hover {
+  color: var(--fg-0);
+}
+
 .msg-role {
   margin-bottom: 4px;
   font-size: 11px;
@@ -1060,7 +1096,11 @@ body {
 .tool-icon[data-kind="read"] {
   --tint: #64d2ff;
 }
-.tool-icon[data-kind="edit"] {
+/* The edit tint is stated once and worn twice: by the icon of a card that
+   changed a file, and by the chip for that file in a folded run's tally. The
+   two are the same claim at two sizes, so they are the same colour. */
+.tool-icon[data-kind="edit"],
+.tool-tally-item[data-kind="edit"] {
   --tint: #ff9f0a;
 }
 .tool-icon[data-kind="run"] {
@@ -1160,6 +1200,17 @@ body {
 
 .tool-state.is-error {
   color: var(--danger);
+}
+
+/* A call the stop caught in flight. It never answered and never will, but
+   nothing failed either — so it says so in the same grey as a finished row
+   rather than borrowing the red of one that broke. */
+.tool-state.is-stopped {
+  color: var(--fg-3);
+}
+
+.tool-stopped .tool-icon {
+  opacity: 0.55;
 }
 
 /* A ring with one quarter drawn, turning. Small enough to sit on a 12px row
@@ -1406,11 +1457,98 @@ body {
   font-weight: 600;
 }
 
+/* A skill's row says what the skill is for, in its own first sentence — prose,
+   not a path, so it is set in the reading face rather than the mono one the
+   other rows use for their file or command. */
+.tool-skill .tool-detail {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+/* What the skill was called with (`--fast`), as a chip by its name. */
+.tool-args {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg-2);
+}
+
+/* The skill's instructions, opened. Rendered as the markdown they were written
+   in, and capped in height: a SKILL.md runs to hundreds of lines, and the card
+   is a thing to glance into, not a page to scroll the conversation by. */
+.tool-brief {
+  max-height: 380px;
+  overflow: auto;
+  padding: 10px 13px;
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg-1);
+}
+
+.tool-brief h1,
+.tool-brief h2,
+.tool-brief h3 {
+  margin: 12px 0 6px;
+  font-size: 13px;
+}
+
+.tool-brief h1 {
+  font-size: 14px;
+}
+
+.tool-brief p,
+.tool-brief ul,
+.tool-brief ol {
+  margin: 0 0 8px;
+}
+
+.tool-brief code {
+  font-size: 11.5px;
+}
+
+.tool-brief pre {
+  padding: 8px 10px;
+  background: var(--bg-1);
+}
+
+.tool-brief pre code {
+  font-size: 11.5px;
+}
+
+.tool-brief table {
+  font-size: 12px;
+}
+
 .tool-steps {
   flex: 0 0 auto;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-3);
+}
+
+/* How work the call left RUNNING ended — an exit code that arrived minutes
+   after the call itself answered. Quiet by default: a background command
+   finishing cleanly is the expected case, and only the other cases are news. */
+.tool-finish {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
+.tool-finish[data-status="failed"],
+.tool-finish[data-status="killed"],
+.tool-finish[data-status="stopped"] {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
 }
 
 /* The subagent's own working. Indented behind a rule, because its tool cards
@@ -1839,9 +1977,9 @@ body {
 }
 
 @media (max-width: 700px) {
-  /* At 360px the three pickers, the attach buttons and Send needed 358px in a
+  /* At 360px the three pickers, the attach button and Send needed 358px in a
      334px box, and the overflow landed on Send — the one control that must
-     never move. They collapse into one button here. */
+     never move. The pickers collapse into one button here. */
   .composer-settings {
     display: none;
   }
@@ -1867,47 +2005,112 @@ body {
   background: rgba(0, 0, 0, 0.5);
 }
 
-/* Anchored to the bottom, where a thumb is, and above the keyboard's own inset. */
+/* Anchored to the bottom, where a thumb is, and above the keyboard's own inset.
+   A COLUMN, not one scrolling box: the options scroll inside `.sheet-body` and
+   `.sheet-foot` stays put, so Done — the only way out of the sheet other than
+   the scrim — is on screen whatever the phone's height. */
 .settings-sheet {
   position: fixed;
   z-index: 41;
   left: 0;
   right: 0;
   bottom: 0;
-  max-height: 78vh;
-  overflow-y: auto;
-  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  max-height: 82vh;
+  overflow: hidden;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   background: var(--bg-1);
   box-shadow: var(--shadow);
 }
 
+/* `min-height: 0` is what makes the scroll happen: without it a flex child
+   refuses to shrink below its content, so the sheet grows past its own
+   max-height and pushes Done off the screen again — the bug this shape is
+   here to fix. `overscroll-behavior` keeps a flick at the end of the list
+   from scrolling the chat behind the scrim. */
+.sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .sheet-group + .sheet-group {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .sheet-head {
-  padding: 2px 4px 6px;
-  font-size: 11px;
+  padding: 1px 4px 3px;
+  font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-3);
 }
 
+/* ---- Compact scale, and only in here ------------------------------------
+   The same three controls are dropdowns on a desktop, where each opens alone
+   and has room to breathe. The sheet shows all three at once on the shortest
+   screen the app runs on, so every row gives up a few pixels of padding —
+   never the hint text, which is the part that says what the row does. Rows
+   that carry two lines still land near 44px; only the model tiles are shorter,
+   and those are full-width-thirds, which is an easy target either way. */
+.settings-sheet .mp {
+  gap: 6px;
+}
+
+.settings-sheet .mp-tab {
+  padding: 5px 8px;
+}
+
+.settings-sheet .mp-grid {
+  gap: 5px;
+}
+
+.settings-sheet .mp-card {
+  padding: 7px 9px;
+}
+
 .settings-sheet .picker-item {
   width: 100%;
+  padding: 6px 9px;
+}
+
+.settings-sheet .eff-head {
+  padding-bottom: 4px;
+}
+
+.settings-sheet .eff-marks {
+  margin-top: 2px;
+}
+
+.settings-sheet .eff-auto {
+  margin-top: 4px;
+  padding: 6px 9px;
+}
+
+.settings-sheet .eff-apply {
+  margin-top: 6px;
+}
+
+/* Outside the scroll. The rule is the seam the options slide under, so it is
+   clear there is more above rather than the list just stopping. */
+.sheet-foot {
+  flex: 0 0 auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
 }
 
 .sheet-done {
   width: 100%;
-  margin-top: 14px;
-  padding: 11px;
+  padding: 10px;
   border: 0;
   border-radius: var(--r-md);
   background: var(--accent);
-  color: var(--accent-fg, #fff);
+  color: var(--accent-fg);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
@@ -1924,7 +2127,7 @@ body {
   border: 0;
   border-radius: 50%;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
   cursor: pointer;
 }
 
@@ -2323,7 +2526,7 @@ body {
 
 .eff-auto.is-on .eff-switch::after {
   transform: translateX(12px);
-  background: #fff;
+  background: var(--accent-fg);
 }
 
 /* A 14px thumb is a mouse target, not a thumb one. */
@@ -2348,7 +2551,7 @@ body {
   border: 0;
   border-radius: var(--r-sm);
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
   font: inherit;
   font-size: 12.5px;
   font-weight: 500;
@@ -2852,7 +3055,7 @@ body.is-ultra .eff {
   border: 0;
   border-radius: var(--r-md);
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
   font: inherit;
   font-weight: 500;
   cursor: pointer;
@@ -2912,14 +3115,39 @@ body.is-ultra .eff {
   background: none;
 }
 
-/* ---- Stopped marker ---------------------------------------------------- */
-.stopped {
-  align-self: flex-start;
-  padding: 2px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+/* ---- Stopped marker ----------------------------------------------------
+   The line an answer stops on when the reader stops it. Full width, because
+   what it marks is the END of the turn above rather than a note attached to
+   it — a pill tucked inside the reply read as one more thing the agent said.
+   Quiet throughout: stopping is a choice, not a fault, so there is no red. */
+.stopmark {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Pulled into the 18px gap between turns so the line sits BETWEEN them
+     rather than adding a third gap of its own. */
+  margin: -6px 0;
+  user-select: none;
+}
+
+.stopmark-rule {
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+.stopmark-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
   font-size: 11px;
+  letter-spacing: 0.03em;
   color: var(--fg-3);
+}
+
+.stopmark-label svg {
+  opacity: 0.75;
 }
 
 /* ---- Stop button ------------------------------------------------------- */
@@ -2930,7 +3158,7 @@ body.is-ultra .eff {
 
 .send.stop:hover {
   background: var(--danger);
-  color: #fff;
+  color: var(--danger-fg);
 }
 
 /* What the agent may do unattended is the one setting here with a consequence,
@@ -2990,7 +3218,7 @@ body.is-ultra .eff {
 
 .picker-item.is-bypass.is-on .picker-switch {
   background: var(--danger);
-  color: #fff;
+  color: var(--danger-fg);
 }
 
 /* A caret on the paragraph still being written, so a pause in the stream reads
@@ -3745,6 +3973,20 @@ body.is-ultra .eff {
   }
 }
 
+/* Phone: the panel IS the screen. The 6vw strip of chat that 94vw leaves on
+   the left is not enough to read or tap, so it only costs width — and a
+   markdown file wants every column a phone has. Close is the × in the head,
+   not the scrim, so nothing is lost by covering it. The slide-in still comes
+   from the right, so it still reads as a sheet that will go away again. */
+@media (max-width: 700px) {
+  .panel {
+    left: 0;
+    width: 100%;
+    border-left: 0;
+    box-shadow: none;
+  }
+}
+
 .panel-head {
   display: flex;
   align-items: center;
@@ -3817,7 +4059,7 @@ body.is-ultra .eff {
 .panel-btn.is-primary:not(:disabled) {
   border-color: transparent;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
 }
 
 .panel-btn:disabled {
@@ -4648,7 +4890,7 @@ body.is-ultra .eff {
 .ask-btn.is-primary {
   border-color: var(--accent);
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
 }
 
 .ask-btn.is-primary:hover {
@@ -4677,6 +4919,29 @@ body.is-ultra .eff {
 
 .attach-input {
   display: none;
+}
+
+/* The "+". First control in the bar, ahead of the agent's own settings,
+   because it is about the MESSAGE being written rather than about the agent —
+   and because that is where every chat box has taught people to look for it.
+   A touch more padding than the labels beside it: this one is a target, not a
+   word you read. */
+.attach-btn {
+  padding: 4px;
+}
+
+/* The mark stands where a word stood, so it must not shrink when the bar gets
+   tight — a squashed logo reads as a smudge, and the word it replaced would
+   have ellipsised instead of deforming. Claude keeps its orange: at 14px the
+   colour identifies the agent faster than the shape does, which is the whole
+   reason for showing a logo. OpenAI's mark has no colour of its own, so Codex
+   takes the button's — including the lift on hover. */
+.agent-logo {
+  flex: 0 0 auto;
+}
+
+.agent-logo.is-claude {
+  color: #d97757;
 }
 
 .chip {
@@ -4995,6 +5260,131 @@ body.is-ultra .eff {
   outline: none;
 }
 
+/* The project's saved commands (card 68). A quiet strip between the tabs and
+   the shell: these OPEN a terminal, so they sit on the tab side of the line,
+   but they are not tabs and must not read as one. */
+.cmd-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.cmd-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.cmd-chip {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-0);
+  color: var(--fg-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cmd-chip:hover {
+  border-color: var(--accent);
+  color: var(--fg-0);
+}
+
+/* Adding one is a different kind of act from running one, so it is drawn as an
+   outline rather than a filled chip — and it stays even when the row is empty,
+   because it is how anyone learns the row is there. */
+.cmd-chip.is-add {
+  border-style: dashed;
+  background: transparent;
+  color: var(--fg-3);
+}
+
+.cmd-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  flex-wrap: wrap;
+}
+
+.cmd-form input {
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font-family: var(--mono);
+  font-size: 11px;
+  outline: none;
+}
+
+.cmd-form input:focus {
+  border-color: var(--accent);
+}
+
+.cmd-form-label {
+  flex: 0 0 auto;
+  width: 96px;
+}
+
+/* The command itself gets the room: it is the long half, and the half worth
+   reading back before saving. */
+.cmd-form-command {
+  flex: 1 1 200px;
+}
+
+.cmd-form button {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.cmd-form button:hover:not(:disabled) {
+  color: var(--fg-0);
+  border-color: var(--accent);
+}
+
+.cmd-form-save {
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.cmd-form button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.cmd-form-delete:hover {
+  border-color: var(--danger, #ff453a);
+  color: var(--danger, #ff453a);
+}
+
+.cmd-form-error {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--danger, #ff453a);
+}
+
 .term {
   flex: 1 1 auto;
   min-height: 0;
@@ -5134,7 +5524,7 @@ body.is-ultra .eff {
 .qa-option.is-on {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent-fg, #fff);
+  color: var(--accent-fg);
 }
 
 .qa-summary {
@@ -5605,7 +5995,7 @@ body.is-ultra .eff {
   padding: 0 5px;
   border-radius: 999px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   line-height: 17px;
@@ -5794,7 +6184,7 @@ body.is-ultra .eff {
 .gitp-btn.is-primary:not(:disabled) {
   border-color: transparent;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
 }
 
 .gitp-btn:disabled {
@@ -6432,7 +6822,7 @@ body.is-ultra .eff {
 .ws-save:not(:disabled) {
   border-color: transparent;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-fg);
 }
 
 .ws-save:disabled {
@@ -6672,11 +7062,23 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
+/* Only the CHANGED files are coloured, and nothing else in the strip is. A
+   tint per family here would be five colours in a row two inches wide, which
+   is confetti, not a legend — and there is only one distinction the fold could
+   lose: a file that was written is not a file that was read. */
+.tool-tally-item[data-kind="edit"] {
+  background: color-mix(in srgb, var(--tint) 14%, transparent);
+}
+
 .tool-tally-name {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--fg-2);
+}
+
+.tool-tally-item[data-kind="edit"] .tool-tally-name {
+  color: color-mix(in srgb, var(--tint) 75%, var(--fg-1));
 }
 
 .tool-tally-count {
@@ -6729,4 +7131,96 @@ body.is-ultra .eff {
    broken however carefully its own radius was cut. */
 .tool-group {
   position: relative;
+}
+
+/* ---- Theme chooser ----------------------------------------------------
+   Tiles, not a list: the thing being chosen is a picture, and a picture in a
+   row of one-per-line is a list you have to scroll to compare. */
+.thm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.thm {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.thm:hover {
+  border-color: var(--border-strong);
+}
+
+/* The current one is marked by a ring the whole way round and a filled
+   background — never by a bar down one edge. */
+.thm.is-on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  background: var(--accent-tint);
+  color: var(--fg-0);
+}
+
+.thm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A small picture of the app: bar across the top, a card, a line of text in
+   it, and the one button. Enough to tell two themes apart at a glance. */
+.thm-shot {
+  position: relative;
+  display: block;
+  height: 60px;
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+
+.thm-bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 13px;
+}
+
+.thm-card {
+  position: absolute;
+  left: 8px;
+  right: 20px;
+  top: 22px;
+  height: 26px;
+  border-radius: 5px;
+}
+
+.thm-line {
+  position: absolute;
+  left: 13px;
+  top: 30px;
+  width: 42px;
+  height: 3px;
+  border-radius: 2px;
+  opacity: 0.55;
+}
+
+.thm-dot {
+  position: absolute;
+  right: 8px;
+  bottom: 9px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+}
+
+.thm-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  padding-left: 1px;
 }

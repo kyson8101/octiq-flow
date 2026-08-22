@@ -18,14 +18,26 @@
 // run that finishes leaves the box the height it already was.
 //
 // Three kinds of call never fold away:
-//   - an edit (Write / Edit / MultiEdit), because a change to a file is the
-//     thing the reader is checking, not the noise around it;
 //   - a subagent (Task), because its whole transcript hangs off its card;
+//   - a skill, because it is a set of instructions the agent has just taken
+//     on: everything after it reads by its rules, and its card carries those
+//     rules. Folded into "Bash × 7" it would be the one call that explains the
+//     other six, hidden among them;
 //   - a call that FAILED, because a group that swallows a failure is a group
 //     that lies about the turn. The one row worth reading is the one that
 //     stopped working.
-// They also BREAK a run, which is what makes `Bash x5, Write x2, Bash x3` read
-// as a group, two edits, and another group.
+// They also BREAK a run, which is what makes `Bash x5, Task, Bash x3` read as a
+// group, a subagent, and another group.
+//
+// An EDIT used to be on that list, and taking it off is what made grouping
+// work at all. A turn is mostly read, edit, edit, read, edit — and an edit that
+// stands alone AND breaks the run around it leaves every run at one or two
+// calls, under MIN_RUN, so nothing ever folded and the reader got the wall of
+// single cards this file exists to prevent. What the old rule was protecting is
+// kept another way: the tally names the FILE an edit went to, in the edit's own
+// colour, and `groupDiff` puts the run's whole `+adds −dels` on the folded row.
+// A group can hide how many calls it took to change a file. It cannot hide that
+// the file changed.
 //
 // THINKING is not drawn here at all — it is watched live above the composer
 // while it happens (see Composer's thinking strip) and left out of the
@@ -34,6 +46,7 @@
 // to arrive as eight lone cards with "thought for a moment" between each pair —
 // the wall this whole file exists to prevent.
 import type { Block } from "./chat";
+import { fileDiff } from "./diff";
 import { toolDetail, toolLook, type ToolKind } from "./toolKind";
 
 export type Tool = Extract<Block, { kind: "tool" }>;
@@ -42,7 +55,7 @@ export type Tool = Extract<Block, { kind: "tool" }>;
  *  already readable; the third is where a stack starts to look like a wall. */
 export const MIN_RUN = 3;
 
-const NEVER_FOLD: ReadonlySet<ToolKind> = new Set<ToolKind>(["edit", "agent"]);
+const NEVER_FOLD: ReadonlySet<ToolKind> = new Set<ToolKind>(["agent", "skill"]);
 
 /** One thing to draw: a block on its own, or a run of calls as a group.
  *
@@ -104,7 +117,10 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
 
 function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
   if (keepOut?.(tool)) return false;
-  if (tool.state === "error") return false;
+  // A call that did not finish is the one worth seeing in a run of ones that
+  // did — and a group rolls up to `done`, so folding either in would report the
+  // whole run as finished.
+  if (tool.state === "error" || tool.state === "stopped") return false;
   return !NEVER_FOLD.has(toolLook(tool.name, tool.args).kind);
 }
 
@@ -135,31 +151,98 @@ export function groupLook(tools: Tool[]): GroupLook {
   };
 }
 
-/** What the group actually did, counted: `python3 ×3`, `cd ×2`.
+/** What the group actually did, counted: `python3 ×3`, `chat.ts ×4`.
  *
  *  A count of calls says how much happened; this says what happened. For a
  *  shell call that is the command, not the tool — a group of five `Bash` rows
- *  that says "Bash ×5" has told the reader nothing they could not see. */
-export type Tally = { label: string; count: number };
+ *  that says "Bash ×5" has told the reader nothing they could not see. For a
+ *  read or an edit it is the file, for the same reason: "Read ×3 · Edit ×4"
+ *  only repeats the row above it, and the file is the part that is nowhere
+ *  else on screen.
+ *
+ *  `kind` is what colours the chip, and it is why one file is ONE chip however
+ *  many ways it was touched: read, edit, read again is one file being worked
+ *  on, not two things, and the chip takes the edit's colour the moment an edit
+ *  lands in it. */
+export type Tally = { label: string; count: number; kind: ToolKind };
 
 export function groupTally(tools: Tool[]): Tally[] {
-  const counts = new Map<string, number>();
+  const counts = new Map<string, Tally>();
   for (const tool of tools) {
-    const label = verb(tool);
-    counts.set(label, (counts.get(label) ?? 0) + 1);
+    const { label, kind } = verb(tool);
+    const seen = counts.get(label);
+    if (!seen) {
+      counts.set(label, { label, count: 1, kind });
+      continue;
+    }
+    seen.count += 1;
+    // A file that was CHANGED is not the same news as a file that was read.
+    if (kind === "edit") seen.kind = "edit";
   }
   // Biggest first: a summary is read for its shape, and the long pole is the
   // shape. Ties keep the order they ran in, which is the order on screen.
-  return [...counts].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+  return [...counts.values()].sort((a, b) => b.count - a.count);
 }
 
-function verb(tool: Tool): string {
+function verb(tool: Tool): { label: string; kind: ToolKind } {
   const look = toolLook(tool.name, tool.args);
   if (look.kind === "run") {
     const command = (tool.args as { command?: unknown } | undefined)?.command;
-    if (typeof command === "string" && command.trim()) return commandHead(command);
+    if (typeof command === "string" && command.trim()) {
+      return { label: commandHead(command), kind: look.kind };
+    }
   }
-  return look.label;
+  if (look.kind === "read" || look.kind === "edit") {
+    const name = fileName(tool.args);
+    if (name) return { label: name, kind: look.kind };
+  }
+  return { label: look.label, kind: look.kind };
+}
+
+/** The file a call went to, by the name a reader would say out loud.
+ *
+ *  The last segment, not the path: a tally is a strip of chips a few words
+ *  wide, and the same absolute path repeated four times across it is the noise
+ *  the fold was meant to remove. Two files sharing a name in different folders
+ *  read as one chip, which is a far smaller lie than a path that eats the row —
+ *  and the cards inside the group still carry the whole path. */
+function fileName(args: unknown): string {
+  const bag = args as Record<string, unknown> | undefined;
+  if (!bag || typeof bag !== "object") return "";
+  for (const key of ["file_path", "path", "notebook_path"]) {
+    const v = bag[key];
+    if (typeof v !== "string" || !v.trim()) continue;
+    // A trailing slash would otherwise hand back an empty last segment.
+    return v.trim().replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? "";
+  }
+  return "";
+}
+
+/** What a folded run CHANGED, added up.
+ *
+ *  The one thing a group must never swallow. An edit folds like any other call
+ *  now, so the row it folds into has to answer "did anything change, and how
+ *  much" without being opened — otherwise `9 calls` is a row that can quietly
+ *  contain a rewrite of the file the reader is here about. Null when the run
+ *  only looked at things. */
+export type GroupDiff = { added: number; removed: number; files: number };
+
+export function groupDiff(tools: Tool[]): GroupDiff | null {
+  let added = 0;
+  let removed = 0;
+  const files = new Set<string>();
+  for (const tool of tools) {
+    // A call still in flight has not changed anything yet, and a failed one
+    // never will; neither belongs in a total that claims the work happened.
+    if (tool.state !== "done") continue;
+    const diff = fileDiff(tool.name, tool.args, tool.details);
+    if (!diff) continue;
+    added += diff.added;
+    removed += diff.removed;
+    files.add(diff.path);
+  }
+  if (!added && !removed) return null;
+  return { added, removed, files: files.size };
 }
 
 /** The name of the program a shell line runs.

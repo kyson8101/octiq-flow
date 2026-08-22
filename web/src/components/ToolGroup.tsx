@@ -1,7 +1,8 @@
 // A run of tool calls, as ONE BOX of two halves.
 //
-// The top half is the run so far, folded: how much happened (`12 × Bash`) and
-// what happened (`git status ×4 · cargo ×3`). The bottom half is the newest
+// The top half is the run so far, folded: how much happened (`12 × Bash`),
+// what happened (`chat.ts ×4 · vitest ×1`, the changed files in the edit
+// colour), and what it came to (`+39 −12`). The bottom half is the newest
 // call, drawn whole — while a turn runs that is what is happening right now,
 // and when it is over it is where the run got to.
 //
@@ -15,8 +16,8 @@
 // Open the top half and it is exactly the cards that would have been there.
 // This component draws no tool of its own; it only decides how many of them the
 // reader has to look at.
-import { useEffect, useRef, useState } from "react";
-import { groupLook, groupTally, type Tool } from "../lib/toolGroups";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { groupDiff, groupLook, groupTally, type Tool } from "../lib/toolGroups";
 import { toolLook } from "../lib/toolKind";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon, ToolState } from "./ToolIcon";
@@ -71,6 +72,10 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
   }, [tools.length]);
 
   const look = groupLook(tools);
+  // Memoised where its neighbours are not: this one diffs every folded edit to
+  // add the numbers up, so a run holding a 3000-line Write would redo that work
+  // on the open/close click and on both renders of the merge animation.
+  const changed = useMemo(() => groupDiff(tools), [tools]);
   const tally = groupTally(tools);
   const shown = tally.slice(0, TALLY_SHOWN);
   const rest = tally.length - shown.length;
@@ -94,7 +99,14 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
         onClick={() => setOpen((v) => !v)}
         type="button"
         aria-expanded={open}
-        title={open ? "Fold these calls back up" : `Show all ${tools.length} calls`}
+        title={
+          open
+            ? "Fold these calls back up"
+            : `Show all ${tools.length} calls` +
+              (changed
+                ? ` · ${changed.files} file${changed.files === 1 ? "" : "s"} changed`
+                : "")
+        }
       >
         <span className="tool-row">
           <span className="tool-icon" data-kind={look.kind} aria-hidden="true">
@@ -105,6 +117,17 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
               which is now the card directly below — the same command said twice
               in two different ways, six pixels apart. */}
           <span className="tool-gap" />
+          {/* What the run changed, whole. An edit folds like anything else
+              now, so this is the row's promise that folding one never hides
+              it: the count above can say `9 calls`, this says a file was
+              rewritten. Drawn like a card's own stat, because it is the same
+              claim about a bigger piece of work. */}
+          {changed && (
+            <span className="diff-stat">
+              {changed.added > 0 && <span className="diff-stat-add">+{changed.added}</span>}
+              {changed.removed > 0 && <span className="diff-stat-del">−{changed.removed}</span>}
+            </span>
+          )}
           <ToolState state={look.state} />
           <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
             <Chevron />
@@ -117,7 +140,10 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
         {!echoesName && (
           <span className="tool-tally">
             {shown.map((t) => (
-              <span className="tool-tally-item" key={t.label}>
+              // Tinted by what happened to it, which is how a file the run
+              // CHANGED is told apart at a glance from one it only read — the
+              // distinction the old never-fold rule was there to protect.
+              <span className="tool-tally-item" data-kind={t.kind} key={t.label}>
                 <span className="tool-tally-name">{t.label}</span>
                 <span className="tool-tally-count">×{t.count}</span>
               </span>

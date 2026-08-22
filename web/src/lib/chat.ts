@@ -34,7 +34,13 @@
 // So every message records the parent it came from, and every question about
 // what is currently being written is asked per parent.
 
-export type ToolState = "running" | "done" | "error";
+import { parseCommandEcho, parseSkillBrief } from "./skillRun";
+import { parseTaskNotice, type TaskNotice } from "./taskNotice";
+
+/** `stopped` is a call that was still in flight when the user stopped the turn.
+ *  It is not a failure and not a result: nothing went wrong, the answer simply
+ *  is not coming, and the card has to say so rather than spin forever. */
+export type ToolState = "running" | "done" | "error" | "stopped";
 
 export type Block =
   | { kind: "text"; text: string }
@@ -59,6 +65,18 @@ export type Block =
        *  only quote the arguments back. Left as `unknown`; the shapes differ
        *  per tool and only the reader of a given tool knows its own. */
       details?: unknown;
+      /** For a SKILL call: the prompt the skill put in front of the agent — the
+       *  whole SKILL.md. The agent replays it as a USER message once the call
+       *  has answered, which is a shape, not a speaker: it is the agent
+       *  briefing itself. It lives on the card because that is what the call
+       *  did; drawn as a bubble it read as something the user had typed. */
+      brief?: string;
+      /** For a call that started work in the BACKGROUND: how that work ended.
+       *  A background command answers the instant it starts — "running in
+       *  background", nothing about how it went — and the exit code arrives
+       *  minutes later as a `<task-notification>` user turn. The card is the
+       *  only place those two halves can meet. */
+      finish?: TaskNotice;
       state: ToolState;
     };
 
@@ -175,6 +193,12 @@ export type ChatState = {
   /** Set once system/init arrives. */
   sessionId?: string;
   model?: string;
+  /** A `/model` is waiting to be answered, so an `init` naming a model must not
+   *  undo it. Sending one as the FIRST thing in a chat starts the process, and
+   *  the `init` that opens it reports the model the command is about to change
+   *  — later in the stream, older than the ask. Cleared when the turn ends, so
+   *  the next `init` is free to correct a name the agent turned down. */
+  modelAsked?: boolean;
   cwd?: string;
   /** The slash commands this session accepts — its own, the project's, and
    *  every skill and plugin it has loaded. The agent reports them at startup,
@@ -247,9 +271,39 @@ export const emptyChat = (): ChatState => ({
   stopping: false,
 });
 
-/** The exact user turn Claude injects when a request is interrupted. It is a
- *  marker, not something the user said, so it never becomes a bubble. */
-const INTERRUPT_MARKER = "[Request interrupted by user]";
+/** The user turn Claude injects when a request is interrupted. It is a marker,
+ *  not something the user said, so it never becomes a bubble.
+ *
+ *  There are TWO of them, and reading only the plain one was the bug. A stop
+ *  that lands while a tool call is in flight says `for tool use` instead — 69
+ *  of those against 158 plain in the transcripts on this machine — so the most
+ *  common way to stop an agent arrived on screen as the reader apparently
+ *  typing a bracketed sentence at their own agent.
+ *
+ *  Anchored at both ends: the same words quoted inside a longer message are
+ *  someone TALKING about the marker, which is their own words and stays a
+ *  bubble. */
+const INTERRUPT_MARKER = /^\[Request interrupted by user(?: for tool use)?\]$/;
+
+/** A call still in flight when the stop landed, marked as ended. Everything
+ *  else on the message is left exactly as it is. */
+const stopIfRunning = (b: Block): Block =>
+  b.kind === "tool" && b.state === "running" ? { ...b, state: "stopped" } : b;
+
+/** What the CLI stamps where a model name goes on a message IT wrote — the
+ *  answer to a local command, an interrupt notice. No model wrote it, so it is
+ *  never the model this session is on. */
+const SYNTHETIC_MODEL = "<synthetic>";
+
+/** The model a typed `/model <name>` asks for.
+ *
+ *  `/model` is a LOCAL command: the CLI answers it itself, so it reaches no
+ *  model, comes back with no echo, and the session does not name the model it
+ *  moved to until the NEXT turn opens with a fresh `init`. Reading the name
+ *  off the command is what lets the label follow it now rather than one
+ *  message later. It is what was ASKED for, so a name the agent turns down
+ *  ("Model 'xxx' not found") is corrected by that same init. */
+const MODEL_COMMAND = /^\/model\s+(\S+)\s*$/;
 
 /** The note Claude Code writes when it has to shrink a picture before sending
  *  it — "[Image: original 2660x642, displayed at 2000x483. Multiply coordinates
@@ -656,7 +710,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     return {
       ...state,
       sessionId: asStr(e.session_id) || state.sessionId,
-      model: asStr(e.model) || state.model,
+      model: state.modelAsked ? state.model : asStr(e.model) || state.model,
       cwd: asStr(e.cwd) || state.cwd,
       commands: commands.length ? commands : state.commands,
     };
@@ -724,8 +778,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // Every assistant message names the model that wrote it, which is how a
     // mid-session `/model sonnet` becomes visible: init reported the model the
     // session STARTED on, and that is no longer the truth.
-    if (!parent && asStr(msg.model) && asStr(msg.model) !== state.model) {
-      state = { ...state, model: asStr(msg.model) };
+    //
+    // Except when the CLI wrote the message itself, which is exactly what the
+    // answer to `/model` is. Taking `<synthetic>` for a model left the label
+    // reading `<synthetic>`, matching nothing in the picker — so the one
+    // message that says the model changed was the one that broke the reading.
+    const wrote = asStr(msg.model);
+    if (!parent && wrote && wrote !== SYNTHETIC_MODEL && wrote !== state.model) {
+      state = { ...state, model: wrote };
     }
     if (aborted && state.messages.some((m) => m.id === id)) {
       return {
@@ -734,7 +794,9 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         busy: false,
         stopping: false,
         stoppedAt: id,
-        messages: state.messages.map((m) => (m.id === id ? { ...m, streaming: false } : m)),
+        messages: state.messages.map((m) =>
+          m.id === id ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) } : m,
+        ),
       };
     }
     const blocks: Block[] = [];
@@ -802,7 +864,11 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   }
 
   if (type === "user") {
-    const content = asArr(asObj(e.message).content);
+    const raw = asObj(e.message).content;
+    // The echo of a typed slash command carries its content as one bare
+    // string, where every other user message carries a list of blocks. Read
+    // as a list it was empty, and the echo matched nothing.
+    const content = typeof raw === "string" ? [{ type: "text", text: raw }] : asArr(raw);
 
     // A subagent's user turns are not the user's. Its opening prompt is one —
     // the main agent wrote it, and it is already on screen as the Task call's
@@ -812,7 +878,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
 
     // The interrupt marker is the agent telling us the turn was cut short. Show
     // it as a state of that turn, not as a message the user typed.
-    if (content.some((c) => asStr(asObj(c).text) === INTERRUPT_MARKER)) {
+    if (content.some((c) => INTERRUPT_MARKER.test(asStr(asObj(c).text).trim()))) {
       const last = state.messages[state.messages.length - 1];
       return {
         ...state,
@@ -820,7 +886,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         busy: false,
         stopping: false,
         stoppedAt: last?.id,
-        messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+        // Every call still open is cut off with the turn. Its result was never
+        // written and never will be, so leaving it `running` spins a card for
+        // the rest of the conversation over work that ended here.
+        messages: state.messages.map((m) =>
+          m.streaming || m.blocks.some((b) => b.kind === "tool" && b.state === "running")
+            ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) }
+            : m,
+        ),
       };
     }
 
@@ -828,13 +901,41 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // bubble is already on screen — but when a conversation is rebuilt from
     // the record it is the only copy there is, so it has to be able to create
     // the bubble as well as recognise it.
-    const said = content
+    const spoken = content
       .filter((c) => asStr(asObj(c).type) === "text")
       .map((c) => asStr(asObj(c).text))
       .join("")
       .replace(IMAGE_NOTE, "")
       .trim();
     const uuid = asStr(e.uuid);
+
+    // Background work reporting its end. The harness injects the report as a
+    // user turn — the transcript marks the envelope `origin.kind:
+    // "task-notification"`, the live stream marks nothing — so read as typed it
+    // put the reader's own name on a block of XML they never wrote.
+    const notice = parseTaskNotice(spoken);
+    if (notice) return foldTaskNotice(state, notice);
+
+    // A skill's prompt, replayed once its Skill call has answered. The agent
+    // briefing itself, in a user message's clothes — so it goes onto the card
+    // of the call that asked for it, and never into a bubble.
+    if (parseSkillBrief(spoken)) {
+      return foldSkillBrief(
+        state,
+        spoken,
+        // On the envelope when the agent says which call: spelled this way in
+        // a transcript read back from disk, guessed at in snake case for the
+        // stream, and absent from older records altogether.
+        asStr(e.sourceToolUseID) || asStr(e.source_tool_use_id),
+        uuid,
+      );
+    }
+
+    // A typed slash command is echoed wrapped in `<command-name>` tags rather
+    // than as typed. Taken literally it matches nothing — the bubble pressing
+    // send put on screen sits unclaimed, and the tags arrive as a second,
+    // garbled bubble. Read back to what was typed, it is an ordinary echo.
+    const said = parseCommandEcho(spoken) ?? spoken;
     // A picture on its own is a message too. Without this the echo of a
     // wordless screenshot matched nothing, so its bubble was never claimed and
     // sat marked "queued" for the rest of the turn.
@@ -899,6 +1000,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       ...turnOver,
       busy: false,
       stopping: false,
+      // The `/model` in this turn has been answered, one way or the other.
+      modelAsked: undefined,
       failure: failed
         ? describeFailure("claude", asStr(e.result) || asStr(e.api_error_status) || subtype)
         : state.failure,
@@ -957,6 +1060,88 @@ function foldToolResults(state: ChatState, content: unknown[], envelope: Json): 
     };
   }
   return next;
+}
+
+/** The newest Skill call in the conversation, whichever message it is on. */
+function newestSkillCall(state: ChatState): Extract<Block, { kind: "tool" }> | undefined {
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const blocks = state.messages[i].blocks;
+    for (let j = blocks.length - 1; j >= 0; j--) {
+      const b = blocks[j];
+      if (b.kind === "tool" && b.name.toLowerCase() === "skill") return b;
+    }
+  }
+  return undefined;
+}
+
+function findTool(state: ChatState, id: string): Extract<Block, { kind: "tool" }> | undefined {
+  for (const m of state.messages) {
+    for (const b of m.blocks) if (b.kind === "tool" && b.id === id) return b;
+  }
+  return undefined;
+}
+
+/** Put a background task's ending on the call that started it.
+ *
+ *  A notice that names no call is DROPPED rather than drawn. Only a background
+ *  command names one; a subagent's ending is already on the agent rail and its
+ *  answer already on its own card, and a Monitor's is news about work still
+ *  running. None of those is worth a bubble nobody typed. */
+function foldTaskNotice(state: ChatState, notice: TaskNotice): ChatState {
+  const call = notice.toolUseId ? findTool(state, notice.toolUseId) : undefined;
+  if (!call) return state;
+  // Already folded in — a catch-up overlapping what we saw live. Compared on
+  // the report rather than the id alone: one task can notify more than once,
+  // and the later word is the one worth keeping.
+  const had = call.finish;
+  if (had && had.taskId === notice.taskId && had.summary === notice.summary) return state;
+  return {
+    ...state,
+    messages: state.messages.map((m) => ({
+      ...m,
+      blocks: m.blocks.map((b) =>
+        b.kind === "tool" && b.id === call.id ? { ...b, finish: notice } : b,
+      ),
+    })),
+  };
+}
+
+/** Hang a skill's prompt on the call that asked for it.
+ *
+ *  The call is the one the envelope names, else the newest Skill call — the
+ *  prompt follows its call's result directly, so newest is right whenever
+ *  the name is missing. A transcript with no call at all (an interactive CLI
+ *  ran the skill without one) still gets a card: the prompt IS a skill run,
+ *  and a card is the honest drawing of one. */
+function foldSkillBrief(state: ChatState, brief: string, sourceId: string, uuid: string): ChatState {
+  const call = (sourceId && findTool(state, sourceId)) || newestSkillCall(state);
+  // Already folded in — a catch-up overlapping what we saw live.
+  if (call?.brief === brief) return state;
+  if (call && call.brief === undefined) {
+    return {
+      ...state,
+      messages: state.messages.map((m) => ({
+        ...m,
+        blocks: m.blocks.map((b) => (b.kind === "tool" && b.id === call.id ? { ...b, brief } : b)),
+      })),
+    };
+  }
+  const id = uuid ? `skill-${uuid}` : `skill-${state.messages.length}`;
+  if (state.messages.some((m) => m.id === id)) return state;
+  const parsed = parseSkillBrief(brief);
+  const skill = parsed ? (parsed.scope ? `${parsed.scope}:${parsed.name}` : parsed.name) : "";
+  return {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id,
+        role: "assistant",
+        blocks: [{ kind: "tool", id, name: "Skill", argsJson: "", args: { skill }, state: "done", brief }],
+        streaming: false,
+      },
+    ],
+  };
 }
 
 function reduceStream(state: ChatState, ev: Json, parent: string | undefined, now: number): ChatState {
@@ -1082,8 +1267,14 @@ export function addUserTurn(
   attachments: Attached[] = [],
   now: number = Date.now(),
 ): ChatState {
+  // `/model haiku` changes the model for real, and nothing in the stream will
+  // say so until the next turn — see MODEL_COMMAND. The picker reads this
+  // field, so a label that only caught up one message later was simply wrong
+  // in between.
+  const asked = MODEL_COMMAND.exec(text.trim())?.[1];
   return {
     ...state,
+    ...(asked ? { model: asked, modelAsked: true } : {}),
     busy: true,
     stopping: false,
     stoppedAt: undefined,

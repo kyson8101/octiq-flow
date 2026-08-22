@@ -15,6 +15,8 @@ import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
 import { workingLine } from "../lib/working";
 import { FolderPicker } from "./FolderPicker";
+import { AttachList } from "./AttachMenu";
+import { AgentLogo } from "./AgentLogo";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
@@ -381,6 +383,7 @@ export function Composer({
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [effMenu, setEffMenu] = useState(false);
+  const [attachMenu, setAttachMenu] = useState(false);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   // What you have sent before, newest first, and where Up has walked to.
@@ -719,6 +722,52 @@ export function Composer({
           }}
         />
         <div className="composer-row">
+          {/* One "+", two ways in. They were a clip and a picture standing
+              side by side, which read as the same idea drawn twice — see
+              `AttachList` for why they are not, and why naming them beats
+              guessing at two icons. */}
+          <div className="picker">
+            <button
+              className="picker-btn attach-btn"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={attachMenu}
+              aria-label="Attach"
+              title="Reference a file, or upload an image"
+              onClick={() => setAttachMenu((v) => !v)}
+            >
+              <PlusIcon />
+            </button>
+            {attachMenu && (
+              <>
+                <div className="picker-scrim" onClick={() => setAttachMenu(false)} />
+                <div className="picker-menu" role="menu" aria-label="Attach">
+                  <AttachList
+                    onReference={() => {
+                      setFilePicker(true);
+                      setAttachMenu(false);
+                    }}
+                    onUpload={() => {
+                      fileRef.current?.click();
+                      setAttachMenu(false);
+                    }}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <input
+            ref={fileRef}
+            className="attach-input"
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={(e) => {
+              void attachFiles([...(e.target.files ?? [])]);
+              e.target.value = "";
+            }}
+          />
+
           {/* A phone fits one of these, not three. `display: contents` keeps
               them as direct flex children on a wide screen, so wrapping them
               costs the desktop layout nothing; the phone rule hides the lot and
@@ -730,9 +779,16 @@ export function Composer({
               type="button"
               aria-haspopup="menu"
               aria-expanded={menu}
+              title={`${choice.name} · ${choice.model}`}
               onClick={() => setMenu((v) => !v)}
             >
-              {choice.name} · {choice.model}
+              {/* The mark, not the name. "Claude · Opus" spent a third of the
+                  toolbar saying a word that never changes between two values,
+                  and the two marks tell them apart faster than reading does —
+                  which is what a logo is for. The name is still in the title,
+                  and `AgentLogo` labels itself for a screen reader. */}
+              <AgentLogo agent={choice.agent} />
+              {choice.model}
               <span className="picker-caret" aria-hidden="true">
                 ▾
               </span>
@@ -843,45 +899,12 @@ export function Composer({
             title="Model, access and effort"
             onClick={() => setSheet(true)}
           >
+            <AgentLogo agent={choice.agent} />
             {choice.model}
             <span className="picker-caret" aria-hidden="true">
               ▾
             </span>
           </button>
-
-          {/* Two different things, which is why they are two buttons.
-              The clip references a file that already lives on the MACHINE
-              running the agents — the agent opens it itself, so a whole file
-              never has to travel through the prompt. The picture button uploads
-              from the DEVICE in your hand, which is the only way to get a photo
-              off a phone. Pasting covers the same ground as the latter. */}
-          <button
-            className="picker-btn"
-            type="button"
-            title="Reference a file on the machine"
-            onClick={() => setFilePicker(true)}
-          >
-            <ClipIcon />
-          </button>
-          <button
-            className="picker-btn"
-            type="button"
-            title="Upload an image from this device"
-            onClick={() => fileRef.current?.click()}
-          >
-            <ImageIcon />
-          </button>
-          <input
-            ref={fileRef}
-            className="attach-input"
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={(e) => {
-              void attachFiles([...(e.target.files ?? [])]);
-              e.target.value = "";
-            }}
-          />
 
           {/* A shell in this project, for the things you would rather run than
               ask for. Next to the agent's own settings because it is the same
@@ -937,39 +960,93 @@ export function Composer({
           </button>
         </div>
 
-        {/* Phone only. The same options as the three pickers, one under the
-            other, because a sheet has the room a 360px bar does not. */}
         {sheet && (
           <>
             <div className="sheet-scrim" onClick={() => setSheet(false)} />
-            <div className="settings-sheet" role="dialog" aria-label="Chat settings">
-              <div className="sheet-group">
-                <div className="sheet-head">Model</div>
-                <ModelPicker
-                  choice={choice}
-                  onChoice={onChoice}
-                  missing={missing}
-                  noAgents={noAgents}
-                  started={!!started}
-                />
-              </div>
-
-              <div className="sheet-group">
-                <div className="sheet-head">Access</div>
-                <AccessList list={accessList} access={access} onPick={onAccess} />
-              </div>
-
-              <div className="sheet-group">
-                <div className="sheet-head">Effort</div>
-                <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
-              </div>
-
-              <button className="sheet-done" type="button" onClick={() => setSheet(false)}>
-                Done
-              </button>
-            </div>
+            <SettingsSheet
+              choice={choice}
+              onChoice={onChoice}
+              missing={missing}
+              noAgents={noAgents}
+              started={!!started}
+              accessList={accessList}
+              access={access}
+              onAccess={onAccess}
+              effort={effort}
+              onEffort={onEffort}
+              onDone={() => setSheet(false)}
+            />
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Phone only: the same options as the three pickers in the wide bar, stacked,
+ *  because a sheet has the room a 360px bar does not.
+ *
+ *  TWO parts, not one scrolling box. All three controls plus the hints that say
+ *  what each row does are taller than a phone, and Done used to sit at the end
+ *  of that scroll — so the one button that closes the sheet was the one thing
+ *  you could not see. The options scroll inside `.sheet-body`; `.sheet-foot`
+ *  does not move. The stylesheet also runs a tighter scale in here than the
+ *  desktop dropdowns use: padding gives way, never the hints.
+ */
+export function SettingsSheet({
+  choice,
+  onChoice,
+  missing,
+  noAgents,
+  started,
+  accessList,
+  access,
+  onAccess,
+  effort,
+  onEffort,
+  onDone,
+}: {
+  choice: ModelChoice;
+  onChoice: (m: ModelChoice) => void;
+  missing: (p: Provider) => boolean;
+  noAgents: boolean;
+  started: boolean;
+  accessList: { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
+  access: AccessLevel;
+  onAccess: (a: AccessLevel) => void;
+  effort: Effort;
+  onEffort: (e: Effort) => void;
+  onDone: () => void;
+}) {
+  return (
+    <div className="settings-sheet" role="dialog" aria-label="Chat settings">
+      <div className="sheet-body">
+        <div className="sheet-group">
+          <div className="sheet-head">Model</div>
+          <ModelPicker
+            choice={choice}
+            onChoice={onChoice}
+            missing={missing}
+            noAgents={noAgents}
+            started={started}
+          />
+        </div>
+
+        <div className="sheet-group">
+          <div className="sheet-head">Access</div>
+          <AccessList list={accessList} access={access} onPick={onAccess} />
+        </div>
+
+        <div className="sheet-group">
+          <div className="sheet-head">Effort</div>
+          <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
+        </div>
+      </div>
+
+      <div className="sheet-foot">
+        <button className="sheet-done" type="button" onClick={onDone}>
+          Done
+        </button>
       </div>
     </div>
   );
@@ -1407,12 +1484,11 @@ function short(n: number): string {
   return String(n);
 }
 
-function ImageIcon() {
+
+function PlusIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <circle cx="8.5" cy="8.5" r="1.5" />
-      <path d="m21 15-5-5L5 21" />
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
     </svg>
   );
 }
@@ -1426,13 +1502,6 @@ function PaperIcon() {
   );
 }
 
-function ClipIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21.4 11.05 12.25 20.2a5.5 5.5 0 0 1-7.78-7.78l9.2-9.19a3.67 3.67 0 0 1 5.18 5.18l-9.2 9.2a1.83 1.83 0 0 1-2.6-2.6l8.5-8.48" />
-    </svg>
-  );
-}
 
 function TerminalIcon() {
   return (

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Block } from "./chat";
-import { groupRows, groupTally, type Row, type Tool } from "./toolGroups";
+import { groupDiff, groupRows, groupTally, type Row, type Tool } from "./toolGroups";
 
 function tool(name: string, id = name + Math.random()): Block {
   return { kind: "tool", id, name, argsJson: "", args: {}, state: "done" };
@@ -37,8 +37,11 @@ describe("groupRows", () => {
     ]);
   });
 
-  it("keeps Write and Edit out of every group", () => {
-    // The example the rule was written from: Bash x5, Write x2, Bash x3.
+  it("folds an edit like any other call", () => {
+    // An edit used to stand alone AND break the run around it, which is what
+    // left the commonest turn there is — read, edit, read, edit — as a wall of
+    // single cards. The tally names the file and the row counts the change, so
+    // nothing about the edit is lost by folding it.
     const blocks = [
       ...Array.from({ length: 5 }, () => tool("Bash")),
       tool("Write"),
@@ -46,11 +49,42 @@ describe("groupRows", () => {
       ...Array.from({ length: 3 }, () => tool("Bash")),
     ];
     expect(shape(groupRows(blocks))).toEqual([
-      "Bash|Bash|Bash|Bash+Bash",
-      "Write",
-      "Edit",
-      "Bash|Bash+Bash",
+      "Bash|Bash|Bash|Bash|Bash|Write|Edit|Bash|Bash+Bash",
     ]);
+  });
+
+  it("folds the read-then-edit loop a turn is mostly made of", () => {
+    const blocks = [tool("Read"), tool("Edit"), tool("Edit"), tool("Read"), tool("Bash")];
+    expect(shape(groupRows(blocks))).toEqual(["Read|Edit|Edit|Read+Bash"]);
+  });
+
+  it("still leaves a failed edit where the reader can see it", () => {
+    const failed: Block = {
+      kind: "tool",
+      id: "boom",
+      name: "Edit",
+      argsJson: "",
+      args: {},
+      state: "error",
+    };
+    const blocks = [tool("Read"), tool("Edit"), failed, tool("Read"), tool("Edit"), tool("Read")];
+    expect(shape(groupRows(blocks))).toEqual(["Read", "Edit", "Edit", "Read|Edit+Read"]);
+  });
+
+  // Same reason a failed one is left out: the row it would fold into reports
+  // itself done, and a call the stop cut off is exactly the one call in the run
+  // that did not finish.
+  it("leaves the call a stop cut off where the reader can see it too", () => {
+    const cut: Block = {
+      kind: "tool",
+      id: "cut",
+      name: "Bash",
+      argsJson: "",
+      args: {},
+      state: "stopped",
+    };
+    const blocks = [tool("Read"), tool("Edit"), tool("Read"), cut];
+    expect(shape(groupRows(blocks))).toEqual(["Read|Edit+Read", "Bash"]);
   });
 
   it("mixes kinds in one group when they run together", () => {
@@ -89,6 +123,17 @@ describe("groupRows", () => {
       "Task",
       "Task",
       "Task",
+    ]);
+  });
+
+  it("never folds a skill away, because what follows it reads by its rules", () => {
+    const skill: Block = { kind: "tool", id: "s1", name: "Skill", argsJson: "", args: { skill: "ship" }, state: "done" };
+    expect(shape(groupRows([tool("Bash"), tool("Bash"), skill, tool("Bash"), tool("Bash")]))).toEqual([
+      "Bash",
+      "Bash",
+      "Skill",
+      "Bash",
+      "Bash",
     ]);
   });
 
@@ -142,33 +187,95 @@ describe("groupTally", () => {
     state: "done",
   });
 
+  const file = (name: string, file_path: string): Block => ({
+    kind: "tool",
+    id: name + file_path + Math.random(),
+    name,
+    argsJson: "",
+    args: { file_path },
+    state: "done",
+  });
+
   it("counts a shell group by the command that ran", () => {
     const tools = [bash("python3 x.py"), bash("cd web && ls"), bash("python3 y.py")] as Tool[];
     expect(groupTally(tools)).toEqual([
-      { label: "python3", count: 2 },
-      { label: "cd", count: 1 },
+      { label: "python3", count: 2, kind: "run" },
+      { label: "cd", count: 1, kind: "run" },
     ]);
   });
 
   it("keeps the subcommand for the tools whose first word says nothing", () => {
     const tools = [bash("git status"), bash("git status -s"), bash("pnpm test")] as Tool[];
     expect(groupTally(tools)).toEqual([
-      { label: "git status", count: 2 },
-      { label: "pnpm test", count: 1 },
+      { label: "git status", count: 2, kind: "run" },
+      { label: "pnpm test", count: 1, kind: "run" },
     ]);
   });
 
   it("reads past the environment a command was given", () => {
     expect(groupTally([bash("CI=true /usr/bin/python3 run.py")] as Tool[])).toEqual([
-      { label: "python3", count: 1 },
+      { label: "python3", count: 1, kind: "run" },
+    ]);
+  });
+
+  it("names the file a read or an edit went to, not the tool", () => {
+    // "Read ×3 · Edit ×4" is the one thing the row above already said. The
+    // file is what the reader cannot see anywhere else.
+    const tools = [
+      file("Read", "/Users/k/octiq/web/src/lib/chat.ts"),
+      file("Edit", "/Users/k/octiq/web/src/lib/toolGroups.ts"),
+    ] as Tool[];
+    expect(groupTally(tools)).toEqual([
+      { label: "chat.ts", count: 1, kind: "read" },
+      { label: "toolGroups.ts", count: 1, kind: "edit" },
+    ]);
+  });
+
+  it("counts one file once however it was touched, and calls it changed", () => {
+    // Read, edit, read again is one file being worked on, not two things. The
+    // chip takes the edit's colour, because a file that was CHANGED is not the
+    // same news as one that was only read.
+    const tools = [
+      file("Read", "/a/chat.ts"),
+      file("Edit", "/a/chat.ts"),
+      file("Read", "/a/chat.ts"),
+      file("Read", "/a/diff.ts"),
+    ] as Tool[];
+    expect(groupTally(tools)).toEqual([
+      { label: "chat.ts", count: 3, kind: "edit" },
+      { label: "diff.ts", count: 1, kind: "read" },
     ]);
   });
 
   it("counts everything else by the name of the tool", () => {
     const tools = [tool("Read"), tool("Read"), tool("Grep")] as Tool[];
     expect(groupTally(tools)).toEqual([
-      { label: "Read", count: 2 },
-      { label: "Grep", count: 1 },
+      { label: "Read", count: 2, kind: "read" },
+      { label: "Grep", count: 1, kind: "search" },
     ]);
+  });
+});
+
+describe("groupDiff", () => {
+  const write = (file_path: string, content: string): Block => ({
+    kind: "tool",
+    id: file_path + content,
+    name: "Write",
+    argsJson: "",
+    args: { file_path, content },
+    state: "done",
+  });
+
+  it("adds up what a folded run changed, so no edit is swallowed silently", () => {
+    const tools = [
+      write("/a/one.ts", "a\nb\nc\n"),
+      tool("Bash"),
+      write("/a/two.ts", "d\ne\n"),
+    ] as Tool[];
+    expect(groupDiff(tools)).toEqual({ added: 5, removed: 0, files: 2 });
+  });
+
+  it("says nothing when a run changed nothing", () => {
+    expect(groupDiff([tool("Bash"), tool("Read"), tool("Grep")] as Tool[])).toBeNull();
   });
 });

@@ -12,7 +12,7 @@
 // alternative, which is what this did before it knew about them, is a reply
 // where a subagent's thinking, tool calls and prose all read as the main
 // agent's own.
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -27,6 +27,8 @@ import { rehypeWordFade } from "../lib/wordfade";
 import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
 import { copyText } from "../lib/clipboard";
+import { clipMessage } from "../lib/clip";
+import { ProseLink } from "./ProseLink";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -120,7 +122,7 @@ const MarkdownBlock = memo(function MarkdownBlock({
     <Markdown
       remarkPlugins={[remarkGfm]}
       rehypePlugins={animate ? [rehypeWordFade] : []}
-      components={{ pre: CodeBlock }}
+      components={{ pre: CodeBlock, a: ProseLink }}
     >
       {closeFence(text)}
     </Markdown>
@@ -205,6 +207,61 @@ function Compacted() {
   );
 }
 
+/** What you said, cut down when it is long.
+ *
+ *  A pasted log or a whole file makes a bubble you have to scroll past every
+ *  time you come back to the conversation — and what you are coming back for
+ *  is the answer under it. So a long message shows its head and offers the
+ *  rest. Nothing is hidden for good: the button puts the whole thing back, and
+ *  a message that already fits is drawn exactly as before, with no button. */
+function UserText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const { head, clipped } = useMemo(() => clipMessage(text), [text]);
+
+  if (!clipped) return <Prose text={text} animate={false} />;
+
+  return (
+    <div className={`clip ${open ? "is-open" : "is-cut"}`}>
+      <Prose text={open ? text : head} animate={false} />
+      <button
+        className="clip-more"
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? "show less" : "show more"}
+      </button>
+    </div>
+  );
+}
+
+/** Where an answer stops, because the reader stopped it.
+ *
+ *  The agent reports a stop by injecting `[Request interrupted by user]` as a
+ *  user turn — a shape, not a speaker. Drawn as a bubble it reads as the reader
+ *  typing a bracketed sentence at their own agent, and drawn as nothing at all
+ *  the reply above simply trails off mid-sentence with no reason given. So it
+ *  is drawn as what it is: the line the conversation stops on, across the full
+ *  width, quiet enough to scroll past and clear enough to explain the silence
+ *  above it.
+ *
+ *  Muted, not red. Stopping is something the reader chose, not something that
+ *  went wrong. */
+function StopMark() {
+  return (
+    <div className="stopmark" role="separator">
+      <span className="stopmark-rule" aria-hidden="true" />
+      <span className="stopmark-label">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <rect x="5" y="5" width="14" height="14" rx="3" />
+        </svg>
+        You stopped this
+      </span>
+      <span className="stopmark-rule" aria-hidden="true" />
+    </div>
+  );
+}
+
 /** One TURN on screen.
  *
  *  An agent answers with several messages in a row — think, call a tool, think
@@ -214,13 +271,11 @@ function Compacted() {
 function TurnView({
   messages,
   kids,
-  stopped,
   last,
   busy,
 }: {
   messages: Message[];
   kids: Kids;
-  stopped?: boolean;
   /** The turn at the bottom — the only one a running agent can still add to. */
   last?: boolean;
   /** Whether the chat is working. A turn can only be waiting its turn while
@@ -267,9 +322,16 @@ function TurnView({
             them — and because a message whose words are "look at this" makes no
             sense until you have seen the picture it came with. */}
         <SentFiles files={files} />
-        <Blocks blocks={blocks} streaming={streaming} kids={kids} />
+        {/* Each message you sent is cut on its own — two long pastes in a row
+            are two messages, and one "show more" over both would open the pair.
+            Anything else in a user turn (there is nothing today) still goes the
+            ordinary way. */}
+        {role === "user" && blocks.every((b) => b.kind === "text") ? (
+          blocks.map((b, i) => <UserText key={i} text={(b as { text: string }).text} />)
+        ) : (
+          <Blocks blocks={blocks} streaming={streaming} kids={kids} />
+        )}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
-        {stopped && <div className="stopped">Stopped</div>}
         {queued && <div className="queued">queued</div>}
         {/* Copy, once the turn is over and there is prose worth taking.
             (The files the turn touched used to sit on this row too. They are a
@@ -491,14 +553,13 @@ export function MessageList({
     <div className="msgs" ref={scrollerRef}>
       <div className="msgs-inner" ref={innerRef}>
         {turns.map((turn, i) => (
-          <TurnView
-            key={turn[0].id}
-            messages={turn}
-            kids={kids}
-            stopped={!!stoppedAt && turn.some((m) => m.id === stoppedAt)}
-            last={i === turns.length - 1}
-            busy={busy}
-          />
+          <Fragment key={turn[0].id}>
+            <TurnView messages={turn} kids={kids} last={i === turns.length - 1} busy={busy} />
+            {/* Under the turn, not inside it: what it marks is where the answer
+                ENDS, and the reader's own next message reads differently once
+                they can see the one above it never finished. */}
+            {!!stoppedAt && turn.some((m) => m.id === stoppedAt) && <StopMark />}
+          </Fragment>
         ))}
         {busy && !messages.some((m) => m.streaming) && <div className="dots" aria-label="working" />}
         <div ref={endRef} />

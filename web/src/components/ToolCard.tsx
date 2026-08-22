@@ -15,8 +15,11 @@
 // watch rather than something to check.
 import { useState } from "react";
 import type React from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Block } from "../lib/chat";
 import { fileDiff } from "../lib/diff";
+import { parseSkillBrief } from "../lib/skillRun";
 import { toolDetail, toolLook } from "../lib/toolKind";
 import { DiffStat, DiffView } from "./DiffView";
 import { ToolIcon, ToolState } from "./ToolIcon";
@@ -80,7 +83,14 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
   // happening. It is NOT folded again when the run ends — a card closing itself
   // mid-read takes the paragraph out from under the reader.
   const [open, setOpen] = useState(() => isAgent && tool.state === "running");
-  const detail = toolDetail(tool.name, tool.args, isAgent);
+  // A skill's card is the skill, not the call. The prompt it put in front of
+  // the agent arrives a moment after the call answers (see `brief` on the
+  // block); once it has, the row says what the skill is FOR in its own words,
+  // and what it was called with moves into a chip beside the name.
+  const brief = isSkill && tool.brief ? parseSkillBrief(tool.brief) : null;
+  const called = toolDetail(tool.name, tool.args, isAgent);
+  const detail = isSkill ? (brief?.summary ?? "") : called;
+  const skillArgs = isSkill ? called : "";
   // Edit, Write and MultiEdit are the calls a reader actually wants to SEE,
   // and the only ones whose arguments are unreadable as arguments: two long
   // strings, one of which is the other with something changed. The card draws
@@ -105,6 +115,7 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
         </span>
         <span className="tool-name">{look.label}</span>
         {look.scope && <span className="tool-scope">{look.scope}</span>}
+        {skillArgs && <span className="tool-args">{skillArgs}</span>}
         {detail && (
           <span className="tool-detail">
             {/* The span reads right-to-left so a long path keeps its useful
@@ -121,6 +132,14 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
         {agent && (
           <span className="tool-steps">
             {agent.steps} step{agent.steps === 1 ? "" : "s"}
+          </span>
+        )}
+        {/* Beside the state, and not instead of it, because the two answer
+            different questions: the tick says the call went through, this says
+            how the work it started actually ended. */}
+        {tool.finish?.status && (
+          <span className="tool-finish" data-status={tool.finish.status}>
+            {tool.finish.status}
           </span>
         )}
         <ToolState state={tool.state} />
@@ -155,9 +174,24 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
               <DiffView diff={diff} />
             </>
           )}
+          {/* What the skill asked of the agent, as the markdown it was written
+              in. This is the card's whole reason to open: the arguments are
+              one word (the skill's name, already on the row) and the result is
+              one line ("Launching skill: …"), so neither is shown beside it. */}
+          {brief && (
+            <>
+              <div className="tool-label">
+                instructions
+                <span className="tool-note">{brief.dir}</span>
+              </div>
+              <div className="tool-brief prose">
+                <Markdown remarkPlugins={[remarkGfm]}>{brief.body}</Markdown>
+              </div>
+            </>
+          )}
           {/* The arguments of a file edit ARE the diff above, said twice as
               long, so they go only when there is no diff to say it better. */}
-          {!diff && argsText(tool) && (
+          {!diff && !brief && argsText(tool) && (
             <>
               <div className="tool-label">arguments</div>
               <pre className="tool-pre">{argsText(tool)}</pre>
@@ -165,11 +199,28 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
           )}
           {/* "The file has been updated successfully" under a drawing of the
               update is noise. A FAILED edit is the opposite: the reason it
-              failed is the only thing on the card worth reading. */}
-          {tool.result !== undefined && (!diff || tool.state === "error") && (
+              failed is the only thing on the card worth reading. A skill's
+              "Launching skill: x" is the same noise, and kept the same way:
+              only when the launch failed. */}
+          {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && (
             <>
               <div className="tool-label">{isAgent ? "report" : "result"}</div>
               <pre className="tool-pre">{tool.result}</pre>
+            </>
+          )}
+          {/* Last, because it is what happened last. The result above is the
+              answer the call gave the moment it started — "running in
+              background", an id — and this is the same work minutes later,
+              reported by the task itself. */}
+          {tool.finish && (
+            <>
+              <div className="tool-label">
+                finished
+                {tool.finish.outputFile && (
+                  <span className="tool-note">{tool.finish.outputFile}</span>
+                )}
+              </div>
+              <pre className="tool-pre">{tool.finish.summary}</pre>
             </>
           )}
         </div>

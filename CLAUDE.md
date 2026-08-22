@@ -177,6 +177,39 @@ emits `app-closing` so the frontend flushes every terminal's scrollback to disk,
 then `confirm_close` lets it through. A `CLOSE_FLUSH_TIMEOUT` (2.5s) fallback
 forces the close so a hung terminal can never make the app unclosable.
 
+### Themes (browser client)
+
+The client ships a theme chooser (top bar → gear → Settings). Themes are
+authored in **tweakcn / shadcn** format and pasted in **verbatim** as
+`web/src/lib/themes/<id>.css` — never hand-edited, so re-pasting an updated
+theme is a straight overwrite. Adding one is two steps: drop the file, add a
+line to `PASTED` in `web/src/lib/themeStore.ts`.
+
+- That format is not ours. `web/src/lib/theme.ts` **translates** its names
+  (`--primary`, `--card`, `--muted-foreground`) into the stylesheet's own
+  (`--accent`, `--bg-1`, `--fg-2`). Two traps it exists to handle: shadcn's
+  `accent` is a quiet hover tint, so `--accent` comes from **`primary`**; and
+  the pasted `muted` is sometimes darker than `card`, so the `bg-0/1/2` ladder
+  is built off `card`, never off `muted`. `--ok` / `--warn` have no shadcn
+  equivalent — they are picked from the theme's chart colours by hue, and
+  invented at the right hue when the theme has no green (Bubblegum has none).
+- **Themes set colours and corner radii only** — never fonts (the terminal
+  draws Menlo, and code in the chat should be the same shapes) and never the
+  drop shadow (the pasted ones are built for small light cards).
+- The terminal cannot read a `var()` — xterm hands its palette to WebGL. So
+  `web/src/lib/xtermTheme.ts` resolves the variables through a hidden element
+  **and then a 1×1 canvas**: computed style returns `oklab(…)`, which xterm's
+  colour parser does not understand.
+- Text that sits ON a fill uses `--accent-fg` / `--danger-fg`, not `#fff`. A
+  theme's accent can be a pale yellow, and white on it is unreadable.
+- **Dark only, by decision.** Only a pasted theme's `.dark` block is ever
+  applied; `styles.css` sets `color-scheme: dark` once and nothing overrides it.
+  A few colours are outside the theme system on purpose — the PDF viewer's white
+  page, the CodeMirror One Dark syntax palette, and the tool-icon `--tint` set,
+  which is a categorical palette rather than a semantic one.
+- `vite.config.ts` sets `test: { css: true }`. Without it vitest stubs CSS to an
+  empty string — `?raw` included — and every theme silently parses to nothing.
+
 ## Conventions & gotchas
 
 - **Code comments reference "card NN"** (e.g. "card 04 — Project mode"). The app
