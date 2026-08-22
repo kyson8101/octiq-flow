@@ -28,6 +28,7 @@ import sage from "./themes/sage.css?raw";
 import ultraviolet from "./themes/ultraviolet.css?raw";
 import clay from "./themes/clay.css?raw";
 import brutalism from "./themes/brutalism.css?raw";
+import neoBrutalism from "./themes/neo-brutalism.css?raw";
 import neumorphism from "./themes/neumorphism.css?raw";
 import liquidGlass from "./themes/liquid-glass.css?raw";
 import metronic from "./themes/metronic.css?raw";
@@ -59,6 +60,7 @@ const PASTED: Array<{ id: string; name: string; css: string }> = [
   { id: "ultraviolet", name: "Ultraviolet", css: ultraviolet },
   { id: "clay", name: "Clay", css: clay },
   { id: "brutalism", name: "Brutalism", css: brutalism },
+  { id: "neo-brutalism", name: "Neo Brutalism", css: neoBrutalism },
   { id: "neumorphism", name: "Neumorphism", css: neumorphism },
   { id: "liquid-glass", name: "Liquid Glass", css: liquidGlass },
   { id: "metronic", name: "Metronic", css: metronic },

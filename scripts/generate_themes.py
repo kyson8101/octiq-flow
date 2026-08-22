@@ -109,6 +109,17 @@ SPECS = [
      dict(bg=0.1350, sidebar=0.1550, card=0.1900, popover=0.2200,
           border=0.5400, input=0.5000, fg=0.9900, muted=0.2400, hover=0.2900)),
 
+    # The revival, not the original: neo-brutalism is a WEB style — flat black
+    # outlines, saturated pop colours, no gradients, no rounding. Where
+    # `brutalism` is concrete, this one is a sticker. The ground goes nearly
+    # black and the border nearly white, because the look is really about a
+    # hard outline around every box; width is not ours to set, so the edge is
+    # pushed as far up the lightness ladder as it will go instead. The accent
+    # is hot pink, and its label is black — that pairing IS the style.
+    ("neo-brutalism", "Neo Brutalism", 320, 0.006, (0.7400, 0.2200, 350), 0.0,
+     dict(bg=0.1200, sidebar=0.1400, card=0.1750, popover=0.2050,
+          muted=0.2300, hover=0.2800, border=0.7500, input=0.6600, fg=0.9950)),
+
     # Soft UI: one material, lit gently, everything close together. The whole
     # look is extruded shadow, which a theme cannot set — so what carries it
     # here is the tight surface ladder and the big radius.

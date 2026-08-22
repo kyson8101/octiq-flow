@@ -147,6 +147,7 @@ export function mapTokens(t: Tokens): Record<string, string> {
   const border = t["border"] ?? mix(fg, 20, bg);
   const dim = t["muted-foreground"] ?? mix(fg, 60, bg);
   const radius = toPx(t["radius"] ?? "0.5rem", 8);
+  const gap = Math.min(2, radius);
 
   return {
     "--bg-0": bg,
@@ -175,9 +176,13 @@ export function mapTokens(t: Tokens): Record<string, string> {
     "--danger": t["destructive"] ?? "#ff453a",
     "--danger-fg": t["destructive-foreground"] ?? "#fff",
 
-    "--r-sm": `${Math.max(2, radius - 2)}px`,
-    "--r-md": `${radius + 2}px`,
-    "--r-lg": `${radius + 6}px`,
+    // Three rungs a fixed gap apart — but the gap can never be wider than the
+    // radius itself, so a theme asking for 0 gets 0 on all three. Adding a
+    // flat 2px/6px used to leave Brutalism and Neon quietly rounded, which is
+    // the one thing a square-cornered theme is FOR.
+    "--r-sm": `${radius - gap}px`,
+    "--r-md": `${radius + gap}px`,
+    "--r-lg": `${radius + gap * 3}px`,
   };
 }
 

@@ -7400,3 +7400,31 @@ body.is-ultra .eff {
   font-weight: 500;
   padding-left: 1px;
 }
+
+/* ---- Neo Brutalism ----------------------------------------------------- */
+/* Themes carry colours and corner radii, and nothing else — see the note at
+   the top of `lib/theme.ts`. Neo-brutalism is not a palette though. It is a
+   thick hard outline and an unblurred offset shadow; without those the pink is
+   just pink, which is exactly how it looked. So this ONE theme also gets a
+   style block, keyed off the `data-theme` attribute `applyTheme` already sets.
+   It is small on purpose and it is NOT a pattern to copy — every other theme
+   stays pure colour, and the day a second style block appears is the day this
+   should become a real capability instead of a special case. */
+
+[data-theme="neo-brutalism"] {
+  /* Offset, no blur, full strength. A theme file may not say this; the
+     stylesheet may, for a theme it knows by name. */
+  --shadow: 4px 4px 0 var(--border);
+}
+
+/* Every border that already exists gets thicker — and only those. A
+   `border-width` on an element whose `border-style` is `none` draws nothing,
+   so this thickens the boxes that were already outlined and outlines nothing
+   new. `box-sizing: border-box` is global, so the extra pixel eats into the
+   padding rather than moving the box.
+
+   The terminal is left alone: xterm measures its pane to decide how many
+   columns fit, and a border it did not account for costs a column. */
+[data-theme="neo-brutalism"] *:not(.term, .term *) {
+  border-width: 2px;
+}

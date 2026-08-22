@@ -160,9 +160,13 @@ describe("Mono — a theme with no colour in it at all", () => {
     expect(parseOklch(semanticColor(MONO.dark, 145))!.c).toBeGreaterThanOrEqual(0.12);
   });
 
-  it("never lets a zero radius produce a negative one", () => {
-    expect(mapTokens(MONO.dark)["--r-sm"]).toBe("2px");
-    expect(mapTokens(MONO.dark)["--r-md"]).toBe("2px");
+  it("gives a zero-radius theme genuinely square corners", () => {
+    // Brutalism, Neo Brutalism and Neon all ask for 0. The ladder used to add
+    // its own 2px/6px on top, so a theme whose whole point was hard corners
+    // still drew rounded ones and nothing in the app was ever square.
+    expect(mapTokens(MONO.dark)["--r-sm"]).toBe("0px");
+    expect(mapTokens(MONO.dark)["--r-md"]).toBe("0px");
+    expect(mapTokens(MONO.dark)["--r-lg"]).toBe("0px");
   });
 });
 
