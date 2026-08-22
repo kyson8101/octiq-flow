@@ -49,6 +49,16 @@ use web_push::{ContentEncoding, SubscriptionInfo, VapidSignatureBuilder, WebPush
 /// is the same channel.
 const TTL: u32 = 4 * 60 * 60;
 
+/// Who is sending, as the VAPID `sub` claim.
+///
+/// Apple is the strict one here and it answers a bad value with a flat 403, no
+/// explanation: `mailto:octiqflow@localhost` was refused outright, because
+/// `localhost` is not a domain anyone could ever reach. The spec asks for a
+/// `mailto:` or `https:` URL identifying whoever operates the server, so the
+/// project's own page stands in — it is real, it resolves, and it carries no
+/// personal address to Apple or Google on every send.
+const CONTACT: &str = "https://github.com/kyson8101/octiq-flow";
+
 /// One browser that asked to be told. Exactly the shape
 /// `PushSubscription.toJSON()` produces, so the client posts it verbatim.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -273,13 +283,9 @@ pub fn notify(notice: Notice) {
 fn send_one(key: &str, sub: &Subscription, body: &[u8]) -> Result<(), String> {
     let info = SubscriptionInfo::new(sub.endpoint.clone(), sub.p256dh.clone(), sub.auth.clone());
 
-    // `sub` identifies who is sending, and push services reject a JWT without
-    // one. It never has to resolve — it is a contact of last resort for an
-    // operator whose server is misbehaving — but it must be a mailto: or https:
-    // URL, so the project's own address stands in for a real one.
     let mut sig = VapidSignatureBuilder::from_base64(key, &info)
         .map_err(|e| format!("bad VAPID key: {e}"))?;
-    sig.add_claim("sub", "mailto:octiqflow@localhost");
+    sig.add_claim("sub", CONTACT);
     let signature = sig.build().map_err(|e| format!("could not sign: {e}"))?;
 
     let mut builder = WebPushMessageBuilder::new(&info);
@@ -337,6 +343,52 @@ mod tests {
     #[test]
     fn two_generated_keys_differ() {
         assert_ne!(generate_key(), generate_key());
+    }
+
+    /// Send a REAL banner to every device subscribed on this machine.
+    ///
+    /// Ignored, because it talks to Apple and Google and needs a subscription
+    /// that only a browser can create. It exists because the failures here are
+    /// invisible from the inside: the encryption can be perfect and the send
+    /// still refused over a claim in the JWT, and the only thing that says so
+    /// is the push service's status code. Nothing else in this file can tell
+    /// you whether a push actually leaves the building.
+    ///
+    ///   cargo test --lib push::tests::send_a_real_push -- --ignored --nocapture
+    #[test]
+    #[ignore = "sends a real notification to a real device"]
+    fn send_a_real_push() {
+        let store = load();
+        assert!(
+            !store.key.is_empty(),
+            "no VAPID key yet — open the app first"
+        );
+        assert!(
+            !store.subs.is_empty(),
+            "nothing subscribed — turn Notifications on in Settings first"
+        );
+
+        let notice = Notice {
+            kind: "done".into(),
+            conversation_id: "test".into(),
+            title: "OctiqFlow".into(),
+            body: "If you can read this, push works.".into(),
+            tag: "octiq:test:done".into(),
+        };
+        let body = serde_json::to_vec(&notice).unwrap();
+
+        let mut sent = 0;
+        for sub in &store.subs {
+            let host = sub.endpoint.split('/').nth(2).unwrap_or("?");
+            match send_one(&store.key, sub, &body) {
+                Ok(()) => {
+                    println!("  {host}: accepted");
+                    sent += 1;
+                }
+                Err(e) => println!("  {host}: {e}"),
+            }
+        }
+        assert!(sent > 0, "every push service refused the send");
     }
 
     #[test]
