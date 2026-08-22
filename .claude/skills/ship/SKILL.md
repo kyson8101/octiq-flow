@@ -6,7 +6,10 @@ description: >-
   (1) commit every working-tree change to the current branch, (2) run the Rust
   and web test suites, (3) build the web client and the `octiq-server` binary,
   (4) ASK before restarting the backend service — the restart stops every live
-  agent chat — then install and restart it, and (5) print the URL to open.
+  agent chat INCLUDING this one — then restart it by touching
+  `~/.octiqflow/restart.request`, never by running `install-service.sh`, which
+  would kill its own shell mid-restart and leave the backend down, and (5) print
+  the URL to open.
   OctiqFlow is a SERVER plus a browser client; there is no desktop app step and
   no `.dmg`. Commits with a conventional message and no AI attribution; skips
   the commit step when the tree is already clean. Never pushes, never branches,
@@ -103,18 +106,37 @@ name how many agents are currently running, and wait for an answer:
 ps -ax -o command | grep -cE "claude -p|codex exec" | cat
 ```
 
+Before triggering it, **commit and push everything** — you will not get another
+turn. The restart kills this chat too: it is a grandchild of the server
+(`zsh ← claude -p ← octiq-server`), and nothing can keep it alive.
+
 Once they agree:
 
 ```bash
-./scripts/install-service.sh
+touch ~/.octiqflow/restart.request
 ```
 
-The script copies the built binary to `~/.octiqflow/bin/octiq-server`, rewrites
-the launchd plist, restarts the service, and waits for the port before it
-returns. It exits non-zero and says so if the backend is not listening.
+**Do NOT run `./scripts/install-service.sh` yourself.** Its `launchctl bootout`
+kills the shell running it — your own — halfway through, so the old server stops
+and the new one is never started. The backend ends up **down**, and the line
+that would have said so dies with the shell.
 
-If it does fail, the backend is **down**, not merely un-updated. Recover before
-reporting anything else:
+The trigger file is watched by a separate launchd job
+(`com.kyson.octiqflow.restarter`) which the dying server cannot touch. It runs
+`install-service.sh` to completion on your behalf: copies the built binary to
+`~/.octiqflow/bin/octiq-server`, signs it, rewrites the plist, restarts the
+service, and waits for the port. It re-reads the current bind address, so a
+server on `0.0.0.0` does not come back on loopback.
+
+Since this chat ends at the trigger, the next session verifies the outcome:
+
+```bash
+tail -5 ~/.octiqflow/logs/restart.log      # ends with "Backend is up."
+lsof -nP -iTCP:1421 -sTCP:LISTEN           # something is listening
+```
+
+If the log says the restart FAILED, the backend is **down**, not merely
+un-updated. Recover before reporting anything else:
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kyson.octiqflow.server.plist

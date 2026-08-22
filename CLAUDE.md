@@ -24,8 +24,17 @@ Run everything from the repo root. **Rust + Node + pnpm are required.**
 pnpm install                                  # the Tauri CLI (only root JS dependency)
 pnpm --dir web build                          # the client → web/dist
 cd src-tauri && cargo build --release --bin octiq-server   # the backend
-./scripts/install-service.sh                  # install + restart the launchd service
+touch ~/.octiqflow/restart.request            # restart the backend (see below)
 pnpm tauri dev                                # desktop window, only if you want one
+```
+
+The restart above is a touched file, not a script, and that is deliberate —
+see the bullet below. The two installers are run **once**, from a real terminal,
+and never again from inside an agent chat:
+
+```bash
+./scripts/install-service.sh                  # first install of the backend service
+./scripts/install-restart-agent.sh            # first install of the restart helper
 ```
 
 - **Deploying** is done by the `/ship` skill (commit → test → build the client
@@ -42,10 +51,33 @@ pnpm tauri dev                                # desktop window, only if you want
   client-only deploy leaves a new page calling commands an old binary does not
   have, which fails as `'<cmd>' is not available from a browser — it needs the
   desktop app`. Ship both.
-- **Restarting the service stops every live agent chat.** `install-service.sh`
-  boots the launchd job out and back in; every `claude -p` / `codex exec` the
-  server owns dies with it. Transcripts survive and can be resumed; the running
-  turns cannot. Ask before doing it.
+- **Restart the backend by touching a file, NOT by running the script.**
+
+  ```bash
+  touch ~/.octiqflow/restart.request        # restart
+  tail -f ~/.octiqflow/logs/restart.log     # what happened
+  ```
+
+  An agent chat is a **grandchild of the server it would restart** —
+  `install-service.sh ← zsh ← claude -p ← octiq-server` — so the `launchctl
+  bootout` halfway down that script kills the shell running the script. The old
+  server stops, the new one is never bootstrapped, and the backend is left
+  **down**, with the line that would have said so dying too. Check with
+  `ps -o pid=,ppid=,comm= -p <pid>` walked up to PID 1 if you doubt it.
+
+  The trigger file is watched by a **second launchd job**
+  (`com.kyson.octiqflow.restarter`, installed once by
+  `scripts/install-restart-agent.sh`) that the dying server cannot touch, so the
+  restart always runs to the end. It re-reads the bind address from the running
+  plist, so a server deliberately put on `0.0.0.0` does not come back on
+  loopback. Reinstall it only if this repo MOVES — the path is baked into its
+  plist.
+
+- **Restarting stops every live agent chat, including the one doing it.** Every
+  `claude -p` / `codex exec` the server owns dies with it, and nothing can save
+  the chat that asked — it is a child of what is being restarted. Transcripts
+  survive and can be resumed; the running turns cannot. **Ask before doing it,
+  and commit and push first**, because you do not get another turn afterwards.
 - **Rust tests** (inline `#[cfg(test)]` in several modules): `cd src-tauri &&
   cargo test`.
 - **Web tests**: `cd web && pnpm test` (vitest, node environment, no jsdom).
