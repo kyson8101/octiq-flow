@@ -231,13 +231,14 @@ export type Seat = {
   provider?: string;
 };
 
-/** Whether a chat is a room, and who is in it. Mirrors `chat_room::RoomView`.
+/** Who is in a chat. Mirrors `chat_room::RoomView`.
  *
- *  `open` is not the same question as "are there seats". Rooms live in the
- *  backend's memory, so a restarted server has forgotten every one while this
- *  browser still has the switch drawn on from `localStorage` — and an empty
- *  seat list alone cannot tell that from a room nobody has joined. */
-export type RoomView = { open: boolean; seats: Seat[] };
+ *  Card 82 removed `open`. There used to be two questions — "is this a room" and
+ *  "who is in it" — kept in two places that could disagree: the browser stored
+ *  the mode on the conversation, the backend held rooms in memory and forgot
+ *  them on restart. With no mode there is one question, and this is the whole
+ *  answer to it: a chat is a group when this list is not empty. */
+export type RoomView = { seats: Seat[] };
 
 export type Message = {
   id: string;

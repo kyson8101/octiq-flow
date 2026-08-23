@@ -20,7 +20,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import type { RoundState } from "./components/RoundBar";
-import { roomSync } from "./lib/roomSync";
 import {
   addUserTurn,
   emptyChat,
@@ -59,6 +58,7 @@ import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail } from "./components/AgentRail";
 import { Todos } from "./components/Todos";
 import { latestTodos } from "./lib/todos";
+import { roomCount } from "./lib/roomCount";
 import { useMedia, WIDE } from "./lib/media";
 import { MessageList } from "./components/MessageList";
 import {
@@ -1307,10 +1307,10 @@ export default function App() {
       // chat back moments after it was removed.
       forgetIndexEntry(id);
       bridge.invoke("chat_index_remove", { id, key: keyFor(id) }).catch(() => {});
-      // The room goes with the chat. Closing it on the backend empties its
-      // seats; leaving it would hold a room, and everyone in it, for the life
-      // of the process on behalf of a conversation that no longer exists.
-      bridge.invoke("chat_set_room", { key: keyFor(id), open: false }).catch(() => {});
+      // The room goes with the chat. Everyone in it is ended and the record
+      // dropped; leaving it would hold a room, and every process in it, for the
+      // life of the server on behalf of a conversation that no longer exists.
+      bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
       delete seen.current[keyFor(id)];
       setConversations((prev) => {
         const list = prev.filter((c) => c.id !== id);
@@ -1678,141 +1678,61 @@ export default function App() {
    *  permissions off part-way, and says so — so `restartForAccess` is still
    *  there for the ones that cannot. Nothing running is the easy case: the next
    *  message starts an agent on the new level anyway. */
-  // Card 66 — is this chat a room, and who is in it.
+  // Card 66 — who is in this chat. Card 82 — and that is the whole question.
   //
-  // The switch is stored on the CONVERSATION (it must survive a reload, the
-  // same way the model and the permission do). The seat list is the BACKEND's,
-  // held in memory there, so it is asked for rather than remembered — a
-  // restarted server has forgotten every room while this browser still has the
-  // switch drawn on, and `chat_room` answering `open: false` is how that shows.
-  const room = conversations.find((c) => c.id === conversationId)?.room ?? false;
+  // There is no stored mode any more. A chat is a group when somebody else is
+  // sitting in it, so the seat list is both the roster and the answer to "is
+  // this a group" — one fact, in one place, which is what stops the two
+  // disagreeing after a reload or a restart.
   const [seats, setSeats] = useState<Record<string, Seat[]>>({});
   // Who the NEXT message is for, per conversation. `null` is the whole room,
   // which is where every message has always gone — so a chat that never opens
   // a room never leaves this state.
   const [sendTo, setSendTo] = useState<Record<string, string | null>>({});
   const mySeats = (conversationId && seats[conversationId]) || [];
+  const room = mySeats.length > 0;
+  // Card 84 — the number at the top. Null in an ordinary chat, which is what
+  // keeps this off every chat in the app.
+  const seatCount = roomCount(mySeats.length);
   const myTarget = (conversationId && sendTo[conversationId]) || null;
   // A seat that has been removed cannot stay chosen, or the next message would
   // be refused by a backend that no longer knows the name.
   const target = mySeats.some((s) => s.id === myTarget) ? myTarget : null;
 
-  /** Ask the backend who is in this room — and settle which of us is right
-   *  about whether it IS one.
+  /** Ask the backend who is in this room.
    *
-   *  The browser remembers the mode on the conversation; the backend holds rooms
-   *  in memory and forgets them on restart. Both can be ahead of the other, and
-   *  both happened: a room opened outside the client read as "single chat" on
-   *  the next reload, and a restart left the browser offering a room that was
-   *  gone. `chat_room` answers `open` for exactly this, and this is where it is
-   *  finally used. */
+   *  Card 82 deleted the other half of this. It used to reconcile the browser's
+   *  stored mode against the backend's, because each could be ahead of the other
+   *  and both happened in practice. With the mode gone there is nothing to
+   *  reconcile: the seat list is the only answer, and it comes from here. */
   const refreshSeats = useCallback(async (id: string) => {
     try {
       const view = (await bridge.invoke("chat_room", { key: keyFor(id) })) as RoomView;
       setSeats((prev) => ({ ...prev, [id]: view.seats }));
-
-      const mine = loadConversations().find((c) => c.id === id)?.room ?? false;
-      const sync = roomSync(mine, view.open);
-      if (sync.do === "adopt") {
-        setConversations((prev) => {
-          const next = prev.map((c) => (c.id === id ? { ...c, room: true } : c));
-          saveConversations(next);
-          return next;
-        });
-      } else if (sync.do === "reassert") {
-        // The person asked for a room; a server restart is not a decision to
-        // undo that. The SEATS are genuinely gone with their processes, and
-        // nothing here pretends otherwise — only the mode comes back.
-        await bridge.invoke("chat_set_room", { key: keyFor(id), open: true });
-      }
     } catch {
       // A backend that cannot answer leaves the list alone rather than
       // emptying it — an empty rail would read as "everyone left".
     }
   }, []);
 
-  // Who is in the room of the chat now on screen.
+  // Who is in the chat now on screen.
   //
-  // Rooms live in the BACKEND's memory, so the browser cannot know them from
-  // `localStorage` the way it knows the switch. Without this, opening a chat
-  // that already has seats showed an empty room until you touched the switch —
-  // the switch came back and the people in it did not.
+  // The seat list is the BACKEND's — nothing about a room is stored in this
+  // browser (card 82), so opening a chat means asking. Without this, a chat that
+  // already had seats in it would open looking like an ordinary one until
+  // something else happened to ask.
   useEffect(() => {
     if (!conversationId) return;
     void refreshSeats(conversationId);
   }, [conversationId, refreshSeats]);
-
-  const toggleRoom = useCallback(
-    async (open: boolean) => {
-      if (!conversationId) return;
-      const id = conversationId;
-      // Already there — the strip fires on every click, including the current
-      // mode, so that a pending confirmation is the caller's to decide about.
-      const now = conversations.find((c) => c.id === id)?.room ?? false;
-      if (now === open) return;
-
-      // Card 76 — both directions ask, and they ask different things.
-      //
-      // Turning it ON sends nothing anywhere by itself; adding an outside seat
-      // is the risky act and asks separately (card 72). Going BACK is the
-      // destructive one, and the question has to name all three things it
-      // destroys — while NOT implying the fourth, because the transcript keeps
-      // every seat's message under its name and no switch can un-say them.
-      const seatCount = (seats[id] ?? []).length;
-      const ok = await confirm(
-        open
-          ? {
-              title: "Turn this into a group chat?",
-              body:
-                "You can add other agents to it, ask them all in turn, and see " +
-                "which of them said what. Nothing is sent anywhere until you add one.",
-              confirmLabel: "Turn on",
-            }
-          : {
-              title: "Go back to a single chat?",
-              body:
-                seatCount > 0
-                  ? `This ends ${seatCount === 1 ? "the agent" : `all ${seatCount} agents`} ` +
-                    "in the room, takes them out of it, and forgets what was said so " +
-                    "nobody added later is shown it. What they already said stays in " +
-                    "this conversation."
-                  : "This closes the room and forgets what was said in it. What was " +
-                    "already said stays in this conversation.",
-              confirmLabel: "Go back",
-              danger: true,
-            },
-      );
-      if (!ok) return;
-      setConversations((prev) => {
-        const next = prev.map((c) => (c.id === id ? { ...c, room: open } : c));
-        saveConversations(next);
-        return next;
-      });
-      try {
-        await bridge.invoke("chat_set_room", { key: keyFor(id), open });
-      } catch {
-        // The switch is the user's answer and stays where they put it. The
-        // backend is re-told on the next thing that needs it.
-      }
-      // Closing a room empties it on the backend, so the list is re-read
-      // either way rather than assumed.
-      void refreshSeats(id);
-    },
-    [conversationId, refreshSeats, conversations, seats, confirm],
-  );
 
   const addSeat = useCallback(
     async (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => {
       if (!conversationId) return;
       const id = conversationId;
       try {
-        // Say it is a room FIRST. The switch is written optimistically and kept
-        // even when its own call failed, and the backend forgets every room it
-        // had when it restarts — so by the time someone adds a seat, this
-        // browser can be the only one that still thinks this is a room. One
-        // idempotent call closes both gaps, and card 67 needs the same thing
-        // before a seat can speak.
-        await bridge.invoke("chat_set_room", { key: keyFor(id), open: true });
+        // Card 82 — nothing to open first. This call IS what makes the chat a
+        // room, and the backend creates the room around the seat.
         await bridge.invoke("chat_add_agent", {
           key: keyFor(id),
           seat: {
@@ -2044,6 +1964,26 @@ export default function App() {
             rendered once, in one place or the other, rather than twice with one
             hidden: the meter polls an endpoint that rate-limits per account. */}
         {wide && viewSwitch}
+
+        {/* Card 84 — how many agents are in this chat. Card 82 took away the
+            mode switch, and with it the only thing on screen that said a chat
+            was a group before anybody had spoken.
+
+            READ ONLY, unlike everything else on this bar. The controls for who
+            is in the room live in the composer and stay there — the user was
+            explicit about that ("my dialog should only came from composer
+            input"), and a second way in from up here would be a second thing to
+            keep in step with the first. */}
+        {seatCount && (
+          <span className="topbar-room" title={seatCount.label} aria-label={seatCount.label}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="9" cy="8" r="3.2" />
+              <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
+              <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
+            </svg>
+            {seatCount.total}
+          </span>
+        )}
 
         {/* The plan: a count on the bar, the list one tap under it. */}
         <Todos todos={todos} />
@@ -2340,7 +2280,6 @@ export default function App() {
             onTarget={(seatId) =>
               conversationId && setSendTo((prev) => ({ ...prev, [conversationId]: seatId }))
             }
-            onRoom={toggleRoom}
             onAddSeat={addSeat}
             onRemoveSeat={removeSeat}
             cwd={project?.primary_path ?? ""}

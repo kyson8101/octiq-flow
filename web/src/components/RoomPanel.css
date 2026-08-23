@@ -1,9 +1,9 @@
-/* Card 66 — the room switch and its seat list, inside the settings sheet.
+/* Card 66 — who is in this chat, and how somebody else gets in, inside the
+   settings sheet.
 
    In its own file rather than styles.css for the same reason AgentRail.css is:
-   so it reads next to the component it dresses. Everything here is drawn ONLY
-   when the switch is on — there are no "off" styles, because off means the
-   markup is absent rather than dimmed. */
+   so it reads next to the component it dresses. Card 82 removed the switch this
+   used to sit under, so all of it is drawn in every chat. */
 
 .room-body {
   display: flex;

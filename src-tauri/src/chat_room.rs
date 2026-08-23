@@ -18,10 +18,21 @@
 //!
 //! ## The one rule everything here serves
 //!
-//! **A chat that is not a room must be byte-for-byte the chat that shipped
-//! before rooms existed.** That is why a room is ABSENT from the map rather
-//! than present-and-closed, why a host's events are never touched on their way
-//! out, and why `add_seat_impl` refuses rather than quietly opening a room.
+//! **A chat with nobody else in it must be byte-for-byte the chat that shipped
+//! before rooms existed.** That is why a chat with no seats reports none, why a
+//! host's events are never touched on their way out, and why nothing here draws
+//! or spawns anything until somebody sits down.
+//!
+//! ## A seat is what makes a room (card 82)
+//!
+//! There is no switch. Room mode used to be a thing you turned on before you
+//! could do anything, and it asked you to confirm in both directions — two steps
+//! to reach one action. Now a chat is a room when somebody is sitting in it, and
+//! the last one out leaves an ordinary chat behind.
+//!
+//! The bookkeeping OUTLIVES the last seat, though, and that is deliberate: a
+//! seat's id becomes its session key, so handing `s1` out twice would sit a
+//! brand-new agent down in front of the departed one's transcript.
 //!
 //! Prior art for the shape of a room — who sits at it, what each seat is for,
 //! and why the seat that cannot see the project is the most valuable one there
@@ -85,7 +96,7 @@ pub enum SeatKind {
 /// case — spawning one on `add` would leave idle agents holding memory for a
 /// conversation that may never involve them. Card 67 starts the process on the
 /// first message.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Seat {
     /// Ours, never the browser's. It becomes part of a session key, so it is
     /// generated file-safe rather than validated after the fact.
@@ -93,12 +104,16 @@ pub struct Seat {
     /// What the user sees on the message and in the rail.
     pub name: String,
     pub agent: ChatAgent,
+    #[serde(default)]
     pub model: Option<String>,
     /// What this seat was added FOR, in the user's own words. Free text: it is
     /// shown to the user and given to the seat, never parsed.
+    #[serde(default)]
     pub role: Option<String>,
+    #[serde(default)]
     pub context: ContextMode,
     /// Whether there is a process behind this seat, or only an HTTP call.
+    #[serde(default)]
     pub kind: SeatKind,
     /// How much had been said in this room when this seat arrived.
     ///
@@ -106,6 +121,7 @@ pub struct Seat {
     /// backlog. WhatsApp's rule, borrowed because it is the one nobody has to
     /// be told, which matters most for the seat whose whole value is what it
     /// has NOT seen.
+    #[serde(default)]
     pub joined_at: usize,
     /// Which service answers for an ON-DEMAND seat — `"deepseek"`, and more
     /// later. Absent for a resident seat, which is answered by its own process.
@@ -113,7 +129,7 @@ pub struct Seat {
     /// Deliberately NOT folded into `agent`. That field is the allowlist of
     /// binaries this app may SPAWN, and putting a name there that is not a
     /// program would put it one bug away from being executed.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 }
 
@@ -156,17 +172,29 @@ impl NewSeat {
     }
 }
 
-/// A chat that has been opened as a room, and who is sitting in it.
+/// Who is sitting in a chat.
 ///
-/// Absent from the map entirely for an ordinary chat — which is what makes "a
-/// chat with room mode off is byte-for-byte the chat that exists today" true by
-/// construction rather than by remembering to check a flag.
-#[derive(Default)]
+/// Absent from the map for a chat nobody has ever joined — which is what makes
+/// "a chat with nobody else in it is byte-for-byte the chat that exists today"
+/// true by construction rather than by remembering to check a flag.
+///
+/// It OUTLIVES the last seat, holding nothing but `next`. Since card 82 the
+/// room is not opened or closed, so this entry is no longer the answer to "is
+/// this a group" — the seat list is. What it still answers is "which id comes
+/// next", and getting that wrong sits a new agent in front of a departed one's
+/// transcript.
+#[derive(Default, Serialize, Deserialize)]
 pub(crate) struct Room {
+    #[serde(default)]
     seats: Vec<Seat>,
     /// Counts up for the life of the room, so a removed seat's id is never
     /// handed out again. Reusing one would attach a dead seat's messages to a
     /// live seat on a client that had not caught up.
+    ///
+    /// Saved with the seats (card 83). A restart that restored the people but
+    /// reset this would hand `s1` out a second time, sitting a fresh agent down
+    /// in front of the first one's transcript.
+    #[serde(default)]
     next: u64,
 }
 
@@ -254,32 +282,6 @@ pub fn target_impl(manager: &ChatManager, key: &str, to: Option<&str>) -> Result
     Ok(Target::Seat(seat.clone()))
 }
 
-/// Turn room mode on or off for a chat.
-///
-/// Turning it OFF empties the room. A closed room that quietly kept its seats
-/// would bring them all back on the next flick of the switch, which is not what
-/// "off" looks like to the person who turned it off.
-/// Returns the session key of every seat that was in it, so the caller can end
-/// their processes. A seat is a running agent once it has spoken, and a room
-/// that forgot its seats while they kept running would defeat `MAX_SEATS`
-/// entirely: close and reopen eight times and there are sixty-four of them.
-pub fn set_room_impl(manager: &ChatManager, key: &str, open: bool) -> Result<Vec<String>, String> {
-    let mut rooms = manager.rooms.lock().map_err(|e| e.to_string())?;
-    if open {
-        rooms.entry(key.to_string()).or_default();
-        return Ok(Vec::new());
-    }
-    Ok(rooms
-        .remove(key)
-        .map(|room| {
-            room.seats
-                .iter()
-                .map(|s| seat_session_key(key, &s.id))
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
 /// How many seats one room may hold.
 ///
 /// A person clicking a button was never going to reach this. The host AGENT
@@ -292,11 +294,6 @@ pub fn set_room_impl(manager: &ChatManager, key: &str, open: bool) -> Result<Vec
 /// that hurts.
 const MAX_SEATS: usize = 8;
 
-/// Add a seat to a room. Refused when the chat is not a room.
-///
-/// The refusal is the BACKEND's. The client hides the control when room mode is
-/// off, but a hidden button is a decision about drawing, not about what may
-/// happen — and this is the one place that can actually hold the line.
 /// Add a seat that joined at the START of the room.
 ///
 /// Tests only, since card 77. Production goes through `add_seat_at`, because
@@ -324,9 +321,9 @@ pub fn add_seat_at(
         return Err("a seat needs a name".into());
     }
     let mut rooms = manager.rooms.lock().map_err(|e| e.to_string())?;
-    let room = rooms
-        .get_mut(key)
-        .ok_or("this chat is not a room, so it cannot take a seat")?;
+    // Card 82 — this is what makes the chat a room. There is nothing to open
+    // first and nothing to refuse: sitting down IS the act.
+    let room = rooms.entry(key.to_string()).or_default();
     if room.seats.len() >= MAX_SEATS {
         return Err(format!("a room holds at most {MAX_SEATS} seats"));
     }
@@ -354,9 +351,13 @@ pub fn add_seat_at(
     Ok(seat)
 }
 
-/// Remove one seat. A room that is not open, or a seat that is not in it, is
-/// not an error worth shouting about — both mean "it is not there", which is
-/// what the caller wanted.
+/// Remove one seat. A chat with no room, or a seat that is not in it, is not an
+/// error worth shouting about — both mean "it is not there", which is what the
+/// caller wanted.
+///
+/// The room's own entry is LEFT BEHIND when the last seat goes, holding nothing
+/// but the counter that names the next seat. It costs a few bytes and it is what
+/// stops a new seat inheriting a departed one's session.
 /// Returns the session key of what was removed — empty when it was not there.
 /// Dropping the record alone would leave the agent running.
 pub fn remove_seat_impl(
@@ -377,38 +378,126 @@ pub fn remove_seat_impl(
     })
 }
 
-/// A room as the client needs to see it: whether it is one at all, and who is in
-/// it.
+// ---- Card 83: the roster outlives the process ---------------------------
+//
+// Rooms live in a `HashMap` in memory, so a backend restart used to empty every
+// one of them. Before card 82 that read as a mode reverting; with no mode, it is
+// a group chat silently becoming an ordinary one. Asked directly, the user chose
+// to have them brought back.
+//
+// **What comes back is the ROSTER, and that is enough.** A seat has no
+// long-lived process to restore: it is spawned when it is asked and resumes its
+// own transcript, so a restored seat starts a process again the next time
+// somebody puts something to it, and recalls its own past when it does.
+//
+// **What does NOT come back is the discussion.** `round::Rounds` is in memory
+// too and is not written anywhere. A restored seat's `joined_at` therefore has
+// nothing behind it, and what it can see begins at the restart. That is stated
+// rather than papered over: bringing the people back without their conversation
+// is honest, and inventing one for them would not be.
+
+/// Where the roster is kept: `~/.octiqflow/chat-rooms.json`.
 ///
-/// `open` is not the same question as "are there seats", and the difference
-/// matters after a restart. Rooms live in memory, so a backend that has been
-/// restarted has forgotten every one of them — while the browser still has the
-/// switch drawn on, from `localStorage`. An empty seat list alone cannot tell
-/// "a room nobody has joined yet" from "a room this backend no longer knows
-/// about"; `open` can.
+/// The fixed `~/.octiqflow` path rather than the Tauri app-data dir, like the
+/// agent-session map and for the same reason — this file is meant to be findable
+/// without knowing a bundle id.
+pub fn rooms_path() -> Option<std::path::PathBuf> {
+    Some(
+        crate::paths::home_dir()?
+            .join(".octiqflow")
+            .join("chat-rooms.json"),
+    )
+}
+
+/// Write every room to disk.
+///
+/// Called after each change to a roster rather than on a timer: the change we
+/// must not lose is the one made seconds before a restart, and a timer is
+/// exactly what loses that one.
+pub fn save_rooms(manager: &ChatManager, path: &std::path::Path) -> Result<(), String> {
+    let rooms = manager.rooms.lock().map_err(|e| e.to_string())?;
+    // A chat whose last seat left is bookkeeping, not a room. It is kept in
+    // memory for its counter (see `Room`) and left out of the file, so the file
+    // does not grow one entry per chat ever opened.
+    let keep: std::collections::HashMap<&String, &Room> =
+        rooms.iter().filter(|(_, r)| !r.seats.is_empty()).collect();
+    let text = serde_json::to_string_pretty(&keep).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
+/// Read the rooms back, or start with none.
+///
+/// Best-effort in every direction. A missing file is an ordinary first run; a
+/// half-written one is a reason to start with no rooms and never a reason the
+/// server does not start.
+pub fn load_rooms(manager: &ChatManager, path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(saved) = serde_json::from_str::<std::collections::HashMap<String, Room>>(&text) else {
+        return;
+    };
+    let Ok(mut rooms) = manager.rooms.lock() else {
+        return;
+    };
+    for (key, room) in saved {
+        rooms.insert(key, room);
+    }
+}
+
+/// Write the roster wherever it lives, and say nothing if it cannot be written.
+///
+/// A room that could not be saved is still a room for as long as this process
+/// runs. Refusing to seat somebody because a file was not writable would break
+/// the working case to protect the restart case.
+pub(crate) fn remember_rooms(manager: &ChatManager) {
+    if let Some(path) = rooms_path() {
+        let _ = save_rooms(manager, &path);
+    }
+}
+
+/// The chat is gone, so the room goes with it.
+///
+/// Card 82 removed "close the room" as something a person does — a room empties
+/// a seat at a time now. This is the other thing that used to do: dropping the
+/// whole room because the CONVERSATION it belonged to has been deleted. Without
+/// it the entry, and every process in it, would live for the rest of the
+/// server's life on behalf of a chat that no longer exists.
+///
+/// Returns the session key of everyone who was in it, so the caller can end
+/// them. Dropping the record alone would leave the agents running.
+pub fn forget_room_impl(manager: &ChatManager, key: &str) -> Result<Vec<String>, String> {
+    let mut rooms = manager.rooms.lock().map_err(|e| e.to_string())?;
+    Ok(rooms
+        .remove(key)
+        .map(|room| {
+            room.seats
+                .iter()
+                .map(|s| seat_session_key(key, &s.id))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// A room as the client needs to see it: who is in it.
+///
+/// Card 82 removed `open`. There used to be two questions here — "is this a
+/// room" and "who is in it" — and after a restart they could disagree, because
+/// rooms live in memory and the browser kept the switch in `localStorage`. With
+/// no switch there is one question, and the seat list is the whole answer.
 #[derive(Debug, Clone, Serialize)]
 pub struct RoomView {
-    pub open: bool,
     pub seats: Vec<Seat>,
 }
 
 /// The Tauri-free half of `chat_room`.
-///
-/// ONE lock for both halves. Taking it twice would let a `set_room_impl(false)`
-/// land in the gap and produce `open: true, seats: []` — which is the wrong
-/// answer to the exact question this struct exists to answer, and a legal-looking
-/// one, so nothing downstream could tell it was torn.
 pub fn room_impl(manager: &ChatManager, key: &str) -> Result<RoomView, String> {
     let rooms = manager.rooms.lock().map_err(|e| e.to_string())?;
-    Ok(match rooms.get(key) {
-        Some(room) => RoomView {
-            open: true,
-            seats: room.seats.clone(),
-        },
-        None => RoomView {
-            open: false,
-            seats: Vec::new(),
-        },
+    Ok(RoomView {
+        seats: rooms.get(key).map(|r| r.seats.clone()).unwrap_or_default(),
     })
 }
 
@@ -450,22 +539,6 @@ pub(crate) fn end_seats(manager: &ChatManager, keys: Vec<String>) {
     }
 }
 
-/// Turn room mode on or off for a chat.
-#[tauri::command]
-pub fn chat_set_room(
-    manager: State<Arc<ChatManager>>,
-    rounds: State<Arc<crate::round::Rounds>>,
-    key: String,
-    open: bool,
-) -> Result<(), String> {
-    let ended = set_room_impl(&manager, &key, open)?;
-    end_seats(&manager, ended);
-    if !open {
-        crate::round::forget_room(&rounds, &key);
-    }
-    Ok(())
-}
-
 /// Add a seat to a room.
 #[tauri::command]
 pub fn chat_add_agent(
@@ -477,18 +550,51 @@ pub fn chat_add_agent(
     // Card 77 — where this seat came in. The command layer is the one place
     // that can see both the seats and the discussion record.
     let joined_at = rounds.said_so_far(&key);
-    add_seat_at(&manager, &key, seat, joined_at)
+    let seat = add_seat_at(&manager, &key, seat, joined_at)?;
+    // Card 83 — written after the change, not on a timer. The change we must
+    // not lose is the one made seconds before a restart, and a timer is exactly
+    // what loses that one.
+    remember_rooms(&manager);
+    Ok(seat)
 }
 
 /// Take a seat back out of a room.
 #[tauri::command]
 pub fn chat_remove_agent(
     manager: State<Arc<ChatManager>>,
+    rounds: State<Arc<crate::round::Rounds>>,
     key: String,
     seat_id: String,
 ) -> Result<(), String> {
     let ended = remove_seat_impl(&manager, &key, &seat_id)?;
     end_seats(&manager, ended);
+    remember_rooms(&manager);
+    // Card 82 — the last one out takes the discussion with them. See
+    // `forget_room`: a record nobody left in the room remembers having is worse
+    // than no record.
+    if is_empty(&manager, &key)? {
+        crate::round::forget_room(&rounds, &key);
+    }
+    Ok(())
+}
+
+/// Is there nobody left in this chat? Read through `room_impl` so there is one
+/// answer to "who is in it", not two that can drift.
+pub(crate) fn is_empty(manager: &ChatManager, key: &str) -> Result<bool, String> {
+    Ok(room_impl(manager, key)?.seats.is_empty())
+}
+
+/// The chat has been deleted, so empty its room and end everyone in it.
+#[tauri::command]
+pub fn chat_forget_room(
+    manager: State<Arc<ChatManager>>,
+    rounds: State<Arc<crate::round::Rounds>>,
+    key: String,
+) -> Result<(), String> {
+    let ended = forget_room_impl(&manager, &key)?;
+    end_seats(&manager, ended);
+    remember_rooms(&manager);
+    crate::round::forget_room(&rounds, &key);
     Ok(())
 }
 
@@ -512,21 +618,60 @@ mod room_tests {
     // ---- card 66: the room ----------------------------------------------
 
     #[test]
-    fn a_chat_is_not_a_room_until_it_is_opened_as_one() {
+    fn an_ordinary_chat_becomes_a_room_by_someone_sitting_down() {
+        // Card 82. There is no switch to throw first: a chat is a room when
+        // somebody is in it, and adding the first seat is what puts them there.
         let m = ChatManager::default();
-        // Room mode is OFF by default, and the refusal is the backend's, not
-        // just the UI hiding a button: a client that calls this anyway on an
-        // ordinary chat must not quietly turn it into a room.
-        let err = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex))
-            .expect_err("a closed chat must refuse a seat");
-        assert!(err.contains("not a room"), "unhelpful refusal: {err}");
+        assert!(
+            seats_of(&m, "chat-a").is_empty(),
+            "a fresh chat holds nobody"
+        );
+
+        add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex))
+            .expect("an ordinary chat takes a seat");
+
+        assert_eq!(seats_of(&m, "chat-a").len(), 1);
+    }
+
+    #[test]
+    fn the_last_seat_out_leaves_an_ordinary_chat_behind() {
+        // The other direction, and it has to be complete: a chat that still
+        // read as a group with nobody in it would keep drawing every group
+        // control over a conversation with one agent in it.
+        let m = ChatManager::default();
+        let one = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
+
+        remove_seat_impl(&m, "chat-a", &one.id).unwrap();
+
         assert!(seats_of(&m, "chat-a").is_empty());
+    }
+
+    #[test]
+    fn a_seat_id_is_never_reused_after_everyone_has_left() {
+        // The reason the bookkeeping OUTLIVES the last seat rather than being
+        // thrown away with it. A seat's id becomes its session key, so handing
+        // `s1` out twice would sit a brand-new agent down in front of the
+        // departed one's transcript.
+        let m = ChatManager::default();
+        let first = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
+        remove_seat_impl(&m, "chat-a", &first.id).unwrap();
+
+        let second = add_seat_impl(
+            &m,
+            "chat-a",
+            NewSeat::named("Codex again", ChatAgent::Codex),
+        )
+        .unwrap();
+
+        assert_ne!(
+            first.id, second.id,
+            "a fresh seat must not inherit a session"
+        );
     }
 
     #[test]
     fn opening_a_room_lets_it_take_seats_and_give_them_up_again() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
 
         let one = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         let two = add_seat_impl(&m, "chat-a", NewSeat::named("Claude", ChatAgent::Claude)).unwrap();
@@ -548,7 +693,6 @@ mod room_tests {
     #[test]
     fn a_seat_remembers_what_it_was_added_for_and_what_it_may_see() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let mut want = NewSeat::named("Outside eye", ChatAgent::Codex);
         want.role = Some("read it as a new reader would".into());
         want.context = Some(ContextMode::RoomOnly);
@@ -568,42 +712,11 @@ mod room_tests {
     }
 
     #[test]
-    fn closing_a_room_empties_it_so_reopening_does_not_resurrect_old_seats() {
-        let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
-        add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
-        set_room_impl(&m, "chat-a", false).unwrap();
-        assert!(seats_of(&m, "chat-a").is_empty());
-        set_room_impl(&m, "chat-a", true).unwrap();
-        assert!(
-            seats_of(&m, "chat-a").is_empty(),
-            "a reopened room must start empty, not with the seats it had before"
-        );
-    }
-
-    #[test]
-    fn an_open_room_with_nobody_in_it_is_not_the_same_as_no_room() {
-        // The two look identical if you only ask for the seat list, and they
-        // are not: after a restart the browser still draws the switch on, from
-        // localStorage, while this backend has forgotten every room it had.
-        let m = ChatManager::default();
-        let forgotten = room_impl(&m, "chat-a").unwrap();
-        assert!(!forgotten.open);
-        assert!(forgotten.seats.is_empty());
-
-        set_room_impl(&m, "chat-a", true).unwrap();
-        let empty = room_impl(&m, "chat-a").unwrap();
-        assert!(empty.open, "an opened room says so before anyone joins");
-        assert!(empty.seats.is_empty());
-    }
-
-    #[test]
     fn a_room_stops_taking_seats_before_it_can_spawn_a_fleet() {
         // Card 70 hands `add_agent` to the HOST AGENT, and card 67 gives every
         // seat a process. Without a cap here, an agent that decides more voices
         // would help has a way to spawn agents until the machine gives up.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         for i in 0..MAX_SEATS {
             add_seat_impl(
                 &m,
@@ -667,7 +780,6 @@ mod room_tests {
             target_impl(&m, "chat-a", None).unwrap(),
             Target::Host
         ));
-        set_room_impl(&m, "chat-a", true).unwrap();
         assert!(matches!(
             target_impl(&m, "chat-a", None).unwrap(),
             Target::Host
@@ -677,7 +789,6 @@ mod room_tests {
     #[test]
     fn addressing_a_seat_by_name_resolves_to_that_seat() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let one = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         let two = add_seat_impl(&m, "chat-a", NewSeat::named("Claude", ChatAgent::Claude)).unwrap();
 
@@ -696,7 +807,6 @@ mod room_tests {
         // Falling back to the host would put a message meant for one agent in
         // front of a different one, which is worse than not sending it.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let err = target_impl(&m, "chat-a", Some("s99")).expect_err("an unknown seat must refuse");
         assert!(err.contains("no seat"), "unhelpful refusal: {err}");
 
@@ -707,7 +817,6 @@ mod room_tests {
     #[test]
     fn a_removed_seat_can_no_longer_be_addressed() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         remove_seat_impl(&m, "chat-a", &seat.id).unwrap();
         assert!(target_impl(&m, "chat-a", Some(&seat.id)).is_err());
@@ -720,7 +829,6 @@ mod room_tests {
         // reads the difference and starts it, exactly as it already does for the
         // host's own first message.
         let m = std::sync::Arc::new(ChatManager::default());
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
 
         let err = crate::agent_chat::chat_send_impl(
@@ -740,7 +848,6 @@ mod room_tests {
     #[test]
     fn sending_to_a_seat_that_is_not_there_never_reaches_the_host() {
         let m = std::sync::Arc::new(ChatManager::default());
-        set_room_impl(&m, "chat-a", true).unwrap();
         let err = crate::agent_chat::chat_send_impl(
             m,
             "chat-a".into(),
@@ -785,7 +892,6 @@ mod room_tests {
         // MAX_SEATS exists to prevent, so removal has to hand back the session
         // key of what it removed.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
 
         let gone = remove_seat_impl(&m, "chat-a", &seat.id).unwrap();
@@ -796,25 +902,143 @@ mod room_tests {
     }
 
     #[test]
-    fn closing_a_room_names_every_seat_in_it() {
+    fn emptying_a_room_names_every_process_it_had() {
+        // Card 82 removed "close the room", which used to give up every process
+        // in one go. Nothing is lost: the room empties a seat at a time, and
+        // each one still names what it leaves running. A seat is a live agent
+        // once it has spoken, and dropping the record alone would leave it
+        // running with nothing left that could stop it.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let one = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         let two = add_seat_impl(&m, "chat-a", NewSeat::named("Claude", ChatAgent::Claude)).unwrap();
 
-        let mut gone = set_room_impl(&m, "chat-a", false).unwrap();
+        let mut gone = remove_seat_impl(&m, "chat-a", &one.id).unwrap();
+        gone.extend(remove_seat_impl(&m, "chat-a", &two.id).unwrap());
         gone.sort();
         let mut want = vec![
             seat_session_key("chat-a", &one.id),
             seat_session_key("chat-a", &two.id),
         ];
         want.sort();
-        assert_eq!(gone, want, "a closed room must give up every process in it");
+        assert_eq!(gone, want, "every seat must give up its process");
 
-        // Opening one ends nothing, and a chat that was never a room has
-        // nothing to end either.
-        assert!(set_room_impl(&m, "chat-a", true).unwrap().is_empty());
-        assert!(set_room_impl(&m, "chat-b", false).unwrap().is_empty());
+        // A chat that never held anyone has nothing to end.
+        assert!(remove_seat_impl(&m, "chat-b", "s1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_chat_names_everyone_who_was_in_it() {
+        // The one thing "close the room" still had to do. A deleted chat must
+        // not leave a room, or the processes in it, alive for the rest of the
+        // server's life.
+        let m = ChatManager::default();
+        let one = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
+        let two = add_seat_impl(&m, "chat-a", NewSeat::named("Claude", ChatAgent::Claude)).unwrap();
+
+        let mut gone = forget_room_impl(&m, "chat-a").unwrap();
+        gone.sort();
+        let mut want = vec![
+            seat_session_key("chat-a", &one.id),
+            seat_session_key("chat-a", &two.id),
+        ];
+        want.sort();
+        assert_eq!(gone, want, "every process in a deleted chat must be named");
+        assert!(seats_of(&m, "chat-a").is_empty());
+
+        // A chat that never held anyone has nothing to give up.
+        assert!(forget_room_impl(&m, "chat-b").unwrap().is_empty());
+    }
+
+    // ---- card 83: seats outlive the process ---------------------------------
+
+    /// A file path nothing else in the suite will touch. `std::env::temp_dir`
+    /// is shared, and these tests run in parallel with everything else.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("octiq-room-test-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("chat-rooms.json")
+    }
+
+    #[test]
+    fn a_room_comes_back_with_the_same_people_in_it() {
+        // Rooms live in memory, so a restart used to empty every one of them.
+        // With no mode to fall back to (card 82) that is not a switch reverting
+        // — it is a group chat silently becoming an ordinary one.
+        let path = scratch("roundtrip");
+        let before = ChatManager::default();
+        let mut want = NewSeat::named("Outside eye", ChatAgent::Claude);
+        want.context = Some(ContextMode::RoomOnly);
+        want.role = Some("read it as a newcomer".into());
+        let seat = add_seat_at(&before, "chat-a", want, 4).unwrap();
+        save_rooms(&before, &path).unwrap();
+
+        let after = ChatManager::default();
+        load_rooms(&after, &path);
+
+        let back = seats_of(&after, "chat-a");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, seat.id);
+        assert_eq!(back[0].name, "Outside eye");
+        assert_eq!(back[0].context, ContextMode::RoomOnly);
+        assert_eq!(back[0].role.as_deref(), Some("read it as a newcomer"));
+        // Card 77's join point has to survive too, or a restored seat is shown
+        // a backlog it was never in the room for.
+        assert_eq!(back[0].joined_at, 4);
+    }
+
+    #[test]
+    fn a_restored_room_does_not_hand_out_an_id_it_has_already_used() {
+        // The counter is the reason `Room` outlives its last seat, and a save
+        // that dropped it would undo that across a restart: the next seat would
+        // be `s1` again, sitting down in front of the first one's transcript.
+        let path = scratch("counter");
+        let before = ChatManager::default();
+        let first =
+            add_seat_impl(&before, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
+        save_rooms(&before, &path).unwrap();
+
+        let after = ChatManager::default();
+        load_rooms(&after, &path);
+        let next = add_seat_impl(
+            &after,
+            "chat-a",
+            NewSeat::named("Claude", ChatAgent::Claude),
+        )
+        .unwrap();
+
+        assert_ne!(first.id, next.id);
+    }
+
+    #[test]
+    fn a_chat_nobody_joined_writes_nothing_to_come_back_to() {
+        let path = scratch("empty");
+        let m = ChatManager::default();
+        save_rooms(&m, &path).unwrap();
+
+        let after = ChatManager::default();
+        load_rooms(&after, &path);
+        assert!(seats_of(&after, "chat-a").is_empty());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_leaves_an_ordinary_chat_rather_than_a_panic() {
+        // Best-effort by design. A half-written file is a reason to start with
+        // no rooms, never a reason the server does not start.
+        let path = scratch("corrupt");
+        std::fs::write(&path, "{not json at all").unwrap();
+        let m = ChatManager::default();
+
+        load_rooms(&m, &path);
+
+        assert!(seats_of(&m, "chat-a").is_empty());
+    }
+
+    #[test]
+    fn a_missing_file_is_not_an_error() {
+        let m = ChatManager::default();
+        load_rooms(&m, &scratch("gone").with_file_name("never-written.json"));
+        assert!(seats_of(&m, "chat-a").is_empty());
     }
 
     // ---- card 69: what a seat can actually see -----------------------------
@@ -822,7 +1046,6 @@ mod room_tests {
     #[test]
     fn a_project_seat_works_where_the_chat_works() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         assert_eq!(seat.context, ContextMode::Project);
 
@@ -839,7 +1062,6 @@ mod room_tests {
         // empty directory — because an agent told to ignore the repo will read
         // it anyway the moment the question gets hard.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let mut want = NewSeat::named("Outside eye", ChatAgent::Codex);
         want.context = Some(ContextMode::RoomOnly);
         let seat = add_seat_impl(&m, "chat-a", want).unwrap();
@@ -873,8 +1095,6 @@ mod room_tests {
             want.context = Some(ContextMode::RoomOnly);
             want
         };
-        set_room_impl(&m, "chat-a", true).unwrap();
-        set_room_impl(&m, "chat-b", true).unwrap();
         let a = add_seat_impl(&m, "chat-a", outside()).unwrap();
         let b = add_seat_impl(&m, "chat-b", outside()).unwrap();
         assert_eq!(a.id, b.id, "the ids really are the same — that is the trap");
@@ -893,7 +1113,6 @@ mod room_tests {
         // Sharing one would let them read each other's scratch files, which is
         // a side channel between two opinions that are supposed to be separate.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let mut a = NewSeat::named("One", ChatAgent::Codex);
         a.context = Some(ContextMode::RoomOnly);
         let mut b = NewSeat::named("Two", ChatAgent::Codex);
@@ -913,7 +1132,6 @@ mod room_tests {
         // way as picking a resident one — the kind is an implementation detail
         // of where the words go, not of who you can talk to.
         let m = std::sync::Arc::new(ChatManager::default());
-        set_room_impl(&m, "chat-a", true).unwrap();
         let mut want = NewSeat::named("Outside eye", ChatAgent::Codex);
         want.kind = Some(SeatKind::OnDemand);
         let seat = add_seat_impl(&m, "chat-a", want).unwrap();
@@ -938,7 +1156,6 @@ mod room_tests {
         // Refused rather than quietly doing nothing: a caller that thinks it
         // started something would then wait for a turn that never comes.
         let m = std::sync::Arc::new(ChatManager::default());
-        set_room_impl(&m, "chat-a", true).unwrap();
         let mut want = NewSeat::named("Outside eye", ChatAgent::Codex);
         want.kind = Some(SeatKind::OnDemand);
         let seat = add_seat_impl(&m, "chat-a", want).unwrap();
@@ -974,7 +1191,6 @@ mod room_tests {
         .expect("the host's own request shape must deserialize");
 
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", want).unwrap();
 
         assert_eq!(seat.kind, SeatKind::OnDemand);
@@ -997,7 +1213,6 @@ mod room_tests {
         .expect("nulls are what the endpoint sends for absent fields");
 
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", want).unwrap();
 
         assert_eq!(seat.kind, SeatKind::Resident);
@@ -1009,7 +1224,6 @@ mod room_tests {
         // Card 77 — the whole rule rests on this number. A seat added after
         // five things were said is shown none of them.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
 
         let early =
             add_seat_at(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex), 0).unwrap();
@@ -1023,7 +1237,6 @@ mod room_tests {
     #[test]
     fn a_seat_added_before_anyone_spoke_joined_at_the_beginning() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
 
         assert_eq!(seat.joined_at, 0, "the plain add is the start of the room");
@@ -1032,8 +1245,6 @@ mod room_tests {
     #[test]
     fn rooms_do_not_leak_into_each_other() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
-        set_room_impl(&m, "chat-b", true).unwrap();
         add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         assert_eq!(seats_of(&m, "chat-a").len(), 1);
         assert!(seats_of(&m, "chat-b").is_empty());
@@ -1042,7 +1253,6 @@ mod room_tests {
     #[test]
     fn a_seat_name_is_trimmed_and_cannot_be_blank() {
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat =
             add_seat_impl(&m, "chat-a", NewSeat::named("  Codex  ", ChatAgent::Codex)).unwrap();
         assert_eq!(seat.name, "Codex");
@@ -1057,7 +1267,6 @@ mod room_tests {
         // name is what stops a seat called "../../etc/passwd" ever reaching a
         // path.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(
             &m,
             "chat-a",
@@ -1090,7 +1299,6 @@ mod room_tests {
         // only the event and rebuilds `seq` from the line number, so anything
         // left on the envelope is lost the moment someone reconnects.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
 
         let mut event = json!({"type": "assistant", "message": {"content": []}});
@@ -1109,7 +1317,6 @@ mod room_tests {
         // `speaker` is a word an agent stream could plausibly start using one
         // day. `octiq_speaker` is ours and cannot be mistaken for theirs.
         let m = ChatManager::default();
-        set_room_impl(&m, "chat-a", true).unwrap();
         let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
         let mut event = json!({"type": "assistant", "speaker": "an agent's own field"});
         stamp_speaker(&mut event, Some(&seat));

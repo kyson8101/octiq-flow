@@ -741,12 +741,12 @@ pub fn chat_new_topic(rounds: tauri::State<Arc<Rounds>>, key: String) {
     rounds.new_topic(&key);
 }
 
-/// A room is closed, so its discussion goes with it.
+/// The room is empty, so its discussion goes with it.
 ///
-/// Card 66 already decided a reopened room starts empty rather than resurrecting
-/// its old seats. Keeping the discussion while dropping the people who had it
-/// would be the same mistake in a quieter place: the next round would show a
-/// seat a conversation nobody in the room remembers having.
+/// Card 82 removed "close the room", so the trigger is now the LAST SEAT
+/// LEAVING — but the reason is unchanged: keeping the discussion while dropping
+/// every person who had it is the same mistake in a quieter place. The next seat
+/// to join would be shown a conversation nobody in the room remembers having.
 pub fn forget_room(rounds: &Rounds, key: &str) {
     rounds.forget(key);
 }
@@ -902,7 +902,6 @@ mod tests {
     fn one_seat() -> (Arc<Rounds>, Arc<ChatManager>, String) {
         let rounds = Arc::new(Rounds::default());
         let m = Arc::new(ChatManager::default());
-        crate::chat_room::set_room_impl(&m, "chat-a", true).unwrap();
         let seat = crate::chat_room::add_seat_impl(
             &m,
             "chat-a",
@@ -1219,7 +1218,6 @@ mod tests {
     fn one_api_seat() -> (Arc<Rounds>, Arc<ChatManager>, String) {
         let rounds = Arc::new(Rounds::default());
         let m = Arc::new(ChatManager::default());
-        crate::chat_room::set_room_impl(&m, "chat-a", true).unwrap();
         let mut want =
             crate::chat_room::NewSeat::for_test("Outside eye", crate::agent_chat::ChatAgent::Codex);
         want.kind = Some(crate::chat_room::SeatKind::OnDemand);

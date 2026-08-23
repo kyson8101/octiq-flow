@@ -186,10 +186,10 @@ function send(message) {
 
 /** Ask OctiqFlow to do something to this chat's room, and wait for the answer.
  *
- *  Card 70. Every refusal the browser would get, the agent gets too — including
- *  "this chat is not a room", which is exactly why these tools can be offered in
- *  EVERY chat instead of only in a room. No restart, no waiting for a resume: a
- *  host that tries this in an ordinary chat is simply told no.
+ *  Card 70. Every refusal the browser would get, the agent gets too — the seat
+ *  cap, an unknown seat id, an unreachable service. Card 82 removed the one that
+ *  used to matter most here ("this chat is not a room"): a chat is a room when
+ *  somebody is in it, so adding the first seat is what opens one.
  *
  *  Long timeout, because `ask_agent` waits for a whole agent turn. */
 function roomCall(body) {
@@ -238,9 +238,9 @@ const ADD_AGENT = {
   name: "add_agent",
   description:
     "Add another agent to THIS conversation as a seat, so it can be asked things " +
-    "and its answers appear in the chat under its own name. Only works when the " +
-    "person has turned room mode on for this chat; otherwise it is refused and " +
-    "you should tell them to turn it on.",
+    "and its answers appear in the chat under its own name. Works in any chat: " +
+    "a seat is what makes a conversation a group, and there is nothing to turn " +
+    "on first.",
   inputSchema: {
     type: "object",
     properties: {
@@ -317,14 +317,10 @@ async function handle(msg) {
     case "tools/list":
       // Inert outside OctiqFlow: with no chat to answer into, offering the
       // tool would only give the agent something that always fails.
-      // Inert outside OctiqFlow: with no chat to answer into, offering the
-      // tool would only give the agent something that always fails.
       //
-      // The two room tools ARE offered in every chat, room or not. The list a
-      // process is given is fixed when it spawns, so gating them on room mode
-      // would leave a host unable to act on a switch turned on mid-chat — and
-      // the backend refuses them anyway, in words the agent can read. See
-      // card 70.
+      // The two room tools are offered in every chat. Since card 82 a chat
+      // becomes a room by taking a seat, so the tool that adds the first one
+      // has to work in a chat that is not a room yet. See card 70.
       return reply(msg.id, {
         tools: CHAT_KEY ? [TOOL, TODO_TOOL, ADD_AGENT, ASK_AGENT] : [],
       });

@@ -172,7 +172,16 @@ pub fn run() {
             app.manage(std::sync::Arc::new(PtyManager::default()));
             // Agent chat sessions: agents run as a JSON stream instead of a TUI,
             // for the chat view (agent_chat.rs).
-            app.manage(std::sync::Arc::new(agent_chat::ChatManager::default()));
+            let chats = std::sync::Arc::new(agent_chat::ChatManager::default());
+            // Card 83 — who was sitting in each chat when this last stopped. A
+            // seat has no process to restore (it is spawned when it is asked),
+            // so bringing the roster back is the whole of it. What does NOT come
+            // back is the discussion: `round::Rounds` is in memory and is not
+            // written anywhere, so a restored seat's view starts here.
+            if let Some(path) = chat_room::rooms_path() {
+                chat_room::load_rooms(&chats, &path);
+            }
+            app.manage(chats);
             app.manage(std::sync::Arc::new(round::Rounds::default()));
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
@@ -272,10 +281,10 @@ pub fn run() {
             agent_chat::chat_set_access,
             agent_chat::chat_stop,
             agent_chat::chat_list,
-            chat_room::chat_set_room,
             chat_room::chat_add_agent,
             chat_room::chat_remove_agent,
             chat_room::chat_room,
+            chat_room::chat_forget_room,
             round::chat_round,
             round::chat_round_stop,
             round::chat_round_state,

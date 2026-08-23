@@ -462,11 +462,10 @@ fn build_command_with_mcp(
                     " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                     sh_quote(&mcp.to_string_lossy()),
                     // The room tools (card 70) are pre-approved alongside the
-                    // other two, and offered in EVERY chat rather than only in a
-                    // room. This list is fixed when the process spawns, so
-                    // gating them on room mode would leave a host unable to act
-                    // on a switch turned on mid-chat; the backend refuses them
-                    // in an ordinary chat anyway, in words the agent can read.
+                    // other two, and offered in EVERY chat. Since card 82 there
+                    // is nothing to gate them on: a chat becomes a room by
+                    // taking a seat, so the tool that adds one has to work in a
+                    // chat that is not a room yet.
                     sh_quote(
                         "mcp__octiq__ask_user mcp__octiq__todo_write \
                          mcp__octiq__add_agent mcp__octiq__ask_agent",
@@ -1582,7 +1581,7 @@ const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 
 /// Told to the agent so it knows the tool is there and when it is wanted.
 /// Without this it has a tool it never thinks to reach for.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Both are refused unless the person has turned room mode on for this chat, and the refusal says so — pass that on rather than working around it.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
 
 /// Write the ask-user MCP server and its config, and return the config path.
 ///
@@ -1751,11 +1750,11 @@ mod tests {
 
     #[test]
     fn the_host_is_given_the_room_tools_in_every_chat_not_only_a_room() {
-        // Card 70. The tool list a process is offered is fixed when it SPAWNS,
-        // so gating these on room mode would leave a host unable to act on a
-        // switch the person turned on mid-chat. The backend refuses them in an
-        // ordinary chat anyway, in words the agent can read — so offering them
-        // always is the option that needs no restart and tells no lies.
+        // Card 70, and since card 82 there is nothing left to gate them on: a
+        // chat becomes a room by taking a seat, so the tool that adds the first
+        // one has to be offered in a chat that is not a room yet. The list a
+        // process is given is fixed when it SPAWNS, which is why this could
+        // never have been decided per-chat anyway.
         let c = build_command_with_mcp(
             ChatAgent::Claude,
             None,

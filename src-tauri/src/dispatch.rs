@@ -46,9 +46,18 @@ pub struct Services {
 impl Services {
     /// Load state from disk, as the app does at startup.
     pub fn load() -> Self {
+        // Card 83 — who was sitting in each chat when this last stopped. A seat
+        // has no process to restore (it is spawned when it is asked), so the
+        // roster is the whole of it. What does NOT come back is the discussion:
+        // `round::Rounds` is in memory and is written nowhere, so a restored
+        // seat's view of the room starts here.
+        let chats = Arc::new(ChatManager::default());
+        if let Some(path) = crate::chat_room::rooms_path() {
+            crate::chat_room::load_rooms(&chats, &path);
+        }
         Self {
             workspaces: Arc::new(WorkspaceState::load()),
-            chats: Arc::new(ChatManager::default()),
+            chats,
             watch: Arc::new(FileWatchState::default()),
             git_watch: Arc::new(GitWatchState::default()),
             ptys: Arc::new(PtyManager::default()),
@@ -252,41 +261,50 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         ))),
         // Card 66 — the room. The browser client does not go through Tauri, so
         // every command has to be listed here as well as in lib.rs.
-        // The seats a closed room gives up are ENDED here, not just forgotten:
-        // a seat that has spoken is a running agent.
-        "chat_set_room" => {
-            let key: String = arg(&args, "key")?;
-            let open: bool = arg(&args, "open")?;
-            unit(
-                crate::chat_room::set_room_impl(&svc.chats, &key, open).map(|ended| {
-                    crate::chat_room::end_seats(&svc.chats, ended);
-                    // A closed room gives up its discussion as well as its
-                    // seats — see `forget_room`.
-                    if !open {
-                        crate::round::forget_room(&svc.rounds, &key);
-                    }
-                }),
-            )
-        }
+        // Card 82 removed `chat_set_room`: adding a seat is what makes a chat a
+        // room, so there is nothing left to switch.
         "chat_add_agent" => {
             let key: String = arg(&args, "key")?;
             // Card 77 — a seat is shown the room from here on, never before.
             let joined_at = svc.rounds.said_so_far(&key);
-            to_value(crate::chat_room::add_seat_at(
-                &svc.chats,
-                &key,
-                arg(&args, "seat")?,
-                joined_at,
-            ))
+            let added =
+                crate::chat_room::add_seat_at(&svc.chats, &key, arg(&args, "seat")?, joined_at);
+            // Card 83 — the roster has to survive this process.
+            if added.is_ok() {
+                crate::chat_room::remember_rooms(&svc.chats);
+            }
+            to_value(added)
         }
-        "chat_remove_agent" => unit(
-            crate::chat_room::remove_seat_impl(
-                &svc.chats,
-                &arg::<String>(&args, "key")?,
-                &arg::<String>(&args, "seatId")?,
+        "chat_remove_agent" => {
+            let key: String = arg(&args, "key")?;
+            unit(
+                crate::chat_room::remove_seat_impl(
+                    &svc.chats,
+                    &key,
+                    &arg::<String>(&args, "seatId")?,
+                )
+                .and_then(|ended| {
+                    crate::chat_room::end_seats(&svc.chats, ended);
+                    // Card 82 — the last one out takes the discussion too.
+                    if crate::chat_room::is_empty(&svc.chats, &key)? {
+                        crate::round::forget_room(&svc.rounds, &key);
+                    }
+                    crate::chat_room::remember_rooms(&svc.chats);
+                    Ok(())
+                }),
             )
-            .map(|ended| crate::chat_room::end_seats(&svc.chats, ended)),
-        ),
+        }
+        // A deleted chat gives up its room, everyone in it, and what they said.
+        "chat_forget_room" => {
+            let key: String = arg(&args, "key")?;
+            unit(
+                crate::chat_room::forget_room_impl(&svc.chats, &key).map(|ended| {
+                    crate::chat_room::end_seats(&svc.chats, ended);
+                    crate::round::forget_room(&svc.rounds, &key);
+                    crate::chat_room::remember_rooms(&svc.chats);
+                }),
+            )
+        }
         "chat_room" => to_value(crate::chat_room::room_impl(
             &svc.chats,
             &arg::<String>(&args, "key")?,

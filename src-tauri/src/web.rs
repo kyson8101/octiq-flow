@@ -1094,9 +1094,8 @@ struct RoomCall {
 ///
 /// Routed through the SAME dispatch table the browser uses, so there is one
 /// implementation of each and no second copy to drift. Every refusal the client
-/// would get, the agent gets too — including "this chat is not a room", which is
-/// what makes it safe to offer these tools in every chat rather than only in a
-/// room. See card 70.
+/// would get, the agent gets too — the seat cap, an unknown seat id, an outside
+/// service that cannot be reached. See card 70.
 async fn room_handler(
     AxumState(ctx): AxumState<Ctx>,
     Query(q): Query<TokenQuery>,

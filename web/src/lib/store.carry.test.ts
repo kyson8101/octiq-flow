@@ -11,7 +11,6 @@ const before: Conversation = {
   messages: [],
   createdAt: 1,
   updatedAt: 2,
-  room: true,
   sessionId: "sess-1",
   seq: 7,
   synced: true,
@@ -29,14 +28,12 @@ const fresh = {
 };
 
 describe("rewriting a saved chat", () => {
-  it("keeps it a room", () => {
+  it("keeps every thing the row already knew", () => {
     // Reported 2026-08-23: turning group chat on, then sending a message, put
     // the chat back to Single. The debounced save rebuilt the row field by
-    // field and `room` was not one of the fields.
-    expect(rewriteConversation(before, fresh).room).toBe(true);
-  });
-
-  it("keeps every other thing the row already knew", () => {
+    // field and the room flag was not one of the fields. Card 82 removed that
+    // flag — this function is the guard the bug bought, and the rule it enforces
+    // is that a field nobody thought about is carried rather than dropped.
     const after = rewriteConversation(before, fresh);
 
     expect(after.sessionId).toBe("sess-1");
@@ -54,7 +51,6 @@ describe("rewriting a saved chat", () => {
   it("does not invent anything for a chat it has never seen", () => {
     const after = rewriteConversation(undefined, fresh);
 
-    expect(after.room).toBeUndefined();
     expect(after.sessionId).toBeUndefined();
     expect(after.title).toBe("a newer title");
   });

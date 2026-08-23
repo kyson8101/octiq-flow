@@ -29,19 +29,6 @@ export type Conversation = {
    *  does not silently change either. */
   modelId?: string;
   permission?: string;
-  /** Whether this chat is a ROOM: opened up to hold several agents at once,
-   *  rather than the one it has always had.
-   *
-   *  Absent, not `false`, for every chat that has never been one — which is all
-   *  of them until someone turns the switch on, and which is what makes "a chat
-   *  with room mode off is byte-for-byte the chat that shipped before rooms"
-   *  true of the stored record as well as of the screen.
-   *
-   *  Kept here for the same reason `modelId` and `permission` are: reopening a
-   *  conversation must not silently change what it was held under. The backend
-   *  holds rooms in MEMORY, so it forgets them on restart — this is the copy
-   *  that outlives one, and card 67 is where it gets re-asserted. */
-  room?: boolean;
   /** When the chat was STARTED. This is what the sidebar orders by, and it
    *  never changes — ordering by `updatedAt` made the list re-sort under the
    *  cursor as you typed, so the chat you were reading moved. */
@@ -151,14 +138,15 @@ export function byProject(list: Conversation[]): Map<string, Conversation[]> {
  *  The debounced save rebuilds a conversation from what is currently on screen —
  *  its title, its messages, when it was last touched. Everything else on the row
  *  was learned elsewhere and is not re-derivable from that: the agent's session
- *  id, how far the server's record has been read, whether the server has
- *  vouched for the chat, whether it is a room.
+  id, how far the server's record has been read, whether the server has
+ *  vouched for the chat.
  *
  *  Listing those by hand is how this has gone wrong twice. `synced` was
  *  forgotten once and had to be carried back with a comment explaining why.
- *  Then `room` was added and forgotten the same way, and sending a message in a
- *  group chat quietly put it back to a single one — the save rewrote the row
- *  without it seconds after the switch was flipped.
+ *  Then a room flag was added and forgotten the same way, and sending a message
+ *  in a group chat quietly put it back to a single one — the save rewrote the
+ *  row without it seconds after the switch was flipped. (Card 82 removed that
+ *  flag; the lesson it taught is why this function still exists.)
  *
  *  So the OLD row is the starting point and the fresh values are laid over it.
  *  A field nobody thought about is carried rather than dropped, which is the

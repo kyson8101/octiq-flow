@@ -20,7 +20,6 @@ import { AgentLogo } from "./AgentLogo";
 import { RoomPanel } from "./RoomPanel";
 import { TargetPicker } from "./TargetPicker";
 import { RoundBar, type RoundState } from "./RoundBar";
-import { ChatModeTabs } from "./ChatModeTabs";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
@@ -341,7 +340,6 @@ export function Composer({
   onStopRound,
   onNewTopic,
   topicDrawn,
-  onRoom,
   onAddSeat,
   onRemoveSeat,
   cwd,
@@ -409,7 +407,12 @@ export function Composer({
   lite: boolean;
   onLite: (on: boolean) => void;
   /** Card 66 — the room controls, passed straight through to the settings
-   *  sheet. Optional: a composer given none draws no room controls. */
+   *  sheet. Optional: a composer given none draws no room controls.
+   *
+   *  Card 82: `room` is DERIVED now, not stored — a chat is a group when it has
+   *  a seat in it. It is still a prop because the caller is the one holding the
+   *  seat list, and two places computing the same thing is two places to get it
+   *  wrong. */
   room?: boolean;
   seats?: Seat[];
   /** Card 67 — the seat the next message is for, and how to change it. `null`
@@ -423,7 +426,6 @@ export function Composer({
   /** Card 69 — draw a line under the discussion so far. */
   onNewTopic?: () => void;
   topicDrawn?: boolean;
-  onRoom?: (open: boolean) => void;
   onAddSeat?: (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => void;
   onRemoveSeat?: (seatId: string) => void;
   /** The project folder, so the file picker opens where the work is. */
@@ -811,9 +813,6 @@ export function Composer({
           activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")
         )}
         </span>
-        {/* Card 78 — the mode, at the right end of the eyebrow. Visible in both
-            modes, because it is the way back out of a room as well as in. */}
-        {onRoom && <ChatModeTabs room={room ?? false} onPick={onRoom} />}
       </div>
 
       {slashOpen && (
@@ -1241,6 +1240,25 @@ export function Composer({
             </button>
           )}
 
+          {/* Card 82 — the way somebody else gets into this chat.
+              Beside the terminal button because it is the same kind of
+              decision: who does this. In EVERY chat, because a seat is what
+              makes a chat a group and there is no longer a mode to turn on
+              first — the room's own controls appear above the box once
+              somebody is actually in it. */}
+          {onAddSeat && (
+            <button
+              className={`picker-btn ${room ? "is-on" : ""}`}
+              type="button"
+              aria-haspopup="dialog"
+              title={room ? "Who is in this chat" : "Add an agent to this chat"}
+              aria-label={room ? "Who is in this chat" : "Add an agent to this chat"}
+              onClick={() => setSheet(true)}
+            >
+              <AddAgentIcon />
+            </button>
+          )}
+
           {/* What used to be the status line stood here, between the buttons
               and Send, and took whatever width was left — which on a phone was
               about eight characters of it. It is a line of text, so it is on a
@@ -1297,10 +1315,8 @@ export function Composer({
               onEffort={onEffort}
               lite={lite}
               onLite={onLite}
-              room={room}
               seats={seats}
-              onRoom={onRoom}
-              onAddSeat={onAddSeat}
+                onAddSeat={onAddSeat}
               onRemoveSeat={onRemoveSeat}
               onDone={() => setSheet(false)}
             />
@@ -1321,6 +1337,29 @@ export function Composer({
  *  does not move. The stylesheet also runs a tighter scale in here than the
  *  desktop dropdowns use: padding gives way, never the hints.
  */
+/** Somebody else joining: two figures, and a plus for the one who is not here
+ *  yet. Named on the button rather than in the drawing — the convention every
+ *  other icon button in this composer already keeps. */
+function AddAgentIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
+      <path d="M18 8.5v5M15.5 11h5" />
+    </svg>
+  );
+}
+
 export function SettingsSheet({
   choice,
   onChoice,
@@ -1334,9 +1373,7 @@ export function SettingsSheet({
   onEffort,
   lite,
   onLite,
-  room,
   seats,
-  onRoom,
   onAddSeat,
   onRemoveSeat,
   onDone,
@@ -1353,11 +1390,9 @@ export function SettingsSheet({
   onEffort: (e: Effort) => void;
   lite: boolean;
   onLite: (on: boolean) => void;
-  /** Card 66. All optional: a sheet handed no room callbacks draws no room
-   *  controls, which is the same answer as the switch being off. */
-  room?: boolean;
+  /** Card 66. Optional: a sheet handed no room callbacks draws no room
+   *  controls at all. */
   seats?: Seat[];
-  onRoom?: (open: boolean) => void;
   onAddSeat?: (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => void;
   onRemoveSeat?: (seatId: string) => void;
   onDone: () => void;
@@ -1390,11 +1425,10 @@ export function SettingsSheet({
 
         {/* Card 66. Last, and off by default: a chat is one agent until someone
             decides otherwise, and nothing above this changes when it is off. */}
-        {onRoom && onAddSeat && onRemoveSeat && (
+        {onAddSeat && onRemoveSeat && (
           <div className="sheet-group">
             <div className="sheet-head">Room</div>
             <RoomPanel
-              room={room ?? false}
               seats={seats ?? []}
               onAdd={onAddSeat}
               onRemove={onRemoveSeat}

@@ -8219,3 +8219,22 @@ body.is-ultra .eff {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---- Card 84: how many agents are in this chat ------------------------
+   READ ONLY, unlike everything else on this bar. Who is in the room is changed
+   from the composer and only from there, so this is shaped as a reading rather
+   than as a control: no hover, no press, no caret. */
+.topbar-room {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+  cursor: default;
+  user-select: none;
+}

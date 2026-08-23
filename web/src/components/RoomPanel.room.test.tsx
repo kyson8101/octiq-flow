@@ -1,4 +1,4 @@
-// Card 66 — the switch that turns a chat into a room.
+// Card 82 — a seat is what makes a room, so this is reachable in every chat.
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -24,7 +24,6 @@ const seats: Seat[] = [
 const render = (props: Partial<Parameters<typeof RoomPanel>[0]> = {}) =>
   renderToStaticMarkup(
     <RoomPanel
-      room={false}
       seats={[]}
       onAdd={vi.fn()}
       onRemove={vi.fn()}
@@ -32,41 +31,32 @@ const render = (props: Partial<Parameters<typeof RoomPanel>[0]> = {}) =>
     />,
   );
 
-describe("room mode off, which is every chat by default", () => {
-  it("draws nothing at all", () => {
-    // Card 76 — the mode TAB is the switch now. A second way in, sitting in
-    // Settings, would be two controls for one thing that could disagree.
-    expect(render()).toBe("");
+describe("a chat nobody else has joined", () => {
+  it("still offers a way to add an agent", () => {
+    // Card 82. This used to draw NOTHING until a mode was switched on — two
+    // steps to reach one action. Adding a seat is what makes a chat a group, so
+    // the control that adds one has to work in a chat that is not one yet.
+    expect(render()).toContain("Add an agent");
   });
 
-  it("no longer carries a switch of its own", () => {
-    // Card 76 — the mode TAB is the switch. Two controls for one thing is two
-    // things that can disagree, and this was the one nobody could find.
-    const html = render({ room: true });
-
-    expect(html).not.toContain("Several agents");
-    // The room's CONTENTS are still its job, though.
-    expect(html).toContain("Add an agent");
+  it("says there is nobody in it rather than pretending it is not a room", () => {
+    expect(render()).toContain("Nobody else is here yet");
   });
 
-  it("does not show seats even if some are somehow still known", () => {
-    // The backend empties a room when it closes. If a stale list ever reaches
-    // this component, the switch still wins — what is drawn must match what the
-    // user turned off.
-    const html = render({ room: false, seats });
-
-    expect(html).not.toContain("Codex");
-    expect(html).not.toContain("room-seat");
+  it("carries no switch of its own", () => {
+    // Card 76 took the switch out of here; card 82 removed it entirely. Two
+    // controls for one thing is two things that can disagree.
+    expect(render()).not.toContain("Several agents");
   });
 });
 
-describe("room mode on", () => {
+describe("a chat with people in it", () => {
   it("offers a way to add an agent", () => {
-    expect(render({ room: true })).toContain("Add an agent");
+    expect(render()).toContain("Add an agent");
   });
 
   it("lists each seat by name", () => {
-    const html = render({ room: true, seats });
+    const html = render({ seats });
 
     expect(html).toContain("Codex");
     expect(html).toContain("Outside eye");
@@ -74,7 +64,7 @@ describe("room mode on", () => {
   });
 
   it("says what a seat was added for, when it was given a reason", () => {
-    const html = render({ room: true, seats });
+    const html = render({ seats });
 
     expect(html).toContain("read it as a newcomer");
   });
@@ -82,20 +72,20 @@ describe("room mode on", () => {
   it("marks the seat that cannot see the project", () => {
     // The whole value of an outside seat is what it CANNOT see. If the screen
     // does not say so, nobody can tell it apart from another copy of the host.
-    const html = render({ room: true, seats });
+    const html = render({ seats });
 
     expect(html).toContain("room-only");
   });
 
   it("draws each seat's own mark", () => {
-    expect(render({ room: true, seats })).toContain("agent-logo");
+    expect(render({ seats })).toContain("agent-logo");
   });
 
   it("marks a seat that has no process behind it", () => {
     // It costs nothing while it sits there, and it has no memory of its own.
     // Both matter to whoever is deciding who to ask, so the list says which
     // seats are which.
-    const html = render({ room: true, seats: onDemand });
+    const html = render({ seats: onDemand });
 
     expect(html).toContain("DeepSeek");
     expect(html).toContain("on demand");
@@ -105,11 +95,11 @@ describe("room mode on", () => {
     // "on demand" says there is no process. WHICH service answers is a
     // different fact, and the one that decides whether the answer is worth
     // anything.
-    expect(render({ room: true, seats: onDemand })).toContain("deepseek");
+    expect(render({ seats: onDemand })).toContain("deepseek");
   });
 
   it("does not mark a resident seat as on demand", () => {
-    expect(render({ room: true, seats })).not.toContain("on demand");
+    expect(render({ seats })).not.toContain("on demand");
   });
 
   it("says plainly that an outside service is sent what the room says", () => {
@@ -117,14 +107,14 @@ describe("room mode on", () => {
     // prompt a seat gets is the room's discussion, which routinely contains
     // code a resident agent pasted in. Someone reading "cannot see the project"
     // and concluding no code leaves the machine would be wrong.
-    const html = render({ room: true, seats: [] });
+    const html = render({ seats: [] });
 
     expect(html.toLowerCase()).toContain("sent");
     expect(html.toLowerCase()).toContain("outside");
   });
 
   it("says the room is empty rather than showing a bare switch", () => {
-    const html = render({ room: true, seats: [] });
+    const html = render({ seats: [] });
 
     expect(html).toContain("Nobody else is here yet");
   });
