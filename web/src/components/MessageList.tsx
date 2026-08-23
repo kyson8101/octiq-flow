@@ -21,6 +21,7 @@ import { AgentLogo } from "./AgentLogo";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { SentFiles } from "./Thumb";
+import { roughTokens } from "../lib/tokens";
 import { groupRows, type Note } from "../lib/toolGroups";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
@@ -181,6 +182,7 @@ function BlockView({
 }) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "compacted") return <Compacted block={block} />;
+  if (block.kind === "notice") return <Notice text={block.text} />;
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
@@ -240,6 +242,16 @@ function SubAgent({ messages, kids }: { messages: Message[]; kids: Kids }) {
   );
 }
 
+/** Card 80 — the CLI reporting on a slash command it answered itself.
+ *
+ *  `/model` and its like never reach the model at all, so this is neither a
+ *  reply nor anything anybody typed: it is the tool the agent is running
+ *  inside, saying what it did. Quiet, and set apart from both bubbles, because
+ *  drawn as either it would claim a speaker that does not exist. */
+function Notice({ text }: { text: string }) {
+  return <div className="cli-note">{text}</div>;
+}
+
 /** Where the agent summarised its own history to make room.
  *
  *  Worth showing rather than hiding: everything above this line is a summary
@@ -256,9 +268,9 @@ function Compacted({ block }: { block: Extract<Block, { kind: "compacted" }> }) 
   const facts = [
     block.trigger === "manual" ? "you asked" : block.trigger ? "context filled up" : "",
     block.preTokens && block.postTokens
-      ? `${tokens(block.preTokens)} → ${tokens(block.postTokens)} tokens`
+      ? `${roughTokens(block.preTokens)} → ${roughTokens(block.postTokens)} tokens`
       : block.preTokens
-        ? `${tokens(block.preTokens)} tokens summarised`
+        ? `${roughTokens(block.preTokens)} tokens summarised`
         : "",
     block.durationMs ? `${Math.max(1, Math.round(block.durationMs / 1000))}s` : "",
   ].filter(Boolean);
@@ -275,12 +287,18 @@ function Compacted({ block }: { block: Extract<Block, { kind: "compacted" }> }) 
           >
             <Chevron open={open} />
             history summarised to make room
-            {facts.length > 0 && <span className="compacted-facts"> · {facts.join(" · ")}</span>}
+            {/* The separator ahead of these is drawn in CSS, not written here: on a
+                narrow screen the facts take a line of their own, and a line
+                opening with a stray bullet reads as a list item. */}
+            {facts.length > 0 && <span className="compacted-facts">{facts.join(" · ")}</span>}
           </button>
         ) : (
           <span className="compacted-label">
             history summarised to make room
-            {facts.length > 0 && <span className="compacted-facts"> · {facts.join(" · ")}</span>}
+            {/* The separator ahead of these is drawn in CSS, not written here: on a
+                narrow screen the facts take a line of their own, and a line
+                opening with a stray bullet reads as a list item. */}
+            {facts.length > 0 && <span className="compacted-facts">{facts.join(" · ")}</span>}
           </span>
         )}
       </CompactRule>
@@ -341,19 +359,11 @@ function Compacting({ since }: { since: number }) {
       <CompactRule running>
         <span className="compacted-label">
           summarising history to make room
-          <span className="compacted-facts"> · {secs}s</span>
+          <span className="compacted-facts">{secs}s</span>
         </span>
       </CompactRule>
     </div>
   );
-}
-
-/** 168345 → "168k". The size of a conversation is only ever read as a rough
- *  one: the difference between 168k and 21k is the whole point, the digits
- *  under it are not. */
-function tokens(n: number): string {
-  if (n >= 1000) return `${Math.round(n / 1000)}k`;
-  return String(n);
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -484,6 +494,14 @@ function TurnView({
   // would leave it marked queued forever — which is how this was first wrong.
   const queued = !!busy && role === "user" && messages.every((m) => !m.echo);
 
+  // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
+  // name. A compaction is not something Claude said, and a `/model` answered by
+  // the CLI never reached Claude at all; a name over either one attributes it to
+  // someone who did not do it. A reply with prose in it is still somebody
+  // talking, event blocks beside the prose or not.
+  const allEvent =
+    blocks.length > 0 && blocks.every((b) => b.kind === "compacted" || b.kind === "notice");
+
   // What was attached to this turn. Taken across the messages the turn is made
   // of, and de-duplicated by path: the agent echoes a user turn back, so the
   // same file can arrive twice by two routes.
@@ -503,7 +521,7 @@ function TurnView({
           {ranSkill}
         </div>
       )}
-      {role === "assistant" && (
+      {role === "assistant" && !allEvent && (
         <div className="msg-role">
           {/* Whoever wrote it. The host has no seat and keeps the plain word it
               has always had; a seat says its own name, with its mark, because

@@ -41,6 +41,7 @@ import {
   resolvedSkill,
   sameCommand,
 } from "./skillRun";
+import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 
 /** `stopped` is a call that was still in flight when the user stopped the turn.
@@ -68,6 +69,13 @@ export type Block =
       postTokens?: number;
       durationMs?: number;
     }
+  /** Card 80 — the CLI reporting on a slash command it handled itself.
+   *
+   *  `/model`, `/status`, `/compact` are answered without the model, and the
+   *  answer comes back through the transcript as a USER turn wrapped in
+   *  `<local-command-stdout>`. It is not a bubble: nobody typed it, and it is
+   *  not the agent either — it is the tool the agent is running inside. */
+  | { kind: "notice"; text: string }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -1107,6 +1115,13 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // is all a REBUILT conversation has. Never on the flag alone: a compaction
     // that produced no summary would otherwise swallow whatever the user typed
     // next.
+    // The CLI answering a slash command itself. Read before anything else that
+    // looks at `spoken`, because taken as typing every later rule treats it as
+    // typing: it went looking for an optimistic bubble to claim, found none,
+    // and made one out of the raw XML.
+    const reported = parseLocalOutput(spoken);
+    if (reported !== null) return foldLocalOutput(state, reported);
+
     if (isCompactSummary(spoken) || (state.awaitingSummary && e.isSynthetic === true)) {
       const folded = foldCompactSummary(state, spoken);
       if (folded) return folded;
@@ -1302,6 +1317,47 @@ function findTool(state: ChatState, id: string): Extract<Block, { kind: "tool" }
     for (const b of m.blocks) if (b.kind === "tool" && b.id === id) return b;
   }
   return undefined;
+}
+
+/** What `/compact` says when it is done.
+ *
+ *  Recognised so it can be DROPPED. The rule directly above it already says the
+ *  history was summarised, what that cost, and who asked — so this is the same
+ *  event reported twice, worse the second time. Matched on the opening word
+ *  because the CLI has written it both bare and with a hint after it
+ *  (`Compacted (ctrl+o to see full summary)`). */
+const COMPACT_ACK = /^compacted\b/i;
+
+/** Put the CLI's own report into the conversation — or not at all.
+ *
+ *  Three outcomes, and two of them draw nothing:
+ *
+ *  * NOTHING to say. Most local commands report an empty string, and a blank
+ *    quiet line between two turns is a gap the reader has to account for.
+ *  * ALREADY said. `Compacted` under the compaction rule is one event twice.
+ *  * A REAL report — `Set model to Opus 5 for this session only` — which is
+ *    worth keeping, on its own line, as the tool speaking rather than as
+ *    something anyone said. */
+function foldLocalOutput(state: ChatState, reported: string): ChatState {
+  if (!reported) return state;
+
+  const above = state.messages[state.messages.length - 1];
+  if (COMPACT_ACK.test(reported) && above?.blocks.some((b) => b.kind === "compacted")) {
+    return state;
+  }
+
+  return {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id: `local-${state.messages.length}`,
+        role: "assistant",
+        blocks: [{ kind: "notice", text: reported }],
+        streaming: false,
+      },
+    ],
+  };
 }
 
 /** The opening line the agent writes on a compaction summary. Recognised on

@@ -6420,7 +6420,10 @@ body.is-ultra .eff {
 }
 
 .compacted-label {
-  flex: 0 1 auto;
+  /* Does NOT shrink. The rules either side are decoration and this is the
+     information, so the rules give up their width first — before this row was
+     told that, the numbers it exists to report were the first thing cut. */
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -6454,6 +6457,61 @@ body.is-ultra .eff {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Written here rather than in the markup so the narrow layout can drop it: with
+   the facts on a line of their own, a leading bullet reads as a list item. */
+.compacted-facts::before {
+  content: " · ";
+}
+
+/* ---- Card 81: the same event, in the width a phone has ----------------
+   `rule — label — rule` needs about 500px and a phone has 390. It failed in
+   three ways at once: the phrase wrapped mid-sentence, the facts ellipsised
+   away the one number the row reports (`889k → 1…`), and both rules shrank to
+   nothing, so the line across the conversation was not a line.
+
+   So it stacks: one full-width rule, the phrase under it, the facts under that.
+   `CompactRule` is shared by the running compaction and the finished one, which
+   is what keeps them one shape — the running row restacks with it and nothing
+   jumps when the work ends. */
+@media (max-width: 700px) {
+  .compacted-bar {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* The rule goes above, whole. */
+  .compacted-line:first-child {
+    flex-basis: 100%;
+  }
+
+  /* One rule is a line across the conversation. Two, with the words below
+     rather than between them, is a box round nothing. */
+  .compacted-line:last-child {
+    display: none;
+  }
+
+  .compacted-label {
+    flex-wrap: wrap;
+    /* The phrase gets the whole width, so if it has to wrap it wraps cleanly
+       instead of colliding with the numbers. */
+    flex-basis: 100%;
+  }
+
+  .compacted-facts {
+    flex-basis: 100%;
+    /* Nothing is cut. There is a line here for it now. */
+    white-space: normal;
+    overflow: visible;
+    /* The chevron's width, so the facts line up under the phrase and not under
+       the arrow. */
+    padding-left: 15px;
+  }
+
+  .compacted-facts::before {
+    content: none;
+  }
 }
 
 .compacted-chev {
@@ -8090,4 +8148,74 @@ body.is-ultra .eff {
   color: var(--fg-2);
   font-family: var(--mono, ui-monospace, monospace);
   font-size: 0.625rem;
+}
+
+/* ---- Card 79: the decision an ask_user call made ----------------------
+   Outside the fold, because it is not detail — it is a thing that was decided,
+   and the card that asked for it is long gone by the time anyone reads back.
+   Indented under the row it answers, the way a reply is. */
+.tool-answer {
+  padding: 4px 12px 8px 30px;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+/* Whole, and wrapped. A question cut off at the width of a row is half a
+   question, and it is always the first half — the half that says what was
+   being decided — that gets cut. */
+.tool-answer-q {
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+
+.tool-answer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 3px;
+}
+
+.tool-answer-mark {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  opacity: 0.7;
+}
+
+/* The person's own words. The one thing on a tool card that a person wrote, so
+   it reads at full strength rather than as another muted argument. */
+.tool-answer-said {
+  min-width: 0;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* No answer is not an answer. Said in the app's own words, never the machine
+   sentence that came back — "The question timed out" on this line would read
+   as a decision to time out. */
+.tool-answer-none {
+  min-width: 0;
+  color: var(--fg-3);
+  font-style: italic;
+}
+
+/* ---- Card 80: the CLI reporting on a command it answered itself -------
+   `/model`, `/status` and their like never reach the model. What comes back is
+   neither a reply nor anything anybody typed, so it is drawn as neither: a
+   quiet line across the conversation, in the same family as the compaction
+   rule directly above it in this file, because they are the same KIND of
+   thing — something that happened, rather than something someone said. */
+/* NOT `.notice` — that name was already taken, by the amber warning banner
+   `.notices` draws at the top of a chat. Two rules under one name is one of
+   them silently winning, and the loser was the warning. */
+.cli-note {
+  margin: 6px 0;
+  padding: 5px 10px;
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-1);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

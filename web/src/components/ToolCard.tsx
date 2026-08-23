@@ -20,6 +20,7 @@ import remarkGfm from "remark-gfm";
 import type { Block } from "../lib/chat";
 import { fileDiff } from "../lib/diff";
 import { parseSkillBrief } from "../lib/skillRun";
+import { askAnswer } from "../lib/askAnswer";
 import { toolDetail, toolLook } from "../lib/toolKind";
 import { DiffStat, DiffView } from "./DiffView";
 import { ToolIcon, ToolState } from "./ToolIcon";
@@ -107,8 +108,16 @@ export function ToolCard({
   // block); once it has, the row says what the skill is FOR in its own words,
   // and what it was called with moves into a chip beside the name.
   const brief = isSkill && tool.brief ? parseSkillBrief(tool.brief) : null;
+  // Card 79 — a question put to the person, and what they decided. The live
+  // card that asked is long gone by the time anyone reads this, so the decision
+  // has to live on the call that made it.
+  const ask = askAnswer(tool.name, tool.args, tool.result);
   const called = toolDetail(tool.name, tool.args, isAgent);
-  const detail = isSkill ? (brief?.summary ?? "") : called;
+  // A question takes no share of the row. `tool-detail` ellipsises from the
+  // LEFT so a long path keeps its useful end — and a question's useful end is
+  // its start, so half a question would be the half nobody needs. It gets a line
+  // of its own below instead.
+  const detail = isSkill ? (brief?.summary ?? "") : ask ? "" : called;
   const skillArgs = isSkill ? called : "";
   // Edit, Write and MultiEdit are the calls a reader actually wants to SEE,
   // and the only ones whose arguments are unreadable as arguments: two long
@@ -167,6 +176,29 @@ export function ToolCard({
         </span>
       </button>
 
+      {/* Outside the fold, on purpose. Everything else on a card is detail you
+          go looking for; this is a decision that was made, and a decision you
+          have to open a card to find is one you will not find. */}
+      {ask && (
+        <div className="tool-answer">
+          <div className="tool-answer-q">{ask.question}</div>
+          {(ask.answer || ask.unanswered) && (
+            <div className="tool-answer-row">
+              <span className="tool-answer-mark" aria-hidden="true">
+                &#8627;
+              </span>
+              {ask.answer ? (
+                <span className="tool-answer-said">{ask.answer}</span>
+              ) : (
+                // Never the machine's own sentence. "The question timed out" put
+                // on this line reads as a decision to time out.
+                <span className="tool-answer-none">{ask.unanswered}</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {open && (
         <div className="tool-body">
           {/* First, because it is what the card was opened for. The briefing
@@ -223,7 +255,7 @@ export function ToolCard({
               failed is the only thing on the card worth reading. A skill's
               "Launching skill: x" is the same noise, and kept the same way:
               only when the launch failed. */}
-          {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && (
+          {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && !ask && (
             <>
               <div className="tool-label">{isAgent ? "report" : "result"}</div>
               <pre className="tool-pre">{tool.result}</pre>
