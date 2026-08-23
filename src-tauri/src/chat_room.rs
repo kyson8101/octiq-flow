@@ -100,6 +100,13 @@ pub struct Seat {
     pub context: ContextMode,
     /// Whether there is a process behind this seat, or only an HTTP call.
     pub kind: SeatKind,
+    /// How much had been said in this room when this seat arrived.
+    ///
+    /// Card 77 — a seat sees the room from the moment it joined, and never the
+    /// backlog. WhatsApp's rule, borrowed because it is the one nobody has to
+    /// be told, which matters most for the seat whose whole value is what it
+    /// has NOT seen.
+    pub joined_at: usize,
     /// Which service answers for an ON-DEMAND seat — `"deepseek"`, and more
     /// later. Absent for a resident seat, which is answered by its own process.
     ///
@@ -290,7 +297,28 @@ const MAX_SEATS: usize = 8;
 /// The refusal is the BACKEND's. The client hides the control when room mode is
 /// off, but a hidden button is a decision about drawing, not about what may
 /// happen — and this is the one place that can actually hold the line.
+/// Add a seat that joined at the START of the room.
+///
+/// Tests only, since card 77. Production goes through `add_seat_at`, because
+/// the command layer is the one place that can see how much has already been
+/// said — and a seat that recorded the wrong join point would be shown a
+/// backlog it was never in the room for.
+#[cfg(test)]
 pub fn add_seat_impl(manager: &ChatManager, key: &str, want: NewSeat) -> Result<Seat, String> {
+    add_seat_at(manager, key, want, 0)
+}
+
+/// Add a seat, recording how much had already been said when it arrived.
+///
+/// `joined_at` comes from the caller because the discussion record lives in
+/// `round::Rounds` and the seats live here; the command layer is the one place
+/// that can see both.
+pub fn add_seat_at(
+    manager: &ChatManager,
+    key: &str,
+    want: NewSeat,
+    joined_at: usize,
+) -> Result<Seat, String> {
     let name = want.name.trim();
     if name.is_empty() {
         return Err("a seat needs a name".into());
@@ -316,6 +344,7 @@ pub fn add_seat_impl(manager: &ChatManager, key: &str, want: NewSeat) -> Result<
             .filter(|r| !r.is_empty()),
         context: want.context.unwrap_or_default(),
         kind: want.kind.unwrap_or_default(),
+        joined_at,
         provider: want
             .provider
             .map(|p| p.trim().to_ascii_lowercase())
@@ -441,10 +470,14 @@ pub fn chat_set_room(
 #[tauri::command]
 pub fn chat_add_agent(
     manager: State<Arc<ChatManager>>,
+    rounds: State<Arc<crate::round::Rounds>>,
     key: String,
     seat: NewSeat,
 ) -> Result<Seat, String> {
-    add_seat_impl(&manager, &key, seat)
+    // Card 77 — where this seat came in. The command layer is the one place
+    // that can see both the seats and the discussion record.
+    let joined_at = rounds.said_so_far(&key);
+    add_seat_at(&manager, &key, seat, joined_at)
 }
 
 /// Take a seat back out of a room.
@@ -923,6 +956,77 @@ mod room_tests {
         )
         .expect_err("there is no process to start");
         assert!(err.contains("no process"), "unhelpful refusal: {err}");
+    }
+
+    #[test]
+    fn the_host_agents_own_request_can_describe_an_outside_seat() {
+        // The shape `web.rs`'s room endpoint builds from the `add_agent` tool.
+        // Until card 72 it carried only name/agent/role/context, so the host
+        // could not add a DeepSeek seat at all — only the UI could.
+        let want: NewSeat = serde_json::from_value(serde_json::json!({
+            "name": "DeepSeek",
+            "agent": "codex",
+            "role": "a second opinion",
+            "context": "room_only",
+            "kind": "on_demand",
+            "provider": "deepseek",
+        }))
+        .expect("the host's own request shape must deserialize");
+
+        let m = ChatManager::default();
+        set_room_impl(&m, "chat-a", true).unwrap();
+        let seat = add_seat_impl(&m, "chat-a", want).unwrap();
+
+        assert_eq!(seat.kind, SeatKind::OnDemand);
+        assert_eq!(seat.provider.as_deref(), Some("deepseek"));
+        assert_eq!(seat.context, ContextMode::RoomOnly);
+    }
+
+    #[test]
+    fn a_request_that_says_nothing_about_kind_is_still_a_resident() {
+        // Every seat added before card 72 omitted both fields, and every
+        // resident one still does.
+        let want: NewSeat = serde_json::from_value(serde_json::json!({
+            "name": "Codex",
+            "agent": "codex",
+            "role": null,
+            "context": null,
+            "kind": null,
+            "provider": null,
+        }))
+        .expect("nulls are what the endpoint sends for absent fields");
+
+        let m = ChatManager::default();
+        set_room_impl(&m, "chat-a", true).unwrap();
+        let seat = add_seat_impl(&m, "chat-a", want).unwrap();
+
+        assert_eq!(seat.kind, SeatKind::Resident);
+        assert_eq!(seat.provider, None);
+    }
+
+    #[test]
+    fn a_seat_records_where_it_came_in() {
+        // Card 77 — the whole rule rests on this number. A seat added after
+        // five things were said is shown none of them.
+        let m = ChatManager::default();
+        set_room_impl(&m, "chat-a", true).unwrap();
+
+        let early =
+            add_seat_at(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex), 0).unwrap();
+        let late =
+            add_seat_at(&m, "chat-a", NewSeat::named("Claude", ChatAgent::Claude), 5).unwrap();
+
+        assert_eq!(early.joined_at, 0);
+        assert_eq!(late.joined_at, 5);
+    }
+
+    #[test]
+    fn a_seat_added_before_anyone_spoke_joined_at_the_beginning() {
+        let m = ChatManager::default();
+        set_room_impl(&m, "chat-a", true).unwrap();
+        let seat = add_seat_impl(&m, "chat-a", NewSeat::named("Codex", ChatAgent::Codex)).unwrap();
+
+        assert_eq!(seat.joined_at, 0, "the plain add is the start of the room");
     }
 
     #[test]

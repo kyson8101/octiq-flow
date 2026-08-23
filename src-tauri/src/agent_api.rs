@@ -284,6 +284,7 @@ mod tests {
             role: None,
             context: ContextMode::RoomOnly,
             kind: SeatKind::OnDemand,
+            joined_at: 0,
             provider: Some("deepseek".into()),
         }
     }

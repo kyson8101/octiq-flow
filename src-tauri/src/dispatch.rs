@@ -268,11 +268,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 }),
             )
         }
-        "chat_add_agent" => to_value(crate::chat_room::add_seat_impl(
-            &svc.chats,
-            &arg::<String>(&args, "key")?,
-            arg(&args, "seat")?,
-        )),
+        "chat_add_agent" => {
+            let key: String = arg(&args, "key")?;
+            // Card 77 — a seat is shown the room from here on, never before.
+            let joined_at = svc.rounds.said_so_far(&key);
+            to_value(crate::chat_room::add_seat_at(
+                &svc.chats,
+                &key,
+                arg(&args, "seat")?,
+                joined_at,
+            ))
+        }
         "chat_remove_agent" => unit(
             crate::chat_room::remove_seat_impl(
                 &svc.chats,

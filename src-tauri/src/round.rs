@@ -299,9 +299,25 @@ impl Rounds {
         }
     }
 
-    /// What a seat should be shown of what came before: the host's choice if it
-    /// made one, otherwise this topic's newest `DEFAULT_WINDOW`.
-    pub fn backdrop_for(&self, key: &str, chosen: Option<&[Said]>) -> Vec<Said> {
+    /// What a seat is shown, given when it JOINED.
+    ///
+    /// Card 77 — WhatsApp's rule, because it is the one nobody has to be told:
+    /// a seat sees the room from the moment it arrived, and never the backlog.
+    ///
+    /// THREE cuts stack here and the tightest wins:
+    /// * the seat's join point — it was not there, so it does not see it;
+    /// * the room's topic marker — the room has moved on, so nobody sees it;
+    /// * the window — even one topic, seen from the start, is not resent whole
+    ///   every round.
+    ///
+    /// The host's explicit choice still beats all three. It knows what a seat is
+    /// FOR, and that outranks any rule about what it happens to have witnessed.
+    pub fn backdrop_since(
+        &self,
+        key: &str,
+        joined_at: usize,
+        chosen: Option<&[Said]>,
+    ) -> Vec<Said> {
         let Ok(record) = self.record.lock() else {
             // Cannot read the record, so the only honest backdrop is the host's
             // choice if it made one, and nothing otherwise.
@@ -309,9 +325,23 @@ impl Rounds {
         };
         let empty = Record::default();
         let r = record.get(key).unwrap_or(&empty);
-        // ONE decision, in one place: `backdrop` owns the choice-beats-window
-        // rule, and this only supplies the record it reads.
-        backdrop(&r.said, r.topic_start, DEFAULT_WINDOW, chosen).to_vec()
+        // The LATER of the two floors: whichever of "you were not here" and
+        // "the room has moved on" cuts more.
+        let from = r.topic_start.max(joined_at);
+        // `backdrop` owns the choice-beats-window rule; this only supplies the
+        // record and the floor. Reimplementing it here is exactly the drift
+        // card 69 already had to fix once.
+        backdrop(&r.said, from, DEFAULT_WINDOW, chosen).to_vec()
+    }
+
+    /// How much has been said in this room. A seat joining now records this as
+    /// its join point, and is shown nothing before it.
+    pub fn said_so_far(&self, key: &str) -> usize {
+        self.record
+            .lock()
+            .ok()
+            .and_then(|r| r.get(key).map(|r| r.said.len()))
+            .unwrap_or(0)
     }
 
     /// Forget a room's discussion entirely — the chat is gone.
@@ -389,7 +419,7 @@ pub fn run_round(
             // What came before, then what this round has said so far. The
             // backdrop is the host's choice when it made one, and this topic's
             // newest few otherwise — see `backdrop`.
-            let mut shown = rounds.backdrop_for(&key, chosen.as_deref());
+            let mut shown = rounds.backdrop_since(&key, seat.joined_at, chosen.as_deref());
             shown.extend(so_far);
             let brief = round_brief(&host_text, &shown);
 
@@ -1119,8 +1149,8 @@ mod tests {
         r.remember("chat-a", vec![said("Codex", "it is not reversible")]);
         r.remember("chat-a", vec![said("Claude", "agreed")]);
 
-        assert_eq!(r.backdrop_for("chat-a", None).len(), 2);
-        assert_eq!(r.backdrop_for("chat-a", None)[1].text, "agreed");
+        assert_eq!(r.backdrop_since("chat-a", 0, None).len(), 2);
+        assert_eq!(r.backdrop_since("chat-a", 0, None)[1].text, "agreed");
     }
 
     #[test]
@@ -1130,19 +1160,21 @@ mod tests {
 
         r.new_topic("chat-a");
         assert!(
-            r.backdrop_for("chat-a", None).is_empty(),
+            r.backdrop_since("chat-a", 0, None).is_empty(),
             "a fresh topic still sent the old one"
         );
 
         r.remember("chat-a", vec![said("Codex", "about the parser")]);
-        let now = r.backdrop_for("chat-a", None);
+        let now = r.backdrop_since("chat-a", 0, None);
         assert_eq!(now.len(), 1);
         assert_eq!(now[0].text, "about the parser");
     }
 
     #[test]
     fn a_chat_that_has_never_had_a_round_has_nothing_to_show() {
-        assert!(Rounds::default().backdrop_for("chat-a", None).is_empty());
+        assert!(Rounds::default()
+            .backdrop_since("chat-a", 0, None)
+            .is_empty());
     }
 
     #[test]
@@ -1154,8 +1186,8 @@ mod tests {
         );
 
         let chosen = vec![said("Claude", "only this")];
-        assert_eq!(r.backdrop_for("chat-a", Some(&chosen)).len(), 1);
-        assert!(r.backdrop_for("chat-a", Some(&[])).is_empty());
+        assert_eq!(r.backdrop_since("chat-a", 0, Some(&chosen)).len(), 1);
+        assert!(r.backdrop_since("chat-a", 0, Some(&[])).is_empty());
     }
 
     // ---- card 71: a seat with no process behind it -------------------------
@@ -1198,7 +1230,7 @@ mod tests {
 
         ask_seat(&rounds, &m, "chat-a", &seat, "is this safe?", "/tmp").unwrap();
 
-        let record = rounds.backdrop_for("chat-a", None);
+        let record = rounds.backdrop_since("chat-a", 0, None);
         assert_eq!(record.len(), 1);
         assert_eq!(record[0].name, "Outside eye");
         assert!(record[0].answered);
@@ -1209,6 +1241,119 @@ mod tests {
         let (rounds, m, seat) = one_api_seat();
 
         assert!(ask_seat(&rounds, &m, "chat-a", &seat, "   ", "/tmp").is_err());
+    }
+
+    // ---- card 77: a seat sees the room from when it joined -----------------
+
+    #[test]
+    fn a_newcomer_is_not_shown_what_was_said_before_it_arrived() {
+        // WhatsApp's rule, and the reason for borrowing it: nobody has to be
+        // told what a seat knows, because everyone already knows this one.
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            (0..5)
+                .map(|i| said("Codex", &format!("point {i}")))
+                .collect(),
+        );
+
+        // Joined after five things had been said.
+        let sent = r.backdrop_since("chat-a", 5, None);
+
+        assert!(
+            sent.is_empty(),
+            "a newcomer was handed the backlog: {sent:?}"
+        );
+    }
+
+    #[test]
+    fn a_seat_that_was_there_throughout_sees_the_room_as_it_always_did() {
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            (0..5)
+                .map(|i| said("Codex", &format!("point {i}")))
+                .collect(),
+        );
+
+        let sent = r.backdrop_since("chat-a", 0, None);
+
+        assert_eq!(sent.len(), 5);
+        assert_eq!(sent[0].text, "point 0");
+    }
+
+    #[test]
+    fn a_seat_sees_only_what_happened_after_it_joined() {
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            (0..5)
+                .map(|i| said("Codex", &format!("point {i}")))
+                .collect(),
+        );
+        r.remember("chat-a", vec![said("Claude", "after you arrived")]);
+
+        let sent = r.backdrop_since("chat-a", 5, None);
+
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].text, "after you arrived");
+    }
+
+    #[test]
+    fn the_topic_marker_still_cuts_above_an_older_join_point() {
+        // Three cuts stack and the TIGHTEST wins. A seat present from the start
+        // is still not shown a topic the room has moved on from.
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            (0..5)
+                .map(|i| said("Codex", &format!("point {i}")))
+                .collect(),
+        );
+        r.new_topic("chat-a");
+        r.remember("chat-a", vec![said("Codex", "the new topic")]);
+
+        let sent = r.backdrop_since("chat-a", 0, None);
+
+        assert_eq!(
+            sent.len(),
+            1,
+            "the topic marker was overridden by the join point"
+        );
+        assert_eq!(sent[0].text, "the new topic");
+    }
+
+    #[test]
+    fn the_window_still_caps_a_seat_that_has_been_there_throughout() {
+        // Without a ceiling, a seat present for 200 exchanges is sent all 200
+        // every round — the squared cost card 69 exists to prevent.
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            (0..40)
+                .map(|i| said("Codex", &format!("point {i}")))
+                .collect(),
+        );
+
+        let sent = r.backdrop_since("chat-a", 0, None);
+
+        assert_eq!(sent.len(), DEFAULT_WINDOW);
+        assert_eq!(sent[0].text, "point 16");
+    }
+
+    #[test]
+    fn the_hosts_choice_still_beats_all_three_cuts() {
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            (0..40)
+                .map(|i| said("Codex", &format!("point {i}")))
+                .collect(),
+        );
+        let chosen = vec![said("Claude", "only this")];
+
+        assert_eq!(r.backdrop_since("chat-a", 39, Some(&chosen)).len(), 1);
+        assert!(r.backdrop_since("chat-a", 0, Some(&[])).is_empty());
     }
 
     #[test]
