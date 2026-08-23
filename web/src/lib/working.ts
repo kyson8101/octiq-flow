@@ -36,6 +36,7 @@ export function tokenLabel(n: number): string {
 export function workingLine({
   elapsedMs,
   tokens,
+  approx,
   activity,
   thinking,
   effort,
@@ -45,6 +46,11 @@ export function workingLine({
   elapsedMs?: number;
   /** Output tokens the agent has produced this turn, settled plus estimated. */
   tokens?: number;
+  /** True while part of that count is still a guess: a message is mid-flight,
+   *  so its tail is an estimate rather than a number anyone reported. The
+   *  tilde is the whole of the apology — it says "about", and it takes itself
+   *  away the moment the message closes and the real count lands. */
+  approx?: boolean;
   /** The agent's own words for a state worth naming — compacting, retrying.
    *  It wins the last slot: it is the more specific news. */
   activity?: string;
@@ -56,7 +62,7 @@ export function workingLine({
 }): string {
   const parts: string[] = [];
   if (typeof elapsedMs === "number") parts.push(elapsedLabel(elapsedMs));
-  if (tokens) parts.push(`↓ ${tokenLabel(tokens)} tokens`);
+  if (tokens) parts.push(`↓ ${approx ? "~" : ""}${tokenLabel(tokens)} tokens`);
   parts.push(
     activity ?? (thinking ? (effort ? `thinking with ${effort} effort` : "thinking…") : "working…"),
   );

@@ -322,6 +322,7 @@ export function Composer({
   activity,
   turnStartedAt,
   turnTokens,
+  turnApprox,
   thinking,
   thought,
   effort,
@@ -379,6 +380,9 @@ export function Composer({
    *  with nothing written is not. */
   turnStartedAt?: number;
   turnTokens?: number;
+  /** True while a message is still being written, so part of `turnTokens` is
+   *  an estimate. Drawn as a tilde — see `workingLine`. */
+  turnApprox?: boolean;
   /** True while the model is reasoning rather than typing, which is when the
    *  effort level is worth naming: it is the setting that chose this wait. */
   thinking?: boolean;
@@ -771,6 +775,7 @@ export function Composer({
           <Working
             since={turnStartedAt}
             tokens={turnTokens}
+            approx={turnApprox}
             activity={activity}
             thinking={thinking}
             effort={eff.label.toLowerCase()}
@@ -1783,12 +1788,14 @@ function ContextMeter({ tokens, window }: { tokens?: number; window?: number }) 
 function Working({
   since,
   tokens,
+  approx,
   activity,
   thinking,
   effort,
 }: {
   since?: number;
   tokens?: number;
+  approx?: boolean;
   activity?: string;
   thinking?: boolean;
   effort: string;
@@ -1804,6 +1811,7 @@ function Working({
       {workingLine({
         elapsedMs: since === undefined ? undefined : Date.now() - since,
         tokens,
+        approx,
         activity,
         thinking,
         effort,

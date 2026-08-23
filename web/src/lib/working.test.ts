@@ -65,4 +65,22 @@ describe("workingLine", () => {
       }),
     ).toBe("1m 03s · ↓ 2.1k tokens · Compacting the conversation to make room…");
   });
+
+  it("marks the count approximate while a message is still being written", () => {
+    expect(
+      workingLine({
+        elapsedMs: 252_000,
+        tokens: 16_543,
+        approx: true,
+        thinking: true,
+        effort: "very high",
+      }),
+    ).toBe("4m 12s · ↓ ~16.5k tokens · thinking with very high effort");
+  });
+
+  it("drops the tilde once the real count has settled", () => {
+    expect(workingLine({ elapsedMs: 252_000, tokens: 16_543 })).toBe(
+      "4m 12s · ↓ 16.5k tokens · working…",
+    );
+  });
 });

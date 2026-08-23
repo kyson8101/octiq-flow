@@ -26,6 +26,7 @@ import {
   reduceChat,
   thinkingNow,
   turnOutput,
+  turnOutputApprox,
   type ChatState,
   type RoomView,
   type Seat,
@@ -2103,6 +2104,7 @@ export default function App() {
             activity={chat.activity}
             turnStartedAt={chat.turnStartedAt}
             turnTokens={turnOutput(chat)}
+            turnApprox={turnOutputApprox(chat)}
             thinking={isThinking(chat)}
             thought={thinkingNow(chat)}
             effort={effort}

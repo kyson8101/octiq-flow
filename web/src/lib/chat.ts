@@ -578,6 +578,12 @@ export const thinkingNow = (s: ChatState): string => {
  *  still being written. */
 export const turnOutput = (s: ChatState): number => (s.turnTokens ?? 0) + (s.turnDraft ?? 0);
 
+/** True while part of that total is still a guess. The draft is the estimated
+ *  half — the agent's own thinking counter, plus four characters a token for
+ *  the prose and tool arguments in flight — and it is emptied the moment a
+ *  message reports its real count, so this goes quiet on its own. */
+export const turnOutputApprox = (s: ChatState): boolean => (s.turnDraft ?? 0) > 0;
+
 /** Four characters a token, the usual rough English rule. Only ever used for
  *  the message in flight, and only until its real count arrives. */
 const asTokens = (text: string): number => text.length / 4;
