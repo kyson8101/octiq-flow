@@ -34,7 +34,7 @@
 // So every message records the parent it came from, and every question about
 // what is currently being written is asked per parent.
 
-import { parseCommandEcho, parseSkillBrief } from "./skillRun";
+import { hasBriefHead, parseCommandEcho, parseSkillBrief } from "./skillRun";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 
 /** `stopped` is a call that was still in flight when the user stopped the turn.
@@ -990,16 +990,22 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // A skill's prompt, replayed once its Skill call has answered. The agent
     // briefing itself, in a user message's clothes — so it goes onto the card
     // of the call that asked for it, and never into a bubble.
-    if (parseSkillBrief(spoken)) {
-      return foldSkillBrief(
-        state,
-        spoken,
-        // On the envelope when the agent says which call: spelled this way in
-        // a transcript read back from disk, guessed at in snake case for the
-        // stream, and absent from older records altogether.
-        asStr(e.sourceToolUseID) || asStr(e.source_tool_use_id),
-        uuid,
-      );
+    //
+    // On the envelope when the agent says which call: spelled this way in a
+    // transcript read back from disk, guessed at in snake case for the stream,
+    // and absent from older records altogether.
+    const sourceId = asStr(e.sourceToolUseID) || asStr(e.source_tool_use_id);
+    // Two shapes, and the second one is why this is not just the first. A
+    // skill read off a folder opens with its directory, which is a thing the
+    // TEXT can be recognised by. A skill bundled with the agent has no such
+    // line — its instructions simply begin — so several screens of them read
+    // as something the user typed. What marks those is the envelope: `isMeta`
+    // is the agent saying "machinery, not typing", and the call named beside
+    // it says which card they belong to. Both are required, and the call has
+    // to be a Skill call, so nothing a person actually types can be taken off
+    // their side by this.
+    if (hasBriefHead(spoken) || (e.isMeta === true && isSkillCall(state, sourceId))) {
+      return foldSkillBrief(state, spoken, sourceId, uuid);
     }
 
     // A typed slash command is echoed wrapped in `<command-name>` tags rather
@@ -1143,6 +1149,11 @@ function newestSkillCall(state: ChatState): Extract<Block, { kind: "tool" }> | u
     }
   }
   return undefined;
+}
+
+/** Whether an id names a Skill call in this conversation. */
+function isSkillCall(state: ChatState, id: string): boolean {
+  return !!id && findTool(state, id)?.name.toLowerCase() === "skill";
 }
 
 function findTool(state: ChatState, id: string): Extract<Block, { kind: "tool" }> | undefined {

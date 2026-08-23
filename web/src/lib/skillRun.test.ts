@@ -12,7 +12,7 @@
 // this module exists to stop.
 import { describe, expect, it } from "vitest";
 
-import { parseCommandEcho, parseSkillBrief } from "./skillRun";
+import { hasBriefHead, parseCommandEcho, parseSkillBrief } from "./skillRun";
 
 const SHIP =
   "Base directory for this skill: /Users/kyson/03-projects/octiq-flow/.claude/skills/ship\n\n" +
@@ -27,11 +27,25 @@ const SLICE =
 
 describe("the prompt a skill puts in front of the agent", () => {
   it("is recognised by its first line, and nothing else is", () => {
-    expect(parseSkillBrief(SHIP)).not.toBeNull();
-    expect(parseSkillBrief("please ship it")).toBeNull();
-    expect(parseSkillBrief("")).toBeNull();
+    expect(hasBriefHead(SHIP)).toBe(true);
+    expect(hasBriefHead("please ship it")).toBe(false);
+    expect(hasBriefHead("")).toBe(false);
     // The same words deeper in a message are a quote, not a skill.
-    expect(parseSkillBrief("look:\nBase directory for this skill: /x/y")).toBeNull();
+    expect(hasBriefHead("look:\nBase directory for this skill: /x/y")).toBe(false);
+  });
+
+  it("reads one that names no folder, for the caller that knows better", () => {
+    // A skill bundled with the agent has no directory line — nothing in the
+    // words says what it is, and the envelope it arrived in has already said
+    // so (see the reducer). All that is left here is to read it.
+    expect(parseSkillBrief("# Fewer Prompts\n\nLook through the logs. Then stop.")).toEqual({
+      dir: "",
+      name: "",
+      scope: undefined,
+      summary: "Look through the logs.",
+      body: "# Fewer Prompts\n\nLook through the logs. Then stop.",
+    });
+    expect(parseSkillBrief("   ")).toBeNull();
   });
 
   it("names the skill after its folder", () => {

@@ -7,14 +7,20 @@
 // to itself, and drawn as a bubble it reads as "I said all this". These are
 // the two readers that tell such a message apart from the user's own words.
 
-/** How the skill prompt opens, every time. The line that follows it is the
- *  folder the skill was read from, and everything after is the SKILL.md. */
+/** How a skill READ OFF A FOLDER opens. The line that follows it is the folder
+ *  it was read from, and everything after is the SKILL.md.
+ *
+ *  Not every skill has one. A skill bundled with the agent itself is handed
+ *  over with no directory line at all — the instructions simply start — so
+ *  there is nothing in the WORDS to recognise it by, and the envelope has to
+ *  say so instead (`isMeta`, see lib/chat). */
 const BRIEF_HEAD = "Base directory for this skill: ";
 
 export type SkillBrief = {
-  /** The folder the skill lives in. */
+  /** The folder the skill lives in, or "" for one that named no folder. */
   dir: string;
-  /** The skill's own name — its folder's name. */
+  /** The skill's own name — its folder's name. Empty when there was no
+   *  folder to take it from; the Skill call's own arguments have it. */
   name: string;
   /** The plugin it came from, when it came from one. */
   scope?: string;
@@ -29,11 +35,24 @@ export type SkillBrief = {
  *  `…/plugins/cache/<marketplace>/<plugin>/<version>/skills/<skill>`. */
 const PLUGIN_DIR = /\/plugins\/cache\/[^/]+\/([^/]+)\/[^/]+\/skills\/[^/]+\/?$/;
 
-/** Read the prompt a skill put in front of the agent, or null for anything
- *  else. Only a message that OPENS with the directory line counts — the same
- *  words quoted deeper in a message are a quote. */
+/** Does this text announce itself as a skill's prompt? Only a message that
+ *  OPENS with the directory line does — the same words quoted deeper in a
+ *  message are a quote. */
+export function hasBriefHead(text: string): boolean {
+  return text.startsWith(BRIEF_HEAD);
+}
+
+/** Read the prompt a skill put in front of the agent.
+ *
+ *  Without the directory line there is nothing here to check: whoever calls
+ *  this has already decided the message IS a briefing, from the envelope it
+ *  came in. So it is read as instructions with no folder to name, and null
+ *  means only that there was nothing to read. */
 export function parseSkillBrief(text: string): SkillBrief | null {
-  if (!text.startsWith(BRIEF_HEAD)) return null;
+  if (!hasBriefHead(text)) {
+    const body = text.trim();
+    return body ? { dir: "", name: "", summary: summarise(body), body } : null;
+  }
   const nl = text.indexOf("\n");
   const dir = (nl === -1 ? text : text.slice(0, nl)).slice(BRIEF_HEAD.length).trim();
   if (!dir) return null;

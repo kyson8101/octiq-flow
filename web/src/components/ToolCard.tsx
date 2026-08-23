@@ -182,7 +182,9 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
             <>
               <div className="tool-label">
                 instructions
-                <span className="tool-note">{brief.dir}</span>
+                {/* Absent for a skill bundled with the agent: there is no
+                    folder it was read from to name. */}
+                {brief.dir && <span className="tool-note">{brief.dir}</span>}
               </div>
               <div className="tool-brief prose">
                 <Markdown remarkPlugins={[remarkGfm]}>{brief.body}</Markdown>

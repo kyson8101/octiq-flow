@@ -40,6 +40,11 @@ import workflowStream from "./__fixtures__/workflow.jsonl?raw";
 // call (`sourceToolUseID`) where the live stream does not.
 import commandEchoStream from "./__fixtures__/command-echo.jsonl?raw";
 import skillBriefLines from "./__fixtures__/skill-brief-from-disk.jsonl?raw";
+// A skill handed to the agent WITHOUT the directory line — three verbatim
+// lines of an on-disk transcript (the Skill call, its result, the prompt).
+// Bundled skills arrive this way, and the only thing marking the prompt as
+// machinery is the envelope: `isMeta` with the call's id beside it.
+import skillBriefMeta from "./__fixtures__/skill-brief-meta.jsonl?raw";
 import skillCallStream from "./__fixtures__/skill-call.jsonl?raw";
 // A live stream of the user typing `/model haiku` and then asking one thing.
 // Recorded on `--model opus` so the switch is visible, with the two prompts
@@ -66,6 +71,7 @@ const FIXTURES: Record<string, string> = {
   "workflow.jsonl": workflowStream,
   "command-echo.jsonl": commandEchoStream,
   "skill-brief-from-disk.jsonl": skillBriefLines,
+  "skill-brief-meta.jsonl": skillBriefMeta,
   "skill-call.jsonl": skillCallStream,
   "model-switch.jsonl": modelSwitchStream,
   "config-command.jsonl": configStream,
@@ -136,6 +142,30 @@ describe("a skill run", () => {
     const [skill] = tools(s.messages);
     expect(skill.id).toBe("toolu_01XJNtfPJaEP4u4AD8NDmeWr");
     expect(skill.brief).toContain("# Ship");
+  });
+
+  it("keeps a prompt with no directory line off the user's side too", () => {
+    const s = replay("skill-brief-meta.jsonl");
+
+    // This is the bug: a bundled skill's instructions are not written as
+    // `Base directory for this skill: …`, so nothing in the TEXT says what
+    // they are. Read as an ordinary user turn they became a bubble reading as
+    // "I said all this" — several screens of it.
+    expect(s.messages.some((m) => m.role === "user")).toBe(false);
+    const [skill] = tools(s.messages);
+    expect(skill.id).toBe("toolu_01LiD6SEW59yFmcWwSnJGhMw");
+    expect(skill.brief).toContain("# Fewer Permission Prompts");
+  });
+
+  it("still lets an ordinary message through when the envelope says nothing", () => {
+    // The guard rail: only a message the agent MARKED as machinery, and named
+    // a Skill call on, is taken off the user's side. Anything else typed is
+    // still theirs, whatever it happens to start with.
+    const s = reduceChat(emptyChat(), {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "# Fewer Permission Prompts" }] },
+    });
+    expect(s.messages.map((m) => m.role)).toEqual(["user"]);
   });
 
   it("folds a prompt in once, however many times a catch-up replays it", () => {
