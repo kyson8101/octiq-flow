@@ -33,6 +33,7 @@ import {
 import {
   byProject,
   loadConversations,
+  opensBlank,
   saveConversations,
   shortTitle,
   titleFrom,
@@ -308,6 +309,12 @@ export default function App() {
   // it changes.
   const runningRef = useRef(running);
   runningRef.current = running;
+  // The same, for the loaded chats. `openConversation` has to know whether the
+  // one being opened already has words in it — and it must NOT be rebuilt every
+  // time any chat says anything, because the sidebar and the notification
+  // handler both hold on to it.
+  const chatsRef = useRef(chats);
+  chatsRef.current = chats;
 
   // The level each chat was last asked to change to. An agent that will not
   // take the change says so on its own event, well after the tap, so this is
@@ -1063,6 +1070,14 @@ export default function App() {
     // has never seen it, `seq` is absent and this replays the whole thing.
     const key = keyFor(c.id);
     const from = seen.current[key] ?? c.seq ?? 0;
+    // ...and when that replay is the WHOLE conversation, say so while it runs.
+    // The chat list comes from the server and the messages do not, so a chat
+    // held on another device opens with nothing in it — and a conversation with
+    // no messages draws the page you START one from. Picking yesterday's work
+    // out of the sidebar on a phone therefore looked exactly like a chat that
+    // had been thrown away, for as long as the replay took.
+    const blank = opensBlank(c, chatsRef.current[c.id]);
+    if (blank) setReading((prev) => ({ ...prev, [c.id]: true }));
     bridge
       .invoke<{ seq: number; event: unknown }[]>("chat_since", { key, after: from })
       .then((missed) => {
@@ -1072,7 +1087,19 @@ export default function App() {
           patch(c.id, (st) => reduceChat(st, item.event));
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => {
+        if (!blank) return;
+        // Whatever came back — the conversation, nothing at all, or a failure —
+        // the waiting is over. An empty answer falls through to the ordinary
+        // empty page, which is then the truth about this chat.
+        setReading((prev) => {
+          if (!prev[c.id]) return prev;
+          const next = { ...prev };
+          delete next[c.id];
+          return next;
+        });
+      });
     setProjectId(c.projectId);
     setConversationId(c.id);
     if (c.modelId) {
@@ -1889,10 +1916,18 @@ export default function App() {
             // has no messages, and the page for a conversation with no
             // messages is the one offering to open a session — the very thing
             // that was just done. So: say it is opening, and say which.
+            //
+            // Two ways in and one name: a session picked out of the agent's own
+            // history is named by the row that was picked, and a chat opened
+            // from the sidebar by the name it already carries there.
             <div className="hero is-waiting">
               <div className="dots" aria-label="opening" />
               <p className="hero-sub">
-                opening “{resumed[conversationId]?.title ?? "the session"}”…
+                opening “
+                {resumed[conversationId]?.title ??
+                  conversations.find((c) => c.id === conversationId)?.title ??
+                  "the session"}
+                ”…
               </p>
             </div>
           ) : chat.messages.length === 0 ? (

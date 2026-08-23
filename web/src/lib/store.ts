@@ -98,6 +98,22 @@ export function saveConversations(list: Conversation[]): void {
   }
 }
 
+/** Will opening this conversation land on an EMPTY page?
+ *
+ *  It will whenever neither copy of it has a word in it: not the one loaded in
+ *  this page, and not the one in storage. That is the ordinary state of a chat
+ *  held on another device — the list comes from the server, the messages do
+ *  not, and they are replayed from the chat's own record after it is opened.
+ *
+ *  Worth asking because the page for a conversation with no messages is the
+ *  page you START one from. Without this, opening a chat from the sidebar on a
+ *  phone that has never seen it looks exactly like a chat that was thrown
+ *  away — for as long as the replay takes, with nothing on screen admitting
+ *  that anything is happening. */
+export function opensBlank(stored: Conversation, loaded?: { messages: Message[] }): boolean {
+  return (loaded?.messages.length ?? 0) === 0 && stored.messages.length === 0;
+}
+
 /** A short name from a line of prose. Split out from `titleFrom` because the
  *  chat is now named the moment it starts, when the only thing to name it after
  *  is the raw text on its way to the agent — one rule, so the name does not
