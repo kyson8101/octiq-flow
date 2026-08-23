@@ -793,7 +793,11 @@ export function Composer({
         </div>
       )}
 
+      {/* The eyebrow: the hint on the left, the mode on the right. No new row —
+          this one was already here, saying "Enter to send", and it was empty on
+          the right the whole time. */}
       <div className="composer-hint">
+        <span className="composer-hint-said">
         {busy ? (
           <Working
             since={turnStartedAt}
@@ -806,6 +810,10 @@ export function Composer({
         ) : (
           activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")
         )}
+        </span>
+        {/* Card 78 — the mode, at the right end of the eyebrow. Visible in both
+            modes, because it is the way back out of a room as well as in. */}
+        {onRoom && <ChatModeTabs room={room ?? false} onPick={onRoom} />}
       </div>
 
       {slashOpen && (
@@ -1001,13 +1009,6 @@ export function Composer({
           }}
         />
         <div className="composer-row">
-          {/* Card 78 — which kind of chat this is, as two icons rather than two
-              words: this row already holds seven controls and a send button.
-              It stays HERE, in the toolbar, while the group's own controls
-              slide out above the box — the mode is a property of the chat, not
-              one of the group's actions, and it has to be reachable from both
-              modes to get back. */}
-          {onRoom && <ChatModeTabs room={room ?? false} onPick={onRoom} />}
 
           {/* One "+", two ways in. They were a clip and a picture standing
               side by side, which read as the same idea drawn twice — see

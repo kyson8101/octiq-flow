@@ -2265,15 +2265,27 @@ body {
 /* Above the box, not in the button row: it is a sentence, and a sentence in a
    row of 36px buttons gets whatever is left, which on a phone was eight
    characters and an ellipsis. */
+/* The eyebrow above the box: what the keys do on the left, what kind of chat
+   this is on the right. One row that was already here. */
 .composer-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   max-width: 780px;
   margin: 0 auto 5px;
   padding: 0 13px;
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
+
+/* The words take what is left and cut, rather than pushing the mode off the
+   end — a running turn writes a whole sentence in here. */
+.composer-hint-said {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 11.5px;
-  color: var(--fg-3);
 }
 
 /* Holds the place the status line used to take in the row, so Send stays at

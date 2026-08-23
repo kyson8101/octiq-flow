@@ -11,7 +11,8 @@
 .mode-tab {
   display: inline-flex;
   align-items: center;
-  padding: 0.25rem;
+  /* Small: it is an eyebrow, not a toolbar. */
+  padding: 0.1875rem;
   border: 1px solid transparent;
   border-radius: 999px;
   background: none;
@@ -25,12 +26,13 @@
   color: var(--fg-1);
 }
 
-/* The current mode is a filled pill — never a left bar. It has to read at a
-   glance from across the box, and it sits in a row rather than a list. */
+/* The current mode is a background fill — never a left bar.
+   Muted, not the accent: this sits in the eyebrow, which is the quietest row on
+   the screen, and a bright pill there would shout over the words beside it. It
+   only has to say WHICH of two, and there are only ever two. */
 .mode-tab.is-on {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
+  background: var(--bg-2);
+  color: var(--fg-1);
 }
 
 /* Card 78 — the group's own row, above the box.
