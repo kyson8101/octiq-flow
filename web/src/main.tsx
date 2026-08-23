@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { ConfirmProvider } from "./components/Confirm";
+import { OpenFileProvider } from "./components/OpenFile";
 import "./styles.css";
 import { applyTheme, savedThemeId } from "./lib/themeStore";
 
@@ -12,7 +13,11 @@ applyTheme(savedThemeId());
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ConfirmProvider>
-      <App />
+      {/* Inside the confirm one: the file panel asks before throwing unsaved
+          edits away. */}
+      <OpenFileProvider>
+        <App />
+      </OpenFileProvider>
     </ConfirmProvider>
   </StrictMode>,
 );

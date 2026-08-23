@@ -78,6 +78,7 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
+import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
@@ -1779,22 +1780,26 @@ export default function App() {
                   where the reader was, and the list scrolls itself to the
                   bottom on mount — so the back arrow would always land at the
                   end of the conversation instead of where they left. */}
-              <div className="chat-main">
-                <MessageList
-                  messages={chat.messages}
-                  busy={chat.busy}
-                  stoppedAt={chat.stoppedAt}
-                  compactingSince={chat.compactingSince}
-                  conversationId={conversationId ?? undefined}
-                />
-                {focused && (
-                  <AgentFocus
-                    run={focused}
+              {/* A path written into a reply is relative to the PROJECT, and
+                  only this knows which one is open — see components/ProsePath. */}
+              <PathCwdProvider value={project?.primary_path ?? ""}>
+                <div className="chat-main">
+                  <MessageList
                     messages={chat.messages}
-                    onBack={() => setFocusedAgent(null)}
+                    busy={chat.busy}
+                    stoppedAt={chat.stoppedAt}
+                    compactingSince={chat.compactingSince}
+                    conversationId={conversationId ?? undefined}
                   />
-                )}
-              </div>
+                  {focused && (
+                    <AgentFocus
+                      run={focused}
+                      messages={chat.messages}
+                      onBack={() => setFocusedAgent(null)}
+                    />
+                  )}
+                </div>
+              </PathCwdProvider>
               {/* The right column: the agents this chat started, as a card
                   that looks like it is floating but keeps its own space — the
                   conversation ends where the column begins, so nothing is ever

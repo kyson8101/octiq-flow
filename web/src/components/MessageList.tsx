@@ -14,7 +14,7 @@
 // agent's own.
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Attached, Block, Message } from "../lib/chat";
 import { ToolCard } from "./ToolCard";
@@ -29,6 +29,8 @@ import { parseContextReport } from "../lib/contextReport";
 import { copyText } from "../lib/clipboard";
 import { clipMessage } from "../lib/clip";
 import { ProseLink } from "./ProseLink";
+import { ProsePath } from "./ProsePath";
+import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -105,6 +107,15 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
   );
 }
 
+/** What the reply's markdown renders as. `PATH_TAG` is not an HTML element —
+ *  it is the marker `rehypeFilePaths` leaves behind, and this is what turns it
+ *  into something clickable. */
+const PROSE_COMPONENTS = {
+  pre: CodeBlock,
+  a: ProseLink,
+  [PATH_TAG]: ProsePath,
+} as Components;
+
 /** One top-level markdown block.
  *
  *  Memoised on its own text: a settled block's text never changes again, so
@@ -121,8 +132,10 @@ const MarkdownBlock = memo(function MarkdownBlock({
   return (
     <Markdown
       remarkPlugins={[remarkGfm]}
-      rehypePlugins={animate ? [rehypeWordFade] : []}
-      components={{ pre: CodeBlock, a: ProseLink }}
+      // Paths first: the word fade cuts text into one span per word, and a
+      // path cut up that way is no longer there to find.
+      rehypePlugins={animate ? [rehypeFilePaths, rehypeWordFade] : [rehypeFilePaths]}
+      components={PROSE_COMPONENTS}
     >
       {closeFence(text)}
     </Markdown>

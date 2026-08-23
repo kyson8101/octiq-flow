@@ -18,12 +18,18 @@
 // Where the paths come from is unchanged: `candidatePaths` collects every
 // path-ish string from the transcript, and the backend's `resolve_paths` throws
 // away the ones that do not exist. What IS new is the cache. Every candidate is
-// asked about once and the answer is kept, so the list only ever grows: a
-// re-scan cannot blank it, and a session that mentions the same file in thirty
-// turns costs one existence check, not thirty.
+// asked about once and the answer is kept, so a re-scan can never blank the
+// list, and a session that mentions the same file in thirty turns costs one
+// existence check, not thirty.
 //
-// A long session's list gets long, so there are two ways to cut it down and one
-// way to tell the rows apart at a glance:
+// A long session names more files than a column can be read: the list is
+// capped at the newest 25, which is far enough back to cover what a chat is
+// still about. Older ones are not hidden behind anything — they are simply not
+// in this list, and the git panel is where a whole branch's worth of files
+// lives.
+//
+// Under the cap there are two ways to cut it down further and one way to tell
+// the rows apart at a glance:
 //
 //   * a text box, matched against the whole path, so a folder narrows it too;
 //   * a TYPE dropdown, built from the extensions actually present with a count
@@ -41,12 +47,12 @@ import {
   fileTypes,
   formatModified,
   isImage,
-  isPdf,
   modifiedTitle,
+  newestFiles,
   typeLabel,
 } from "../lib/files";
-import { Viewer } from "./Viewer";
-import { FilePanel } from "./FilePanel";
+import { askPaths, knownPaths, subscribePaths } from "../lib/pathStore";
+import { useOpenFile } from "./OpenFile";
 import type { Message } from "../lib/chat";
 
 const WIDTH_KEY = "octiq.v2.filesWidth";
@@ -64,6 +70,12 @@ const CHAT_MIN_W = 340;
  *  something to do per delta; a second's lag on a list nobody is reading yet
  *  costs nothing. */
 const LIVE_MS = 1200;
+
+/** How many files the panel holds, newest first. A hard ceiling rather than a
+ *  first page: past two dozen rows the list has stopped being "what this chat
+ *  is about" and become a log, and the older end of it is the part nobody
+ *  scrolls to. */
+const MAX_FILES = 25;
 
 /** Below this many files the filter row is more chrome than help: a list this
  *  short is entirely on screen already, and reading it beats narrowing it. */
@@ -87,7 +99,8 @@ function clampWidth(px: number): number {
 /** Every file this conversation has touched that actually exists, newest first.
  *
  *  Newest first because the file worth opening is nearly always the one the
- *  last turn was about; the rest is history you scroll to.
+ *  last turn was about, and never more than MAX_FILES of them — the older end
+ *  of a long session's list is history nobody scrolls to.
  *
  *  Scanned when the transcript gains or loses a message — about once per tool
  *  call, which is the rate files actually appear at. `active` buys one thing on
@@ -100,18 +113,6 @@ export function useSessionFiles(
   active: boolean,
   busy: boolean,
 ): string[] {
-  /** candidate → the real path it resolved to, or null for "no such file".
-   *  A ref, not state: nothing renders from it directly, and it must survive
-   *  every re-render between scans or the caching is pointless. */
-  const cache = useRef(new Map<string, string | null>());
-  /** The cwd the cache's answers were given for. A relative path means a
-   *  different file under a different project, so the answers do not carry. */
-  const cachedFor = useRef(cwd);
-  if (cachedFor.current !== cwd) {
-    cache.current = new Map();
-    cachedFor.current = cwd;
-  }
-
   const [paths, setPaths] = useState<string[]>([]);
   /** Bumped when the transcript is worth scanning again. The scan reads
    *  `messages` through a ref so that a delta arriving does not, on its own,
@@ -139,20 +140,10 @@ export function useSessionFiles(
   const candidates = useMemo(() => candidatePaths(latest.current), [gen]);
 
   useEffect(() => {
-    let alive = true;
-
-    /** Rebuild the list from what the cache knows. Cheap, and it is what makes
+    /** Rebuild the list from what the store knows. Cheap, and it is what makes
      *  a scan that learns nothing new a no-op rather than a flicker. */
     const apply = () => {
-      if (!alive) return;
-      const seen = new Set<string>();
-      const out: string[] = [];
-      for (let i = candidates.length - 1; i >= 0; i--) {
-        const real = cache.current.get(candidates[i]);
-        if (!real || seen.has(real)) continue;
-        seen.add(real);
-        out.push(real);
-      }
+      const out = newestFiles(candidates, knownPaths(candidates, cwd), MAX_FILES);
       // Same list, same array: re-rendering the panel every LIVE_MS to draw
       // exactly what is already on screen is the thing this file exists to
       // stop doing.
@@ -161,30 +152,13 @@ export function useSessionFiles(
       );
     };
 
-    const unknown = candidates.filter((c) => !cache.current.has(c));
-    if (unknown.length === 0) {
-      apply();
-      return;
-    }
-
-    bridge
-      .invoke<(string | null)[]>("resolve_paths", { paths: unknown, cwd })
-      .then((resolved) => {
-        // Position by position: null means "no such file", which is most of
-        // what prose throws at it.
-        unknown.forEach((c, i) => cache.current.set(c, resolved?.[i] ?? null));
-        apply();
-      })
-      .catch(() => {
-        // Deliberately NOT cached as "does not exist". A check that failed is
-        // not an answer, and writing one in would hide a real file for the rest
-        // of the session; leaving it unknown means the next scan asks again.
-        apply();
-      });
-
-    return () => {
-      alive = false;
-    };
+    // Draw what is already known, then follow the answers in. The store is
+    // shared with the clickable paths in the transcript (lib/pathStore), so
+    // most of a re-scan's candidates are answered before this even asks.
+    apply();
+    const off = subscribePaths(apply);
+    askPaths(candidates, cwd);
+    return off;
   }, [candidates, cwd]);
 
   return paths;
@@ -266,7 +240,11 @@ export function FilesButton({
       // Named apart from the view switch's "Files", which opens the editor.
       // Two controls one bar apart, both called Files, would be a coin toss.
       aria-label={`Files in this chat — ${count}`}
-      title={`${count} file${count === 1 ? "" : "s"} this chat has touched`}
+      title={
+        count === MAX_FILES
+          ? `The last ${MAX_FILES} files this chat has touched`
+          : `${count} file${count === 1 ? "" : "s"} this chat has touched`
+      }
       onClick={onToggle}
     >
       <FileIcon />
@@ -292,8 +270,7 @@ export function SessionFilesPanel({
   busy: boolean;
   onClose: () => void;
 }) {
-  const [viewing, setViewing] = useState<string | null>(null);
-  const [opened, setOpened] = useState<string | null>(null);
+  const openFile = useOpenFile();
   const [filter, setFilter] = useState("");
   const [type, setType] = useState(ALL_TYPES);
   const modified = useModified(paths, open, busy);
@@ -406,9 +383,14 @@ export function SessionFilesPanel({
             {/* Once a filter is on, the count has to say what it is counting —
                 "12 in this chat" over a list of three is a lie you have to
                 count the rows to catch. */}
-            {shown.length === paths.length
-              ? `${paths.length} in this chat`
-              : `${shown.length} of ${paths.length}`}
+            {shown.length !== paths.length
+              ? `${shown.length} of ${paths.length}`
+              : /* At the cap the count is not the session's total, and saying
+                   "25 in this chat" over a chat that touched two hundred is the
+                   same kind of lie the line above exists to avoid. */
+                paths.length === MAX_FILES
+                ? `Last ${MAX_FILES} in this chat`
+                : `${paths.length} in this chat`}
           </span>
           <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
             ✕
@@ -470,9 +452,7 @@ export function SessionFilesPanel({
                   className={`file ${isImage(path) ? "is-image" : ""}`}
                   type="button"
                   title={path}
-                  // A picture or a PDF is best seen whole; anything else opens
-                  // in the side panel, where it can also be edited.
-                  onClick={() => (isImage(path) || isPdf(path) ? setViewing(path) : setOpened(path))}
+                  onClick={() => openFile(path)}
                 >
                   <span className="file-icon" aria-hidden="true">
                     {isImage(path) ? <ImageIcon /> : <FileIcon />}
@@ -494,9 +474,6 @@ export function SessionFilesPanel({
           </ul>
         </div>
       </aside>
-
-      {viewing && <Viewer path={viewing} onClose={() => setViewing(null)} />}
-      {opened && <FilePanel path={opened} onClose={() => setOpened(null)} />}
     </>
   );
 }

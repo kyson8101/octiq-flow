@@ -8,7 +8,14 @@
 // depend on the machine's timezone.
 import { describe, expect, it } from "vitest";
 
-import { fileExt, fileTypes, formatModified, modifiedTitle, typeLabel } from "./files";
+import {
+  fileExt,
+  fileTypes,
+  formatModified,
+  modifiedTitle,
+  newestFiles,
+  typeLabel,
+} from "./files";
 
 describe("fileExt", () => {
   it("takes the extension from the NAME, not the path", () => {
@@ -82,5 +89,68 @@ describe("formatModified", () => {
       "Modified 19 Aug 2026 at 09:05",
     );
     expect(modifiedTitle(null)).toBe("");
+  });
+});
+
+describe("newestFiles", () => {
+  /** The shape the panel keeps: every candidate it has asked about, mapped to
+   *  the real file it turned out to be, or null for "no such file". */
+  const answers = (pairs: [string, string | null][]) => new Map(pairs);
+
+  it("is newest last-mentioned first, and drops what does not exist", () => {
+    expect(
+      newestFiles(
+        ["a.ts", "not-a-file", "b.ts"],
+        answers([
+          ["a.ts", "/repo/a.ts"],
+          ["not-a-file", null],
+          ["b.ts", "/repo/b.ts"],
+        ]),
+        25,
+      ),
+    ).toEqual(["/repo/b.ts", "/repo/a.ts"]);
+  });
+
+  it("shows a file mentioned twice once, at its newest mention", () => {
+    expect(
+      newestFiles(
+        ["a.ts", "b.ts", "./a.ts"],
+        answers([
+          ["a.ts", "/repo/a.ts"],
+          ["b.ts", "/repo/b.ts"],
+          ["./a.ts", "/repo/a.ts"],
+        ]),
+        25,
+      ),
+    ).toEqual(["/repo/a.ts", "/repo/b.ts"]);
+  });
+
+  it("leaves out a candidate nothing has answered for yet", () => {
+    expect(newestFiles(["a.ts", "pending.ts"], answers([["a.ts", "/repo/a.ts"]]), 25)).toEqual([
+      "/repo/a.ts",
+    ]);
+  });
+
+  it("stops at the limit, keeping the newest", () => {
+    const many = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
+    const list = newestFiles(
+      many,
+      answers(many.map((c) => [c, `/repo/${c}`])),
+      25,
+    );
+    expect(list).toHaveLength(25);
+    expect(list[0]).toBe("/repo/f39.ts");
+    expect(list[24]).toBe("/repo/f15.ts");
+  });
+
+  it("counts only the files it kept, so a dead candidate does not eat a slot", () => {
+    const many = Array.from({ length: 60 }, (_, i) => `f${i}.ts`);
+    const list = newestFiles(
+      many,
+      answers(many.map((c, i) => [c, i % 2 === 0 ? `/repo/${c}` : null])),
+      25,
+    );
+    expect(list).toHaveLength(25);
+    expect(list[0]).toBe("/repo/f58.ts");
   });
 });

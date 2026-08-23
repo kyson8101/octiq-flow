@@ -189,6 +189,37 @@ export function candidatePaths(messages: Message[]): string[] {
   return out;
 }
 
+/** The files to actually show, out of every candidate the transcript named.
+ *
+ *  `resolved` is the panel's cache: candidate → the real file it turned out to
+ *  be, or `null` for "no such file". A candidate missing from it has not been
+ *  asked about yet and is simply left out; the next scan puts it in.
+ *
+ *  Newest first — the file worth opening is nearly always the one the last turn
+ *  was about — and one row per real file, so a path named in thirty turns is
+ *  one row at its newest mention rather than thirty.
+ *
+ *  `limit` is a hard cap on the answer, and it counts ROWS rather than
+ *  candidates: prose throws far more words that merely look like filenames at
+ *  this than there are files, and letting those eat slots would show a handful
+ *  of rows and call it a full list.
+ */
+export function newestFiles(
+  candidates: string[],
+  resolved: Map<string, string | null>,
+  limit: number,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let i = candidates.length - 1; i >= 0 && out.length < limit; i--) {
+    const real = resolved.get(candidates[i]);
+    if (!real || seen.has(real)) continue;
+    seen.add(real);
+    out.push(real);
+  }
+  return out;
+}
+
 function collectFromBlock(
   block: Block,
   add: (v: unknown) => void,
