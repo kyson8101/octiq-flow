@@ -23,6 +23,26 @@ import { AgentLogo } from "./AgentLogo";
 
 import "./RoundBar.css";
 
+/** Put it to everyone: a small burst going outward. */
+const ASK = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="12" cy="12" r="3" />
+    <circle cx="4.5" cy="7" r="2" />
+    <circle cx="19.5" cy="7" r="2" />
+    <circle cx="4.5" cy="17" r="2" />
+    <circle cx="19.5" cy="17" r="2" />
+  </svg>
+);
+
+/** A line drawn under what came before. */
+const CUT = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path d="M3 12h18" strokeLinecap="round" />
+    <path d="M6 6.5h12" strokeLinecap="round" opacity="0.35" />
+    <path d="M6 17.5h12" strokeLinecap="round" opacity="0.35" />
+  </svg>
+);
+
 /** A round as the backend reports it (`chat_round_state`). */
 export type RoundState = {
   running: boolean;
@@ -58,8 +78,16 @@ export function RoundBar({
   if (!live) {
     return (
       <div className="round-bar">
-        <button type="button" className="round-ask" onClick={onAsk}>
-          Ask the room
+        {/* Card 78 — an icon in the toolbar. The NAME stays on the button, for
+            a screen reader and for anyone who has not learned the shape. */}
+        <button
+          type="button"
+          className="round-ask"
+          aria-label="Ask the room"
+          title="Ask the room"
+          onClick={onAsk}
+        >
+          {ASK}
         </button>
         {/* Only BETWEEN rounds. Cutting the history out from under seats that
             are mid-discussion would leave the ones still to speak answering a
@@ -68,10 +96,11 @@ export function RoundBar({
           <button
             type="button"
             className="round-topic"
-            title="Nothing said before now is shown to any seat again"
+            aria-label="New topic"
+            title="New topic — nothing said before now is shown to any seat again"
             onClick={onNewTopic}
           >
-            New topic
+            {CUT}
           </button>
         )}
         {/* The transcript used to carry a rule saying this. Every notice about

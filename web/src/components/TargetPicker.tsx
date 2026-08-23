@@ -25,47 +25,84 @@ export function TargetPicker({
   seats,
   to,
   onPick,
+  open = false,
+  onOpen,
 }: {
   /** Who is in the room. Empty in an ordinary chat. */
   seats: Seat[];
   /** The seat id currently chosen, or `null` for the whole room. */
   to: string | null;
   onPick: (seatId: string | null) => void;
+  /** Whether the full list is showing. */
+  open?: boolean;
+  onOpen?: (open: boolean) => void;
 }) {
   if (seats.length === 0) return null;
 
+  const chosen = seats.find((s) => s.id === to);
+  const label = chosen?.name ?? "Everyone";
+
   return (
-    <div className="target-pick" role="radiogroup" aria-label="Send to">
+    <div className="target-pick">
+      {/* Card 78 — ONE control, not a pill per seat. This sits in a row that
+          already holds seven others, and a room with four seats would eat it. */}
       <button
         type="button"
-        role="radio"
-        aria-checked={to === null}
-        className={`target-btn ${to === null ? "is-on" : ""}`}
-        onClick={() => onPick(null)}
+        className="target-now"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={`Sending to ${label}`}
+        onClick={() => onOpen?.(!open)}
       >
-        Everyone
+        {chosen && (
+          <AgentLogo agent={chosen.agent === "claude" ? "claude" : "codex"} size={12} />
+        )}
+        {label}
       </button>
-      {seats.map((seat) => (
-        <button
-          key={seat.id}
-          type="button"
-          role="radio"
-          aria-checked={to === seat.id}
-          className={`target-btn ${to === seat.id ? "is-on" : ""}`}
-          onClick={() => onPick(seat.id)}
-        >
-          <AgentLogo agent={seat.agent === "claude" ? "claude" : "codex"} size={12} />
-          {seat.name}
-          {/* Said here as well as on the room panel, because this is where the
-              choice is actually made: picking a seat without knowing it cannot
-              see the project is picking blind. */}
-          {seat.context === "room_only" && (
-            <span className="target-blind" title="Cannot see the project">
-              room-only
-            </span>
-          )}
-        </button>
-      ))}
+
+      {open && (
+        <>
+          <div className="target-scrim" onClick={() => onOpen?.(false)} />
+          <div className="target-menu" role="listbox" aria-label="Send to">
+            <button
+              type="button"
+              role="option"
+              aria-selected={to === null}
+              className={`target-opt ${to === null ? "is-on" : ""}`}
+              onClick={() => {
+                onPick(null);
+                onOpen?.(false);
+              }}
+            >
+              Everyone
+            </button>
+            {seats.map((seat) => (
+              <button
+                key={seat.id}
+                type="button"
+                role="option"
+                aria-selected={to === seat.id}
+                className={`target-opt ${to === seat.id ? "is-on" : ""}`}
+                onClick={() => {
+                  onPick(seat.id);
+                  onOpen?.(false);
+                }}
+              >
+                <AgentLogo agent={seat.agent === "claude" ? "claude" : "codex"} size={12} />
+                {seat.name}
+                {/* Said here as well as on the room panel, because this is
+                    where the choice is actually made: picking a seat without
+                    knowing it cannot see the project is picking blind. */}
+                {seat.context === "room_only" && (
+                  <span className="target-blind" title="Cannot see the project">
+                    room-only
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

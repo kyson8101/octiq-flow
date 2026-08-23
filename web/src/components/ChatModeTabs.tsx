@@ -22,6 +22,24 @@
  */
 import "./ChatModeTabs.css";
 
+/** One person. */
+const ONE = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="12" cy="8" r="3.6" />
+    <path d="M5 20c0-3.6 3.1-5.6 7-5.6s7 2 7 5.6z" />
+  </svg>
+);
+
+/** Several, overlapping — the shape a group has in every app that has one. */
+const MANY = (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="9" cy="8.5" r="3.2" />
+    <circle cx="17" cy="9.5" r="2.4" />
+    <path d="M2.5 20c0-3.3 2.9-5.1 6.5-5.1s6.5 1.8 6.5 5.1z" />
+    <path d="M17 13.4c2.7 0 4.5 1.4 4.5 3.9h-4.1c0-1.5-.5-2.8-1.4-3.8z" />
+  </svg>
+);
+
 export function ChatModeTabs({
   room,
   onPick,
@@ -40,18 +58,26 @@ export function ChatModeTabs({
         role="tab"
         aria-selected={!room}
         className={`mode-tab ${room ? "" : "is-on"}`}
+        /* Named, not just drawn. An icon with no name is a mystery to a
+           screen reader and to anyone who has not learned it yet — and
+           `aria-label` is how every other icon button in this composer does
+           it. */
+        aria-label="Single chat"
+        title="Single chat"
         onClick={() => onPick(false)}
       >
-        Single chat
+        {ONE}
       </button>
       <button
         type="button"
         role="tab"
         aria-selected={room}
         className={`mode-tab ${room ? "is-on" : ""}`}
+        aria-label="Group chat"
+        title="Group chat"
         onClick={() => onPick(true)}
       >
-        Group chat
+        {MANY}
       </button>
     </div>
   );

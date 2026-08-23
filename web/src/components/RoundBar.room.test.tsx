@@ -29,16 +29,25 @@ describe("with no round running", () => {
     expect(render({ seats: [] })).toBe("");
   });
 
-  it("offers to put something to everyone", () => {
-    expect(render()).toContain("Ask the room");
+  it("offers to put something to everyone, as an icon", () => {
+    // Card 78 — words become icons in the toolbar. The NAME stays, for a screen
+    // reader and for anyone who has not learned the icon.
+    const html = render();
+
+    expect(html).toContain("Ask the room");
+    expect(html).not.toContain(">Ask the room<");
+    expect(html).toContain("<svg");
   });
 
   it("does not offer to stop something that is not running", () => {
     expect(render()).not.toContain("Stop");
   });
 
-  it("offers to draw a line under the topic", () => {
-    expect(render()).toContain("New topic");
+  it("offers to draw a line under the topic, as an icon", () => {
+    const html = render();
+
+    expect(html).toContain("New topic");
+    expect(html).not.toContain(">New topic<");
   });
 
   it("says a line has been drawn, once one has", () => {

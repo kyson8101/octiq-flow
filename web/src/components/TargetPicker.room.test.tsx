@@ -21,8 +21,24 @@ describe("the target picker", () => {
     expect(render({ seats: [] })).toBe("");
   });
 
-  it("offers everyone plus a row per seat", () => {
-    const html = render();
+  it("shows only the current target, not one pill per seat", () => {
+    // Card 78 — a room with four seats cannot spend four pills of a row that
+    // already holds seven controls.
+    const html = render({ to: null });
+
+    expect(html).toContain("Everyone");
+    expect(html).not.toContain("Outside eye");
+  });
+
+  it("names the seat it is currently pointed at", () => {
+    const html = render({ to: "s2" });
+
+    expect(html).toContain("Outside eye");
+    expect(html).not.toContain("Everyone");
+  });
+
+  it("opens the full list on demand", () => {
+    const html = render({ open: true });
 
     expect(html).toContain("Everyone");
     expect(html).toContain("Codex");
@@ -30,27 +46,28 @@ describe("the target picker", () => {
   });
 
   it("starts on everyone", () => {
-    const html = render({ to: null });
-
     // The default has to be the room, not a seat: a message typed without a
     // thought about this should go where it always went.
-    expect(/Everyone[^<]*<\/[^>]+>\s*<\/button>/.test(html) || html.includes("is-on")).toBe(true);
+    expect(render({ to: null })).toContain("Everyone");
   });
 
-  it("marks the seat that is currently chosen", () => {
-    const html = render({ to: "s2" });
-    const chosen = /class="[^"]*is-on[^"]*"[^>]*>(?:(?!<\/button>).)*Outside eye/s.test(html);
+  it("marks the seat that is currently chosen, in the open list", () => {
+    const html = render({ to: "s2", open: true });
+    const chosen = /aria-selected="true"[^>]*>(?:(?!<\/button>).)*Outside eye/s.test(html);
 
     expect(chosen).toBe(true);
   });
 
-  it("draws each seat's own mark", () => {
-    expect(render()).toContain("agent-logo");
+  it("draws the chosen seat's own mark on the control", () => {
+    // Only when a SEAT is chosen — "Everyone" is not an agent and has no mark.
+    expect(render({ to: "s1" })).toContain("agent-logo");
+    expect(render({ to: null })).not.toContain("agent-logo");
   });
 
   it("says a seat cannot see the project, where that is true", () => {
     // Same reason the room panel says it: an outside seat's value is what it
-    // cannot see, and picking it without knowing that is picking blind.
-    expect(render()).toContain("room-only");
+    // cannot see, and picking it without knowing that is picking blind. In the
+    // open list, which is where the choice is actually made.
+    expect(render({ open: true })).toContain("room-only");
   });
 });

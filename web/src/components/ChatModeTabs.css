@@ -1,19 +1,17 @@
 /* Card 76 — the mode strip. One thin row at the top of the composer, replacing
    a hidden toggle and giving the room's controls somewhere to belong. */
 
+/* Card 78 — inline in the toolbar under the box, not a row of its own. */
 .mode-tabs {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 0.125rem;
-  padding: 0 0.25rem 0.375rem;
-  /* Right, not left. The eye starts at the box it is about to type into; a
-     mode strip on the left is the first thing read every time and the least
-     often changed. */
-  justify-content: flex-end;
+  gap: 0.0625rem;
 }
 
 .mode-tab {
-  padding: 0.1875rem 0.625rem;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem;
   border: 1px solid transparent;
   border-radius: 999px;
   background: none;
@@ -33,4 +31,44 @@
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
+}
+
+/* Card 78 — the group's own row, above the box.
+
+   Animated with grid-template-rows rather than max-height: a max-height needs a
+   magic number big enough for the tallest content, and anything shorter then
+   animates at the wrong speed while anything taller is clipped. `0fr -> 1fr`
+   measures the content itself. */
+.room-strip {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 160ms ease;
+}
+
+.room-strip.is-open {
+  grid-template-rows: 1fr;
+}
+
+/* The grid row is what animates; this is what gets clipped while it does. */
+.room-strip-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.room-strip.is-open .room-strip-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0 0.25rem 0.375rem;
+  /* Only once open. Overflow stays hidden while it moves, or the target list
+     would be clipped by the very row it opens out of. */
+  overflow: visible;
+}
+
+/* Somebody who has asked for less motion gets the state change without it. */
+@media (prefers-reduced-motion: reduce) {
+  .room-strip {
+    transition: none;
+  }
 }

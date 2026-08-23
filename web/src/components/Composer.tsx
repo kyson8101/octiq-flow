@@ -449,6 +449,8 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null);
   const [effMenu, setEffMenu] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
+  // Card 78 — the target list is a popover now, not a row of pills.
+  const [targetOpen, setTargetOpen] = useState(false);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   // What "clear" just threw away, for as long as it can still be taken back.
@@ -842,25 +844,39 @@ export function Composer({
           onClose={() => setFilePicker(false)}
         />
       )}
+      {/* Card 78 — the group's own row, above the box.
+          It stays MOUNTED when this is not a room, collapsed to nothing. A CSS
+          transition cannot run on an element that has been removed, and the ask
+          was for it to slide down on the way out as well as up on the way in —
+          so an ordinary chat carries one empty, zero-height row here. It shows
+          nothing and takes no space; it is not literally nothing, which is the
+          price of the animation. */}
+      <div className={`room-strip ${room ? "is-open" : ""}`} aria-hidden={!room}>
+        <div className="room-strip-inner">
+          {room && (
+            <>
+              <TargetPicker
+                seats={seats ?? []}
+                to={to ?? null}
+                onPick={onTarget ?? (() => {})}
+                open={targetOpen}
+                onOpen={setTargetOpen}
+              />
+              {onAsk && onStopRound && (
+                <RoundBar
+                  seats={seats ?? []}
+                  round={round ?? null}
+                  onAsk={onAsk}
+                  onStop={onStopRound}
+                  onNewTopic={onNewTopic}
+                  topicDrawn={topicDrawn}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </div>
       <div className="composer-box">
-        {/* Card 76 — which kind of chat this is. One row, on the right, and the
-            only way in or out of a room. */}
-        {onRoom && <ChatModeTabs room={room ?? false} onPick={onRoom} />}
-        {/* Card 67 — who the next message is for. Draws nothing at all unless
-            somebody else is in the room, so an ordinary chat is unchanged. */}
-        <TargetPicker seats={seats ?? []} to={to ?? null} onPick={onTarget ?? (() => {})} />
-        {/* Card 68 — put your last message to every seat in turn, and cut in
-            when you have heard enough. Absent in an ordinary chat. */}
-        {onAsk && onStopRound && (
-          <RoundBar
-            seats={seats ?? []}
-            round={round ?? null}
-            onAsk={onAsk}
-            onStop={onStopRound}
-            onNewTopic={onNewTopic}
-            topicDrawn={topicDrawn}
-          />
-        )}
         {(attached.length > 0 || attachError || cleared) && (
           <div className="attach">
             {attached.map((a) => (
@@ -985,6 +1001,14 @@ export function Composer({
           }}
         />
         <div className="composer-row">
+          {/* Card 78 — which kind of chat this is, as two icons rather than two
+              words: this row already holds seven controls and a send button.
+              It stays HERE, in the toolbar, while the group's own controls
+              slide out above the box — the mode is a property of the chat, not
+              one of the group's actions, and it has to be reachable from both
+              modes to get back. */}
+          {onRoom && <ChatModeTabs room={room ?? false} onPick={onRoom} />}
+
           {/* One "+", two ways in. They were a clip and a picture standing
               side by side, which read as the same idea drawn twice — see
               `AttachList` for why they are not, and why naming them beats
