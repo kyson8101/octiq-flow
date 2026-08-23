@@ -20,6 +20,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import type { RoundState } from "./components/RoundBar";
+import { roomSync } from "./lib/roomSync";
 import {
   addUserTurn,
   emptyChat,
@@ -1693,11 +1694,34 @@ export default function App() {
   // be refused by a backend that no longer knows the name.
   const target = mySeats.some((s) => s.id === myTarget) ? myTarget : null;
 
-  /** Ask the backend who is in this room. */
+  /** Ask the backend who is in this room — and settle which of us is right
+   *  about whether it IS one.
+   *
+   *  The browser remembers the mode on the conversation; the backend holds rooms
+   *  in memory and forgets them on restart. Both can be ahead of the other, and
+   *  both happened: a room opened outside the client read as "single chat" on
+   *  the next reload, and a restart left the browser offering a room that was
+   *  gone. `chat_room` answers `open` for exactly this, and this is where it is
+   *  finally used. */
   const refreshSeats = useCallback(async (id: string) => {
     try {
       const view = (await bridge.invoke("chat_room", { key: keyFor(id) })) as RoomView;
       setSeats((prev) => ({ ...prev, [id]: view.seats }));
+
+      const mine = loadConversations().find((c) => c.id === id)?.room ?? false;
+      const sync = roomSync(mine, view.open);
+      if (sync.do === "adopt") {
+        setConversations((prev) => {
+          const next = prev.map((c) => (c.id === id ? { ...c, room: true } : c));
+          saveConversations(next);
+          return next;
+        });
+      } else if (sync.do === "reassert") {
+        // The person asked for a room; a server restart is not a decision to
+        // undo that. The SEATS are genuinely gone with their processes, and
+        // nothing here pretends otherwise — only the mode comes back.
+        await bridge.invoke("chat_set_room", { key: keyFor(id), open: true });
+      }
     } catch {
       // A backend that cannot answer leaves the list alone rather than
       // emptying it — an empty rail would read as "everyone left".
