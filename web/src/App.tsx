@@ -19,6 +19,7 @@
 // whether or not it is the chat on screen.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
+import type { RoundState } from "./components/RoundBar";
 import {
   addUserTurn,
   emptyChat,
@@ -1382,11 +1383,16 @@ export default function App() {
       // The same files the agent is given, kept on the bubble so the message
       // shows what was sent with it. The object URLs are dropped: they are this
       // page's copy of the bytes, and a stored one points at nothing.
+      // Who this one is for, resolved BEFORE anything is sent so the bubble and
+      // the wire agree.
+      const seat = mySeats.find((s) => s.id === target) ?? null;
       patch(id, (s) =>
         addUserTurn(
           s,
           text,
           attachments.map((a) => ({ path: a.path, name: a.name, isImage: !!a.isImage })),
+          undefined,
+          seat ? { id: seat.id, name: seat.name } : undefined,
         ),
       );
 
@@ -1421,6 +1427,37 @@ export default function App() {
           busy: false,
           notices: [...s.notices, String((err as Error).message ?? err)],
         }));
+
+      // Addressed to a SEAT. Its own process, started by its first message —
+      // the same two-call shape the host has always had, which is why this
+      // reads like the branch below it rather than like something new.
+      if (seat) {
+        try {
+          await bridge.invoke("chat_send", { key: keyFor(id), text, images, to: seat.id });
+        } catch (err) {
+          const said = String((err as Error).message ?? err);
+          if (!said.includes("not running")) {
+            fail(err);
+            return;
+          }
+          // It has never spoken, so there is nothing to write to yet.
+          try {
+            await bridge.invoke("chat_seat_start", {
+              key: keyFor(id),
+              seatId: seat.id,
+              cwd: project.primary_path ?? "",
+              extraDirs: project.paths ?? [],
+              access,
+              effort,
+              images,
+              prompt: text,
+            });
+          } catch (second) {
+            fail(second);
+          }
+        }
+        return;
+      }
 
       // Already running: this is the next turn of a conversation in flight.
       if (runningRef.current.has(id)) {
@@ -1646,7 +1683,15 @@ export default function App() {
   // switch drawn on, and `chat_room` answering `open: false` is how that shows.
   const room = conversations.find((c) => c.id === conversationId)?.room ?? false;
   const [seats, setSeats] = useState<Record<string, Seat[]>>({});
+  // Who the NEXT message is for, per conversation. `null` is the whole room,
+  // which is where every message has always gone — so a chat that never opens
+  // a room never leaves this state.
+  const [sendTo, setSendTo] = useState<Record<string, string | null>>({});
   const mySeats = (conversationId && seats[conversationId]) || [];
+  const myTarget = (conversationId && sendTo[conversationId]) || null;
+  // A seat that has been removed cannot stay chosen, or the next message would
+  // be refused by a backend that no longer knows the name.
+  const target = mySeats.some((s) => s.id === myTarget) ? myTarget : null;
 
   /** Ask the backend who is in this room. */
   const refreshSeats = useCallback(async (id: string) => {
@@ -1693,7 +1738,7 @@ export default function App() {
   );
 
   const addSeat = useCallback(
-    async (agent: "claude" | "codex") => {
+    async (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => {
       if (!conversationId) return;
       const id = conversationId;
       try {
@@ -1706,7 +1751,13 @@ export default function App() {
         await bridge.invoke("chat_set_room", { key: keyFor(id), open: true });
         await bridge.invoke("chat_add_agent", {
           key: keyFor(id),
-          seat: { name: agent === "claude" ? "Claude" : "Codex", agent },
+          seat: {
+            name: want.label,
+            agent: want.agent,
+            kind: want.kind,
+            provider: want.provider,
+            context: want.context,
+          },
         });
       } catch (err) {
         patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
@@ -1730,6 +1781,109 @@ export default function App() {
     },
     [conversationId, refreshSeats],
   );
+
+  // Card 68 — the round in flight, per conversation. The BACKEND runs it (a
+  // round takes minutes and one driven from here would die with the page), so
+  // this is only ever a picture of what it is doing.
+  const [rounds, setRounds] = useState<Record<string, RoundState | null>>({});
+  const myRound = (conversationId && rounds[conversationId]) || null;
+
+  const refreshRound = useCallback(async (id: string) => {
+    try {
+      const state = (await bridge.invoke("chat_round_state", {
+        key: keyFor(id),
+      })) as RoundState;
+      setRounds((prev) => ({ ...prev, [id]: state.running ? state : null }));
+    } catch {
+      // Leave the last picture alone rather than claiming nothing is running.
+    }
+  }, []);
+
+  const askRoom = useCallback(async () => {
+    if (!conversationId || !project) return;
+    const id = conversationId;
+    // What the room is asked: the last thing YOU said. A round is "put that to
+    // everyone", so inventing a different question would put words in your
+    // mouth — and there is nothing else in the conversation that is yours.
+    const mine = [...(chats[id]?.messages ?? [])].reverse().find((m) => m.role === "user");
+    const text = mine?.blocks
+      .map((b) => ("text" in b ? b.text : ""))
+      .join(" ")
+      .trim();
+    if (!text) {
+      patch(id, (s) => ({
+        ...s,
+        notices: [...s.notices, "Say something first — a round puts YOUR last message to the room."],
+      }));
+      return;
+    }
+    try {
+      await bridge.invoke("chat_round", {
+        key: keyFor(id),
+        order: mySeats.map((s) => s.id),
+        text,
+        cwd: project.primary_path ?? "",
+        extraDirs: project.paths ?? [],
+        access,
+        effort,
+      });
+    } catch (err) {
+      patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
+    }
+    void refreshRound(id);
+  }, [conversationId, project, mySeats, access, effort, patch, refreshRound, chats]);
+
+  // Card 69 — whether a topic line has been drawn in this chat.
+  //
+  // Shown on the ROUND BAR, in the composer, rather than as a rule in the
+  // transcript: every control and every notice about the room lives in the
+  // composer, by the user's rule of 2026-08-23. The BACKEND is what actually
+  // refuses to show a seat anything older; this is only the acknowledgement.
+  const [topicDrawn, setTopicDrawn] = useState<Record<string, boolean>>({});
+
+  const newTopic = useCallback(async () => {
+    if (!conversationId) return;
+    const id = conversationId;
+    try {
+      await bridge.invoke("chat_new_topic", { key: keyFor(id) });
+    } catch {
+      // Not acknowledged if the backend did not take it — saying the seats have
+      // forgotten, when they have not, is worse than saying nothing.
+      return;
+    }
+    setTopicDrawn((prev) => ({ ...prev, [id]: true }));
+  }, [conversationId]);
+
+  const stopRound = useCallback(async () => {
+    if (!conversationId) return;
+    const id = conversationId;
+    try {
+      await bridge.invoke("chat_round_stop", { key: keyFor(id) });
+    } catch {
+      // Nothing to say: a round that could not be stopped is still shown
+      // running, which is the truth.
+    }
+    void refreshRound(id);
+  }, [conversationId, refreshRound]);
+
+  // A round says when it is over. Between those it is polled, because the
+  // seats speak on their own schedule and a bar that only moved at the end
+  // would look frozen for the whole discussion.
+  useEffect(
+    () =>
+      bridge.on<{ key: string }>("chat-round", (payload) => {
+        const id = payload && convOf(payload.key);
+        if (id) void refreshRound(id);
+      }),
+    [refreshRound],
+  );
+
+  useEffect(() => {
+    if (!conversationId || !myRound?.running) return;
+    const id = conversationId;
+    const tick = setInterval(() => void refreshRound(id), 2000);
+    return () => clearInterval(tick);
+  }, [conversationId, myRound?.running, refreshRound]);
 
   const changeAccess = useCallback(
     (p: AccessLevel) => {
@@ -1991,9 +2145,9 @@ export default function App() {
                   that looks like it is floating but keeps its own space — the
                   conversation ends where the column begins, so nothing is ever
                   underneath it. Drawn only when there is an agent to list. */}
-              {(chat.agents.length > 0 || mySeats.length > 0) && (
+              {chat.agents.length > 0 && (
                 <aside className="side">
-                  <AgentRail agents={chat.agents} seats={mySeats} onOpen={setFocusedAgent} />
+                  <AgentRail agents={chat.agents} onOpen={setFocusedAgent} />
                 </aside>
               )}
             </div>
@@ -2113,6 +2267,15 @@ export default function App() {
             onLite={changeLite}
             room={room}
             seats={mySeats}
+            to={target}
+            round={myRound}
+            onAsk={askRoom}
+            onStopRound={stopRound}
+            onNewTopic={newTopic}
+            topicDrawn={!!(conversationId && topicDrawn[conversationId])}
+            onTarget={(seatId) =>
+              conversationId && setSendTo((prev) => ({ ...prev, [conversationId]: seatId }))
+            }
             onRoom={toggleRoom}
             onAddSeat={addSeat}
             onRemoveSeat={removeSeat}

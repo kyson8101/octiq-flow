@@ -1,0 +1,44 @@
+/* Card 67 — the "send to" row above the composer. Only ever drawn in a room;
+   an ordinary chat renders nothing here at all. */
+
+.target-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  padding: 0 0.25rem 0.25rem;
+}
+
+.target-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3125rem;
+  padding: 0.1875rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.target-btn:hover {
+  background: var(--bg-1);
+}
+
+/* The chosen one is a filled pill, not a left bar: it has to read at a glance
+   from across the box, and it sits in a row rather than a list. */
+.target-btn.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.target-blind {
+  padding: 0 0.25rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  opacity: 0.75;
+}

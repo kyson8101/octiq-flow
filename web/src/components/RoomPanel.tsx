@@ -27,9 +27,33 @@ import "./RoomPanel.css";
 
 /** The agents a seat can be. The backend's allowlist is `claude` | `codex`;
  *  card 71 adds seats with no CLI behind them at all. */
-const CAN_ADD: { agent: "claude" | "codex"; label: string }[] = [
-  { agent: "claude", label: "Claude" },
-  { agent: "codex", label: "Codex" },
+/** What can be added, and what each one is.
+ *
+ *  A RESIDENT is a CLI agent on this machine, with a process of its own. An
+ *  ON-DEMAND seat is an HTTP call with nothing behind it between questions —
+ *  cheap to keep around, and with no memory of its own.
+ *
+ *  The DeepSeek row defaults to `room_only` because that is the whole reason to
+ *  add it: it cannot see the project, so it reads as a newcomer would. A seat
+ *  that can read the files ends up agreeing with the host. */
+const CAN_ADD: {
+  label: string;
+  agent: "claude" | "codex";
+  kind?: "on_demand";
+  provider?: string;
+  context?: "room_only";
+}[] = [
+  { label: "Claude", agent: "claude" },
+  { label: "Codex", agent: "codex" },
+  {
+    label: "DeepSeek",
+    // The logo only knows the two CLI marks; `agent` here is what to DRAW, and
+    // `provider` is what actually answers.
+    agent: "codex",
+    kind: "on_demand",
+    provider: "deepseek",
+    context: "room_only",
+  },
 ];
 
 export function RoomPanel({
@@ -43,7 +67,7 @@ export function RoomPanel({
   room: boolean;
   seats: Seat[];
   onToggle: (open: boolean) => void;
-  onAdd: (agent: "claude" | "codex") => void;
+  onAdd: (want: (typeof CAN_ADD)[number]) => void;
   onRemove: (seatId: string) => void;
 }) {
   return (
@@ -78,6 +102,20 @@ export function RoomPanel({
                   {/* The one thing about a seat worth saying on a list this
                       short: an outside seat's whole value is what it CANNOT
                       see, and unmarked it looks like another copy of the host. */}
+                  {/* No process behind it: it costs nothing while it sits
+                      there, and remembers nothing between questions. Both
+                      matter to whoever is choosing who to ask. */}
+                  {seat.kind === "on_demand" && (
+                    <span
+                      className="room-seat-kind"
+                      title="No process — asked directly, answers, gone"
+                    >
+                      {/* "on demand" says there is no process behind it. WHICH
+                          service answers is the other half, and the half that
+                          decides whether the answer is worth anything. */}
+                      on demand{seat.provider ? ` · ${seat.provider}` : ""}
+                    </span>
+                  )}
                   {seat.context === "room_only" && (
                     <span className="room-seat-blind" title="Cannot see the project">
                       room-only
@@ -100,16 +138,29 @@ export function RoomPanel({
             <span className="room-add-label">Add an agent</span>
             {CAN_ADD.map((a) => (
               <button
-                key={a.agent}
+                key={a.label}
                 type="button"
                 className="room-add-btn"
-                onClick={() => onAdd(a.agent)}
+                onClick={() => onAdd(a)}
               >
                 <AgentLogo agent={a.agent} size={13} />
                 {a.label}
               </button>
             ))}
           </div>
+
+          {/* Said HERE, where the decision is made, and not only on the seat
+              afterwards.
+
+              A seat marked `room_only` cannot open your files — but what it is
+              SENT is the room's discussion, and that routinely contains code a
+              resident agent pasted in. "Cannot see the project" is true about
+              the filesystem and misleading about what leaves the machine, which
+              is the thing anyone actually cares about. */}
+          <p className="room-warn">
+            An outside service is sent what is said in this room. It cannot open
+            your files, but anything quoted into the chat goes with the question.
+          </p>
         </div>
       )}
     </>

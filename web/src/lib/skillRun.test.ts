@@ -12,7 +12,13 @@
 // this module exists to stop.
 import { describe, expect, it } from "vitest";
 
-import { hasBriefHead, parseCommandEcho, parseSkillBrief } from "./skillRun";
+import {
+  hasBriefHead,
+  parseCommandEcho,
+  parseSkillBrief,
+  resolvedSkill,
+  sameCommand,
+} from "./skillRun";
 
 const SHIP =
   "Base directory for this skill: /Users/kyson/03-projects/octiq-flow/.claude/skills/ship\n\n" +
@@ -101,5 +107,65 @@ describe("an old-style echo of a typed slash command", () => {
 
   it("leaves an ordinary message alone", () => {
     expect(parseCommandEcho("run /ship please")).toBeNull();
+  });
+});
+
+// Card 75 — the harness rewrites `/execute` to `/pandahrms:execute`, and the
+// rewritten form must not read as a second thing the user said.
+describe("a slash command and its namespaced form", () => {
+  it("are the same command", () => {
+    expect(sameCommand("/execute cards 67-73", "/pandahrms:execute cards 67-73")).toBe(true);
+  });
+
+  it("are the same when the user typed the long form themselves", () => {
+    expect(sameCommand("/pandahrms:execute cards 67-73", "/pandahrms:execute cards 67-73")).toBe(
+      true,
+    );
+  });
+
+  it("are the same with no arguments at all", () => {
+    expect(sameCommand("/ship", "/pandahrms:ship")).toBe(true);
+  });
+
+  it("are NOT the same when the arguments differ", () => {
+    // The namespace is the only thing the harness rewrites. Different args mean
+    // a different message, and claiming otherwise would swallow one.
+    expect(sameCommand("/execute card-67", "/pandahrms:execute card-68")).toBe(false);
+  });
+
+  it("are NOT the same when the command differs", () => {
+    expect(sameCommand("/execute", "/pandahrms:commit")).toBe(false);
+  });
+
+  it("leaves an unnamespaced command matching itself", () => {
+    // The existing captured fixture is `/list-all-branches`. This is the case
+    // that already worked and must keep working.
+    expect(sameCommand("/list-all-branches", "/list-all-branches")).toBe(true);
+  });
+
+  it("is not fooled by ordinary prose containing a colon", () => {
+    expect(sameCommand("note: this is fine", "note: this is fine")).toBe(true);
+    expect(sameCommand("note: one thing", "other: one thing")).toBe(false);
+  });
+
+  it("does not treat two different plugins' commands as one", () => {
+    expect(sameCommand("/pandahrms:execute", "/docspace:execute")).toBe(false);
+  });
+});
+
+describe("the skill a command actually resolved to", () => {
+  it("is the namespaced name, when the harness rewrote one", () => {
+    expect(resolvedSkill("/execute cards 67-73", "/pandahrms:execute cards 67-73")).toBe(
+      "pandahrms:execute",
+    );
+  });
+
+  it("is absent when nothing was rewritten", () => {
+    expect(resolvedSkill("/list-all-branches", "/list-all-branches")).toBeUndefined();
+  });
+
+  it("is absent when the user typed the long form themselves", () => {
+    // Nothing was rewritten, so there is nothing to tell them.
+    expect(resolvedSkill("/pandahrms:execute", "/pandahrms:execute")).toBeUndefined();
   });
 });

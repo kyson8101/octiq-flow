@@ -11,6 +11,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
 
 mod access;
+mod agent_api;
 mod agent_chat;
 mod agent_history;
 mod agent_resume;
@@ -37,6 +38,7 @@ mod profile_lock;
 mod pty;
 mod push;
 mod question;
+mod round;
 mod terminal_layout;
 mod transcript;
 mod usage_limits;
@@ -171,6 +173,7 @@ pub fn run() {
             // Agent chat sessions: agents run as a JSON stream instead of a TUI,
             // for the chat view (agent_chat.rs).
             app.manage(std::sync::Arc::new(agent_chat::ChatManager::default()));
+            app.manage(std::sync::Arc::new(round::Rounds::default()));
             // Persisted terminal layout + scrollback, used to rebuild each
             // project's terminals after a restart.
             app.manage(TerminalLayoutState::load());
@@ -264,6 +267,7 @@ pub fn run() {
             pty::pty_active_sessions,
             agent_chat::chat_start,
             agent_chat::chat_send,
+            agent_chat::chat_seat_start,
             agent_chat::chat_interrupt,
             agent_chat::chat_set_access,
             agent_chat::chat_stop,
@@ -272,6 +276,10 @@ pub fn run() {
             chat_room::chat_add_agent,
             chat_room::chat_remove_agent,
             chat_room::chat_room,
+            round::chat_round,
+            round::chat_round_stop,
+            round::chat_round_state,
+            round::chat_new_topic,
             agent_chat::chat_since,
             agent_chat::chat_forget,
             agent_chat::chat_index_list,

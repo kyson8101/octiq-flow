@@ -39,6 +39,8 @@ pub struct Services {
     /// The fs watcher behind the live git counts and branch chips.
     pub git_watch: Arc<GitWatchState>,
     pub ptys: Arc<PtyManager>,
+    /// Rounds in flight (card 68). One per chat, at most.
+    pub rounds: Arc<crate::round::Rounds>,
 }
 
 impl Services {
@@ -50,6 +52,7 @@ impl Services {
             watch: Arc::new(FileWatchState::default()),
             git_watch: Arc::new(GitWatchState::default()),
             ptys: Arc::new(PtyManager::default()),
+            rounds: Arc::new(crate::round::Rounds::default()),
         }
     }
 }
@@ -176,9 +179,24 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "lite")?,
         )),
         "chat_send" => unit(crate::agent_chat::chat_send_impl(
-            &svc.chats,
+            svc.chats.clone(),
             arg(&args, "key")?,
             arg(&args, "text")?,
+            arg(&args, "images")?,
+            arg(&args, "to")?,
+        )),
+        // Card 67 — a seat's own process, started by its first message. The
+        // mirror of `chat_start`, and the same two-call shape the client
+        // already uses for the host.
+        "chat_seat_start" => unit(crate::agent_chat::chat_seat_start_impl(
+            svc.chats.clone(),
+            arg(&args, "key")?,
+            arg(&args, "seatId")?,
+            arg(&args, "cwd")?,
+            arg(&args, "prompt")?,
+            arg(&args, "access")?,
+            arg(&args, "extraDirs")?,
+            arg(&args, "effort")?,
             arg(&args, "images")?,
         )),
         "chat_interrupt" => unit(crate::agent_chat::chat_interrupt_impl(
@@ -195,23 +213,74 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
         )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
+        // Card 68 — put one thing to every seat, in order, one at a time.
+        "chat_round" => unit(crate::round::start_round_impl(
+            svc.rounds.clone(),
+            svc.chats.clone(),
+            arg(&args, "key")?,
+            arg(&args, "order")?,
+            arg(&args, "text")?,
+            arg(&args, "cwd")?,
+            arg(&args, "access")?,
+            arg(&args, "extraDirs")?,
+            arg(&args, "effort")?,
+            // Card 69 — what the host chose to show them. Absent means the
+            // mechanical window.
+            arg(&args, "history")?,
+        )),
+        // Card 70 — the HOST agent's own two tools, reached through the MCP
+        // server it was handed at spawn.
+        "chat_seat_ask" => to_value(crate::round::ask_seat_impl(
+            svc.rounds.clone(),
+            svc.chats.clone(),
+            arg(&args, "key")?,
+            arg(&args, "seatId")?,
+            arg(&args, "prompt")?,
+            arg(&args, "cwd")?,
+        )),
+        "chat_new_topic" => {
+            svc.rounds.new_topic(&arg::<String>(&args, "key")?);
+            Ok(json!(null))
+        }
+        "chat_round_stop" => {
+            svc.rounds.raise_hand(&arg::<String>(&args, "key")?);
+            Ok(json!(null))
+        }
+        "chat_round_state" => Ok(json!(crate::round::state_impl(
+            &svc.rounds,
+            &arg::<String>(&args, "key")?
+        ))),
         // Card 66 — the room. The browser client does not go through Tauri, so
         // every command has to be listed here as well as in lib.rs.
-        "chat_set_room" => unit(crate::chat_room::set_room_impl(
-            &svc.chats,
-            &arg::<String>(&args, "key")?,
-            arg(&args, "open")?,
-        )),
+        // The seats a closed room gives up are ENDED here, not just forgotten:
+        // a seat that has spoken is a running agent.
+        "chat_set_room" => {
+            let key: String = arg(&args, "key")?;
+            let open: bool = arg(&args, "open")?;
+            unit(
+                crate::chat_room::set_room_impl(&svc.chats, &key, open).map(|ended| {
+                    crate::chat_room::end_seats(&svc.chats, ended);
+                    // A closed room gives up its discussion as well as its
+                    // seats — see `forget_room`.
+                    if !open {
+                        crate::round::forget_room(&svc.rounds, &key);
+                    }
+                }),
+            )
+        }
         "chat_add_agent" => to_value(crate::chat_room::add_seat_impl(
             &svc.chats,
             &arg::<String>(&args, "key")?,
             arg(&args, "seat")?,
         )),
-        "chat_remove_agent" => unit(crate::chat_room::remove_seat_impl(
-            &svc.chats,
-            &arg::<String>(&args, "key")?,
-            &arg::<String>(&args, "seatId")?,
-        )),
+        "chat_remove_agent" => unit(
+            crate::chat_room::remove_seat_impl(
+                &svc.chats,
+                &arg::<String>(&args, "key")?,
+                &arg::<String>(&args, "seatId")?,
+            )
+            .map(|ended| crate::chat_room::end_seats(&svc.chats, ended)),
+        ),
         "chat_room" => to_value(crate::chat_room::room_impl(
             &svc.chats,
             &arg::<String>(&args, "key")?,

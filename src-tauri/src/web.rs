@@ -469,6 +469,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/file", get(file_handler))
             .route("/hook/permission", post(permission_handler))
             .route("/hook/ask", post(ask_handler))
+            .route("/hook/room", post(room_handler))
             .fallback(get(asset_handler))
             .with_state(ctx);
 
@@ -1055,6 +1056,99 @@ async fn ask_handler(
     }
     let answer = crate::question::ask(question).await;
     axum::Json(json!({ "answer": answer })).into_response()
+}
+
+/// What the host agent wants done to its room (card 70).
+#[derive(Deserialize)]
+struct RoomCall {
+    /// Which chat is asking. The MCP server reads it from `OCTIQ_CHAT_KEY`.
+    #[serde(rename = "chatKey")]
+    chat_key: String,
+    /// "add" or "ask".
+    action: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    seat: Option<String>,
+    #[serde(default)]
+    prompt: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+/// The host agent adding a seat, or putting something to one.
+///
+/// Routed through the SAME dispatch table the browser uses, so there is one
+/// implementation of each and no second copy to drift. Every refusal the client
+/// would get, the agent gets too — including "this chat is not a room", which is
+/// what makes it safe to offer these tools in every chat rather than only in a
+/// room. See card 70.
+async fn room_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<TokenQuery>,
+    Json(call): Json<RoomCall>,
+) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let (cmd, args) = match call.action.as_str() {
+        "add" => (
+            "chat_add_agent",
+            json!({
+                "key": call.chat_key,
+                "seat": {
+                    "name": call.name.unwrap_or_default(),
+                    "agent": call.agent.unwrap_or_else(|| "codex".into()),
+                    "role": call.role,
+                    "context": call.context,
+                },
+            }),
+        ),
+        "ask" => (
+            "chat_seat_ask",
+            json!({
+                "key": call.chat_key,
+                "seatId": call.seat.unwrap_or_default(),
+                "prompt": call.prompt.unwrap_or_default(),
+                "cwd": call.cwd.unwrap_or_default(),
+            }),
+        ),
+        other => {
+            return axum::Json(json!({ "error": format!("unknown room action '{other}'") }))
+                .into_response()
+        }
+    };
+    // On a BLOCKING thread, never the runtime's own.
+    //
+    // `run_command` reaches `dispatch`, which is synchronous — and `ask` waits
+    // on a whole agent turn, up to twenty minutes. Doing that on a tokio worker
+    // parks one of a handful of threads that serve every browser, every socket
+    // and every other hook; two agents asking at once could stall the server for
+    // everybody. The other hooks in this file never had the problem because
+    // they await properly.
+    let joined = tokio::task::spawn_blocking({
+        let ctx = ctx.clone();
+        let cmd = cmd.to_string();
+        move || tauri::async_runtime::block_on(run_command(&ctx, cmd, args))
+    })
+    .await;
+    let outcome = match joined {
+        Ok(outcome) => outcome,
+        Err(e) => Err(format!("the room call did not finish: {e}")),
+    };
+    match outcome {
+        Ok(value) => axum::Json(json!({ "ok": value })).into_response(),
+        // An error is an ANSWER here, not a failure of the request: the agent
+        // has to be told what went wrong so it can say so or try something
+        // else, and an HTTP error would reach it as a dead tool instead.
+        Err(why) => axum::Json(json!({ "error": why })).into_response(),
+    }
 }
 
 /// One connected browser: forward its invokes, stream events back.

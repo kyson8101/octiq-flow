@@ -1,0 +1,86 @@
+/* Card 68 — the round bar, above the composer. Only ever drawn in a room. */
+
+.round-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0 0.25rem 0.25rem;
+  font-size: 0.75rem;
+}
+
+.round-ask,
+.round-stop {
+  padding: 0.1875rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.round-ask:hover {
+  background: var(--bg-2);
+}
+
+/* Cutting in is the one thing here that stops money being spent, so it reads
+   as the live control rather than as another quiet chip. */
+.round-stop {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.round-said,
+.round-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.round-who {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--fg-1);
+}
+
+/* Still to come: quieter than what has already been said, because it is a
+   promise rather than a fact. */
+.round-who.is-waiting {
+  color: var(--fg-2);
+  opacity: 0.8;
+}
+
+.round-who.is-quiet {
+  color: var(--fg-2);
+}
+
+.round-none {
+  font-style: italic;
+}
+
+.round-note {
+  color: var(--fg-2);
+}
+
+/* Drawing a line is a discarding act — everything above it stops reaching the
+   seats — so it reads quieter than "Ask the room", which is the thing you came
+   here to press. */
+.round-topic {
+  padding: 0.1875rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.round-topic:hover {
+  border-color: var(--border);
+  color: var(--fg-1);
+}

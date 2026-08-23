@@ -111,3 +111,28 @@
 .room-add-btn:hover {
   background: var(--bg-2);
 }
+
+/* Card 71 — a seat with no process behind it. Quiet, like the room-only mark
+   beside it: both are facts about the seat, not warnings. */
+.room-seat-kind {
+  flex: 0 0 auto;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-2);
+  font-size: 0.6875rem;
+}
+
+/* Card 72 — what leaves the machine. Stated where a seat is ADDED, because that
+   is where the decision is made; the per-seat "room-only" mark is true about
+   files and says nothing about what is transmitted. Quiet rather than alarming:
+   it is a fact to know, not a mistake to undo. */
+.room-warn {
+  margin: 0;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+}

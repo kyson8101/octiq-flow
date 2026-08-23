@@ -92,3 +92,52 @@ export function parseCommandEcho(text: string): string | null {
   const slashed = name.startsWith("/") ? name : `/${name}`;
   return args ? `${slashed} ${args}` : slashed;
 }
+
+/** A slash command split into its parts, or null when the text is not one. */
+function slashParts(text: string): { plugin: string; name: string; args: string } | null {
+  const match = /^\/([a-zA-Z0-9_-]+:)?([a-zA-Z0-9_-]+)(\s[\s\S]*)?$/.exec(text.trim());
+  if (!match) return null;
+  return {
+    plugin: (match[1] ?? "").replace(/:$/, ""),
+    name: match[2] ?? "",
+    args: (match[3] ?? "").trim(),
+  };
+}
+
+/** Are these the same command, allowing for the harness's namespace rewrite?
+ *
+ *  Typing `/execute` reaches the agent as `/pandahrms:execute`, and the echo
+ *  comes back in the rewritten form. Compared literally it matches nothing, so
+ *  the bubble you typed goes unclaimed and the rewritten text lands beside it as
+ *  a SECOND user message — two lines in one bubble, the second of which you
+ *  never said.
+ *
+ *  Only the namespace may differ. The command and its arguments must match
+ *  exactly: the harness rewrites the prefix and nothing else, so anything else
+ *  differing means these really are two different messages, and treating them
+ *  as one would swallow the other.
+ *
+ *  Anything that is not a slash command falls back to a plain comparison, so no
+ *  ordinary prose is ever taken off the user's side by this. */
+export function sameCommand(typed: string, echoed: string): boolean {
+  const a = slashParts(typed);
+  const b = slashParts(echoed);
+  if (!a || !b) return typed.trim() === echoed.trim();
+  if (a.name !== b.name || a.args !== b.args) return false;
+  // One side unnamespaced is the rewrite. Two DIFFERENT namespaces are two
+  // different plugins' commands that happen to share a name.
+  return !a.plugin || !b.plugin || a.plugin === b.plugin;
+}
+
+/** The skill a typed command actually resolved to, when the harness rewrote it.
+ *
+ *  Absent when nothing was rewritten — either an unnamespaced command, or the
+ *  user typing the long form themselves. There is nothing to tell them then,
+ *  and a badge repeating what they typed is noise. */
+export function resolvedSkill(typed: string, echoed: string): string | undefined {
+  if (!sameCommand(typed, echoed)) return undefined;
+  const a = slashParts(typed);
+  const b = slashParts(echoed);
+  if (!a || !b || a.plugin || !b.plugin) return undefined;
+  return `${b.plugin}:${b.name}`;
+}

@@ -18,6 +18,8 @@ import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
 import { RoomPanel } from "./RoomPanel";
+import { TargetPicker } from "./TargetPicker";
+import { RoundBar, type RoundState } from "./RoundBar";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
@@ -331,6 +333,13 @@ export function Composer({
   onLite,
   room,
   seats,
+  to,
+  onTarget,
+  round,
+  onAsk,
+  onStopRound,
+  onNewTopic,
+  topicDrawn,
   onRoom,
   onAddSeat,
   onRemoveSeat,
@@ -402,8 +411,19 @@ export function Composer({
    *  sheet. Optional: a composer given none draws no room controls. */
   room?: boolean;
   seats?: Seat[];
+  /** Card 67 — the seat the next message is for, and how to change it. `null`
+   *  is the whole room. */
+  to?: string | null;
+  onTarget?: (seatId: string | null) => void;
+  /** Card 68 — the round in flight, and the two things you can do about it. */
+  round?: RoundState | null;
+  onAsk?: () => void;
+  onStopRound?: () => void;
+  /** Card 69 — draw a line under the discussion so far. */
+  onNewTopic?: () => void;
+  topicDrawn?: boolean;
   onRoom?: (open: boolean) => void;
-  onAddSeat?: (agent: "claude" | "codex") => void;
+  onAddSeat?: (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => void;
   onRemoveSeat?: (seatId: string) => void;
   /** The project folder, so the file picker opens where the work is. */
   cwd?: string;
@@ -822,6 +842,21 @@ export function Composer({
         />
       )}
       <div className="composer-box">
+        {/* Card 67 — who the next message is for. Draws nothing at all unless
+            somebody else is in the room, so an ordinary chat is unchanged. */}
+        <TargetPicker seats={seats ?? []} to={to ?? null} onPick={onTarget ?? (() => {})} />
+        {/* Card 68 — put your last message to every seat in turn, and cut in
+            when you have heard enough. Absent in an ordinary chat. */}
+        {onAsk && onStopRound && (
+          <RoundBar
+            seats={seats ?? []}
+            round={round ?? null}
+            onAsk={onAsk}
+            onStop={onStopRound}
+            onNewTopic={onNewTopic}
+            topicDrawn={topicDrawn}
+          />
+        )}
         {(attached.length > 0 || attachError || cleared) && (
           <div className="attach">
             {attached.map((a) => (
@@ -1294,7 +1329,7 @@ export function SettingsSheet({
   room?: boolean;
   seats?: Seat[];
   onRoom?: (open: boolean) => void;
-  onAddSeat?: (agent: "claude" | "codex") => void;
+  onAddSeat?: (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => void;
   onRemoveSeat?: (seatId: string) => void;
   onDone: () => void;
 }) {

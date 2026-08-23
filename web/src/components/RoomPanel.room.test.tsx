@@ -5,6 +5,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { Seat } from "../lib/chat";
 import { RoomPanel } from "./RoomPanel";
 
+const onDemand: Seat[] = [
+  {
+    id: "s9",
+    name: "DeepSeek",
+    agent: "codex",
+    provider: "deepseek",
+    context: "room_only",
+    kind: "on_demand",
+  },
+];
+
 const seats: Seat[] = [
   { id: "s1", name: "Codex", agent: "codex", context: "project" },
   { id: "s2", name: "Outside eye", agent: "codex", role: "read it as a newcomer", context: "room_only" },
@@ -73,6 +84,38 @@ describe("room mode on", () => {
 
   it("draws each seat's own mark", () => {
     expect(render({ room: true, seats })).toContain("agent-logo");
+  });
+
+  it("marks a seat that has no process behind it", () => {
+    // It costs nothing while it sits there, and it has no memory of its own.
+    // Both matter to whoever is deciding who to ask, so the list says which
+    // seats are which.
+    const html = render({ room: true, seats: onDemand });
+
+    expect(html).toContain("DeepSeek");
+    expect(html).toContain("on demand");
+  });
+
+  it("names the service answering for it", () => {
+    // "on demand" says there is no process. WHICH service answers is a
+    // different fact, and the one that decides whether the answer is worth
+    // anything.
+    expect(render({ room: true, seats: onDemand })).toContain("deepseek");
+  });
+
+  it("does not mark a resident seat as on demand", () => {
+    expect(render({ room: true, seats })).not.toContain("on demand");
+  });
+
+  it("says plainly that an outside service is sent what the room says", () => {
+    // "room-only" is true about FILES and false about what is transmitted: the
+    // prompt a seat gets is the room's discussion, which routinely contains
+    // code a resident agent pasted in. Someone reading "cannot see the project"
+    // and concluding no code leaves the machine would be wrong.
+    const html = render({ room: true, seats: [] });
+
+    expect(html.toLowerCase()).toContain("sent");
+    expect(html.toLowerCase()).toContain("outside");
   });
 
   it("says the room is empty rather than showing a bare switch", () => {

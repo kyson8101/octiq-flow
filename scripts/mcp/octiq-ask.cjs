@@ -184,6 +184,106 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+/** Ask OctiqFlow to do something to this chat's room, and wait for the answer.
+ *
+ *  Card 70. Every refusal the browser would get, the agent gets too — including
+ *  "this chat is not a room", which is exactly why these tools can be offered in
+ *  EVERY chat instead of only in a room. No restart, no waiting for a resume: a
+ *  host that tries this in an ordinary chat is simply told no.
+ *
+ *  Long timeout, because `ask_agent` waits for a whole agent turn. */
+function roomCall(body) {
+  return new Promise((resolve) => {
+    let cfg;
+    try {
+      cfg = serverConfig();
+    } catch {
+      return resolve({ error: "OctiqFlow is not reachable." });
+    }
+    const payload = JSON.stringify({ chatKey: CHAT_KEY, ...body });
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port: cfg.port,
+        path: `/hook/room?token=${encodeURIComponent(cfg.token)}`,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let out = "";
+        res.on("data", (d) => (out += d));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(out));
+          } catch {
+            resolve({ error: "OctiqFlow gave no answer." });
+          }
+        });
+      },
+    );
+    req.on("error", () => resolve({ error: "OctiqFlow is not reachable." }));
+    req.setTimeout(21 * 60 * 1000, () => {
+      req.destroy();
+      resolve({ error: "OctiqFlow did not answer in time." });
+    });
+    req.write(payload);
+    req.end();
+  });
+}
+
+const ADD_AGENT = {
+  name: "add_agent",
+  description:
+    "Add another agent to THIS conversation as a seat, so it can be asked things " +
+    "and its answers appear in the chat under its own name. Only works when the " +
+    "person has turned room mode on for this chat; otherwise it is refused and " +
+    "you should tell them to turn it on.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "What to call this seat on screen." },
+      agent: {
+        type: "string",
+        enum: ["claude", "codex"],
+        description: "Which agent to run.",
+      },
+      role: {
+        type: "string",
+        description: "What this seat is here to do, in one line. Shown to the person.",
+      },
+      context: {
+        type: "string",
+        enum: ["project", "room_only"],
+        description:
+          "What it may see. `project` sees the files this chat sees. `room_only` " +
+          "sees NOTHING but what is said to it — use that when you want an " +
+          "outside opinion, because a seat that can read the project ends up " +
+          "agreeing with you.",
+      },
+    },
+    required: ["name", "agent"],
+  },
+};
+
+const ASK_AGENT = {
+  name: "ask_agent",
+  description:
+    "Put something to ONE seat and wait for its answer, which comes back as the " +
+    "result of this call. You choose exactly what it is told — it does not see " +
+    "this conversation unless you put it in the prompt.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      seat: { type: "string", description: "The seat id returned by add_agent." },
+      prompt: { type: "string", description: "Exactly what to put to it." },
+    },
+    required: ["seat", "prompt"],
+  },
+};
+
 function reply(id, result) {
   if (id === undefined || id === null) return; // a notification wants no reply
   send({ jsonrpc: "2.0", id, result });
@@ -201,9 +301,48 @@ async function handle(msg) {
     case "tools/list":
       // Inert outside OctiqFlow: with no chat to answer into, offering the
       // tool would only give the agent something that always fails.
-      return reply(msg.id, { tools: CHAT_KEY ? [TOOL, TODO_TOOL] : [] });
+      // Inert outside OctiqFlow: with no chat to answer into, offering the
+      // tool would only give the agent something that always fails.
+      //
+      // The two room tools ARE offered in every chat, room or not. The list a
+      // process is given is fixed when it spawns, so gating them on room mode
+      // would leave a host unable to act on a switch turned on mid-chat — and
+      // the backend refuses them anyway, in words the agent can read. See
+      // card 70.
+      return reply(msg.id, {
+        tools: CHAT_KEY ? [TOOL, TODO_TOOL, ADD_AGENT, ASK_AGENT] : [],
+      });
 
     case "tools/call": {
+      if (msg.params?.name === "add_agent" || msg.params?.name === "ask_agent") {
+        const a = msg.params.arguments || {};
+        const out = await roomCall(
+          msg.params.name === "add_agent"
+            ? {
+                action: "add",
+                name: a.name,
+                agent: a.agent,
+                role: a.role,
+                context: a.context,
+              }
+            : {
+                action: "ask",
+                seat: a.seat,
+                prompt: a.prompt,
+                cwd: process.env.OCTIQ_CWD || process.cwd(),
+              },
+        );
+        // A refusal comes back as ordinary text, not as a protocol error: the
+        // agent has to be able to READ what went wrong and say so, and an
+        // error result reaches it as a broken tool instead of an answer.
+        const text = out.error
+          ? out.error
+          : typeof out.ok === "string"
+            ? out.ok
+            : JSON.stringify(out.ok);
+        return reply(msg.id, { content: [{ type: "text", text }] });
+      }
+
       // Nothing to do but say yes. The list the client draws is the call
       // itself, which is already on its way down the chat stream by the time
       // this runs — so there is nobody to tell and nothing to wait for.

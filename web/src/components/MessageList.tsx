@@ -454,6 +454,14 @@ function TurnView({
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
   // here has the same one.
   const speaker = messages[0].speaker;
+  // And, on a turn you typed, the seat you addressed it to. Absent for the
+  // whole room, which is where every message has always gone.
+  const to = messages[0].to;
+  // Card 75 — the skill a typed command actually resolved to. Drawn as a badge
+  // rather than as text in the bubble: it is the system's resolution, not
+  // something the person said, and it used to appear as a second line of their
+  // own message.
+  const ranSkill = messages[0].ranSkill;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
   // The answer as it reads on screen. Thinking is left out — it is folded away
@@ -487,6 +495,14 @@ function TurnView({
 
   return (
     <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
+      {/* Above your own words, because it changes how they read: "check this"
+          means something different said to the room than said to one agent. */}
+      {role === "user" && to && <div className="msg-to">to {to.name}</div>}
+      {role === "user" && ranSkill && (
+        <div className="msg-ran" title="The skill this command resolved to">
+          {ranSkill}
+        </div>
+      )}
       {role === "assistant" && (
         <div className="msg-role">
           {/* Whoever wrote it. The host has no seat and keeps the plain word it

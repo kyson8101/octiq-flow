@@ -306,6 +306,24 @@ fn with_access<T>(f: impl FnOnce(&mut HashMap<String, Access>) -> T) -> T {
     f(guard.get_or_insert_with(HashMap::new))
 }
 
+/// Remember the level the hook will answer at, unless a SEAT is asking.
+///
+/// The permission channel is keyed by the CONVERSATION — `OCTIQ_CHAT_KEY` has to
+/// name the chat, or `ask_user` would put its question in front of the wrong one
+/// — so a room's host and every seat in it share ONE entry.
+///
+/// That makes writing to it a HOST-only act. A seat that wrote its own level
+/// here would answer the host's permission questions at that level, and nothing
+/// on screen would say the picker no longer meant what it says. A seat inherits
+/// whatever the room is already on, which is the only reading that can be true
+/// for both of them at once.
+pub(crate) fn record_access_for(key: &str, access: Option<Access>, is_seat: bool) {
+    if is_seat {
+        return;
+    }
+    with_access(|a| a.insert(key.to_string(), access.unwrap_or(Access::Read)));
+}
+
 /// What a chat may do at this moment, or None when no chat by that key is known.
 pub fn access_now(key: &str) -> Option<Access> {
     with_access(|a| a.get(key).copied())
@@ -410,7 +428,16 @@ fn build_command(
                 cmd.push_str(&format!(
                     " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                     sh_quote(&mcp.to_string_lossy()),
-                    sh_quote("mcp__octiq__ask_user mcp__octiq__todo_write"),
+                    // The room tools (card 70) are pre-approved alongside the
+                    // other two, and offered in EVERY chat rather than only in a
+                    // room. This list is fixed when the process spawns, so
+                    // gating them on room mode would leave a host unable to act
+                    // on a switch turned on mid-chat; the backend refuses them
+                    // in an ordinary chat anyway, in words the agent can read.
+                    sh_quote(
+                        "mcp__octiq__ask_user mcp__octiq__todo_write \
+                         mcp__octiq__add_agent mcp__octiq__ask_agent",
+                    ),
                     sh_quote(ASK_PROMPT),
                 ));
             }
@@ -563,6 +590,47 @@ pub fn chat_start(
     )
 }
 
+/// Which process this is, where its words go, and whose voice they are.
+///
+/// For the HOST the first two are the same string, which is why one `key` was
+/// enough until rooms existed. A SEAT's are not: it runs as its own process, so
+/// it needs its own entry in the sessions map — but what it SAYS belongs to the
+/// room's transcript, under the room's key, or the conversation would be split
+/// across as many records as it has voices and no reader could put it back
+/// together.
+pub(crate) struct Voice {
+    /// The sessions-map key. Identifies the PROCESS.
+    pub session_key: String,
+    /// The chat its events are recorded and emitted under, its permission
+    /// questions attach to, and `OCTIQ_CHAT_KEY` names. Identifies the
+    /// CONVERSATION.
+    pub stream_key: String,
+    /// Stamped onto every event this process produces. `None` is the host, and
+    /// a host's events are never touched at all.
+    pub seat: Option<crate::chat_room::Seat>,
+}
+
+impl Voice {
+    /// A chat's own agent: one key, no seat — the shape every chat had before
+    /// rooms.
+    fn host(key: String) -> Self {
+        Self {
+            session_key: key.clone(),
+            stream_key: key,
+            seat: None,
+        }
+    }
+
+    /// One seat in a room. Its own process, the room's transcript.
+    pub(crate) fn seat(room_key: &str, seat: crate::chat_room::Seat) -> Self {
+        Self {
+            session_key: crate::chat_room::seat_session_key(room_key, &seat.id),
+            stream_key: room_key.to_string(),
+            seat: Some(seat),
+        }
+    }
+}
+
 /// Start a chat. The Tauri-free half of `chat_start`, so a headless server can
 /// call exactly the same code path rather than a copy of it.
 #[allow(clippy::too_many_arguments)]
@@ -580,11 +648,56 @@ pub fn chat_start_impl(
     images: Option<Vec<String>>,
     lite: Option<bool>,
 ) -> Result<(), String> {
+    start_session(
+        manager,
+        Voice::host(key),
+        cwd,
+        agent,
+        model,
+        access,
+        prompt,
+        resume,
+        extra_dirs,
+        effort,
+        images,
+        lite,
+    )
+}
+
+/// Start one agent process — the host's, or a seat's.
+///
+/// Everything below reads `key` as the CONVERSATION: the transcript it appends
+/// to, the events it emits, the permission questions it raises, the value of
+/// `OCTIQ_CHAT_KEY`. Only the sessions map wants the other one, and it is named
+/// `session_key` at each of the three places it does.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_session(
+    manager: Arc<ChatManager>,
+    voice: Voice,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    lite: Option<bool>,
+) -> Result<(), String> {
+    let Voice {
+        session_key,
+        stream_key: key,
+        seat,
+    } = voice;
+    // Read before `seat` is moved into the reader thread below.
+    let is_seat = seat.is_some();
     let manager_for_exit = manager.clone();
+    let session_key_for_exit = session_key.clone();
     {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        if sessions.contains_key(&key) {
-            return Err(format!("chat '{key}' is already running"));
+        if sessions.contains_key(&session_key) {
+            return Err(format!("chat '{session_key}' is already running"));
         }
     }
 
@@ -681,10 +794,10 @@ pub fn chat_start_impl(
         .sessions
         .lock()
         .map_err(|e| e.to_string())?
-        .insert(key.clone(), session.clone());
+        .insert(session_key.clone(), session.clone());
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
-    with_access(|a| a.insert(key.clone(), access.unwrap_or(Access::Read)));
+    record_access_for(&key, access, is_seat);
 
     // Say hello, or never be asked anything.
     //
@@ -713,12 +826,12 @@ pub fn chat_start_impl(
     {
         let key = key.clone();
         let asking = session.clone();
-        // Whose stdout this is. `chat_start_impl` starts the HOST, so there is
-        // nobody to name and every event goes through untouched — see
-        // `stamp_speaker`. Card 67 gives a seat its own process, and this is
-        // the one line it changes: the seat is passed in and its every event
-        // then says so, in the record as well as on the wire.
-        let speaker: Option<crate::chat_room::Seat> = None;
+        // Whose stdout this is. `None` is the host, and a host's events go
+        // through completely untouched — see `stamp_speaker`. A seat names
+        // itself on every event it produces, in the record as well as on the
+        // wire, so a reader coming back to the conversation still knows who
+        // said what.
+        let speaker = seat;
         // The runtime the answer will be waited on. Captured HERE, on the thread
         // that still has one: `chat_start` is called from an async handler, the
         // reader below is a plain thread, and `Handle::current()` panics there.
@@ -805,6 +918,16 @@ pub fn chat_start_impl(
                                 .and_then(|r| r.as_str())
                                 .unwrap_or_default();
                             crate::push::notify_chat(Some(&key), "done", said);
+                            // A round, if one is going, is waiting to hear
+                            // exactly this: `result` is the agent's own full
+                            // stop, and the only honest signal that a seat has
+                            // finished its turn. Silent for every ordinary
+                            // chat, because nobody is listening.
+                            crate::round::turn_ended(
+                                &key,
+                                speaker.as_ref().map(|s| s.id.as_str()),
+                                said,
+                            );
                         }
                         // Who said this — BEFORE the record is written, so a
                         // client that catches up later is told the same thing a
@@ -902,7 +1025,7 @@ pub fn chat_start_impl(
                 .sessions
                 .lock()
                 .ok()
-                .map(|mut m| m.remove(&key));
+                .map(|mut m| m.remove(&session_key_for_exit));
         });
     }
 
@@ -992,22 +1115,151 @@ pub fn chat_send(
     key: String,
     text: String,
     images: Option<Vec<String>>,
+    to: Option<String>,
 ) -> Result<(), String> {
-    chat_send_impl(&manager, key, text, images)
+    chat_send_impl(manager.inner().clone(), key, text, images, to)
+}
+
+/// Start one seat's process, with its first message.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn chat_seat_start(
+    manager: State<Arc<ChatManager>>,
+    key: String,
+    seat_id: String,
+    cwd: String,
+    prompt: Option<String>,
+    access: Option<Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+) -> Result<(), String> {
+    chat_seat_start_impl(
+        manager.inner().clone(),
+        key,
+        seat_id,
+        cwd,
+        prompt,
+        access,
+        extra_dirs,
+        effort,
+        images,
+    )
 }
 
 /// The Tauri-free half of `chat_send`.
 pub fn chat_send_impl(
-    manager: &ChatManager,
+    manager: Arc<ChatManager>,
     key: String,
     text: String,
     images: Option<Vec<String>>,
+    // Who this is for. `None` is the chat's own agent — every message of every
+    // chat that is not a room, and the default inside one.
+    to: Option<String>,
 ) -> Result<(), String> {
+    // WHO first, because an unknown seat must be refused before anything is
+    // written anywhere. Falling through to the host would put a message meant
+    // for one agent in front of a different one.
+    let target = crate::chat_room::target_impl(&manager, &key, to.as_deref())?;
+    let session_key = match &target {
+        crate::chat_room::Target::Host => key.clone(),
+        crate::chat_room::Target::Seat(seat) => crate::chat_room::seat_session_key(&key, &seat.id),
+    };
+    // A seat with no process behind it never had a session to find. Card 71:
+    // it is an HTTP call, so the words go straight out and the answer is
+    // already back by the time this returns.
+    if let crate::chat_room::Target::Seat(seat) = &target {
+        if seat.kind == crate::chat_room::SeatKind::OnDemand {
+            crate::agent_api::ask(seat, &key, &text)?;
+            return Ok(());
+        }
+    }
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&key).cloned().ok_or("no such chat")?
+        sessions.get(&session_key).cloned()
+    };
+    let Some(session) = session else {
+        // Two different failures, said differently on purpose. A seat is a
+        // RECORD until someone talks to it, so "it has not started yet" is an
+        // ordinary state the client answers by starting it — the same thing it
+        // already does for the host's own first message. "No such chat" is not
+        // recoverable and must not be mistaken for it.
+        return Err(match target {
+            crate::chat_room::Target::Seat(seat) => {
+                format!("seat '{}' is not running", seat.name)
+            }
+            crate::chat_room::Target::Host => "no such chat".into(),
+        });
     };
     write_user_message(&session, &text, &images.unwrap_or_default())
+}
+
+/// Start ONE seat's process, with its first message.
+///
+/// The mirror of `chat_start_impl` for a seat, and deliberately the same shape:
+/// the client already knows "not running yet, so start it with the prompt;
+/// otherwise send", because that is how it has always talked to the host. A
+/// seat gets the same two calls rather than a cleverer one.
+///
+/// The context comes from the caller because the CLIENT is the thing that knows
+/// it — the project's folders, the access level, the effort. Keeping a copy on
+/// the room would be a second source of truth that could drift from the one the
+/// host was started with.
+#[allow(clippy::too_many_arguments)]
+pub fn chat_seat_start_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    seat_id: String,
+    cwd: String,
+    prompt: Option<String>,
+    access: Option<Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+) -> Result<(), String> {
+    let crate::chat_room::Target::Seat(seat) =
+        crate::chat_room::target_impl(&manager, &key, Some(&seat_id))?
+    else {
+        return Err("that is the host, not a seat".into());
+    };
+    // Nothing to start. Refused rather than quietly doing nothing, or a caller
+    // would go on to wait for a turn that is never coming.
+    if seat.kind == crate::chat_room::SeatKind::OnDemand {
+        return Err(format!(
+            "'{}' has no process to start — it is asked directly",
+            seat.name
+        ));
+    }
+    let agent = seat.agent;
+    let model = seat.model.clone();
+    // Card 69 — WHERE this seat runs is the seat's own business, not the
+    // caller's. A `room_only` seat is put somewhere the project is not, and an
+    // agent merely TOLD to ignore a repository will read it the moment the
+    // question gets hard. Deciding it here means no call site can forget.
+    let (cwd, extra_dirs) =
+        crate::chat_room::seat_workspace(&seat, &key, &cwd, &extra_dirs.unwrap_or_default());
+    // A folder it has never used will not exist yet, and `current_dir` on a
+    // missing path fails the spawn outright.
+    let _ = std::fs::create_dir_all(&cwd);
+    let extra_dirs = Some(extra_dirs);
+    start_session(
+        manager,
+        Voice::seat(&key, seat),
+        cwd,
+        agent,
+        model,
+        access,
+        prompt,
+        // A seat has no earlier session of its own to resume: it is new the
+        // first time it is spoken to, and after that it has a live process.
+        None,
+        extra_dirs,
+        effort,
+        images,
+        // A seat is a second opinion, not a second copy of this machine's
+        // setup. It starts clean for the same reason `lite` exists.
+        Some(true),
+    )
 }
 
 /// Ask the agent to stop what it is doing, WITHOUT ending the conversation.
@@ -1297,7 +1549,7 @@ const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 
 /// Told to the agent so it knows the tool is there and when it is wanted.
 /// Without this it has a tool it never thinks to reach for.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Both are refused unless the person has turned room mode on for this chat, and the refusal says so — pass that on rather than working around it.";
 
 /// Write the ask-user MCP server and its config, and return the config path.
 ///
@@ -1462,6 +1714,38 @@ mod tests {
         });
         assert!(can_use_tool(&ours).is_none());
         assert!(can_use_tool(&json!({ "type": "assistant" })).is_none());
+    }
+
+    #[test]
+    fn the_host_is_given_the_room_tools_in_every_chat_not_only_a_room() {
+        // Card 70. The tool list a process is offered is fixed when it SPAWNS,
+        // so gating these on room mode would leave a host unable to act on a
+        // switch the person turned on mid-chat. The backend refuses them in an
+        // ordinary chat anyway, in words the agent can read — so offering them
+        // always is the option that needs no restart and tells no lies.
+        let c = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "hi",
+            None,
+            &[],
+            None,
+            &[],
+            false,
+        );
+
+        assert!(
+            c.contains("mcp__octiq__add_agent"),
+            "add_agent is not allowed: {c}"
+        );
+        assert!(
+            c.contains("mcp__octiq__ask_agent"),
+            "ask_agent is not allowed: {c}"
+        );
+        // And the two that were always there still are.
+        assert!(c.contains("mcp__octiq__ask_user"));
+        assert!(c.contains("mcp__octiq__todo_write"));
     }
 
     #[test]

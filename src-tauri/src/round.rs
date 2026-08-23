@@ -1,0 +1,1225 @@
+//! A ROUND: the seats of a room answering one thing, in order, one at a time.
+//!
+//! The host says something, then each seat answers — and each one is shown what
+//! the seats before it just said. That ordering is the whole point, and it is
+//! copied from a system already in daily use: Starfall's round-table
+//! (`.claude/rules/roundtable.md`, `lab/roundtable/turn.py` in that repo).
+//!
+//! ## Why in sequence, never at once
+//!
+//! `turn.py` puts it plainly: 顺序跑不并发：后讲的那一方要看得见前面刚讲的，否则
+//! 同一轮出来的是几份独白 — *run them in order, not in parallel: whoever speaks
+//! later has to be able to see what was just said, or one round produces several
+//! monologues.* Fan the seats out concurrently and nobody is answering anybody;
+//! you get N first drafts of the same reply and no discussion at all.
+//!
+//! ## Why the BACKEND drives it
+//!
+//! A round takes minutes. The obvious implementation — the client sends to seat
+//! one, waits for its reply, sends to seat two — dies the moment a laptop lid
+//! shuts. That is the exact failure `transcript.rs` was written to fix: an agent
+//! here keeps working whether or not anyone is watching. So the sequence runs
+//! here, and the client only watches it happen.
+//!
+//! ## What a seat is actually told
+//!
+//! Its brief is the host's message plus, attributed, whatever the earlier seats
+//! answered THIS round. How much older history rides along with that is card
+//! 69's question, not this module's.
+use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::agent_chat::ChatManager;
+use crate::chat_room::{seat_session_key, Seat};
+
+/// How long one seat may take before the round gives up on it and moves on.
+///
+/// Long, because a real answer to a real question takes minutes and cutting one
+/// off mid-thought is worse than waiting. Not unbounded, because a seat that has
+/// silently died would otherwise hold the round open forever, and the user would
+/// see a discussion that never ends and never says why.
+const SEAT_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// The hardest a seat may think during a round.
+///
+/// A trap Starfall already paid for, in `lab/roundtable/turn.py`: 推理档必须在
+/// 这里压掉 — *the reasoning tier has to be forced down here.* A round brief
+/// grows with every seat that speaks, and a large prompt on the top tier hangs:
+/// 0.0% CPU, pure waiting, indistinguishable from an API outage. Their measured
+/// numbers are six seconds on a low tier against twenty-four minutes with no
+/// output at all on `xhigh`.
+///
+/// So a round does not honour whatever the picker is set to. It is not the
+/// user's setting being ignored for its own sake — it is the difference between
+/// a discussion and a hang nobody can diagnose.
+const ROUND_EFFORT: &str = "medium";
+
+/// The effort a seat runs at during a round: the user's, unless theirs is
+/// higher than a round can safely carry.
+fn round_effort(chosen: &Option<String>) -> Option<String> {
+    match chosen.as_deref() {
+        // Anything at or below the cap is honoured as chosen.
+        Some("minimal") | Some("low") => chosen.clone(),
+        // Everything else — including `auto`, `high`, `xhigh`, `max` and an
+        // unset picker — comes down to the cap.
+        _ => Some(ROUND_EFFORT.to_string()),
+    }
+}
+
+/// What one seat said when its turn came.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Said {
+    pub name: String,
+    /// What it answered, or the reason it did not.
+    pub text: String,
+    /// False when the seat failed rather than answered. Starfall's rule:
+    /// 一方挂了不该拖垮另一方 — *one side falling over should not drag the other
+    /// down with it* — so the round carries on and this is reported in place.
+    pub answered: bool,
+}
+
+/// How many exchanges a seat is shown by default, when the host says nothing.
+///
+/// Starfall's tested value. The reason for having a limit at all is the sharpest
+/// line in their rules: 每轮重发整场 ＝ 成本随轮数平方增长 — *re-sending the whole
+/// discussion every round makes cost grow with the SQUARE of the round count.*
+/// The 30k characters pasted in round one are paid for again in round two, and
+/// again in round three. It also makes the answers WORSE: a seat reads thirty
+/// rounds about something else before reaching the question in front of it, and
+/// its attention is spread over all of it.
+pub const DEFAULT_WINDOW: usize = 24;
+
+/// The part of the discussion a seat is shown: from the current topic, newest
+/// first, at most `window` of them.
+///
+/// Two rules stacked. The TOPIC marker is the hard cut — everything before it is
+/// gone for good, because the judgement Starfall uses is 这一轮要答的问题，需要上
+/// 一个话题的哪一句？答不出来就 --fresh (*which line of the last topic does this
+/// question need? If you cannot say, start fresh*). The WINDOW is the soft cut
+/// inside what is left, because even one topic should not run forever.
+///
+/// A window of 0 means no limit, not "send nothing" — a config that quietly made
+/// every seat answer blind would show up only as answers going strange, with
+/// nothing on screen saying why.
+pub fn discussion_window(record: &[Said], topic_start: usize, window: usize) -> &[Said] {
+    // The marker can outrun the record when a topic is opened before anyone has
+    // spoken in it. Nothing to send is the right answer; panicking here would
+    // take the round down with it.
+    let from = topic_start.min(record.len());
+    let this_topic = &record[from..];
+    if window == 0 || this_topic.len() <= window {
+        return this_topic;
+    }
+    &this_topic[this_topic.len() - window..]
+}
+
+/// What a seat is told about what came before — the host's choice if it made
+/// one, the mechanical window otherwise.
+///
+/// The host knows what a seat is FOR. A reviewer brought in to read one function
+/// does not need forty rounds about something else, and sending them anyway is
+/// both the expensive answer and the worse one.
+///
+/// `Some(&[])` is a real choice, not an absent one: "answer this cold". It must
+/// not fall back to the window, because giving an outside opinion the whole
+/// discussion is exactly how it stops being outside.
+pub fn backdrop<'a>(
+    record: &'a [Said],
+    topic_start: usize,
+    window: usize,
+    chosen: Option<&'a [Said]>,
+) -> &'a [Said] {
+    match chosen {
+        Some(chosen) => chosen,
+        None => discussion_window(record, topic_start, window),
+    }
+}
+
+/// The brief one seat is handed when its turn comes.
+///
+/// The host's message first, because that is the question. Then what the seats
+/// before it said this round, each under its own name — a seat that cannot tell
+/// who said what cannot answer anybody, it can only add another monologue.
+///
+/// A seat that FAILED is still named. Silently dropping it would let the next
+/// seat believe the round had been quieter than it was, and a reader comparing
+/// the brief against the screen would find them disagreeing.
+pub fn round_brief(host: &str, said: &[Said]) -> String {
+    let mut out = String::from(host.trim());
+    if said.is_empty() {
+        return out;
+    }
+    out.push_str("\n\n=== what has been said this round ===");
+    for s in said {
+        out.push_str(&format!("\n\n--- {} ---\n", s.name));
+        out.push_str(if s.answered {
+            s.text.trim()
+        } else {
+            "(did not answer this round)"
+        });
+    }
+    out.push_str("\n\n=== over to you ===");
+    out
+}
+
+/// One round in flight, for one chat.
+#[derive(Debug, Clone, Default)]
+pub struct Round {
+    /// The seats still to speak, in order. Drains from the front.
+    pub waiting: Vec<String>,
+    /// Who has spoken, and what they said.
+    pub said: Vec<Said>,
+    /// The user cut in. Nothing further runs, and nothing further is billed.
+    pub hand: bool,
+    /// The session key of the seat speaking RIGHT NOW, if any. Kept so cutting
+    /// in can end the wait for it instead of sitting out `SEAT_TIMEOUT`.
+    pub speaking: Option<String>,
+}
+
+/// A room's discussion so far, across rounds.
+///
+/// Separate from `Round`, which is one round in flight. A round ends; the
+/// discussion does not, and the next round has to be able to show a seat what
+/// the last one concluded.
+#[derive(Debug, Clone, Default)]
+struct Record {
+    said: Vec<Said>,
+    /// Where the current topic began. Everything before it is gone for good —
+    /// see `discussion_window`.
+    topic_start: usize,
+}
+
+/// Every round in flight, and what has been said in each room.
+#[derive(Default)]
+pub struct Rounds {
+    live: Mutex<HashMap<String, Round>>,
+    record: Mutex<HashMap<String, Record>>,
+}
+
+impl Rounds {
+    /// Begin a round. Refused when one is already going in this chat — two
+    /// rounds at once would interleave two conversations into one transcript
+    /// and neither would read as a discussion.
+    pub fn start(&self, key: &str, order: Vec<String>) -> Result<(), String> {
+        if order.is_empty() {
+            return Err("a round needs at least one seat".into());
+        }
+        let mut live = self.live.lock().map_err(|e| e.to_string())?;
+        if live.contains_key(key) {
+            return Err("a round is already running in this chat".into());
+        }
+        live.insert(
+            key.to_string(),
+            Round {
+                waiting: order,
+                said: Vec::new(),
+                hand: false,
+                speaking: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Whose turn it is, and what to tell them — or `None` when the round is
+    /// over, was never started, or the hand went up.
+    ///
+    /// Taking the next seat REMOVES it from the queue, so a round cannot ask the
+    /// same seat twice however the driver is scheduled.
+    pub fn next(&self, key: &str) -> Option<(String, Vec<Said>)> {
+        let mut live = self.live.lock().ok()?;
+        let round = live.get_mut(key)?;
+        if round.hand || round.waiting.is_empty() {
+            return None;
+        }
+        let seat = round.waiting.remove(0);
+        Some((seat, round.said.clone()))
+    }
+
+    /// Write down what a seat said.
+    pub fn record(&self, key: &str, said: Said) {
+        if let Ok(mut live) = self.live.lock() {
+            if let Some(round) = live.get_mut(key) {
+                round.said.push(said);
+            }
+        }
+    }
+
+    /// The user cut in. The seats still waiting never run.
+    ///
+    /// And the one already speaking is stopped being WAITED ON. Dropping its
+    /// listener makes the driver's `recv` fail at once instead of sitting out
+    /// the full `SEAT_TIMEOUT` — without this the bar reads "stopped" while the
+    /// round is still open, for up to twenty minutes.
+    pub fn raise_hand(&self, key: &str) {
+        let mut speaking = None;
+        if let Ok(mut live) = self.live.lock() {
+            if let Some(round) = live.get_mut(key) {
+                round.hand = true;
+                round.waiting.clear();
+                speaking = round.speaking.take();
+            }
+        }
+        if let Some(session) = speaking {
+            with_listening(|l| l.remove(&session));
+        }
+    }
+
+    /// Note who is speaking, so cutting in can end the wait for them.
+    fn speaking(&self, key: &str, session: Option<String>) {
+        if let Ok(mut live) = self.live.lock() {
+            if let Some(round) = live.get_mut(key) {
+                round.speaking = session;
+            }
+        }
+    }
+
+    /// The round as it stands, for the client to draw.
+    pub fn peek(&self, key: &str) -> Option<Round> {
+        self.live.lock().ok()?.get(key).cloned()
+    }
+
+    /// Add what a round concluded to the room's running discussion.
+    pub fn remember(&self, key: &str, said: Vec<Said>) {
+        if let Ok(mut record) = self.record.lock() {
+            record.entry(key.to_string()).or_default().said.extend(said);
+        }
+    }
+
+    /// Draw a line. Nothing said before now is shown to any seat again.
+    ///
+    /// The judgement is Starfall's: 这一轮要答的问题，需要上一个话题的哪一句？
+    /// 答不出来就 --fresh — *which line of the last topic does this question
+    /// need? If you cannot say, start fresh.*
+    pub fn new_topic(&self, key: &str) {
+        if let Ok(mut record) = self.record.lock() {
+            let r = record.entry(key.to_string()).or_default();
+            r.topic_start = r.said.len();
+        }
+    }
+
+    /// What a seat should be shown of what came before: the host's choice if it
+    /// made one, otherwise this topic's newest `DEFAULT_WINDOW`.
+    pub fn backdrop_for(&self, key: &str, chosen: Option<&[Said]>) -> Vec<Said> {
+        let Ok(record) = self.record.lock() else {
+            // Cannot read the record, so the only honest backdrop is the host's
+            // choice if it made one, and nothing otherwise.
+            return chosen.unwrap_or_default().to_vec();
+        };
+        let empty = Record::default();
+        let r = record.get(key).unwrap_or(&empty);
+        // ONE decision, in one place: `backdrop` owns the choice-beats-window
+        // rule, and this only supplies the record it reads.
+        backdrop(&r.said, r.topic_start, DEFAULT_WINDOW, chosen).to_vec()
+    }
+
+    /// Forget a room's discussion entirely — the chat is gone.
+    pub fn forget(&self, key: &str) {
+        if let Ok(mut record) = self.record.lock() {
+            record.remove(key);
+        }
+    }
+
+    /// The round is over. Hands back what was said, so the caller can report it.
+    pub fn finish(&self, key: &str) -> Option<Round> {
+        self.live.lock().ok()?.remove(key)
+    }
+}
+
+/// Who is waiting to hear that a turn ended, keyed by the seat's session key.
+///
+/// The reader thread in `agent_chat` is the only thing that knows a turn is
+/// over — `result` is the agent's own full stop. It shouts down here; the round
+/// driver is listening.
+static LISTENING: Mutex<Option<HashMap<String, Sender<String>>>> = Mutex::new(None);
+
+fn with_listening<T>(f: impl FnOnce(&mut HashMap<String, Sender<String>>) -> T) -> T {
+    let mut guard = LISTENING.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+/// Listen for one seat's turn to end. Registered BEFORE the seat is spoken to,
+/// or a fast answer could land before anyone was listening for it.
+fn listen_for(session_key: &str) -> Receiver<String> {
+    let (tx, rx) = channel();
+    with_listening(|l| l.insert(session_key.to_string(), tx));
+    rx
+}
+
+/// A turn ended. Called from the reader thread on the agent's own `result`.
+///
+/// Silent when nobody is waiting, which is every turn of every ordinary chat.
+pub fn turn_ended(room_key: &str, seat_id: Option<&str>, said: &str) {
+    let Some(seat_id) = seat_id else { return };
+    let key = seat_session_key(room_key, seat_id);
+    let tx = with_listening(|l| l.remove(&key));
+    if let Some(tx) = tx {
+        let _ = tx.send(said.to_string());
+    }
+}
+
+/// Run a whole round, one seat at a time, on a thread of its own.
+///
+/// Spawned rather than awaited because a round takes minutes and the call that
+/// starts it is an HTTP request. Everything it needs is owned, so it outlives
+/// the request, the browser, and a closed laptop — see this module's header.
+#[allow(clippy::too_many_arguments)]
+pub fn run_round(
+    rounds: Arc<Rounds>,
+    manager: Arc<ChatManager>,
+    key: String,
+    host_text: String,
+    cwd: String,
+    access: Option<crate::agent_chat::Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    // What the host chose to show the seats, or `None` for the window.
+    chosen: Option<Vec<Said>>,
+) {
+    std::thread::spawn(move || {
+        while let Some((seat_id, so_far)) = rounds.next(&key) {
+            let Ok(crate::chat_room::Target::Seat(seat)) =
+                crate::chat_room::target_impl(&manager, &key, Some(&seat_id))
+            else {
+                // Removed mid-round. Not an error worth stopping for — the
+                // seats after it are still owed their turn.
+                continue;
+            };
+            // What came before, then what this round has said so far. The
+            // backdrop is the host's choice when it made one, and this topic's
+            // newest few otherwise — see `backdrop`.
+            let mut shown = rounds.backdrop_for(&key, chosen.as_deref());
+            shown.extend(so_far);
+            let brief = round_brief(&host_text, &shown);
+
+            // The same fork as `ask_seat`: an on-demand seat is a call that
+            // returns, not a process whose turn has to be waited for.
+            if seat.kind == crate::chat_room::SeatKind::OnDemand {
+                let said = match crate::agent_api::ask(&seat, &key, &brief) {
+                    Ok(text) => Said {
+                        name: seat.name.clone(),
+                        text,
+                        answered: true,
+                    },
+                    Err(why) => Said {
+                        name: seat.name.clone(),
+                        text: why,
+                        answered: false,
+                    },
+                };
+                rounds.record(&key, said);
+                continue;
+            }
+
+            let session = seat_session_key(&key, &seat.id);
+            // Listening BEFORE speaking: a fast answer that landed first would
+            // otherwise be shouted into an empty room and the round would wait
+            // out the whole timeout for something already said.
+            let heard = listen_for(&session);
+            rounds.speaking(&key, Some(session.clone()));
+
+            let sent = speak_to(
+                &manager,
+                &key,
+                &seat,
+                &brief,
+                &cwd,
+                access,
+                &extra_dirs,
+                &effort,
+            );
+            let said = match sent {
+                Err(why) => Said {
+                    name: seat.name.clone(),
+                    text: why,
+                    answered: false,
+                },
+                Ok(()) => match heard.recv_timeout(SEAT_TIMEOUT) {
+                    Ok(text) => Said {
+                        name: seat.name.clone(),
+                        text,
+                        answered: true,
+                    },
+                    Err(_) => Said {
+                        name: seat.name.clone(),
+                        text: "did not answer in time".into(),
+                        answered: false,
+                    },
+                },
+            };
+            // Whatever happened, it is written down and the round carries on —
+            // 一方挂了不该拖垮另一方.
+            with_listening(|l| l.remove(&session));
+            rounds.speaking(&key, None);
+            rounds.record(&key, said);
+        }
+        let over = rounds.finish(&key);
+        // What this round concluded joins the room's running discussion, so the
+        // NEXT round can show a seat what this one decided.
+        if let Some(o) = over.as_ref() {
+            rounds.remember(&key, o.said.clone());
+        }
+        crate::bus::emit(
+            "chat-round",
+            serde_json::json!({
+                "key": key,
+                "done": true,
+                "hand": over.as_ref().map(|o| o.hand).unwrap_or(false),
+                "said": over
+                    .map(|o| o.said.iter().map(|s| serde_json::json!({
+                        "name": s.name, "answered": s.answered,
+                    })).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            }),
+        );
+    });
+}
+
+/// Put the brief to one seat: start its process if this is its first word,
+/// otherwise write to the one it already has.
+///
+/// Caps the reasoning effort ITSELF rather than trusting the caller to have
+/// done it. That is deliberate: the first version capped it at the call site,
+/// `cargo fmt` reflowed that call, the edit silently missed — and the test went
+/// on passing, because it exercised the pure function rather than the path.
+/// A cap the caller cannot forget cannot be lost that way again.
+#[allow(clippy::too_many_arguments)]
+fn speak_to(
+    manager: &Arc<ChatManager>,
+    key: &str,
+    seat: &Seat,
+    brief: &str,
+    cwd: &str,
+    access: Option<crate::agent_chat::Access>,
+    extra_dirs: &Option<Vec<String>>,
+    effort: &Option<String>,
+) -> Result<(), String> {
+    let effort = &round_effort(effort);
+    let send = crate::agent_chat::chat_send_impl(
+        manager.clone(),
+        key.to_string(),
+        brief.to_string(),
+        None,
+        Some(seat.id.clone()),
+    );
+    match send {
+        Ok(()) => Ok(()),
+        // Never spoken before, so there is nothing to write to yet. The same
+        // two-step the client does for the host's own first message.
+        Err(why) if why.contains("not running") => crate::agent_chat::chat_seat_start_impl(
+            manager.clone(),
+            key.to_string(),
+            seat.id.clone(),
+            cwd.to_string(),
+            Some(brief.to_string()),
+            access,
+            extra_dirs.clone(),
+            effort.clone(),
+            None,
+        ),
+        Err(why) => Err(why),
+    }
+}
+
+/// Start a round. The Tauri-free half of `chat_round`.
+///
+/// Validates the whole order BEFORE anything runs. A round that discovered a bad
+/// seat halfway through would already have spent money on the seats before it,
+/// and the user asked for a discussion, not most of one.
+#[allow(clippy::too_many_arguments)]
+pub fn start_round_impl(
+    rounds: Arc<Rounds>,
+    manager: Arc<ChatManager>,
+    key: String,
+    order: Vec<String>,
+    text: String,
+    cwd: String,
+    access: Option<crate::agent_chat::Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    // What to show the seats of what came before. `None` is the mechanical
+    // window; `Some(vec![])` is "answer this cold" and is a real choice, not an
+    // absent one.
+    history: Option<Vec<Said>>,
+) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("a round needs something to answer".into());
+    }
+    for seat_id in &order {
+        crate::chat_room::target_impl(&manager, &key, Some(seat_id))?;
+    }
+    rounds.start(&key, order)?;
+    run_round(
+        rounds, manager, key, text, cwd, access, extra_dirs, effort, history,
+    );
+    Ok(())
+}
+
+/// The round in this chat as it stands, for the client to draw.
+pub fn state_impl(rounds: &Rounds, key: &str) -> serde_json::Value {
+    match rounds.peek(key) {
+        None => serde_json::json!({ "running": false }),
+        Some(round) => serde_json::json!({
+            "running": true,
+            "hand": round.hand,
+            "waiting": round.waiting,
+            "said": round.said.iter().map(|s| serde_json::json!({
+                "name": s.name, "answered": s.answered,
+            })).collect::<Vec<_>>(),
+        }),
+    }
+}
+
+/// Put one thing to every seat in turn.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn chat_round(
+    rounds: tauri::State<Arc<Rounds>>,
+    manager: tauri::State<Arc<ChatManager>>,
+    key: String,
+    order: Vec<String>,
+    text: String,
+    cwd: String,
+    access: Option<crate::agent_chat::Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    history: Option<Vec<Said>>,
+) -> Result<(), String> {
+    start_round_impl(
+        rounds.inner().clone(),
+        manager.inner().clone(),
+        key,
+        order,
+        text,
+        cwd,
+        access,
+        extra_dirs,
+        effort,
+        history,
+    )
+}
+
+/// Put ONE thing to ONE seat and wait for its answer.
+///
+/// The host agent's own tool (card 70), and deliberately narrower than a round:
+/// the host says exactly what this seat is told, and gets exactly what it said
+/// back, as the tool result. No window, no backdrop, no other seats — when the
+/// host wants a discussion it starts a round instead.
+///
+/// Blocking on purpose. A tool that returned "I asked, check later" would leave
+/// the host with nothing to reason about, which is the whole reason it asked.
+pub fn ask_seat(
+    rounds: &Rounds,
+    manager: &Arc<ChatManager>,
+    key: &str,
+    seat_id: &str,
+    prompt: &str,
+    cwd: &str,
+) -> Result<String, String> {
+    if prompt.trim().is_empty() {
+        return Err("a seat needs something to answer".into());
+    }
+    let crate::chat_room::Target::Seat(seat) =
+        crate::chat_room::target_impl(manager, key, Some(seat_id))?
+    else {
+        return Err("that is the host, not a seat".into());
+    };
+    // A round already owns this chat's seats. Two things driving the same seat
+    // would interleave two conversations in one transcript.
+    if rounds.peek(key).is_some() {
+        return Err("a round is running in this chat — wait for it, or stop it".into());
+    }
+    // A seat with no process behind it is a CALL, not a turn to wait for.
+    // Nothing is spawned, nothing is listened for, and the answer is already
+    // here by the time this returns.
+    if seat.kind == crate::chat_room::SeatKind::OnDemand {
+        let said = crate::agent_api::ask(&seat, key, prompt)?;
+        rounds.remember(
+            key,
+            vec![Said {
+                name: seat.name.clone(),
+                text: said.clone(),
+                answered: true,
+            }],
+        );
+        return Ok(said);
+    }
+    let session = seat_session_key(key, &seat.id);
+    let heard = listen_for(&session);
+    let sent = speak_to(manager, key, &seat, prompt, cwd, None, &None, &None);
+    if let Err(why) = sent {
+        with_listening(|l| l.remove(&session));
+        return Err(why);
+    }
+    let answer = heard
+        .recv_timeout(SEAT_TIMEOUT)
+        .map_err(|_| format!("{} did not answer in time", seat.name));
+    with_listening(|l| l.remove(&session));
+    let answer = answer?;
+    // What one seat said still joins the room's record, so a later round can
+    // show the others what was already established.
+    rounds.remember(
+        key,
+        vec![Said {
+            name: seat.name.clone(),
+            text: answer.clone(),
+            answered: true,
+        }],
+    );
+    Ok(answer)
+}
+
+/// The Tauri-free half of the host's `ask_agent` tool.
+pub fn ask_seat_impl(
+    rounds: Arc<Rounds>,
+    manager: Arc<ChatManager>,
+    key: String,
+    seat_id: String,
+    prompt: String,
+    cwd: String,
+) -> Result<String, String> {
+    ask_seat(&rounds, &manager, &key, &seat_id, &prompt, &cwd)
+}
+
+/// Draw a line under the discussion. Nothing said before now is shown to any
+/// seat again.
+#[tauri::command]
+pub fn chat_new_topic(rounds: tauri::State<Arc<Rounds>>, key: String) {
+    rounds.new_topic(&key);
+}
+
+/// A room is closed, so its discussion goes with it.
+///
+/// Card 66 already decided a reopened room starts empty rather than resurrecting
+/// its old seats. Keeping the discussion while dropping the people who had it
+/// would be the same mistake in a quieter place: the next round would show a
+/// seat a conversation nobody in the room remembers having.
+pub fn forget_room(rounds: &Rounds, key: &str) {
+    rounds.forget(key);
+}
+
+/// Cut in. The seats still waiting never run, and nothing further is billed.
+#[tauri::command]
+pub fn chat_round_stop(rounds: tauri::State<Arc<Rounds>>, key: String) {
+    rounds.raise_hand(&key);
+}
+
+/// Whether a round is going here, and how far through it is.
+#[tauri::command]
+pub fn chat_round_state(rounds: tauri::State<Arc<Rounds>>, key: String) -> serde_json::Value {
+    state_impl(&rounds, &key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn said(name: &str, text: &str) -> Said {
+        Said {
+            name: name.into(),
+            text: text.into(),
+            answered: true,
+        }
+    }
+
+    #[test]
+    fn the_first_seat_is_told_only_the_question() {
+        let brief = round_brief("  Is this safe to ship?  ", &[]);
+
+        assert_eq!(brief, "Is this safe to ship?");
+        assert!(
+            !brief.contains("==="),
+            "nothing has been said yet, so there is no record to head"
+        );
+    }
+
+    #[test]
+    fn a_later_seat_is_shown_what_came_before_it_and_who_said_it() {
+        // The whole reason a round runs in order. Without the attribution a seat
+        // cannot answer anybody, it can only add another monologue.
+        let brief = round_brief(
+            "Is this safe to ship?",
+            &[
+                said("Codex", "The migration is not reversible."),
+                said("Claude", "Agreed, and untested."),
+            ],
+        );
+
+        assert!(brief.starts_with("Is this safe to ship?"));
+        assert!(brief.contains("--- Codex ---"));
+        assert!(brief.contains("The migration is not reversible."));
+        assert!(brief.contains("--- Claude ---"));
+        assert!(brief.contains("Agreed, and untested."));
+        assert!(
+            brief.find("Codex").unwrap() < brief.find("Claude").unwrap(),
+            "the record has to read in the order it was said"
+        );
+        assert!(brief.trim_end().ends_with("=== over to you ==="));
+    }
+
+    #[test]
+    fn a_seat_that_failed_is_still_named_in_the_brief() {
+        // Dropping it silently would let the next seat believe the round had
+        // been quieter than it was, and the brief would disagree with the screen.
+        let brief = round_brief(
+            "Is this safe to ship?",
+            &[Said {
+                name: "Codex".into(),
+                text: "boom".into(),
+                answered: false,
+            }],
+        );
+
+        assert!(brief.contains("--- Codex ---"));
+        assert!(brief.contains("did not answer"));
+        assert!(
+            !brief.contains("boom"),
+            "the failure's innards are not the discussion"
+        );
+    }
+
+    #[test]
+    fn a_round_hands_out_its_seats_in_order_and_never_twice() {
+        let r = Rounds::default();
+        r.start("chat-a", vec!["s1".into(), "s2".into()]).unwrap();
+
+        let (first, before) = r.next("chat-a").expect("someone must be first");
+        assert_eq!(first, "s1");
+        assert!(before.is_empty());
+
+        r.record("chat-a", said("Codex", "it is not reversible"));
+        let (second, before) = r.next("chat-a").expect("and someone second");
+        assert_eq!(second, "s2");
+        assert_eq!(
+            before.len(),
+            1,
+            "the second seat sees the first one's answer"
+        );
+        assert_eq!(before[0].text, "it is not reversible");
+
+        assert!(r.next("chat-a").is_none(), "the round is over");
+    }
+
+    #[test]
+    fn two_rounds_at_once_in_one_chat_are_refused() {
+        // Two would interleave two conversations into one transcript and neither
+        // would read as a discussion.
+        let r = Rounds::default();
+        r.start("chat-a", vec!["s1".into()]).unwrap();
+        assert!(r.start("chat-a", vec!["s2".into()]).is_err());
+        // A different chat is a different room.
+        assert!(r.start("chat-b", vec!["s1".into()]).is_ok());
+    }
+
+    #[test]
+    fn a_round_with_nobody_in_it_is_refused() {
+        assert!(Rounds::default().start("chat-a", vec![]).is_err());
+    }
+
+    #[test]
+    fn a_raised_hand_stops_the_round_before_the_next_seat() {
+        // Nothing further runs, so nothing further is billed. This is the
+        // difference between cutting in and waiting out three more agents.
+        let r = Rounds::default();
+        r.start("chat-a", vec!["s1".into(), "s2".into(), "s3".into()])
+            .unwrap();
+        assert_eq!(r.next("chat-a").unwrap().0, "s1");
+        r.record("chat-a", said("Codex", "one"));
+
+        r.raise_hand("chat-a");
+
+        assert!(
+            r.next("chat-a").is_none(),
+            "a seat ran after the hand went up"
+        );
+        // The queue is EMPTIED, not just skipped. `next` short-circuits on the
+        // hand either way, so without this the clear is uncovered — and a round
+        // still reporting two seats as "waiting" would draw a UI promising
+        // answers that are never coming.
+        assert!(
+            r.peek("chat-a").unwrap().waiting.is_empty(),
+            "the seats that will never run are still listed as waiting"
+        );
+        let over = r.finish("chat-a").unwrap();
+        assert!(over.hand);
+        assert_eq!(over.said.len(), 1, "what WAS said is kept");
+    }
+
+    /// A room with one seat in it, ready to be asked something.
+    fn one_seat() -> (Arc<Rounds>, Arc<ChatManager>, String) {
+        let rounds = Arc::new(Rounds::default());
+        let m = Arc::new(ChatManager::default());
+        crate::chat_room::set_room_impl(&m, "chat-a", true).unwrap();
+        let seat = crate::chat_room::add_seat_impl(
+            &m,
+            "chat-a",
+            crate::chat_room::NewSeat::for_test("Codex", crate::agent_chat::ChatAgent::Codex),
+        )
+        .unwrap();
+        (rounds, m, seat.id)
+    }
+
+    #[test]
+    fn a_round_naming_a_seat_that_is_not_there_is_refused_before_anything_runs() {
+        // Validating halfway through would already have spent money on the
+        // seats before the bad one, and the user asked for a discussion, not
+        // most of one.
+        let (rounds, m, good) = one_seat();
+
+        let err = start_round_impl(
+            rounds.clone(),
+            m,
+            "chat-a".into(),
+            vec![good, "s99".into()],
+            "is this safe?".into(),
+            "/tmp".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("an unknown seat must refuse the whole round");
+
+        assert!(err.contains("no seat"), "unhelpful refusal: {err}");
+        assert!(
+            !rounds.peek("chat-a").is_some(),
+            "a refused round must not be left open"
+        );
+    }
+
+    #[test]
+    fn a_round_with_nothing_to_answer_is_refused() {
+        let (rounds, m, seat) = one_seat();
+
+        assert!(start_round_impl(
+            rounds.clone(),
+            m,
+            "chat-a".into(),
+            vec![seat],
+            "   ".into(),
+            "/tmp".into(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_err());
+        assert!(!rounds.peek("chat-a").is_some());
+    }
+
+    #[test]
+    fn nobody_listening_means_a_finished_turn_is_simply_ignored() {
+        // Every turn of every ordinary chat goes through this. It has to be
+        // silent, and it must not panic.
+        turn_ended("chat-a", None, "the host finished");
+        turn_ended("chat-a", Some("s1"), "a seat nobody is waiting on");
+    }
+
+    #[test]
+    fn a_chat_with_no_round_says_so_rather_than_nothing() {
+        let rounds = Rounds::default();
+        assert_eq!(state_impl(&rounds, "chat-a")["running"], false);
+        rounds.start("chat-a", vec!["s1".into()]).unwrap();
+        let live = state_impl(&rounds, "chat-a");
+        assert_eq!(live["running"], true);
+        assert_eq!(live["waiting"][0], "s1");
+    }
+
+    #[test]
+    fn a_round_never_thinks_harder_than_it_can_safely_carry() {
+        // Starfall measured this one: six seconds on a low tier against
+        // twenty-four minutes with no output on xhigh, for the same prompt.
+        assert_eq!(
+            round_effort(&Some("xhigh".into())).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            round_effort(&Some("high".into())).as_deref(),
+            Some("medium")
+        );
+        assert_eq!(round_effort(&Some("max".into())).as_deref(), Some("medium"));
+        // `auto` is not a level, it is "the agent picks" — which could be the
+        // top tier, so it comes down too.
+        assert_eq!(
+            round_effort(&Some("auto".into())).as_deref(),
+            Some("medium")
+        );
+        // Nothing chosen at all still gets the cap rather than the default.
+        assert_eq!(round_effort(&None).as_deref(), Some("medium"));
+        // At or below the cap, the choice stands.
+        assert_eq!(round_effort(&Some("low".into())).as_deref(), Some("low"));
+        assert_eq!(
+            round_effort(&Some("minimal".into())).as_deref(),
+            Some("minimal")
+        );
+    }
+
+    #[test]
+    fn cutting_in_stops_the_wait_for_whoever_is_speaking() {
+        // Without this the driver sits in `recv_timeout` for the seat already
+        // going, so the bar reads "stopped" while the round stays open — for up
+        // to SEAT_TIMEOUT, which is twenty minutes.
+        let r = Rounds::default();
+        r.start("chat-a", vec!["s1".into(), "s2".into()]).unwrap();
+        let (seat, _) = r.next("chat-a").unwrap();
+        let session = seat_session_key("chat-a", &seat);
+        let heard = listen_for(&session);
+        r.speaking("chat-a", Some(session.clone()));
+
+        r.raise_hand("chat-a");
+
+        // The sender is gone, so the driver's wait ends NOW rather than at the
+        // timeout.
+        assert!(
+            heard.recv_timeout(Duration::from_millis(50)).is_err(),
+            "the round is still waiting on a seat nobody wants to hear from"
+        );
+        assert!(r.peek("chat-a").unwrap().speaking.is_none());
+    }
+
+    // ---- card 69: how much of the discussion a seat is sent ----------------
+
+    #[test]
+    fn a_short_discussion_is_sent_whole() {
+        let record: Vec<Said> = (0..3)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        let sent = discussion_window(&record, 0, 24);
+
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0].text, "point 0");
+    }
+
+    #[test]
+    fn a_long_discussion_is_cut_to_the_window_keeping_the_newest() {
+        // Starfall: 每轮重发整场 ＝ 成本随轮数平方增长 — re-sending the whole
+        // thing every round makes cost grow with the SQUARE of the round count,
+        // and the answers get worse as attention spreads over old rounds.
+        let record: Vec<Said> = (0..40)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        let sent = discussion_window(&record, 0, 24);
+
+        assert_eq!(sent.len(), 24, "the window is not being applied");
+        assert_eq!(
+            sent[0].text, "point 16",
+            "the window kept the OLDEST, not the newest"
+        );
+        assert_eq!(sent[23].text, "point 39");
+    }
+
+    #[test]
+    fn a_new_topic_sends_nothing_from_before_it() {
+        // The judgement, in one line from Starfall: 这一轮要答的问题，需要上一个
+        // 话题的哪一句？答不出来就 --fresh. Everything before the marker is gone
+        // for good, not merely deprioritised.
+        let record: Vec<Said> = (0..10)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        let sent = discussion_window(&record, 7, 24);
+
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0].text, "point 7");
+        assert!(
+            !sent.iter().any(|s| s.text == "point 6"),
+            "a new topic still sent the old one"
+        );
+    }
+
+    #[test]
+    fn the_window_applies_inside_a_topic_not_across_it() {
+        // Both rules at once: start from the topic, then keep the newest N of
+        // what is left.
+        let record: Vec<Said> = (0..40)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        let sent = discussion_window(&record, 30, 5);
+
+        assert_eq!(sent.len(), 5);
+        assert_eq!(sent[0].text, "point 35");
+    }
+
+    #[test]
+    fn a_topic_marker_past_the_end_sends_nothing_rather_than_panicking() {
+        // A marker can outrun the record when a topic is started before anyone
+        // has spoken in it. Nothing to send is the right answer; a panic here
+        // would take the whole round down.
+        let record: Vec<Said> = vec![said("Codex", "one")];
+
+        assert!(discussion_window(&record, 5, 24).is_empty());
+        assert!(discussion_window(&[], 0, 24).is_empty());
+    }
+
+    #[test]
+    fn a_window_of_zero_is_read_as_no_limit_rather_than_no_history() {
+        // A config that meant "send nothing" would silently make every seat
+        // answer with no idea what was being discussed, and nothing on screen
+        // would say why the answers went strange.
+        let record: Vec<Said> = (0..5)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        assert_eq!(discussion_window(&record, 0, 0).len(), 5);
+    }
+
+    #[test]
+    fn with_no_instruction_the_backdrop_is_the_mechanical_window() {
+        let record: Vec<Said> = (0..40)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        let sent = backdrop(&record, 0, 24, None);
+
+        assert_eq!(sent.len(), 24);
+        assert_eq!(sent[23].text, "point 39");
+    }
+
+    #[test]
+    fn the_host_can_send_a_seat_exactly_what_it_chooses() {
+        // The host knows what this seat is FOR. A reviewer brought in to read
+        // one function does not need forty rounds about something else, and
+        // sending them anyway is both the expensive answer and the worse one.
+        let record: Vec<Said> = (0..40)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+        let chosen = vec![said("Claude", "only this matters")];
+
+        let sent = backdrop(&record, 0, 24, Some(&chosen));
+
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].text, "only this matters");
+        assert!(
+            !sent.iter().any(|s| s.text.starts_with("point")),
+            "the mechanical window leaked in on top of the host's choice"
+        );
+    }
+
+    #[test]
+    fn the_host_can_send_a_seat_nothing_at_all() {
+        // An EMPTY choice is a choice — "answer this cold" — and must not fall
+        // back to the window. That distinction is the whole point of an outside
+        // opinion: give it the discussion and it stops being outside.
+        let record: Vec<Said> = (0..40)
+            .map(|i| said("Codex", &format!("point {i}")))
+            .collect();
+
+        assert!(backdrop(&record, 0, 24, Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn what_was_said_outlives_the_round_that_said_it() {
+        // A round ends; the discussion does not. The next round has to be able
+        // to show a seat what the last one concluded.
+        let r = Rounds::default();
+        r.remember("chat-a", vec![said("Codex", "it is not reversible")]);
+        r.remember("chat-a", vec![said("Claude", "agreed")]);
+
+        assert_eq!(r.backdrop_for("chat-a", None).len(), 2);
+        assert_eq!(r.backdrop_for("chat-a", None)[1].text, "agreed");
+    }
+
+    #[test]
+    fn a_new_topic_draws_a_line_the_window_cannot_reach_back_over() {
+        let r = Rounds::default();
+        r.remember("chat-a", vec![said("Codex", "about the migration")]);
+
+        r.new_topic("chat-a");
+        assert!(
+            r.backdrop_for("chat-a", None).is_empty(),
+            "a fresh topic still sent the old one"
+        );
+
+        r.remember("chat-a", vec![said("Codex", "about the parser")]);
+        let now = r.backdrop_for("chat-a", None);
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].text, "about the parser");
+    }
+
+    #[test]
+    fn a_chat_that_has_never_had_a_round_has_nothing_to_show() {
+        assert!(Rounds::default().backdrop_for("chat-a", None).is_empty());
+    }
+
+    #[test]
+    fn the_hosts_choice_beats_the_record_here_too() {
+        let r = Rounds::default();
+        r.remember(
+            "chat-a",
+            vec![said("Codex", "forty rounds about something else")],
+        );
+
+        let chosen = vec![said("Claude", "only this")];
+        assert_eq!(r.backdrop_for("chat-a", Some(&chosen)).len(), 1);
+        assert!(r.backdrop_for("chat-a", Some(&[])).is_empty());
+    }
+
+    // ---- card 71: a seat with no process behind it -------------------------
+
+    /// A room holding one ON-DEMAND seat. Nothing is spawned for it, which is
+    /// what lets this be tested at all.
+    fn one_api_seat() -> (Arc<Rounds>, Arc<ChatManager>, String) {
+        let rounds = Arc::new(Rounds::default());
+        let m = Arc::new(ChatManager::default());
+        crate::chat_room::set_room_impl(&m, "chat-a", true).unwrap();
+        let mut want =
+            crate::chat_room::NewSeat::for_test("Outside eye", crate::agent_chat::ChatAgent::Codex);
+        want.kind = Some(crate::chat_room::SeatKind::OnDemand);
+        want.context = Some(crate::chat_room::ContextMode::RoomOnly);
+        let seat = crate::chat_room::add_seat_impl(&m, "chat-a", want).unwrap();
+        (rounds, m, seat.id)
+    }
+
+    #[test]
+    fn an_on_demand_seat_answers_without_anything_being_spawned() {
+        // The whole point of the kind. A resident seat needs a process, a
+        // session and a turn to come back; this one is a call that returns.
+        let (rounds, m, seat) = one_api_seat();
+
+        let said = ask_seat(&rounds, &m, "chat-a", &seat, "is this safe?", "/tmp")
+            .expect("an on-demand seat should answer with no process at all");
+
+        assert!(!said.is_empty());
+        assert!(
+            crate::agent_chat::chat_list_impl(&m).unwrap().is_empty(),
+            "something was spawned for a seat that has no process"
+        );
+    }
+
+    #[test]
+    fn what_an_on_demand_seat_says_joins_the_rooms_record() {
+        // So a later round can show the others what it established. Nothing
+        // about the kind should change that.
+        let (rounds, m, seat) = one_api_seat();
+
+        ask_seat(&rounds, &m, "chat-a", &seat, "is this safe?", "/tmp").unwrap();
+
+        let record = rounds.backdrop_for("chat-a", None);
+        assert_eq!(record.len(), 1);
+        assert_eq!(record[0].name, "Outside eye");
+        assert!(record[0].answered);
+    }
+
+    #[test]
+    fn an_on_demand_seat_asked_nothing_is_refused() {
+        let (rounds, m, seat) = one_api_seat();
+
+        assert!(ask_seat(&rounds, &m, "chat-a", &seat, "   ", "/tmp").is_err());
+    }
+
+    #[test]
+    fn a_finished_round_is_no_longer_running() {
+        let r = Rounds::default();
+        assert!(!r.peek("chat-a").is_some());
+        r.start("chat-a", vec!["s1".into()]).unwrap();
+        assert!(r.peek("chat-a").is_some());
+        r.finish("chat-a");
+        assert!(!r.peek("chat-a").is_some());
+        // And a second start is fine once the first is done.
+        assert!(r.start("chat-a", vec!["s1".into()]).is_ok());
+    }
+}

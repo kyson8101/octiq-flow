@@ -60,6 +60,47 @@ describe("a message written by a seat", () => {
   });
 });
 
+describe("a message you addressed to one seat", () => {
+  it("says who it went to", () => {
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[
+          {
+            id: "u1",
+            role: "user",
+            blocks: [{ kind: "text", text: "what do you think?" }],
+            streaming: false,
+            to: { id: "s1", name: "Codex" },
+          },
+        ]}
+        busy={false}
+      />,
+    );
+
+    expect(html).toContain("what do you think?");
+    expect(html).toContain("Codex");
+  });
+
+  it("says nothing extra when it went to the whole room", () => {
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[
+          {
+            id: "u1",
+            role: "user",
+            blocks: [{ kind: "text", text: "morning" }],
+            streaming: false,
+          },
+        ]}
+        busy={false}
+      />,
+    );
+
+    expect(html).toContain("morning");
+    expect(html).not.toContain("msg-to");
+  });
+});
+
 describe("two seats answering one after the other", () => {
   it("gets a label each, instead of merging into one turn", () => {
     // Consecutive assistant messages are drawn as ONE turn with ONE label —

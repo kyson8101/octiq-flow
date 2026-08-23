@@ -34,7 +34,13 @@
 // So every message records the parent it came from, and every question about
 // what is currently being written is asked per parent.
 
-import { hasBriefHead, parseCommandEcho, parseSkillBrief } from "./skillRun";
+import {
+  hasBriefHead,
+  parseCommandEcho,
+  parseSkillBrief,
+  resolvedSkill,
+  sameCommand,
+} from "./skillRun";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 
 /** `stopped` is a call that was still in flight when the user stopped the turn.
@@ -201,6 +207,20 @@ export type Seat = {
   /** `"project"` sees the project as every chat here always has; `"room_only"`
    *  sees nothing but what has been said in the room. */
   context: "project" | "room_only";
+  /** Card 71 — whether there is a process behind this seat.
+   *
+   *  `resident` is a CLI agent with its own process, running until the room
+   *  closes. `on_demand` is an HTTP call: asked, answered, gone. Nothing of it
+   *  exists in between, which is what makes it cheap to keep around — and it
+   *  has no memory of its own, which is what it costs. Absent means resident,
+   *  which is every seat that existed before card 71. */
+  kind?: "resident" | "on_demand";
+  /** Card 72 — which service answers for an on-demand seat ("deepseek"). Absent
+   *  for a resident seat, which is answered by its own process.
+   *
+   *  Kept apart from `agent` on purpose: that one names a BINARY the backend may
+   *  spawn, and a service name does not belong in the same field. */
+  provider?: string;
 };
 
 /** Whether a chat is a room, and who is in it. Mirrors `chat_room::RoomView`.
@@ -233,6 +253,19 @@ export type Message = {
    *  wrote it. Undefined for the main agent — which is most messages, and the
    *  whole conversation when nothing has spawned one. */
   parent?: string;
+  /** Card 75 — the skill a typed slash command actually resolved to.
+   *
+   *  Typing `/execute` reaches the agent as `/pandahrms:execute`. The bubble
+   *  keeps showing what you TYPED; this is the rewritten name, shown as a badge
+   *  so it is visibly the system's resolution rather than a second line you
+   *  said. Absent when nothing was rewritten. */
+  ranSkill?: string;
+  /** Which SEAT this was addressed to, on a USER turn in a room.
+   *
+   *  The mirror of `speaker`: that one says who WROTE a message, this says who
+   *  one was sent TO. Undefined means the whole room, which is where every
+   *  message has always gone. */
+  to?: { id: string; name: string };
   /** Which SEAT wrote this, when the chat is a room and it was not the host.
    *
    *  A different axis from `parent`, not a replacement for it: `parent` says
@@ -1123,12 +1156,25 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
           (m) =>
             m.role === "user" &&
             !m.echo &&
-            m.blocks.some((b) => b.kind === "text" && b.text.trim() === said),
+            // Not an exact match: the harness rewrites `/execute` to
+            // `/pandahrms:execute`, and comparing literally left the bubble you
+            // typed unclaimed while the rewritten text landed beside it as a
+            // SECOND message you never said. `sameCommand` allows the namespace
+            // to differ and nothing else, and falls back to an exact compare
+            // for anything that is not a slash command.
+            m.blocks.some((b) => b.kind === "text" && sameCommand(b.text, said)),
         );
       if (mine) {
+        // What it resolved TO, when that differs from what was typed. The
+        // bubble goes on showing the typed words; this rides beside them.
+        const typed = mine.blocks.find((b) => b.kind === "text");
+        const ran =
+          typed && "text" in typed ? resolvedSkill(typed.text, said) : undefined;
         return {
           ...state,
-          messages: state.messages.map((m) => (m === mine ? { ...m, echo: uuid } : m)),
+          messages: state.messages.map((m) =>
+            m === mine ? { ...m, echo: uuid, ...(ran ? { ranSkill: ran } : {}) } : m,
+          ),
         };
       }
       // Nothing to claim: this is a rebuild, so the echo becomes the message.
@@ -1511,6 +1557,9 @@ export function addUserTurn(
   text: string,
   attachments: Attached[] = [],
   now: number = Date.now(),
+  /** The seat this was addressed to (card 67). Absent for the whole room,
+   *  which is where every message has always gone. */
+  to?: { id: string; name: string },
 ): ChatState {
   // `/model haiku` changes the model for real, and nothing in the stream will
   // say so until the next turn — see MODEL_COMMAND. The picker reads this
@@ -1540,6 +1589,7 @@ export function addUserTurn(
         blocks: [{ kind: "text", text }],
         streaming: false,
         ...(attachments.length ? { attachments } : {}),
+        ...(to ? { to } : {}),
       },
     ],
   };

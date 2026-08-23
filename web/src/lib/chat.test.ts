@@ -1263,3 +1263,65 @@ describe("a room with several agents in it", () => {
     expect(state.messages.every((m) => m.speaker === undefined)).toBe(true);
   });
 });
+
+// Card 75 — a namespaced slash command is not a second thing you said.
+describe("typing a plugin slash command", () => {
+  /** The agent's echo of a typed command, in the shape the CLI really sends —
+   *  taken from `command-echo.jsonl`, with the namespaced name the harness
+   *  rewrites to. */
+  const echo = (name: string, args?: string) => ({
+    type: "user",
+    uuid: "echo-1",
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text:
+            `<command-message>${name.replace(/^\//, "")}</command-message>\n` +
+            `<command-name>${name}</command-name>` +
+            (args ? `\n<command-args>${args}</command-args>` : ""),
+        },
+      ],
+    },
+  });
+
+  it("leaves ONE bubble, saying what you typed", () => {
+    let state = addUserTurn(emptyChat(), "/execute cards 67-73");
+    state = reduceChat(state, echo("/pandahrms:execute", "cards 67-73"));
+
+    const mine = state.messages.filter((m) => m.role === "user");
+    expect(mine).toHaveLength(1);
+    expect(JSON.stringify(mine[0].blocks)).toContain("/execute cards 67-73");
+    expect(JSON.stringify(mine[0].blocks)).not.toContain("/pandahrms:execute");
+  });
+
+  it("says which skill it actually resolved to", () => {
+    let state = addUserTurn(emptyChat(), "/execute cards 67-73");
+    state = reduceChat(state, echo("/pandahrms:execute", "cards 67-73"));
+
+    expect(state.messages[0].ranSkill).toBe("pandahrms:execute");
+  });
+
+  it("leaves one bubble when you typed the long form yourself", () => {
+    let state = addUserTurn(emptyChat(), "/pandahrms:execute cards 67-73");
+    state = reduceChat(state, echo("/pandahrms:execute", "cards 67-73"));
+
+    expect(state.messages.filter((m) => m.role === "user")).toHaveLength(1);
+    // Nothing was rewritten, so there is nothing to tell them.
+    expect(state.messages[0].ranSkill).toBeUndefined();
+  });
+
+  it("replays the real captured stream exactly as it did before", () => {
+    // `command-echo.jsonl` is a live capture of typing `/list-all-branches` —
+    // an UNNAMESPACED command, which is why this never broke before. It is the
+    // regression guard for the whole card.
+    let state = emptyChat();
+    for (const line of commandEchoStream.split("\n").filter(Boolean)) {
+      state = reduceChat(state, JSON.parse(line));
+    }
+    const mine = state.messages.filter((m) => m.role === "user");
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((m) => m.ranSkill === undefined)).toBe(true);
+  });
+});

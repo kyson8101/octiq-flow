@@ -8053,3 +8053,29 @@ body.is-ultra .eff {
   background: var(--accent);
   color: var(--accent-fg);
 }
+
+/* Card 67 — who a message you typed was addressed to. Only ever present in a
+   room, and only when you picked a seat rather than the whole room. Sits above
+   the words for the same reason the agent's name sits above its own: it changes
+   how what follows reads. */
+.msg-to {
+  align-self: flex-end;
+  padding: 0 0.125rem 0.1875rem;
+  color: var(--fg-2);
+  font-size: 0.6875rem;
+}
+
+
+/* Card 75 — the skill a typed command resolved to. Typing `/execute` reaches
+   the agent as `/pandahrms:execute`, and the rewritten form used to be drawn as
+   a second line inside the user's own bubble — something they never said. It is
+   a badge now, quiet and clearly apart from their words. */
+.msg-ran {
+  align-self: flex-end;
+  padding: 0 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-2);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+}
