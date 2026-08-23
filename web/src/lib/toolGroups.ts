@@ -61,9 +61,28 @@ const NEVER_FOLD: ReadonlySet<ToolKind> = new Set<ToolKind>(["agent", "skill"]);
  *
  *  `tools` is the run so far, summarised on the group's top half. `newest` is
  *  the call that has not folded yet, drawn whole on the bottom half. */
+/** A fenced code block that belongs to the tool card above it (card 73). */
+export type Note = { lang: string; body: string };
+
 export type Row =
-  | { kind: "block"; block: Block; index: number }
+  | { kind: "block"; block: Block; index: number; note?: Note }
   | { kind: "group"; tools: Tool[]; newest: Tool; index: number };
+
+/** The fence, when a text block is ENTIRELY one fenced code block.
+ *
+ *  "Entirely" is the whole test, and it is deliberately strict. A block that is
+ *  nothing but a fence is a lump of output the reply is showing you, and it sits
+ *  better inside the card that produced it than floating under it in a box of
+ *  its own. A block with prose AROUND the fence is the agent TALKING, and moving
+ *  that into a card would hide half a sentence.
+ *
+ *  The closing fence is required. A fence still being typed has no end yet, and
+ *  swallowing it would make the card flicker into existence mid-stream. */
+export function fenceOnly(text: string): Note | null {
+  const match = /^```([\w+-]*)\n([\s\S]*?)\n?```$/.exec(text.trim());
+  if (!match) return null;
+  return { lang: match[1] ?? "", body: match[2] ?? "" };
+}
 
 /**
  * Fold consecutive tool calls into groups.
@@ -106,9 +125,35 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
     // Thinking draws nothing, so it decides nothing: it neither takes a row of
     // its own nor cuts the run it landed in the middle of.
     if (block.kind === "thinking") return;
+    // Card 73 — a block that is ENTIRELY one code fence, landing straight after
+    // a single tool card, becomes that card's body instead of a box of its own.
+    //
+    // Only after a SINGLE tool. A group holds several calls and there is no
+    // honest answer to which of them the text belongs to, so it stays a row.
+    // And only the first: a second fence is the reply talking again.
     // Anything else — prose, an edit, a subagent — ends the run where it
     // stands. Moving a call past it would put the reply in the wrong order.
+    //
+    // Flushed BEFORE the card-73 check below, because a single tool that has
+    // not folded yet is still pending in `run` and is not a row at all until
+    // this happens. Checking first found nothing above the text and attached
+    // nothing, which is how this was first wrong.
     flush();
+
+    // Card 73 — a block that is ENTIRELY one code fence, landing straight after
+    // a single tool card, becomes that card's body instead of a box of its own.
+    //
+    // Only after a SINGLE tool: a group holds several calls and there is no
+    // honest answer to which of them the text belongs to. And only the first,
+    // because a second fence is the reply talking again.
+    const last = rows[rows.length - 1];
+    if (block.kind === "text" && last?.kind === "block" && last.block.kind === "tool" && !last.note) {
+      const note = fenceOnly(block.text);
+      if (note) {
+        rows[rows.length - 1] = { ...last, note, index };
+        return;
+      }
+    }
     rows.push({ kind: "block", block, index });
   });
   flush();

@@ -26,6 +26,8 @@ import { ToolIcon, ToolState } from "./ToolIcon";
 
 type Tool = Extract<Block, { kind: "tool" }>;
 
+import type { Note } from "../lib/toolGroups";
+
 /** A subagent's own working, when this card started one. */
 export type AgentRun = {
   /** How many messages it has written so far. On the collapsed row, so a folded
@@ -74,7 +76,24 @@ function Chevron() {
   );
 }
 
-export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
+export function ToolCard({
+  tool,
+  agent,
+  note,
+  open: openFrom,
+}: {
+  tool: Tool;
+  agent?: AgentRun;
+  /** Card 73 — a fenced block the reply wrote straight after this call.
+   *
+   *  The AGENT'S prose, not the tool's output. It is drawn under its own label
+   *  for exactly that reason: a code block after a Bash call can be a snippet
+   *  being proposed or an unrelated example, and calling it `result` would make
+   *  the card claim the command produced it. */
+  note?: Note;
+  /** Force the card open. Tests only; the card decides for itself otherwise. */
+  open?: boolean;
+}) {
   const isAgent = !!agent || AGENT_TOOLS.has(tool.name.toLowerCase());
   const look = toolLook(tool.name, tool.args);
   const isSkill = look.kind === "skill";
@@ -82,7 +101,7 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
   // minutes, and a folded card through all of it looks like nothing is
   // happening. It is NOT folded again when the run ends — a card closing itself
   // mid-read takes the paragraph out from under the reader.
-  const [open, setOpen] = useState(() => isAgent && tool.state === "running");
+  const [open, setOpen] = useState(() => openFrom ?? (isAgent && tool.state === "running"));
   // A skill's card is the skill, not the call. The prompt it put in front of
   // the agent arrives a moment after the call answers (see `brief` on the
   // block); once it has, the row says what the skill is FOR in its own words,
@@ -208,6 +227,14 @@ export function ToolCard({ tool, agent }: { tool: Tool; agent?: AgentRun }) {
             <>
               <div className="tool-label">{isAgent ? "report" : "result"}</div>
               <pre className="tool-pre">{tool.result}</pre>
+            </>
+          )}
+          {/* The reply's own words, kept with the call they followed. Its own
+              label, never "result": see the `note` prop. */}
+          {note && (
+            <>
+              <div className="tool-label">note</div>
+              <pre className="tool-pre tool-note-body">{note.body}</pre>
             </>
           )}
           {/* Last, because it is what happened last. The result above is the

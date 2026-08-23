@@ -21,7 +21,7 @@ import { AgentLogo } from "./AgentLogo";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { SentFiles } from "./Thumb";
-import { groupRows } from "../lib/toolGroups";
+import { groupRows, type Note } from "../lib/toolGroups";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
@@ -165,7 +165,20 @@ const MarkdownBlock = memo(function MarkdownBlock({
 /** Subagent messages, by the `tool_use` id of the Task call that owns them. */
 type Kids = Map<string, Message[]>;
 
-function BlockView({ block, animate, kids }: { block: Block; animate?: boolean; kids: Kids }) {
+function BlockView({
+  block,
+  animate,
+  kids,
+  note,
+}: {
+  block: Block;
+  animate?: boolean;
+  kids: Kids;
+  /** Card 73 — a fenced block the reply wrote straight after this call, drawn
+   *  inside the card rather than as a box of its own beneath it. `groupRows`
+   *  decides which text that is; this only carries it. */
+  note?: Note;
+}) {
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "compacted") return <Compacted block={block} />;
   // Thinking is watched live above the composer and left out of the transcript;
@@ -175,6 +188,7 @@ function BlockView({ block, animate, kids }: { block: Block; animate?: boolean; 
   return (
     <ToolCard
       tool={block}
+      note={note}
       agent={own?.length ? { steps: own.length, body: <SubAgent messages={own} kids={kids} /> } : undefined}
     />
   );
@@ -201,6 +215,7 @@ function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boole
             block={row.block}
             animate={streaming && row.index === last}
             kids={kids}
+            note={row.note}
           />
         ),
       )}

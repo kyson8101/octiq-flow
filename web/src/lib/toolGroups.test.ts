@@ -279,3 +279,70 @@ describe("groupDiff", () => {
     expect(groupDiff([tool("Bash"), tool("Read"), tool("Grep")] as Tool[])).toBeNull();
   });
 });
+
+// Card 73 — a fenced block right after a tool card belongs INSIDE it.
+describe("a code fence following a tool call", () => {
+  const fence = (body: string, lang = "") => text("```" + lang + "\n" + body + "\n```");
+
+  it("is taken out of the flow and attached to the call before it", () => {
+    const rows = groupRows([tool("Bash"), fence("VERIFY RESULT: PASS")]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("block");
+    expect((rows[0] as Extract<Row, { kind: "block" }>).note?.body).toBe("VERIFY RESULT: PASS");
+  });
+
+  it("keeps the fence's language, so the card can draw it as code", () => {
+    const rows = groupRows([tool("Bash"), fence("cargo test", "sh")]);
+
+    expect((rows[0] as Extract<Row, { kind: "block" }>).note?.lang).toBe("sh");
+  });
+
+  it("leaves a block that mixes prose and a fence exactly where it was", () => {
+    // Only a block that is ENTIRELY one fence is unambiguous enough to move.
+    // Prose around it is the agent talking, and that belongs in the reply.
+    const mixed = text("Here is what happened:\n\n```\nboom\n```");
+    const rows = groupRows([tool("Bash"), mixed]);
+
+    expect(rows).toHaveLength(2);
+    expect((rows[0] as Extract<Row, { kind: "block" }>).note).toBeUndefined();
+  });
+
+  it("leaves a fence that follows nothing alone", () => {
+    const rows = groupRows([fence("just a snippet")]);
+
+    expect(rows).toHaveLength(1);
+    expect((rows[0] as Extract<Row, { kind: "block" }>).note).toBeUndefined();
+  });
+
+  it("leaves a fence that follows prose alone", () => {
+    const rows = groupRows([text("look at this"), fence("just a snippet")]);
+
+    expect(rows).toHaveLength(2);
+  });
+
+  it("does not attach to a GROUP, because no one tool in it owns the text", () => {
+    const rows = groupRows([tool("Read"), tool("Read"), tool("Read"), fence("something")]);
+
+    const group = rows.find((r) => r.kind === "group");
+    expect(group).toBeDefined();
+    // The fence stays a row of its own rather than picking a tool arbitrarily.
+    expect(rows.filter((r) => r.kind === "block")).toHaveLength(1);
+  });
+
+  it("attaches only the FIRST fence, so a second stays in the reply", () => {
+    const rows = groupRows([tool("Bash"), fence("one"), fence("two")]);
+
+    expect(rows).toHaveLength(2);
+    expect((rows[0] as Extract<Row, { kind: "block" }>).note?.body).toBe("one");
+  });
+
+  it("leaves a reply with no tool calls exactly as it was", () => {
+    // Two rows, not three: thinking has never drawn a row of its own. That is
+    // pre-existing behaviour and this card must not change it.
+    const before = groupRows([text("a"), thought("b"), text("c")]);
+
+    expect(before).toHaveLength(2);
+    expect(before.every((r) => r.kind === "block" && !r.note)).toBe(true);
+  });
+});
