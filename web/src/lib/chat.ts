@@ -171,6 +171,46 @@ export type AgentRun = {
  *  The path is enough: the picture is fetched back through `/file`. */
 export type Attached = { path: string; name: string; isImage: boolean };
 
+/** One voice in a room: the seat that wrote a message.
+ *
+ *  Ours, not the agent's. The backend stamps it into the event as
+ *  `octiq_speaker` (see `chat_room::stamp_speaker`) — namespaced so it can
+ *  never be mistaken for a field an agent stream starts sending one day, and
+ *  renamed here, exactly as `parent_tool_use_id` is renamed to `parent`. */
+export type Speaker = {
+  id: string;
+  name: string;
+  /** "claude" | "codex" — which logo to draw. Left as a string because the
+   *  backend's list of agents will grow (card 72 adds an API seat) and a union
+   *  here would have to be edited every time it does. */
+  agent: string;
+};
+
+/** One seat in a room, as the backend describes it.
+ *
+ *  Mirrors `chat_room::Seat` on the Rust side. `context` is stored by card 66
+ *  and USED by card 69 — a seat that cannot see the project is the only one
+ *  reading as a newcomer would, and the screen has to say which is which. */
+export type Seat = {
+  id: string;
+  name: string;
+  agent: string;
+  model?: string;
+  /** What this seat was added FOR, in the user's own words. */
+  role?: string;
+  /** `"project"` sees the project as every chat here always has; `"room_only"`
+   *  sees nothing but what has been said in the room. */
+  context: "project" | "room_only";
+};
+
+/** Whether a chat is a room, and who is in it. Mirrors `chat_room::RoomView`.
+ *
+ *  `open` is not the same question as "are there seats". Rooms live in the
+ *  backend's memory, so a restarted server has forgotten every one while this
+ *  browser still has the switch drawn on from `localStorage` — and an empty
+ *  seat list alone cannot tell that from a room nobody has joined. */
+export type RoomView = { open: boolean; seats: Seat[] };
+
 export type Message = {
   id: string;
   role: "user" | "assistant";
@@ -193,6 +233,15 @@ export type Message = {
    *  wrote it. Undefined for the main agent — which is most messages, and the
    *  whole conversation when nothing has spawned one. */
   parent?: string;
+  /** Which SEAT wrote this, when the chat is a room and it was not the host.
+   *
+   *  A different axis from `parent`, not a replacement for it: `parent` says
+   *  "a Task subagent of whoever is writing", `speaker` says "which agent in
+   *  this room". A seat can spawn its own subagent, and then both are set.
+   *
+   *  Undefined for the host, which is every message in every chat that is not a
+   *  room — so a conversation with no seats carries this field nowhere. */
+  speaker?: Speaker;
   /** True when `message_start` opened this message, i.e. its partials are
    *  streaming into it. Such a message ends on `message_stop` and on nothing
    *  else — see the `assistant` merge, which must not close it early. */
@@ -435,19 +484,43 @@ function appendText(blocks: Block[], kind: "text" | "thinking", text: string): B
   return [...blocks, { kind, text } as Block];
 }
 
+/** The seat named on an event, if any.
+ *
+ *  NO speaker field at all means the host, which is every message of every chat
+ *  that is not a room.
+ *
+ *  A speaker field that is PRESENT but unreadable is a different thing, and it
+ *  must not collapse into the first one. Reading it as the host would put a
+ *  seat's words under the host's name — the one answer that is actively wrong
+ *  in a feature whose whole job is saying who spoke. So a broken one still
+ *  counts as somebody, just somebody we cannot name. */
+function readSpeaker(raw: unknown): Speaker | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const o = asObj(raw);
+  const id = asStr(o.id);
+  const name = asStr(o.name);
+  if (!id && !name) return { id: "", name: "Unknown", agent: "" };
+  return { id, name: name || "Unknown", agent: asStr(o.agent) };
+}
+
 /** The message being written BY THIS WRITER, or a fresh one. A `stream_event`
  *  can arrive before `message_start` in principle, so this never assumes one
  *  exists.
  *
- *  Keyed on the parent, because "the last streaming message" is not one thing
- *  once subagents are running: two of them stream at the same time, and the
- *  main agent's own half-written message is still sitting above both. */
+ *  Keyed on the parent AND the seat, because "the last streaming message" is not
+ *  one thing once more than one writer is going: two subagents stream at the
+ *  same time with the main agent's own half-written message above both, and in
+ *  a room two SEATS do the same. Matching on only one axis folds two voices
+ *  into one bubble. */
 function withCurrent(
   state: ChatState,
   parent: string | undefined,
+  speaker: Speaker | undefined,
   fn: (m: Message) => Message,
 ): ChatState {
-  const idx = state.messages.map((m) => m.streaming && m.parent === parent).lastIndexOf(true);
+  const idx = state.messages
+    .map((m) => m.streaming && m.parent === parent && m.speaker?.id === speaker?.id)
+    .lastIndexOf(true);
   if (idx < 0) {
     const seeded: Message = {
       id: `m${state.messages.length}`,
@@ -455,6 +528,7 @@ function withCurrent(
       blocks: [],
       streaming: true,
       parent,
+      speaker,
     };
     return { ...state, messages: [...state.messages, fn(seeded)] };
   }
@@ -672,13 +746,21 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // Which writer this event belongs to: a Task call's id when a subagent wrote
   // it, nothing when the main agent did.
   const parent = asStr(e.parent_tool_use_id) || undefined;
+  // And which SEAT, when this chat is a room. Absent for the host, and absent
+  // from every event of every chat that is not a room.
+  const speaker = readSpeaker(e.octiq_speaker);
 
   // A subagent has its own session, its own model and its own status line, and
   // none of them are this conversation's. Reporting them here is how a Task
   // running Haiku used to rewrite the model label and the context meter for a
   // conversation that was still on Opus. Its work still shows — as the
   // messages below, nested in the card that started it.
-  if (parent && (type === "system" || type === "result")) return state;
+  //
+  // A SEAT is the same mistake one floor up, and worse: it is a whole separate
+  // process with its own session, its own model and its own `result`. Letting
+  // its `result` through would end the host's turn and bill this conversation
+  // for a turn it did not take.
+  if ((parent || speaker) && (type === "system" || type === "result")) return state;
 
   if (type === "system") {
     const subtype = asStr(e.subtype);
@@ -812,7 +894,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     return next;
   }
 
-  if (type === "stream_event") return reduceStream(state, asObj(e.event), parent, now);
+  if (type === "stream_event") return reduceStream(state, asObj(e.event), parent, speaker, now);
 
   if (type === "assistant") {
     const msg = asObj(e.message);
@@ -831,7 +913,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // From the MAIN agent only. A subagent holds a context of its own, usually
     // a fraction of this one, and often on a different model — taking either
     // from it describes a conversation nobody is having.
-    const used = parent ? undefined : contextFrom(msg.usage);
+    const used = parent || speaker ? undefined : contextFrom(msg.usage);
     if (used) state = { ...state, contextTokens: used };
     // Every assistant message names the model that wrote it, which is how a
     // mid-session `/model sonnet` becomes visible: init reported the model the
@@ -842,7 +924,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // reading `<synthetic>`, matching nothing in the picker — so the one
     // message that says the model changed was the one that broke the reading.
     const wrote = asStr(msg.model);
-    if (!parent && wrote && wrote !== SYNTHETIC_MODEL && wrote !== state.model) {
+    if (!parent && !speaker && wrote && wrote !== SYNTHETIC_MODEL && wrote !== state.model) {
       state = { ...state, model: wrote };
     }
     if (aborted && state.messages.some((m) => m.id === id)) {
@@ -916,7 +998,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       ...state,
       messages: [
         ...state.messages,
-        { id: id || `m${state.messages.length}`, role: "assistant", blocks, streaming: false, parent },
+        {
+          id: id || `m${state.messages.length}`,
+          role: "assistant",
+          blocks,
+          streaming: false,
+          parent,
+          speaker,
+        },
       ],
     };
   }
@@ -1286,7 +1375,13 @@ function foldSkillBrief(state: ChatState, brief: string, sourceId: string, uuid:
   };
 }
 
-function reduceStream(state: ChatState, ev: Json, parent: string | undefined, now: number): ChatState {
+function reduceStream(
+  state: ChatState,
+  ev: Json,
+  parent: string | undefined,
+  speaker: Speaker | undefined,
+  now: number,
+): ChatState {
   switch (asStr(ev.type)) {
     case "message_start": {
       const id = asStr(asObj(ev.message).id) || `m${state.messages.length}`;
@@ -1301,7 +1396,7 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined, no
         turnStartedAt: state.turnStartedAt ?? now,
         messages: [
           ...state.messages,
-          { id, role: "assistant", blocks: [], streaming: true, parent, partial: true },
+          { id, role: "assistant", blocks: [], streaming: true, parent, speaker, partial: true },
         ],
       };
     }
@@ -1309,7 +1404,7 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined, no
     case "content_block_start": {
       const block = asObj(ev.content_block);
       const kind = asStr(block.type);
-      return withCurrent(state, parent, (m) => {
+      return withCurrent(state, parent, speaker, (m) => {
         if (kind === "tool_use") {
           return {
             ...m,
@@ -1337,19 +1432,19 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined, no
       if (kind === "text_delta") {
         const text = asStr(delta.text);
         state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(text) };
-        return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "text", text) }));
+        return withCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "text", text) }));
       }
       if (kind === "thinking_delta") {
         // Not counted here: the agent counts its own thinking on the
         // `thinking_tokens` channel, and counting the characters too would say
         // every reasoned token twice.
-        return withCurrent(state, parent, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
+        return withCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
       }
       if (kind === "input_json_delta") {
         // A tool's arguments stream in as JSON text. Kept raw until the block
         // closes: half a JSON document does not parse.
         state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(asStr(delta.partial_json)) };
-        return withCurrent(state, parent, (m) => {
+        return withCurrent(state, parent, speaker, (m) => {
           const at = m.blocks.map((b) => b.kind).lastIndexOf("tool");
           if (at < 0) return m;
           const blocks = [...m.blocks];
@@ -1363,7 +1458,7 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined, no
     }
 
     case "content_block_stop": {
-      return withCurrent(state, parent, (m) => ({
+      return withCurrent(state, parent, speaker, (m) => ({
         ...m,
         blocks: m.blocks.map((b) => {
           if (b.kind !== "tool" || b.args !== undefined || !b.argsJson) return b;
@@ -1392,7 +1487,9 @@ function reduceStream(state: ChatState, ev: Json, parent: string | undefined, no
       return {
         ...state,
         messages: state.messages.map((m) =>
-          m.streaming && m.parent === parent ? { ...m, streaming: false } : m,
+          m.streaming && m.parent === parent && m.speaker?.id === speaker?.id
+          ? { ...m, streaming: false }
+          : m,
         ),
       };
 

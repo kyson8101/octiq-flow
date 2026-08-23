@@ -909,9 +909,24 @@ body {
   min-width: 0;
 }
 
+/* Your turn is a right-hand COLUMN, not itself the bubble: the bubble and the
+   copy row under it are two stacked things, and the row has to sit outside the
+   tint or it reads as part of what you said. Both hug their own content, so a
+   three-word message is still a three-word bubble. */
 .msg-user {
   align-self: flex-end;
   max-width: 85%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  /* A flex item's floor is its content width unless told otherwise, so one
+     long unbroken line would push this past its 85% rather than wrap in it. */
+  min-width: 0;
+}
+
+/* The bubble itself. */
+.msg-user .msg-body {
+  max-width: 100%;
   padding: 9px 13px;
   border-radius: var(--r-lg);
   background: var(--bg-1);
@@ -1021,18 +1036,82 @@ body {
   line-height: 1.55;
 }
 
-.prose table {
-  width: 100%;
+/* A table an agent wrote — see components/ProseTable for why it is in a box.
+   The box, not the table, carries the frame: it is what stays still while the
+   table is scrolled under it, so the border does not slide away with the last
+   column. */
+.prose-table {
+  /* Hugs its own table, up to the width of the message column. Two short
+     columns pulled across the full width read as a form rather than a table,
+     and past that cap the table keeps its width and this scrolls to it. */
+  width: max-content;
+  max-width: 100%;
   margin: 0 0 10px;
-  border-collapse: collapse;
-  font-size: 13px;
+  overflow-x: auto;
+  /* A sideways flick that runs out of table stops here rather than becoming a
+     swipe on the page behind it. */
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 
-.prose th,
-.prose td {
-  padding: 5px 8px;
-  border: 1px solid var(--border);
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  /* Figures in a column line up under each other — the whole reason a number
+     is in a table rather than a sentence. */
+  font-variant-numeric: tabular-nums;
+}
+
+/* Inside the box it takes the width it needs and is scrolled to; `min-width`
+   is what keeps a narrow table filling the box rather than leaving a strip of
+   empty frame beside it. A table with no box of its own — a tool's brief —
+   keeps the plain full-width rule above, since it has nowhere to scroll. */
+.prose-table table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+}
+
+/* The header is told apart by a tint and the weight of its words, not by a
+   grid: lines around every cell turn a small table into a spreadsheet, and the
+   reading happens along the rows. */
+.prose th {
+  padding: 7px 11px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  /* A heading is a label, not a sentence: kept on one line, it also stops the
+     column from being sized by where its title happens to wrap. */
+  white-space: nowrap;
   text-align: left;
+}
+
+.prose td {
+  padding: 6px 11px;
+  /* A cell sized to its content is right for a word and wrong for a sentence:
+     inside the box the table takes the width it wants, so one long note would
+     otherwise make a whole table something you scroll to read. Past this the
+     text wraps instead. (A cell's max-width is a suggestion the table layout
+     may ignore — where it is ignored the table simply scrolls, as it did.) */
+  max-width: 22em;
+  /* Between rows only, and quieter than the frame around them — enough to
+     follow a row across, not enough to be read as a shape of its own. */
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  /* A cell that wraps sits under its own first line, not floating beside the
+     tallest cell in the row. */
+  vertical-align: top;
+  text-align: left;
+}
+
+/* The row under the pointer, for reading a wide one across. Touch has no
+   hover, so this costs a phone nothing. */
+.prose tbody tr:hover td {
+  background: color-mix(in srgb, var(--fg-1) 4%, transparent);
 }
 
 .prose a {
@@ -1702,6 +1781,14 @@ body {
 }
 
 /* ---- Working indicator ------------------------------------------------ */
+/* The place the working dots live, kept open whether they are in it or not.
+   Exactly their own height, so holding it costs nothing when idle and the
+   transcript stops stepping up and down once per tool call. */
+.dots-slot {
+  flex: 0 0 auto;
+  min-height: 8px;
+}
+
 .dots {
   width: 22px;
   height: 8px;
@@ -5066,6 +5153,12 @@ body.is-ultra .eff {
   align-items: flex-start;
   gap: 8px;
   margin-top: 7px;
+}
+
+/* Under your own bubble it is one button on its own, so it sits closer than a
+   reply's row does — far enough to read as separate, near enough to belong. */
+.msg-user .msg-foot {
+  margin-top: 3px;
 }
 
 .msg-actions {

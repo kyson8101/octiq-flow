@@ -27,6 +27,8 @@ import {
   thinkingNow,
   turnOutput,
   type ChatState,
+  type RoomView,
+  type Seat,
 } from "./lib/chat";
 import {
   byProject,
@@ -117,6 +119,9 @@ const ACCESS_KEY = "octiq.v2.access";
 const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
+/** Whether new chats start clean. Kept here rather than per project: it is a
+ *  way of working, not a property of the code you are working on. */
+const LITE_KEY = "octiq.v2.lite";
 const TERM_KEY = "octiq.v2.terminalOpen";
 /** What the address bar says you are looking at.
  *
@@ -265,6 +270,19 @@ export default function App() {
   const [effort, setEffort] = useState<Effort>(
     () => (localStorage.getItem(EFFORT_KEY) as Effort | null) ?? "medium",
   );
+  // A clean chat: none of this machine's skills, hooks or other MCP servers.
+  // Read once, when the agent process starts, so turning it on part way through
+  // a conversation changes nothing until a new chat begins. Off by default —
+  // the skills and hooks are there because somebody installed them.
+  const [lite, setLite] = useState<boolean>(() => localStorage.getItem(LITE_KEY) === "1");
+  const changeLite = useCallback((on: boolean) => {
+    setLite(on);
+    try {
+      localStorage.setItem(LITE_KEY, on ? "1" : "0");
+    } catch {
+      /* storage blocked: the choice holds for this session only */
+    }
+  }, []);
 
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
@@ -1256,6 +1274,10 @@ export default function App() {
       // chat back moments after it was removed.
       forgetIndexEntry(id);
       bridge.invoke("chat_index_remove", { id, key: keyFor(id) }).catch(() => {});
+      // The room goes with the chat. Closing it on the backend empties its
+      // seats; leaving it would hold a room, and everyone in it, for the life
+      // of the process on behalf of a conversation that no longer exists.
+      bridge.invoke("chat_set_room", { key: keyFor(id), open: false }).catch(() => {});
       delete seen.current[keyFor(id)];
       setConversations((prev) => {
         const list = prev.filter((c) => c.id !== id);
@@ -1263,6 +1285,11 @@ export default function App() {
         return list;
       });
       setChats((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setSeats((prev) => {
         const next = { ...prev };
         delete next[id];
         return next;
@@ -1395,6 +1422,7 @@ export default function App() {
           model: choice.flag || null,
           access,
           effort,
+          lite,
           images,
           prompt: text,
           // Continuing an earlier conversation: the agent picks its own
@@ -1422,7 +1450,7 @@ export default function App() {
         });
       }
     },
-    [project, choice, access, effort, conversationId, chats, conversations, patch],
+    [project, choice, access, effort, lite, conversationId, chats, conversations, patch],
   );
 
   /** Stop the running turn. The session survives, ready for the next one. */
@@ -1581,6 +1609,100 @@ export default function App() {
    *  permissions off part-way, and says so — so `restartForAccess` is still
    *  there for the ones that cannot. Nothing running is the easy case: the next
    *  message starts an agent on the new level anyway. */
+  // Card 66 — is this chat a room, and who is in it.
+  //
+  // The switch is stored on the CONVERSATION (it must survive a reload, the
+  // same way the model and the permission do). The seat list is the BACKEND's,
+  // held in memory there, so it is asked for rather than remembered — a
+  // restarted server has forgotten every room while this browser still has the
+  // switch drawn on, and `chat_room` answering `open: false` is how that shows.
+  const room = conversations.find((c) => c.id === conversationId)?.room ?? false;
+  const [seats, setSeats] = useState<Record<string, Seat[]>>({});
+  const mySeats = (conversationId && seats[conversationId]) || [];
+
+  /** Ask the backend who is in this room. */
+  const refreshSeats = useCallback(async (id: string) => {
+    try {
+      const view = (await bridge.invoke("chat_room", { key: keyFor(id) })) as RoomView;
+      setSeats((prev) => ({ ...prev, [id]: view.seats }));
+    } catch {
+      // A backend that cannot answer leaves the list alone rather than
+      // emptying it — an empty rail would read as "everyone left".
+    }
+  }, []);
+
+  // Who is in the room of the chat now on screen.
+  //
+  // Rooms live in the BACKEND's memory, so the browser cannot know them from
+  // `localStorage` the way it knows the switch. Without this, opening a chat
+  // that already has seats showed an empty room until you touched the switch —
+  // the switch came back and the people in it did not.
+  useEffect(() => {
+    if (!conversationId) return;
+    void refreshSeats(conversationId);
+  }, [conversationId, refreshSeats]);
+
+  const toggleRoom = useCallback(
+    async (open: boolean) => {
+      if (!conversationId) return;
+      const id = conversationId;
+      setConversations((prev) => {
+        const next = prev.map((c) => (c.id === id ? { ...c, room: open } : c));
+        saveConversations(next);
+        return next;
+      });
+      try {
+        await bridge.invoke("chat_set_room", { key: keyFor(id), open });
+      } catch {
+        // The switch is the user's answer and stays where they put it. The
+        // backend is re-told on the next thing that needs it.
+      }
+      // Closing a room empties it on the backend, so the list is re-read
+      // either way rather than assumed.
+      void refreshSeats(id);
+    },
+    [conversationId, refreshSeats],
+  );
+
+  const addSeat = useCallback(
+    async (agent: "claude" | "codex") => {
+      if (!conversationId) return;
+      const id = conversationId;
+      try {
+        // Say it is a room FIRST. The switch is written optimistically and kept
+        // even when its own call failed, and the backend forgets every room it
+        // had when it restarts — so by the time someone adds a seat, this
+        // browser can be the only one that still thinks this is a room. One
+        // idempotent call closes both gaps, and card 67 needs the same thing
+        // before a seat can speak.
+        await bridge.invoke("chat_set_room", { key: keyFor(id), open: true });
+        await bridge.invoke("chat_add_agent", {
+          key: keyFor(id),
+          seat: { name: agent === "claude" ? "Claude" : "Codex", agent },
+        });
+      } catch (err) {
+        patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
+      }
+      void refreshSeats(id);
+    },
+    [conversationId, refreshSeats],
+  );
+
+  const removeSeat = useCallback(
+    async (seatId: string) => {
+      if (!conversationId) return;
+      const id = conversationId;
+      try {
+        await bridge.invoke("chat_remove_agent", { key: keyFor(id), seatId });
+      } catch {
+        // Nothing to say: a seat that could not be removed is still listed,
+        // which is the truth.
+      }
+      void refreshSeats(id);
+    },
+    [conversationId, refreshSeats],
+  );
+
   const changeAccess = useCallback(
     (p: AccessLevel) => {
       setAccess(p);
@@ -1833,9 +1955,9 @@ export default function App() {
                   that looks like it is floating but keeps its own space — the
                   conversation ends where the column begins, so nothing is ever
                   underneath it. Drawn only when there is an agent to list. */}
-              {chat.agents.length > 0 && (
+              {(chat.agents.length > 0 || mySeats.length > 0) && (
                 <aside className="side">
-                  <AgentRail agents={chat.agents} onOpen={setFocusedAgent} />
+                  <AgentRail agents={chat.agents} seats={mySeats} onOpen={setFocusedAgent} />
                 </aside>
               )}
             </div>
@@ -1950,6 +2072,13 @@ export default function App() {
             thought={thinkingNow(chat)}
             effort={effort}
             onEffort={changeEffort}
+            lite={lite}
+            onLite={changeLite}
+            room={room}
+            seats={mySeats}
+            onRoom={toggleRoom}
+            onAddSeat={addSeat}
+            onRemoveSeat={removeSeat}
             cwd={project?.primary_path ?? ""}
             terminalOpen={termOpen}
             onTerminal={

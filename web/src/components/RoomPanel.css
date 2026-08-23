@@ -1,0 +1,113 @@
+/* Card 66 — the room switch and its seat list, inside the settings sheet.
+
+   In its own file rather than styles.css for the same reason AgentRail.css is:
+   so it reads next to the component it dresses. Everything here is drawn ONLY
+   when the switch is on — there are no "off" styles, because off means the
+   markup is absent rather than dimmed. */
+
+.room-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.5rem 0.25rem 0.25rem;
+}
+
+.room-empty {
+  margin: 0;
+  padding: 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--fg-2);
+}
+
+.room-seats {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.room-seat {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.5rem;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  font-size: 0.8125rem;
+}
+
+.room-seat-name {
+  font-weight: 500;
+}
+
+/* What the seat was added FOR. Quiet — it is context for the name, not a
+   second name. */
+.room-seat-role {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+  font-size: 0.75rem;
+}
+
+/* The seat that cannot see the project. Marked because that is the whole
+   point of such a seat — unmarked it reads as another copy of the host. */
+.room-seat-blind {
+  flex: 0 0 auto;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-2);
+  font-size: 0.6875rem;
+}
+
+.room-seat-drop {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 0.25rem;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.room-seat-drop:hover {
+  color: var(--danger);
+}
+
+.room-add {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+  padding: 0 0.5rem;
+}
+
+.room-add-label {
+  color: var(--fg-2);
+  font-size: 0.75rem;
+}
+
+.room-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.room-add-btn:hover {
+  background: var(--bg-2);
+}

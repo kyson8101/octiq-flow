@@ -17,6 +17,7 @@ import type React from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Attached, Block, Message } from "../lib/chat";
+import { AgentLogo } from "./AgentLogo";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { SentFiles } from "./Thumb";
@@ -31,6 +32,24 @@ import { clipMessage } from "../lib/clip";
 import { ProseLink } from "./ProseLink";
 import { ProsePath } from "./ProsePath";
 import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
+
+/** A table, in a box that scrolls sideways on its own.
+ *
+ *  The transcript deliberately scrolls one way only — `.msgs` is
+ *  `overflow-x: hidden`, because one over-wide child used to drag the whole
+ *  app across on a phone and take the header and composer with it. So a table
+ *  with more columns than the message column is wide has nowhere to go: it is
+ *  cut off at the edge, with nothing to say the rest of it is there.
+ *
+ *  The box is what gives it somewhere to go. Inside it the table keeps its own
+ *  width and is scrolled to; outside it the transcript never moves. */
+function ProseTable({ children }: { children?: React.ReactNode }) {
+  return (
+    <div className="prose-table">
+      <table>{children}</table>
+    </div>
+  );
+}
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -112,6 +131,7 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
  *  into something clickable. */
 const PROSE_COMPONENTS = {
   pre: CodeBlock,
+  table: ProseTable,
   a: ProseLink,
   [PATH_TAG]: ProsePath,
 } as Components;
@@ -416,6 +436,9 @@ function TurnView({
   busy?: boolean;
 }) {
   const role = messages[0].role;
+  // One turn is one voice — `groupTurns` breaks on the seat, so every message
+  // here has the same one.
+  const speaker = messages[0].speaker;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
   // The answer as it reads on screen. Thinking is left out — it is folded away
@@ -449,7 +472,22 @@ function TurnView({
 
   return (
     <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
-      {role === "assistant" && <div className="msg-role">Claude</div>}
+      {role === "assistant" && (
+        <div className="msg-role">
+          {/* Whoever wrote it. The host has no seat and keeps the plain word it
+              has always had; a seat says its own name, with its mark, because
+              in a room "which of these is talking" is the first question the
+              eye asks. */}
+          {speaker ? (
+            <>
+              <AgentLogo agent={speaker.agent === "claude" ? "claude" : "codex"} size={13} />
+              {speaker.name}
+            </>
+          ) : (
+            "Claude"
+          )}
+        </div>
+      )}
       <div className="msg-body">
         {/* Above the words, the way they sit above the box while you attach
             them — and because a message whose words are "look at this" makes no
@@ -481,20 +519,36 @@ function TurnView({
             to, so that is the one that has to wait for it to stop. */}
         {role === "assistant" && !streaming && !(busy && last) && answer && (
           <div className="msg-foot">
-            <CopyAnswer text={answer} />
+            <CopyAnswer text={answer} what="reply" />
           </div>
         )}
       </div>
+      {/* Your own words, on the same terms — but UNDER the bubble rather than
+          in it. The bubble is `.msg-body`, and a row inside the tint reads as
+          one more thing you said.
+
+          None of the assistant's timing guards apply here: a turn of yours is
+          whole the moment it is on screen, so there is no gap to flicker in.
+          What it copies is `answer`, taken from the blocks themselves — so a
+          message long enough to be cut down to a head still copies whole,
+          which is the case worth having a button for at all. A long press
+          still selects part of it, the way it always did; this is the
+          shortcut, not the replacement. */}
+      {role === "user" && answer && (
+        <div className="msg-foot">
+          <CopyAnswer text={answer} what="message" />
+        </div>
+      )}
     </article>
   );
 }
 
-/** Copy a whole reply.
+/** Copy a whole turn — a reply, or something you said.
  *
  *  Says whether it worked rather than always claiming success: on a plain-http
  *  origin the copy goes through a fallback that can fail outright, and "copied"
  *  over an unchanged clipboard is worse than being told it did not. */
-function CopyAnswer({ text }: { text: string }) {
+function CopyAnswer({ text, what }: { text: string; what: "reply" | "message" }) {
   const [state, setState] = useState<"idle" | "done" | "failed">("idle");
 
   return (
@@ -502,7 +556,7 @@ function CopyAnswer({ text }: { text: string }) {
       <button
         className={`msg-copy ${state === "done" ? "is-done" : ""}`}
         type="button"
-        title="Copy this reply"
+        title={`Copy this ${what}`}
         onClick={async () => {
           const ok = await copyText(text);
           setState(ok ? "done" : "failed");
@@ -538,7 +592,11 @@ function groupTurns(messages: Message[]): Message[][] {
   const turns: Message[][] = [];
   for (const m of messages) {
     const last = turns[turns.length - 1];
-    if (last && last[0].role === m.role) last.push(m);
+    // Same side AND same voice. Role alone was right while a conversation had
+    // one agent in it: think, call a tool, answer again is one reply and wants
+    // one label. In a room it is wrong the moment two seats are consecutive —
+    // the second seat's words would be drawn under the first seat's name.
+    if (last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id) last.push(m);
     else turns.push([m]);
   }
   return turns;
@@ -701,12 +759,21 @@ export function MessageList({
           </Fragment>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}
-        {/* Not while compacting: the line above already says what the silence
+        {/* The dots come and go SEVERAL TIMES A MINUTE — the agent stops
+            streaming at every tool call and starts again after it — so the row
+            they live in is held open whether they are showing or not. Drawn
+            only when working, it would add its own height and the gap above it
+            each time, and the whole transcript would step up and down under
+            the reader for the length of a turn.
+
+            Not while compacting: the line above already says what the silence
             is, and two "something is happening" marks under each other say it
             twice. */}
-        {busy && compactingSince === undefined && !messages.some((m) => m.streaming) && (
-          <div className="dots" aria-label="working" />
-        )}
+        <div className="dots-slot">
+          {busy && compactingSince === undefined && !messages.some((m) => m.streaming) && (
+            <div className="dots" aria-label="working" />
+          )}
+        </div>
         <div ref={endRef} />
       </div>
     </div>

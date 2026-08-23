@@ -17,8 +17,11 @@ import { workingLine } from "../lib/working";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
+import { RoomPanel } from "./RoomPanel";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
+import { Drafts, type Draft } from "../lib/drafts";
+import type { Seat } from "../lib/chat";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
@@ -323,6 +326,13 @@ export function Composer({
   thought,
   effort,
   onEffort,
+  lite,
+  onLite,
+  room,
+  seats,
+  onRoom,
+  onAddSeat,
+  onRemoveSeat,
   cwd,
   onTerminal,
   terminalOpen,
@@ -379,6 +389,18 @@ export function Composer({
   thought?: string;
   effort: Effort;
   onEffort: (e: Effort) => void;
+  /** New chats start without this machine's skills, hooks and other MCP
+   *  servers. Read when the agent process starts, so it only ever describes
+   *  the NEXT chat. */
+  lite: boolean;
+  onLite: (on: boolean) => void;
+  /** Card 66 — the room controls, passed straight through to the settings
+   *  sheet. Optional: a composer given none draws no room controls. */
+  room?: boolean;
+  seats?: Seat[];
+  onRoom?: (open: boolean) => void;
+  onAddSeat?: (agent: "claude" | "codex") => void;
+  onRemoveSeat?: (seatId: string) => void;
   /** The project folder, so the file picker opens where the work is. */
   cwd?: string;
   /** Show the shell drawer. Absent when there is no project to open one in. */
@@ -669,6 +691,48 @@ export function Composer({
     }, UNDO_MS);
     return () => clearTimeout(timer);
   }, [attached.length, cleared, forget, text]);
+
+  /** What is in the box RIGHT NOW, readable from an effect that must not wake
+   *  up on every keystroke. Written during the render, the way `runningRef` is
+   *  in App: assigning the same value twice costs nothing and cannot drift. */
+  const box = useRef<Draft<Attachment>>({ text: "", attached: [] });
+  box.current = { text, attached };
+  /** Half-typed messages, one per chat, for as long as this page is open. */
+  const drafts = useRef(new Drafts<Attachment>());
+  /** The chat whose words the box is currently showing. */
+  const shownFor = useRef(session);
+
+  // The box belongs to the CHAT, not to the screen.
+  //
+  // It is drawn once and the conversation under it changes — a tapped banner,
+  // an answered question card, a chat picked in the sidebar. The words used to
+  // stay behind in the box while the chat moved out from under them, and the
+  // next Enter sent them to whatever had arrived. That is how a message lands
+  // in a conversation nobody typed it into: the words were real, the chat that
+  // got them was not the one they were written in.
+  //
+  // So leaving a chat puts the box away under its id, and arriving takes that
+  // chat's own words back out — an empty box for one never typed in.
+  useEffect(() => {
+    if (shownFor.current === session) return;
+    drafts.current.keep(shownFor.current, box.current);
+    shownFor.current = session;
+    const back = drafts.current.take(session);
+    setText(back.text);
+    setAttached(back.attached);
+    setAttachError(null);
+    // Up walks the history of the chat you are in, from wherever the box is
+    // now — neither of which is what it was a moment ago.
+    draft.current = "";
+    // The Undo belonged to the chat that has just left. Offering it here would
+    // put that chat's words in this one, which is the very thing above.
+    setCleared((old) => {
+      if (old) forget(old.attached);
+      return null;
+    });
+    // Only the chat. Everything this reads about the box is read through a ref
+    // precisely so that typing does not re-run it.
+  }, [session, forget]);
 
   function send() {
     const value = text.trim();
@@ -992,6 +1056,8 @@ export function Composer({
                     missing={missing}
                     noAgents={noAgents}
                     started={!!started}
+                    lite={lite}
+                    onLite={onLite}
                   />
                 </div>
               </>
@@ -1160,6 +1226,11 @@ export function Composer({
               onAccess={onAccess}
               effort={effort}
               onEffort={onEffort}
+              room={room}
+              seats={seats}
+              onRoom={onRoom}
+              onAddSeat={onAddSeat}
+              onRemoveSeat={onRemoveSeat}
               onDone={() => setSheet(false)}
             />
           </>
@@ -1190,6 +1261,13 @@ export function SettingsSheet({
   onAccess,
   effort,
   onEffort,
+  lite,
+  onLite,
+  room,
+  seats,
+  onRoom,
+  onAddSeat,
+  onRemoveSeat,
   onDone,
 }: {
   choice: ModelChoice;
@@ -1202,6 +1280,15 @@ export function SettingsSheet({
   onAccess: (a: AccessLevel) => void;
   effort: Effort;
   onEffort: (e: Effort) => void;
+  lite: boolean;
+  onLite: (on: boolean) => void;
+  /** Card 66. All optional: a sheet handed no room callbacks draws no room
+   *  controls, which is the same answer as the switch being off. */
+  room?: boolean;
+  seats?: Seat[];
+  onRoom?: (open: boolean) => void;
+  onAddSeat?: (agent: "claude" | "codex") => void;
+  onRemoveSeat?: (seatId: string) => void;
   onDone: () => void;
 }) {
   return (
@@ -1215,6 +1302,8 @@ export function SettingsSheet({
             missing={missing}
             noAgents={noAgents}
             started={started}
+            lite={lite}
+            onLite={onLite}
           />
         </div>
 
@@ -1227,6 +1316,21 @@ export function SettingsSheet({
           <div className="sheet-head">Effort</div>
           <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
         </div>
+
+        {/* Card 66. Last, and off by default: a chat is one agent until someone
+            decides otherwise, and nothing above this changes when it is off. */}
+        {onRoom && onAddSeat && onRemoveSeat && (
+          <div className="sheet-group">
+            <div className="sheet-head">Room</div>
+            <RoomPanel
+              room={room ?? false}
+              seats={seats ?? []}
+              onToggle={onRoom}
+              onAdd={onAddSeat}
+              onRemove={onRemoveSeat}
+            />
+          </div>
+        )}
       </div>
 
       <div className="sheet-foot">
@@ -1255,6 +1359,8 @@ function ModelPicker({
   missing,
   noAgents,
   started,
+  lite,
+  onLite,
 }: {
   choice: ModelChoice;
   onChoice: (m: ModelChoice) => void;
@@ -1264,6 +1370,9 @@ function ModelPicker({
   noAgents: boolean;
   /** This conversation already has turns in it. */
   started: boolean;
+  /** New chats start without this machine's skills, hooks and other MCP. */
+  lite: boolean;
+  onLite: (on: boolean) => void;
 }) {
   const [tab, setTab] = useState<Provider>(choice.agent);
   // Choosing elsewhere — the Agents page, or restoring a chat — moves the tab
@@ -1317,7 +1426,38 @@ function ModelPicker({
         })}
       </div>
 
-      <ModelNote tab={tab} choice={choice} gone={gone} noAgents={noAgents} started={started} />
+      {/* Under the tiles because it is the same decision as the model: what
+          this chat is made of, chosen before it starts. Claude only — Codex
+          keeps its skills in a folder rather than in the config it can be told
+          to skip, so the same flags there saved about 2% and are not worth a
+          switch that would look like it did something. */}
+      {tab === "claude" && (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={lite}
+          className={`mp-lite ${lite ? "is-on" : ""}`}
+          title="Start without this machine's skills, hooks or other MCP servers"
+          onClick={() => onLite(!lite)}
+        >
+          <span className="mp-lite-text">
+            <span className="mp-lite-name">Clean start</span>
+            <span className="mp-lite-hint">
+              No skills, hooks or other MCP — about half the context
+            </span>
+          </span>
+          <span className="picker-switch">{lite ? "On" : "Off"}</span>
+        </button>
+      )}
+
+      <ModelNote
+        tab={tab}
+        choice={choice}
+        gone={gone}
+        noAgents={noAgents}
+        started={started}
+        lite={lite}
+      />
     </div>
   );
 }
@@ -1331,12 +1471,14 @@ function ModelNote({
   gone,
   noAgents,
   started,
+  lite,
 }: {
   tab: Provider;
   choice: ModelChoice;
   gone: boolean;
   noAgents: boolean;
   started: boolean;
+  lite: boolean;
 }) {
   if (noAgents) {
     return <div className="mp-note is-warn">No agent CLI on this machine — a chat cannot start</div>;
@@ -1347,6 +1489,11 @@ function ModelNote({
         {AGENT_NAME[tab]} is not on this machine — install it to use these
       </div>
     );
+  }
+  // The flags are read once, when the agent starts. Said here rather than on
+  // the switch itself, because it is only true of a chat already running.
+  if (started && lite && tab === "claude" && choice.agent === "claude") {
+    return <div className="mp-note">Clean start applies to your next new chat</div>;
   }
   if (!started) return null;
   return tab === choice.agent ? (

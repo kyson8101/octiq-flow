@@ -173,6 +173,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "extraDirs")?,
             arg(&args, "effort")?,
             arg(&args, "images")?,
+            arg(&args, "lite")?,
         )),
         "chat_send" => unit(crate::agent_chat::chat_send_impl(
             &svc.chats,
@@ -194,6 +195,27 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
         )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
+        // Card 66 — the room. The browser client does not go through Tauri, so
+        // every command has to be listed here as well as in lib.rs.
+        "chat_set_room" => unit(crate::chat_room::set_room_impl(
+            &svc.chats,
+            &arg::<String>(&args, "key")?,
+            arg(&args, "open")?,
+        )),
+        "chat_add_agent" => to_value(crate::chat_room::add_seat_impl(
+            &svc.chats,
+            &arg::<String>(&args, "key")?,
+            arg(&args, "seat")?,
+        )),
+        "chat_remove_agent" => unit(crate::chat_room::remove_seat_impl(
+            &svc.chats,
+            &arg::<String>(&args, "key")?,
+            &arg::<String>(&args, "seatId")?,
+        )),
+        "chat_room" => to_value(crate::chat_room::room_impl(
+            &svc.chats,
+            &arg::<String>(&args, "key")?,
+        )),
         "chat_since" => Ok(json!(crate::agent_chat::chat_since(
             arg(&args, "key")?,
             arg(&args, "after")?,

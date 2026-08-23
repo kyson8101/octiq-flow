@@ -73,11 +73,16 @@ struct ChatSession {
 #[derive(Default)]
 pub struct ChatManager {
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
+    /// Only chats opened as rooms appear here. No entry means no room.
+    ///
+    /// Stored here because a seat that speaks needs a session and a round
+    /// needs both at once — everything ELSE about a room lives in `chat_room`.
+    pub(crate) rooms: Mutex<HashMap<String, crate::chat_room::Room>>,
 }
 
 /// Which agents this module can start. The name from the UI only ever picks
 /// between these literals — it is never interpolated into the command line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ChatAgent {
     Claude,
@@ -85,7 +90,7 @@ pub enum ChatAgent {
 }
 
 impl ChatAgent {
-    fn bin(self) -> &'static str {
+    pub(crate) fn bin(self) -> &'static str {
         match self {
             ChatAgent::Claude => "claude",
             ChatAgent::Codex => "codex",
@@ -117,7 +122,7 @@ fn toml_string(s: &str) -> String {
 /// Model aliases we will pass on. An unknown value is dropped rather than
 /// forwarded: the model name reaches a command line, so it is an allowlist, not
 /// an escaping problem.
-fn safe_model(model: &str) -> Option<String> {
+pub(crate) fn safe_model(model: &str) -> Option<String> {
     let ok = model
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_');
@@ -328,6 +333,9 @@ fn build_command(
     extra_dirs: &[String],
     effort: Option<&str>,
     images: &[String],
+    // A chat started clean: none of this machine's skills, hooks or other MCP
+    // servers. Claude only — see the branch below.
+    lite: bool,
 ) -> String {
     match agent {
         ChatAgent::Claude => {
@@ -405,6 +413,32 @@ fn build_command(
                     sh_quote("mcp__octiq__ask_user mcp__octiq__todo_write"),
                     sh_quote(ASK_PROMPT),
                 ));
+            }
+            // A clean chat: this machine's skills, hooks and other MCP servers
+            // left out of it.
+            //
+            // Measured in this repo, a first turn costs 60.4k of context before
+            // anyone has said anything, and the skill list is about half of
+            // that. These three flags bring it to 30.2k:
+            //
+            //   --strict-mcp-config     only the servers named above — ours
+            //   --disable-slash-commands   no skills
+            //   --setting-sources ''    no user/project/local settings, so no
+            //                           SessionStart hooks and no rules
+            //
+            // What it deliberately does NOT use is `--bare`, the flag that
+            // looks like this feature's name. Bare never reads the OAuth login
+            // or the keychain — auth is strictly ANTHROPIC_API_KEY — so on a
+            // subscription every bare chat ends at "Not logged in" without
+            // reaching the model. `--safe-mode` keeps the login but drops MCP
+            // servers even when we pass them ourselves, taking `ask_user` and
+            // the todo list with them, and still costs more (31.6k) because it
+            // goes on listing the built-in skills.
+            //
+            // CLAUDE.md still loads. Only bare and safe mode drop it, and both
+            // cost more than they save.
+            if lite {
+                cmd.push_str(" --strict-mcp-config --disable-slash-commands --setting-sources ''");
             }
             // A project can group several folders. The agent starts in one of
             // them (`cwd`) and can already read that one; every OTHER folder of
@@ -508,6 +542,10 @@ pub fn chat_start(
     effort: Option<String>,
     // Image files to attach to the first turn.
     images: Option<Vec<String>>,
+    // Start clean: none of this machine's skills, hooks or other MCP servers.
+    // Claude only, and fixed for the life of the process — the flags it sets
+    // are read once, when the agent starts.
+    lite: Option<bool>,
 ) -> Result<(), String> {
     chat_start_impl(
         manager.inner().clone(),
@@ -521,6 +559,7 @@ pub fn chat_start(
         extra_dirs,
         effort,
         images,
+        lite,
     )
 }
 
@@ -539,6 +578,7 @@ pub fn chat_start_impl(
     extra_dirs: Option<Vec<String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
+    lite: Option<bool>,
 ) -> Result<(), String> {
     let manager_for_exit = manager.clone();
     {
@@ -568,6 +608,7 @@ pub fn chat_start_impl(
         &extras,
         effort.as_deref(),
         &images,
+        lite.unwrap_or(false),
     );
 
     // Login shell, for PATH — see the module docs.
@@ -672,6 +713,12 @@ pub fn chat_start_impl(
     {
         let key = key.clone();
         let asking = session.clone();
+        // Whose stdout this is. `chat_start_impl` starts the HOST, so there is
+        // nobody to name and every event goes through untouched — see
+        // `stamp_speaker`. Card 67 gives a seat its own process, and this is
+        // the one line it changes: the seat is passed in and its every event
+        // then says so, in the record as well as on the wire.
+        let speaker: Option<crate::chat_room::Seat> = None;
         // The runtime the answer will be waited on. Captured HERE, on the thread
         // that still has one: `chat_start` is called from an async handler, the
         // reader below is a plain thread, and `Handle::current()` panics there.
@@ -759,6 +806,14 @@ pub fn chat_start_impl(
                                 .unwrap_or_default();
                             crate::push::notify_chat(Some(&key), "done", said);
                         }
+                        // Who said this — BEFORE the record is written, so a
+                        // client that catches up later is told the same thing a
+                        // client watching live was told. `None` is the host,
+                        // and the host's events go through completely
+                        // untouched; that is what makes a chat with no seats
+                        // byte-for-byte the chat that shipped before card 66.
+                        let mut event = event;
+                        crate::chat_room::stamp_speaker(&mut event, speaker.as_ref());
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.
@@ -1422,6 +1477,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         );
         assert!(line.contains("--permission-prompt-tool stdio"));
     }
@@ -1454,8 +1510,84 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         );
         assert!(line.contains("--disallowedTools AskUserQuestion"));
+    }
+
+    #[test]
+    fn a_lite_chat_drops_the_machines_skills_hooks_and_other_mcp_servers() {
+        // What this machine loads into a chat that never asked for it: ten MCP
+        // servers, every installed skill, and the SessionStart hooks. Measured
+        // in this repo, that is 60.4k of context before the first word — half
+        // of it the skill list alone. Lite is the same chat without them.
+        //
+        // `--bare` is the flag that reads like the answer and is not: it never
+        // looks at the OAuth login or the keychain, so on a subscription it
+        // dies at "Not logged in" before it reaches the model. `--safe-mode`
+        // does keep the login, but it drops MCP servers passed with
+        // `--mcp-config` too — which is where `ask_user` lives, so the chat
+        // could no longer ask anything. These three flags are the cut that
+        // leaves the login and our own two tools standing: 30.2k.
+        let line = build_command(
+            ChatAgent::Claude,
+            None,
+            Some(Access::Auto),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+            true,
+        );
+        assert!(line.contains("--strict-mcp-config"));
+        assert!(line.contains("--disable-slash-commands"));
+        // Empty, and quoted: the flag takes a list, and no list is the whole
+        // point. An unquoted empty word would vanish in the shell and the next
+        // flag would be read as its value.
+        assert!(line.contains("--setting-sources ''"));
+        // Ours survives the cut. `--strict-mcp-config` means ONLY the servers
+        // named on this command line, and ours is named on it.
+        assert!(line.contains("--mcp-config"));
+    }
+
+    #[test]
+    fn a_normal_chat_still_gets_everything_this_machine_offers() {
+        let line = build_command(
+            ChatAgent::Claude,
+            None,
+            Some(Access::Auto),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+            false,
+        );
+        assert!(!line.contains("--strict-mcp-config"));
+        assert!(!line.contains("--disable-slash-commands"));
+        assert!(!line.contains("--setting-sources"));
+    }
+
+    #[test]
+    fn lite_says_nothing_to_codex() {
+        // Codex loads its skills from a folder rather than from the config it
+        // can be told to ignore, so the same idea saved 21.2k against 20.8k
+        // there — a rounding error, for flags that would still have to be
+        // written and kept right. The switch is a Claude one until that changes.
+        let line = build_command(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Auto),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+            true,
+        );
+        assert!(!line.contains("--ignore-user-config"));
+        assert!(!line.contains("--strict-mcp-config"));
     }
 
     #[test]
@@ -1483,6 +1615,7 @@ mod tests {
             &[r#"/tmp/a", evil = "yes"#.to_string()],
             None,
             &[],
+            false,
         );
         assert!(
             line.contains(r#"["/tmp/a\", evil = \"yes"]"#),
@@ -1515,7 +1648,7 @@ mod tests {
     #[test]
     fn resume_only_takes_a_plain_id() {
         let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
-        let c = build_command(ChatAgent::Claude, None, None, "", Some(id), &[], None, &[]);
+        let c = build_command(ChatAgent::Claude, None, None, "", Some(id), &[], None, &[], false);
         assert!(c.contains(&format!("--resume '{id}'")));
         // Anything that could become a second shell word is dropped outright.
         let bad = build_command(
@@ -1527,6 +1660,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         );
         assert!(!bad.contains("--resume"));
     }
@@ -1558,6 +1692,7 @@ mod tests {
                 &[],
                 None,
                 &[],
+                false,
             );
             assert!(
                 c.contains(&format!("--permission-mode {claude}")),
@@ -1577,6 +1712,7 @@ mod tests {
                 &[],
                 None,
                 &[],
+                false,
             );
             assert!(
                 x.contains(&format!("--sandbox {sandbox}")),
@@ -1612,6 +1748,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         );
         assert!(x.contains("-c sandbox_mode='workspace-write'"));
         assert!(x.contains("-c approval_policy='on-request'"));
@@ -1639,6 +1776,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         );
         assert!(c.contains("--input-format stream-json"));
         assert!(c.contains("--model 'opus'"));
@@ -1655,6 +1793,7 @@ mod tests {
             &[],
             None,
             &[],
+            false,
         );
         assert!(x.contains("codex exec --json"));
         assert!(x.ends_with("'hi there'"));
@@ -1671,6 +1810,7 @@ mod tests {
             &[],
             Some("xhigh"),
             &[],
+            false,
         );
         assert!(c.contains("--effort xhigh"));
         // Codex supports it too, but only as a config override.
@@ -1683,6 +1823,7 @@ mod tests {
             &[],
             Some("xhigh"),
             &[],
+            false,
         );
         assert!(x.contains("-c model_reasoning_effort='xhigh'"));
         assert!(!x.contains("--effort"));
@@ -1697,6 +1838,7 @@ mod tests {
             &[],
             Some("turbo; id"),
             &[],
+            false,
         );
         assert!(!bad.contains("--effort"));
 
@@ -1713,6 +1855,7 @@ mod tests {
             &[],
             Some("max"),
             &[],
+            false,
         );
         assert!(claude_max.contains("--effort max"));
         let codex_max = build_command(
@@ -1724,6 +1867,7 @@ mod tests {
             &[],
             Some("max"),
             &[],
+            false,
         );
         assert!(codex_max.contains("model_reasoning_effort='max'"));
 
@@ -1738,6 +1882,7 @@ mod tests {
             &[],
             Some("minimal"),
             &[],
+            false,
         );
         assert!(!codex_min.contains("model_reasoning_effort"));
         let claude_min = build_command(
@@ -1749,6 +1894,7 @@ mod tests {
             &[],
             Some("minimal"),
             &[],
+            false,
         );
         assert!(!claude_min.contains("--effort"));
 
@@ -1764,6 +1910,7 @@ mod tests {
             &[],
             Some("ultracode"),
             &[],
+            false,
         );
         assert!(ultra.contains("--effort ultracode"));
         let codex_ultra = build_command(
@@ -1775,6 +1922,7 @@ mod tests {
             &[],
             Some("ultracode"),
             &[],
+            false,
         );
         assert!(!codex_ultra.contains("model_reasoning_effort"));
 
@@ -1790,6 +1938,7 @@ mod tests {
             &[],
             Some("auto"),
             &[],
+            false,
         );
         assert!(!auto.contains("--effort"));
     }
@@ -1806,6 +1955,7 @@ mod tests {
             &["/tmp/api".to_string()],
             Some("high"),
             &[],
+            false,
         );
         // The subcommand, with the id BEFORE the prompt — that is the order
         // `codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]` expects.
@@ -1829,6 +1979,7 @@ mod tests {
             &["/tmp/api".to_string()],
             None,
             &[],
+            false,
         );
         assert!(first.starts_with("codex exec --json"));
         assert!(!first.contains("resume"));
@@ -1862,6 +2013,7 @@ mod tests {
             &[],
             None,
             &shots,
+            false,
         );
         // Quoted, so a space in the name stays one argument.
         assert!(x.contains("-i '/tmp/a shot.png'"));
@@ -1879,6 +2031,7 @@ mod tests {
             &[],
             None,
             &shots,
+            false,
         );
         assert!(!c.contains("-i "));
     }
@@ -1896,13 +2049,13 @@ mod tests {
     #[test]
     fn a_projects_other_folders_are_added_for_both_agents() {
         let dirs = vec!["/Users/me/api".to_string(), "/Users/me/my docs".to_string()];
-        let c = build_command(ChatAgent::Claude, None, None, "", None, &dirs, None, &[]);
+        let c = build_command(ChatAgent::Claude, None, None, "", None, &dirs, None, &[], false);
         assert!(c.contains("--add-dir '/Users/me/api'"));
         // A space in a folder name stays one argument.
         assert!(c.contains("--add-dir '/Users/me/my docs'"));
 
         // Codex takes extra folders too — it was a mistake to think otherwise.
-        let x = build_command(ChatAgent::Codex, None, None, "hi", None, &dirs, None, &[]);
+        let x = build_command(ChatAgent::Codex, None, None, "hi", None, &dirs, None, &[], false);
         assert!(x.contains("--add-dir '/Users/me/api'"));
         assert!(x.contains("--add-dir '/Users/me/my docs'"));
     }

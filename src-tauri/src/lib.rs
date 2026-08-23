@@ -19,6 +19,7 @@ mod appearance;
 mod bus;
 mod canvas;
 mod chat_index;
+mod chat_room;
 mod dispatch;
 mod file_watch;
 mod focus;
@@ -267,6 +268,10 @@ pub fn run() {
             agent_chat::chat_set_access,
             agent_chat::chat_stop,
             agent_chat::chat_list,
+            chat_room::chat_set_room,
+            chat_room::chat_add_agent,
+            chat_room::chat_remove_agent,
+            chat_room::chat_room,
             agent_chat::chat_since,
             agent_chat::chat_forget,
             agent_chat::chat_index_list,

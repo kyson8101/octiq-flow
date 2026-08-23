@@ -60,6 +60,57 @@ describe("a long message of your own", () => {
   });
 });
 
+describe("copying a message of your own", () => {
+  it("offers a copy, the same one a reply has", () => {
+    const html = render(said("what does this do?"));
+
+    expect(html).toContain("msg-copy");
+    expect(html).toContain("Copy this message");
+  });
+
+  it("still offers it on a message too long to be shown whole", () => {
+    // The button takes the WHOLE message, not the head the bubble is cut to,
+    // which is the case a copy is worth most: a pasted log you cannot select.
+    const html = render(said(json));
+
+    expect(html).toContain("show more");
+    expect(html).toContain("msg-copy");
+  });
+
+  it("sits under the bubble rather than inside it", () => {
+    // Inside the tinted bubble it reads as part of what you said. The bubble
+    // is .msg-body, so the row has to come after that element has closed.
+    const html = render(said("what does this do?"));
+    const bubble = html.indexOf('class="msg-body"');
+    const foot = html.indexOf('class="msg-foot"');
+
+    expect(bubble).toBeGreaterThan(-1);
+    expect(foot).toBeGreaterThan(-1);
+    expect(html.slice(bubble, foot)).toContain("</div>");
+  });
+
+  it("says nothing to copy when there are no words to take", () => {
+    expect(render(said(""))).not.toContain("msg-copy");
+  });
+});
+
+describe("the working dots", () => {
+  const at = (busy: boolean) =>
+    renderToStaticMarkup(<MessageList messages={[said("read that file")]} busy={busy} />);
+
+  it("show only while something is working", () => {
+    expect(at(true)).toContain('aria-label="working"');
+    expect(at(false)).not.toContain('aria-label="working"');
+  });
+
+  it("keep their row open either way, so the transcript does not jump", () => {
+    // They come and go once per tool call. If the row came with them, the
+    // whole transcript would shift under the reader several times a minute.
+    expect(at(true)).toContain("dots-slot");
+    expect(at(false)).toContain("dots-slot");
+  });
+});
+
 describe("a turn the reader stopped", () => {
   const answered = (id: string, text: string): Message => ({
     id,
@@ -167,5 +218,41 @@ describe("a file path in a reply", () => {
 
   it("draws no picture for a name that turned out not to be a file", () => {
     expect(reply("something like screenshot.png would do")).not.toContain("prose-shot");
+  });
+});
+
+describe("a table in a reply", () => {
+  const replied = (text: string): Message => ({
+    id: "a1",
+    role: "assistant",
+    blocks: [{ kind: "text", text }],
+    streaming: false,
+  });
+
+  const reply = (text: string) =>
+    renderToStaticMarkup(<MessageList messages={[replied(text)]} busy={false} />);
+
+  const table = [
+    "| file | lines | why |",
+    "| --- | ---: | --- |",
+    "| styles.css | 5020 | the whole look |",
+    "| pty.rs | 900 | the bridge |",
+  ].join("\n");
+
+  it("sits in a box of its own, so a wide one can be scrolled to", () => {
+    // The transcript scrolls one way only — `.msgs` is `overflow-x: hidden` —
+    // so a table wider than the column is simply CUT unless it brings its own
+    // sideways scroll. This wrapper is what brings it.
+    const html = reply(table);
+    const box = html.indexOf("prose-table");
+
+    expect(box).toBeGreaterThan(-1);
+    expect(html.indexOf("<table")).toBeGreaterThan(box);
+  });
+
+  it("keeps the alignment the markdown asked for", () => {
+    // `---:` is how an agent says "this column is numbers". Losing it puts a
+    // column of figures back on the left, where they no longer line up.
+    expect(reply(table)).toContain("text-align:right");
   });
 });

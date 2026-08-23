@@ -1108,3 +1108,158 @@ describe("a compaction", () => {
     expect(reduceChat(again, boundary({})).compactingSince).toBeUndefined();
   });
 });
+
+// ---- card 66: who wrote this ------------------------------------------------
+//
+// The agent halves of these events are lifted VERBATIM from
+// `task-subagent.jsonl`, which is a real captured stream. `octiq_speaker` is
+// not part of any capture and never will be: OctiqFlow's own backend stamps it
+// on, in `chat_room::stamp_speaker`, on the way to the record and the wire. So
+// it is authored here — the agent's shapes stay real, and only our own envelope
+// field is written by hand.
+describe("a room with several agents in it", () => {
+  const SEAT = { id: "s1", name: "Codex", agent: "codex" };
+
+  /** An assistant message, optionally from a seat rather than the host. */
+  const said = (text: string, speaker?: typeof SEAT, id = "msg_x") => ({
+    type: "assistant",
+    message: {
+      id,
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-5-20250929",
+      content: [{ type: "text", text }],
+      usage: { input_tokens: 4, output_tokens: 2 },
+    },
+    ...(speaker ? { octiq_speaker: speaker } : {}),
+  });
+
+  it("puts the seat's name on the message it wrote", () => {
+    const state = reduceChat(emptyChat(), said("from the seat", SEAT));
+    const last = state.messages[state.messages.length - 1];
+    expect(last.speaker).toEqual(SEAT);
+  });
+
+  it("leaves a host message with no speaker at all", () => {
+    const state = reduceChat(emptyChat(), said("from the host"));
+    const last = state.messages[state.messages.length - 1];
+    expect(last.speaker).toBeUndefined();
+  });
+
+  it("does not let a seat rewrite the model the host is on", () => {
+    // The same bug the Task-subagent guard fixed, one floor up: a seat running
+    // a different model would relabel a conversation that never changed.
+    let state = reduceChat(emptyChat(), {
+      type: "system",
+      subtype: "init",
+      session_id: "abc",
+      model: "claude-opus-4-6",
+    });
+    expect(state.model).toBe("claude-opus-4-6");
+
+    state = reduceChat(state, said("seat speaking", SEAT));
+    expect(state.model).toBe("claude-opus-4-6");
+
+    // ... while the HOST saying the same thing still moves the label, which is
+    // how a mid-session /model stays visible.
+    state = reduceChat(state, said("host speaking"));
+    expect(state.model).toBe("claude-sonnet-4-5-20250929");
+  });
+
+  it("does not let a seat rewrite the host's context meter or cost", () => {
+    let state = reduceChat(emptyChat(), said("host speaking"));
+    const hostContext = state.contextTokens;
+    expect(hostContext).toBeGreaterThan(0);
+
+    state = reduceChat(state, {
+      ...said("seat speaking", SEAT),
+      message: {
+        ...said("seat speaking", SEAT).message,
+        usage: { input_tokens: 999_999, output_tokens: 999_999 },
+      },
+    });
+    expect(state.contextTokens).toBe(hostContext);
+
+    // A seat's `result` is the end of the SEAT's turn, not the host's, so its
+    // cost and its "the turn is over" must not land on this conversation.
+    state = { ...state, busy: true };
+    state = reduceChat(state, {
+      type: "result",
+      subtype: "success",
+      total_cost_usd: 42,
+      duration_ms: 1,
+      octiq_speaker: SEAT,
+    });
+    expect(state.lastCostUsd).toBeUndefined();
+    expect(state.busy).toBe(true);
+  });
+
+  it("keeps two seats writing at once in two separate messages", () => {
+    // Without this the last streaming message is "the" streaming message, and
+    // two seats answering together fold into one bubble with both voices in it.
+    const other = { id: "s2", name: "Claude", agent: "claude" };
+    const start = (speaker: typeof SEAT, id: string) => ({
+      type: "stream_event",
+      event: { type: "message_start", message: { id, role: "assistant", content: [] } },
+      octiq_speaker: speaker,
+    });
+    const delta = (speaker: typeof SEAT, text: string) => ({
+      type: "stream_event",
+      event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+      octiq_speaker: speaker,
+    });
+
+    let state = emptyChat();
+    for (const ev of [
+      start(SEAT, "a"),
+      start(other, "b"),
+      delta(SEAT, "codex says"),
+      delta(other, "claude says"),
+    ]) {
+      state = reduceChat(state, ev);
+    }
+
+    const bySeat = state.messages.filter((m) => m.speaker?.id === "s1");
+    const byOther = state.messages.filter((m) => m.speaker?.id === "s2");
+    expect(bySeat).toHaveLength(1);
+    expect(byOther).toHaveLength(1);
+    expect(JSON.stringify(bySeat[0].blocks)).toContain("codex says");
+    expect(JSON.stringify(bySeat[0].blocks)).not.toContain("claude says");
+    expect(JSON.stringify(byOther[0].blocks)).toContain("claude says");
+  });
+
+  it("never puts a broken speaker's words under the host's name", () => {
+    // Failing open is right for availability — a chat that cannot read one
+    // field must not stop. But this field's whole job is attribution, and
+    // "unknown" is the only honest fallback: silently crediting the host is the
+    // one answer that is actively wrong.
+    const broken = { ...said("who said this?"), octiq_speaker: { name: "", id: "" } };
+    const state = reduceChat(emptyChat(), broken);
+    const last = state.messages[state.messages.length - 1];
+
+    expect(last.speaker).toBeDefined();
+    expect(last.speaker?.name).toBe("Unknown");
+    // And it still must not move the host's own label.
+    expect(state.model).toBeUndefined();
+  });
+
+  it("takes a speaker with an id but no name as far as it can", () => {
+    const partial = { ...said("half a speaker"), octiq_speaker: { id: "s9" } };
+    const last = reduceChat(emptyChat(), partial).messages[0];
+
+    expect(last.speaker?.id).toBe("s9");
+    expect(last.speaker?.name).toBe("Unknown");
+  });
+
+  it("replays a real captured stream exactly as it did before rooms existed", () => {
+    // The regression guard for the whole card: a conversation with no seats has
+    // to be byte-for-byte what it was. Nothing in this stream carries a
+    // speaker, so nothing in the result may.
+    let state = emptyChat();
+    for (const line of taskStream.split("\n").filter(Boolean)) {
+      state = reduceChat(state, JSON.parse(line));
+    }
+    expect(state.messages.length).toBeGreaterThan(0);
+    expect(state.messages.every((m) => m.speaker === undefined)).toBe(true);
+  });
+});

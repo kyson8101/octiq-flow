@@ -12,7 +12,8 @@
 // A dynamic workflow is one run holding many agents, so it opens into its own
 // phases. A Task subagent is a single row: it has no tree to show.
 import { useEffect, useState } from "react";
-import type { AgentRun, WorkflowAgent } from "../lib/chat";
+import type { AgentRun, Seat, WorkflowAgent } from "../lib/chat";
+import { AgentLogo } from "./AgentLogo";
 
 import "./AgentRail.css";
 
@@ -188,29 +189,53 @@ function AgentRow({
 
 export function AgentRail({
   agents,
+  seats = [],
   onOpen,
 }: {
   agents: AgentRun[];
+  /** Who is sitting in this room right now (card 66). A different thing from
+   *  `agents`, which is a HISTORY of what has run — a seat may have run
+   *  nothing yet and still be here, and that is worth seeing. Empty for every
+   *  chat that is not a room. */
+  seats?: Seat[];
   onOpen?: (id: string) => void;
 }) {
   const running = agents.filter((a) => a.status === "running").length;
   const now = useTick(running > 0);
 
-  // Nothing has ever run here, so there is nothing to show and no empty box to
-  // explain. Most conversations never start an agent at all. The hook above
-  // runs first either way — it cannot sit behind a return.
-  if (agents.length === 0) return null;
+  // Nothing has ever run here AND nobody is sitting here, so there is nothing
+  // to show and no empty box to explain. Most conversations never start an
+  // agent at all. The hook above runs first either way — it cannot sit behind
+  // a return.
+  if (agents.length === 0 && seats.length === 0) return null;
 
   return (
     <aside className="rail" aria-label="agents">
+      {/* Who is HERE, above what has RUN. Two different questions, and the one
+          a reader asks first in a room is who they are talking to. */}
+      {seats.length > 0 && (
+        <>
+          <div className="rail-head">In this room</div>
+          <ul className="rail-seats">
+            {seats.map((seat) => (
+              <li key={seat.id} className="rail-seat">
+                <AgentLogo agent={seat.agent === "claude" ? "claude" : "codex"} size={13} />
+                <span className="rail-seat-name">{seat.name}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <ul className="rail-list">
         {agents.map((run) => (
           <AgentRow key={run.id} run={run} now={now} onOpen={onOpen} />
         ))}
       </ul>
-      <div className="rail-foot">
-        {running > 0 ? `${running} running` : `${agents.length} finished`}
-      </div>
+      {agents.length > 0 && (
+        <div className="rail-foot">
+          {running > 0 ? `${running} running` : `${agents.length} finished`}
+        </div>
+      )}
     </aside>
   );
 }
