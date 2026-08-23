@@ -20,6 +20,7 @@ import { AgentLogo } from "./AgentLogo";
 import { RoomPanel } from "./RoomPanel";
 import { TargetPicker } from "./TargetPicker";
 import { RoundBar, type RoundState } from "./RoundBar";
+import { ChatModeTabs } from "./ChatModeTabs";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
@@ -842,6 +843,9 @@ export function Composer({
         />
       )}
       <div className="composer-box">
+        {/* Card 76 — which kind of chat this is. One row, on the right, and the
+            only way in or out of a room. */}
+        {onRoom && <ChatModeTabs room={room ?? false} onPick={onRoom} />}
         {/* Card 67 — who the next message is for. Draws nothing at all unless
             somebody else is in the room, so an ordinary chat is unchanged. */}
         <TargetPicker seats={seats ?? []} to={to ?? null} onPick={onTarget ?? (() => {})} />
@@ -1367,7 +1371,6 @@ export function SettingsSheet({
             <RoomPanel
               room={room ?? false}
               seats={seats ?? []}
-              onToggle={onRoom}
               onAdd={onAddSeat}
               onRemove={onRemoveSeat}
             />

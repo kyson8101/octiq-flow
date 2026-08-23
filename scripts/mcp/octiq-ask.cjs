@@ -263,6 +263,22 @@ const ADD_AGENT = {
           "outside opinion, because a seat that can read the project ends up " +
           "agreeing with you.",
       },
+      kind: {
+        type: "string",
+        enum: ["resident", "on_demand"],
+        description:
+          "`resident` is a CLI agent on this machine with a process of its own. " +
+          "`on_demand` has no process at all — it is an HTTP call to an outside " +
+          "service, asked and answered and gone, and it remembers nothing " +
+          "between questions. Adding one ALWAYS asks the person first, because " +
+          "what is said in this room then leaves the machine.",
+      },
+      provider: {
+        type: "string",
+        description:
+          "Which outside service answers an `on_demand` seat — currently only " +
+          "`deepseek`. Ignored for a resident seat.",
+      },
     },
     required: ["name", "agent"],
   },
@@ -316,6 +332,38 @@ async function handle(msg) {
     case "tools/call": {
       if (msg.params?.name === "add_agent" || msg.params?.name === "ask_agent") {
         const a = msg.params.arguments || {};
+
+        // An OUTSIDE seat is never added on the agent's say-so alone.
+        //
+        // A resident seat is another program on this machine. An on-demand one
+        // is a third party, and everything said in the room afterwards goes to
+        // it — including code somebody pasted in. That is the person's call to
+        // make, not ours, so it is put to them in their own words before
+        // anything is created.
+        if (msg.params.name === "add_agent" && a.kind === "on_demand") {
+          const service = a.provider || "an outside service";
+          const answer = await askOctiq(
+            `Add ${a.name || service} to this chat? It runs on ${service}, so what is ` +
+              `said in this room from now on is sent there — including anything ` +
+              `quoted into the chat. It cannot open your files.`,
+            ["Add it", "No"],
+            1,
+            false,
+          );
+          if (!/add it/i.test(String(answer || ""))) {
+            return reply(msg.id, {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `Not added — the person did not agree to send this room's ` +
+                    `words to ${service}. Do not ask again unless they bring it up.`,
+                },
+              ],
+            });
+          }
+        }
+
         const out = await roomCall(
           msg.params.name === "add_agent"
             ? {
@@ -324,6 +372,8 @@ async function handle(msg) {
                 agent: a.agent,
                 role: a.role,
                 context: a.context,
+                kind: a.kind,
+                provider: a.provider,
               }
             : {
                 action: "ask",

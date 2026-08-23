@@ -1719,6 +1719,43 @@ export default function App() {
     async (open: boolean) => {
       if (!conversationId) return;
       const id = conversationId;
+      // Already there — the strip fires on every click, including the current
+      // mode, so that a pending confirmation is the caller's to decide about.
+      const now = conversations.find((c) => c.id === id)?.room ?? false;
+      if (now === open) return;
+
+      // Card 76 — both directions ask, and they ask different things.
+      //
+      // Turning it ON sends nothing anywhere by itself; adding an outside seat
+      // is the risky act and asks separately (card 72). Going BACK is the
+      // destructive one, and the question has to name all three things it
+      // destroys — while NOT implying the fourth, because the transcript keeps
+      // every seat's message under its name and no switch can un-say them.
+      const seatCount = (seats[id] ?? []).length;
+      const ok = await confirm(
+        open
+          ? {
+              title: "Turn this into a group chat?",
+              body:
+                "You can add other agents to it, ask them all in turn, and see " +
+                "which of them said what. Nothing is sent anywhere until you add one.",
+              confirmLabel: "Turn on",
+            }
+          : {
+              title: "Go back to a single chat?",
+              body:
+                seatCount > 0
+                  ? `This ends ${seatCount === 1 ? "the agent" : `all ${seatCount} agents`} ` +
+                    "in the room, takes them out of it, and forgets what was said so " +
+                    "nobody added later is shown it. What they already said stays in " +
+                    "this conversation."
+                  : "This closes the room and forgets what was said in it. What was " +
+                    "already said stays in this conversation.",
+              confirmLabel: "Go back",
+              danger: true,
+            },
+      );
+      if (!ok) return;
       setConversations((prev) => {
         const next = prev.map((c) => (c.id === id ? { ...c, room: open } : c));
         saveConversations(next);
@@ -1734,7 +1771,7 @@ export default function App() {
       // either way rather than assumed.
       void refreshSeats(id);
     },
-    [conversationId, refreshSeats],
+    [conversationId, refreshSeats, conversations, seats, confirm],
   );
 
   const addSeat = useCallback(

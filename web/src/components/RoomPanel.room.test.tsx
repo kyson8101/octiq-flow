@@ -26,7 +26,6 @@ const render = (props: Partial<Parameters<typeof RoomPanel>[0]> = {}) =>
     <RoomPanel
       room={false}
       seats={[]}
-      onToggle={vi.fn()}
       onAdd={vi.fn()}
       onRemove={vi.fn()}
       {...props}
@@ -34,14 +33,20 @@ const render = (props: Partial<Parameters<typeof RoomPanel>[0]> = {}) =>
   );
 
 describe("room mode off, which is every chat by default", () => {
-  it("shows the switch and nothing else", () => {
-    const html = render();
+  it("draws nothing at all", () => {
+    // Card 76 — the mode TAB is the switch now. A second way in, sitting in
+    // Settings, would be two controls for one thing that could disagree.
+    expect(render()).toBe("");
+  });
 
-    expect(html).toContain("Several agents");
-    // No seat controls at all — the card's promise is that nothing about rooms
-    // is reachable until the switch is on.
-    expect(html).not.toContain("Add an agent");
-    expect(html).not.toContain("room-seat");
+  it("no longer carries a switch of its own", () => {
+    // Card 76 — the mode TAB is the switch. Two controls for one thing is two
+    // things that can disagree, and this was the one nobody could find.
+    const html = render({ room: true });
+
+    expect(html).not.toContain("Several agents");
+    // The room's CONTENTS are still its job, though.
+    expect(html).toContain("Add an agent");
   });
 
   it("does not show seats even if some are somehow still known", () => {

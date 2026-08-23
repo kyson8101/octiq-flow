@@ -1074,6 +1074,14 @@ struct RoomCall {
     role: Option<String>,
     #[serde(default)]
     context: Option<String>,
+    /// Card 72 — `resident` or `on_demand`. An on-demand seat is an outside
+    /// service, and the MCP server has already asked the person before this
+    /// arrives; the backend does not re-ask.
+    #[serde(default)]
+    kind: Option<String>,
+    /// Which outside service answers an on-demand seat.
+    #[serde(default)]
+    provider: Option<String>,
     #[serde(default)]
     seat: Option<String>,
     #[serde(default)]
@@ -1107,6 +1115,8 @@ async fn room_handler(
                     "agent": call.agent.unwrap_or_else(|| "codex".into()),
                     "role": call.role,
                     "context": call.context,
+                    "kind": call.kind,
+                    "provider": call.provider,
                 },
             }),
         ),

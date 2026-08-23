@@ -59,33 +59,19 @@ const CAN_ADD: {
 export function RoomPanel({
   room,
   seats,
-  onToggle,
   onAdd,
   onRemove,
 }: {
   /** Whether this chat is a room. Off for every chat that has never been one. */
   room: boolean;
   seats: Seat[];
-  onToggle: (open: boolean) => void;
   onAdd: (want: (typeof CAN_ADD)[number]) => void;
   onRemove: (seatId: string) => void;
 }) {
   return (
     <>
-      <button
-        type="button"
-        role="menuitemcheckbox"
-        aria-checked={room}
-        className={`picker-item is-bypass ${room ? "is-on" : ""}`}
-        title="Let this chat hold more than one agent"
-        onClick={() => onToggle(!room)}
-      >
-        <span className="picker-name">Several agents</span>
-        <span className="picker-switch">{room ? "On" : "Turn on"}</span>
-      </button>
-
-      {/* Everything below exists only when the switch is on. Not disabled —
-          absent. */}
+      {/* Card 76 — the mode TAB is the switch now; this is only the room's
+          contents. Absent, never disabled, when this is not a room. */}
       {room && (
         <div className="room-body">
           {seats.length === 0 ? (
