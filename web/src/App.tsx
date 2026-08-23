@@ -1726,7 +1726,11 @@ export default function App() {
         {wide && <Usage />}
       </header>
 
-      <div className="body">
+      {/* `id` so the file panel can render INTO this row from where its state
+          lives, which is above the whole app — see components/OpenFile. It has
+          to be a sibling of the views to take width from them, and nothing that
+          opens a file is anywhere near them in the tree. */}
+      <div className="body" id="dock">
         <div className="scrim" onClick={() => setDrawer(false)} />
 
         <Sidebar

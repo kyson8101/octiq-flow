@@ -4385,6 +4385,77 @@ body.is-ultra .eff {
   font-size: 13px;
 }
 
+/* ---- Quoting a highlight into the prompt box -------------------------- */
+
+/* Follows the selection, in viewport coordinates, sitting just above it and
+   centred on it — `translate` rather than maths in the component, so the anchor
+   the component gives is simply "where the text is". */
+.quote-btn {
+  position: fixed;
+  z-index: 200;
+  transform: translate(-50%, calc(-100% - 9px));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  animation: quote-in 0.12s ease-out;
+}
+
+.quote-btn:hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.quote-btn-plus {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+/* On the fill on hover, so it cannot be the accent any more — see the theme
+   notes: an accent can be a pale yellow, and it would vanish. */
+.quote-btn:hover .quote-btn-plus {
+  color: inherit;
+}
+
+/* Which lines are going in. Said on the button rather than after the fact,
+   because a quote from rendered markdown sometimes has no line to name and the
+   difference is worth seeing BEFORE the click. */
+.quote-btn-at {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.quote-btn:hover .quote-btn-at {
+  color: inherit;
+  opacity: 0.75;
+}
+
+@keyframes quote-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% - 3px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quote-btn {
+    animation: none;
+  }
+}
+
 /* Said before the choice, not after it: the model and provider are fixed once
    an agent is running, so picking another one opens a new chat. */
 .picker-note {
@@ -6563,9 +6634,14 @@ body.is-ultra .eff {
 /* The column. `--gitp-w` is set inline by the drag handle; the fallback is what
    a first visit gets. The dividing line is the panel's own edge, the same way
    the sidebar has one — it marks where the layout splits, and marks nothing as
-   selected. */
+   selected.
+
+   Three panels share this slot — git, the session's files, and a file you
+   opened — and only one of them is ever worth two columns of chat, so they
+   share the rules rather than each having their own. */
 .gitp-panel,
-.sfp-panel {
+.sfp-panel,
+.fpanel {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -6602,7 +6678,8 @@ body.is-ultra .eff {
    this closes. Keep the width here in step with PHONE_W in GitPanel.tsx. */
 /* Off the phone the panel is a column and there is nothing to slide, so the
    scrim does not exist. */
-.gitp-scrim {
+.gitp-scrim,
+.fpanel-scrim {
   display: none;
 }
 
@@ -6613,7 +6690,8 @@ body.is-ultra .eff {
      than filling the body: the strip of the view left showing is what says this
      is on top of your work and will go away again. */
   .gitp-panel,
-  .sfp-panel {
+  .sfp-panel,
+  .fpanel {
     position: absolute;
     inset: 0 0 0 auto;
     width: min(88vw, 420px);
@@ -6630,11 +6708,23 @@ body.is-ultra .eff {
   /* 102% rather than 100%: the shadow is drawn outside the box, and at exactly
      100% a sliver of it stays on screen down the right edge. */
   .gitp-panel.is-open,
-  .sfp-panel.is-open {
+  .sfp-panel.is-open,
+  .fpanel.is-open {
     transform: translateX(0);
   }
 
-  .gitp-scrim {
+  /* One above the other two: a file is opened FROM them, so it has to land on
+     top of the panel that opened it rather than behind it. */
+  .fpanel {
+    z-index: 7;
+  }
+
+  .fpanel-scrim {
+    z-index: 6;
+  }
+
+  .gitp-scrim,
+  .fpanel-scrim {
     display: block;
     position: absolute;
     inset: 0;
@@ -6645,7 +6735,8 @@ body.is-ultra .eff {
     transition: opacity 0.2s ease;
   }
 
-  .gitp-scrim.is-open {
+  .gitp-scrim.is-open,
+  .fpanel-scrim.is-open {
     opacity: 1;
     pointer-events: auto;
   }
@@ -6684,7 +6775,9 @@ body.is-ultra .eff {
 @media (prefers-reduced-motion: reduce) {
   .gitp-panel,
   .sfp-panel,
-  .gitp-scrim {
+  .fpanel,
+  .gitp-scrim,
+  .fpanel-scrim {
     transition: none;
   }
 }

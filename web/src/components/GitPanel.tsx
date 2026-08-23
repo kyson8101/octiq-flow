@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
+import { useDockWidth, type Sizes } from "../lib/dockWidth";
 
 /** One changed file in a repo (git.rs `ChangedFile`). */
 type ChangedFile = {
@@ -108,12 +109,7 @@ type PullMode = (typeof PULL_MODES)[number];
 const PULL_KEY = "octiq.v2.gitPullMode";
 const WIDTH_KEY = "octiq.v2.gitWidth";
 
-const DEFAULT_W = 380;
-const MIN_W = 280;
-const MAX_W = 680;
-/** Room the chat keeps whatever the panel is dragged to. A column you can drag
- *  over the thing it sits beside is a column you can lose the chat behind. */
-const CHAT_MIN_W = 340;
+const SIZES: Sizes = { initial: 380, min: 280, max: 680 };
 
 /** Header lines of a unified diff that say nothing a reader wants here — the
  *  file name is already at the top of the row the diff hangs under. */
@@ -156,12 +152,6 @@ function splitPath(path: string): { dir: string; name: string } {
  *  column of its own at 860px (see styles.css), and that column comes out of the
  *  same row — so above that width the chat is competing with two panels, not
  *  one, and the cap has to know it. */
-function clampWidth(px: number): number {
-  const sidebar = window.innerWidth >= 860 ? 260 : 0;
-  const max = Math.max(MIN_W, Math.min(MAX_W, window.innerWidth - sidebar - CHAT_MIN_W));
-  return Math.round(Math.min(max, Math.max(MIN_W, px)));
-}
-
 // ---------------------------------------------------------------------------
 // The toolbar button
 // ---------------------------------------------------------------------------
@@ -354,23 +344,7 @@ export function GitPanel({
     null,
   );
   const [busy, setBusy] = useState(false);
-  /** The width the user ASKED for, unclamped. What is actually applied is
-   *  `width` below. Keeping the two apart is what lets a narrow window squeeze
-   *  the panel and a wide one give the chosen width straight back — clamping the
-   *  stored value instead would quietly forget it the first time the window got
-   *  small. */
-  const [chosen, setChosen] = useState(() => Number(localStorage.getItem(WIDTH_KEY)) || DEFAULT_W);
-  const [, onViewportChange] = useState(0);
-  /* Mounted one frame in its off-screen position before it is told to open, so
-   * the phone rule has something to transition FROM. Mounting straight into the
-   * open position is already the finished state, and CSS has nothing to animate
-   * — the panel would appear instantly, which is the thing this exists to
-   * avoid. Off the phone this class changes nothing; the panel is a column. */
-  const [entered, setEntered] = useState(false);
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => setEntered(true));
-    return () => cancelAnimationFrame(frame);
-  }, []);
+  const { width, startDrag, entered } = useDockWidth(WIDTH_KEY, SIZES);
 
   const [pullMode, setPullMode] = useState<PullMode>(() => {
     const saved = localStorage.getItem(PULL_KEY);
@@ -482,51 +456,6 @@ export function GitPanel({
     window.addEventListener(CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(CHANGED_EVENT, onChanged);
   }, [load]);
-
-  // Shrinking the window must not leave the chat with nothing, so the applied
-  // width is recomputed against the new viewport. Nothing here reads the tick —
-  // it exists to make the render below run again.
-  useEffect(() => {
-    const onResize = () => onViewportChange((n) => n + 1);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  const width = clampWidth(chosen);
-
-  /** Drag the left edge. Pointer events rather than mouse ones so the handle
-   *  works from a trackpad, a pen and a touch screen with one code path, and the
-   *  capture keeps the drag alive when the pointer outruns the 7px strip. */
-  const startDrag = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      const handle = e.currentTarget;
-      handle.setPointerCapture(e.pointerId);
-      const startX = e.clientX;
-      const startW = width;
-      let latest = startW;
-
-      const move = (ev: PointerEvent) => {
-        // The panel is on the RIGHT, so dragging left makes it wider.
-        latest = clampWidth(startW - (ev.clientX - startX));
-        setChosen(latest);
-      };
-      const up = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
-        try {
-          localStorage.setItem(WIDTH_KEY, String(latest));
-        } catch {
-          /* storage blocked: the width lasts for this session */
-        }
-      };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
-    },
-    [width],
-  );
 
   /** Run one git write with the whole panel locked, then reload. The reload is
    *  what makes the ahead/behind counts and the file list true again — a commit

@@ -37,7 +37,7 @@
 //   * and each row's MODIFIED time, read from disk rather than from the
 //     transcript, so "which of these did the last change touch" is answered
 //     without opening any of them.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { bridge } from "../lib/bridge";
 import {
@@ -51,19 +51,14 @@ import {
   newestFiles,
   typeLabel,
 } from "../lib/files";
+import { useDockWidth, type Sizes } from "../lib/dockWidth";
 import { askPaths, knownPaths, subscribePaths } from "../lib/pathStore";
 import { useOpenFile } from "./OpenFile";
 import type { Message } from "../lib/chat";
 
 const WIDTH_KEY = "octiq.v2.filesWidth";
 
-const DEFAULT_W = 340;
-const MIN_W = 260;
-const MAX_W = 620;
-/** Room the chat keeps whatever the panel is dragged to, matching the git
- *  panel's — a column you can drag over the chat is a column you can lose the
- *  chat behind. */
-const CHAT_MIN_W = 340;
+const SIZES: Sizes = { initial: 340, min: 260, max: 620 };
 
 /** How often the transcript is re-scanned while the agent is still working.
  *  The scan runs a handful of regexes over every message, so it is not
@@ -85,12 +80,6 @@ const FILTER_AT = 8;
  *  string, because "" is a real answer here — the files with no extension at
  *  all, which are a bucket you can pick. */
 const ALL_TYPES = "*";
-
-function clampWidth(px: number): number {
-  const sidebar = window.innerWidth >= 860 ? 260 : 0;
-  const max = Math.max(MIN_W, Math.min(MAX_W, window.innerWidth - sidebar - CHAT_MIN_W));
-  return Math.round(Math.min(max, Math.max(MIN_W, px)));
-}
 
 // ---------------------------------------------------------------------------
 // The scan
@@ -275,60 +264,7 @@ export function SessionFilesPanel({
   const [type, setType] = useState(ALL_TYPES);
   const modified = useModified(paths, open, busy);
 
-  /* What the drag handle was left at, kept apart from the width actually used
-   * below: a narrow window squeezes the panel, and a wide one has to give the
-   * chosen width straight back rather than having quietly forgotten it. */
-  const [chosen, setChosen] = useState(() => Number(localStorage.getItem(WIDTH_KEY)) || DEFAULT_W);
-  const [, onViewportChange] = useState(0);
-  /* Mounted one frame in its off-screen position before it is told to open, so
-   * the phone rule has something to transition FROM. Off the phone this class
-   * changes nothing; the panel is a column. */
-  const [entered, setEntered] = useState(false);
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => setEntered(true));
-    return () => cancelAnimationFrame(frame);
-  }, []);
-
-  useEffect(() => {
-    const onResize = () => onViewportChange((n) => n + 1);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  const width = clampWidth(chosen);
-
-  /** Drag the left edge. Pointer events rather than mouse ones so the handle
-   *  works from a trackpad, a pen and a touch screen with one code path. */
-  const startDrag = useCallback(
-    (e: React.PointerEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      const handle = e.currentTarget;
-      handle.setPointerCapture(e.pointerId);
-      const startX = e.clientX;
-      const startW = width;
-      let latest = startW;
-
-      const move = (ev: PointerEvent) => {
-        // The panel is on the RIGHT, so dragging left makes it wider.
-        latest = clampWidth(startW - (ev.clientX - startX));
-        setChosen(latest);
-      };
-      const up = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
-        try {
-          localStorage.setItem(WIDTH_KEY, String(latest));
-        } catch {
-          /* storage blocked: the width lasts for this session */
-        }
-      };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
-    },
-    [width],
-  );
+  const { width, startDrag, entered } = useDockWidth(WIDTH_KEY, SIZES);
 
   /** The kinds on offer, counted over the WHOLE list rather than what the text
    *  box has left of it. A dropdown that reshuffles itself as you type is a

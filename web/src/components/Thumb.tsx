@@ -14,9 +14,7 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
 import type { Attached } from "../lib/chat";
-import { isPdf } from "../lib/files";
-import { Viewer } from "./Viewer";
-import { FilePanel } from "./FilePanel";
+import { useOpenFile } from "./OpenFile";
 
 /** What a message remembers about a file: enough to draw it and to name it.
  *  The composer's own attachments carry an object `url` as well, which is the
@@ -59,11 +57,11 @@ export function Thumb({ attachment }: { attachment: ThumbSource }) {
  *  message sent with three screenshots read as an empty bubble — the pictures
  *  went to the agent and left no trace of themselves in the conversation. */
 export function SentFiles({ files }: { files: Attached[] }) {
-  // What is being looked at, if anything: a picture or a PDF full screen, and
-  // anything else in the side panel — the same two answers the file list under
-  // a reply gives, because it is the same question.
-  const [viewing, setViewing] = useState<string | null>(null);
-  const [opened, setOpened] = useState<string | null>(null);
+  // Through the app's one opener rather than a pair of flags here. It used to
+  // keep its own, which meant a second viewer able to be open beside the one
+  // the files panel had already opened — and a chip's file could not reach the
+  // docked column at all.
+  const openFile = useOpenFile();
 
   if (files.length === 0) return null;
 
@@ -75,15 +73,12 @@ export function SentFiles({ files }: { files: Attached[] }) {
           type="button"
           key={a.path}
           title={`${a.path} — click to open`}
-          onClick={() => (a.isImage || isPdf(a.path) ? setViewing(a.path) : setOpened(a.path))}
+          onClick={() => openFile(a.path)}
         >
           {a.isImage ? <Thumb attachment={a} /> : <PaperIcon />}
           <span className="chip-name">{a.name}</span>
         </button>
       ))}
-
-      {viewing && <Viewer path={viewing} onClose={() => setViewing(null)} />}
-      {opened && <FilePanel path={opened} onClose={() => setOpened(null)} />}
     </div>
   );
 }

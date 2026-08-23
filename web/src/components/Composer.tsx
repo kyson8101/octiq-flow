@@ -18,6 +18,7 @@ import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
+import { formatQuote, onQuote } from "../lib/quote";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
@@ -537,6 +538,14 @@ export function Composer({
     area.setRangeText(value, area.selectionStart, area.selectionEnd, "end");
     setText(area.value);
   }, []);
+
+  /** Text highlighted in a file, on its way in at the caret.
+   *
+   *  The file panel cannot hand it over directly — it is a cousin of this box
+   *  in the tree, not a parent — so it leaves the quote with lib/quote and this
+   *  picks it up. Registering is also what tells the panel there is a box to
+   *  put one in at all: with no chat on screen it draws no button. */
+  useEffect(() => onQuote((quote) => insertText(formatQuote(quote, cwd))), [insertText, cwd]);
 
   /** Paste whatever is on the clipboard: a picture becomes an attachment, text
    *  goes in at the caret.
