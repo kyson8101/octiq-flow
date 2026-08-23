@@ -273,6 +273,11 @@ export default function App() {
    *  when the transcript could not be read — the chat still works, so this is a
    *  note beside the caption rather than a failure of the conversation. */
   const [resumed, setResumed] = useState<Record<string, HistorySession & { problem?: string }>>({});
+  // Conversations whose transcript is still being read back off disk. A
+  // resumed session has no messages until that read lands, and "no messages"
+  // is also what a BRAND NEW chat looks like — so without this the page you
+  // land on after picking a session is the page you pick a session from.
+  const [reading, setReading] = useState<Record<string, boolean>>({});
 
   // What each loaded conversation belongs to and was started with. A background
   // chat still has to be saved when it answers, and by then the pickers on
@@ -986,6 +991,7 @@ export default function App() {
       // and must not wait on a file that may be megabytes. The transcript
       // arrives after, into `id` — which is the conversation that was picked,
       // not whichever one is on screen by then.
+      setReading((prev) => ({ ...prev, [id]: true }));
       void readSession(session)
         .then((events) => {
           const past = replaySession(events);
@@ -1005,7 +1011,15 @@ export default function App() {
           // typing resumes the real session even when its file cannot be read.
           const problem = err instanceof Error ? err.message : String(err);
           setResumed((prev) => (prev[id] ? { ...prev, [id]: { ...prev[id], problem } } : prev));
-        });
+        })
+        .finally(() =>
+          setReading((prev) => {
+            if (!prev[id]) return prev;
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          }),
+        );
       setProjectId(forProject);
       setConversationId(id);
       setDrawer(false);
@@ -1744,7 +1758,18 @@ export default function App() {
         />
 
         <main className="main" hidden={mode !== "chat"}>
-          {chat.messages.length === 0 ? (
+          {chat.messages.length === 0 && conversationId && reading[conversationId] ? (
+            // Reading the transcript back. Until it lands this conversation
+            // has no messages, and the page for a conversation with no
+            // messages is the one offering to open a session — the very thing
+            // that was just done. So: say it is opening, and say which.
+            <div className="hero is-waiting">
+              <div className="dots" aria-label="opening" />
+              <p className="hero-sub">
+                opening “{resumed[conversationId]?.title ?? "the session"}”…
+              </p>
+            </div>
+          ) : chat.messages.length === 0 ? (
             <div className="hero">
               <h1 className="hero-title">
                 What do you want to do{project ? ` in ${project.name}` : ""}?

@@ -17,11 +17,28 @@ import { workingLine } from "../lib/working";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
+import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
+
+/** Whether the browser will let the PAGE read the clipboard at all.
+ *
+ *  Only in a secure context, which on a phone means the https address rather
+ *  than `http://192.168.x.x:1421` — there `navigator.clipboard` is simply not
+ *  there. So the button is not there either: a paste button that cannot paste
+ *  is worse than no button, and holding the box and choosing Paste still
+ *  works. */
+/** How long "Cleared · Undo" stays. Long enough to notice a mis-tap and reach
+ *  for it, short enough that it is gone before it becomes furniture. */
+const UNDO_MS = 8000;
+
+const CAN_PASTE =
+  typeof navigator !== "undefined" &&
+  !!navigator.clipboard &&
+  !!(navigator.clipboard.read || navigator.clipboard.readText);
 
 export type Provider = "claude" | "codex";
 
@@ -386,6 +403,9 @@ export function Composer({
   const [attachMenu, setAttachMenu] = useState(false);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
+  // What "clear" just threw away, for as long as it can still be taken back.
+  // Null the rest of the time, which is also what hides the Undo.
+  const [cleared, setCleared] = useState<{ text: string; attached: Attachment[] } | null>(null);
   // What you have sent before, newest first, and where Up has walked to.
   // -1 is "not browsing"; anything else is an index into `history`.
   const [history, setHistory] = useState<string[]>(() => loadHistory(session));
@@ -502,6 +522,80 @@ export function Composer({
     }
   }, []);
 
+  /** Put text in at the caret, the way a paste does.
+   *
+   *  `setRangeText` moves the DOM value ahead of React; mirroring it straight
+   *  back into state keeps the two in step and leaves the caret where `"end"`
+   *  put it — the same trick Cmd+Enter uses to add a line break. */
+  const insertText = useCallback((value: string) => {
+    const area = areaRef.current;
+    if (!area) {
+      setText((prev) => prev + value);
+      return;
+    }
+    area.focus();
+    area.setRangeText(value, area.selectionStart, area.selectionEnd, "end");
+    setText(area.value);
+  }, []);
+
+  /** Paste whatever is on the clipboard: a picture becomes an attachment, text
+   *  goes in at the caret.
+   *
+   *  A button for it because on a phone there is no Cmd+V. Holding the box and
+   *  choosing Paste is the OS answer, and it is two seconds of aiming at a
+   *  small menu — which is a long way round for the commonest thing anyone does
+   *  with a screenshot they just took.
+   *
+   *  `read()` is called before anything is awaited, because Safari counts the
+   *  clipboard as something only a tap may reach and an await in front of it
+   *  spends the tap. It is also the call Safari answers with its own "Paste"
+   *  confirmation, which is the browser's to show and not ours to skip. */
+  const pasteIn = useCallback(async () => {
+    // Started on the FIRST line of the handler, before even clearing the last
+    // error: the tap is what gives the page the right to look at the clipboard,
+    // and anything awaited in front of this spends it.
+    const reading = navigator.clipboard?.read ? navigator.clipboard.read() : null;
+    setAttachError(null);
+
+    /** Refused. The box takes focus so the way round it — hold, then Paste —
+     *  is where the finger already is. */
+    const refused = (err: unknown) => {
+      setAttachError(pasteRefusal(err));
+      areaRef.current?.focus();
+    };
+
+    if (reading) {
+      let items: Awaited<typeof reading>;
+      try {
+        items = await reading;
+      } catch (err) {
+        refused(err);
+        return;
+      }
+      // A separate try: being refused a look and failing to read what was
+      // there are different problems, and one message for both would send
+      // someone hunting for a permission that was never the trouble.
+      try {
+        const { files, text } = await readClipboard(items);
+        if (files.length) await attachFiles(files);
+        if (text) insertText(text);
+        if (!files.length && !text) setAttachError("There is nothing to paste.");
+      } catch (err) {
+        setAttachError(`Could not read what is on the clipboard (${reason(err)}).`);
+      }
+      return;
+    }
+
+    // No `read()` at all — Firefox does not give pages one. Words only, then.
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) insertText(text);
+      else setAttachError("There is nothing to paste.");
+    } catch (err) {
+      refused(err);
+    }
+  }, [attachFiles, insertText]);
+
   /** Reference files that already exist on the machine, by path. */
   const attachPaths = useCallback((paths: string[]) => {
     setAttachError(null);
@@ -522,6 +616,50 @@ export function Composer({
   const forget = useCallback((gone: Attachment[]) => {
     for (const a of gone) if (a.url) URL.revokeObjectURL(a.url);
   }, []);
+
+  /** Empty the box: the words and every file waiting to go with them.
+   *
+   *  One tap, and on a phone there is no Cmd+Z behind it — so nothing is really
+   *  thrown away yet. What was in the box is held aside and an Undo appears
+   *  beside it; only when that goes does the last of it (the object URLs
+   *  drawing the thumbnails) actually go. */
+  const clearAll = useCallback(() => {
+    // A second clear before the first Undo has gone: the older snapshot is the
+    // one nobody can reach any more.
+    if (cleared) forget(cleared.attached);
+    setCleared({ text, attached });
+    setText("");
+    setAttached([]);
+    setAttachError(null);
+    setRecall(-1);
+    draft.current = "";
+    areaRef.current?.focus();
+  }, [attached, cleared, forget, text]);
+
+  const undoClear = useCallback(() => {
+    if (!cleared) return;
+    setText(cleared.text);
+    setAttached(cleared.attached);
+    setCleared(null);
+    areaRef.current?.focus();
+  }, [cleared]);
+
+  // The Undo has a life of a few seconds, and typing anything ends it early:
+  // once there is something new in the box, putting the old thing back would
+  // take the new one away.
+  useEffect(() => {
+    if (!cleared) return;
+    if (text || attached.length) {
+      forget(cleared.attached);
+      setCleared(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      forget(cleared.attached);
+      setCleared(null);
+    }, UNDO_MS);
+    return () => clearTimeout(timer);
+  }, [attached.length, cleared, forget, text]);
 
   function send() {
     const value = text.trim();
@@ -606,7 +744,7 @@ export function Composer({
         />
       )}
       <div className="composer-box">
-        {(attached.length > 0 || attachError) && (
+        {(attached.length > 0 || attachError || cleared) && (
           <div className="attach">
             {attached.map((a) => (
               <span className={`chip ${a.isImage ? "is-image" : ""}`} key={a.path} title={a.path}>
@@ -626,6 +764,14 @@ export function Composer({
               </span>
             ))}
             {attachError && <span className="attach-error">{attachError}</span>}
+            {cleared && (
+              <span className="attach-undo">
+                Cleared.
+                <button className="attach-undo-btn" type="button" onClick={undoClear}>
+                  Undo
+                </button>
+              </span>
+            )}
           </div>
         )}
         <textarea
@@ -756,6 +902,37 @@ export function Composer({
               </>
             )}
           </div>
+          {/* Cmd+V for a screen with no Cmd. Beside "+" because it is the same
+              question — what goes in with this message — and it answers it in
+              one tap for the case that is nearly always a screenshot. */}
+          {CAN_PASTE && (
+            <button
+              className="picker-btn attach-btn"
+              type="button"
+              aria-label="Paste"
+              title="Paste from the clipboard"
+              disabled={!!disabled}
+              onClick={() => void pasteIn()}
+            >
+              <ClipboardIcon />
+            </button>
+          )}
+
+          {/* Only here when there is something to clear. A bin standing in an
+              empty bar is a button that does nothing, and next to Send that is
+              the wrong thing to leave lying around. */}
+          {(!!text || attached.length > 0) && (
+            <button
+              className="picker-btn attach-btn clear-btn"
+              type="button"
+              aria-label="Clear the message"
+              title="Clear the message and its files"
+              onClick={clearAll}
+            >
+              <BinIcon />
+            </button>
+          )}
+
           <input
             ref={fileRef}
             className="attach-input"
@@ -1484,6 +1661,26 @@ function short(n: number): string {
   return String(n);
 }
 
+
+function BinIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M9.5 7V5.2a1.2 1.2 0 0 1 1.2-1.2h2.6a1.2 1.2 0 0 1 1.2 1.2V7" />
+      <path d="M6.5 7.5 7.3 19a1.8 1.8 0 0 0 1.8 1.7h5.8a1.8 1.8 0 0 0 1.8-1.7l.8-11.5" />
+      <path d="M10.5 11v6M13.5 11v6" />
+    </svg>
+  );
+}
+
+function ClipboardIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="8" y="2.5" width="8" height="4" rx="1.3" />
+      <path d="M9 4.5H7a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.5a2 2 0 0 0-2-2h-2" />
+    </svg>
+  );
+}
 
 function PlusIcon() {
   return (

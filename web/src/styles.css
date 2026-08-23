@@ -610,6 +610,22 @@ body {
   font-family: var(--mono);
 }
 
+/* The same middle of the page while a picked session is still being read back.
+   Deliberately almost nothing — a name and three dots. Anything more would be
+   a second page to look at for the second it is there, and the transcript is
+   what the reader is waiting for. */
+.hero.is-waiting {
+  gap: 12px;
+}
+
+.hero.is-waiting .hero-sub {
+  margin: 0;
+  max-width: 90%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* The session was picked up, but its transcript could not be read back. Not a
    failure of the conversation — typing still resumes it — so this is a warmer
    note on the same line, not an error block. */
@@ -1028,12 +1044,24 @@ body {
    because it opens the file BESIDE the chat rather than going anywhere, and
    the dashed underline is what says so: an ordinary link here is solid. */
 .prose-path {
+  /* A button is inline-BLOCK by default, and an inline-block's baseline is its
+     LAST line — so a path long enough to wrap dragged the bullet of its own
+     list item down to the bottom of it. Inline makes it flow like the words it
+     is standing among, and break like them. */
+  display: inline;
   padding: 0;
   border: 0;
   border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
   background: none;
   color: var(--accent);
   font: inherit;
+  /* A button centres its text — the browser's own rule, and invisible until a
+     long path wraps, at which point four centred lines sit in the middle of the
+     paragraph like a poem. It is a word in a sentence: it starts at the left. */
+  text-align: left;
+  /* And it may be broken anywhere. A path has no spaces in it, so without this
+     one long enough to pass the edge of a phone simply goes past it. */
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
@@ -1056,6 +1084,63 @@ body {
   background: var(--bg-1);
   font-family: var(--mono);
   font-size: 12.5px;
+}
+
+/* A picture the reply named, drawn under the words that named it — see
+   components/ProseShot. A span rather than a div because it sits INSIDE a
+   paragraph, where a div is not allowed; `display: block` is what gives it a
+   line of its own there. */
+.prose-shot {
+  display: block;
+  margin: 8px 0 4px;
+}
+
+.prose-shot-btn {
+  display: block;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  /* The frame must not add a line's worth of space under the picture. */
+  line-height: 0;
+  cursor: zoom-in;
+}
+
+.prose-shot-btn:hover {
+  border-color: var(--accent);
+}
+
+.prose-shot-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Big enough to recognise a screenshot, small enough that three of them in one
+   reply are still a reply. The full size is one click away. */
+.prose-shot img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: min(100%, 360px);
+  max-height: 240px;
+}
+
+/* Something is coming. Roughly a small picture's shape, so the words below it
+   move as little as possible when the real one arrives. */
+.prose-shot-wait {
+  display: block;
+  width: 180px;
+  height: 110px;
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prose-shot-wait {
+    animation: none;
+  }
 }
 
 /* ---- Thinking --------------------------------------------------------- */
@@ -5236,8 +5321,44 @@ body.is-ultra .eff {
   color: var(--fg-0);
 }
 
-.attach-error {
+/* The bin only appears when the box has something in it, so it must not shout
+   for the second it is there. Red on hover, where a destructive button says
+   what it is at the moment of pressing it. */
+.clear-btn:hover {
+  color: var(--danger);
+}
+
+/* What "clear" threw away is still reachable for a few seconds. Quiet — it is
+   a way back, not a warning. */
+.attach-undo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
+  color: var(--fg-3);
+}
+
+.attach-undo-btn {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.attach-undo-btn:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* A whole line of its own, and allowed to use more than one. It sits in the
+   same wrapping row as the file chips, where a sentence with nowhere to break
+   would run off the side of a phone. */
+.attach-error {
+  flex: 1 1 100%;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--warn);
 }
 
