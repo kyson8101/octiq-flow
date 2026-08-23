@@ -30,6 +30,8 @@ describe("SettingsSheet", () => {
         onAccess={() => {}}
         effort="high"
         onEffort={() => {}}
+        lite={false}
+        onLite={() => {}}
         onDone={() => {}}
       />,
     );

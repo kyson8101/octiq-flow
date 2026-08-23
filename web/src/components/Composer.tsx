@@ -1226,6 +1226,8 @@ export function Composer({
               onAccess={onAccess}
               effort={effort}
               onEffort={onEffort}
+              lite={lite}
+              onLite={onLite}
               room={room}
               seats={seats}
               onRoom={onRoom}

@@ -1648,7 +1648,17 @@ mod tests {
     #[test]
     fn resume_only_takes_a_plain_id() {
         let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
-        let c = build_command(ChatAgent::Claude, None, None, "", Some(id), &[], None, &[], false);
+        let c = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            Some(id),
+            &[],
+            None,
+            &[],
+            false,
+        );
         assert!(c.contains(&format!("--resume '{id}'")));
         // Anything that could become a second shell word is dropped outright.
         let bad = build_command(
@@ -2049,13 +2059,33 @@ mod tests {
     #[test]
     fn a_projects_other_folders_are_added_for_both_agents() {
         let dirs = vec!["/Users/me/api".to_string(), "/Users/me/my docs".to_string()];
-        let c = build_command(ChatAgent::Claude, None, None, "", None, &dirs, None, &[], false);
+        let c = build_command(
+            ChatAgent::Claude,
+            None,
+            None,
+            "",
+            None,
+            &dirs,
+            None,
+            &[],
+            false,
+        );
         assert!(c.contains("--add-dir '/Users/me/api'"));
         // A space in a folder name stays one argument.
         assert!(c.contains("--add-dir '/Users/me/my docs'"));
 
         // Codex takes extra folders too — it was a mistake to think otherwise.
-        let x = build_command(ChatAgent::Codex, None, None, "hi", None, &dirs, None, &[], false);
+        let x = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "hi",
+            None,
+            &dirs,
+            None,
+            &[],
+            false,
+        );
         assert!(x.contains("--add-dir '/Users/me/api'"));
         assert!(x.contains("--add-dir '/Users/me/my docs'"));
     }
