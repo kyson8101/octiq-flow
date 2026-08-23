@@ -145,3 +145,31 @@ export function byProject(list: Conversation[]): Map<string, Conversation[]> {
   }
   return out;
 }
+
+/** Rewrite a saved chat, keeping everything the row already knew.
+ *
+ *  The debounced save rebuilds a conversation from what is currently on screen —
+ *  its title, its messages, when it was last touched. Everything else on the row
+ *  was learned elsewhere and is not re-derivable from that: the agent's session
+ *  id, how far the server's record has been read, whether the server has
+ *  vouched for the chat, whether it is a room.
+ *
+ *  Listing those by hand is how this has gone wrong twice. `synced` was
+ *  forgotten once and had to be carried back with a comment explaining why.
+ *  Then `room` was added and forgotten the same way, and sending a message in a
+ *  group chat quietly put it back to a single one — the save rewrote the row
+ *  without it seconds after the switch was flipped.
+ *
+ *  So the OLD row is the starting point and the fresh values are laid over it.
+ *  A field nobody thought about is carried rather than dropped, which is the
+ *  safe direction: the next one added to `Conversation` cannot go missing here
+ *  by omission. Clearing something stays possible — a value explicitly present
+ *  in `fresh` wins, including `0` or `undefined`, because that is a decision
+ *  rather than a silence.
+ */
+export function rewriteConversation(
+  before: Conversation | undefined,
+  fresh: Conversation,
+): Conversation {
+  return { ...(before ?? {}), ...fresh };
+}

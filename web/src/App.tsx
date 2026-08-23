@@ -36,6 +36,7 @@ import {
 import {
   byProject,
   loadConversations,
+  rewriteConversation,
   opensBlank,
   saveConversations,
   shortTitle,
@@ -793,7 +794,12 @@ export default function App() {
           if (!info || s.messages.length === 0) continue;
           const before = list.find((c) => c.id === id);
           if (before && before.messages === s.messages) continue;
-          const next: Conversation = {
+          // Everything the row already knew is CARRIED, and only what this
+          // save actually recomputes is laid over it. Listing the carried
+          // fields by hand is how `synced` went missing once and `room` went
+          // missing again — see `rewriteConversation`.
+          const next: Conversation = rewriteConversation(before, {
+            ...(before ?? ({} as Conversation)),
             id,
             projectId: info.projectId,
             title: titleFrom(s.messages),
@@ -806,10 +812,7 @@ export default function App() {
             createdAt: before?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
             seq: seen.current[keyFor(id)] ?? before?.seq,
-            // Carried, not recomputed. Rewriting the row must not forget that
-            // the server has already vouched for this chat.
-            synced: before?.synced,
-          };
+          });
           list = [next, ...list.filter((c) => c.id !== id)];
           changedIds.add(id);
           touched = true;

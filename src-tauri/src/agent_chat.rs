@@ -355,6 +355,39 @@ fn build_command(
     // servers. Claude only — see the branch below.
     lite: bool,
 ) -> String {
+    // Codex has no use for this Claude MCP config. Keep its command builder
+    // free of an unrelated home-directory write.
+    let mcp = (agent == ChatAgent::Claude).then(ask_mcp_config).flatten();
+    build_command_with_mcp(
+        agent,
+        model,
+        access,
+        prompt,
+        resume,
+        extra_dirs,
+        effort,
+        images,
+        lite,
+        mcp.as_deref(),
+    )
+}
+
+/// The pure command builder. Keeping the already-written MCP config as an
+/// input makes the command-line rules testable without requiring a unit test
+/// to write into the user's home directory.
+#[allow(clippy::too_many_arguments)]
+fn build_command_with_mcp(
+    agent: ChatAgent,
+    model: Option<&str>,
+    access: Option<Access>,
+    prompt: &str,
+    resume: Option<&str>,
+    extra_dirs: &[String],
+    effort: Option<&str>,
+    images: &[String],
+    lite: bool,
+    mcp_config: Option<&std::path::Path>,
+) -> String {
     match agent {
         ChatAgent::Claude => {
             let mut cmd = String::from(
@@ -424,7 +457,7 @@ fn build_command(
             // talk to the user must not itself raise a permission question, and
             // a TODO list that had to be approved item by item would be worse
             // than none.
-            if let Some(mcp) = ask_mcp_config() {
+            if let Some(mcp) = mcp_config {
                 cmd.push_str(&format!(
                     " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                     sh_quote(&mcp.to_string_lossy()),
@@ -1723,7 +1756,7 @@ mod tests {
         // switch the person turned on mid-chat. The backend refuses them in an
         // ordinary chat anyway, in words the agent can read — so offering them
         // always is the option that needs no restart and tells no lies.
-        let c = build_command(
+        let c = build_command_with_mcp(
             ChatAgent::Claude,
             None,
             None,
@@ -1733,6 +1766,7 @@ mod tests {
             None,
             &[],
             false,
+            Some(std::path::Path::new("octiq-ask.json")),
         );
 
         assert!(
@@ -1813,7 +1847,7 @@ mod tests {
         // `--mcp-config` too — which is where `ask_user` lives, so the chat
         // could no longer ask anything. These three flags are the cut that
         // leaves the login and our own two tools standing: 30.2k.
-        let line = build_command(
+        let line = build_command_with_mcp(
             ChatAgent::Claude,
             None,
             Some(Access::Auto),
@@ -1823,6 +1857,7 @@ mod tests {
             None,
             &[],
             true,
+            Some(std::path::Path::new("octiq-ask.json")),
         );
         assert!(line.contains("--strict-mcp-config"));
         assert!(line.contains("--disable-slash-commands"));

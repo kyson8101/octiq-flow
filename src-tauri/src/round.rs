@@ -42,6 +42,27 @@ use crate::chat_room::{seat_session_key, Seat};
 /// see a discussion that never ends and never says why.
 const SEAT_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
+/// How long `ask_agent` waits before handing the host back its turn.
+///
+/// Much shorter than `SEAT_TIMEOUT`, and for a different reason. A round runs in
+/// the background with nobody watching it, so waiting out a considered answer
+/// costs nothing. `ask_agent` is a tool call the HOST is blocked on: a host that
+/// stops for twenty minutes is a chat that looks dead, which is how this was
+/// first reported — a cold `codex exec` start with no sign of life.
+///
+/// Giving up here loses nothing. A seat has its own process and its own reader,
+/// so whatever it eventually says still reaches the transcript and the screen.
+/// Only the host's copy of the answer is missed, and the host is told so.
+const ASK_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+
+/// What the host is told when the wait ends before the answer does.
+fn gave_up_on(name: &str) -> String {
+    format!(
+        "{name} is still thinking. Its answer will appear in this chat when it \
+         arrives — carry on without it, or ask the person to wait for it."
+    )
+}
+
 /// The hardest a seat may think during a round.
 ///
 /// A trap Starfall already paid for, in `lab/roundtable/turn.py`: 推理档必须在
@@ -682,9 +703,10 @@ pub fn ask_seat(
         with_listening(|l| l.remove(&session));
         return Err(why);
     }
+    // The TOOL's cap, not the round's — see `ASK_TIMEOUT`.
     let answer = heard
-        .recv_timeout(SEAT_TIMEOUT)
-        .map_err(|_| format!("{} did not answer in time", seat.name));
+        .recv_timeout(ASK_TIMEOUT)
+        .map_err(|_| gave_up_on(&seat.name));
     with_listening(|l| l.remove(&session));
     let answer = answer?;
     // What one seat said still joins the room's record, so a later round can
@@ -1354,6 +1376,42 @@ mod tests {
 
         assert_eq!(r.backdrop_since("chat-a", 39, Some(&chosen)).len(), 1);
         assert!(r.backdrop_since("chat-a", 0, Some(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_tool_call_does_not_wait_as_long_as_a_round_does() {
+        // A round runs in the background and nobody is watching it, so twenty
+        // minutes for a considered answer is right. `ask_agent` is a tool call
+        // the HOST is blocked on, and a host that stops for twenty minutes is a
+        // chat that looks dead — which is exactly how this was reported.
+        assert!(
+            ASK_TIMEOUT < SEAT_TIMEOUT,
+            "a blocked tool must give up sooner than a background round"
+        );
+        assert!(
+            ASK_TIMEOUT >= Duration::from_secs(60),
+            "a cold agent start alone can take most of a minute"
+        );
+    }
+
+    #[test]
+    fn giving_up_on_a_seat_says_the_answer_is_still_coming() {
+        // The answer is NOT lost when the wait ends. A resident seat has its own
+        // process and its own reader, so whatever it says still reaches the
+        // transcript and the screen — only the host's copy is missed. Saying
+        // "it did not answer" would be false and would send the host looking
+        // for a failure that never happened.
+        let said = gave_up_on("Codex");
+
+        assert!(said.contains("Codex"));
+        assert!(
+            said.contains("still") || said.contains("appear"),
+            "it must say the answer is on its way: {said}"
+        );
+        assert!(
+            !said.to_lowercase().contains("failed"),
+            "nothing failed: {said}"
+        );
     }
 
     #[test]
