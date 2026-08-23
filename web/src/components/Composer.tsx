@@ -18,7 +18,7 @@ import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
 import { RoomPanel } from "./RoomPanel";
-import { completeMention, mentionMatches, mentionQuery } from "../lib/mention";
+import { completeMention, mentionMatches, mentionPicks, mentionQuery } from "../lib/mention";
 import { RoundBar, type RoundState } from "./RoundBar";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
@@ -996,10 +996,9 @@ export function Composer({
                 setPick((i) => (i - 1 + whoList.length) % whoList.length);
                 return;
               }
-              // Tab picks. Enter does NOT: unlike a command, a name is only half
-              // a message — there is always something still to type after it,
-              // and Enter here would send a bare `@codex` to a seat.
-              if (e.key === "Tab") {
+              // Enter and Tab both pick — see `mentionPicks` for why Enter
+              // has to, and what it cost to learn.
+              if (mentionPicks(e)) {
                 e.preventDefault();
                 completeWho(whoList[pick].label);
                 return;

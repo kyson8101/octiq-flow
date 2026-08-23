@@ -89,6 +89,30 @@ export function mentionMatches(name: string, id: string | undefined, query: stri
   return typeable(name).startsWith(q) || (id ?? "").toLowerCase().startsWith(q);
 }
 
+/** Should this keypress choose the highlighted name?
+ *
+ *  ENTER PICKS, and that is the correction to the first version of this, which
+ *  had Tab pick and let Enter fall through to send. The reasoning was that a
+ *  bare `@codex` should not be sendable — true, but the consequence was that
+ *  the very first `@` anybody typed sent a message of one character.
+ *
+ *  A tag is never a whole message. There is always something still to type
+ *  after it, so Enter here has nothing to send and everything to complete —
+ *  which is also what the slash menu beside it does, and two menus in one box
+ *  answering the same key differently is its own bug.
+ *
+ *  Shift+Enter still writes a new line, and Cmd/Ctrl+Enter still sends:
+ *  somebody holding one of those has said what they want, menu or no menu. */
+export function mentionPicks(e: {
+  key: string;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+  ctrlKey?: boolean;
+}): boolean {
+  if (e.key === "Tab") return true;
+  return e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+}
+
 /** What to put in the box when a name is picked out of the menu. */
 export function completeMention(name: string): string {
   return `@${typeable(name) || name} `;

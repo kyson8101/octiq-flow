@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Seat } from "./chat";
-import { mentionMatches, mentionQuery, readMention } from "./mention";
+import { mentionMatches, mentionPicks, mentionQuery, readMention } from "./mention";
 
 const seats: Seat[] = [
   { id: "s1", name: "Codex", agent: "codex", context: "project" },
@@ -126,5 +126,35 @@ describe("narrowing the menu as you type", () => {
   it("matches the id too, so @s2 narrows to that seat", () => {
     expect(mentionMatches("DeepSeek", "s2", "s2")).toBe(true);
     expect(mentionMatches("DeepSeek", "s2", "s9")).toBe(false);
+  });
+});
+
+describe("what a key does while the @ menu is open", () => {
+  it("picks on Enter", () => {
+    // First cut had Tab pick and let Enter fall through to send, on the theory
+    // that a bare `@codex` should not be sendable. It made the very first `@`
+    // typed send a message of one character. A tag is never a whole message, so
+    // Enter here has nothing to send and everything to complete.
+    expect(mentionPicks({ key: "Enter" })).toBe(true);
+  });
+
+  it("picks on Tab too, the way a shell completion does", () => {
+    expect(mentionPicks({ key: "Tab" })).toBe(true);
+  });
+
+  it("leaves Shift+Enter alone, so a new line is still a new line", () => {
+    expect(mentionPicks({ key: "Enter", shiftKey: true })).toBe(false);
+  });
+
+  it("leaves the send chord alone", () => {
+    // Cmd+Enter and Ctrl+Enter are deliberate sends. Somebody holding one has
+    // said what they want, even with a menu up.
+    expect(mentionPicks({ key: "Enter", metaKey: true })).toBe(false);
+    expect(mentionPicks({ key: "Enter", ctrlKey: true })).toBe(false);
+  });
+
+  it("does not pick on an ordinary key", () => {
+    expect(mentionPicks({ key: "a" })).toBe(false);
+    expect(mentionPicks({ key: "Escape" })).toBe(false);
   });
 });
