@@ -59,6 +59,7 @@ import { AgentRail } from "./components/AgentRail";
 import { Todos } from "./components/Todos";
 import { latestTodos } from "./lib/todos";
 import { roomCount } from "./lib/roomCount";
+import { readMention } from "./lib/mention";
 import { useMedia, WIDE } from "./lib/media";
 import { MessageList } from "./components/MessageList";
 import {
@@ -1387,9 +1388,67 @@ export default function App() {
       // The same files the agent is given, kept on the bubble so the message
       // shows what was sent with it. The object URLs are dropped: they are this
       // page's copy of the bytes, and a stored one points at nothing.
-      // Who this one is for, resolved BEFORE anything is sent so the bubble and
-      // the wire agree.
-      const seat = mySeats.find((s) => s.id === target) ?? null;
+      // Card 85 — who this one is for, read off the message itself and resolved
+      // BEFORE anything is sent, so the bubble and the wire agree.
+      //
+      // Read AFTER the file list is appended, which is safe and deliberate: the
+      // tag is at the START, so appending to the end cannot disturb it, and the
+      // files stay attached to the message the seat actually receives.
+      const addressed = readMention(text, mySeats);
+
+      // A name that is nobody. Refused rather than quietly answered by the host:
+      // the message was plainly meant for someone, and answering it here is the
+      // one outcome where nobody ever finds out it went to the wrong place.
+      if (addressed.kind === "unknown") {
+        patch(id, (s) => ({
+          ...s,
+          notices: [
+            ...s.notices,
+            `Nobody here is called "${addressed.tag}". In this chat: ${
+              mySeats.map((x) => `@${x.name}`).join(", ") || "nobody yet"
+            }, or @all.`,
+          ],
+        }));
+        return;
+      }
+
+      // Card 86 — `@all` puts THIS message to every seat in turn.
+      //
+      // Not the same as the "Ask the room" button, which puts your LAST message
+      // to everyone: that button has no words of its own, so inventing a
+      // question would put words in your mouth. This one has words — the ones
+      // after the tag.
+      if (addressed.kind === "all") {
+        if (mySeats.length === 0) {
+          patch(id, (s) => ({
+            ...s,
+            notices: [...s.notices, "Nobody else is in this chat yet, so @all has nobody to ask."],
+          }));
+          return;
+        }
+        patch(id, (s) => addUserTurn(s, text));
+        try {
+          await bridge.invoke("chat_round", {
+            key: keyFor(id),
+            order: mySeats.map((x) => x.id),
+            text: addressed.text,
+            cwd: project.primary_path ?? "",
+            extraDirs: project.paths ?? [],
+            access,
+            effort,
+          });
+        } catch (err) {
+          patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
+        }
+        return;
+      }
+
+      const seat =
+        addressed.kind === "seat" ? mySeats.find((s) => s.id === addressed.seatId) ?? null : null;
+      // What the agent is actually sent: the tag is a decision about routing,
+      // not part of the question, so a seat is asked what you asked rather than
+      // being told its own name first.
+      text = addressed.text;
       patch(id, (s) =>
         addUserTurn(
           s,
@@ -1685,19 +1744,16 @@ export default function App() {
   // this a group" — one fact, in one place, which is what stops the two
   // disagreeing after a reload or a restart.
   const [seats, setSeats] = useState<Record<string, Seat[]>>({});
-  // Who the NEXT message is for, per conversation. `null` is the whole room,
-  // which is where every message has always gone — so a chat that never opens
-  // a room never leaves this state.
-  const [sendTo, setSendTo] = useState<Record<string, string | null>>({});
   const mySeats = (conversationId && seats[conversationId]) || [];
   const room = mySeats.length > 0;
   // Card 84 — the number at the top. Null in an ordinary chat, which is what
   // keeps this off every chat in the app.
   const seatCount = roomCount(mySeats.length);
-  const myTarget = (conversationId && sendTo[conversationId]) || null;
-  // A seat that has been removed cannot stay chosen, or the next message would
-  // be refused by a backend that no longer knows the name.
-  const target = mySeats.some((s) => s.id === myTarget) ? myTarget : null;
+  // Card 85 — there is no longer any "who the next message is for" STATE. It
+  // was a mode: pick a seat and every message went there until you remembered
+  // to change it back, and a removed seat left a target the backend no longer
+  // knew. The tag is read off each message instead, so there is nothing to
+  // leave switched on and nothing to go stale.
 
   /** Ask the backend who is in this room.
    *
@@ -2271,15 +2327,11 @@ export default function App() {
             onLite={changeLite}
             room={room}
             seats={mySeats}
-            to={target}
             round={myRound}
             onAsk={askRoom}
             onStopRound={stopRound}
             onNewTopic={newTopic}
             topicDrawn={!!(conversationId && topicDrawn[conversationId])}
-            onTarget={(seatId) =>
-              conversationId && setSendTo((prev) => ({ ...prev, [conversationId]: seatId }))
-            }
             onAddSeat={addSeat}
             onRemoveSeat={removeSeat}
             cwd={project?.primary_path ?? ""}

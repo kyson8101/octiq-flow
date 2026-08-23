@@ -18,7 +18,7 @@ import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
 import { RoomPanel } from "./RoomPanel";
-import { TargetPicker } from "./TargetPicker";
+import { completeMention, mentionMatches, mentionQuery } from "../lib/mention";
 import { RoundBar, type RoundState } from "./RoundBar";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
@@ -333,8 +333,6 @@ export function Composer({
   onLite,
   room,
   seats,
-  to,
-  onTarget,
   round,
   onAsk,
   onStopRound,
@@ -415,10 +413,6 @@ export function Composer({
    *  wrong. */
   room?: boolean;
   seats?: Seat[];
-  /** Card 67 — the seat the next message is for, and how to change it. `null`
-   *  is the whole room. */
-  to?: string | null;
-  onTarget?: (seatId: string | null) => void;
   /** Card 68 — the round in flight, and the two things you can do about it. */
   round?: RoundState | null;
   onAsk?: () => void;
@@ -451,8 +445,6 @@ export function Composer({
   const fileRef = useRef<HTMLInputElement>(null);
   const [effMenu, setEffMenu] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
-  // Card 78 — the target list is a popover now, not a row of pills.
-  const [targetOpen, setTargetOpen] = useState(false);
   const [attached, setAttached] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   // What "clear" just threw away, for as long as it can still be taken back.
@@ -502,6 +494,25 @@ export function Composer({
           .slice(0, 40);
   const slashOpen = matches.length > 0;
 
+  // Card 85 — the @ menu, on exactly the same terms as the slash menu above:
+  // open while the WHOLE box is one `@word`, gone the moment a space is typed.
+  // Absent in a chat with nobody else in it, where an `@` is just a character.
+  const atQuery = (seats ?? []).length > 0 ? mentionQuery(text) : undefined;
+  const whoList: { key: string; label: string; seat?: Seat }[] =
+    atQuery === undefined
+      ? []
+      : ([
+          // Everyone first: it is the one that is always there, and the one
+          // whose name never changes.
+          { key: "all", label: "all", seat: undefined },
+          ...(seats ?? []).map((s) => ({ key: s.id, label: s.name, seat: s })),
+        ] as { key: string; label: string; seat?: Seat }[]).filter((w) =>
+          mentionMatches(w.label, w.seat?.id, atQuery),
+        );
+  // One highlight serves both menus. They can never both be open — a box cannot
+  // start with a `/` and an `@` at once — which is what makes that safe.
+  const atOpen = whoList.length > 0;
+
   /** The highlighted command is exactly what is typed: there is nothing left to
    *  complete, so Enter should send it. Arrowing to a different one puts
    *  completion back. */
@@ -514,8 +525,19 @@ export function Composer({
     setPick((i) => (i < matches.length ? i : 0));
   }, [matches.length]);
 
+  // The same, for the @ menu. One highlight serves both, and only one is ever
+  // open — a box cannot start with both a `/` and an `@`.
+  useEffect(() => {
+    setPick((i) => (i < whoList.length ? i : 0));
+  }, [whoList.length]);
+
   function complete(name: string) {
     setText(`/${name} `);
+    areaRef.current?.focus();
+  }
+
+  function completeWho(label: string) {
+    setText(completeMention(label));
     areaRef.current?.focus();
   }
 
@@ -815,6 +837,43 @@ export function Composer({
         </span>
       </div>
 
+      {/* Card 85 — who this message is for. Same shape and same keys as the
+          slash menu below it, because it is the same gesture: a character that
+          opens a list, arrows and Tab to choose, and a space to give up on it. */}
+      {atOpen && (
+        <div className="slash" role="listbox" aria-label="Send to">
+          <div className="slash-head">
+            {whoList.length} to choose from · Tab to pick
+          </div>
+          <ul className="slash-list">
+            {whoList.map((w, i) => (
+              <li key={w.key}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={i === pick}
+                  className={`slash-item ${i === pick ? "is-on" : ""}`}
+                  onMouseEnter={() => setPick(i)}
+                  onClick={() => completeWho(w.label)}
+                >
+                  {w.seat ? (
+                    <AgentLogo agent={w.seat.agent === "claude" ? "claude" : "codex"} size={12} />
+                  ) : null}
+                  @{w.label}
+                  {/* Said here because this is where the choice is made:
+                      picking a seat without knowing it cannot see the project
+                      is picking blind. */}
+                  {w.seat?.context === "room_only" && (
+                    <span className="slash-note">room-only</span>
+                  )}
+                  {!w.seat && <span className="slash-note">everyone, in turn</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {slashOpen && (
         <div className="slash" role="listbox">
           <div className="slash-head">
@@ -862,13 +921,6 @@ export function Composer({
         <div className="room-strip-inner">
           {room && (
             <>
-              <TargetPicker
-                seats={seats ?? []}
-                to={to ?? null}
-                onPick={onTarget ?? (() => {})}
-                open={targetOpen}
-                onOpen={setTargetOpen}
-              />
               {onAsk && onStopRound && (
                 <RoundBar
                   seats={seats ?? []}
@@ -931,6 +983,33 @@ export function Composer({
             void attachFiles(files);
           }}
           onKeyDown={(e) => {
+            // Card 85 — the @ menu takes the same keys the command list does,
+            // and gives them back the moment it closes.
+            if (atOpen) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setPick((i) => (i + 1) % whoList.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setPick((i) => (i - 1 + whoList.length) % whoList.length);
+                return;
+              }
+              // Tab picks. Enter does NOT: unlike a command, a name is only half
+              // a message — there is always something still to type after it,
+              // and Enter here would send a bare `@codex` to a seat.
+              if (e.key === "Tab") {
+                e.preventDefault();
+                completeWho(whoList[pick].label);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setText("");
+                return;
+              }
+            }
             // While the command list is up it owns the arrows, Tab and Enter —
             // the same keys a shell completion takes.
             if (slashOpen) {

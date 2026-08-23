@@ -4267,6 +4267,27 @@ body.is-ultra .eff {
   color: var(--fg-0);
 }
 
+/* Card 85 — the @ menu shares the slash menu's list, because it is the same
+   gesture: a character opens a list, arrows and Tab choose. It carries an agent
+   mark and a word about the seat, which a command has no use for. */
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* What is worth knowing about a seat at the moment you pick it. `room-only` is
+   the important one: an outside seat's whole value is what it CANNOT see, and
+   picking it without knowing that is picking blind. */
+.slash-note {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  font-size: 10.5px;
+  color: var(--fg-3);
+}
+
 /* ---- File panel (slides out from the right) --------------------------- */
 .panel-scrim {
   position: fixed;
@@ -8237,4 +8258,55 @@ body.is-ultra .eff {
   color: var(--fg-2);
   cursor: default;
   user-select: none;
+}
+
+/* ---- The group's own row, above the box ------------------------------
+   These styles lived in `ChatModeTabs.css` until card 82 deleted that file
+   along with the mode tabs, and the strip was left with no CSS at all — no
+   width, no clipping, no animation. On a wide screen the controls then sat
+   against the left edge of the VIEWPORT while the box they belong to was
+   centred, which is how it was spotted.
+
+   It stays MOUNTED when this is not a room, collapsed to nothing. A CSS
+   transition cannot run on an element that has been removed, and the ask was
+   for it to slide down on the way out as well as up on the way in — so an
+   ordinary chat carries one empty, zero-height row here. */
+.room-strip {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 160ms ease;
+  /* Lined up with `.composer-box` and `.composer-hint`, which is what was
+     missing. The strip belongs to the box; sharing the box's own measurements
+     is the only thing that keeps it there at every width. */
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 0 13px;
+}
+
+.room-strip.is-open {
+  grid-template-rows: 1fr;
+}
+
+/* The grid row is what animates; this is what gets clipped while it does. */
+.room-strip-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.room-strip.is-open .room-strip-inner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0 0 0.375rem;
+  /* Only once open. Overflow stays hidden while it moves, or the target list
+     would be clipped by the very row it opens out of. */
+  overflow: visible;
+}
+
+/* Somebody who has asked for less motion gets the state change without it. */
+@media (prefers-reduced-motion: reduce) {
+  .room-strip {
+    transition: none;
+  }
 }
