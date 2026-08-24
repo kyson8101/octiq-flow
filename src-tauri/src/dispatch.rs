@@ -55,6 +55,11 @@ impl Services {
         if let Some(path) = crate::chat_room::rooms_path() {
             crate::chat_room::load_rooms(&chats, &path);
         }
+        // A chat nobody has touched for a quarter of an hour is ended and
+        // resumed on its next message. This is where it matters most: the
+        // service runs for days, and every chat left open holds an agent and
+        // its whole MCP fleet.
+        crate::agent_chat::start_idle_reaper(chats.clone());
         Self {
             workspaces: Arc::new(WorkspaceState::load()),
             chats,

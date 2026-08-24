@@ -32,6 +32,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -68,6 +69,72 @@ struct ChatSession {
     /// Which program this is. Only Claude has a control channel, so a setting
     /// changed part-way through a chat has to know before it writes one.
     agent: ChatAgent,
+    /// A turn is in flight: this process was given something and has not
+    /// reached its own full stop yet.
+    ///
+    /// The idle sweeper is built on this rather than on "no output lately",
+    /// and the difference is the whole reason the flag exists. An agent
+    /// running a twenty-minute build says NOTHING while it waits — no partial
+    /// message, no tool event, nothing — so a sweeper reading silence would
+    /// kill the one turn nobody could afford to lose. A turn is also still in
+    /// flight while a permission card or an `ask_user` question sits on
+    /// screen, and both of those are minutes of quiet by design.
+    busy: bool,
+    /// When this last started or finished a turn. Only read while `busy` is
+    /// false, so it means "still since".
+    last_active: Instant,
+}
+
+impl ChatSession {
+    /// Something was sent to the agent: it is working from here until it says
+    /// otherwise.
+    fn turn_started(&mut self) {
+        self.busy = true;
+        self.last_active = Instant::now();
+    }
+
+    /// The agent reached its own full stop. The clock starts now.
+    fn turn_ended(&mut self) {
+        self.busy = false;
+        self.last_active = Instant::now();
+    }
+
+    /// How long this has been sitting still, or `None` while it is working.
+    fn still_for(&self) -> Option<Duration> {
+        (!self.busy).then(|| self.last_active.elapsed())
+    }
+}
+
+/// How long a chat may sit with nothing happening before its process is ended.
+///
+/// Ending one is cheap because nothing is lost: every event is already written
+/// down (`transcript.rs`), the agent's own session id is kept in the chat
+/// index, and the client's send path already starts a chat it has no process
+/// for with `resume` — the same two calls it makes for a chat picked back up
+/// the next morning. So the next message carries on the conversation and the
+/// only thing the person sees is that the live dot was off.
+///
+/// What it buys is real: on one machine nine chats left open overnight held
+/// 4.3 GB between them — about 480 MB each, once each agent's own MCP servers
+/// are counted.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+/// How often the sweeper looks. Well under the timeout, and cheap: it takes one
+/// lock, reads a flag and an `Instant` per chat, and goes back to sleep.
+const IDLE_SWEEP: Duration = Duration::from_secs(60);
+
+/// The timeout in force, which `OCTIQ_CHAT_IDLE_MINS` may change. `0` turns the
+/// sweeper off altogether, for anyone who would rather pay the memory than have
+/// a process end behind their back.
+fn idle_timeout() -> Option<Duration> {
+    match std::env::var("OCTIQ_CHAT_IDLE_MINS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        Some(0) => None,
+        Some(mins) => Some(Duration::from_secs(mins * 60)),
+        None => Some(IDLE_TIMEOUT),
+    }
 }
 
 #[derive(Default)]
@@ -821,6 +888,13 @@ pub(crate) fn start_session(
         child,
         stdin,
         agent,
+        // Working from the first breath, because a chat is nearly always
+        // started WITH its first message: Claude is handed it on stdin a few
+        // lines below, and Codex already has it on its command line. Started
+        // with nothing to do — which only the API can ask for — it is still
+        // from birth, and the sweeper is right to treat it that way.
+        busy: !prompt.trim().is_empty(),
+        last_active: Instant::now(),
     }));
     manager
         .sessions
@@ -944,6 +1018,14 @@ pub(crate) fn start_session(
                         // looking for the last turn that actually said
                         // something. An errored turn still ended, and being
                         // told so matters more than being told it went well.
+                        // The two agents spell their full stop differently, and
+                        // the idle sweeper has to understand both of them or a
+                        // Codex chat would look busy for as long as it lived.
+                        if turn_is_over(&event) {
+                            if let Ok(mut s) = asking.lock() {
+                                s.turn_ended();
+                            }
+                        }
                         if event.get("type").and_then(|t| t.as_str()) == Some("result") {
                             let said = event
                                 .get("result")
@@ -1137,7 +1219,11 @@ fn write_user_message(
         .as_mut()
         .ok_or("this chat does not take more input")?;
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())
+    stdin.flush().map_err(|e| e.to_string())?;
+    // Every turn this session is ever asked to do comes through here, so this
+    // one line is the whole of "somebody is still using this chat".
+    guard.turn_started();
+    Ok(())
 }
 
 /// Send the next user turn to a running chat, with any images attached to it.
@@ -1323,7 +1409,13 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
         .as_mut()
         .ok_or("this chat does not take more input")?;
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())
+    stdin.flush().map_err(|e| e.to_string())?;
+    // The turn is over as far as anyone waiting is concerned, and the still
+    // clock starts here rather than at whatever `result` the agent may or may
+    // not send after being cut off. A session that stopped and was never
+    // spoken to again is exactly what the sweeper is for.
+    guard.turn_ended();
+    Ok(())
 }
 
 /// Is this line the agent asking whether it may use a tool? Its request id and
@@ -1556,19 +1648,144 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Anything the person allowed "always" was allowed for THIS piece of work.
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
+    with_access(|a| a.remove(&key));
+    end_process(manager, &key).map(|_| ())
+}
+
+/// End one chat's PROCESS, and change nothing else about the chat.
+///
+/// The difference from `chat_stop_impl` is everything that is not here, and it
+/// is the difference between a person ending a piece of work and this app
+/// tidying up after itself. Standing permissions and the access level belong to
+/// the WORK: the sweeper's chat is coming back on the next message, at the same
+/// level, and re-asking about a command already allowed "always" would be a
+/// decision quietly taken away. `chat_stop` drops both because the person said
+/// they were finished.
+///
+/// Answers whether there WAS one, so a caller reporting what it ended does not
+/// name a key that had already gone.
+fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
     let session = {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.remove(&key)
+        sessions.remove(key)
     };
-    with_access(|a| a.remove(&key));
     let Some(session) = session else {
-        return Ok(());
+        return Ok(false);
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     // Closing stdin asks Claude to finish; the kill is the backstop.
     guard.stdin.take();
     let _ = guard.child.kill();
-    Ok(())
+    Ok(true)
+}
+
+/// Did this event end a turn? Both agents' way of saying so.
+///
+/// Claude's `result` is its own full stop, the same line the push notice and a
+/// round already read. Codex says `turn.completed`, or `turn.failed` when it
+/// went wrong — and a failed turn has ended just as surely as a good one.
+fn turn_is_over(event: &Value) -> bool {
+    matches!(
+        event.get("type").and_then(Value::as_str),
+        Some("result") | Some("turn.completed") | Some("turn.failed")
+    )
+}
+
+/// The chats that have been sitting still for longer than `timeout`.
+///
+/// Split out from the sweeper so the rule can be tested without waiting a
+/// quarter of an hour for one.
+fn still_keys(manager: &ChatManager, timeout: Duration) -> Vec<String> {
+    let Ok(sessions) = manager.sessions.lock() else {
+        return Vec::new();
+    };
+    sessions
+        .iter()
+        .filter(|(_, s)| {
+            s.lock()
+                .ok()
+                .and_then(|s| s.still_for())
+                .is_some_and(|still| still >= timeout)
+        })
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// Is this session part-way through a turn right now?
+fn is_working(manager: &ChatManager, key: &str) -> bool {
+    let Ok(sessions) = manager.sessions.lock() else {
+        // Cannot tell, so assume it is working. Every wrong answer in this
+        // direction costs memory; the other one costs somebody's turn.
+        return true;
+    };
+    sessions
+        .get(key)
+        .map(|s| s.lock().map(|s| s.busy).unwrap_or(true))
+        .unwrap_or(false)
+}
+
+/// End every chat that has been sitting still too long, and everyone sitting
+/// in it.
+///
+/// A room is swept as ONE thing. Its seats are separate processes under their
+/// own keys, so ending the host alone would leave them running with nobody left
+/// to talk to them and nothing that would ever end them — the memory would come
+/// back in part, and the part that did not would need a restart. Seats lose
+/// nothing by it: a seat is handed the discussion it needs each time it is
+/// spoken to (`round::round_brief`), and the client already knows how to start
+/// one that has no process.
+///
+/// The exception is a seat that is ANSWERING. A round runs with nobody watching
+/// it and gives each seat up to twenty minutes, so an idle host with a seat
+/// still thinking is an ordinary sight rather than a stuck one — and the seat's
+/// answer reaches the room's transcript through its own reader whether the host
+/// is up or not. It keeps its process, and sweeps itself once it has been quiet
+/// as long as anyone else.
+fn sweep_still_chats(manager: &ChatManager, timeout: Duration) -> Vec<String> {
+    let mut ended = Vec::new();
+    for key in still_keys(manager, timeout) {
+        // The room's seats first, while the room can still be read.
+        let seats = crate::chat_room::room_impl(manager, &key)
+            .map(|room| room.seats)
+            .unwrap_or_default();
+        for seat in seats {
+            let seat_key = crate::chat_room::seat_session_key(&key, &seat.id);
+            if is_working(manager, &seat_key) {
+                continue;
+            }
+            if end_process(manager, &seat_key) == Ok(true) {
+                ended.push(seat_key);
+            }
+        }
+        if end_process(manager, &key) == Ok(true) {
+            ended.push(key);
+        }
+    }
+    ended
+}
+
+/// Watch for chats nobody is using and give their memory back.
+///
+/// Started once, by whichever half of the app is running. Nothing announces a
+/// swept chat to the client: the process exiting already emits `chat-status`
+/// `exit`, which is what turns the live mark off, and there is nothing else to
+/// report — the conversation is all still there and the next message picks it
+/// straight back up.
+pub fn start_idle_reaper(manager: Arc<ChatManager>) {
+    let Some(timeout) = idle_timeout() else {
+        println!("[chat] idle sweeper off (OCTIQ_CHAT_IDLE_MINS=0)");
+        return;
+    };
+    println!(
+        "[chat] idle sweeper on: a chat with nothing happening for {} minutes is ended and resumed on its next message",
+        timeout.as_secs() / 60
+    );
+    thread::spawn(move || loop {
+        thread::sleep(IDLE_SWEEP);
+        for key in sweep_still_chats(&manager, timeout) {
+            println!("[chat] {key} ended after {}m still", timeout.as_secs() / 60);
+        }
+    });
 }
 
 /// An MCP server carrying the two tools print mode has no answer for: asking
@@ -2466,5 +2683,196 @@ mod access_tests {
         assert_eq!(Access::Read.claude(), "plan");
         assert_eq!(Access::Auto.claude(), "auto");
         assert_eq!(Access::Full.claude(), "bypassPermissions");
+    }
+}
+
+/// The sweeper that gives an unused chat's memory back.
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    /// A session with a real process behind it, last active `ago` back.
+    ///
+    /// A real child rather than a fake one, because ending it is half of what
+    /// is being tested: `end_process` kills a `Child`, and a stand-in with no
+    /// process would let a sweeper that ends nothing pass.
+    fn still_session(busy: bool, ago: Duration) -> Arc<Mutex<ChatSession>> {
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("a sleep to stand in for an agent");
+        Arc::new(Mutex::new(ChatSession {
+            child,
+            stdin: None,
+            agent: ChatAgent::Claude,
+            busy,
+            last_active: Instant::now()
+                .checked_sub(ago)
+                .expect("a clock with some run-up behind it"),
+        }))
+    }
+
+    fn put(manager: &ChatManager, key: &str, session: Arc<Mutex<ChatSession>>) {
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), session);
+    }
+
+    const FIFTEEN: Duration = Duration::from_secs(15 * 60);
+
+    #[test]
+    fn a_chat_still_for_longer_than_the_timeout_is_ended() {
+        let m = ChatManager::default();
+        put(
+            &m,
+            "chat-a",
+            still_session(false, Duration::from_secs(20 * 60)),
+        );
+
+        assert_eq!(sweep_still_chats(&m, FIFTEEN), vec!["chat-a".to_string()]);
+        assert!(
+            chat_list_impl(&m).unwrap().is_empty(),
+            "and it is gone from the map, so the next message starts a fresh one"
+        );
+    }
+
+    #[test]
+    fn a_chat_still_for_less_than_the_timeout_is_left_alone() {
+        let m = ChatManager::default();
+        put(
+            &m,
+            "chat-a",
+            still_session(false, Duration::from_secs(5 * 60)),
+        );
+
+        assert!(sweep_still_chats(&m, FIFTEEN).is_empty());
+        assert_eq!(chat_list_impl(&m).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_working_chat_is_never_ended_however_long_it_has_been_working() {
+        // The one that would hurt. An agent part-way through a long tool call
+        // — a build, a test suite, a question waiting on the person — produces
+        // no output at all while it waits, so a sweeper reading silence would
+        // kill exactly the turn nobody could afford to lose. `busy` is what
+        // separates "nothing is happening" from "nothing is being said".
+        let m = ChatManager::default();
+        put(
+            &m,
+            "chat-a",
+            still_session(true, Duration::from_secs(3 * 60 * 60)),
+        );
+
+        assert!(sweep_still_chats(&m, FIFTEEN).is_empty());
+        assert_eq!(chat_list_impl(&m).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_room_swept_takes_its_seats_with_it() {
+        // Seats are separate processes under their own keys, and nothing else
+        // in the app would ever end them once their host is gone: only
+        // DELETING the conversation does that. Ending the host alone would
+        // hand back a fraction of the memory and strand the rest until a
+        // restart.
+        let m = ChatManager::default();
+        let seat = crate::chat_room::add_seat_impl(
+            &m,
+            "chat-a",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .expect("a seat to sit down");
+        let seat_key = crate::chat_room::seat_session_key("chat-a", &seat.id);
+
+        put(
+            &m,
+            "chat-a",
+            still_session(false, Duration::from_secs(20 * 60)),
+        );
+        // The seat itself answered a while back and has been quiet since.
+        put(&m, &seat_key, still_session(false, Duration::from_secs(60)));
+
+        let ended = sweep_still_chats(&m, FIFTEEN);
+
+        assert!(ended.contains(&seat_key), "the seat went with its host");
+        assert!(ended.contains(&"chat-a".to_string()));
+        assert!(chat_list_impl(&m).unwrap().is_empty());
+        assert_eq!(
+            crate::chat_room::room_impl(&m, "chat-a")
+                .unwrap()
+                .seats
+                .len(),
+            1,
+            "and the ROSTER stays — the room is not being disbanded, only its \
+             processes ended"
+        );
+    }
+
+    #[test]
+    fn a_seat_still_answering_keeps_its_process_when_its_host_is_swept() {
+        // A round runs with nobody watching and gives each seat up to twenty
+        // minutes, so an idle host with a seat still thinking is an ordinary
+        // sight — and sweeping the room would kill the answer being written.
+        // The seat's own words reach the room's transcript whether the host is
+        // up or not, so it is simply left to finish.
+        let m = ChatManager::default();
+        let seat = crate::chat_room::add_seat_impl(
+            &m,
+            "chat-a",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .unwrap();
+        let seat_key = crate::chat_room::seat_session_key("chat-a", &seat.id);
+
+        put(
+            &m,
+            "chat-a",
+            still_session(false, Duration::from_secs(20 * 60)),
+        );
+        put(&m, &seat_key, still_session(true, Duration::from_secs(60)));
+
+        let ended = sweep_still_chats(&m, FIFTEEN);
+
+        assert_eq!(ended, vec!["chat-a".to_string()], "only the host went");
+        assert_eq!(
+            chat_list_impl(&m).unwrap(),
+            vec![seat_key],
+            "the seat is still there, writing its answer"
+        );
+    }
+
+    #[test]
+    fn both_agents_full_stops_end_a_turn_and_nothing_else_does() {
+        assert!(turn_is_over(
+            &json!({ "type": "result", "subtype": "success" })
+        ));
+        assert!(turn_is_over(&json!({ "type": "turn.completed" })));
+        // A failed turn has ended just as surely as a good one. Reading only
+        // the happy word would leave a Codex chat that errored looking busy
+        // for the rest of its life, and it would never be swept.
+        assert!(turn_is_over(&json!({ "type": "turn.failed" })));
+
+        assert!(!turn_is_over(&json!({ "type": "assistant" })));
+        assert!(!turn_is_over(&json!({ "type": "stream_event" })));
+        assert!(!turn_is_over(&json!({ "type": "thread.started" })));
+    }
+
+    #[test]
+    fn a_turn_written_to_a_session_makes_it_busy_again() {
+        // The other half of the pair: `turn_started` is what stops a chat
+        // being swept out from under a message sent a second ago.
+        let session = still_session(false, Duration::from_secs(20 * 60));
+        assert!(session.lock().unwrap().still_for().is_some());
+
+        session.lock().unwrap().turn_started();
+        assert!(session.lock().unwrap().still_for().is_none());
+
+        session.lock().unwrap().turn_ended();
+        assert!(
+            session.lock().unwrap().still_for().unwrap() < Duration::from_secs(1),
+            "and the clock restarts from the end of the turn, not from before it"
+        );
     }
 }

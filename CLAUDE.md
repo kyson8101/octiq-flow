@@ -194,6 +194,29 @@ hook keys the captured `sessionId` by it. On restart the app reads that map to
 rebuild the resume command in the same tab. The hook is best-effort and must
 never break the agent (any error → exit 0).
 
+### Idle chats are ended, and resumed on the next message
+
+A **chat** process (`agent_chat.rs`, not a PTY) is killed after **15 minutes**
+with no turn in flight, by a sweeper thread started from both entry points
+(`start_idle_reaper`). Nothing is lost and nothing is announced: the transcript
+is already on disk, the client's send path already starts a chat it has no
+process for with `resume`, and the `exit` event it triggers is what turns the
+live dot off. `OCTIQ_CHAT_IDLE_MINS=0` turns it off; any other number sets the
+minutes.
+
+- **"Idle" is `!busy`, never "no output lately".** A turn is in flight from the
+  moment something is written to the agent's stdin until its own full stop
+  (`result` / `turn.completed` / `turn.failed`). An agent inside a 20-minute
+  build, or parked on a permission card, says *nothing* — read silence and you
+  kill the one turn that mattered.
+- **A room is swept as one thing.** Seats are separate processes under
+  `"{room}-seat-{id}"`, and `chat_stop` only ever ends the key it is given, so
+  ending a host alone strands its seats until a restart — nothing else reaps
+  them but deleting the conversation. A seat that is still **answering** is the
+  exception: it keeps its process and sweeps itself later.
+- Why it is worth having: a chat costs ~480 MB — the agent plus its own copy of
+  every MCP server it starts. Nine left open overnight held 4.3 GB.
+
 ### Attention alerts
 
 `pty.rs` scans PTY output for OSC 9 / OSC 777 / OSC 99 (Kitty) "notify"

@@ -181,6 +181,9 @@ pub fn run() {
             if let Some(path) = chat_room::rooms_path() {
                 chat_room::load_rooms(&chats, &path);
             }
+            // A chat nobody has touched for a quarter of an hour is ended, and
+            // resumed on its next message. See `agent_chat::start_idle_reaper`.
+            agent_chat::start_idle_reaper(chats.clone());
             app.manage(chats);
             app.manage(std::sync::Arc::new(round::Rounds::default()));
             // Persisted terminal layout + scrollback, used to rebuild each
