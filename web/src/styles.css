@@ -6899,9 +6899,22 @@ body.is-ultra .eff {
   }
 
   /* One above the other two: a file is opened FROM them, so it has to land on
-     top of the panel that opened it rather than behind it. */
+     top of the panel that opened it rather than behind it.
+
+     Card 88 — and it takes the WHOLE width, where the git and session-files
+     panels keep their strip. The strip is deliberate on those: it says "this is
+     on top of your work and will go away again", and tapping it closes. That
+     reasoning holds for a list you glance at. It does not hold for a file you
+     are reading — 88vw of a 390px screen is 343px of code, and the strip costs
+     the one thing the view is for. A picture opened from the same place was
+     already full screen, so this also stops the same gesture having two
+     answers.
+
+     What it costs: with nothing showing behind it there is no scrim left to
+     tap, so the close button is the only way out. It is already there. */
   .fpanel {
     z-index: 7;
+    width: 100%;
   }
 
   .fpanel-scrim {
