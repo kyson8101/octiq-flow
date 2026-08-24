@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
-import { CodeEditor } from "./CodeEditor";
+import { FileView } from "./FileView";
 import { FileTree, rootsOf } from "./FileTree";
 import { useConfirm } from "./Confirm";
 
@@ -363,22 +363,18 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
               hidden={tab.path !== active}
             >
               {!tab.file && !tab.error && <div className="dots" aria-label="loading" />}
-              {tab.file?.kind === "text" && (
-                <CodeEditor
-                  key={`${tab.path}:${tab.generation}`}
+              {/* Card 89 — the same body the chat dock draws. What stays HERE is
+                  what is genuinely this frame's: the tab, its draft, and its
+                  undo history, all kept alive while the tab is hidden. */}
+              {tab.file && (
+                <FileView
                   path={tab.path}
-                  initialDoc={tab.file.content}
-                  readOnly={tab.file.truncated}
-                  onChange={(text) => setDrafts((prev) => ({ ...prev, [tab.path]: text }))}
+                  preview={tab.file}
+                  draft={drafts[tab.path] ?? tab.file.content}
+                  generation={tab.generation}
+                  onDraft={(text) => setDrafts((prev) => ({ ...prev, [tab.path]: text }))}
                   onSave={() => void save()}
                 />
-              )}
-              {tab.file?.kind === "image" && <ImageDoc path={tab.path} />}
-              {tab.file && tab.file.kind !== "text" && tab.file.kind !== "image" && (
-                <div className="ws-empty">
-                  {tab.file.kind === "pdf" ? "A PDF" : "Not a text file"} ·{" "}
-                  {humanSize(tab.file.size)}. There is nothing here to edit.
-                </div>
               )}
             </div>
           ))}
@@ -388,35 +384,3 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
   );
 }
 
-/** An image tab. The bytes come over the backend's `/file` route rather than
- *  the WebSocket, the same way the chat's image viewer gets them: an image in a
- *  JSON frame would have to be base64, and this way the browser decodes it. */
-function ImageDoc({ path }: { path: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const revoke = useRef<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    bridge
-      .fetchFile(path)
-      .then((blob) => {
-        if (!alive) return;
-        revoke.current = URL.createObjectURL(blob);
-        setUrl(revoke.current);
-      })
-      .catch((e: Error) => alive && setError(e.message));
-    return () => {
-      alive = false;
-      if (revoke.current) URL.revokeObjectURL(revoke.current);
-    };
-  }, [path]);
-
-  if (error) return <div className="panel-error">{error}</div>;
-  if (!url) return <div className="dots" aria-label="loading" />;
-  return (
-    <div className="ws-image">
-      <img src={url} alt={baseName(path)} />
-    </div>
-  );
-}

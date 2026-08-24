@@ -24,13 +24,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type React from "react";
 import { createPortal } from "react-dom";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
 import { canQuote, lineRange, sendQuote, type Quote } from "../lib/quote";
 import { useConfirm } from "./Confirm";
+import { FileView } from "./FileView";
 
 type Preview = {
   /** "text" | "image" | "pdf" | "binary" */
@@ -88,11 +87,14 @@ export function FilePanel({
   // happens to you.
   const [staleOnDisk, setStaleOnDisk] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null);
+  /** Bumped on every read from disk. The editor keeps its document and its undo
+   *  history for the life of one mount, so a reload has to give it a new `key`
+   *  or it would go on showing text the file no longer holds. */
+  const [generation, setGeneration] = useState(0);
   const confirm = useConfirm();
   const { width, startDrag, entered } = useDockWidth(WIDTH_KEY, SIZES);
 
   const panelRef = useRef<HTMLElement | null>(null);
-  const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const proseRef = useRef<HTMLDivElement | null>(null);
   /** Where the pointer last came up inside the panel, so the quote button can
    *  appear where the selection was made. A drag in a textarea has no rect to
@@ -117,11 +119,14 @@ export function FilePanel({
         const p = await bridge.invoke<Preview>("read_file_preview", { path });
         setPreview(p);
         setDraft(p.content ?? "");
+        setGeneration((n) => n + 1);
         setStaleOnDisk(false);
         setError(null);
-        // A file with nothing to render opens in the editor rather than on an
-        // empty page.
-        if (!keepEditor) setEditing(p.kind === "text" && !isMarkdown(path));
+        // Card 89 — this flag now means "show markdown as SOURCE", not "show a
+        // textarea": anything that is not markdown is drawn in the editor
+        // either way, so there is nothing here to decide for it. Markdown opens
+        // rendered, which is what it is for.
+        if (!keepEditor) setEditing(false);
       } catch (e) {
         setError(String((e as Error).message ?? e));
       }
@@ -171,17 +176,6 @@ export function FilePanel({
    *  when it is not found (a table, a heading, anything the renderer reshaped)
    *  the quote names the file and no line, rather than a line it guessed. */
   const readSelection = useCallback(() => {
-    const area = areaRef.current;
-    if (area && document.activeElement === area) {
-      const start = area.selectionStart;
-      const end = area.selectionEnd;
-      if (start === end) return setPending(null);
-      const text = area.value.slice(start, end);
-      if (!text.trim()) return setPending(null);
-      const at = pointerAt.current ?? centerOf(area);
-      return setPending({ quote: { path, text, ...lineRange(area.value, start, end) }, ...at });
-    }
-
     const live = window.getSelection();
     if (!live || live.isCollapsed || live.rangeCount === 0) return setPending(null);
     const range = live.getRangeAt(0);
@@ -211,6 +205,26 @@ export function FilePanel({
     document.addEventListener("selectionchange", onChange);
     return () => document.removeEventListener("selectionchange", onChange);
   }, [readSelection]);
+
+  /** A highlight made in the EDITOR, reported by the editor itself.
+   *
+   *  It used to be read off a `<textarea>`'s `selectionStart`. CodeMirror has no
+   *  textarea to ask, and finding the text in the document with `indexOf` would
+   *  be near enough most of the time and wrong exactly when it matters — a short
+   *  snippet appearing twice would be quoted against the first line it happened
+   *  to match. So the editor says, because it is the only thing that knows. */
+  const onEditorSelect = useCallback(
+    (sel: { from: number; to: number; text: string }) => {
+      if (!sel.text.trim()) return setPending(null);
+      const doc = draftRef.current;
+      const at = pointerAt.current ?? centerOf(panelRef.current);
+      setPending({
+        quote: { path, text: sel.text, ...lineRange(doc, sel.from, sel.to) },
+        ...at,
+      });
+    },
+    [path],
+  );
 
   /** Put the highlight in the prompt box. */
   const quote = useCallback(() => {
@@ -376,29 +390,27 @@ export function FilePanel({
             <div className="panel-body">
               {!preview && !error && <div className="dots" aria-label="loading" />}
 
-              {preview?.kind === "text" &&
-                (editing ? (
-                  <textarea
-                    ref={areaRef}
-                    className="panel-editor"
-                    value={draft}
-                    spellCheck={false}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onSelect={readSelection}
-                  />
-                ) : (
-                  <div className="prose panel-prose" ref={proseRef}>
-                    <Markdown remarkPlugins={[remarkGfm]}>{draft}</Markdown>
-                  </div>
-                ))}
-
-              {preview && preview.kind !== "text" && (
-                <div className="panel-note">
-                  {preview.kind === "image"
-                    ? "This is an image — open it from the list to view it."
-                    : `Nothing to show for a ${preview.kind} file (${humanSize(preview.size)}).`}
-                </div>
+              {/* Card 89 — the same body the editor mode draws, which is how
+                  this finally gets syntax colouring, search and an undo
+                  history. It had a bare textarea until now, and nobody had
+                  decided that: it is what two implementations of one thing
+                  drift into. */}
+              {preview && (
+                <FileView
+                  path={path}
+                  preview={preview}
+                  draft={draft}
+                  raw={editing}
+                  generation={generation}
+                  onDraft={setDraft}
+                  onSave={() => void save()}
+                  onSelect={onEditorSelect}
+                  onProseRef={(el: HTMLDivElement | null) => {
+                    proseRef.current = el;
+                  }}
+                />
               )}
+
             </div>
           </aside>
         </>,
@@ -441,7 +453,13 @@ export function FilePanel({
 
 /** A point near the top of an element, for a selection that has no rect of its
  *  own to sit by. */
-function centerOf(el: HTMLElement): { x: number; y: number } {
+/** Where to put the quote button when the pointer did not say.
+ *
+ *  Null-tolerant: the panel element is a ref, and a selection can in principle
+ *  be reported in the frame before it is attached. A guessed corner is better
+ *  than a crash, and the pointer position is the usual answer anyway. */
+function centerOf(el: HTMLElement | null): { x: number; y: number } {
+  if (!el) return { x: 24, y: 80 };
   const rect = el.getBoundingClientRect();
   return { x: rect.left + rect.width / 2, y: rect.top + 40 };
 }

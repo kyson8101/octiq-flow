@@ -118,6 +118,7 @@ export function CodeEditor({
   readOnly = false,
   onChange,
   onSave,
+  onSelect,
 }: {
   /** Only used to pick the grammar. Changing it does NOT reload the document —
    *  give the component a new `key` for that. */
@@ -129,6 +130,16 @@ export function CodeEditor({
   onChange: (text: string) => void;
   /** ⌘S / Ctrl-S. Returns nothing; the owner decides whether a save is possible. */
   onSave: () => void;
+  /** Card 89 — what is highlighted, in CHARACTER OFFSETS.
+   *
+   *  The chat dock offers to put a highlight into the prompt box with the lines
+   *  it came from, and it used to read those straight off a `<textarea>`'s
+   *  `selectionStart`. This editor has no textarea to ask. Finding the text in
+   *  the document with `indexOf` would be near enough most of the time and
+   *  wrong exactly when it matters — a short snippet that appears twice would
+   *  be quoted against the first line it happens to match. So the editor, which
+   *  is the only thing that actually knows, says. */
+  onSelect?: (sel: { from: number; to: number; text: string }) => void;
 }) {
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
@@ -137,8 +148,10 @@ export function CodeEditor({
   // at the current ones instead of a stale render's.
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const onSelectRef = useRef(onSelect);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+  onSelectRef.current = onSelect;
 
   useEffect(() => {
     const parent = host.current;
@@ -211,6 +224,17 @@ export function CodeEditor({
         ]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) onChangeRef.current(update.state.doc.toString());
+          // Reported on every selection change, including the collapse to a
+          // caret — the button that offers a quote has to GO when the highlight
+          // does, not only appear when one is made.
+          if (update.selectionSet || update.docChanged) {
+            const { from, to } = update.state.selection.main;
+            onSelectRef.current?.({
+              from,
+              to,
+              text: from === to ? "" : update.state.doc.sliceString(from, to),
+            });
+          }
         }),
       ],
     });
