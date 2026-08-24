@@ -647,6 +647,23 @@ fn build_command_with_mcp(
                 Some(id) => format!("codex exec resume --json {}", sh_quote(id)),
                 None => String::from("codex exec --json"),
             };
+            // Codex refuses to start in a folder that is neither a git repo nor
+            // a trusted project in its own config, and says so before it reads
+            // the prompt: "Not inside a trusted directory and
+            // --skip-git-repo-check was not specified."
+            //
+            // An OUTSIDE seat is started in an empty scratch folder on purpose
+            // (`chat_room::seat_workspace`) — that is the whole point of it, a
+            // place the project cannot be read from. So that check killed every
+            // room-only Codex seat at birth, and the room sat waiting on an
+            // answer that was never coming.
+            //
+            // Passed always rather than only for that case: which folder a chat
+            // runs in is OctiqFlow's own decision, made deliberately at spawn
+            // time, and what may be touched there is already said properly by
+            // the sandbox. Codex guessing from the presence of a `.git` adds
+            // nothing here.
+            cmd.push_str(" --skip-git-repo-check");
             if let Some(m) = model.and_then(|m| safe_model(m)) {
                 cmd.push_str(&format!(" -m {}", sh_quote(&m)));
             }
@@ -2727,6 +2744,65 @@ mod tests {
         assert!(!first.contains("resume"));
         assert!(first.contains("--sandbox read-only"));
         assert!(first.contains("--add-dir '/tmp/api'"));
+    }
+
+    #[test]
+    fn codex_is_allowed_to_run_where_there_is_no_git_repo() {
+        // An outside seat is started in an empty scratch folder on purpose
+        // (`chat_room::seat_workspace`), and that folder is neither a git repo
+        // nor a trusted project. Codex 0.147 refuses to start there at all —
+        // "Not inside a trusted directory and --skip-git-repo-check was not
+        // specified." — so the seat died before it read a word of the prompt
+        // and the room sat waiting on an answer that could never come.
+        let first = build_command(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Read),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+            false,
+        );
+        assert!(
+            first.contains("--skip-git-repo-check"),
+            "a first turn cannot start outside a repo: {first}"
+        );
+
+        // The resume form takes the same flag, and needs it for the same
+        // reason: every turn after the first is a fresh process in that same
+        // folder.
+        let again = build_command(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Read),
+            "and again",
+            Some("01a0142d-552d-7a93-9152-47530c33e501"),
+            &[],
+            None,
+            &[],
+            false,
+        );
+        assert!(
+            again.contains("--skip-git-repo-check"),
+            "a resumed turn cannot start outside a repo: {again}"
+        );
+
+        // Claude has no such check and no such flag; handing it one would be
+        // an unknown argument.
+        let claude = build_command(
+            ChatAgent::Claude,
+            None,
+            Some(Access::Read),
+            "hello",
+            None,
+            &[],
+            None,
+            &[],
+            false,
+        );
+        assert!(!claude.contains("--skip-git-repo-check"), "{claude}");
     }
 
     #[test]
