@@ -46,6 +46,12 @@ import skillBriefLines from "./__fixtures__/skill-brief-from-disk.jsonl?raw";
 // machinery is the envelope: `isMeta` with the call's id beside it.
 import skillBriefMeta from "./__fixtures__/skill-brief-meta.jsonl?raw";
 import skillCallStream from "./__fixtures__/skill-call.jsonl?raw";
+// The same bundled skill LIVE, which is the hard one: the stream keeps neither
+// the `isMeta` marking nor the call's id, so both of the readers above are
+// blind to it. Recorded with the prompt "Use the Skill tool to run the skill
+// named artifact-diagramming, then reply with one short line. Do not do
+// anything else."
+import skillBundledLive from "./__fixtures__/skill-bundled-live.jsonl?raw";
 // A live stream of the user typing `/model haiku` and then asking one thing.
 // Recorded on `--model opus` so the switch is visible, with the two prompts
 // piped in on stdin one after the other.
@@ -72,6 +78,7 @@ const FIXTURES: Record<string, string> = {
   "command-echo.jsonl": commandEchoStream,
   "skill-brief-from-disk.jsonl": skillBriefLines,
   "skill-brief-meta.jsonl": skillBriefMeta,
+  "skill-bundled-live.jsonl": skillBundledLive,
   "skill-call.jsonl": skillCallStream,
   "model-switch.jsonl": modelSwitchStream,
   "config-command.jsonl": configStream,
@@ -155,6 +162,21 @@ describe("a skill run", () => {
     const [skill] = tools(s.messages);
     expect(skill.id).toBe("toolu_01LiD6SEW59yFmcWwSnJGhMw");
     expect(skill.brief).toContain("# Fewer Permission Prompts");
+  });
+
+  it("keeps a bundled skill's prompt on its card LIVE, where nothing names the call", () => {
+    const asked =
+      "Use the Skill tool to run the skill named artifact-diagramming, then reply with one short line. Do not do anything else.";
+    const s = replay("skill-bundled-live.jsonl", addUserTurn(emptyChat(), asked));
+
+    // Live, the stream keeps neither of the two markings the record on disk
+    // has: no `isMeta`, no call id. So several screens of a skill's own
+    // instructions arrived looking exactly like a message the user had typed,
+    // and were drawn as one — the bug this fixture was recorded for.
+    expect(s.messages.filter((m) => m.role === "user").map(text)).toEqual([asked]);
+    const skill = tools(s.messages).find((t) => t.name === "Skill")!;
+    expect(skill.state).toBe("done");
+    expect(skill.brief).toContain("Draw as the engineer who has to live with the decision");
   });
 
   it("still lets an ordinary message through when the envelope says nothing", () => {

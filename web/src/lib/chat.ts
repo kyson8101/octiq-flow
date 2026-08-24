@@ -1155,16 +1155,29 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // transcript read back from disk, guessed at in snake case for the stream,
     // and absent from older records altogether.
     const sourceId = asStr(e.sourceToolUseID) || asStr(e.source_tool_use_id);
-    // Two shapes, and the second one is why this is not just the first. A
-    // skill read off a folder opens with its directory, which is a thing the
-    // TEXT can be recognised by. A skill bundled with the agent has no such
+    // Three shapes, and each later one is there because the one before it is
+    // blind to a case.
+    //
+    // A skill read off a FOLDER opens with its directory, which is a thing the
+    // TEXT can be recognised by. A skill BUNDLED with the agent has no such
     // line — its instructions simply begin — so several screens of them read
-    // as something the user typed. What marks those is the envelope: `isMeta`
-    // is the agent saying "machinery, not typing", and the call named beside
-    // it says which card they belong to. Both are required, and the call has
-    // to be a Skill call, so nothing a person actually types can be taken off
-    // their side by this.
-    if (hasBriefHead(spoken) || (e.isMeta === true && isSkillCall(state, sourceId))) {
+    // as something the user typed. What marks those in a transcript read back
+    // off disk is the envelope: `isMeta` is the agent saying "machinery, not
+    // typing", and the call named beside it says which card they belong to.
+    //
+    // LIVE, neither of those survives. The stream keeps no `isMeta` and no
+    // call id — all it marks the prompt with is `isSynthetic`, which says
+    // "the CLI wrote this" and nothing about what it is. So the third reader
+    // takes its bearings from the conversation instead: a skill's prompt
+    // follows its own call's result immediately, before the agent says
+    // anything, so a synthetic message arriving while the NEWEST call is a
+    // Skill call that has answered and has no prompt yet is that prompt. Once
+    // it is folded the card has a prompt, and the same test stops being true.
+    if (
+      hasBriefHead(spoken) ||
+      (e.isMeta === true && isSkillCall(state, sourceId)) ||
+      (e.isSynthetic === true && briefIsDue(state))
+    ) {
       return foldSkillBrief(state, spoken, sourceId, uuid);
     }
 
@@ -1325,6 +1338,23 @@ function newestSkillCall(state: ChatState): Extract<Block, { kind: "tool" }> | u
     }
   }
   return undefined;
+}
+
+/** Is a skill's prompt DUE — is the newest call in the whole conversation a
+ *  Skill call that has answered and has not been given its prompt yet?
+ *
+ *  The newest call, not the newest SKILL call: anything else running means the
+ *  agent has moved on and whatever arrives now is not the skill's prompt. */
+function briefIsDue(state: ChatState): boolean {
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    const blocks = state.messages[i].blocks;
+    for (let j = blocks.length - 1; j >= 0; j--) {
+      const b = blocks[j];
+      if (b.kind !== "tool") continue;
+      return b.name.toLowerCase() === "skill" && b.state !== "running" && b.brief === undefined;
+    }
+  }
+  return false;
 }
 
 /** Whether an id names a Skill call in this conversation. */
