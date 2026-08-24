@@ -1216,6 +1216,38 @@ describe("a room with several agents in it", () => {
     expect(state.busy).toBe(true);
   });
 
+  it("does not let a seat's thread id become the host's session id", () => {
+    // A Codex seat opens with `thread.started`, and its `thread_id` is the id
+    // `codex exec resume` takes — the SEAT's conversation, never the host's.
+    // The guard above covered `system` and `result` but not this, so a Codex
+    // seat in a Claude room overwrote the host's `session_id` with a Codex
+    // thread id. That id was then stored and replayed as
+    // `claude --resume <a codex id>`, which the CLI answers with
+    // "No conversation found with session ID: …" — every turn, for good,
+    // because the failing `result` carries the bad id straight back.
+    let state = reduceChat(emptyChat(), {
+      type: "system",
+      subtype: "init",
+      session_id: "616837a9-2488-44c5-a417-3d4b897b3685",
+    });
+    expect(state.sessionId).toBe("616837a9-2488-44c5-a417-3d4b897b3685");
+
+    state = reduceChat(state, {
+      type: "thread.started",
+      thread_id: "01a03343-b61b-7593-82ca-f7012c6f3b70",
+      octiq_speaker: SEAT,
+    });
+    expect(state.sessionId).toBe("616837a9-2488-44c5-a417-3d4b897b3685");
+
+    // ... while a Codex HOST still names its own conversation. That is the
+    // only way a Codex chat is ever resumable, so the guard must not eat it.
+    const codexHost = reduceChat(emptyChat(), {
+      type: "thread.started",
+      thread_id: "01a03343-b61b-7593-82ca-f7012c6f3b70",
+    });
+    expect(codexHost.sessionId).toBe("01a03343-b61b-7593-82ca-f7012c6f3b70");
+  });
+
   it("keeps two seats writing at once in two separate messages", () => {
     // Without this the last streaming message is "the" streaming message, and
     // two seats answering together fold into one bubble with both voices in it.

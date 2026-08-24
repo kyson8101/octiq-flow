@@ -833,7 +833,16 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // process with its own session, its own model and its own `result`. Letting
   // its `result` through would end the host's turn and bill this conversation
   // for a turn it did not take.
-  if ((parent || speaker) && (type === "system" || type === "result")) return state;
+  //
+  // `thread.started` is the third of them, and the one that was missed. It is
+  // how a Codex SEAT names its own conversation, so reading it here handed the
+  // host a Codex thread id to be resumed with — and `claude --resume <a codex
+  // id>` is answered with "No conversation found with session ID", every turn,
+  // for good, because the failing `result` carries the bad id straight back.
+  // The backend already guards the same capture with `speaker.is_none()`; see
+  // `agent_chat::announced_session`.
+  if ((parent || speaker) && (type === "system" || type === "result" || type === "thread.started"))
+    return state;
 
   // Codex speaks its own protocol — see `codexEvents`. Read BEFORE the branches
   // below, none of which know any of its event names, and all of which
