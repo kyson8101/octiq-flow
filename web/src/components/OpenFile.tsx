@@ -18,6 +18,7 @@ import { Viewer } from "./Viewer";
 type Open = (path: string) => void;
 
 const OpenFileContext = createContext<Open>(() => {});
+const CloseFileContext = createContext<() => void>(() => {});
 
 /** How long the panel takes to slide off a phone screen. Matches the transform
  *  transition in styles.css — unmount sooner and it disappears mid-slide. */
@@ -29,6 +30,16 @@ export function useOpenFile(): Open {
   return useContext(OpenFileContext);
 }
 
+/** Put away whatever file is on screen, in either window.
+ *
+ *  The panel closes itself when its own X is clicked; this is for the caller
+ *  that has nothing to do with the file — switching PROJECT. A file belongs to
+ *  the project it was opened from, and left on screen beside the next
+ *  project's chat it reads as one of that project's files. */
+export function useCloseFile(): () => void {
+  return useContext(CloseFileContext);
+}
+
 export function OpenFileProvider({ children }: { children: React.ReactNode }) {
   const [viewing, setViewing] = useState<string | null>(null);
   const [opened, setOpened] = useState<string | null>(null);
@@ -36,6 +47,11 @@ export function OpenFileProvider({ children }: { children: React.ReactNode }) {
    *  Closing sets `opened` to null and leaves this, so the panel has a name to
    *  show on its way out. */
   const [drawn, setDrawn] = useState<string | null>(null);
+
+  const close = useCallback(() => {
+    setViewing(null);
+    setOpened(null);
+  }, []);
 
   const open = useCallback<Open>((path) => {
     // Whichever window this file wants, the other one closes. Two files on
@@ -58,11 +74,13 @@ export function OpenFileProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <OpenFileContext.Provider value={open}>
-      {children}
-      {viewing && <Viewer path={viewing} onClose={() => setViewing(null)} />}
-      {drawn && (
-        <FilePanel path={drawn} open={!!opened} onClose={() => setOpened(null)} />
-      )}
+      <CloseFileContext.Provider value={close}>
+        {children}
+        {viewing && <Viewer path={viewing} onClose={() => setViewing(null)} />}
+        {drawn && (
+          <FilePanel path={drawn} open={!!opened} onClose={() => setOpened(null)} />
+        )}
+      </CloseFileContext.Provider>
     </OpenFileContext.Provider>
   );
 }

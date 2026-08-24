@@ -19,6 +19,7 @@
 // whether or not it is the chat on screen.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
+import { CatchUp } from "./lib/catchUp";
 import type { RoundState } from "./components/RoundBar";
 import {
   addUserTurn,
@@ -86,6 +87,7 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
+import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
@@ -330,10 +332,14 @@ export default function App() {
   // the listener below is set up long before `endSession` exists to build it.
   const onAccessRefused = useRef<(id: string, why: string) => void>(() => {});
 
-  // The last event we have seen for each chat, so a reconnect can ask for what
-  // it missed. The agent kept working while we were away — the record of it is
-  // on the server, and this is our place in it.
-  const seen = useRef<Record<string, number>>({});
+  // How much of each chat's record this page actually holds.
+  //
+  // Two facts, not one: how far we have read, and whether that reading started
+  // at the beginning. They used to be the same number, and on a second device
+  // they are not: the agent talking in a chat this page holds NOTHING of pushed
+  // the number past the whole transcript, so opening it asked for the tail,
+  // got nothing, and drew an empty page. See lib/catchUp.
+  const catchUp = useRef(new CatchUp());
 
   // Desktop notifications, for the chats you are NOT looking at.
   //
@@ -369,6 +375,12 @@ export default function App() {
   };
   // Set long before `openConversation` exists, like `onAccessRefused` below.
   const onOpenChat = useRef<(id: string) => void>(() => {});
+  /** A chat a tapped banner asked for that the list did not have yet.
+   *
+   *  A phone wakes with the socket dropped and the conversation list still on
+   *  its way. The tap must not be spent on a chat this page has not heard of,
+   *  so it is remembered here and opened the moment the list lands. */
+  const awaited = useRef<string | null>(null);
   // Answered ids, so one ask does not announce twice. It reaches this page down
   // two routes — the live broadcast and the refill on connect — and the second
   // arrival is the same question, not a new one.
@@ -409,32 +421,6 @@ export default function App() {
   }, []);
 
   useEffect(() => bridge.onState(setConn), []);
-
-  // Reconnected: ask each live chat for everything that happened while we were
-  // away. Without this, closing a laptop mid-answer loses the rest of it — the
-  // agent finished perfectly well, we simply were not listening.
-  useEffect(() => {
-    if (conn !== "open") return;
-    for (const id of runningRef.current) {
-      const key = keyFor(id);
-      bridge
-        .invoke<{ seq: number; event: unknown }[]>("chat_since", {
-          key,
-          after: seen.current[key] ?? 0,
-        })
-        .then((missed) => {
-          for (const item of missed ?? []) {
-            if (item.seq <= (seen.current[key] ?? 0)) continue;
-            seen.current[key] = item.seq;
-            patch(id, (st) => reduceChat(st, item.event));
-          }
-        })
-        .catch(() => {});
-    }
-    // `patch` is stable; running is read through the ref so a chat starting
-    // mid-reconnect does not restart this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn]);
 
   useEffect(() => {
     try {
@@ -693,17 +679,76 @@ export default function App() {
     setChats((prev) => ({ ...prev, [id]: fn(prev[id] ?? EMPTY) }));
   }, []);
 
+  /** Read whatever this page is missing of a chat's record, and fold it in.
+   *
+   *  `storedSeq` is how far the copy in this browser's storage runs — absent on
+   *  a device that has never seen the chat, which is exactly when the whole
+   *  conversation has to be replayed.
+   *
+   *  A replay that started at the very beginning REBUILDS the chat rather than
+   *  adding to it. Live events fold into a chat this page does not hold, so
+   *  that its working dot still moves in the sidebar, and what that leaves is a
+   *  handful of newest events with a hole under them. Folding the record on top
+   *  of that would show the conversation twice from there down.
+   *
+   *  One `patch` for the lot, not one per event: a long conversation is tens of
+   *  thousands of events, and a state update each was the difference between
+   *  opening and appearing to hang. */
+  const catchUpChat = useCallback(
+    (id: string, storedSeq?: number) => {
+      const key = keyFor(id);
+      const from = catchUp.current.begin(key, storedSeq);
+      return bridge
+        .invoke<{ seq: number; event: unknown }[]>("chat_since", { key, after: from })
+        .then((run) => {
+          const frames = catchUp.current.end(key, run ?? []);
+          if (!frames.length) return;
+          patch(id, (st) => {
+            let next = from === 0 ? { ...emptyChat(), sessionId: st.sessionId } : st;
+            for (const frame of frames) next = reduceChat(next, frame.event);
+            return next;
+          });
+        })
+        .catch((err: unknown) => {
+          // The chat stays unheld, so the next open replays it in full rather
+          // than trusting a mark that nothing filled in.
+          catchUp.current.abandon(key);
+          throw err;
+        });
+    },
+    [patch],
+  );
+
+  // Reconnected: ask each live chat for everything that happened while we were
+  // away. Without this, closing a laptop mid-answer loses the rest of it — the
+  // agent finished perfectly well, we simply were not listening.
+  //
+  // Only chats this page HOLDS. One it does not is caught up when it is opened,
+  // and reconnecting is no reason to pull a transcript nobody is reading —
+  // on a phone that is megabytes per running chat, for a page that shows none
+  // of it.
+  useEffect(() => {
+    if (conn !== "open") return;
+    for (const id of runningRef.current) {
+      if (!catchUp.current.holds(keyFor(id))) continue;
+      catchUpChat(id).catch(() => {});
+    }
+    // running is read through the ref so a chat starting mid-reconnect does not
+    // restart this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn, catchUpChat]);
+
   useEffect(
     () =>
       bridge.on<{ key: string; seq?: number; event: unknown }>("chat-event", (payload) => {
         const id = payload && convOf(payload.key);
         if (!id) return;
-        // Out of order, or one we already folded in during a catch-up.
-        if (typeof payload.seq === "number") {
-          if (payload.seq <= (seen.current[payload.key] ?? 0)) return;
-          seen.current[payload.key] = payload.seq;
+        // What is safe to fold RIGHT NOW. Nothing, while a catch-up for this
+        // chat is in the air — that catch-up is about to rebuild it, and would
+        // wipe anything folded on top in the meantime.
+        for (const frame of catchUp.current.live(payload.key, payload.seq, payload.event)) {
+          patch(id, (s) => reduceChat(s, frame.event));
         }
-        patch(id, (s) => reduceChat(s, payload.event));
       }),
     [patch],
   );
@@ -812,7 +857,12 @@ export default function App() {
             // byProject in lib/store.ts.
             createdAt: before?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
-            seq: seen.current[keyFor(id)] ?? before?.seq,
+            // Only when this page holds the chat from the beginning. For one
+            // it does not, its own mark is 0 — writing that would throw away a
+            // perfectly good stored position and replay the lot next time.
+            seq: catchUp.current.holds(keyFor(id))
+              ? catchUp.current.mark(keyFor(id))
+              : before?.seq,
           });
           list = [next, ...list.filter((c) => c.id !== id)];
           changedIds.add(id);
@@ -1074,9 +1124,8 @@ export default function App() {
 
     // Fill in anything this device has not seen. On the device that held the
     // conversation that is the tail of an interrupted answer; on a device that
-    // has never seen it, `seq` is absent and this replays the whole thing.
-    const key = keyFor(c.id);
-    const from = seen.current[key] ?? c.seq ?? 0;
+    // has never seen it, `seq` is absent and the whole thing is replayed.
+    //
     // ...and when that replay is the WHOLE conversation, say so while it runs.
     // The chat list comes from the server and the messages do not, so a chat
     // held on another device opens with nothing in it — and a conversation with
@@ -1085,15 +1134,7 @@ export default function App() {
     // had been thrown away, for as long as the replay took.
     const blank = opensBlank(c, chatsRef.current[c.id]);
     if (blank) setReading((prev) => ({ ...prev, [c.id]: true }));
-    bridge
-      .invoke<{ seq: number; event: unknown }[]>("chat_since", { key, after: from })
-      .then((missed) => {
-        for (const item of missed ?? []) {
-          if (item.seq <= (seen.current[key] ?? 0)) continue;
-          seen.current[key] = item.seq;
-          patch(c.id, (st) => reduceChat(st, item.event));
-        }
-      })
+    catchUpChat(c.id, c.seq)
       .catch(() => {})
       .finally(() => {
         if (!blank) return;
@@ -1115,17 +1156,12 @@ export default function App() {
     }
     if (c.permission) setAccess(c.permission as AccessLevel);
     setDrawer(false);
-  }, [patch]);
+  }, [catchUpChat]);
 
-  // Clicking a desktop notification brings the window forward — this is what
-  // then puts the chat it came from on screen, so the banner lands you on the
-  // thing it was about rather than wherever you left off.
-  onOpenChat.current = (id) => {
-    const found = notifying.current.list.find((c) => c.id === id);
-    if (found) openConversation(found);
-  };
+  // The half that opens a chat a banner asked for lives further down, with the
+  // panel closers it needs — see `showConversation`.
 
-  // The same, for a banner the SERVICE WORKER raised. It cannot reach into the
+  // A banner the SERVICE WORKER raised. It cannot reach into the
   // page, so tapping one only brings the window forward and posts the chat it
   // came from; this is the half that opens it.
   useEffect(() => {
@@ -1182,7 +1218,11 @@ export default function App() {
     } catch {
       /* storage blocked: the URL is the only way back */
     }
-    const wanted = opened.current.chat ?? last;
+    // A link names ONE chat and is the only reason this page is open; the
+    // remembered one is where you happened to be last. The difference decides
+    // what is on screen underneath — see below.
+    const linked = opened.current.chat ?? null;
+    const wanted = linked ?? last;
     if (!wanted) {
       restored.current = true;
       return;
@@ -1193,7 +1233,12 @@ export default function App() {
     if (!found) return;
     restored.current = true;
     opened.current = {};
-    openConversation(found);
+    // A tapped banner with nothing of ours open lands here, through the address
+    // the worker built — so it gets the same treatment as a tap on a page that
+    // was already running: the chat in front, not underneath the files view it
+    // was left in. A reload restores what you left, view and all.
+    if (linked) onOpenChat.current(wanted);
+    else openConversation(found);
   }, [conversations, conversationId, openConversation]);
 
   /** Remember whether a side column is open. Split out because two of them do
@@ -1249,6 +1294,69 @@ export default function App() {
     const timer = setTimeout(() => setFilesMounted(false), GIT_SLIDE_MS);
     return () => clearTimeout(timer);
   }, [filesOpen]);
+
+  /** Switching project puts the whole right-hand column away: the git panel,
+   *  the files panel, and any file open in either window.
+   *
+   *  All three are about the project you just left — its branch, the files its
+   *  chat touched, one of its files. Left up, they sit beside the new project's
+   *  chat looking like they belong to it, and a diff read as the wrong repo's
+   *  is worse than no diff at all.
+   *
+   *  Keyed on the project rather than hung off the sidebar's click, so every
+   *  way in is covered: picking a conversation out of another project's folder
+   *  switches project too. The FIRST project of a visit is not a switch, which
+   *  is what the ref is for — a panel reopened from storage on arrival stays
+   *  open. */
+  const closeFile = useCloseFile();
+  const wasProject = useRef<string | null>(null);
+  useEffect(() => {
+    const before = wasProject.current;
+    wasProject.current = projectId;
+    if (!before || before === projectId) return;
+    showGit(false);
+    showFiles(false);
+    closeFile();
+  }, [projectId, showGit, showFiles, closeFile]);
+
+  /** Open a conversation AND put it in front of you, whatever was over it.
+   *
+   *  What a tapped banner means, and it is more than `openConversation`: that
+   *  one changes which chat the chat view is showing, and on a phone the chat
+   *  view is routinely not what is on screen. The files view covers it whole,
+   *  and the git and files sheets are full-screen there and are REMEMBERED
+   *  between visits, so the odds of one being up are good. Opening the chat
+   *  underneath any of them looks exactly like a tap that did nothing — on the
+   *  one notification whose whole job was to take you somewhere. */
+  const showConversation = useCallback(
+    (c: Conversation) => {
+      openConversation(c);
+      pickMode("chat");
+      showGit(false);
+      showFiles(false);
+      closeFile();
+    },
+    [openConversation, pickMode, showGit, showFiles, closeFile],
+  );
+
+  // Tapping a notification brings the window forward — this is what then puts
+  // the chat it came from on screen, so the banner lands you on the thing it
+  // was about rather than wherever you left off.
+  onOpenChat.current = (id) => {
+    const found = notifying.current.list.find((c) => c.id === id);
+    if (found) showConversation(found);
+    else awaited.current = id;
+  };
+
+  // ...and this is that tap arriving before the list it needs. See `awaited`.
+  useEffect(() => {
+    const id = awaited.current;
+    if (!id) return;
+    const found = conversations.find((c) => c.id === id);
+    if (!found) return;
+    awaited.current = null;
+    showConversation(found);
+  }, [conversations, showConversation]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
@@ -1312,7 +1420,7 @@ export default function App() {
       // dropped; leaving it would hold a room, and every process in it, for the
       // life of the server on behalf of a conversation that no longer exists.
       bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
-      delete seen.current[keyFor(id)];
+      catchUp.current.forget(keyFor(id));
       setConversations((prev) => {
         const list = prev.filter((c) => c.id !== id);
         saveConversations(list);
@@ -1365,7 +1473,10 @@ export default function App() {
           bridge.invoke("chat_send", { key, text }).catch(() => undefined);
         }
         bridge.invoke("chat_forget", { key }).catch(() => undefined);
-        seen.current[key] = 0;
+        // Held again, from nothing: `transcript::forget` drops the server's
+        // counter to zero, and a page still holding the old high number would
+        // discard every event after this as one it had already seen.
+        catchUp.current.own(key);
         patch(id, (s) => ({ ...emptyChat(), sessionId: s.sessionId }));
         // The saved copy has to be emptied here rather than left to the sync
         // effect, which skips any chat with no messages — that guard is what
@@ -1537,6 +1648,17 @@ export default function App() {
       // the stored conversation otherwise.
       const resume =
         chats[id]?.sessionId ?? conversations.find((c) => c.id === id)?.sessionId ?? null;
+
+      // Speaking into a chat whose record this page does not hold. A brand-new
+      // one has no record to hold, so it is simply ours from here. Anything
+      // else — a chat opened while the replay failed, a session picked out of
+      // history — is read first, or this turn's events would fold onto a
+      // conversation with a hole where its past belongs.
+      if (!catchUp.current.holds(keyFor(id))) {
+        if (resume) await catchUpChat(id, conversations.find((c) => c.id === id)?.seq).catch(() => {});
+        else catchUp.current.own(keyFor(id));
+      }
+
       setRunning((prev) => new Set(prev).add(id));
       try {
         await bridge.invoke("chat_start", {
@@ -1578,7 +1700,18 @@ export default function App() {
         });
       }
     },
-    [project, choice, access, effort, lite, conversationId, chats, conversations, patch],
+    [
+      project,
+      choice,
+      access,
+      effort,
+      lite,
+      conversationId,
+      chats,
+      conversations,
+      patch,
+      catchUpChat,
+    ],
   );
 
   /** Stop the running turn. The session survives, ready for the next one. */
