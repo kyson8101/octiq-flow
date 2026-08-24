@@ -40,6 +40,13 @@ import {
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
 import { tags as t } from "@lezer/highlight";
 import { languageFor } from "../lib/language";
+import { placeKey, placeOf, rememberPlace } from "../lib/scrollMemory";
+
+/** How far down a file the reader was, as CodeMirror itself describes it: a
+ *  position in the text and how far above the top of the view its line sat.
+ *  Named off the method rather than imported, because the type it wraps is not
+ *  part of the package's public names. */
+type Spot = ReturnType<EditorView["scrollSnapshot"]>;
 
 /** Colours lifted from the terminal theme the desktop app ships, so a Rust file
  *  read in the editor and the same file printed by an agent in the terminal
@@ -242,6 +249,26 @@ export function CodeEditor({
     const editor = new EditorView({ state, parent });
     view.current = editor;
 
+    // Back to where this file was left, rather than to the top of it. A file is
+    // opened, closed to read the reply underneath it and opened again, and the
+    // part you were looking at is the part you want.
+    //
+    // A snapshot rather than a pixel offset, because the two frames that draw
+    // this editor are different widths: the same line sits a different number
+    // of pixels down in the chat's column and in editor mode, and only a
+    // position in the TEXT means the same thing in both. CodeMirror clips one
+    // that now points past the end, so a file that shrank underneath us lands
+    // at its end rather than throwing.
+    const spot = placeOf<Spot>(placeKey("code", path));
+    if (spot) editor.dispatch({ effects: spot });
+
+    // Remembered as it scrolls, not as it closes. React runs this effect's
+    // cleanup where the element may already be off the page, and an element
+    // that is off the page reports a scroll of zero — which would write "the
+    // top" over the place we are trying to keep.
+    const remember = () => rememberPlace(placeKey("code", path), editor.scrollSnapshot());
+    editor.scrollDOM.addEventListener("scroll", remember, { passive: true });
+
     let alive = true;
     languageFor(path)
       .then((support) => {
@@ -255,6 +282,7 @@ export function CodeEditor({
 
     return () => {
       alive = false;
+      editor.scrollDOM.removeEventListener("scroll", remember);
       editor.destroy();
       view.current = null;
     };

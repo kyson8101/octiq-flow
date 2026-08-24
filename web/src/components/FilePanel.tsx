@@ -21,13 +21,15 @@
 //     of a large file it returns, and writing that back would cut the real file
 //     down to the part we happened to be shown. So saving is refused outright
 //     for those, rather than warned about.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type React from "react";
 import { createPortal } from "react-dom";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
+import { drawAs } from "../lib/fileView";
 import { canQuote, lineRange, sendQuote, type Quote } from "../lib/quote";
+import { placeKey, placeOf, rememberPlace } from "../lib/scrollMemory";
 import { useConfirm } from "./Confirm";
 import { FileView } from "./FileView";
 
@@ -96,6 +98,11 @@ export function FilePanel({
 
   const panelRef = useRef<HTMLElement | null>(null);
   const proseRef = useRef<HTMLDivElement | null>(null);
+  /** The scrolling part of the panel. Rendered markdown has no scroller of its
+   *  own — this element is it. The editor does, and keeps its own place (see
+   *  CodeEditor), so this only ever has a place worth keeping while prose is
+   *  what is drawn. */
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   /** Where the pointer last came up inside the panel, so the quote button can
    *  appear where the selection was made. A drag in a textarea has no rect to
    *  measure — the browser does not expose one — so the pointer is the only
@@ -110,6 +117,10 @@ export function FilePanel({
   draftRef.current = draft;
   savedRef.current = preview?.content ?? "";
   const canSave = !!preview && preview.kind === "text" && !preview.truncated && dirty;
+  /** Rendered markdown is what is on screen. It is the only thing this panel
+   *  draws that scrolls in the panel's OWN element; everything else either
+   *  brings its own scroller or does not scroll at all. */
+  const showingProse = !!preview && !editing && drawAs(path, preview) === "prose";
 
   /** Read the file. `keepEditor` is for a reload, where flipping the user out
    *  of the editor they were in would be its own small betrayal. */
@@ -141,6 +152,22 @@ export function FilePanel({
     setPending(null);
     void load(false);
   }, [path, load]);
+
+  // Where this file was left, rather than the top of it. Opening a long file,
+  // closing the column to read the reply underneath it and opening the same
+  // file again is one action interrupted, not two readings.
+  //
+  // A LAYOUT effect: the prose is in the DOM by the time this runs and the
+  // browser has not painted yet, so the file appears already scrolled instead
+  // of appearing at the top and jumping. Run when the file or the surface
+  // changes and not when the text does — a save must not throw the reader
+  // anywhere.
+  useLayoutEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !showingProse) return;
+    const at = placeOf<number>(placeKey("prose", path));
+    if (at) el.scrollTop = at;
+  }, [path, showingProse]);
 
   // Follow the file while it is open. An agent editing it in another chat, a
   // git checkout, a build writing a report — the panel is a window onto the
@@ -387,7 +414,17 @@ export function FilePanel({
               </div>
             )}
 
-            <div className="panel-body">
+            <div
+              className="panel-body"
+              ref={bodyRef}
+              // Written down as it moves, not as the panel closes: by then the
+              // browser may have taken this element off the page, and an
+              // element that is off the page reports a scroll of zero.
+              onScroll={(e) => {
+                if (!showingProse) return;
+                rememberPlace(placeKey("prose", path), e.currentTarget.scrollTop);
+              }}
+            >
               {!preview && !error && <div className="dots" aria-label="loading" />}
 
               {/* Card 89 — the same body the editor mode draws, which is how
