@@ -1906,6 +1906,46 @@ body {
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
 }
 
+/* A turn the backend stopped mid-answer, and the one way back to it. Sits
+   between the conversation and the prompt box: it belongs to neither — the list
+   is what was said, and nobody said this. Warn-tinted rather than danger:
+   nothing was lost, the answer simply is not finished. */
+.carry-on {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--fg-1);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.carry-on-said {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.carry-on-btn {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.carry-on-btn:hover {
+  filter: brightness(1.08);
+}
+
 /* A call joining the group above it. The group takes the drop: it swells for a
    moment where the card landed and settles back, the way a surface does. The
    origin is the BOTTOM edge because that is the side the new call comes from —

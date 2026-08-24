@@ -44,7 +44,20 @@ import {
 import { readCodexEvent } from "./codexEvents";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
+import { readCarryOn } from "./carryOn";
 import { readRelay } from "./relay";
+
+/** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
+ *  person typed.
+ *
+ *  Two of them now — a room's follow-up brief and a carry-on after the backend
+ *  stopped — and both are recognised by their own words rather than by a flag,
+ *  because a conversation rebuilt from the transcript has nothing else to go
+ *  on. Kept in one place so both the live path and the rebuild agree; they are
+ *  two different lines of code for the same message. */
+function asOneLine(text: string): string | undefined {
+  return readRelay(text) ?? readCarryOn(text);
+}
 
 /** `stopped` is a call that was still in flight when the user stopped the turn.
  *  It is not a failure and not a result: nothing went wrong, the answer simply
@@ -277,13 +290,15 @@ export type Message = {
    *  one was sent TO. Undefined means the whole room, which is where every
    *  message has always gone. */
   to?: { id: string; name: string };
-  /** The one line to draw instead of this turn's words, when the turn is a
-   *  follow-up brief the client sent the host rather than something a person
-   *  typed — see lib/relay.
+  /** The one line to draw instead of this turn's words, when the turn is one
+   *  the CLIENT sent rather than something a person typed: a room's follow-up
+   *  brief (lib/relay) or a carry-on after the backend stopped (lib/carryOn).
    *
    *  The words are still on the message, and have to be: the echo is matched by
-   *  text, and the brief is what the agent was actually given. This only says
-   *  not to print them, because they are the messages directly above it. */
+   *  text, and what is written here is what the agent was actually given. This
+   *  only says not to PRINT them — a brief quotes the answers directly above
+   *  it, and a carry-on is machinery aimed at the agent. Neither is anything
+   *  the reader of the conversation needs to read. */
   relay?: string;
   /** Which SEAT wrote this, when the chat is a room and it was not the host.
    *
@@ -1235,7 +1250,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
             blocks: [{ kind: "text", text: said }],
             streaming: false,
             echo: uuid,
-            ...(readRelay(said) ? { relay: readRelay(said) } : {}),
+            ...(asOneLine(said) ? { relay: asOneLine(said) } : {}),
           },
         ],
       };
@@ -1779,7 +1794,7 @@ export function addUserTurn(
         streaming: false,
         ...(attachments.length ? { attachments } : {}),
         ...(to ? { to } : {}),
-        ...(readRelay(text) ? { relay: readRelay(text) } : {}),
+        ...(asOneLine(text) ? { relay: asOneLine(text) } : {}),
       },
     ],
   };

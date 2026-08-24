@@ -20,6 +20,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp } from "./lib/catchUp";
+import { CARRY_ON, wasCutOff } from "./lib/carryOn";
 import type { RoundState } from "./components/RoundBar";
 import {
   addUserTurn,
@@ -93,6 +94,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { useConfirm } from "./components/Confirm";
+import { CarryOn } from "./components/CarryOn";
 
 /** The editor and its text-editing engine are a third of the app's code and
  *  nobody who only ever chats should download them. Split off here, they arrive
@@ -188,6 +190,11 @@ export default function App() {
   const [chats, setChats] = useState<Record<string, ChatState>>({});
   // The conversations with a live agent process behind them.
   const [running, setRunning] = useState<Set<string>>(() => new Set());
+  /** Whether the server has said what is running yet. Until it has, an empty
+   *  `running` means "not asked", not "nothing is". Telling the two apart is
+   *  what keeps a cut-turn notice off a chat that is perfectly alive — see
+   *  lib/carryOn. */
+  const [liveKnown, setLiveKnown] = useState(false);
   const [drawer, setDrawer] = useState(false);
   const [mode, setMode] = useState<Mode>(() =>
     localStorage.getItem(MODE_KEY) === "editor" ? "editor" : "chat",
@@ -571,15 +578,25 @@ export default function App() {
   // closed — or open in another tab — is recognised as belonging to a
   // conversation we already know, rather than being an orphan process that
   // blocks the next `chat_start` on that key.
+  //
+  // Asked on every CONNECT, not once on load, and its answer REPLACES what is
+  // here rather than adding to it. A backend restart is a reconnect in which
+  // every one of those processes has gone: asked once, this page would go on
+  // showing live dots for chats that no longer exist, and a chat cut off
+  // mid-turn would spin forever waiting for an answer nothing is writing.
+  // A `chat_start` racing the reply loses its dot until the next connect,
+  // which is the same trade the waiting-cards effect below makes.
   useEffect(() => {
+    if (conn !== "open") return;
     bridge
       .invoke<string[]>("chat_list")
       .then((keys) => {
         const ids = (keys ?? []).map(convOf).filter((id): id is string => !!id);
-        if (ids.length) setRunning(new Set(ids));
+        setRunning(new Set(ids));
+        setLiveKnown(true);
       })
       .catch(() => {});
-  }, []);
+  }, [conn]);
 
   // What is waiting on YOU right now, asked for rather than waited for.
   //
@@ -970,6 +987,18 @@ export default function App() {
     for (const id of running) if (chats[id]?.busy) out.add(id);
     return out;
   }, [running, chats]);
+
+  /** The chat on screen says it is working, and nothing is working on it.
+   *
+   *  Which means the backend stopped mid-answer: a restart kills every agent it
+   *  owns where it stands, so no full stop was ever written and the turn is
+   *  still open in the record. Everything said survives, and so does the
+   *  agent's own memory of it — see lib/carryOn. */
+  const cutOff = wasCutOff({
+    busy: chat.busy,
+    live: !!conversationId && running.has(conversationId),
+    known: liveKnown,
+  });
 
   // A turn that ended, announced to the desktop.
   //
@@ -2343,7 +2372,10 @@ export default function App() {
                 <div className="chat-main">
                   <MessageList
                     messages={chat.messages}
-                    busy={chat.busy}
+                    // Not `chat.busy`: a turn nothing is working on any more is
+                    // over, whatever the record says. The strip above the
+                    // prompt box is what says so.
+                    busy={chat.busy && !cutOff}
                     stoppedAt={chat.stoppedAt}
                     compactingSince={chat.compactingSince}
                     conversationId={conversationId ?? undefined}
@@ -2456,6 +2488,10 @@ export default function App() {
             />
           )}
 
+          {/* Only ever after a restart or a crash: the chat is holding a turn
+              open that nothing is answering. */}
+          {cutOff && <CarryOn onCarryOn={() => void send(CARRY_ON)} />}
+
           <Composer
             session={conversationId ?? undefined}
             choice={choice}
@@ -2465,7 +2501,7 @@ export default function App() {
             onAccess={changeAccess}
             onSend={send}
             onStop={stop}
-            busy={chat.busy}
+            busy={chat.busy && !cutOff}
             disabled={!project}
             installed={installed}
             commands={(projectId && commands[projectId]) || []}
@@ -2536,7 +2572,7 @@ export default function App() {
           <SessionFilesPanel
             paths={sessionFiles}
             open={filesOpen}
-            busy={chat.busy}
+            busy={chat.busy && !cutOff}
             onClose={() => showFiles(false)}
           />
         )}
