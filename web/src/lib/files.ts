@@ -220,6 +220,37 @@ export function newestFiles(
   return out;
 }
 
+/** How two names are put in order: case ignored, and runs of digits counted
+ *  rather than compared character by character, so `card-2` comes before
+ *  `card-10`. The same order the file tree arrives in — `fsbrowse.rs` sorts its
+ *  rows the same way, and one list that disagrees with the other about where a
+ *  name belongs is a list you have to re-read. */
+const NAME_ORDER = new Intl.Collator(undefined, { sensitivity: "base", numeric: true });
+
+/** A list of paths in the order a person looks for a NAME in: A to Z by the
+ *  file's own name, whatever folder it sits in.
+ *
+ *  It orders a list that recency CHOSE — `newestFiles` still decides which
+ *  files the panel holds, so a long session keeps showing what it is currently
+ *  about. This only decides how those rows are drawn, and a name is what the
+ *  eye scans a column for; "which of these is newest" is what the modified time
+ *  beside each row answers.
+ *
+ *  Two files can share a name and not be the same file (`mod.rs`, `index.ts`),
+ *  so the whole path breaks the tie — and a plain comparison breaks THAT one,
+ *  because the collator above calls `A.ts` and `a.ts` equal and a sort left to
+ *  decide for itself could hand back either order. Returns a new array; the
+ *  caller's list is left alone.
+ */
+export function byName(paths: string[]): string[] {
+  return [...paths].sort(
+    (a, b) =>
+      NAME_ORDER.compare(baseName(a), baseName(b)) ||
+      NAME_ORDER.compare(a, b) ||
+      (a < b ? -1 : a > b ? 1 : 0),
+  );
+}
+
 function collectFromBlock(
   block: Block,
   add: (v: unknown) => void,

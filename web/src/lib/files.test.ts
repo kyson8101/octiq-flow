@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  byName,
   fileExt,
   fileTypes,
   formatModified,
@@ -152,5 +153,42 @@ describe("newestFiles", () => {
     );
     expect(list).toHaveLength(25);
     expect(list[0]).toBe("/repo/f58.ts");
+  });
+});
+
+describe("byName", () => {
+  it("orders by file name, not by the folder above it", () => {
+    expect(byName(["/repo/a/zebra.ts", "/repo/z/apple.ts"])).toEqual([
+      "/repo/z/apple.ts",
+      "/repo/a/zebra.ts",
+    ]);
+  });
+
+  it("ignores case, so a capital letter does not jump the list", () => {
+    expect(byName(["/repo/Zeta.ts", "/repo/alpha.ts", "/repo/Beta.ts"])).toEqual([
+      "/repo/alpha.ts",
+      "/repo/Beta.ts",
+      "/repo/Zeta.ts",
+    ]);
+  });
+
+  it("counts numbers rather than comparing them character by character", () => {
+    expect(byName(["/repo/card-10.md", "/repo/card-2.md"])).toEqual([
+      "/repo/card-2.md",
+      "/repo/card-10.md",
+    ]);
+  });
+
+  it("breaks a tie on the whole path, so two mod.rs have a fixed order", () => {
+    expect(byName(["/repo/z/mod.rs", "/repo/a/mod.rs"])).toEqual([
+      "/repo/a/mod.rs",
+      "/repo/z/mod.rs",
+    ]);
+  });
+
+  it("leaves the list it was given alone", () => {
+    const given = ["/repo/b.ts", "/repo/a.ts"];
+    byName(given);
+    expect(given).toEqual(["/repo/b.ts", "/repo/a.ts"]);
   });
 });

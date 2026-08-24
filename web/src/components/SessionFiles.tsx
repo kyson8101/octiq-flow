@@ -24,7 +24,8 @@
 //
 // A long session names more files than a column can be read: the list is
 // capped at the newest 25, which is far enough back to cover what a chat is
-// still about. Older ones are not hidden behind anything — they are simply not
+// still about. Those 25 are then drawn A→Z by file name — recency chooses the
+// rows, the name orders them. Older ones are not hidden behind anything — they are simply not
 // in this list, and the git panel is where a whole branch's worth of files
 // lives.
 //
@@ -42,6 +43,7 @@ import type React from "react";
 import { bridge } from "../lib/bridge";
 import {
   baseName,
+  byName,
   candidatePaths,
   fileExt,
   fileTypes,
@@ -85,11 +87,12 @@ const ALL_TYPES = "*";
 // The scan
 // ---------------------------------------------------------------------------
 
-/** Every file this conversation has touched that actually exists, newest first.
+/** Every file this conversation has touched that actually exists, in name
+ *  order, out of the newest MAX_FILES of them.
  *
- *  Newest first because the file worth opening is nearly always the one the
- *  last turn was about, and never more than MAX_FILES of them — the older end
- *  of a long session's list is history nobody scrolls to.
+ *  The newest are what it KEEPS — the older end of a long session's list is
+ *  history nobody scrolls to — and the name is what it ORDERS them by, because
+ *  a column of names is scanned for a name.
  *
  *  Scanned when the transcript gains or loses a message — about once per tool
  *  call, which is the rate files actually appear at. `active` buys one thing on
@@ -132,7 +135,12 @@ export function useSessionFiles(
     /** Rebuild the list from what the store knows. Cheap, and it is what makes
      *  a scan that learns nothing new a no-op rather than a flicker. */
     const apply = () => {
-      const out = newestFiles(candidates, knownPaths(candidates, cwd), MAX_FILES);
+      // Recency picks WHICH files the list holds; the name decides the ORDER
+      // they are read in. The two are not in competition: the cap is what keeps
+      // a long session's list about the work in hand, and A→Z is how anyone
+      // finds a row in a column of names. When a row was last written is the
+      // stamp beside it.
+      const out = byName(newestFiles(candidates, knownPaths(candidates, cwd), MAX_FILES));
       // Same list, same array: re-rendering the panel every LIVE_MS to draw
       // exactly what is already on screen is the thing this file exists to
       // stop doing.
