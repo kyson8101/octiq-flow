@@ -467,6 +467,11 @@ function TurnView({
   // And, on a turn you typed, the seat you addressed it to. Absent for the
   // whole room, which is where every message has always gone.
   const to = messages[0].to;
+  // The follow-up brief the host was handed once the others had spoken. Drawn
+  // as one line rather than as its words: the brief QUOTES every answer above
+  // it in full, so printing it would show the whole discussion twice — see
+  // lib/relay.
+  const relay = messages[0].relay;
   // Card 75 — the skill a typed command actually resolved to. Drawn as a badge
   // rather than as text in the bubble: it is the system's resolution, not
   // something the person said, and it used to appear as a second line of their
@@ -510,6 +515,14 @@ function TurnView({
     for (const m of messages) for (const a of m.attachments ?? []) seen.set(a.path, a);
     return [...seen.values()];
   }, [messages]);
+
+  if (relay) {
+    return (
+      <article className="msg msg-relay">
+        <span aria-hidden="true">↳</span> {relay}
+      </article>
+    );
+  }
 
   return (
     <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
@@ -645,7 +658,13 @@ function groupTurns(messages: Message[]): Message[][] {
     // one agent in it: think, call a tool, answer again is one reply and wants
     // one label. In a room it is wrong the moment two seats are consecutive —
     // the second seat's words would be drawn under the first seat's name.
-    if (last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id) last.push(m);
+    // A follow-up brief never joins anything, in either direction. It is drawn
+    // as one line instead of as its words (see lib/relay), and a line that had
+    // swallowed the message you typed just before it would put your words
+    // nowhere on screen.
+    const alone = !!m.relay || !!last?.[0].relay;
+    if (!alone && last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id)
+      last.push(m);
     else turns.push([m]);
   }
   return turns;

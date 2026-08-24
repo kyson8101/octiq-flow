@@ -137,6 +137,38 @@ fn idle_timeout() -> Option<Duration> {
     }
 }
 
+/// How a chat's HOST was last started, so the backend can start it again.
+///
+/// Every one of these fields belongs to the client: the model came from the
+/// picker, the folders from the project, the level from the access control. The
+/// backend has never needed them, because the client has always been the thing
+/// that starts a chat.
+///
+/// One thing changed that. A room's host is now spoken to by the backend
+/// itself, once the other agents have answered (`round::ask_host`) — and by
+/// then its process may well be gone: the idle sweeper ends the host of a room
+/// whose seats are mid-round, because an idle host is exactly what that looks
+/// like. Without this the follow-up would be dropped in the one case it matters
+/// most, a long round nobody was watching.
+///
+/// Kept in memory only. A backend restart loses it, and a room whose host has
+/// not spoken since is simply not followed up — the words are all in the
+/// transcript either way.
+#[derive(Debug, Clone)]
+pub(crate) struct HostStart {
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    lite: Option<bool>,
+    /// The agent's own id for this conversation, learned from its opening
+    /// event. Restarting without it would hand the host an empty memory and
+    /// a brief about a discussion it had never heard of.
+    session_id: Option<String>,
+}
+
 #[derive(Default)]
 pub struct ChatManager {
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
@@ -145,6 +177,32 @@ pub struct ChatManager {
     /// Stored here because a seat that speaks needs a session and a round
     /// needs both at once — everything ELSE about a room lives in `chat_room`.
     pub(crate) rooms: Mutex<HashMap<String, crate::chat_room::Room>>,
+    /// How each chat's host was last started — see `HostStart`. Hosts only:
+    /// a seat is started from its own record and never needs this.
+    host_starts: Mutex<HashMap<String, HostStart>>,
+}
+
+impl ChatManager {
+    /// Remember how a host was started, so it can be started that way again.
+    fn remember_host(&self, key: &str, start: HostStart) {
+        if let Ok(mut m) = self.host_starts.lock() {
+            m.insert(key.to_string(), start);
+        }
+    }
+
+    /// The agent named its own conversation. Kept so a restart can resume it
+    /// rather than beginning a new one.
+    fn remember_session(&self, key: &str, session_id: &str) {
+        if let Ok(mut m) = self.host_starts.lock() {
+            if let Some(start) = m.get_mut(key) {
+                start.session_id = Some(session_id.to_string());
+            }
+        }
+    }
+
+    fn host_start(&self, key: &str) -> Option<HostStart> {
+        self.host_starts.lock().ok()?.get(key).cloned()
+    }
 }
 
 /// Which agents this module can start. The name from the UI only ever picks
@@ -747,6 +805,23 @@ pub fn chat_start_impl(
     images: Option<Vec<String>>,
     lite: Option<bool>,
 ) -> Result<(), String> {
+    // How this host was started, kept so the backend can start it the same way
+    // again — see `HostStart`. Written BEFORE the spawn, and left in place if
+    // the spawn fails: the settings were still the right ones, and a chat that
+    // failed to start is retried with them rather than with nothing.
+    manager.remember_host(
+        &key,
+        HostStart {
+            cwd: cwd.clone(),
+            agent,
+            model: model.clone(),
+            access,
+            extra_dirs: extra_dirs.clone(),
+            effort: effort.clone(),
+            lite,
+            session_id: resume.clone(),
+        },
+    );
     start_session(
         manager,
         Voice::host(key),
@@ -761,6 +836,51 @@ pub fn chat_start_impl(
         images,
         lite,
     )
+}
+
+/// Say something to a chat's own agent, starting it first if it is not up.
+///
+/// The two-step the client has always done for the host, moved down here so the
+/// BACKEND can do it too. Its one caller is `round::ask_host`: a room's host is
+/// told what the other agents said, and by then its process may be gone — the
+/// idle sweeper ends the host of a room whose seats are still answering.
+///
+/// A host that was never started in this process cannot be started by this:
+/// nothing here knows which model to pick or which folders to open, and
+/// guessing would start the wrong agent on the wrong project. It says so and
+/// nothing is sent, which loses only the follow-up — every word is already in
+/// the transcript.
+pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> Result<(), String> {
+    match chat_send_impl(
+        manager.clone(),
+        key.to_string(),
+        text.to_string(),
+        None,
+        None,
+    ) {
+        Ok(()) => Ok(()),
+        // Swept while it had nothing to do, or ended with the last restart.
+        Err(why) if why.contains("no such chat") => {
+            let start = manager
+                .host_start(key)
+                .ok_or_else(|| format!("nothing here knows how to start '{key}'"))?;
+            chat_start_impl(
+                manager,
+                key.to_string(),
+                start.cwd,
+                start.agent,
+                start.model,
+                start.access,
+                Some(text.to_string()),
+                start.session_id,
+                start.extra_dirs,
+                start.effort,
+                None,
+                start.lite,
+            )
+        }
+        Err(why) => Err(why),
+    }
 }
 
 /// Start one agent process — the host's, or a seat's.
@@ -944,8 +1064,15 @@ pub(crate) fn start_session(
         // Absent only on the desktop build, which has no server runtime — see
         // `answer_permission`.
         let rt = tokio::runtime::Handle::try_current().ok();
+        // The reader is where a chat learns its own session id and where a
+        // seat's answer is handed on, and both of those want the manager.
+        let reading = manager.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
+            // The last thing a Codex turn said, kept until the turn stops and
+            // cleared the moment it is handed over. One turn's words must never
+            // be read as the next one's answer.
+            let mut carried = String::new();
             for line in reader.lines() {
                 let Ok(line) = line else { break };
                 let trimmed = line.trim();
@@ -1021,26 +1148,41 @@ pub(crate) fn start_session(
                         // The two agents spell their full stop differently, and
                         // the idle sweeper has to understand both of them or a
                         // Codex chat would look busy for as long as it lived.
+                        // The agent naming its own conversation. Kept so the
+                        // backend can RESUME this chat rather than start a
+                        // blank one — see `HostStart`. Both agents announce it
+                        // once, under different names, in their opening event.
+                        // Hosts only: a seat resumes nothing.
+                        if speaker.is_none() {
+                            if let Some(id) = announced_session(&event) {
+                                reading.remember_session(&key, id);
+                            }
+                        }
+                        // Codex says nothing on its full stop, so its closing
+                        // words have to be kept as they go past — see
+                        // `codex_said`.
+                        if let Some(text) = codex_said(&event) {
+                            carried.clear();
+                            carried.push_str(text);
+                        }
                         if turn_is_over(&event) {
                             if let Ok(mut s) = asking.lock() {
                                 s.turn_ended();
                             }
-                        }
-                        if event.get("type").and_then(|t| t.as_str()) == Some("result") {
-                            let said = event
-                                .get("result")
-                                .and_then(|r| r.as_str())
-                                .unwrap_or_default();
-                            crate::push::notify_chat(Some(&key), "done", said);
-                            // A round, if one is going, is waiting to hear
-                            // exactly this: `result` is the agent's own full
-                            // stop, and the only honest signal that a seat has
-                            // finished its turn. Silent for every ordinary
-                            // chat, because nobody is listening.
+                            let said = closing_words(&event, &carried).to_string();
+                            carried.clear();
+                            crate::push::notify_chat(Some(&key), "done", &said);
+                            // A full stop is the only honest signal that an
+                            // agent has finished its turn. A round may be
+                            // waiting to hear exactly this; a seat that nobody
+                            // was waiting on hands the room's host something to
+                            // answer. Silent for every ordinary chat, which has
+                            // no seats and nobody listening.
                             crate::round::turn_ended(
+                                reading.clone(),
                                 &key,
-                                speaker.as_ref().map(|s| s.id.as_str()),
-                                said,
+                                speaker.as_ref(),
+                                &said,
                             );
                         }
                         // Who said this — BEFORE the record is written, so a
@@ -1140,6 +1282,9 @@ pub(crate) fn start_session(
                 .lock()
                 .ok()
                 .map(|mut m| m.remove(&session_key_for_exit));
+            // And nothing may go on waiting for a turn it will never finish —
+            // see `round::session_gone`.
+            crate::round::session_gone(&session_key_for_exit);
         });
     }
 
@@ -1689,6 +1834,58 @@ fn turn_is_over(event: &Value) -> bool {
         event.get("type").and_then(Value::as_str),
         Some("result") | Some("turn.completed") | Some("turn.failed")
     )
+}
+
+/// The id the agent gave this conversation, if this event announces one.
+///
+/// Both agents say it once and then never again, in different words: Claude's
+/// `system`/`init` carries `session_id`, and Codex's `thread.started` carries
+/// `thread_id` — which is what `codex exec resume` takes, so the two are the
+/// same thing under two names and land in one field.
+fn announced_session(event: &Value) -> Option<&str> {
+    match event.get("type").and_then(Value::as_str) {
+        Some("system") if event.get("subtype").and_then(Value::as_str) == Some("init") => {
+            event.get("session_id").and_then(Value::as_str)
+        }
+        Some("thread.started") => event.get("thread_id").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// The words a Codex turn ended on, if this event carries any.
+///
+/// Codex's full stop is EMPTY: `turn.completed` has a usage block and nothing
+/// else. What it said is in the last `item.completed` of type `agent_message`
+/// before it — so the reader keeps that line as it goes past, and hands it over
+/// when the turn stops.
+///
+/// This is the half a round was missing. `turn_ended` only ever fired on
+/// Claude's `result`, so a Codex seat in a round said its piece, was never
+/// heard, and was written down as "did not answer in time" twenty minutes
+/// later.
+fn codex_said(event: &Value) -> Option<&str> {
+    if event.get("type").and_then(Value::as_str) != Some("item.completed") {
+        return None;
+    }
+    let item = event.get("item")?;
+    if item.get("type").and_then(Value::as_str) != Some("agent_message") {
+        return None;
+    }
+    item.get("text").and_then(Value::as_str)
+}
+
+/// The words a turn ended on, whichever agent ended it.
+///
+/// Claude puts them on the full stop itself; Codex's have to have been kept as
+/// they went past, which is what `carried` holds.
+fn closing_words<'a>(event: &'a Value, carried: &'a str) -> &'a str {
+    match event.get("type").and_then(Value::as_str) {
+        Some("result") => event
+            .get("result")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        _ => carried,
+    }
 }
 
 /// The chats that have been sitting still for longer than `timeout`.
@@ -2857,6 +3054,89 @@ mod idle_tests {
         assert!(!turn_is_over(&json!({ "type": "assistant" })));
         assert!(!turn_is_over(&json!({ "type": "stream_event" })));
         assert!(!turn_is_over(&json!({ "type": "thread.started" })));
+    }
+
+    #[test]
+    fn claude_puts_its_closing_words_on_its_own_full_stop() {
+        let end = json!({ "type": "result", "result": "the migration is reversible" });
+        assert_eq!(
+            closing_words(&end, "stale"),
+            "the migration is reversible",
+            "the carried line must never win over words the event carries itself"
+        );
+    }
+
+    #[test]
+    fn codexs_closing_words_have_to_be_kept_as_they_go_past() {
+        // `turn.completed` carries a usage block and NOTHING else. This is why
+        // a Codex seat in a round said its piece, was never heard, and was
+        // written down as "did not answer in time" twenty minutes later.
+        let spoke = json!({
+            "type": "item.completed",
+            "item": { "id": "item_4", "type": "agent_message", "text": "Hi! I am Codex." },
+        });
+        assert_eq!(codex_said(&spoke), Some("Hi! I am Codex."));
+
+        // Everything else it says as it works is machinery, not an answer.
+        assert_eq!(
+            codex_said(&json!({
+                "type": "item.completed",
+                "item": { "id": "item_1", "type": "command_execution" },
+            })),
+            None
+        );
+        assert_eq!(
+            codex_said(&json!({
+                "type": "item.started",
+                "item": { "id": "item_4", "type": "agent_message", "text": "half a" },
+            })),
+            None,
+            "only a COMPLETED message is what the turn ended on"
+        );
+
+        let end = json!({ "type": "turn.completed", "usage": { "output_tokens": 448 } });
+        assert_eq!(closing_words(&end, "Hi! I am Codex."), "Hi! I am Codex.");
+        // A turn that failed before saying anything ends on nothing, which is
+        // honest — better than the last thing said two turns ago.
+        assert_eq!(closing_words(&json!({ "type": "turn.failed" }), ""), "");
+    }
+
+    #[test]
+    fn both_agents_name_the_conversation_they_opened() {
+        // One field each, under two names, meaning the same thing: the id that
+        // resumes this chat. Kept so the backend can restart a host it swept
+        // and hand it the follow-up — see `HostStart`.
+        assert_eq!(
+            announced_session(&json!({
+                "type": "system", "subtype": "init", "session_id": "abc-123",
+            })),
+            Some("abc-123")
+        );
+        assert_eq!(
+            announced_session(&json!({ "type": "thread.started", "thread_id": "01a0-2f39" })),
+            Some("01a0-2f39")
+        );
+        // Said once, in the opening event, and never again. Anything else that
+        // happens to carry the field is not the announcement.
+        assert_eq!(
+            announced_session(&json!({
+                "type": "system", "subtype": "status", "session_id": "abc-123",
+            })),
+            None
+        );
+        assert_eq!(announced_session(&json!({ "type": "assistant" })), None);
+    }
+
+    #[test]
+    fn a_host_the_backend_never_started_cannot_be_started_by_it() {
+        // The honest limit of `send_to_host`. Nothing down here knows which
+        // model to pick or which folders to open, and guessing would start the
+        // wrong agent on the wrong project.
+        let manager = Arc::new(ChatManager::default());
+        let why = send_to_host(manager, "chat-never-seen", "what did they say?")
+            .expect_err("there is no chat and no record of one");
+
+        assert!(why.contains("chat-never-seen"), "{why}");
     }
 
     #[test]

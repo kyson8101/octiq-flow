@@ -44,6 +44,7 @@ import {
 import { readCodexEvent } from "./codexEvents";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
+import { readRelay } from "./relay";
 
 /** `stopped` is a call that was still in flight when the user stopped the turn.
  *  It is not a failure and not a result: nothing went wrong, the answer simply
@@ -276,6 +277,14 @@ export type Message = {
    *  one was sent TO. Undefined means the whole room, which is where every
    *  message has always gone. */
   to?: { id: string; name: string };
+  /** The one line to draw instead of this turn's words, when the turn is a
+   *  follow-up brief the client sent the host rather than something a person
+   *  typed — see lib/relay.
+   *
+   *  The words are still on the message, and have to be: the echo is matched by
+   *  text, and the brief is what the agent was actually given. This only says
+   *  not to print them, because they are the messages directly above it. */
+  relay?: string;
   /** Which SEAT wrote this, when the chat is a room and it was not the host.
    *
    *  A different axis from `parent`, not a replacement for it: `parent` says
@@ -1201,6 +1210,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         };
       }
       // Nothing to claim: this is a rebuild, so the echo becomes the message.
+      // A follow-up brief is marked HERE as well as where it is sent, because
+      // this is the only copy a reopened conversation ever has — see lib/relay.
       return {
         ...state,
         messages: [
@@ -1211,6 +1222,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
             blocks: [{ kind: "text", text: said }],
             streaming: false,
             echo: uuid,
+            ...(readRelay(said) ? { relay: readRelay(said) } : {}),
           },
         ],
       };
@@ -1737,6 +1749,7 @@ export function addUserTurn(
         streaming: false,
         ...(attachments.length ? { attachments } : {}),
         ...(to ? { to } : {}),
+        ...(readRelay(text) ? { relay: readRelay(text) } : {}),
       },
     ],
   };

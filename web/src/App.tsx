@@ -1925,6 +1925,29 @@ export default function App() {
     return () => clearInterval(tick);
   }, [conversationId, myRound?.running, refreshRound]);
 
+  // The host has been told what the other agents in its room said, and is
+  // answering it now. The BACKEND asked it — this is only the news, which is
+  // why nothing here sends anything: every open tab hears this, and a tab that
+  // acted on it would ask the host the same thing again.
+  //
+  // The turn goes on screen because a host that suddenly speaks with nothing
+  // above it reads as an agent talking to itself. It is drawn as one line
+  // rather than as its words — the brief quotes the answers already sitting
+  // above it — see lib/relay.
+  useEffect(
+    () =>
+      bridge.on<{ key: string; text: string }>("chat-followup", (payload) => {
+        const id = payload && convOf(payload.key);
+        if (!id || !payload.text) return;
+        // Started by the backend if it had to be, so this browser may never
+        // have heard the process come up. Without this the live mark stays off
+        // for a chat that is plainly working.
+        setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+        patch(id, (st) => addUserTurn(st, payload.text));
+      }),
+    [patch],
+  );
+
   const changeAccess = useCallback(
     (p: AccessLevel) => {
       setAccess(p);

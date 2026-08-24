@@ -8183,6 +8183,22 @@ body.is-ultra .eff {
 }
 
 
+/* The follow-up brief the host was handed once the other agents had spoken.
+   It is a real turn — the host answers it — but its words are a QUOTE of the
+   messages directly above it, so drawing it as a bubble would print the whole
+   discussion twice. One centred line instead: it belongs to neither side, the
+   way a compaction notice does. */
+.msg-relay {
+  align-self: center;
+  display: flex;
+  gap: 0.375rem;
+  align-items: baseline;
+  max-width: 100%;
+  padding: 0.125rem 0.5rem;
+  color: var(--fg-2);
+  font-size: 0.75rem;
+}
+
 /* Card 75 — the skill a typed command resolved to. Typing `/execute` reaches
    the agent as `/pandahrms:execute`, and the rewritten form used to be drawn as
    a second line inside the user's own bubble — something they never said. It is

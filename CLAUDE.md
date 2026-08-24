@@ -194,6 +194,48 @@ hook keys the captured `sessionId` by it. On restart the app reads that map to
 rebuild the resume command in the same tab. The hook is best-effort and must
 never break the agent (any error → exit 0).
 
+### The host answers its own room
+
+A room's seats are separate processes. What one says goes into the **room's**
+transcript and never down the host's stdin, so after `@dee look at this` the
+host has not read a word of the answer on screen above it. It is now told:
+
+- **Once the others have finished, and only when nobody else was waiting on
+  them**, `round.rs` builds a brief of what was said (`followup_brief`) and
+  sends it to the host itself (`agent_chat::send_to_host`).
+- **A round is followed up once, at the end** — never between seats, which
+  would break the ordering the round exists for. Not at all after a round the
+  person **stopped**: cutting in is a decision that the answer is no longer
+  wanted.
+- **The discriminator is `DRIVEN`**, a set of seat sessions a round or the
+  host's own `ask_agent` started. Nothing registers for `@dee`, and that
+  absence is what says the host has not heard it. Kept separate from
+  `LISTENING` because cutting in drops the listener while the seat keeps
+  thinking — a late answer must still be known as the round's. Cleared when the
+  turn ends, when nothing was sent, and when the process dies (`session_gone`).
+- **The backend sends it, not the client.** A browser is not required for a
+  room to work, and two open tabs acting on an announcement would ask the host
+  the same thing twice. So `ChatManager` remembers how each host was started
+  (`HostStart`, plus the session id read off its opening event) and can restart
+  a host the idle sweeper ended mid-round. A host this backend has never
+  started cannot be started by it — the follow-up is logged and dropped.
+- **`chat-followup` is a notice, not an instruction.** The client draws the
+  turn (`addUserTurn`) so a host that suddenly speaks is not talking to itself,
+  and draws it as **one line** rather than its words: the brief quotes the
+  answers already sitting above it. `web/src/lib/relay.ts` recognises a brief by
+  its first line, so a conversation rebuilt from the transcript reads like the
+  live one — a flag would be one page's memory, the transcript keeps only words.
+
+### Both agents' full stops carry their closing words
+
+`turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`
+(Codex). Only Claude's carries the text. Codex's is **empty** — a usage block
+and nothing else — and what it said is in the last `item.completed` of type
+`agent_message` before it, so the reader keeps that line as it goes past
+(`codex_said`) and `closing_words` hands over whichever half applies. Without
+this a Codex seat in a round said its piece, was never heard, and was written
+down as "did not answer in time" twenty minutes later.
+
 ### Idle chats are ended, and resumed on the next message
 
 A **chat** process (`agent_chat.rs`, not a PTY) is killed after **15 minutes**

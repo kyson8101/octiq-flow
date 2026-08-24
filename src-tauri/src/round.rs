@@ -390,24 +390,150 @@ fn with_listening<T>(f: impl FnOnce(&mut HashMap<String, Sender<String>>) -> T) 
     f(guard.get_or_insert_with(HashMap::new))
 }
 
+/// Seat sessions whose turn was started by a round or by the host's own
+/// `ask_agent` — as opposed to by the PERSON typing `@name`.
+///
+/// Deliberately NOT the same set as `LISTENING`, though they are written
+/// together. Cutting in (`raise_hand`) drops the listener so the driver stops
+/// waiting at once, and a seat whose answer arrives after that would otherwise
+/// look exactly like one the person had asked directly — and would hand the
+/// host a follow-up about a round the person had just stopped.
+///
+/// So this set survives the hand going up, and is cleared only when the turn
+/// actually ends or when nothing was ever sent.
+static DRIVEN: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+fn with_driven<T>(f: impl FnOnce(&mut std::collections::HashSet<String>) -> T) -> T {
+    let mut guard = DRIVEN.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(std::collections::HashSet::new))
+}
+
 /// Listen for one seat's turn to end. Registered BEFORE the seat is spoken to,
 /// or a fast answer could land before anyone was listening for it.
 fn listen_for(session_key: &str) -> Receiver<String> {
     let (tx, rx) = channel();
     with_listening(|l| l.insert(session_key.to_string(), tx));
+    with_driven(|d| d.insert(session_key.to_string()));
     rx
 }
 
-/// A turn ended. Called from the reader thread on the agent's own `result`.
+/// Nothing was sent after all, so this seat is not answering anybody.
+fn never_spoke(session_key: &str) {
+    with_listening(|l| l.remove(session_key));
+    with_driven(|d| d.remove(session_key));
+}
+
+/// A process is gone. Whatever it was in the middle of, it will not be
+/// finishing it, so nothing may go on waiting for it or marking it as busy.
 ///
-/// Silent when nobody is waiting, which is every turn of every ordinary chat.
-pub fn turn_ended(room_key: &str, seat_id: Option<&str>, said: &str) {
-    let Some(seat_id) = seat_id else { return };
-    let key = seat_session_key(room_key, seat_id);
+/// Without this a seat killed part-way through a round — the person stopped the
+/// chat, the room was swept, the agent crashed — would leave its mark behind
+/// for the life of the backend, and the follow-up on the very next thing it was
+/// asked would be swallowed as though a round were still driving it.
+pub fn session_gone(session_key: &str) {
+    never_spoke(session_key);
+}
+
+/// A turn ended. Called from the reader thread on the agent's own full stop.
+///
+/// Two different things can be owed an answer here, and which one it is turns
+/// on whether anything STARTED this turn:
+///
+/// * a round or the host's `ask_agent` is waiting for it — hand it over;
+/// * nothing is, so the PERSON asked this seat directly with `@name`, and the
+///   host has not heard a word of it. It is told, so it can answer.
+///
+/// Silent for the host's own turn and for every ordinary chat, which has no
+/// seats at all.
+pub fn turn_ended(manager: Arc<ChatManager>, room_key: &str, seat: Option<&Seat>, said: &str) {
+    let Some(seat) = seat else { return };
+    let key = seat_session_key(room_key, &seat.id);
+    let driven = with_driven(|d| d.remove(&key));
     let tx = with_listening(|l| l.remove(&key));
     if let Some(tx) = tx {
         let _ = tx.send(said.to_string());
+        return;
     }
+    // Driven, but nobody is left waiting: the person cut in mid-round. The
+    // round is over by the person's own decision, and telling the host about
+    // the answer it stopped would be answering a question that was withdrawn.
+    if driven {
+        return;
+    }
+    ask_host(
+        manager,
+        room_key,
+        &followup_brief(&[Said {
+            name: seat.name.clone(),
+            text: said.to_string(),
+            answered: true,
+        }]),
+    );
+}
+
+/// What the host is handed once the other agents have spoken.
+///
+/// The host runs as its OWN process with its own conversation: a seat's words
+/// go into the room's transcript, never down the host's stdin. So it has not
+/// read any of this, and a brief that only said "answer them" would have it
+/// answering something it cannot see.
+///
+/// Attributed by name, the same shape a seat gets in `round_brief`, and for the
+/// same reason — an answer that cannot say who said what is not a reply to
+/// anybody. The closing note is the part that matters most: without it the host
+/// reads the whole thing as the PERSON talking, and replies to the wrong one.
+pub fn followup_brief(said: &[Said]) -> String {
+    let mut out = String::from("=== what the others in this chat just said ===");
+    for s in said {
+        out.push_str(&format!("\n\n--- {} ---\n", s.name));
+        out.push_str(if s.answered {
+            s.text.trim()
+        } else {
+            "(did not answer)"
+        });
+    }
+    out.push_str(
+        "\n\n=== over to you ===\nThose are the other agents sitting in this chat, \
+         not the person. The person is waiting to hear what YOU make of it. Say so, \
+         in your own words — agree, disagree, or carry on with the work it changes. \
+         Do not repeat their answers back, and do not ask them anything unless the \
+         person asked you to.",
+    );
+    out
+}
+
+/// Hand the host something to answer.
+///
+/// Sent from HERE rather than announced for the client to send, and on a thread
+/// of its own, for the reason this whole module runs in the background: a
+/// browser is not required for a room to work. It is also the only way to keep
+/// it to one — two open tabs both acting on an announcement would ask the host
+/// the same thing twice.
+///
+/// A thread because the caller is a reader thread part-way through the seat's
+/// own stream, and starting a host means spawning a process and waiting on its
+/// first bytes. Blocking there would stall the seat that just finished.
+///
+/// The client is still TOLD, after the fact — `chat-followup` is what puts the
+/// line on screen saying the answers were passed on. It is a notice, not an
+/// instruction: nothing acts on it, so however many tabs are watching, the host
+/// is asked once.
+fn ask_host(manager: Arc<ChatManager>, room_key: &str, text: &str) {
+    let key = room_key.to_string();
+    let text = text.to_string();
+    std::thread::spawn(move || {
+        if let Err(why) = crate::agent_chat::send_to_host(manager, &key, &text) {
+            // Worth a line and nothing more. The seats' answers are on screen
+            // and in the transcript; what is lost is the host's remark about
+            // them, and the person can still ask for it themselves.
+            eprintln!("[round] {key} could not be told what the room said: {why}");
+            return;
+        }
+        crate::bus::emit(
+            "chat-followup",
+            serde_json::json!({ "key": key, "text": text }),
+        );
+    });
 }
 
 /// Run a whole round, one seat at a time, on a thread of its own.
@@ -481,27 +607,40 @@ pub fn run_round(
                 &effort,
             );
             let said = match sent {
-                Err(why) => Said {
-                    name: seat.name.clone(),
-                    text: why,
-                    answered: false,
-                },
+                Err(why) => {
+                    // Nothing was sent, so no turn will ever end for this. Both
+                    // marks come off here or they would sit there for the life
+                    // of the process, silencing the follow-up of whatever this
+                    // seat is asked next.
+                    never_spoke(&session);
+                    Said {
+                        name: seat.name.clone(),
+                        text: why,
+                        answered: false,
+                    }
+                }
                 Ok(()) => match heard.recv_timeout(SEAT_TIMEOUT) {
                     Ok(text) => Said {
                         name: seat.name.clone(),
                         text,
                         answered: true,
                     },
-                    Err(_) => Said {
-                        name: seat.name.clone(),
-                        text: "did not answer in time".into(),
-                        answered: false,
-                    },
+                    Err(_) => {
+                        // Only the LISTENER goes. The seat was spoken to and is
+                        // still thinking; giving up on it does not stop it, and
+                        // an answer that lands after this is still the round's
+                        // — `turn_ended` clears the mark when it does.
+                        with_listening(|l| l.remove(&session));
+                        Said {
+                            name: seat.name.clone(),
+                            text: "did not answer in time".into(),
+                            answered: false,
+                        }
+                    }
                 },
             };
             // Whatever happened, it is written down and the round carries on —
             // 一方挂了不该拖垮另一方.
-            with_listening(|l| l.remove(&session));
             rounds.speaking(&key, None);
             rounds.record(&key, said);
         }
@@ -517,13 +656,26 @@ pub fn run_round(
                 "key": key,
                 "done": true,
                 "hand": over.as_ref().map(|o| o.hand).unwrap_or(false),
-                "said": over
+                "said": over.as_ref()
                     .map(|o| o.said.iter().map(|s| serde_json::json!({
                         "name": s.name, "answered": s.answered,
                     })).collect::<Vec<_>>())
                     .unwrap_or_default(),
             }),
         );
+        // The host has been sitting out its own room: every seat wrote to the
+        // transcript and none of it went down the host's stdin. Now that the
+        // last one has spoken it is handed the lot, ONCE — a host cutting in
+        // between seats would break the ordering the round exists for.
+        //
+        // Not after a round the person STOPPED. Cutting in is a decision that
+        // the answer is no longer wanted, and answering it anyway is the one
+        // thing the button was pressed to prevent.
+        if let Some(o) = over {
+            if !o.hand && !o.said.is_empty() {
+                ask_host(manager.clone(), &key, &followup_brief(&o.said));
+            }
+        }
     });
 }
 
@@ -700,13 +852,16 @@ pub fn ask_seat(
     let heard = listen_for(&session);
     let sent = speak_to(manager, key, &seat, prompt, cwd, None, &None, &None);
     if let Err(why) = sent {
-        with_listening(|l| l.remove(&session));
+        never_spoke(&session);
         return Err(why);
     }
     // The TOOL's cap, not the round's — see `ASK_TIMEOUT`.
     let answer = heard
         .recv_timeout(ASK_TIMEOUT)
         .map_err(|_| gave_up_on(&seat.name));
+    // Only the LISTENER goes. Giving up here does not stop the seat, and its
+    // answer still arrives — driven, so it is not mistaken for one the person
+    // asked for, and `turn_ended` clears the mark when it lands.
     with_listening(|l| l.remove(&session));
     let answer = answer?;
     // What one seat said still joins the room's record, so a later round can
@@ -959,12 +1114,42 @@ mod tests {
         assert!(!rounds.peek("chat-a").is_some());
     }
 
+    fn a_seat() -> Seat {
+        Seat {
+            id: "s1".into(),
+            name: "Dee".into(),
+            agent: crate::agent_chat::ChatAgent::Claude,
+            model: None,
+            role: None,
+            context: crate::chat_room::ContextMode::Project,
+            kind: crate::chat_room::SeatKind::Resident,
+            joined_at: 0,
+            provider: None,
+        }
+    }
+
     #[test]
-    fn nobody_listening_means_a_finished_turn_is_simply_ignored() {
-        // Every turn of every ordinary chat goes through this. It has to be
-        // silent, and it must not panic.
-        turn_ended("chat-a", None, "the host finished");
-        turn_ended("chat-a", Some("s1"), "a seat nobody is waiting on");
+    fn the_hosts_own_full_stop_is_simply_ignored() {
+        // Every turn of every ordinary chat goes through this — no seat, so
+        // nothing is owed an answer. It has to be silent and it must not panic.
+        turn_ended(Arc::new(ChatManager::default()), "chat-a", None, "done");
+    }
+
+    #[test]
+    fn a_seat_in_a_room_that_is_gone_is_reported_rather_than_panicking() {
+        // The follow-up path on a manager that has never heard of this chat.
+        // Nothing can be sent, and the only right answer is to say so and carry
+        // on: the seat's words are in the transcript whatever happens here.
+        let seat = a_seat();
+        turn_ended(
+            Arc::new(ChatManager::default()),
+            "chat-a",
+            Some(&seat),
+            "a seat nobody is waiting on",
+        );
+        // `ask_host` works on a thread of its own, so give it a moment to fail
+        // where a panic would still take the test down with it.
+        std::thread::sleep(Duration::from_millis(200));
     }
 
     #[test]
@@ -1409,6 +1594,109 @@ mod tests {
         assert!(
             !said.to_lowercase().contains("failed"),
             "nothing failed: {said}"
+        );
+    }
+
+    #[test]
+    fn the_host_is_shown_who_said_what_and_told_they_are_not_the_person() {
+        // The host runs as its own process and has read NONE of this. A brief
+        // that only said "answer them" would have it answering something it
+        // cannot see, and one that did not say whose words these are would have
+        // it replying to the seats as though they were the person.
+        let brief = followup_brief(&[
+            said("Dee", "  The migration is not reversible.  "),
+            Said {
+                name: "Codex".into(),
+                text: "timed out".into(),
+                answered: false,
+            },
+        ]);
+
+        assert!(brief.starts_with("=== what the others in this chat just said ==="));
+        assert!(brief.contains("--- Dee ---\nThe migration is not reversible."));
+        assert!(
+            brief.contains("--- Codex ---\n(did not answer)"),
+            "a seat that failed is still named: {brief}"
+        );
+        assert!(
+            brief.contains("not the person"),
+            "the host must be told whose words these are: {brief}"
+        );
+    }
+
+    #[test]
+    fn the_brief_head_is_the_one_the_client_draws_a_line_for() {
+        // web/src/lib/relay.ts recognises a brief by this exact first line and
+        // draws it as ONE LINE instead of quoting the whole discussion twice.
+        // Changing it here without changing it there is silent: the brief still
+        // works, it just arrives on screen as a wall of text.
+        let head = followup_brief(&[said("Dee", "yes")])
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let ts = include_str!("../../web/src/lib/relay.ts");
+
+        assert!(
+            ts.contains(&format!("\"{head}\"")),
+            "relay.ts does not know this head: {head}"
+        );
+    }
+
+    #[test]
+    fn a_seat_the_person_asked_directly_is_not_mistaken_for_a_driven_one() {
+        // The whole rule `turn_ended` turns on. A round and `ask_agent` both
+        // register before they speak; nothing registers for `@dee look at
+        // this`, and that absence is what says the host has not heard it.
+        let session = seat_session_key("chat-a", "s1");
+        assert!(!with_driven(|d| d.contains(&session)));
+
+        let _heard = listen_for(&session);
+        assert!(with_driven(|d| d.contains(&session)));
+
+        never_spoke(&session);
+        assert!(!with_driven(|d| d.contains(&session)));
+    }
+
+    #[test]
+    fn cutting_in_leaves_the_mark_so_a_late_answer_is_still_a_round_s() {
+        // `raise_hand` drops the LISTENER so the driver stops waiting at once.
+        // The seat is not stopped by that, and its answer still lands — and
+        // must not then look like one the person asked for, or the host would
+        // be handed a follow-up about the round they had just stopped.
+        let r = Rounds::default();
+        r.start("chat-b", vec!["s1".into()]).unwrap();
+        let session = seat_session_key("chat-b", "s1");
+        let _heard = listen_for(&session);
+        r.speaking("chat-b", Some(session.clone()));
+
+        r.raise_hand("chat-b");
+
+        assert!(
+            !with_listening(|l| l.contains_key(&session)),
+            "the driver must stop waiting at once"
+        );
+        assert!(
+            with_driven(|d| d.contains(&session)),
+            "a late answer must still be known as the round's"
+        );
+        never_spoke(&session);
+    }
+
+    #[test]
+    fn a_dead_process_stops_being_waited_on_and_stops_being_marked() {
+        // A seat killed part-way through — the chat was stopped, the room was
+        // swept, the agent crashed. Left marked, the follow-up on the very next
+        // thing it was asked would be swallowed as though a round still had it.
+        let session = seat_session_key("chat-c", "s1");
+        let heard = listen_for(&session);
+
+        session_gone(&session);
+
+        assert!(!with_driven(|d| d.contains(&session)));
+        assert!(
+            heard.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a driver must not go on waiting twenty minutes for a dead process"
         );
     }
 
