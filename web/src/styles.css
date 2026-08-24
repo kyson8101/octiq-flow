@@ -2338,8 +2338,12 @@ body {
 /* Anchored to the bottom, where a thumb is, and above the keyboard's own inset.
    A COLUMN, not one scrolling box: the options scroll inside `.sheet-body` and
    `.sheet-foot` stays put, so Done — the only way out of the sheet other than
-   the scrim — is on screen whatever the phone's height. */
-.settings-sheet {
+   the scrim — is on screen whatever the phone's height.
+
+   The SHELL, shared: card 90 split the one settings sheet into two — settings,
+   and who is in the chat — and both rise from the same edge to the same shape.
+   What each adds to it is below, under its own class. */
+.sheet {
   position: fixed;
   z-index: 41;
   left: 0;
@@ -2379,6 +2383,13 @@ body {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--fg-3);
+}
+
+/* Who is in the chat, on a phone. One group, so it is never tall enough to
+   need the settings sheet's compact scale — and it must not inherit it either:
+   the seat rows here are the touch targets. */
+.room-sheet {
+  max-height: 70vh;
 }
 
 /* ---- Compact scale, and only in here ------------------------------------
@@ -2609,6 +2620,24 @@ body {
 /* Auto: every bar lit, none of them a claim about how hard it will think. */
 .eff-bars.is-auto rect.is-lit {
   fill: var(--accent);
+}
+
+/* Card 90 — the room as a dropdown, where there is a row to hang one from.
+   Wider than the option lists beside it: a seat row carries a name, what the
+   seat is, and the button that drops it, and the warning under the add buttons
+   is a sentence rather than a hint. */
+.picker-menu.is-room {
+  min-width: 268px;
+  max-width: 330px;
+  padding: 6px;
+}
+
+/* The panel's own rows are drawn for a sheet, whose ground is `--bg-1`. That is
+   also this menu's ground, so in here they would be invisible seams; one step
+   up separates them from it. */
+.picker-menu.is-room .room-seat,
+.picker-menu.is-room .room-warn {
+  background: var(--bg-2);
 }
 
 .picker-menu.is-effort {

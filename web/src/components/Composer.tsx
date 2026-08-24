@@ -17,13 +17,14 @@ import { workingLine } from "../lib/working";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
-import { RoomPanel } from "./RoomPanel";
+import { RoomPanel, RoomSheet } from "./RoomPanel";
 import { completeMention, mentionMatches, mentionPicks, mentionQuery } from "../lib/mention";
 import { RoundBar, type RoundState } from "./RoundBar";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
 import type { Seat } from "../lib/chat";
+import { useMedia, WIDE } from "../lib/media";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
@@ -432,6 +433,15 @@ export function Composer({
   const [menu, setMenu] = useState(false);
   /** The phone's stand-in for the three pickers: one sheet holding all of them. */
   const [sheet, setSheet] = useState(false);
+  /** Who is in this chat, opened by the person+ button. Its OWN state, not the
+   *  settings sheet's: card 90 split them, because "who else is here" is not a
+   *  setting of the agent you are talking to. */
+  const [roomOpen, setRoomOpen] = useState(false);
+  /** Which shape that panel takes. A dropdown over the row where there is a row
+   *  to hang it over; a sheet from the bottom edge where a 360px bar cannot
+   *  hold one. Asked of the browser, not of CSS, because the two are different
+   *  ELEMENTS in different places — see lib/media.ts. */
+  const wide = useMedia(WIDE);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
   // Every option list depends on which provider is chosen: the two agents do
@@ -1323,18 +1333,54 @@ export function Composer({
               decision: who does this. In EVERY chat, because a seat is what
               makes a chat a group and there is no longer a mode to turn on
               first — the room's own controls appear above the box once
-              somebody is actually in it. */}
-          {onAddSeat && (
-            <button
-              className={`picker-btn ${room ? "is-on" : ""}`}
-              type="button"
-              aria-haspopup="dialog"
-              title={room ? "Who is in this chat" : "Add an agent to this chat"}
-              aria-label={room ? "Who is in this chat" : "Add an agent to this chat"}
-              onClick={() => setSheet(true)}
-            >
-              <AddAgentIcon />
-            </button>
+              somebody is actually in it.
+
+              Card 90 — and it opens the ROOM, not the settings sheet. This
+              button used to open the same pile as the button beside it, with
+              the room fourth in it under Model, Access and Effort; pressing the
+              one drawn as a person and getting a model picker is not what the
+              icon promised. */}
+          {onAddSeat && onRemoveSeat && (
+            <div className="picker">
+              <button
+                className={`picker-btn ${room ? "is-on" : ""}`}
+                type="button"
+                aria-haspopup="dialog"
+                aria-expanded={roomOpen}
+                title={room ? "Who is in this chat" : "Add an agent to this chat"}
+                aria-label={room ? "Who is in this chat" : "Add an agent to this chat"}
+                onClick={() => setRoomOpen((v) => !v)}
+              >
+                <AddAgentIcon />
+              </button>
+              {roomOpen &&
+                (wide ? (
+                  <>
+                    <div className="picker-scrim" onClick={() => setRoomOpen(false)} />
+                    {/* No Done: a dropdown closes on the scrim, the same as the
+                        three beside it. And it does NOT close on adding a seat
+                        — adding two is one act, and the list you are adding to
+                        is the thing you want to keep watching. */}
+                    <div className="picker-menu is-room" role="dialog" aria-label="Who is in this chat">
+                      <RoomPanel
+                        seats={seats ?? []}
+                        onAdd={onAddSeat}
+                        onRemove={onRemoveSeat}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="sheet-scrim" onClick={() => setRoomOpen(false)} />
+                    <RoomSheet
+                      seats={seats ?? []}
+                      onAdd={onAddSeat}
+                      onRemove={onRemoveSeat}
+                      onDone={() => setRoomOpen(false)}
+                    />
+                  </>
+                ))}
+            </div>
           )}
 
           {/* What used to be the status line stood here, between the buttons
@@ -1393,9 +1439,6 @@ export function Composer({
               onEffort={onEffort}
               lite={lite}
               onLite={onLite}
-              seats={seats}
-                onAddSeat={onAddSeat}
-              onRemoveSeat={onRemoveSeat}
               onDone={() => setSheet(false)}
             />
           </>
@@ -1451,9 +1494,6 @@ export function SettingsSheet({
   onEffort,
   lite,
   onLite,
-  seats,
-  onAddSeat,
-  onRemoveSeat,
   onDone,
 }: {
   choice: ModelChoice;
@@ -1468,15 +1508,10 @@ export function SettingsSheet({
   onEffort: (e: Effort) => void;
   lite: boolean;
   onLite: (on: boolean) => void;
-  /** Card 66. Optional: a sheet handed no room callbacks draws no room
-   *  controls at all. */
-  seats?: Seat[];
-  onAddSeat?: (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => void;
-  onRemoveSeat?: (seatId: string) => void;
   onDone: () => void;
 }) {
   return (
-    <div className="settings-sheet" role="dialog" aria-label="Chat settings">
+    <div className="sheet settings-sheet" role="dialog" aria-label="Chat settings">
       <div className="sheet-body">
         <div className="sheet-group">
           <div className="sheet-head">Model</div>
@@ -1500,19 +1535,6 @@ export function SettingsSheet({
           <div className="sheet-head">Effort</div>
           <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
         </div>
-
-        {/* Card 66. Last, and off by default: a chat is one agent until someone
-            decides otherwise, and nothing above this changes when it is off. */}
-        {onAddSeat && onRemoveSeat && (
-          <div className="sheet-group">
-            <div className="sheet-head">Room</div>
-            <RoomPanel
-              seats={seats ?? []}
-              onAdd={onAddSeat}
-              onRemove={onRemoveSeat}
-            />
-          </div>
-        )}
       </div>
 
       <div className="sheet-foot">

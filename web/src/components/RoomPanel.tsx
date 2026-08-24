@@ -11,10 +11,16 @@
  *  what makes a chat a group, so the control that adds one has to work in a chat
  *  that is not one yet.
  *
- *  What that costs is honest and small: every chat's settings sheet now carries
- *  a short "nobody else is here yet" and a way to change that. It costs nothing
+ *  What that costs is honest and small: every chat carries a short "nobody else
+ *  is here yet" and a way to change that, one button away. It costs nothing
  *  anywhere else — the transcript, the composer row and the header all stay
  *  exactly as they were until somebody actually joins.
+ *
+ *  ## Card 90 — one panel, one subject
+ *
+ *  That button used to open the SETTINGS sheet, with this fourth in it under
+ *  Model, Access and Effort. Now it opens this alone: a dropdown over the row on
+ *  a wide screen, `RoomSheet` below on a phone.
  *
  *  ## Presentational
  *
@@ -142,6 +148,48 @@ export function RoomPanel({
         An outside service is sent what is said in this room. It cannot open
         your files, but anything quoted into the chat goes with the question.
       </p>
+    </div>
+  );
+}
+
+/** Card 90 — the room on its own, as a sheet.
+ *
+ *  It used to be the FOURTH group of the settings sheet, under Model, Access
+ *  and Effort. So adding somebody meant opening a sheet about the agent you are
+ *  already talking to, scrolling past three of its settings, and finding the
+ *  room at the bottom — and the person+ button in the composer row opened that
+ *  same pile. It opens this instead, and this holds one thing.
+ *
+ *  The same shell as the settings sheet (`.sheet`), so it rises from the same
+ *  edge and Done closes it the same way. On a wide screen the button opens the
+ *  panel as a dropdown over the row instead; there a sheet would be a whole
+ *  screen of furniture for three buttons.
+ */
+export function RoomSheet({
+  seats,
+  onAdd,
+  onRemove,
+  onDone,
+}: {
+  seats: Seat[];
+  onAdd: (want: (typeof CAN_ADD)[number]) => void;
+  onRemove: (seatId: string) => void;
+  onDone: () => void;
+}) {
+  return (
+    <div className="sheet room-sheet" role="dialog" aria-label="Who is in this chat">
+      <div className="sheet-body">
+        <div className="sheet-group">
+          <div className="sheet-head">Who is in this chat</div>
+          <RoomPanel seats={seats} onAdd={onAdd} onRemove={onRemove} />
+        </div>
+      </div>
+
+      <div className="sheet-foot">
+        <button className="sheet-done" type="button" onClick={onDone}>
+          Done
+        </button>
+      </div>
     </div>
   );
 }
