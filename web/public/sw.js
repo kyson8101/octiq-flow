@@ -110,10 +110,19 @@ self.addEventListener("notificationclick", (event) => {
       });
       if (windows.length > 0) {
         const client = windows[0];
-        await client.focus();
+        // Focus first, so the page acts on a window already in front — but
+        // `focus()` is allowed to REFUSE, and a phone that has just woken is
+        // where it does. Refused, the window is still ours and the chat is
+        // still the thing that was asked for, so the message goes either way:
+        // one that lands on a window the OS brought forward by itself is worth
+        // more than a tap that threw before it said anything.
+        try {
+          await client.focus();
+        } catch {
+          /* not allowed to raise it; the message below still opens the chat */
+        }
         // A page that is already running owns the conversation list and the
-        // routing, so it only needs the chat id. Told after focus, so it acts
-        // on a window already in front.
+        // routing, so it only needs the chat id.
         if (id) client.postMessage({ type: "open-chat", conversationId: id });
         return;
       }
