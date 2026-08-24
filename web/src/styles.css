@@ -982,6 +982,70 @@ body {
   color: var(--fg-3);
 }
 
+/* ---- A seat's reply ---------------------------------------------------- */
+
+/* A room's guests each speak in their own block. The host does not: it keeps
+   the plain full-width prose every chat has always had, because it is the one
+   voice a room never has to identify, and boxing it too would make a one-seat
+   room read as two strangers talking.
+
+   Before this, every reply in a room was the same prose at the same width
+   under an 11px name at 32% opacity — the faintest text on the page carrying
+   the first question a room asks, which of these is talking. Scrolled back
+   through three seats it was a wall with no owners. */
+.msg-seat {
+  --tint: var(--fg-2);
+  padding: 8px 13px 10px;
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--tint) 6%, transparent);
+  /* An inset ring rather than a border: this sits in a flex column whose items
+     are already held to `min-width: 0`, and a border would add its two pixels
+     to the width rather than to the inside. Drawn on all four sides — a strip
+     down one edge is a look this project does not use. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tint) 20%, transparent);
+}
+
+/* The name, said properly rather than whispered. It carries the seat's colour;
+   the agent's mark keeps its own beside it. The mark says WHICH AGENT, the
+   colour says WHICH SEAT, and a room holding two Claudes needs both. */
+.msg-seat .msg-role {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+  color: color-mix(in srgb, var(--tint) 65%, var(--fg-0));
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+/* Eight colours, handed out in order of first appearance (see lib/seatTint) —
+   the same categorical palette the tool icons draw from. Quiet, and never the
+   only thing carrying the meaning, since the name is right beside it. */
+.msg-seat[data-tint="0"] {
+  --tint: #0a84ff;
+}
+.msg-seat[data-tint="1"] {
+  --tint: #ff9f0a;
+}
+.msg-seat[data-tint="2"] {
+  --tint: #bf5af3;
+}
+.msg-seat[data-tint="3"] {
+  --tint: #30d158;
+}
+.msg-seat[data-tint="4"] {
+  --tint: #ff375f;
+}
+.msg-seat[data-tint="5"] {
+  --tint: #64d2ff;
+}
+.msg-seat[data-tint="6"] {
+  --tint: #ffd60a;
+}
+.msg-seat[data-tint="7"] {
+  --tint: #66d4cf;
+}
+
 .msg-body {
   display: flex;
   flex-direction: column;

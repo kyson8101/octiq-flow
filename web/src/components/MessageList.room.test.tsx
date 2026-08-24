@@ -134,3 +134,35 @@ describe("two seats answering one after the other", () => {
     expect(html.match(/msg-role/g) ?? []).toHaveLength(2);
   });
 });
+
+describe("telling one seat's reply from another's at a glance", () => {
+  it("marks a seat's turn as a seat's, and the host's as neither", () => {
+    // The host is the voice a room never has to identify: it keeps the plain
+    // full-width prose every chat has always had, and only the guests are set
+    // apart. Mark the host too and a one-seat room reads as two strangers.
+    const html = render(answered("the host speaking"), answered("the seat speaking", CODEX));
+
+    expect(html.match(/msg-seat/g) ?? []).toHaveLength(1);
+  });
+
+  it("gives two seats two different colours", () => {
+    const html = render(answered("Codex here.", CODEX), answered("I disagree.", CLAUDE));
+    const tints = [...html.matchAll(/data-tint="(\d+)"/g)].map((m) => m[1]);
+
+    expect(tints).toHaveLength(2);
+    expect(new Set(tints).size).toBe(2);
+  });
+
+  it("keeps a seat's colour the same across the whole conversation", () => {
+    const html = render(
+      answered("Codex, first.", CODEX),
+      answered("me next.", CLAUDE),
+      answered("Codex again.", CODEX),
+    );
+    const tints = [...html.matchAll(/data-tint="(\d+)"/g)].map((m) => m[1]);
+
+    expect(tints).toHaveLength(3);
+    expect(tints[0]).toBe(tints[2]);
+    expect(tints[0]).not.toBe(tints[1]);
+  });
+});

@@ -33,6 +33,7 @@ import { clipMessage } from "../lib/clip";
 import { ProseLink } from "./ProseLink";
 import { ProsePath } from "./ProsePath";
 import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
+import { seatKey, seatTints } from "../lib/seatTint";
 
 /** A table, in a box that scrolls sideways on its own.
  *
@@ -451,6 +452,7 @@ function TurnView({
   kids,
   last,
   busy,
+  tints,
 }: {
   messages: Message[];
   kids: Kids;
@@ -459,6 +461,9 @@ function TurnView({
   /** Whether the chat is working. A turn can only be waiting its turn while
    *  something else is having one. */
   busy?: boolean;
+  /** Which colour each seat in this room speaks in. Empty in an ordinary chat,
+   *  which has no seats — see lib/seatTint. */
+  tints?: Map<string, number>;
 }) {
   const role = messages[0].role;
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
@@ -524,8 +529,17 @@ function TurnView({
     );
   }
 
+  // A guest's turn, drawn as its own block. The host keeps the plain full-width
+  // prose every chat has always had — it is the voice a room never has to
+  // identify, and marking it too would make a one-seat room read as two
+  // strangers talking.
+  const tint = speaker ? tints?.get(seatKey(speaker)) : undefined;
+
   return (
-    <article className={`msg msg-${role} ${queued ? "is-queued" : ""}`}>
+    <article
+      className={`msg msg-${role} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""}`}
+      data-tint={tint}
+    >
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
       {role === "user" && to && <div className="msg-to">to {to.name}</div>}
@@ -814,12 +828,23 @@ export function MessageList({
     return { turns: groupTurns(top), kids };
   }, [messages]);
 
+  // Which colour each seat speaks in. Computed over the WHOLE conversation
+  // rather than per turn, because the colours are handed out in order of first
+  // appearance and a turn cannot see who came before it.
+  const tints = useMemo(() => seatTints(messages), [messages]);
+
   return (
     <div className="msgs" ref={scrollerRef}>
       <div className="msgs-inner" ref={innerRef}>
         {turns.map((turn, i) => (
           <Fragment key={turn[0].id}>
-            <TurnView messages={turn} kids={kids} last={i === turns.length - 1} busy={busy} />
+            <TurnView
+              messages={turn}
+              kids={kids}
+              last={i === turns.length - 1}
+              busy={busy}
+              tints={tints}
+            />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once
                 they can see the one above it never finished. */}
