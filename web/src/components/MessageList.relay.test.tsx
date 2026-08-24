@@ -14,7 +14,7 @@ vi.mock("../lib/pathStore", () => ({
   subscribePaths: () => () => {},
 }));
 
-import { addUserTurn, type ChatState, type Message } from "../lib/chat";
+import { addUserTurn, emptyChat, type Message } from "../lib/chat";
 import { RELAY_HEAD } from "../lib/relay";
 import { MessageList } from "./MessageList";
 
@@ -25,8 +25,6 @@ The migration is not reversible.
 
 === over to you ===
 Those are the other agents sitting in this chat, not the person.`;
-
-const EMPTY: ChatState = { messages: [], agents: [], notices: [], busy: false };
 
 let n = 0;
 const typed = (text: string): Message => ({
@@ -53,7 +51,7 @@ describe("a follow-up brief in the transcript", () => {
     // The bubble is claimed when the agent replays what it was given. Trimming
     // the brief down to its label would leave the echo matching nothing, and
     // the whole brief would arrive as a SECOND message nobody sent.
-    const state = addUserTurn(EMPTY, BRIEF);
+    const state = addUserTurn(emptyChat(), BRIEF);
     const message = state.messages[state.messages.length - 1];
 
     expect(message.relay).toBe("passed on what Dee said");
