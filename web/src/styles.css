@@ -2103,7 +2103,7 @@ body {
   flex-direction: column;
   gap: 8px;
   min-height: 0;
-  padding: 8px 8px 8px 0;
+  padding: 8px;
   background: transparent;
 }
 
@@ -2115,27 +2115,31 @@ body {
   overflow: hidden;
 }
 
+/* Sized to what it holds, not to the window. A card stretched from the top bar
+   to the floor with two rows in it stops reading as a card and starts reading
+   as a second sidebar; grown only as far as its rows, it stays the light thing
+   parked in the corner that the shadow says it is. It still shrinks — a long
+   list gives way to the height there is and scrolls inside `.rail-list`. */
 .side .rail {
+  flex: 0 1 auto;
   width: auto;
   min-height: 0;
   border-left: 1px solid var(--border);
 }
 
-.side .rail {
-  flex: 1 1 auto;
-}
-
 /* On a phone the column cannot be a column: 14.5rem of a 24rem screen is the
-   conversation. So `.side` stops being a box at all — its children lay out as
-   direct children of the stack, which is how the rail behaved before the
-   column existed. */
+   conversation. So it stops taking width and becomes a sheet anchored to the
+   right edge, the way the git and files panels do at this width — the strip of
+   chat left showing is what says this is on top of your work. There is nothing
+   to slide: the ✕ and the top bar's count mount and unmount it. */
 @media (max-width: 700px) {
   .side {
-    display: contents;
-  }
-
-  .side .rail {
-    background: var(--bg-sunken);
+    position: absolute;
+    inset: 0 0 0 auto;
+    /* Above the views and below the project drawer (20) and its scrim (10),
+       the same rung the git sheet sits on. */
+    z-index: 5;
+    width: min(72vw, 15.5rem);
   }
 }
 

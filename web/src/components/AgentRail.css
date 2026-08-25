@@ -164,34 +164,15 @@
   color: var(--fg-3);
 }
 
-/* The transcript and the rail as one row. The transcript keeps its own
-   scroller, the rail keeps its own; only this row is shared. */
+/* The transcript, and the room it scrolls in. The rail is no longer in here —
+   it is a column of the whole view now, beside the git and files panels, so
+   that the prompt box below the transcript moves with the transcript rather
+   than staying centred on a window the conversation has stopped using. */
 .chat-body {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   align-items: stretch;
-}
-
-/* On a phone the row has to become a stack.
-   `.rail` is a FIXED 13.5rem and does not shrink, which is right beside a
-   transcript with room to spare and wrong on a 24rem screen: it took more than
-   half the width and squeezed the conversation into a gutter about 10rem wide.
-   Width is the scarce thing on a phone and height is not, so below this the
-   rail goes UNDER the transcript, full width, capped so it can never take the
-   screen — its own list still scrolls inside that cap. */
-@media (max-width: 700px) {
-  .chat-body {
-    flex-direction: column;
-  }
-
-  .rail {
-    width: auto;
-    max-height: 9rem;
-    /* The divider follows the rail: it sits above now, not beside. */
-    border-left: none;
-    border-top: 1px solid var(--border);
-  }
 }
 
 /* The row is a button now. Strip the browser's chrome and keep the layout the
@@ -213,4 +194,80 @@ button.rail-row:hover {
 button.rail-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+}
+
+/* ---- The head, and the two controls that open and close the column ------ */
+/* Named, so a box of rows is a thing you can point at, and closable, so it is
+   a thing you can put away. Built to match `.gitp-head` next door — the two
+   columns dock to the same edge and should not look like different apps. */
+.rail-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4375rem 0.375rem 0.4375rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.rail-title {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-2);
+}
+
+.rail-close {
+  flex: 0 0 auto;
+  padding: 0 0.3125rem;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 0.6875rem;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.rail-close:hover {
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+/* The top bar's count. The shape `.sfp-toggle` has, one button along: the two
+   sit side by side and are the same kind of control. */
+.rail-toggle {
+  width: auto;
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  color: var(--fg-1);
+}
+
+.rail-toggle.is-on {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.rail-count {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The phone bar has four things to carry and 390px to carry them in, so up
+   there the count goes and the button stays — the same trade the files button
+   makes at this width. */
+@media (max-width: 700px) {
+  .topbar .rail-toggle {
+    width: 32px;
+    padding: 0;
+  }
+
+  .topbar .rail-count {
+    display: none;
+  }
 }

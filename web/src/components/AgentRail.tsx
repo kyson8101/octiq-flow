@@ -186,12 +186,62 @@ function AgentRow({
   );
 }
 
+/** The top bar's way back to the rail: how many agents this chat has started,
+ *  and the switch that shows or hides the column listing them.
+ *
+ *  It exists because the column can be closed. A panel with a ✕ and no button
+ *  anywhere that brings it back is a panel you close once and never see again —
+ *  and this one draws itself only when a chat starts an agent, so there would
+ *  be nothing to say it had ever been there. Shaped like the Files and Git
+ *  buttons beside it, and wearing the same sparkles a Task card wears, so the
+ *  count and the thing it counts look like each other. */
+export function RailButton({
+  count,
+  open,
+  onToggle,
+}: {
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  if (count === 0) return null;
+
+  return (
+    <button
+      className={`icon-btn rail-toggle ${open ? "is-on" : ""}`}
+      type="button"
+      aria-expanded={open}
+      aria-label={`Agents in this chat — ${count}`}
+      title={`${count} agent${count === 1 ? "" : "s"} this chat has started`}
+      onClick={onToggle}
+    >
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7z" />
+        <path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
+      </svg>
+      <span className="rail-count">{count}</span>
+    </button>
+  );
+}
+
 export function AgentRail({
   agents,
   onOpen,
+  onClose,
 }: {
   agents: AgentRun[];
   onOpen?: (id: string) => void;
+  onClose?: () => void;
 }) {
   const running = agents.filter((a) => a.status === "running").length;
   const now = useTick(running > 0);
@@ -203,6 +253,16 @@ export function AgentRail({
 
   return (
     <aside className="rail" aria-label="agents">
+      {/* The name of the column and the way out of it. Both are new with the
+          ✕: an unnamed box you cannot close reads as part of the furniture. */}
+      <header className="rail-head">
+        <span className="rail-title">Agents</span>
+        {onClose && (
+          <button className="rail-close" type="button" aria-label="Hide agents" onClick={onClose}>
+            ✕
+          </button>
+        )}
+      </header>
       <ul className="rail-list">
         {agents.map((run) => (
           <AgentRow key={run.id} run={run} now={now} onOpen={onOpen} />

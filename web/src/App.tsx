@@ -57,7 +57,7 @@ import {
 } from "./lib/notify";
 import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
-import { AgentRail } from "./components/AgentRail";
+import { AgentRail, RailButton } from "./components/AgentRail";
 import { BackgroundProvider, BackgroundStrip } from "./components/Background";
 import { backgroundCalls } from "./lib/background";
 import { Todos } from "./components/Todos";
@@ -1437,6 +1437,15 @@ export default function App() {
     remember(FILES_KEY, next);
   }, []);
 
+  /** The agent column. Unlike the two above it takes no width from a panel and
+   *  closes none of them: it is narrow, it is about the chat rather than the
+   *  code, and a chat that starts an agent while you are reading a diff should
+   *  not throw the diff away. */
+  const showRail = useCallback((next: boolean) => {
+    setRailShut(!next);
+    remember(RAIL_KEY, !next);
+  }, []);
+
   useEffect(() => {
     if (gitOpen) return;
     const timer = setTimeout(() => setGitMounted(false), GIT_SLIDE_MS);
@@ -2449,6 +2458,15 @@ export default function App() {
         {/* The plan: a count on the bar, the list one tap under it. */}
         <Todos todos={todos} />
 
+        {/* The agents this chat has started: a count on the bar, the column
+            one tap under it — and the only way back once the column's ✕ has
+            put it away. */}
+        <RailButton
+          count={chat.agents.length}
+          open={!railShut}
+          onToggle={() => showRail(railShut)}
+        />
+
         {/* The files the chat has touched: a count on the bar, the column one
             tap under it. Beside Git because they are the same kind of thing —
             a column about the code, opened from the bar — and because they take
@@ -2615,15 +2633,6 @@ export default function App() {
                   </div>
                 </BackgroundProvider>
               </PathCwdProvider>
-              {/* The right column: the agents this chat started, as a card
-                  that looks like it is floating but keeps its own space — the
-                  conversation ends where the column begins, so nothing is ever
-                  underneath it. Drawn only when there is an agent to list. */}
-              {chat.agents.length > 0 && (
-                <aside className="side">
-                  <AgentRail agents={chat.agents} onOpen={setFocusedAgent} />
-                </aside>
-              )}
             </div>
           )}
 
@@ -2788,6 +2797,29 @@ export default function App() {
               <EditorMode project={project} />
             </Suspense>
           </div>
+        )}
+
+        {/* The agent column: the agents this chat started, as a card that
+            looks like it is floating but keeps its own space — the chat ends
+            where the column begins, so nothing is ever underneath it.
+
+            A sibling of the views rather than something inside the chat,
+            which is where it started and what made it look wrong. In there it
+            took its width from the TRANSCRIPT alone: the messages re-centred
+            in what was left while the prompt box below them, outside that row,
+            stayed centred on the whole window. Two columns, half a panel
+            apart, in a layout whose whole shape is one centred column. Out
+            here it takes width from the view, so the transcript and the prompt
+            box move together and stay lined up — which is what the git and
+            files panels beside it have always done. */}
+        {mode === "chat" && !railShut && chat.agents.length > 0 && (
+          <aside className="side">
+            <AgentRail
+              agents={chat.agents}
+              onOpen={setFocusedAgent}
+              onClose={() => showRail(false)}
+            />
+          </aside>
         )}
 
         {/* On a wide screen a sibling of the views, not something laid over
