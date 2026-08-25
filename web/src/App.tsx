@@ -896,11 +896,21 @@ export default function App() {
   // transcript 60 times a second, so this waits for a quiet moment.
   useEffect(() => {
     const timer = setTimeout(() => {
+      // A chat waiting on Undo is the one case where a missing row is on
+      // purpose. Everything a row is rebuilt FROM — its ChatState, its meta —
+      // is deliberately left alive for those three seconds, so this loop read
+      // the deleted chat as one that had never been saved and wrote it
+      // straight back at the top of the list. Any streaming agent anywhere is
+      // enough to run this pass, so a delete made while something was working
+      // undid itself, and since `commitDelete` only takes the chat off the
+      // SERVER, the row it put back then stayed for good.
+      const undoable = pendingDelete.current?.conversation.id;
       setConversations((prev) => {
         let list = prev;
         let touched = false;
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
+          if (id === undoable) continue;
           const info = meta.current[id];
           if (!info || s.messages.length === 0) continue;
           const before = list.find((c) => c.id === id);
@@ -1498,6 +1508,17 @@ export default function App() {
     // life of the server on behalf of a conversation that no longer exists.
     bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
     catchUp.current.forget(keyFor(id));
+    // The row went when the × was clicked, and this takes it out again. Not
+    // needless: a delete is only ever as good as its last word, and anything
+    // that wrote the list during the three seconds — a save already on its way
+    // when the click landed — would otherwise leave a row pointing at a chat
+    // that no longer exists anywhere.
+    setConversations((prev) => {
+      if (!prev.some((c) => c.id === id)) return prev;
+      const list = prev.filter((c) => c.id !== id);
+      saveConversations(list);
+      return list;
+    });
     setChats((prev) => {
       const next = { ...prev };
       delete next[id];
