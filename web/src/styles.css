@@ -262,12 +262,6 @@ body {
   display: inline;
 }
 
-/* Both agents' meters, with their labels: the drawer is not short of width the
-   way the bar was. */
-.sidebar-slot .usage-pill:not(.is-lead) {
-  display: flex;
-}
-
 .sidebar-slot .usage-btn {
   width: 100%;
   justify-content: space-between;
@@ -5174,26 +5168,18 @@ body.is-ultra .eff {
 }
 
 /* ---- Plan usage (top right) -------------------------------------------
-   Two small meters, one per agent, showing whichever of that agent's windows
-   is closest to running out. Tapping opens the full breakdown — every window,
-   with when it resets. */
+   Two small meters, one per agent, each showing how much of the WEEK is gone.
+   Hovering opens the full breakdown — every window that agent reports, with
+   when it resets — and a tap does the same where there is no pointer to
+   hover with. */
 .usage {
   position: relative;
   flex: 0 0 auto;
 }
 
-/* A phone's top bar carries the project name, the view switch, the git toggle
-   and this. Something has to give, and three windows per agent is the part that
-   is not needed at a glance — only the tightest stays, still labelled, with the
-   rest one tap away in the popup. Without this the bar ran 19px past a 390px
-   screen and took the whole page into horizontal scroll with it. */
+/* An agent reporting nothing draws as "CX —", which costs 30px to say it has
+   no numbers. On a phone that space is the project's name. */
 @media (max-width: 700px) {
-  .usage-num:not(.is-tightest) {
-    display: none;
-  }
-
-  /* An agent reporting nothing draws as "CX —", which costs 30px to say it has
-     no numbers. On a phone that space is the project's name. */
   .usage-pill.is-empty {
     display: none;
   }

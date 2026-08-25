@@ -33,6 +33,12 @@ const REFRESH_MS = 60_000;
 const MIN_INTERVAL_MS = 15_000;
 const CACHE_KEY = "octiq.v2.usage";
 
+/** How long the popup waits before closing after the pointer leaves. The gap
+ *  between the button and the popup belongs to neither of them, so crossing it
+ *  reads as leaving — and a popup that shuts while you reach for it cannot be
+ *  read. Coming back inside this cancels the close. */
+const CLOSE_MS = 180;
+
 /** Percent used at which the meter stops being calm, and at which it is hot. */
 const WARN_AT = 60;
 const DANGER_AT = 85;
@@ -77,8 +83,19 @@ export function Usage() {
     claude: true,
     codex: true,
   });
-  const [open, setOpen] = useState(false);
+  // Shut, showing because the pointer is over it, or held open by a click.
+  // The difference matters on the way out: a hover closes itself when the
+  // pointer leaves, a pinned one waits to be dismissed, which is the only
+  // behaviour a touch screen — where there is no hover at all — can use.
+  const [open, setOpen] = useState<null | "hover" | "pin">(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAt = useRef(0);
+
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }, []);
+  useEffect(() => cancelClose, [cancelClose]);
 
   const refresh = useCallback(async (force: boolean) => {
     if (!force && Date.now() - lastAt.current < MIN_INTERVAL_MS) return;
@@ -139,29 +156,46 @@ export function Usage() {
 
   if (!data.claude && !data.codex) return null;
 
-  // A phone's top bar has room for ONE of these, so the one it shows is the
-  // agent closest to its limit — the other is a tap away in the popup, with
-  // every window it has. Off the phone both are on the bar as before.
-  const lead = worstOf(data.claude) >= worstOf(data.codex) ? "claude" : "codex";
-
   return (
-    <div className="usage">
+    <div
+      className="usage"
+      // The whole thing, button and popup together, so moving the pointer from
+      // one into the other is not "leaving".
+      onPointerEnter={(e) => {
+        // A tap fires this too, and a tap already has a meaning below.
+        if (e.pointerType !== "mouse") return;
+        cancelClose();
+        setOpen((v) => v ?? "hover");
+        void refresh(false);
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType !== "mouse") return;
+        cancelClose();
+        closeTimer.current = setTimeout(
+          () => setOpen((v) => (v === "hover" ? null : v)),
+          CLOSE_MS,
+        );
+      }}
+    >
       <button
         className="usage-btn"
         type="button"
-        title="Plan usage — tap for reset times"
+        title="Plan usage this week — hover or tap for every window"
         onClick={() => {
-          setOpen((v) => !v);
+          cancelClose();
+          setOpen((v) => (v === "pin" ? null : "pin"));
           void refresh(true);
         }}
       >
-        <Pill label="CL" provider={data.claude} stale={stale.claude} lead={lead === "claude"} />
-        <Pill label="CX" provider={data.codex} stale={stale.codex} lead={lead === "codex"} />
+        <Pill label="CL" provider={data.claude} stale={stale.claude} />
+        <Pill label="CX" provider={data.codex} stale={stale.codex} />
       </button>
 
       {open && (
         <>
-          <div className="usage-scrim" onClick={() => setOpen(false)} />
+          {/* Only a pinned popup takes the page: a scrim under a hovering one
+              would sit between the pointer and everything it is hovering. */}
+          {open === "pin" && <div className="usage-scrim" onClick={() => setOpen(null)} />}
           <div className="usage-pop" role="dialog" aria-label="Plan usage">
             <Detail name="Claude" provider={data.claude} stale={stale.claude} />
             <Detail name="Codex" provider={data.codex} stale={stale.codex} />
@@ -172,67 +206,51 @@ export function Usage() {
   );
 }
 
-/** One agent's windows in the top bar: an agent tag, then every window it
- *  reports as a labelled percent.
+/** One agent in the top bar: its tag, then how much of the WEEK is gone.
  *
- *  Numbers only. A bar has to be wide enough to read, and three of them per
- *  agent would take the whole top bar to say what three numbers say — with the
- *  colour still carrying the "how bad is it" signal on its own. */
-/** How close this agent is to its nearest limit, or -1 when it reports nothing.
- *  -1 keeps an agent with no numbers from ever winning the one slot a phone
- *  has: a blank pill would be the whole readout. */
-function worstOf(p: Provider | null): number {
-  const windows = [p?.fiveHour, p?.weekly, ...(p?.models ?? [])].filter(Boolean) as Window[];
-  return windows.reduce((n, w) => Math.max(n, w.percent), -1);
+ *  The week and nothing else. The bar used to carry every window an agent
+ *  reported — five hours, the week, one per model — which is three or four
+ *  numbers per agent to read at a glance, and a glance does not read four
+ *  numbers. The week is the one that decides what you can still do today; a
+ *  five-hour window refills while you make coffee. The rest have not gone
+ *  anywhere: they are in the popup, one hover away.
+ *
+ *  A number, not a bar. A bar has to be wide enough to read, and the colour
+ *  carries "how bad is it" on its own. */
+function barWindow(p: Provider | null): { label: string; window: Window } | null {
+  if (p?.weekly) return { label: "", window: p.weekly };
+  // No weekly window reported. Rather than show nothing, show whichever window
+  // it does report that is closest to running out — LABELLED, since a lone
+  // number standing for a window you cannot name says less than no number.
+  const rest: { label: string; window: Window }[] = [];
+  if (p?.fiveHour) rest.push({ label: "5h", window: p.fiveHour });
+  for (const m of p?.models ?? []) rest.push({ label: m.name, window: m });
+  if (rest.length === 0) return null;
+  return rest.reduce((worst, w) => (w.window.percent > worst.window.percent ? w : worst));
 }
 
 function Pill({
   label,
   provider,
   stale,
-  lead,
 }: {
   label: string;
   provider: Provider | null;
   stale: boolean;
-  /** The one a phone keeps — see `worstOf`. Marked here, hidden in CSS. */
-  lead?: boolean;
 }) {
-  const windows: { label: string; window: Window }[] = [];
-  if (provider?.fiveHour) windows.push({ label: "5h", window: provider.fiveHour });
-  if (provider?.weekly) windows.push({ label: "wk", window: provider.weekly });
-  // Per-model weekly windows, whatever the account has — Fable today, more if
-  // Anthropic reports more. Named by the model so it is clear which is which.
-  for (const m of provider?.models ?? []) windows.push({ label: m.name, window: m });
-
-  // The window closest to its limit. On a phone the top bar only has room for
-  // one number per agent, and this is the one worth having — the others are a
-  // tap away in the popup. It keeps its own label, so a lone number is never
-  // left standing for a window you cannot identify.
-  let tightest = -1;
-  for (let i = 0; i < windows.length; i += 1) {
-    if (tightest < 0 || windows[i].window.percent > windows[tightest].window.percent) tightest = i;
-  }
+  const shown = barWindow(provider);
+  const percent = shown ? Math.min(100, Math.max(0, shown.window.percent)) : 0;
 
   return (
-    <span
-      className={`usage-pill ${stale ? "is-stale" : ""} ${windows.length === 0 ? "is-empty" : ""} ${
-        lead ? "is-lead" : ""
-      }`}
-    >
+    <span className={`usage-pill ${stale ? "is-stale" : ""} ${shown ? "" : "is-empty"}`}>
       <span className="usage-tag">{label}</span>
-      {windows.length === 0 ? (
+      {!shown ? (
         <span className="usage-val">—</span>
       ) : (
-        windows.map((w, i) => {
-          const percent = Math.min(100, Math.max(0, w.window.percent));
-          return (
-            <span className={`usage-num ${i === tightest ? "is-tightest" : ""}`} key={w.label}>
-              <span className="usage-num-label">{w.label}</span>
-              <span className={`usage-val ${severity(percent)}`}>{Math.round(percent)}%</span>
-            </span>
-          );
-        })
+        <span className="usage-num">
+          {shown.label && <span className="usage-num-label">{shown.label}</span>}
+          <span className={`usage-val ${severity(percent)}`}>{Math.round(percent)}%</span>
+        </span>
       )}
     </span>
   );
