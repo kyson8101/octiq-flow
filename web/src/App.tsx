@@ -193,6 +193,10 @@ const GIT_KEY = "octiq.v2.gitOpen";
  *  that says whether it is out. */
 const NAV_KEY = "octiq.v2.navShut";
 const FILES_KEY = "octiq.v2.filesOpen";
+/** The agent column, put away. Stored the other way round from the two above:
+ *  the rail shows itself the moment a chat starts an agent, so what is worth
+ *  remembering is the decision to CLOSE it. A missing key is open. */
+const RAIL_KEY = "octiq.v2.railShut";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
@@ -288,6 +292,9 @@ export default function App() {
   // body, and only one piece of state joins them.
   const [filesOpen, setFilesOpen] = useState(() => localStorage.getItem(FILES_KEY) === "1");
   const [filesMounted, setFilesMounted] = useState(filesOpen);
+  // The agent column. Shown by default and closed by hand, so the flag it
+  // keeps is the closing — see RAIL_KEY.
+  const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
   const [asks, setAsks] = useState<Record<string, Ask[]>>({});
@@ -376,6 +383,51 @@ export default function App() {
   // handler both hold on to it.
   const chatsRef = useRef(chats);
   chatsRef.current = chats;
+  // And for the list itself, so the server's answer can be compared against
+  // what this page holds without rebuilding the effect that asks for it.
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+
+  /** Chats this page knows are GONE: deleted here, or listed as deleted by the
+   *  server.
+   *
+   *  Worth writing down because a missing row is ambiguous. The debounced save
+   *  builds a row for any loaded chat the list has none for — that is how a
+   *  brand-new chat is first written down — and it cannot otherwise tell one
+   *  from a chat that was thrown away a moment ago. Told which is which, it
+   *  leaves the second alone. */
+  const gone = useRef<Set<string>>(new Set());
+
+  /** Drop everything this page holds of a chat. The record on the server is
+   *  someone else's business — `commitDelete` deletes it, and the index says so
+   *  when another device did — this is only the copy in front of you: its
+   *  transcript in memory, what it was started with, how far it had been read,
+   *  its seats, and the screen if it is the one you are looking at. */
+  const forgetLocally = useCallback((id: string) => {
+    gone.current.add(id);
+    catchUp.current.forget(keyFor(id));
+    setChats((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    setSeats((prev) => {
+      if (!(id in prev)) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    delete meta.current[id];
+    setConversationId((open) => (open === id ? null : open));
+    // The chat you were last in is remembered by id, and a deleted one left
+    // there is a restore that waits for a row that is never coming.
+    try {
+      if (localStorage.getItem(LAST_KEY) === id) localStorage.removeItem(LAST_KEY);
+    } catch {
+      /* storage blocked: nothing was remembered to forget */
+    }
+  }, []);
 
   // The level each chat was last asked to change to. An agent that will not
   // take the change says so on its own event, well after the tap, so this is
@@ -582,6 +634,22 @@ export default function App() {
         // every conversation this browser holds. A server that genuinely has
         // none has nothing to tell us either, so ignoring it costs nothing.
         if (!remote || remote.length === 0) return;
+        // A chat this page has seen LISTED and the list no longer carries has
+        // been deleted — here a moment ago, or on another device. The row is
+        // dropped for it below, and everything this page holds of it goes with
+        // the row.
+        //
+        // Going with the row is the point. This page reopens the chat you were
+        // last in straight from its cached copy, a tick before this answer
+        // lands — so a chat deleted on the last visit was on screen, loaded,
+        // and missing only its row. The debounced save writes a row for exactly
+        // that shape, and did: a new row, a new createdAt, and a fresh entry
+        // pushed back into the server's index. The delete undid itself, and the
+        // chat was back in the sidebar every time it was thrown away.
+        const known = new Set(remote.map((r) => r.id));
+        for (const c of conversationsRef.current) {
+          if (c.synced && !known.has(c.id)) forgetLocally(c.id);
+        }
         setConversations((local) => {
           const byId = new Map(local.map((c) => [c.id, c]));
           const merged = remote.map((r) => {
@@ -608,7 +676,6 @@ export default function App() {
           //
           // Dropped when the server HAS listed them before, because then the
           // list is authoritative and the chat was deleted on another device.
-          const known = new Set(remote.map((r) => r.id));
           const mine = local.filter((c) => !known.has(c.id) && !c.synced);
           const all = [...merged, ...mine];
           saveConversations(all);
@@ -896,21 +963,20 @@ export default function App() {
   // transcript 60 times a second, so this waits for a quiet moment.
   useEffect(() => {
     const timer = setTimeout(() => {
-      // A chat waiting on Undo is the one case where a missing row is on
-      // purpose. Everything a row is rebuilt FROM — its ChatState, its meta —
-      // is deliberately left alive for those three seconds, so this loop read
-      // the deleted chat as one that had never been saved and wrote it
-      // straight back at the top of the list. Any streaming agent anywhere is
-      // enough to run this pass, so a delete made while something was working
-      // undid itself, and since `commitDelete` only takes the chat off the
-      // SERVER, the row it put back then stayed for good.
+      // A missing row does not always mean a chat nobody has saved yet. It
+      // also means one thrown away seconds ago and waiting on Undo, whose
+      // ChatState and meta are deliberately left alive for those seconds — and
+      // one the server has already deleted, which this page can still be
+      // holding, open, from its cached copy. Rebuilt from either, a deleted
+      // chat came back with a new createdAt and a fresh entry in the server's
+      // index, so deleting it never took.
       const undoable = pendingDelete.current?.conversation.id;
       setConversations((prev) => {
         let list = prev;
         let touched = false;
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
-          if (id === undoable) continue;
+          if (id === undoable || gone.current.has(id)) continue;
           const info = meta.current[id];
           if (!info || s.messages.length === 0) continue;
           const before = list.find((c) => c.id === id);
@@ -1507,7 +1573,6 @@ export default function App() {
     // dropped; leaving it would hold a room, and every process in it, for the
     // life of the server on behalf of a conversation that no longer exists.
     bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
-    catchUp.current.forget(keyFor(id));
     // The row went when the × was clicked, and this takes it out again. Not
     // needless: a delete is only ever as good as its last word, and anything
     // that wrote the list during the three seconds — a save already on its way
@@ -1519,18 +1584,11 @@ export default function App() {
       saveConversations(list);
       return list;
     });
-    setChats((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    setSeats((prev) => {
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
-    delete meta.current[id];
-  }, [endSession]);
+    // And the copy in front of you, which is also what marks the chat gone —
+    // without that mark the debounced save would read it as one nobody had got
+    // round to writing down, and write it down.
+    forgetLocally(id);
+  }, [endSession, forgetLocally]);
 
   const deleteConversation = useCallback(
     (id: string) => {
