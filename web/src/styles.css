@@ -321,6 +321,21 @@ body {
   pointer-events: auto;
 }
 
+/* While a finger is dragging it, the drawer is wherever the finger is. The
+   class comes off at the release and the transition takes over from there, so
+   the two never fight: during the drag there is no transition to fight with,
+   and after it there is no `--swipe-p`. `--swipe-p` is 0 shut, 1 open — see
+   lib/swipe, which is the only thing that sets it. */
+.app.is-swiping .sidebar {
+  transition: none;
+  transform: translateX(calc(-102% * (1 - var(--swipe-p, 0))));
+}
+
+.app.is-swiping .scrim {
+  transition: none;
+  opacity: var(--swipe-p, 0);
+}
+
 /* The way into the shelf. Quiet — the point of shelving is not to look at
    these — but always present, because it is the only route back. */
 .shelf-open {
@@ -1478,6 +1493,14 @@ body {
   color: var(--danger);
 }
 
+/* The call answered; the work it started has not. Its own colour rather than
+   the accent a live call gets: those two states look the same from across the
+   room, and they are not the same news — one is the agent working, the other is
+   the agent gone and something still running without it. */
+.tool-state.is-background {
+  color: var(--warn);
+}
+
 /* A call the stop caught in flight. It never answered and never will, but
    nothing failed either — so it says so in the same grey as a finished row
    rather than borrowing the red of one that broke. */
@@ -1944,6 +1967,74 @@ body {
 
 .carry-on-btn:hover {
   filter: brightness(1.08);
+}
+
+/* Work the turn left running behind it — see components/Background.
+   Sits in the same slot as the carry-on notice, directly above the prompt box,
+   and is built quieter on purpose: that one is a thing to DO, this one is a
+   thing to know. No border and no fill, so a chat with a build running for
+   half an hour does not have a coloured box parked in it the whole time. */
+.bgwork {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 12px 2px;
+  padding: 2px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-3);
+}
+
+/* The one moving thing on the row, and the whole reason the row exists: a
+   still strip reads as another line of chrome. Warn-coloured to match the
+   card's own `in background` chip, so the two are visibly the same news. */
+.bgwork-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+  animation: bgwork-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes bgwork-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bgwork-dot {
+    animation: none;
+  }
+}
+
+.bgwork-count {
+  flex: 0 0 auto;
+  color: var(--warn);
+}
+
+/* The label is the part that gives way. On a phone the count and the clock are
+   both short and both matter; a long description is the only thing here that
+   can be cut without losing the news. */
+.bgwork-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+}
+
+.bgwork-time {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* A call joining the group above it. The group takes the drop: it swells for a
@@ -3434,6 +3525,15 @@ body.is-ultra .eff {
     box-shadow: none;
     width: 260px;
     flex: 0 0 auto;
+  }
+
+  /* Put away, and the chat has the width. Gone rather than narrowed: a width
+     transition reflows every row on the way out, and a column of project names
+     squashing to nothing reads worse than one that simply goes. The way back
+     is the project name in the top bar, which gets its caret — and its click —
+     back the moment this is on. */
+  .app.nav-shut .sidebar {
+    display: none;
   }
 
   .scrim {

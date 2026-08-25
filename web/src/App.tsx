@@ -20,7 +20,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp } from "./lib/catchUp";
-import { CARRY_ON, wasCutOff } from "./lib/carryOn";
+import { CARRY_ON, someoneWorking, wasCutOff } from "./lib/carryOn";
 import type { RoundState } from "./components/RoundBar";
 import {
   addUserTurn,
@@ -58,11 +58,14 @@ import {
 import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail } from "./components/AgentRail";
+import { BackgroundProvider, BackgroundStrip } from "./components/Background";
+import { backgroundCalls } from "./lib/background";
 import { Todos } from "./components/Todos";
 import { latestTodos } from "./lib/todos";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
-import { useMedia, WIDE } from "./lib/media";
+import { DRAWER, useMedia, WIDE } from "./lib/media";
+import { useDrawerSwipe } from "./lib/swipe";
 import { MessageList } from "./components/MessageList";
 import {
   ACCESS,
@@ -129,6 +132,10 @@ const ACCESS_KEY = "octiq.v2.access";
 const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
+/** How long a ROOM is given to hand a seat's answer to its host before the
+ *  chat is called cut off. Long enough to start an agent — the gap is a fresh
+ *  process reading its own history, not a stopped backend. */
+const HANDOVER_MS = 20_000;
 /** Whether new chats start clean. Kept here rather than per project: it is a
  *  way of working, not a property of the code you are working on. */
 const LITE_KEY = "octiq.v2.lite";
@@ -160,6 +167,10 @@ function writeLocation(project: string | null, chat: string | null): void {
 /** The chat that was on screen when the page was last left. */
 const LAST_KEY = "octiq.v2.lastChat";
 const GIT_KEY = "octiq.v2.gitOpen";
+/** The project column, put away. Only means anything at 860px and up, where
+ *  the sidebar is a column; below that it is a drawer and `drawer` is the flag
+ *  that says whether it is out. */
+const NAV_KEY = "octiq.v2.navShut";
 const FILES_KEY = "octiq.v2.filesOpen";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
@@ -212,6 +223,21 @@ export default function App() {
   /** Wide enough for a sidebar column — and so for a top bar that can hold the
    *  view switch and the usage meter. Below it those live in the drawer. */
   const wide = useMedia(WIDE);
+  /** The project column, put away, on the screens where it is a column.
+   *  Remembered: someone who works with the chat full width wants it that way
+   *  the next time too. */
+  const [navShut, setNavShut] = useState(() => localStorage.getItem(NAV_KEY) === "1");
+  /** Whether the sidebar is a drawer at all. Not the same question as `wide`:
+   *  the top bar gains room at 700px, the drawer only becomes a column at 860.
+   *  Between the two there is still something to swipe. */
+  const hasDrawer = useMedia(DRAWER);
+  /** The app shell, which the drag gesture listens on because it holds both the
+   *  drawer and everything the drawer slides over. */
+  const shell = useRef<HTMLDivElement | null>(null);
+  // Drag in from the left edge to pull the drawer out, and back to put it away.
+  // Touch only, and only while the drawer exists — see lib/swipe for how the
+  // gesture keeps out of the way of scrolling and of highlighting text.
+  useDrawerSwipe(shell, { enabled: hasDrawer, open: drawer, onChange: setDrawer });
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
@@ -795,7 +821,10 @@ export default function App() {
           }
           patch(id, (s) =>
             payload.kind === "exit"
-              ? { ...s, busy: false, exited: { code: payload.code } }
+              ? // Its background children die with it, so nothing is still
+                // running — and a strip left counting a dead run would be the
+                // same lie the other way round.
+                { ...s, busy: false, background: [], exited: { code: payload.code } }
               : { ...s, notices: [...s.notices, payload.text].slice(-8) },
           );
         },
@@ -988,17 +1017,11 @@ export default function App() {
     return out;
   }, [running, chats]);
 
-  /** The chat on screen says it is working, and nothing is working on it.
-   *
-   *  Which means the backend stopped mid-answer: a restart kills every agent it
-   *  owns where it stands, so no full stop was ever written and the turn is
-   *  still open in the record. Everything said survives, and so does the
-   *  agent's own memory of it — see lib/carryOn. */
-  const cutOff = wasCutOff({
-    busy: chat.busy,
-    live: !!conversationId && running.has(conversationId),
-    known: liveKnown,
-  });
+  /** The calls whose background work is still running, for the cards. Memoised
+   *  on the roster itself: it is a context value read by every card on screen,
+   *  and a fresh Set on every render would re-render the whole transcript on
+   *  every keystroke. */
+  const runningCalls = useMemo(() => backgroundCalls(chat.background), [chat.background]);
 
   // A turn that ended, announced to the desktop.
   //
@@ -1280,6 +1303,13 @@ export default function App() {
       /* storage blocked: it just forgets between visits */
     }
   };
+
+  /** Put the project column away, or bring it back. Every way in and out goes
+   *  through here so the stored flag cannot drift from what is on screen. */
+  const showNav = useCallback((next: boolean) => {
+    setNavShut(!next);
+    remember(NAV_KEY, !next);
+  }, []);
 
   /** Show or hide the git column, and remember it — every way in and out goes
    *  through here, so the stored flag cannot drift from what is on screen.
@@ -1990,6 +2020,42 @@ export default function App() {
   const [rounds, setRounds] = useState<Record<string, RoundState | null>>({});
   const myRound = (conversationId && rounds[conversationId]) || null;
 
+  /** The chat on screen says it is working, and nobody is working on it.
+   *
+   *  Which means the backend stopped mid-answer: a restart kills every agent it
+   *  owns where it stands, so no full stop was ever written and the turn is
+   *  still open in the record. Everything said survives, and so does the
+   *  agent's own memory of it — see lib/carryOn.
+   *
+   *  "Nobody" is the word that has to be read carefully: a room's work is done
+   *  by processes that are not the room's own — see `someoneWorking`. */
+  const stalled = wasCutOff({
+    busy: chat.busy,
+    live:
+      !!conversationId &&
+      someoneWorking({ id: conversationId, running, round: !!myRound?.running }),
+    known: liveKnown,
+  });
+
+  // ...and it has stayed that way for a moment. A HANDOVER is not a stop: when
+  // a seat finishes, the backend starts the host to tell it what was said
+  // (`round::ask_host`), and starting an agent takes seconds — seconds in which
+  // nothing at all is running on this chat. Drawn the instant that gap opened,
+  // the notice accused the backend of stopping every time an agent finished.
+  //
+  // Only a room waits. A chat with no seats has no handover to sit through, and
+  // a turn the backend really did cut off is on screen the moment it is known.
+  const [settledFor, setSettled] = useState<string | null>(null);
+  useEffect(() => {
+    if (!stalled || !conversationId) {
+      setSettled(null);
+      return;
+    }
+    const wait = setTimeout(() => setSettled(conversationId), room ? HANDOVER_MS : 0);
+    return () => clearTimeout(wait);
+  }, [stalled, conversationId, room]);
+  const cutOff = stalled && settledFor === conversationId;
+
   const refreshRound = useCallback(async (id: string) => {
     try {
       const state = (await bridge.invoke("chat_round_state", {
@@ -2169,7 +2235,7 @@ export default function App() {
   );
 
   return (
-    <div className={`app ${drawer ? "drawer-open" : ""}`}>
+    <div className={`app ${drawer ? "drawer-open" : ""} ${navShut ? "nav-shut" : ""}`} ref={shell}>
       {conn !== "open" && (
         <div className="conn-strip">
           {conn === "connecting" ? "Connecting to OctiqFlow…" : "Reconnecting…"}
@@ -2177,18 +2243,22 @@ export default function App() {
       )}
 
       <header className="topbar">
-        {/* The project name IS the way into the drawer.
+        {/* The project name IS the way back to the project list.
             A hamburger beside a project name is two controls saying "projects"
             where one will do, and on a phone the bar has four things to carry
-            and 390px to carry them in. Off the phone the sidebar is always
-            open, so this stops being a button and is just the title. */}
+            and 390px to carry them in.
+
+            Two sidebars, one control: under 860px it is a drawer that slides
+            over the chat, above that a column that takes width from it. This
+            brings back whichever of the two is away, and while the column is
+            out it is not a button at all — just the title, its caret gone. */}
         <button
           className="topbar-title"
           type="button"
           aria-label="Projects and chats"
-          aria-expanded={drawer}
-          onClick={() => setDrawer((v) => !v)}
-          disabled={wide}
+          aria-expanded={hasDrawer ? drawer : !navShut}
+          onClick={() => (hasDrawer ? setDrawer((v) => !v) : showNav(true))}
+          disabled={!hasDrawer && !navShut}
         >
           <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
           <span className="topbar-caret" aria-hidden="true">
@@ -2306,6 +2376,7 @@ export default function App() {
           onDelete={deleteConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
+          onHide={hasDrawer ? undefined : () => showNav(false)}
           head={wide ? undefined : viewSwitch}
           foot={wide ? undefined : <Usage />}
         />
@@ -2369,25 +2440,30 @@ export default function App() {
               {/* A path written into a reply is relative to the PROJECT, and
                   only this knows which one is open — see components/ProsePath. */}
               <PathCwdProvider value={project?.primary_path ?? ""}>
-                <div className="chat-main">
-                  <MessageList
-                    messages={chat.messages}
-                    // Not `chat.busy`: a turn nothing is working on any more is
-                    // over, whatever the record says. The strip above the
-                    // prompt box is what says so.
-                    busy={chat.busy && !cutOff}
-                    stoppedAt={chat.stoppedAt}
-                    compactingSince={chat.compactingSince}
-                    conversationId={conversationId ?? undefined}
-                  />
-                  {focused && (
-                    <AgentFocus
-                      run={focused}
+                {/* Which cards are still waiting on work they started. Read
+                    four levels down, past a grouping pass that rebuilds its
+                    rows — see components/Background. */}
+                <BackgroundProvider value={runningCalls}>
+                  <div className="chat-main">
+                    <MessageList
                       messages={chat.messages}
-                      onBack={() => setFocusedAgent(null)}
+                      // Not `chat.busy`: a turn nothing is working on any more
+                      // is over, whatever the record says. The strip above the
+                      // prompt box is what says so.
+                      busy={chat.busy && !cutOff}
+                      stoppedAt={chat.stoppedAt}
+                      compactingSince={chat.compactingSince}
+                      conversationId={conversationId ?? undefined}
                     />
-                  )}
-                </div>
+                    {focused && (
+                      <AgentFocus
+                        run={focused}
+                        messages={chat.messages}
+                        onBack={() => setFocusedAgent(null)}
+                      />
+                    )}
+                  </div>
+                </BackgroundProvider>
               </PathCwdProvider>
               {/* The right column: the agents this chat started, as a card
                   that looks like it is floating but keeps its own space — the
@@ -2491,6 +2567,12 @@ export default function App() {
           {/* Only ever after a restart or a crash: the chat is holding a turn
               open that nothing is answering. */}
           {cutOff && <CarryOn onCarryOn={() => void send(CARRY_ON)} />}
+
+          {/* Work the turn left running behind it. Directly above the composer
+              because that is where the eye already goes for "what is happening
+              now" — the eyebrow answers it while a turn is in flight, and this
+              answers it for the twenty minutes afterwards. */}
+          <BackgroundStrip tasks={chat.background} />
 
           <Composer
             session={conversationId ?? undefined}

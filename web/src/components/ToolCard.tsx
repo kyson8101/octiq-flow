@@ -24,6 +24,7 @@ import { askAnswer } from "../lib/askAnswer";
 import { toolDetail, toolLook } from "../lib/toolKind";
 import { DiffStat, DiffView } from "./DiffView";
 import { ToolIcon, ToolState } from "./ToolIcon";
+import { useStillRunning } from "./Background";
 
 type Tool = Extract<Block, { kind: "tool" }>;
 
@@ -124,6 +125,10 @@ export function ToolCard({
   // strings, one of which is the other with something changed. The card draws
   // them as the change they are, and stops quoting the JSON they arrived in.
   const diff = fileDiff(tool.name, tool.args, tool.details);
+  // Only for a call that has already ANSWERED. While the call itself is in
+  // flight the card is running for its own reasons and says so; and once the
+  // ending has landed the card has a real word for how it went.
+  const stillRunning = useStillRunning(tool.id) && tool.state === "done" && !tool.finish;
 
   return (
     <div
@@ -170,7 +175,17 @@ export function ToolCard({
             {tool.finish.status}
           </span>
         )}
-        <ToolState state={tool.state} />
+        {/* The call answered; the work it started has not. A tick here would be
+            the card's own small share of a screen that reads as finished, so
+            the tick waits and this pulses in its place. */}
+        {stillRunning ? (
+          <span className="tool-state is-background">
+            <span className="tool-spinner" aria-hidden="true" />
+            in background
+          </span>
+        ) : (
+          <ToolState state={tool.state} />
+        )}
         <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
           <Chevron />
         </span>

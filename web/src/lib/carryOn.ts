@@ -71,10 +71,40 @@ export function wasCutOff({
 }: {
   /** The chat has a turn in flight, as the record reads. */
   busy: boolean;
-  /** The server has a process for it. */
+  /** Somebody is working on it — which is not the same as "the server has a
+   *  process on this chat's own key". See `someoneWorking`. */
   live: boolean;
   /** The server has said which chats are running at least once. */
   known: boolean;
 }): boolean {
   return known && busy && !live;
+}
+
+/** Is anybody working on this chat?
+ *
+ *  Not the same question as "is this chat's own process up", and reading the
+ *  one for the other is what put the notice on screen every time a seat was
+ *  asked something. A room is worked on by processes that are not its own:
+ *
+ *   · a SEAT runs under a key of its own (`chat_room::seat_session_key` spells
+ *     it `<room>-seat-<id>`), so nothing at all is running on the room's key
+ *     while a seat writes for ten minutes;
+ *   · a ROUND is work in flight between seats — one has stopped, the next has
+ *     not started, and for that moment no process exists anywhere. */
+export function someoneWorking({
+  id,
+  running,
+  round,
+}: {
+  /** The conversation on screen. */
+  id: string;
+  /** Every conversation the server has a process for, seats included. */
+  running: Set<string>;
+  /** A round is going in this chat. */
+  round: boolean;
+}): boolean {
+  if (round || running.has(id)) return true;
+  const seat = `${id}-seat-`;
+  for (const key of running) if (key.startsWith(seat)) return true;
+  return false;
 }

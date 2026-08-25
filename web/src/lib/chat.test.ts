@@ -1305,6 +1305,44 @@ describe("a room with several agents in it", () => {
     expect(last.speaker?.name).toBe("Unknown");
   });
 
+  it("does not open the room's own turn for a message addressed to a seat", () => {
+    // `@dee look at this` is a question for the SEAT's process. The room's own
+    // agent was not asked and owes nothing, so its turn stays closed — and a
+    // chat that is not working must not read as one whose answer was cut off
+    // (see lib/carryOn: "busy with nothing running it" IS the cut-turn test).
+    const state = addUserTurn(emptyChat(), "look at this", [], 1, { id: "s1", name: "Codex" });
+
+    expect(state.messages[0].to).toEqual({ id: "s1", name: "Codex" });
+    expect(state.busy).toBe(false);
+  });
+
+  it("still opens the turn for a message with no seat named on it", () => {
+    expect(addUserTurn(emptyChat(), "hello", [], 1).busy).toBe(true);
+  });
+
+  it("does not open the room's own turn when a seat starts writing", () => {
+    // The other half of the same rule. A seat's first message used to mark the
+    // whole chat as working, and its `result` is skipped on purpose — so the
+    // flag went up and never came down again.
+    const state = reduceChat(emptyChat(), {
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "m1", role: "assistant", content: [] } },
+      octiq_speaker: SEAT,
+    });
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.busy).toBe(false);
+  });
+
+  it("still opens the turn when the HOST starts writing", () => {
+    const state = reduceChat(emptyChat(), {
+      type: "stream_event",
+      event: { type: "message_start", message: { id: "m1", role: "assistant", content: [] } },
+    });
+
+    expect(state.busy).toBe(true);
+  });
+
   it("replays a real captured stream exactly as it did before rooms existed", () => {
     // The regression guard for the whole card: a conversation with no seats has
     // to be byte-for-byte what it was. Nothing in this stream carries a

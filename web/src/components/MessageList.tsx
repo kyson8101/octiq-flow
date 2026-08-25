@@ -20,6 +20,7 @@ import type { Attached, Block, Message } from "../lib/chat";
 import { AgentLogo } from "./AgentLogo";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
+import { useRunningCalls } from "./Background";
 import { SentFiles } from "./Thumb";
 import { roughTokens } from "../lib/tokens";
 import { groupRows, type Note } from "../lib/toolGroups";
@@ -204,8 +205,13 @@ function BlockView({
  *  hands back that position rather than just the calls. */
 function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boolean; kids: Kids }) {
   // A card that has picked up a subagent transcript is never folded away, even
-  // when its name is not one of the ones that says so.
-  const rows = useMemo(() => groupRows(blocks, (tool) => kids.has(tool.id)), [blocks, kids]);
+  // when its name is not one of the ones that says so — nor is one whose
+  // background work is still going, which is the same rule for the same reason.
+  const running = useRunningCalls();
+  const rows = useMemo(
+    () => groupRows(blocks, (tool) => kids.has(tool.id) || running.has(tool.id)),
+    [blocks, kids, running],
+  );
   const last = blocks.length - 1;
   return (
     <>

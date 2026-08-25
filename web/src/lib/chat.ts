@@ -46,6 +46,7 @@ import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 import { readCarryOn } from "./carryOn";
 import { readRelay } from "./relay";
+import { taskLabel, type BackgroundTask } from "./background";
 
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
  *  person typed.
@@ -320,6 +321,12 @@ export type ChatState = {
   /** Every agent this conversation has started, oldest first. Empty until one
    *  does, which is how the rail knows to stay hidden. */
   agents: AgentRun[];
+  /** Work still running RIGHT NOW that outlived the call which started it —
+   *  a background command, a subagent, a workflow. Rows leave as they finish,
+   *  which is the difference between this and `agents`: that one is history and
+   *  keeps what it holds, this one is the answer to "is anything still going".
+   *  See `lib/background`. */
+  background: BackgroundTask[];
   /** Set once system/init arrives. */
   sessionId?: string;
   model?: string;
@@ -404,6 +411,7 @@ export type Failure = {
 export const emptyChat = (): ChatState => ({
   messages: [],
   agents: [],
+  background: [],
   busy: false,
   notices: [],
   stopping: false,
@@ -743,6 +751,57 @@ function agentFinished(state: ChatState, e: Json): ChatState {
   });
 }
 
+/** Words a run uses for "still going". Anything else — `completed`, `failed`,
+ *  `killed`, or a word nobody here has seen yet — is taken as over.
+ *
+ *  Erring that way on purpose. A strip that goes on counting work which has
+ *  already finished is a worse lie than one that lets go of a run a moment
+ *  early: the first makes every later reading of the strip untrustworthy, and
+ *  the second costs a marker whose ending is on the card anyway. */
+const STILL_GOING: ReadonlySet<string> = new Set(["running", "in_progress", "pending", "queued"]);
+
+/** The same `task_started` the rail reads, kept for a different question.
+ *
+ *  Every kind of task lands here, `local_bash` included. A shell command is not
+ *  an agent and has no business on a rail that names agents — but it is very
+ *  much something still running, which is all this roster claims. */
+function backgroundStarted(state: ChatState, e: Json, now: number): ChatState {
+  const id = asStr(e.task_id);
+  if (!id || state.background.some((t) => t.id === id)) return state;
+  const kind = asStr(e.task_type) || "local_agent";
+  const task: BackgroundTask = {
+    id,
+    toolUseId: asStr(e.tool_use_id) || undefined,
+    label: taskLabel(kind, asStr(e.description) || asStr(e.workflow_name), asStr(e.command)),
+    kind,
+    startedAt: now,
+  };
+  return { ...state, background: [...state.background, task] };
+}
+
+function backgroundDropped(state: ChatState, id: string): ChatState {
+  if (!id || !state.background.some((t) => t.id === id)) return state;
+  return { ...state, background: state.background.filter((t) => t.id !== id) };
+}
+
+/** A patch that says the run is over. A patch saying nothing about how it is
+ *  going changes nothing here — `task_progress` and its kind arrive constantly
+ *  and none of them is an ending. */
+function backgroundPatched(state: ChatState, e: Json): ChatState {
+  const patch = asObj(e.patch);
+  const status = asStr(patch.status);
+  if (!status && patch.end_time === undefined) return state;
+  if (status && STILL_GOING.has(status)) return state;
+  return backgroundDropped(state, asStr(e.task_id));
+}
+
+/** The run's own report of its ending. */
+function backgroundFinished(state: ChatState, e: Json): ChatState {
+  const status = asStr(e.status);
+  if (status && STILL_GOING.has(status)) return state;
+  return backgroundDropped(state, asStr(e.task_id));
+}
+
 /** `task_progress`: how far along a run is. Workflow runs only.
  *
  *  Two things arrive here and they must be handled differently. `usage` is on
@@ -923,10 +982,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // Agents this conversation started. A `Task` subagent and a whole dynamic
     // workflow both report here, keyed by `task_id` and told apart by
     // `task_type`, and none of it appears anywhere else in the stream.
-    if (subtype === "task_started") return agentStarted(state, e, now);
-    if (subtype === "task_updated") return agentPatched(state, e);
+    // Each of these does the job twice, for two different questions. The rail
+    // asks what this conversation has STARTED and keeps every answer; the
+    // background roster asks what is running NOW and lets go as work ends.
+    if (subtype === "task_started")
+      return backgroundStarted(agentStarted(state, e, now), e, now);
+    if (subtype === "task_updated") return backgroundPatched(agentPatched(state, e), e);
     if (subtype === "task_progress") return agentProgressed(state, e);
-    if (subtype === "task_notification") return agentFinished(state, e);
+    if (subtype === "task_notification") return backgroundFinished(agentFinished(state, e), e);
     // `background_tasks_changed` is deliberately NOT read as the roster. It
     // reports what is RUNNING, so the last one of a finished run is an empty
     // list — building rows from it would erase every agent the moment it
@@ -1456,8 +1519,17 @@ function foldCodex(
     // The turn is over. Nothing may be left looking like it is still writing,
     // and no card may spin for the rest of the conversation over work that
     // ended here.
+    //
+    // Whose turn it was decides how far that goes. A SEAT's full stop ends the
+    // seat's turn and nothing else — the host may be part-way through one of
+    // its own, and it is the one that asked. A Codex chat with no seats at all
+    // is the other case: this IS its full stop, the same thing Claude's
+    // `result` is, and a chat left saying it is working after it has finished
+    // is what `lib/carryOn` draws the cut-turn notice for.
+    const mine = !speaker && !parent;
     return {
       ...state,
+      ...(mine ? { ...turnOver, busy: false, stopping: false } : {}),
       messages: state.messages.map((m) =>
         m.streaming && m.parent === parent && m.speaker?.id === speaker?.id
           ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) }
@@ -1584,16 +1656,25 @@ function foldCompactSummary(state: ChatState, text: string): ChatState | null {
  *  answer already on its own card, and a Monitor's is news about work still
  *  running. None of those is worth a bubble nobody typed. */
 function foldTaskNotice(state: ChatState, notice: TaskNotice): ChatState {
-  const call = notice.toolUseId ? findTool(state, notice.toolUseId) : undefined;
-  if (!call) return state;
+  // The background roster lets go here too, and it does so BEFORE the early
+  // return below: a subagent's notice names no call and so draws nothing, but
+  // it is still the word that the work is over. A Monitor's notice carries no
+  // status at all — that is news from work STILL RUNNING, and it must leave the
+  // roster exactly as it found it.
+  const held =
+    notice.status && !STILL_GOING.has(notice.status)
+      ? backgroundDropped(state, notice.taskId)
+      : state;
+  const call = notice.toolUseId ? findTool(held, notice.toolUseId) : undefined;
+  if (!call) return held;
   // Already folded in — a catch-up overlapping what we saw live. Compared on
   // the report rather than the id alone: one task can notify more than once,
   // and the later word is the one worth keeping.
   const had = call.finish;
-  if (had && had.taskId === notice.taskId && had.summary === notice.summary) return state;
+  if (had && had.taskId === notice.taskId && had.summary === notice.summary) return held;
   return {
-    ...state,
-    messages: state.messages.map((m) => ({
+    ...held,
+    messages: held.messages.map((m) => ({
       ...m,
       blocks: m.blocks.map((b) =>
         b.kind === "tool" && b.id === call.id ? { ...b, finish: notice } : b,
@@ -1651,14 +1732,20 @@ function reduceStream(
     case "message_start": {
       const id = asStr(asObj(ev.message).id) || `m${state.messages.length}`;
       if (state.messages.some((m) => m.id === id)) return state;
+      // A SEAT writing is not this chat's turn opening. It is a separate
+      // process answering in its own conversation, and its `result` is skipped
+      // further up on purpose — so a seat that raised this flag left it raised
+      // for good, and a chat that says it is working while nothing is running
+      // it is exactly what `lib/carryOn` reads as a turn the backend cut off.
+      const mine = !speaker;
       return {
         ...state,
-        busy: true,
+        busy: mine ? true : state.busy,
         // Only if the turn is not already timed. `addUserTurn` starts the clock
         // when you press send, which is the honest start — this is for the turn
         // nobody here started: a resumed session, or a catch-up on a chat that
         // kept working while the browser was away.
-        turnStartedAt: state.turnStartedAt ?? now,
+        turnStartedAt: mine ? state.turnStartedAt ?? now : state.turnStartedAt,
         messages: [
           ...state.messages,
           { id, role: "assistant", blocks: [], streaming: true, parent, speaker, partial: true },
@@ -1780,18 +1867,23 @@ export function addUserTurn(
   // in between.
   const line = text.trim();
   const asked = (MODEL_COMMAND.exec(line) ?? CONFIG_MODEL.exec(line))?.[1];
+  // Addressed to a SEAT, this opens the seat's turn and not this chat's. The
+  // host was not asked, owes nothing, and has no process running — so marking
+  // the chat busy here was the flag `lib/carryOn` reads as a cut-off turn, put
+  // up by `@dee look at this` and never taken down by anything.
+  const mine = !to;
   return {
     ...state,
     ...(asked ? { model: asked, modelAsked: true } : {}),
-    busy: true,
+    busy: mine ? true : state.busy,
     stopping: false,
     stoppedAt: undefined,
     // A second message sent MID-TURN joins the turn already running rather than
     // restarting its clock — the agent reads it as the next thing it is told,
     // and the time and tokens so far are still this turn's.
-    turnStartedAt: state.busy ? state.turnStartedAt : now,
-    turnTokens: state.busy ? state.turnTokens : 0,
-    turnDraft: state.busy ? state.turnDraft : 0,
+    turnStartedAt: mine && !state.busy ? now : state.turnStartedAt,
+    turnTokens: mine && !state.busy ? 0 : state.turnTokens,
+    turnDraft: mine && !state.busy ? 0 : state.turnDraft,
     // The last failure belonged to the last turn; asking again clears it.
     failure: undefined,
     messages: [

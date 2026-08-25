@@ -11,7 +11,7 @@
 import { describe, expect, it } from "vitest";
 
 import codexTurn from "./__fixtures__/codex-seat.jsonl?raw";
-import { emptyChat, reduceChat, type ChatState, type Message } from "./chat";
+import { addUserTurn, emptyChat, reduceChat, type ChatState, type Message } from "./chat";
 
 function replay(text: string, start: ChatState = emptyChat()): ChatState {
   let state = start;
@@ -80,5 +80,30 @@ describe("a Codex seat answering", () => {
     // `turn.completed` is Codex saying it has finished. Without it read, the
     // seat's last message streams forever.
     expect(after.messages.every((m) => !m.streaming)).toBe(true);
+  });
+
+  it("does not end the room's own turn", () => {
+    // A seat's full stop is the end of the SEAT's turn. The host may be
+    // part-way through one of its own — it is the one that asked, after all.
+    const busy = { ...addUserTurn(emptyChat(), "host is working"), busy: true };
+    const done = reduceChat(busy, {
+      type: "turn.completed",
+      octiq_speaker: { id: "s1", name: "Codex", agent: "codex" },
+    });
+    expect(done.busy).toBe(true);
+  });
+});
+
+describe("a Codex chat of its own", () => {
+  it("ends its turn on its own full stop", () => {
+    // No seat, no room: `turn.completed` is this conversation's full stop, the
+    // same thing Claude's `result` is. Left unread, the chat went on saying it
+    // was working until its process exited — and a chat that says it is working
+    // while nothing runs it is what `lib/carryOn` draws the cut-turn notice for.
+    const busy = addUserTurn(emptyChat(), "do the thing");
+    expect(busy.busy).toBe(true);
+
+    const done = reduceChat(busy, { type: "turn.completed", usage: { output_tokens: 12 } });
+    expect(done.busy).toBe(false);
   });
 });

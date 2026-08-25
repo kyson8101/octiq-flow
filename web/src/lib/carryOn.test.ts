@@ -1,7 +1,7 @@
 // A turn that was cut off, and the one thing to do about it.
 import { describe, expect, it } from "vitest";
 
-import { CARRY_ON, CARRY_ON_HEAD, readCarryOn, wasCutOff } from "./carryOn";
+import { CARRY_ON, CARRY_ON_HEAD, readCarryOn, someoneWorking, wasCutOff } from "./carryOn";
 
 describe("wasCutOff", () => {
   it("is a chat that says it is working while nothing is running it", () => {
@@ -43,5 +43,36 @@ describe("readCarryOn", () => {
     // The reader gets a line about the restart, not the instruction the agent
     // was given.
     expect(readCarryOn(CARRY_ON)).toBe("asked it to carry on after the backend stopped");
+  });
+});
+
+describe("someoneWorking", () => {
+  const room = "room-1";
+
+  it("is true while the chat's own process is up", () => {
+    expect(someoneWorking({ id: room, running: new Set([room]), round: false })).toBe(true);
+  });
+
+  it("is true while a SEAT of this room is answering", () => {
+    // A seat runs as its own process, under a key of its own. Nothing is
+    // running on the room's key while it writes — and the room is plainly
+    // being worked on.
+    expect(
+      someoneWorking({ id: room, running: new Set([`${room}-seat-s1`]), round: false }),
+    ).toBe(true);
+  });
+
+  it("is true while a round is going, whichever seat is speaking", () => {
+    expect(someoneWorking({ id: room, running: new Set(), round: true })).toBe(true);
+  });
+
+  it("is not fooled by another room's seat", () => {
+    expect(
+      someoneWorking({ id: room, running: new Set(["room-2-seat-s1"]), round: false }),
+    ).toBe(false);
+  });
+
+  it("is false when nothing at all is up", () => {
+    expect(someoneWorking({ id: room, running: new Set(), round: false })).toBe(false);
   });
 });

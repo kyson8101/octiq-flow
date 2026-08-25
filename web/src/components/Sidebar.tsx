@@ -36,6 +36,7 @@ export function Sidebar({
   onDelete,
   onSettings,
   onNewProject,
+  onHide,
   head,
   foot,
 }: {
@@ -66,6 +67,11 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
+  /** Put the whole column away, on the screens where it IS a column. Absent
+   *  below 860px, where the sidebar is a drawer that the scrim and the top
+   *  bar's own title already close — a third control there would be a third
+   *  way to do one thing. */
+  onHide?: () => void;
   /** Controls with nowhere else to be on a phone. The top bar holds four things
    *  at 390px, so the view switch (`head`) and the plan-usage meter (`foot`)
    *  come in here instead — passed in rather than rendered twice, because the
@@ -83,6 +89,19 @@ export function Sidebar({
         <button className="sidebar-add" type="button" title="New project" onClick={onNewProject}>
           <PlusIcon />
         </button>
+        {/* Last, against the edge that goes away. The way back is the project
+            name in the top bar, which gets its caret back once this is used. */}
+        {onHide && (
+          <button
+            className="sidebar-add"
+            type="button"
+            title="Hide projects"
+            aria-label="Hide projects"
+            onClick={onHide}
+          >
+            <CollapseIcon />
+          </button>
+        )}
       </div>
 
       <ul className="proj-list">
@@ -272,6 +291,16 @@ function GearIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+    </svg>
+  );
+}
+
+function CollapseIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M9 3v18" />
+      <path d="m16 15-3-3 3-3" />
     </svg>
   );
 }
