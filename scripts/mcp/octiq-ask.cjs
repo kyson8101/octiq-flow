@@ -19,6 +19,13 @@
  * the list straight off it. So this tool answers instantly and can never hold
  * a turn up.
  *
+ * `pin_file` is the same trick a third time, and it replaced a scraper. The
+ * files column used to be built by reading every path-shaped word out of the
+ * transcript, which answers "what did this chat touch" — a question nobody
+ * asks. What people want is "which of these should I open", and only the agent
+ * knows that. So it says, one line of reason per file, and the column is its
+ * answer rather than a machine's guess at it.
+ *
  * Speaks MCP over stdio: newline-delimited JSON-RPC, three methods. Written by
  * hand rather than with the SDK because it is ~100 lines and adding a
  * dependency to a script the agent spawns is a cost paid on every turn.
@@ -101,9 +108,13 @@ const TOOL = {
     "approaches to take, what something should be called, whether an assumption " +
     "is right. Prefer it over guessing, and over stopping to ask in prose. " +
     "Offer options when the choice is between a few known answers; leave options " +
-    "empty when any answer will do. Set multiple when the answer is a SET rather " +
-    "than a choice — which files to include, which checks to run — and they can " +
-    "then tick as many as they like.",
+    "empty when any answer will do. Each option is either a plain string or " +
+    "{label, description} — give it a description whenever the label alone does " +
+    "not say what picking it means. Set multiple when the answer is a SET rather " +
+    "than a choice: which files to include, which checks to run, which of these " +
+    "to fix now. Reach for it whenever the honest answer is \"any number of " +
+    "these\" — they then tick as many as they like and you get all of them back. " +
+    "Leave it out only for a real either/or.",
   inputSchema: {
     type: "object",
     properties: {
@@ -113,8 +124,29 @@ const TOOL = {
       },
       options: {
         type: "array",
-        items: { type: "string" },
-        description: "Two to four choices. Omit for a free-text answer.",
+        items: {
+          anyOf: [
+            { type: "string" },
+            {
+              type: "object",
+              properties: {
+                label: {
+                  type: "string",
+                  description: "The words on the button, and what comes back as the answer.",
+                },
+                description: {
+                  type: "string",
+                  description:
+                    "One short line under the label, saying what picking it means.",
+                },
+              },
+              required: ["label"],
+            },
+          ],
+        },
+        description:
+          "Two to four choices, each a string or {label, description}. " +
+          "Omit for a free-text answer.",
       },
       recommended: {
         type: "integer",
@@ -128,9 +160,10 @@ const TOOL = {
         type: "boolean",
         description:
           "True when several options may be picked at once, and the answer " +
-          "comes back as all of them. Leave it out for an either/or question: " +
-          "offering two ticks where you can only act on one answer invites a " +
-          "reply you cannot use. Needs options.",
+          "comes back as all of them — use it for any question whose honest " +
+          "answer is a set rather than one winner. Leave it out for a real " +
+          "either/or: offering two ticks where you can only act on one answer " +
+          "invites a reply you cannot use. Needs options.",
       },
     },
     required: ["question"],
@@ -177,6 +210,55 @@ const TODO_TOOL = {
       },
     },
     required: ["todos"],
+  },
+};
+
+const PIN_TOOL = {
+  name: "pin_file",
+  description:
+    "Pin the files the person should actually READ, with one line each saying " +
+    "why. The pinned list is a column beside the chat, and it is the only file " +
+    "list they get — nothing else puts a file in front of them. Pin the file " +
+    "that answers their question, the one holding the bug, the one they will " +
+    "have to edit themselves. Do NOT pin everything you opened: a list of " +
+    "twenty is a list nobody reads. Files you WRITE or EDIT are listed on their " +
+    "own, so this tool is for the ones you only read. Send the WHOLE list every " +
+    "time; it replaces the one on screen, and omitting a file unpins it. " +
+    "Returns immediately: it asks nothing of the user and never blocks a turn.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      files: {
+        type: "array",
+        description: "The whole pinned list, most worth reading first.",
+        items: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description:
+                "Where the file is. Absolute, or relative to the project root. " +
+                "A path that does not exist on disk is dropped.",
+            },
+            why: {
+              type: "string",
+              description:
+                "One line on why they should open it: \"the retry loop that " +
+                "swallows the error\". Not a description of the file — a " +
+                "reason to read it. Shown under the name.",
+            },
+            line: {
+              type: "integer",
+              description:
+                "The line worth landing on, when one place in the file is the " +
+                "point. Opens there. Leave it out for a whole-file pin.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    required: ["files"],
   },
 };
 
@@ -322,7 +404,7 @@ async function handle(msg) {
       // becomes a room by taking a seat, so the tool that adds the first one
       // has to work in a chat that is not a room yet. See card 70.
       return reply(msg.id, {
-        tools: CHAT_KEY ? [TOOL, TODO_TOOL, ADD_AGENT, ASK_AGENT] : [],
+        tools: CHAT_KEY ? [TOOL, TODO_TOOL, PIN_TOOL, ADD_AGENT, ASK_AGENT] : [],
       });
 
     case "tools/call": {
@@ -400,6 +482,28 @@ async function handle(msg) {
           content: [{ type: "text", text: `The list on screen now has ${todos} item(s).` }],
         });
       }
+
+      // Same deal as `todo_write`: the panel draws the CALL, which is already
+      // travelling down the chat stream. Counting is all there is left to do.
+      //
+      // It answers with the count rather than a bare "done" so that a pin of
+      // nothing reads as one. An agent that meant to add a file and sent an
+      // empty list is told it cleared the column instead.
+      if (msg.params?.name === "pin_file") {
+        const files = Array.isArray(msg.params.arguments?.files)
+          ? msg.params.arguments.files.length
+          : 0;
+        return reply(msg.id, {
+          content: [
+            {
+              type: "text",
+              text: files
+                ? `Pinned ${files} file(s) beside the chat.`
+                : "The pinned column is now empty.",
+            },
+          ],
+        });
+      }
       if (msg.params?.name !== "ask_user") {
         return reply(msg.id, {
           content: [{ type: "text", text: `No tool called ${msg.params?.name}.` }],
@@ -407,7 +511,12 @@ async function handle(msg) {
         });
       }
       const args = msg.params.arguments || {};
-      const options = Array.isArray(args.options) ? args.options.map(String) : [];
+      // Passed through in whatever shape it arrived: strings and
+      // {label, description} objects are both real, and the server decides
+      // which entries are usable. Coercing here is what once turned a list of
+      // objects into four buttons reading "[object Object]" — a question
+      // nobody could answer, with the agent blocked behind it.
+      const options = Array.isArray(args.options) ? args.options : [];
       // Only a whole number that actually names one of the options survives.
       // A stray index would otherwise mark nothing and look like a bug in the
       // UI rather than a bad argument here.
@@ -417,7 +526,10 @@ async function handle(msg) {
       // Several answers only where there are several things to pick. Asked of
       // a free-text question the flag means nothing, and passing it on would
       // draw a card promising ticks it has none of.
-      const multiple = args.multiple === true && options.length > 0;
+      // `multiSelect` is `AskUserQuestion`'s name for this, and an agent going
+      // on training rather than on our schema sends that one. Reading only our
+      // name is why a set-shaped question quietly arrived as a one-of card.
+      const multiple = (args.multiple === true || args.multiSelect === true) && options.length > 0;
       const answer = await askOctiq(
         String(args.question || "").trim(),
         options,

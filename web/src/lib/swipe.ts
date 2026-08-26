@@ -110,7 +110,7 @@ export function swipeEnd(s: Swipe): "open" | "close" | null {
 /** Does anything between `el` and `root` scroll sideways? Then the finger is
  *  probably about to scroll it — a wide code block or a diff reaches the left
  *  edge, and its own scroll has to win there. */
-function scrollsSideways(el: Element | null, root: Element): boolean {
+export function scrollsSideways(el: Element | null, root: Element): boolean {
   for (let n = el; n && n !== root; n = n.parentElement) {
     if (n.scrollWidth > n.clientWidth + 1) {
       const ox = getComputedStyle(n).overflowX;

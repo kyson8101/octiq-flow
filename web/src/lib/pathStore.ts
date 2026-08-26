@@ -46,8 +46,8 @@ export function knownPath(raw: string, cwd: string): string | null | undefined {
   return answers.get(keyOf(raw, cwd));
 }
 
-/** The same, for a list — the shape `newestFiles` reads. Paths with no answer
- *  yet are simply absent. */
+/** The same, for a list — the shape the files column reads (see lib/pins).
+ *  Paths with no answer yet are simply absent. */
 export function knownPaths(raws: string[], cwd: string): Map<string, string | null> {
   const out = new Map<string, string | null>();
   for (const raw of raws) {

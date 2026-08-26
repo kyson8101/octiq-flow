@@ -39,6 +39,7 @@ import {
   loadConversations,
   rewriteConversation,
   opensBlank,
+  sameIndex,
   saveConversations,
   shortTitle,
   titleFrom,
@@ -66,6 +67,7 @@ import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
 import { DRAWER, useMedia, WIDE } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
+import { neighbour, useChatSwipe } from "./lib/chatSwipe";
 import { MessageList } from "./components/MessageList";
 import {
   ACCESS,
@@ -85,12 +87,14 @@ import { isUnder, readSession, replaySession, type HistorySession } from "./lib/
 import { Sidebar, type Project } from "./components/Sidebar";
 import { AgentsPage, loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
+import { WorkBoard } from "./components/WorkBoard";
+import { buildBoard } from "./lib/board";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
-import { FilesButton, SessionFilesPanel, useSessionFiles } from "./components/SessionFiles";
+import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -217,6 +221,7 @@ export default function App() {
    *  the model picker may offer, so it is not only the Agents page's business. */
   const [agents, setAgents] = useState<AgentInstall[]>([]);
   const [agentsOpen, setAgentsOpen] = useState(false);
+  const [boardOpen, setBoardOpen] = useState(false);
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
@@ -259,6 +264,9 @@ export default function App() {
   /** The app shell, which the drag gesture listens on because it holds both the
    *  drawer and everything the drawer slides over. */
   const shell = useRef<HTMLDivElement | null>(null);
+  /** The chat pane, which the OTHER drag gesture listens on: a sideways swipe
+   *  over the transcript moves along the project's chats — see lib/chatSwipe. */
+  const pane = useRef<HTMLElement | null>(null);
   // Drag in from the left edge to pull the drawer out, and back to put it away.
   // Touch only, and only while the drawer exists — see lib/swipe for how the
   // gesture keeps out of the way of scrolling and of highlighting text.
@@ -613,7 +621,7 @@ export default function App() {
   // closed early, leaves a chat this browser has and the server does not.
   // The browser's own chats are now kept, and the next save re-offers them to
   // the index.
-  useEffect(() => {
+  const refreshIndex = useCallback(() => {
     bridge
       .invoke<
         {
@@ -678,12 +686,65 @@ export default function App() {
           // list is authoritative and the chat was deleted on another device.
           const mine = local.filter((c) => !known.has(c.id) && !c.synced);
           const all = [...merged, ...mine];
+          // Most answers say exactly what this page already holds — a
+          // reconnection, or the echo of this page's own save — and folding one
+          // of those in is not free: every row is rebuilt, the app re-renders,
+          // and the whole store is written back to localStorage, transcripts
+          // and all. An answer that changes nothing is dropped instead.
+          if (sameIndex(local, all)) return local;
           saveConversations(all);
           return all;
         });
       })
       .catch(() => {});
-  }, []);
+  }, [forgetLocally]);
+
+  // Asked for on every CONNECT rather than once on load, and again the moment
+  // the server says the list has changed.
+  //
+  // Once on load was the whole of it, and it made the sidebar a snapshot: a
+  // chat started on the phone — or deleted on it — reached the laptop at the
+  // next reload and not before. A connect covers the device that was asleep
+  // while the change happened; the event covers the one that was watching.
+  useEffect(() => {
+    if (conn !== "open") return;
+    refreshIndex();
+  }, [conn, refreshIndex]);
+
+  useEffect(() => {
+    // Coalesced: a save and its neighbours arrive in a burst, and the answer to
+    // all of them is the same one list.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const off = bridge.on("chat-index-changed", () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(refreshIndex, 250);
+    });
+    return () => {
+      off();
+      if (timer) clearTimeout(timer);
+    };
+  }, [refreshIndex]);
+
+  // A chat can arrive from another device for a project this page has never
+  // heard of, because the project was made over there too. The row would then
+  // render nowhere at all — the sidebar draws chats INSIDE their project, so a
+  // chat whose folder is missing is simply invisible.
+  //
+  // Asked ONCE per unknown project, which is the whole reason for the ref: a
+  // project that is genuinely gone stays unknown after the reload, and
+  // re-asking on that would be a loop that never settles. Shelved ones count as
+  // known for the same reason — they are deliberately not in `workspaces`.
+  const askedAbout = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (workspaces.length === 0) return;
+    const known = new Set([...workspaces, ...shelved].map((w) => w.id));
+    const strangers = conversations
+      .map((c) => c.projectId)
+      .filter((id) => !known.has(id) && !askedAbout.current.has(id));
+    if (strangers.length === 0) return;
+    for (const id of strangers) askedAbout.current.add(id);
+    loadWorkspaces();
+  }, [conversations, workspaces, shelved, loadWorkspaces]);
 
   // Adopt whatever is already running on the server. This is what the
   // conversation-derived key buys: a chat left working when the browser was
@@ -1072,10 +1133,11 @@ export default function App() {
   const chat = (conversationId && chats[conversationId]) || EMPTY;
   /** The newest plan this chat wrote down — see lib/todos. */
   const todos = useMemo(() => latestTodos(chat.messages), [chat.messages]);
-  /** Every file this chat has touched. Read once up here rather than twice
-   *  below: the button needs the count and the panel needs the list, and
-   *  scanning the transcript for each of them would do the same work twice. */
-  const sessionFiles = useSessionFiles(
+  /** The files this chat says are worth opening — see lib/pins. Read once up
+   *  here rather than twice below: the button needs the count and the panel
+   *  needs the list, and walking the transcript for each of them would do the
+   *  same work twice. */
+  const sessionFiles = useSessionPins(
     chat.messages,
     project?.primary_path ?? "",
     filesOpen,
@@ -1111,6 +1173,18 @@ export default function App() {
     for (const id of running) if (chats[id]?.busy) out.add(id);
     return out;
   }, [running, chats]);
+
+  /** Every chat under what it wants from you — see `lib/board`. Built only
+   *  while the page is open: it walks every loaded transcript for its newest
+   *  plan, and there is no reason to do that behind a page nobody is looking
+   *  at. */
+  const board = useMemo(
+    () =>
+      boardOpen
+        ? buildBoard({ conversations, running, busy: busySet, asks, questions, chats })
+        : null,
+    [boardOpen, conversations, running, busySet, asks, questions, chats],
+  );
 
   /** The calls whose background work is still running, for the cards. Memoised
    *  on the roster itself: it is a context value read by every card on screen,
@@ -1304,6 +1378,31 @@ export default function App() {
     if (c.permission) setAccess(c.permission as AccessLevel);
     setDrawer(false);
   }, [catchUpChat]);
+
+  /** This project's chats, in the order the sidebar lists them, which is the
+   *  order a swipe walks. Ids only: the gesture is about which row comes next,
+   *  and rebuilding this on every message would re-bind the listeners. */
+  const siblings = useMemo(
+    () => (projectId ? (grouped.get(projectId) ?? []).map((c) => c.id) : []),
+    [grouped, projectId],
+  );
+
+  // Swipe the transcript sideways to move along them — left for the next chat
+  // down the list, right for the one above, wrapping round at the ends. Held
+  // back while the drawer is open, because there the same drag shuts it, and
+  // while the editor is up, where there is no transcript under the finger.
+  //
+  // Read straight off this render rather than through refs: the hook keeps the
+  // callback in one of its own and refreshes it every time, so what is closed
+  // over here is always the chat currently on screen.
+  useChatSwipe(pane, {
+    enabled: mode === "chat" && !drawer && siblings.length > 1,
+    onGo: (dir) => {
+      const next = neighbour(siblings, conversationId, dir);
+      const found = next && conversations.find((c) => c.id === next);
+      if (found) openConversation(found);
+    },
+  });
 
   // The half that opens a chat a banner asked for lives further down, with the
   // panel closers it needs — see `showConversation`.
@@ -2524,6 +2623,7 @@ export default function App() {
           projects={workspaces}
           shelved={shelved}
           onShowShelved={() => setShelfOpen(true)}
+          onShowBoard={() => setBoardOpen(true)}
           onShowAgents={() => {
             // Read through the cache on open, so the page paints at once; the
             // page's own "Check again" is the one that asks the shell afresh.
@@ -2549,7 +2649,7 @@ export default function App() {
           foot={wide ? undefined : <Usage />}
         />
 
-        <main className="main" hidden={mode !== "chat"}>
+        <main className="main" hidden={mode !== "chat"} ref={pane}>
           {chat.messages.length === 0 && conversationId && reading[conversationId] ? (
             // Reading the transcript back. Until it lands this conversation
             // has no messages, and the page for a conversation with no
@@ -2829,7 +2929,7 @@ export default function App() {
 
         {filesMounted && (
           <SessionFilesPanel
-            paths={sessionFiles}
+            pins={sessionFiles}
             open={filesOpen}
             busy={chat.busy && !cutOff}
             onClose={() => showFiles(false)}
@@ -2847,6 +2947,19 @@ export default function App() {
           }}
           onReload={() => loadAgentList(true)}
           onClose={() => setAgentsOpen(false)}
+        />
+      )}
+
+      {boardOpen && board && (
+        <WorkBoard
+          board={board}
+          projectName={(id) => workspaces.find((w) => w.id === id)?.name}
+          onOpen={(id) => {
+            const found = conversations.find((c) => c.id === id);
+            if (found) openConversation(found);
+            setBoardOpen(false);
+          }}
+          onClose={() => setBoardOpen(false)}
         />
       )}
 

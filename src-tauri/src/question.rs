@@ -35,6 +35,70 @@ pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 /// somebody who has not.
 pub const RELOAD_GRACE: Duration = Duration::from_secs(20);
 
+/// One thing you can pick.
+///
+/// A bare string and a `{label, description}` object are both accepted, because
+/// both are what an agent will send. Every Claude model is trained on
+/// `AskUserQuestion`, whose choices are objects, so the object shape is the one
+/// it reaches for by reflex — and a boundary that stringified whatever it was
+/// handed turned that reflex into four buttons reading `[object Object]`.
+/// Accepting both costs a deserializer; teaching every agent which of the two
+/// we meant costs a wrong question every time one forgets.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Choice {
+    /// The words on the button, and the words sent back as the answer. A
+    /// description is never part of what is answered: the agent has to be able
+    /// to match what it is told against what it offered.
+    pub label: String,
+    /// A line under the label, for when the label alone does not say enough.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// A choice as it arrives, before we know whether it is usable.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawChoice {
+    Text(String),
+    Labelled {
+        label: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    /// Anything else at all — a number, a null, an object with no label.
+    Unusable(serde_json::Value),
+}
+
+/// Read the offered choices, keeping the ones a person could actually read.
+///
+/// Tolerant on purpose. One malformed entry rejecting the whole request would
+/// fail the call the agent is BLOCKED on, and the person would see nothing at
+/// all rather than one choice fewer.
+fn choices<'de, D>(d: D) -> Result<Vec<Choice>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Vec::<RawChoice>::deserialize(d)?
+        .into_iter()
+        .filter_map(|raw| match raw {
+            RawChoice::Text(label) => Some(Choice {
+                label,
+                description: None,
+            }),
+            RawChoice::Labelled { label, description } => Some(Choice {
+                label,
+                // A blank line under the label is a gap in the card, not a
+                // description.
+                description: description.filter(|d| !d.trim().is_empty()),
+            }),
+            // Dropped rather than drawn. A button with no words on it is not a
+            // choice, and `[object Object]` is worse than one button fewer.
+            RawChoice::Unusable(_) => None,
+        })
+        .filter(|c| !c.label.trim().is_empty())
+        .collect())
+}
+
 /// What the agent wants to know.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,8 +108,8 @@ pub struct Question {
     pub question: String,
     /// Choices to offer. Empty means any answer will do, so the UI asks for
     /// text instead of showing buttons.
-    #[serde(default)]
-    pub options: Vec<String>,
+    #[serde(default, deserialize_with = "choices")]
+    pub options: Vec<Choice>,
     /// Which option the agent would pick, as an INDEX into `options`.
     ///
     /// An index rather than a flag on each choice, because "recommended" is
@@ -66,7 +130,12 @@ pub struct Question {
     /// UI that let you tick both would be inviting an answer the agent cannot
     /// act on. The agent knows which of its questions is a set and which is a
     /// choice; nothing else does.
-    #[serde(default)]
+    ///
+    /// Read under BOTH names. `AskUserQuestion` calls this `multiSelect`, and
+    /// that is what an agent going on training rather than on our schema
+    /// sends — a name we did not read was a set-shaped question quietly drawn
+    /// as a one-of card, with no ticks, no error, and nothing to notice.
+    #[serde(default, alias = "multiSelect")]
     pub multiple: bool,
 }
 
@@ -194,7 +263,16 @@ mod tests {
         Question {
             chat_key: None,
             question: "Which database?".into(),
-            options: vec!["Postgres".into(), "SQLite".into()],
+            options: vec![
+                Choice {
+                    label: "Postgres".into(),
+                    description: None,
+                },
+                Choice {
+                    label: "SQLite".into(),
+                    description: Some("One file, no server".into()),
+                },
+            ],
             recommended: Some(0),
             multiple: false,
         }
@@ -328,5 +406,60 @@ mod tests {
         assert!(free.options.is_empty());
         assert!(!free.question.is_empty());
         assert_eq!(free.recommended, None);
+    }
+
+    #[test]
+    fn a_choice_arrives_as_a_string_or_as_a_labelled_object() {
+        // Every Claude model is trained on `AskUserQuestion`, whose choices are
+        // `{label, description}` objects. That is the shape an agent reaches for
+        // by reflex, and a boundary that stringified whatever it was handed
+        // turned the reflex into four buttons reading `[object Object]` — a
+        // question nobody could answer, with nothing anywhere saying why.
+        let q: Question = serde_json::from_str(
+            r#"{"question":"Which database?","options":[
+                 "Postgres",
+                 {"label":"SQLite","description":"One file, no server"}
+               ]}"#,
+        )
+        .expect("parses both shapes");
+        assert_eq!(q.options[0].label, "Postgres");
+        assert_eq!(q.options[0].description, None);
+        assert_eq!(q.options[1].label, "SQLite");
+        assert_eq!(
+            q.options[1].description.as_deref(),
+            Some("One file, no server")
+        );
+    }
+
+    #[test]
+    fn a_choice_nobody_could_read_is_dropped_rather_than_drawn() {
+        // An object with no label has no words to put on a button. Dropping it
+        // loses a choice; drawing it loses the whole question.
+        let q: Question = serde_json::from_str(
+            r#"{"question":"Which?","options":["Keep",{"value":"Lost"},"  ",7]}"#,
+        )
+        .expect("parses past the unusable ones");
+        assert_eq!(q.options.len(), 1);
+        assert_eq!(q.options[0].label, "Keep");
+    }
+
+    #[test]
+    fn the_set_flag_answers_to_the_name_the_agent_knows_it_by() {
+        // `AskUserQuestion` calls it `multiSelect`, so that is what an agent
+        // sends when it is going on training rather than on our schema. Read
+        // only `multiple` and the ticks silently never appear — which is
+        // exactly how a set-shaped question came back as a one-of card, with
+        // nothing logged and nothing to notice.
+        let ours: Question = serde_json::from_str(
+            r#"{"question":"Which files?","options":["a","b"],"multiple":true}"#,
+        )
+        .expect("parses our name");
+        assert!(ours.multiple);
+
+        let theirs: Question = serde_json::from_str(
+            r#"{"question":"Which files?","options":["a","b"],"multiSelect":true}"#,
+        )
+        .expect("parses their name");
+        assert!(theirs.multiple);
     }
 }

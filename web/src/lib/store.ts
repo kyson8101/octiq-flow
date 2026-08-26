@@ -161,3 +161,35 @@ export function rewriteConversation(
 ): Conversation {
   return { ...(before ?? {}), ...fresh };
 }
+
+/** Do two lists say the same thing about which chats exist?
+ *
+ *  The chat list is refreshed from the server whenever anything might have
+ *  changed it — a reconnection, or another device saving a row — and most of
+ *  those answers are the one this page already has. Folding an identical answer
+ *  in is not free: it rebuilds every row, re-renders the app, and rewrites the
+ *  whole store to localStorage, transcripts and all. So an answer that changes
+ *  nothing is dropped instead of applied.
+ *
+ *  Compares METADATA ONLY, and ignores order. The messages are not part of the
+ *  index — they arrive from each chat's transcript — and the order of the rows
+ *  is not either, since the sidebar sorts by `createdAt` itself (`byProject`). */
+export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
+  if (a.length !== b.length) return false;
+  const byId = new Map(a.map((c) => [c.id, c]));
+  return b.every((c) => {
+    const held = byId.get(c.id);
+    return (
+      !!held &&
+      held.projectId === c.projectId &&
+      held.title === c.title &&
+      held.sessionId === c.sessionId &&
+      held.modelId === c.modelId &&
+      held.permission === c.permission &&
+      held.createdAt === c.createdAt &&
+      held.updatedAt === c.updatedAt &&
+      held.seq === c.seq &&
+      !!held.synced === !!c.synced
+    );
+  });
+}

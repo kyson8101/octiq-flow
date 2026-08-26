@@ -14,6 +14,7 @@ const html = (over: { onHide?: () => void } = {}) =>
       projects={projects}
       shelved={[]}
       onShowShelved={() => {}}
+      onShowBoard={() => {}}
       onShowAgents={() => {}}
       agentName="Claude"
       conversations={new Map<string, Conversation[]>()}

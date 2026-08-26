@@ -46,8 +46,7 @@ const BARE_ONLY = new RegExp(`^${BARE}${LINE}$`);
 /** The name at the end carries an extension. A FOLDER is a real path that the
  *  backend's existence check says yes to and the file panel cannot open, and
  *  this is the only thing in the string that tells the two apart. It is the
- *  same rule `candidatePaths` uses for the files panel, so both surfaces agree
- *  on what counts. */
+ *  same rule the files column uses, so both surfaces agree on what counts. */
 const NAMES_A_FILE = new RegExp(String.raw`[^/]\.[A-Za-z]\w{0,7}${LINE}$`);
 
 /** Punctuation the sentence owns rather than the path. Trailing only: a path

@@ -8,15 +8,7 @@
 // depend on the machine's timezone.
 import { describe, expect, it } from "vitest";
 
-import {
-  byName,
-  fileExt,
-  fileTypes,
-  formatModified,
-  modifiedTitle,
-  newestFiles,
-  typeLabel,
-} from "./files";
+import { fileExt, fileTypes, formatModified, modifiedTitle, typeLabel } from "./files";
 
 describe("fileExt", () => {
   it("takes the extension from the NAME, not the path", () => {
@@ -93,102 +85,4 @@ describe("formatModified", () => {
   });
 });
 
-describe("newestFiles", () => {
-  /** The shape the panel keeps: every candidate it has asked about, mapped to
-   *  the real file it turned out to be, or null for "no such file". */
-  const answers = (pairs: [string, string | null][]) => new Map(pairs);
 
-  it("is newest last-mentioned first, and drops what does not exist", () => {
-    expect(
-      newestFiles(
-        ["a.ts", "not-a-file", "b.ts"],
-        answers([
-          ["a.ts", "/repo/a.ts"],
-          ["not-a-file", null],
-          ["b.ts", "/repo/b.ts"],
-        ]),
-        25,
-      ),
-    ).toEqual(["/repo/b.ts", "/repo/a.ts"]);
-  });
-
-  it("shows a file mentioned twice once, at its newest mention", () => {
-    expect(
-      newestFiles(
-        ["a.ts", "b.ts", "./a.ts"],
-        answers([
-          ["a.ts", "/repo/a.ts"],
-          ["b.ts", "/repo/b.ts"],
-          ["./a.ts", "/repo/a.ts"],
-        ]),
-        25,
-      ),
-    ).toEqual(["/repo/a.ts", "/repo/b.ts"]);
-  });
-
-  it("leaves out a candidate nothing has answered for yet", () => {
-    expect(newestFiles(["a.ts", "pending.ts"], answers([["a.ts", "/repo/a.ts"]]), 25)).toEqual([
-      "/repo/a.ts",
-    ]);
-  });
-
-  it("stops at the limit, keeping the newest", () => {
-    const many = Array.from({ length: 40 }, (_, i) => `f${i}.ts`);
-    const list = newestFiles(
-      many,
-      answers(many.map((c) => [c, `/repo/${c}`])),
-      25,
-    );
-    expect(list).toHaveLength(25);
-    expect(list[0]).toBe("/repo/f39.ts");
-    expect(list[24]).toBe("/repo/f15.ts");
-  });
-
-  it("counts only the files it kept, so a dead candidate does not eat a slot", () => {
-    const many = Array.from({ length: 60 }, (_, i) => `f${i}.ts`);
-    const list = newestFiles(
-      many,
-      answers(many.map((c, i) => [c, i % 2 === 0 ? `/repo/${c}` : null])),
-      25,
-    );
-    expect(list).toHaveLength(25);
-    expect(list[0]).toBe("/repo/f58.ts");
-  });
-});
-
-describe("byName", () => {
-  it("orders by file name, not by the folder above it", () => {
-    expect(byName(["/repo/a/zebra.ts", "/repo/z/apple.ts"])).toEqual([
-      "/repo/z/apple.ts",
-      "/repo/a/zebra.ts",
-    ]);
-  });
-
-  it("ignores case, so a capital letter does not jump the list", () => {
-    expect(byName(["/repo/Zeta.ts", "/repo/alpha.ts", "/repo/Beta.ts"])).toEqual([
-      "/repo/alpha.ts",
-      "/repo/Beta.ts",
-      "/repo/Zeta.ts",
-    ]);
-  });
-
-  it("counts numbers rather than comparing them character by character", () => {
-    expect(byName(["/repo/card-10.md", "/repo/card-2.md"])).toEqual([
-      "/repo/card-2.md",
-      "/repo/card-10.md",
-    ]);
-  });
-
-  it("breaks a tie on the whole path, so two mod.rs have a fixed order", () => {
-    expect(byName(["/repo/z/mod.rs", "/repo/a/mod.rs"])).toEqual([
-      "/repo/a/mod.rs",
-      "/repo/z/mod.rs",
-    ]);
-  });
-
-  it("leaves the list it was given alone", () => {
-    const given = ["/repo/b.ts", "/repo/a.ts"];
-    byName(given);
-    expect(given).toEqual(["/repo/b.ts", "/repo/a.ts"]);
-  });
-});

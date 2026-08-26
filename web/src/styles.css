@@ -613,6 +613,48 @@ body {
   min-height: 0;
 }
 
+/* The transcript follows a sideways drag between the project's chats. The other
+   half of this is lib/chatSwipe, which is the only thing that sets
+   `--chat-swipe-x` and the two classes below: `is-chat-swiping` while a finger
+   is on it, `is-chat-landing` for the settle afterwards.
+
+   Class-gated rather than left on at 0px, which would look the same and read
+   the same. A transform makes an element the containing block for everything
+   positioned inside it, and the pane holds panels that are laid over the
+   transcript. Between gestures there is nothing here to trip over. */
+.main.is-chat-swiping,
+.main.is-chat-landing {
+  /* The transcript hangs off the side while it moves. `clip` rather than
+     `hidden`: hidden would make this a scroll container, and the page would
+     gain a horizontal scrollbar to a place nothing is. */
+  overflow-x: clip;
+}
+
+.main.is-chat-swiping > .hero,
+.main.is-chat-swiping > .chat-body,
+.main.is-chat-landing > .hero,
+.main.is-chat-landing > .chat-body {
+  transform: translateX(var(--chat-swipe-x, 0px));
+  will-change: transform;
+}
+
+/* Following the finger has no transition — it IS the finger. Only the settle
+   afterwards does, and LAND_MS in lib/chatSwipe is this number. */
+.main.is-chat-landing > .hero,
+.main.is-chat-landing > .chat-body {
+  transition: transform 180ms ease-out;
+}
+
+/* Dragging is direct manipulation and stays. The slide the new chat arrives on
+   is an animation, and goes: it opens where it belongs instead. */
+@media (prefers-reduced-motion: reduce) {
+  .main.is-chat-landing > .hero,
+  .main.is-chat-landing > .chat-body {
+    transform: none;
+    transition: none;
+  }
+}
+
 /* ---- Empty state ------------------------------------------------------ */
 .hero {
   display: flex;
@@ -4317,6 +4359,47 @@ body.is-ultra .eff {
   gap: 1px;
 }
 
+/* A pinned row is two lines: the file, then the agent's reason for it. The
+   row wraps rather than being a nested column, so the name/folder/stamp line
+   keeps the exact layout every other `.file` row in the app has. */
+.sfp-pin {
+  flex-wrap: wrap;
+}
+
+/* `.file-icon` centres itself, which is right on a one-line row and wrong on a
+   wrapped one — it would drift to the middle of both lines. Baseline puts it
+   back beside the name. */
+.sfp-pin .file-icon {
+  align-self: baseline;
+}
+
+/* What the agent said the file is FOR. Full width, so it sits under the row
+   rather than fighting the folder for the space left over, and indented past
+   the icon so it reads as belonging to the name above it. */
+.sfp-why {
+  flex: 0 0 100%;
+  /* The icon (13px) plus the row's gap (7px). */
+  padding-left: 20px;
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-2);
+}
+
+/* The line worth landing on. A signpost beside the reason, not a link — see
+   the note in SessionFiles about why clicking opens the file instead. */
+.sfp-line {
+  font-family: var(--mono);
+  color: var(--fg-3);
+}
+
+/* Pinned vs merely changed. The agent CHOSE the pinned ones, so their icon
+   takes the accent and the changed ones stay in the quiet grey `.file-icon`
+   already gives them. Deliberately not a bar down the left edge. */
+.sfp-pin.is-pinned .file-icon {
+  color: var(--accent);
+}
+
 /* ---- Image viewer ------------------------------------------------------ */
 .viewer {
   position: fixed;
@@ -6596,6 +6679,49 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
+/* ---- A choice that needs explaining -------------------------------------
+   `AskUserQuestion`-shaped choices carry a line of description, and a line of
+   prose cannot sit in a wrapping pill row: it would wrap past the next choice
+   along and read as belonging to it. One described choice turns the whole list
+   into full-width rows, so every option in a question keeps the same shape. */
+.qa-options.is-detailed {
+  flex-direction: column;
+  flex-wrap: nowrap;
+  align-items: stretch;
+}
+
+.qa-option.is-detailed {
+  width: 100%;
+  text-align: left;
+}
+
+.qa-option-text {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.qa-option-label {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+/* Quieter than the label, and never the same weight: the words you are picking
+   have to stay the ones that read first. */
+.qa-option-desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-2);
+  white-space: normal;
+}
+
+.qa-option.is-on .qa-option-desc {
+  color: inherit;
+  opacity: 0.8;
+}
+
 .qa-option.is-many {
   display: inline-flex;
   align-items: center;
@@ -6619,6 +6745,16 @@ body.is-ultra .eff {
 
 .qa-option.is-on .qa-tick {
   border-color: currentColor;
+}
+
+/* A tick against two lines of text belongs beside the FIRST of them, not
+   halfway down the pair. */
+.qa-option.is-many.is-detailed {
+  align-items: flex-start;
+}
+
+.qa-option.is-many.is-detailed .qa-tick {
+  margin-top: 2px;
 }
 
 /* ---- The card, put aside -----------------------------------------------
@@ -8676,4 +8812,162 @@ body.is-ultra .eff {
   .room-strip {
     transition: none;
   }
+}
+
+/* ── The board ─────────────────────────────────────────────────────────────
+   A page, not a side sheet: four columns need the width. It reuses the `.panel`
+   shell for its head, close button, scrim and slide-in, and only widens it. */
+
+.panel.is-wide {
+  width: 100vw;
+  border-left: none;
+}
+
+.board-cols {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  /* Four columns will not fit a phone, so it swipes sideways rather than
+     reflowing into one long list that loses the grouping. */
+  overflow-x: auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.board-col {
+  flex: 1 0 240px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.board-col-head {
+  padding: 2px 4px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.board-col-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--fg-1);
+}
+
+.board-count {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+/* The one column worth a colour. It earns it by being the only one that is
+   ever about you rather than about the agents. */
+.board-col.is-needs-you .board-count {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.board-col-sub {
+  margin-top: 2px;
+  font-size: 0.7rem;
+  color: var(--fg-3);
+}
+
+.board-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.board-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.board-card:hover {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+}
+
+/* A tint and a full border, never a left-edge strip. */
+.board-col.is-needs-you .board-card {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+.board-card-title {
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.3;
+  /* A chat title is the first thing somebody said, so it can be a paragraph. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.board-want {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.board-plan {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 0.72rem;
+  color: var(--fg-2);
+}
+
+.board-plan-count {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  color: var(--fg-3);
+}
+
+.board-plan-line {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-stalled {
+  font-size: 0.72rem;
+  color: var(--warn);
+}
+
+.board-proj {
+  font-size: 0.68rem;
+  color: var(--fg-3);
+}
+
+.board-empty,
+.board-more {
+  padding: 6px 4px;
+  font-size: 0.72rem;
+  color: var(--fg-3);
 }

@@ -21,6 +21,7 @@ export function Sidebar({
   projects,
   shelved,
   onShowShelved,
+  onShowBoard,
   onShowAgents,
   agentName,
   conversations,
@@ -47,6 +48,8 @@ export function Sidebar({
   shelved: Project[];
   /** Opens the modal that lists them, which is the only way back. */
   onShowShelved: () => void;
+  /** Opens the board: every chat under what it wants from you. */
+  onShowBoard: () => void;
   /** Opens the page that says which agent CLIs this machine has. */
   onShowAgents: () => void;
   /** The agent new chats start with, named on the button so the current answer
@@ -130,6 +133,12 @@ export function Sidebar({
           Shelved · {shelved.length}
         </button>
       )}
+
+      {/* The board reads across every project, so it does not belong to any
+          one row above — it sits with the other whole-app routes. */}
+      <button className="shelf-open" type="button" onClick={onShowBoard}>
+        Board
+      </button>
 
       {/* Same quiet treatment as the shelf: not what you came to the sidebar
           for, but the only route to the page — and it names the agent in use,

@@ -51,6 +51,13 @@ and never again from inside an agent chat:
   client-only deploy leaves a new page calling commands an old binary does not
   have, which fails as `'<cmd>' is not available from a browser — it needs the
   desktop app`. Ship both.
+- **Check the backend's state with `./scripts/octiq-check.sh`.** Read-only and
+  safe from inside a chat: it says whether the service is up, which build is
+  actually live, whether `web/dist` has run ahead of the server, whether the
+  restarter job is loaded, and how much the running agents hold. Each run
+  appends a JSON object to `~/.octiqflow/logs/audit.jsonl`, so "what changed
+  since it last worked" is a grep. Exit 0 ok · 1 worth a look · 2 down.
+
 - **Restart the backend by touching a file, NOT by running the script.**
 
   ```bash
@@ -309,6 +316,18 @@ line to `PASTED` in `web/src/lib/themeStore.ts`.
 
 ## Conventions & gotchas
 
+- **End a finished task with `Task Completed`.** When the work asked for in THIS
+  chat is done, the last line of the reply says so in those words — plus
+  `— ready to ship` when it is committed and only the build/restart is left.
+  Several chats run against this one checkout at once, and from the prose alone
+  it is not clear whether the one being read has finished or is still going; the
+  flag answers that at a glance. It goes LAST, after any caveats, flags, or
+  things left to watch — a caveat is not a hedge on whether the work is done,
+  and a reply that ends on one is exactly what the flag exists to disambiguate.
+  When the work is NOT done the last line is `Task Not Completed` and one line
+  saying why — blocked, waiting on an answer, part of the scope dropped — so a
+  reply with no flag is never something to interpret. It speaks for this chat
+  ONLY: other sessions working in parallel neither earn it nor withhold it.
 - **Code comments reference "card NN"** (e.g. "card 04 — Project mode"). The app
   was built in numbered work cards/phases; the numbers are historical context,
   not a live system.

@@ -23,13 +23,17 @@
 // which is itself an answer. Minimising decides nothing.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
-import { composeAnswer, togglePick } from "../lib/questionAnswer";
+import { choicesOf, pendingAnswer, togglePick } from "../lib/questionAnswer";
+import type { Choice } from "../lib/questionAnswer";
 
 export type Question = {
   id: string;
   chatKey?: string;
   question: string;
-  options?: string[];
+  /** What is on offer. Read through `choicesOf`, never straight: an agent sends
+   *  `AskUserQuestion`-shaped `{label, description}` objects, an older server
+   *  sends plain strings, and both have to draw. */
+  options?: (string | Choice)[];
   /** Index into `options` of the one the agent would pick. Advisory only: it is
    *  marked, never pre-selected, and closing without answering still sends
    *  DECLINED rather than this. The agent having a view does not make the
@@ -75,14 +79,39 @@ export function UserQuestion({
   const current = onSummary ? undefined : questions[page];
   const answered = questions.filter((q) => answers[q.id]).length;
 
-  const options = current?.options ?? [];
+  const options = choicesOf(current?.options);
+  // What an answer is made of. A description explains a choice; it is never
+  // part of what the agent is told was chosen.
+  const labels = options.map((o) => o.label);
+  // A description turns the pills into rows: a line of explanation cannot wrap
+  // sideways next to the next choice along and still read as belonging to this
+  // one.
+  const detailed = options.some((o) => o.description);
   // A set needs something to make a set of. Marked as taking several with no
   // options to tick, the question is a text box like any other.
   const many = !!current?.multiple && options.length > 0;
   const ticked = current ? picks[current.id] ?? [] : [];
-  // What the current page would send: the ticks and anything typed beside them
-  // for a set, the typed line on its own otherwise.
-  const pending = many ? composeAnswer(options, ticked, text) : text.trim();
+  /** The one selected on this page, or the answer already recorded for it. */
+  const chosen = current ? answers[current.id] : undefined;
+  // What the button would send. Nothing is sent without pressing it — see
+  // `pendingAnswer` for why a tap decides nothing on its own.
+  const pending = pendingAnswer({ many, labels, ticked, chosen, text });
+  /** The word on the button, said again in the hint above the choices so that
+   *  the two-step is stated rather than discovered. */
+  const sendLabel = page + 1 === total && summaryPage < 0 ? "Answer" : "Next";
+
+  /** Select a choice, or take the selection back.
+   *
+   *  Both halves matter. Selecting used to SEND, which is what made a mis-tap
+   *  final; a second tap undoing it is what makes the first one cost nothing. */
+  const choose = (q: Question, label: string) => {
+    setAnswers((prev) => {
+      if (prev[q.id] !== label) return { ...prev, [q.id]: label };
+      const rest = { ...prev };
+      delete rest[q.id];
+      return rest;
+    });
+  };
 
   const record = (q: Question, value: string) => {
     const said = value.trim();
@@ -179,37 +208,48 @@ export function UserQuestion({
         <>
           <p className="qa-question">{current.question}</p>
 
-          {/* Said before the first tap, because the two behave differently:
-              one choice answers on the spot, a set waits to be sent. */}
-          {many && <p className="qa-hint">Pick as many as you like</p>}
+          {/* Said before the first tap. Neither kind sends on the tap, and a
+              card that waits without saying so reads as a card that ignored
+              you. */}
+          {options.length > 0 && (
+            <p className="qa-hint">
+              {many ? "Pick as many as you like" : `Pick one, then press ${sendLabel}`}
+            </p>
+          )}
 
           {options.length > 0 && (
-            <div className="qa-options" role={many ? "group" : undefined}>
-              {options.map((option, i) => {
+            <div
+              className={`qa-options ${detailed ? "is-detailed" : ""}`}
+              // One of these is a radio group and the other a set of
+              // checkboxes, and saying which is what tells a screen reader
+              // that pressing one decides nothing yet.
+              role={many ? "group" : "radiogroup"}
+            >
+              {options.map((choice, i) => {
                 // Said in WORDS, not colour alone — the mark has to survive a
                 // screen reader and a colourblind reader, and "the blue one"
                 // is not an answer either of them gets.
                 const tip = i === current.recommended;
-                const on = many ? ticked.includes(option) : answers[current.id] === option;
+                const on = many
+                  ? ticked.includes(choice.label)
+                  : answers[current.id] === choice.label;
                 return (
                   <button
-                    key={option}
+                    key={choice.label}
                     className={`qa-option ${on ? "is-on" : ""} ${tip ? "is-tip" : ""} ${
                       many ? "is-many" : ""
-                    }`}
+                    } ${detailed ? "is-detailed" : ""}`}
                     type="button"
-                    // A tick is a checkbox, and saying so is what tells a
-                    // screen reader that pressing it decides nothing yet.
-                    role={many ? "checkbox" : undefined}
-                    aria-checked={many ? on : undefined}
+                    role={many ? "checkbox" : "radio"}
+                    aria-checked={on}
                     disabled={sending}
                     onClick={() =>
                       many
                         ? setPicks((prev) => ({
                             ...prev,
-                            [current.id]: togglePick(prev[current.id] ?? [], option),
+                            [current.id]: togglePick(prev[current.id] ?? [], choice.label),
                           }))
-                        : record(current, option)
+                        : choose(current, choice.label)
                     }
                   >
                     {many && (
@@ -217,8 +257,18 @@ export function UserQuestion({
                         {on ? "✓" : ""}
                       </span>
                     )}
-                    {option}
-                    {tip && <span className="qa-tip">Suggested</span>}
+                    <span className="qa-option-text">
+                      <span className="qa-option-label">
+                        {choice.label}
+                        {tip && <span className="qa-tip">Suggested</span>}
+                      </span>
+                      {/* The explanation, when the label alone does not say
+                          enough. Never sent as the answer — the agent has to
+                          match what it is told against what it offered. */}
+                      {choice.description && (
+                        <span className="qa-option-desc">{choice.description}</span>
+                      )}
+                    </span>
                   </button>
                 );
               })}
@@ -248,11 +298,11 @@ export function UserQuestion({
               disabled={sending}
               onChange={(e) => setText(e.target.value)}
             />
-            {/* A set is sent by this button and not by the ticks, so it stays
-                pressable on ticks alone — with nothing typed there would
-                otherwise be no way to send what you picked. */}
+            {/* Every question is sent by this button and not by its choices, so
+                it stays pressable on a selection alone — with nothing typed
+                there would otherwise be no way to send what you picked. */}
             <button className="ask-btn" type="submit" disabled={sending || !pending}>
-              {page + 1 === total && summaryPage < 0 ? "Answer" : "Next"}
+              {sendLabel}
             </button>
           </form>
         </>

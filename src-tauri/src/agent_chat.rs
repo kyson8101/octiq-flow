@@ -2091,17 +2091,42 @@ pub fn chat_index_list() -> Vec<crate::chat_index::ChatMeta> {
     crate::chat_index::list()
 }
 
+/// Say that the list of chats has changed, so every OTHER browser can pick the
+/// change up without being reloaded.
+///
+/// Until this event existed a browser read the list when it connected and never
+/// again, which made the sidebar a snapshot: a chat started on the phone reached
+/// the laptop at the next reload and not before.
+///
+/// It carries the id and whether the chat went, rather than the entry itself,
+/// and the client is free to use neither — it re-reads the whole list. That is
+/// deliberate. One shape of answer means a row on screen can only ever be one
+/// this server actually holds, and the list is metadata for a handful of chats.
+fn announce_index_change(id: &str, gone: bool) {
+    crate::bus::emit(
+        "chat-index-changed",
+        serde_json::json!({ "id": id, "gone": gone }),
+    );
+}
+
 /// Record a chat, or update what is known about it.
 #[tauri::command]
 pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> {
-    crate::chat_index::upsert(meta)
+    let id = meta.id.clone();
+    crate::chat_index::upsert(meta)?;
+    // Only once it is actually on disk. Announcing a write that failed would
+    // send every other device to fetch a list that has not changed.
+    announce_index_change(&id, false);
+    Ok(())
 }
 
 /// Forget a chat entirely — its entry in the list and its transcript.
 #[tauri::command]
 pub fn chat_index_remove(id: String, key: String) -> Result<(), String> {
     crate::transcript::forget(&key);
-    crate::chat_index::remove(&id)
+    crate::chat_index::remove(&id)?;
+    announce_index_change(&id, true);
+    Ok(())
 }
 
 /// Everything a chat said after `after`.
