@@ -41,24 +41,61 @@ const ACK_MS = 8000;
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30000;
 
-/** Entries the server has not confirmed, newest version per chat. Keyed by id,
- *  so a chat that changes twice while offline is sent once, current. */
-const unconfirmed = new Map<string, IndexEntry>();
+/** What the server has not confirmed, newest per chat.
+ *
+ *  Saves AND removals, in one queue keyed by id, because they are two answers
+ *  to the same question and the newest one wins. A removal that lands behind a
+ *  queued save must not be overtaken by it: the save would put the chat back in
+ *  the index seconds after the delete took it out, which is precisely how a
+ *  deleted chat used to reappear. */
+type Pending =
+  | { kind: "save"; entry: IndexEntry }
+  | { kind: "remove"; id: string; key: string };
+
+const unconfirmed = new Map<string, Pending>();
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = 0;
 let watchingConnection = false;
 
 /** Record a chat in the server's index, and keep trying until it is there. */
 export function saveIndexEntry(entry: IndexEntry): void {
-  unconfirmed.set(entry.id, entry);
+  // A chat on its way out is not written back in. Nothing should ask — the page
+  // knows what it deleted — but this is the last gate before the wire, and a
+  // save that slips past it is a chat back in the sidebar.
+  if (unconfirmed.get(entry.id)?.kind === "remove") return;
+  unconfirmed.set(entry.id, { kind: "save", entry });
   watchConnection();
   flush();
 }
 
-/** Stop caring about a chat that has been deleted, so a queued retry cannot
- *  put it back after `chat_index_remove` has taken it out. */
-export function forgetIndexEntry(id: string): void {
-  unconfirmed.delete(id);
+/** Take a deleted chat out of the server's index, and keep trying until it is
+ *  gone.
+ *
+ *  This used to be a bare `invoke(...).catch(() => {})` at the delete site, and
+ *  that is a delete which can quietly not happen: a socket closing with the
+ *  call in flight never settles it, so there is no rejection to catch and
+ *  nothing to retry. The entry survived, the next `chat_index_list` carried the
+ *  chat, and the sidebar handed it back. */
+export function removeIndexEntry(id: string, key: string): void {
+  // Asked for again while the first one is still going — the index list is
+  // re-read on every connect, and a chat still listed asks for its removal each
+  // time. Queuing a second one would replace the object the call in flight is
+  // holding, so its acknowledgement would clear nothing and the removal would
+  // be sent forever. What is already queued is already being retried.
+  const held = unconfirmed.get(id);
+  if (held?.kind === "remove" && held.key === key) return;
+  unconfirmed.set(id, { kind: "remove", id, key });
+  watchConnection();
+  flush();
+}
+
+/** Forget what is queued for a chat. Used by tests; the app either saves or
+ *  removes, and both of those are answers rather than silence. */
+export function resetIndexQueue(): void {
+  unconfirmed.clear();
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  retryDelay = 0;
 }
 
 /** True while at least one entry is still unacknowledged. Exposed for tests
@@ -90,27 +127,33 @@ function scheduleRetry(): void {
 }
 
 function flush(): void {
-  for (const entry of [...unconfirmed.values()]) send(entry);
+  for (const pending of [...unconfirmed.values()]) send(pending);
 }
 
-function send(entry: IndexEntry): void {
+function send(pending: Pending): void {
+  const id = pending.kind === "save" ? pending.entry.id : pending.id;
+  const [command, payload] =
+    pending.kind === "save"
+      ? (["chat_index_save", { meta: pending.entry }] as const)
+      : (["chat_index_remove", { id: pending.id, key: pending.key }] as const);
+
   // Raced against a deadline. `bridge.invoke` resolves or rejects only when a
   // reply arrives, and a socket that closes mid-call never brings one — so
   // without this the entry would sit here forever, silently.
   let settled = false;
   const deadline = new Promise<never>((_, reject) => {
     setTimeout(() => {
-      if (!settled) reject(new Error("chat_index_save was not acknowledged"));
+      if (!settled) reject(new Error(`${command} was not acknowledged`));
     }, ACK_MS);
   });
 
-  Promise.race([bridge.invoke("chat_index_save", { meta: entry }), deadline])
+  Promise.race([bridge.invoke(command, payload), deadline])
     .then(() => {
       settled = true;
-      // Only clear the exact version that was acknowledged. A newer one may
-      // have replaced it while this call was in the air, and that one still
-      // has to be sent.
-      if (unconfirmed.get(entry.id) === entry) unconfirmed.delete(entry.id);
+      // Only clear the exact thing that was acknowledged. A newer one may have
+      // replaced it while this call was in the air — a removal, most of all —
+      // and that one still has to be sent.
+      if (unconfirmed.get(id) === pending) unconfirmed.delete(id);
       retryDelay = 0;
     })
     .catch(() => {

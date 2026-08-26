@@ -45,7 +45,8 @@ import {
   titleFrom,
   type Conversation,
 } from "./lib/store";
-import { forgetIndexEntry, saveIndexEntry } from "./lib/chatIndex";
+import { removeIndexEntry, saveIndexEntry } from "./lib/chatIndex";
+import { deletedIds, isDeleted, listDeletions, markDeleted } from "./lib/deletions";
 import {
   focusNow,
   isOn as notifyIsOn,
@@ -244,7 +245,13 @@ export default function App() {
   // rather than unmounted. Its open files hold unsaved drafts, and a tap on
   // "Chat" is not a decision to throw them away.
   const [editorSeen, setEditorSeen] = useState(() => localStorage.getItem(MODE_KEY) === "editor");
-  const [conversations, setConversations] = useState<Conversation[]>(loadConversations);
+  // The stored list, minus everything this browser has deleted. The two are
+  // written at different moments — a save already on its way when the × was
+  // clicked lands after it — so the copy on disk can still carry a chat whose
+  // delete is settled. See lib/deletions.
+  const [conversations, setConversations] = useState<Conversation[]>(() =>
+    loadConversations().filter((c) => !isDeleted(c.id)),
+  );
   const [conversationId, setConversationId] = useState<string | null>(null);
   /** Which agent the rail has opened, by `task_id`, or null for the whole
    *  conversation. View state, not chat state: it is about what this person is
@@ -396,15 +403,23 @@ export default function App() {
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
 
-  /** Chats this page knows are GONE: deleted here, or listed as deleted by the
-   *  server.
+  /** Chats this page knows are GONE: deleted here — this visit or an earlier
+   *  one — or listed as deleted by the server.
    *
    *  Worth writing down because a missing row is ambiguous. The debounced save
    *  builds a row for any loaded chat the list has none for — that is how a
    *  brand-new chat is first written down — and it cannot otherwise tell one
    *  from a chat that was thrown away a moment ago. Told which is which, it
-   *  leaves the second alone. */
-  const gone = useRef<Set<string>>(new Set());
+   *  leaves the second alone.
+   *
+   *  It starts from the stored deletion list rather than empty, because the
+   *  ambiguity outlives the page: a reload arrives holding a cached row, a
+   *  cached transcript and, if the removal never landed, a server entry still
+   *  naming the chat — all three of which read as a chat nobody has deleted.
+   *  What is only in memory here is the second half, the chats the SERVER said
+   *  were deleted; those need no tombstone, since the same list will say so
+   *  again. See lib/deletions. */
+  const gone = useRef<Set<string>>(deletedIds());
 
   /** Drop everything this page holds of a chat. The record on the server is
    *  someone else's business — `commitDelete` deletes it, and the index says so
@@ -635,13 +650,28 @@ export default function App() {
           updatedAt: number;
         }[]
       >("chat_index_list")
-      .then((remote) => {
+      .then((answer) => {
         // An EMPTY answer is not news, it is the absence of news. `index.json`
         // missing, unreadable, or belonging to a profile that was switched all
         // read back as zero chats, and treating that as the truth would wipe
         // every conversation this browser holds. A server that genuinely has
         // none has nothing to tell us either, so ignoring it costs nothing.
-        if (!remote || remote.length === 0) return;
+        if (!answer || answer.length === 0) return;
+        // Anything this browser deleted is not on offer, however the server
+        // answers. An entry that is still listed says the removal never landed
+        // — the call was in flight when the socket closed, or the backend
+        // restarted under it — so it is sent again here rather than shown as a
+        // chat. This is the compare the whole deletion list exists for.
+        const buried = listDeletions();
+        for (const d of buried) {
+          if (answer.some((r) => r.id === d.id)) removeIndexEntry(d.id, d.key);
+        }
+        const gravestones = new Set(buried.map((d) => d.id));
+        const remote = gravestones.size ? answer.filter((r) => !gravestones.has(r.id)) : answer;
+        // Every chat the server still lists is one this browser has deleted:
+        // nothing to fold in, and an empty list here means the same as an empty
+        // answer above — no news.
+        if (remote.length === 0) return;
         // A chat this page has seen LISTED and the list no longer carries has
         // been deleted — here a moment ago, or on another device. The row is
         // dropped for it below, and everything this page holds of it goes with
@@ -1473,6 +1503,15 @@ export default function App() {
       restored.current = true;
       return;
     }
+    // A link, or a remembered position, naming a chat this browser has deleted.
+    // Both are just an id written down somewhere: the link outlives the chat,
+    // and another tab can leave the remembered one behind after this one has
+    // deleted it. Neither is a reason to go looking for it.
+    if (isDeleted(wanted)) {
+      restored.current = true;
+      opened.current = {};
+      return;
+    }
     // Not here YET is not the same as gone: the server's list folds in a moment
     // after the cached one, so this waits rather than giving up.
     const found = conversations.find((c) => c.id === wanted);
@@ -1671,12 +1710,17 @@ export default function App() {
     // Deleting the transcript with the agent still working on it would leave a
     // process nobody can reach, so it goes too.
     endSession(id);
+    // Written down before anything is sent anywhere. From this moment the chat
+    // is deleted as far as this browser is concerned, whatever the server does
+    // with the message — and that survives the reload, which is what stops a
+    // cached row and a stale index entry from handing the chat back tomorrow.
+    markDeleted(id, keyFor(id));
     // The record on the server goes as well — the point of deleting a chat is
-    // that it is gone, not that it is hidden on this device. Drop any unsent
-    // index entry first, or a retry still in the queue would put the chat back
-    // moments after it was removed.
-    forgetIndexEntry(id);
-    bridge.invoke("chat_index_remove", { id, key: keyFor(id) }).catch(() => {});
+    // that it is gone, not that it is hidden on this device. Through
+    // `removeIndexEntry`, which supersedes any unsent save for this chat and
+    // keeps trying: a removal sent once and forgotten is a delete that can
+    // quietly not happen.
+    removeIndexEntry(id, keyFor(id));
     // The room goes with the chat. Everyone in it is ended and the record
     // dropped; leaving it would hold a room, and every process in it, for the
     // life of the server on behalf of a conversation that no longer exists.
