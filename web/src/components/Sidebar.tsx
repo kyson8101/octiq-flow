@@ -186,6 +186,13 @@ function ProjectNode({
   const hidden = showAll ? 0 : Math.max(0, chats.length - SHOW_AT_FIRST);
   const visible = hidden ? chats.slice(0, SHOW_AT_FIRST) : chats;
 
+  // A closed folder hides everything it holds, its chats' own marks included.
+  // So the count carries that up: whether there is anything inside, and — from
+  // the same pixel, since it is the row's only mark — whether any of it is
+  // still running.
+  const working = chats.some((c) => busy.has(c.id));
+  const live = !working && chats.some((c) => running.has(c.id));
+
   return (
     <li className="proj-node">
       <div className={`proj ${current ? "is-on" : ""}`}>
@@ -199,6 +206,24 @@ function ProjectNode({
             <FolderIcon open={showing} />
           </span>
           <span className="proj-name">{project.name}</span>
+          {/* How many chats are in here. Written at the right edge of the name,
+              so the numbers line up in a column that can be read straight down
+              the list — and left out entirely at zero, because an empty project
+              is told from a full one fastest by there being nothing there. */}
+          {chats.length > 0 && (
+            <span
+              className={`proj-count ${working ? "is-busy" : live ? "is-live" : ""}`}
+              title={
+                working
+                  ? `${chats.length} chats · one still working`
+                  : live
+                    ? `${chats.length} chats · a session is up`
+                    : `${chats.length} ${chats.length === 1 ? "chat" : "chats"}`
+              }
+            >
+              {chats.length}
+            </span>
+          )}
         </button>
         <button
           className="proj-add"

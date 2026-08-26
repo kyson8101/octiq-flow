@@ -88,3 +88,32 @@ export function pendingAnswer(a: {
   if (said) return said;
   return a.chosen?.trim() ?? "";
 }
+
+/** Whether a choice should draw as chosen.
+ *
+ *  Not simply "was it tapped". For a one-of question what you TYPE beats what
+ *  you tapped — `pendingAnswer` sends the typed line and nothing else — so a
+ *  choice left lit beside it claims a decision that is not the one going to the
+ *  agent. Typing puts it out. Emptying the box lights it again: typing dims the
+ *  tap, it does not take it back, and a stray keystroke should not cost you the
+ *  choice you already made.
+ *
+ *  A set is the other way round. Its ticks and its typed line are sent together
+ *  — the box says "…and anything else" — so what is typed is no reason to
+ *  un-tick anything. */
+export function optionIsOn(a: {
+  /** Whether this question takes a set. */
+  many: boolean;
+  /** The choice being drawn. */
+  label: string;
+  /** For a set: what is ticked so far. */
+  ticked: string[];
+  /** For a one-of: what is selected, or an answer already recorded for it. */
+  chosen?: string;
+  /** Whatever is in the text box. */
+  text: string;
+}): boolean {
+  if (a.many) return a.ticked.includes(a.label);
+  if (a.text.trim()) return false;
+  return a.chosen === a.label;
+}

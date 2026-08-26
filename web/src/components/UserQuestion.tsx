@@ -23,7 +23,7 @@
 // which is itself an answer. Minimising decides nothing.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
-import { choicesOf, pendingAnswer, togglePick } from "../lib/questionAnswer";
+import { choicesOf, optionIsOn, pendingAnswer, togglePick } from "../lib/questionAnswer";
 import type { Choice } from "../lib/questionAnswer";
 
 export type Question = {
@@ -230,9 +230,11 @@ export function UserQuestion({
                 // screen reader and a colourblind reader, and "the blue one"
                 // is not an answer either of them gets.
                 const tip = i === current.recommended;
-                const on = many
-                  ? ticked.includes(choice.label)
-                  : answers[current.id] === choice.label;
+                // Lit only while it is what the button would send. Type a line
+                // and a one-of's choice goes out — what is typed beats what was
+                // tapped, and a choice still lit beside it claims a decision
+                // that is not the one being sent.
+                const on = optionIsOn({ many, label: choice.label, ticked, chosen, text });
                 return (
                   <button
                     key={choice.label}

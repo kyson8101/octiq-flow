@@ -16,9 +16,10 @@
 // Open the top half and it is exactly the cards that would have been there.
 // This component draws no tool of its own; it only decides how many of them the
 // reader has to look at.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { groupDiff, groupLook, groupTally, type Tool } from "../lib/toolGroups";
 import { toolLook } from "../lib/toolKind";
+import { RollingNumber } from "./RollingNumber";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon, ToolState } from "./ToolIcon";
 
@@ -46,35 +47,13 @@ function Chevron() {
   );
 }
 
-/** How long the drop takes to settle. Kept in step with `tool-merge` in
- *  styles.css — it only decides when the class comes back off. */
-const MERGE_MS = 460;
-
-
 export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
   const [open, setOpen] = useState(false);
-
-  // A call folding into the summary above it. Nothing moves — that is the whole
-  // point of the two halves — so the merge needs something else to say it
-  // happened: the top half takes the drop and settles, the way a surface does
-  // when something joins it.
-  const [merging, setMerging] = useState(false);
-  const count = useRef(tools.length);
-  useEffect(() => {
-    if (tools.length <= count.current) {
-      count.current = tools.length;
-      return;
-    }
-    count.current = tools.length;
-    setMerging(true);
-    const timer = setTimeout(() => setMerging(false), MERGE_MS);
-    return () => clearTimeout(timer);
-  }, [tools.length]);
 
   const look = groupLook(tools);
   // Memoised where its neighbours are not: this one diffs every folded edit to
   // add the numbers up, so a run holding a 3000-line Write would redo that work
-  // on the open/close click and on both renders of the merge animation.
+  // on the open/close click and on every render the rolling count causes.
   const changed = useMemo(() => groupDiff(tools), [tools]);
   const tally = groupTally(tools);
   const shown = tally.slice(0, TALLY_SHOWN);
@@ -89,11 +68,7 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
     tally[0].label === toolLook(tools[0].name, tools[0].args).label;
 
   return (
-    <div
-      className={`tool tool-group tool-${look.state} ${open ? "is-open" : ""} ${
-        merging ? "is-merging" : ""
-      }`}
-    >
+    <div className={`tool tool-group tool-${look.state} ${open ? "is-open" : ""}`}>
       <button
         className="tool-head tool-group-head"
         onClick={() => setOpen((v) => !v)}
@@ -112,7 +87,14 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
           <span className="tool-icon" data-kind={look.kind} aria-hidden="true">
             <ToolIcon kind={look.kind} />
           </span>
-          <span className="tool-name">{look.label}</span>
+          {/* A call folding into the run above it moves nothing — that is the
+              whole point of the two halves — so the merge has to be said by
+              the one thing that actually changed. The count rolls to its new
+              digit and stays lit for a beat; the box holds perfectly still. */}
+          <span className="tool-name">
+            <RollingNumber value={look.count} />
+            {look.noun}
+          </span>
           {/* No detail line here. It used to carry the newest call in the run,
               which is now the card directly below — the same command said twice
               in two different ways, six pixels apart. */}

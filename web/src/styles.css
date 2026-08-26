@@ -2102,48 +2102,102 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* A call joining the group above it. The group takes the drop: it swells for a
-   moment where the card landed and settles back, the way a surface does. The
-   origin is the BOTTOM edge because that is the side the new call comes from —
-   it is the row directly below. */
-@keyframes tool-merge {
+/* A call joining the group above it, said by the only thing that changed.
+   Nothing else in the box moves — it is the one shape on screen holding its
+   size while a run grows, and a box that swelled and glowed every few seconds
+   was the whole row shouting about one character. So the COUNT rolls: the
+   digit that changed turns up to the next one like a wheel, overshoots its
+   stop, and rocks back into place. */
+@keyframes roll-digit-up {
   0% {
-    transform: scaleY(1.055) scaleX(0.992);
+    transform: translateY(0);
   }
-  38% {
-    transform: scaleY(0.972) scaleX(1.006);
+  /* Past the stop, then back, then past it by less: a wheel with a spring
+     behind it rather than a slide that stops dead. One cell is 33.333% of the
+     three-cell stack, and what shows past the stop is the wheel's next face. */
+  56% {
+    transform: translateY(-38.4%);
   }
-  70% {
-    transform: scaleY(1.012) scaleX(0.998);
+  74% {
+    transform: translateY(-31.1%);
+  }
+  88% {
+    transform: translateY(-34.4%);
   }
   100% {
-    transform: scaleY(1) scaleX(1);
+    transform: translateY(-33.3333%);
   }
 }
 
-@keyframes tool-merge-glow {
-  0% {
-    background: var(--accent-tint);
+/* And then it stays lit, a beat longer than it moved. The movement says
+   something happened; the colour says which number it happened to, and holds
+   long enough for an eye that arrived late to still catch it. */
+@keyframes roll-flash {
+  0%,
+  46% {
+    color: var(--accent);
   }
   100% {
-    background: transparent;
+    color: var(--fg-1);
   }
 }
 
-/* Only the TOP half moves, and only a little. The box itself must not scale:
-   it is the one thing on screen holding its size while the run grows, and a
-   box that squashes every few seconds is the jumpiness this shape exists to
-   remove. */
-.tool-group.is-merging .tool-group-head {
-  transform-origin: bottom center;
-  animation: tool-merge 420ms cubic-bezier(0.34, 1.4, 0.5, 1),
-    tool-merge-glow 520ms ease-out;
+/* The number, as a row of wheels. `tabular-nums` on the group's name keeps
+   each one the same width, so a digit rolling never nudges the words after
+   it. */
+.roll {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
 }
 
-/* Anyone who has asked not to be moved gets the colour and none of the wobble. */
+.roll.is-fresh {
+  animation: roll-flash 1460ms ease-out both;
+}
+
+/* One wheel. Everything outside the window is clipped, which is what makes the
+   cells above and below it a wheel rather than a column of numbers. */
+.roll-digit {
+  display: inline-block;
+  overflow: hidden;
+  height: 1.35em;
+  line-height: 1.35em;
+}
+
+.roll-stack {
+  display: block;
+  animation: roll-digit-up 560ms cubic-bezier(0.33, 0, 0.2, 1) both;
+}
+
+/* A fixed height, not one taken from the glyph inside: the cell above a new
+   leading digit is EMPTY — the 1 in 10 rolls up out of nothing — and an empty
+   cell that collapsed would drag the whole stack out of step. */
+.roll-cell {
+  display: block;
+  height: 1.35em;
+  line-height: 1.35em;
+}
+
+/* The number as one thing, for a reader who cannot see it turn. The wheels
+   themselves are `aria-hidden`; without this the row would be read out a digit
+   at a time, each with the two faces on either side of it. */
+.roll-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Anyone who has asked not to be moved gets the colour and none of the turn —
+   the wheel is simply already at its stop. */
 @media (prefers-reduced-motion: reduce) {
-  .tool-group.is-merging .tool-group-head {
-    animation: tool-merge-glow 520ms ease-out;
+  .roll-stack {
+    animation: none;
+    transform: translateY(-33.3333%);
   }
 }
 
@@ -4009,6 +4063,41 @@ body.is-ultra .eff {
   text-overflow: ellipsis;
 }
 
+/* The chat count on a project row. Quiet by default — it is a fact about the
+   folder, not a thing to click — and only ever drawn when there is something to
+   count, so "no chats yet" is a row with nothing after its name. */
+.proj-count {
+  flex: 0 0 auto;
+  min-width: 17px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 17px;
+  text-align: center;
+}
+
+.proj.is-on .proj-count {
+  color: var(--fg-2);
+}
+
+/* Rolled up from the chats inside, in the same two colours their own dots use:
+   grey for a session that is up but idle, green for one still working. A closed
+   folder is exactly when those dots cannot be seen, which is what this is for.
+   It does not pulse — the moving thing in the sidebar stays the chat itself, so
+   opening the folder still tells you which one. */
+.proj-count.is-live {
+  color: var(--fg-1);
+}
+
+.proj-count.is-busy {
+  background: color-mix(in srgb, var(--ok) 20%, transparent);
+  color: var(--ok);
+}
+
 .proj-add {
   display: inline-flex;
   align-items: center;
@@ -4023,14 +4112,40 @@ body.is-ultra .eff {
   background: transparent;
   color: var(--fg-3);
   cursor: pointer;
-  /* Dim, not hidden: a hover-to-reveal button does not exist on a touch
-     screen, and these are the only way to reach a project's settings. */
-  opacity: 0.55;
+  /* Away until the row is under the pointer. They were dim-but-present, on the
+     grounds that a hover-to-reveal control does not exist on a touch screen and
+     these are the only route to a project's settings — which is still true, and
+     is what the `hover: none` block at the end of this section is for. On a
+     machine WITH a pointer they were two grey shapes on every row, competing
+     with the one mark that says something (the chat count).
+     They keep their box while hidden, so nothing shifts when they arrive. */
+  opacity: 0;
+  transform: translateX(4px);
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
+/* Keyboard focus counts as reaching for them: Tab still lands on a button that
+   opacity alone would leave invisible. */
 .proj:hover .proj-add,
 .proj-add:focus-visible {
   opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  /* On the way IN only — the delay lives here, not on the base rule, so they
+     leave together instead of the gear lingering after the plus. They slide in
+     from the right edge, so the plus is nearest where they come from and
+     arrives first; the gear follows it by a frame. */
+  transition-delay: 45ms;
+}
+
+.proj:hover .proj-add + .proj-add,
+.proj-add + .proj-add:focus-visible {
+  transition-delay: 0s;
 }
 
 .proj-add:hover {
@@ -4146,11 +4261,24 @@ body.is-ultra .eff {
   background: transparent;
   color: var(--fg-3);
   cursor: pointer;
+  /* Already hover-only; it now arrives the same way the project row's buttons
+     do, so a sidebar full of rows does not have one kind snapping in and
+     another sliding. */
   opacity: 0;
+  transform: translateX(4px);
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 120ms ease,
+    color 120ms ease;
 }
 
-.chat:hover .chat-del {
+.chat:hover .chat-del,
+.chat-del:focus-visible {
   opacity: 1;
+  transform: none;
+  pointer-events: auto;
 }
 
 .chat-del:hover {
@@ -4177,11 +4305,27 @@ body.is-ultra .eff {
   color: var(--fg-1);
 }
 
+/* No pointer, so there is no hover to reveal anything with: everything is
+   simply there. This is the whole licence for hiding them above. */
 @media (hover: none) {
   .sidebar-add,
   .proj-add,
   .chat-del {
     opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+/* The fade stays — it is the slide that is motion. */
+@media (prefers-reduced-motion: reduce) {
+  .proj-add,
+  .chat-del {
+    transform: none;
+    transition:
+      opacity 140ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
   }
 }
 
@@ -8403,7 +8547,14 @@ body.is-ultra .eff {
 }
 
 /* The count leads the row, so it gets the figures that line up in a column. */
+/* The count and the words after it are two things now, not one string: the
+   count is a row of wheels that turns, the words never change. `tabular-nums`
+   is what keeps a wheel the same width as it turns, so `× Bash` does not shift
+   sideways when 9 becomes 10. */
 .tool-group .tool-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-variant-numeric: tabular-nums;
 }
 

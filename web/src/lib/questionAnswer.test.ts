@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { choicesOf, composeAnswer, pendingAnswer, togglePick } from "./questionAnswer";
+import { choicesOf, composeAnswer, optionIsOn, pendingAnswer, togglePick } from "./questionAnswer";
 
 describe("togglePick", () => {
   it("ticks an option, and un-ticks the same one again", () => {
@@ -107,5 +107,36 @@ describe("pendingAnswer", () => {
     expect(pendingAnswer({ ...base, chosen: "something I typed last time" })).toBe(
       "something I typed last time",
     );
+  });
+});
+
+describe("optionIsOn", () => {
+  const base = { many: false, ticked: [] as string[], text: "" };
+
+  it("lights the choice that was tapped", () => {
+    expect(optionIsOn({ ...base, label: "SQLite", chosen: "SQLite" })).toBe(true);
+    expect(optionIsOn({ ...base, label: "Postgres", chosen: "SQLite" })).toBe(false);
+  });
+
+  it("puts the tap out once something is typed", () => {
+    // What you type beats what you tapped (`pendingAnswer`). A choice still lit
+    // beside a typed line claims a decision that is not the one being sent.
+    expect(optionIsOn({ ...base, label: "SQLite", chosen: "SQLite", text: "neither" })).toBe(
+      false,
+    );
+  });
+
+  it("lights it again when the box is emptied", () => {
+    // Typing dims the tap; it does not take it back. Clearing the line has to
+    // leave the card as it was, or a stray keystroke costs you the choice.
+    expect(optionIsOn({ ...base, label: "SQLite", chosen: "SQLite", text: "   " })).toBe(true);
+  });
+
+  it("leaves a set's ticks alone whatever is typed", () => {
+    // A set sends its ticks AND the typed line together — "…and anything else"
+    // — so the text is no reason to un-tick anything.
+    expect(
+      optionIsOn({ many: true, label: "SQLite", ticked: ["SQLite"], text: "and MySQL" }),
+    ).toBe(true);
   });
 });

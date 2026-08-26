@@ -68,6 +68,16 @@ describe("a run with edits folded into it", () => {
     expect(html()).toContain('data-kind="edit"');
   });
 
+  it("still says how many calls folded into it", () => {
+    // The count is a row of wheels now rather than a piece of the name string,
+    // so `4` and `calls` reach the markup as two things. What must survive is
+    // that the row still reads as a count — and that the whole number is in it
+    // once as one string, which is what a screen reader is given.
+    const markup = html();
+    expect(markup).toContain(">4</span>");
+    expect(markup).toContain("calls");
+  });
+
   it("keeps the folded row clear of the path it repeated four times", () => {
     // The same absolute path down four rows was half the wall. Folded, the row
     // says the file once and by its name; the whole path is on the cards

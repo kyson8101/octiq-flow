@@ -172,8 +172,13 @@ function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
 /** What a group is worth on its collapsed row. */
 export type GroupLook = {
   kind: ToolKind;
-  /** `5 × Bash` when it was all one tool, `7 calls` when it was not. */
-  label: string;
+  /** How many calls are folded into it. Kept apart from the words after it
+   *  because the count is the only part of the row that ever changes, and the
+   *  row draws it as a rolling number rather than as text. */
+  count: number;
+  /** What follows the count: `× Bash` when the run was all one tool, `calls`
+   *  when it was not. */
+  noun: string;
   /** Running while any call in it is, and never anything worse: a failed call
    *  is never in a group at all, it is a row of its own. */
   state: Tool["state"];
@@ -190,7 +195,8 @@ export function groupLook(tools: Tool[]): GroupLook {
     // A mixed run takes the kind of the call whose detail is on the row, so the
     // icon and the text beside it are talking about the same call.
     kind: oneName ? looks[0].kind : toolLook(last.name, last.args).kind,
-    label: oneName ? `${tools.length} × ${looks[0].label}` : `${tools.length} calls`,
+    count: tools.length,
+    noun: oneName ? `× ${looks[0].label}` : "calls",
     state: tools.some((t) => t.state === "running") ? "running" : "done",
     detail: toolDetail(last.name, last.args),
   };
