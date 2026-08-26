@@ -25,6 +25,8 @@ import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
 import type { Seat } from "../lib/chat";
+import type { BackgroundTask } from "../lib/background";
+import { BackgroundNote } from "./Background";
 import { useMedia, WIDE } from "../lib/media";
 
 const TYPES_ON_GLASS =
@@ -329,6 +331,7 @@ export function Composer({
   turnApprox,
   thinking,
   thought,
+  background,
   effort,
   onEffort,
   lite,
@@ -394,6 +397,9 @@ export function Composer({
   /** True while the model is reasoning rather than typing, which is when the
    *  effort level is worth naming: it is the setting that chose this wait. */
   thinking?: boolean;
+  /** Work the turn started and left running behind it. Shown on the status
+   *  line rather than on a row of its own — see `BackgroundNote`. */
+  background?: BackgroundTask[];
   /** The thought being written right now, or "" — see `thinkingNow` in
    *  lib/chat. Watched here and nowhere else: it is left out of the transcript
    *  entirely, because a fold-out row of the agent talking to itself between
@@ -833,6 +839,11 @@ export function Composer({
           the right the whole time. */}
       <div className="composer-hint">
         <span className="composer-hint-said">
+        {/* Work the turn left running behind it rides on this same line: a dot
+            in front of the clock, and what it is running after the words. It
+            used to have a row of its own directly above, which is a line of
+            chrome parked in the chat for as long as the build takes. */}
+        <BackgroundNote tasks={background ?? []} busy={busy}>
         {busy ? (
           <Working
             since={turnStartedAt}
@@ -845,6 +856,7 @@ export function Composer({
         ) : (
           activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")
         )}
+        </BackgroundNote>
         </span>
       </div>
 

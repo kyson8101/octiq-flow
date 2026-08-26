@@ -58,7 +58,7 @@ import {
 import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail, RailButton } from "./components/AgentRail";
-import { BackgroundProvider, BackgroundStrip } from "./components/Background";
+import { BackgroundProvider } from "./components/Background";
 import { backgroundCalls } from "./lib/background";
 import { Todos } from "./components/Todos";
 import { latestTodos } from "./lib/todos";
@@ -2727,12 +2727,6 @@ export default function App() {
               open that nothing is answering. */}
           {cutOff && <CarryOn onCarryOn={() => void send(CARRY_ON)} />}
 
-          {/* Work the turn left running behind it. Directly above the composer
-              because that is where the eye already goes for "what is happening
-              now" — the eyebrow answers it while a turn is in flight, and this
-              answers it for the twenty minutes afterwards. */}
-          <BackgroundStrip tasks={chat.background} />
-
           <Composer
             session={conversationId ?? undefined}
             choice={choice}
@@ -2754,6 +2748,7 @@ export default function App() {
             turnApprox={turnOutputApprox(chat)}
             thinking={isThinking(chat)}
             thought={thinkingNow(chat)}
+            background={chat.background}
             effort={effort}
             onEffort={changeEffort}
             lite={lite}

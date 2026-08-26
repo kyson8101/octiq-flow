@@ -8,11 +8,11 @@
  *
  *  Two marks answer that, because they answer two different questions:
  *
- *    - the STRIP above the composer, for "is anything still going" — the
- *      question you ask when you have just come back to the chat, and the one
- *      the eyebrow used to answer only while a turn was in flight;
+ *    - the DOT on the status line above the composer, for "is anything still
+ *      going" — the question you ask when you have just come back to the chat,
+ *      and the one the eyebrow used to answer only while a turn was in flight;
  *    - the CARD, for "which of these is still going" — the question you ask
- *      once the strip has told you something is. Its tick is held back and a
+ *      once the dot has told you something is. Its tick is held back and a
  *      pulsing `in background` put in its place, until the ending lands.
  *
  *  The card's half rides on a context rather than a prop. It is read four
@@ -20,7 +20,7 @@
  *  threading a set of ids through all of that would put this file's business in
  *  three components that have none of it.
  */
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { backgroundSummary, type BackgroundTask } from "../lib/background";
 import { elapsedLabel } from "../lib/working";
@@ -42,31 +42,58 @@ export function useRunningCalls(): ReadonlySet<string> {
   return useContext(RunningCalls);
 }
 
-/** The strip. Draws nothing at all when nothing is running, so an ordinary
- *  chat never grows a row it has no news for. */
-export function BackgroundStrip({ tasks }: { tasks: BackgroundTask[] }) {
-  // Its own second hand. Nothing on the stream ticks while a background command
-  // runs — that is the whole complaint — so a clock fed by events would sit
-  // still for twenty minutes and read as the stall it is meant to rule out.
+/** The dot, drawn INSIDE the status line above the composer rather than on a
+ *  row of its own. It wraps that line's own words — the three pieces are one
+ *  sentence, and only this knows whether there is anything to add to it — so a
+ *  chat with nothing running gets exactly the line it always had.
+ *
+ *  The dot says "still running" without the words: it is the one moving thing
+ *  on the row, and it is warn-coloured to match the card's own `in background`
+ *  chip, so the two are visibly the same news.
+ *
+ *  A running turn already ticks a clock on this line, so nothing here adds a
+ *  second one. Once the turn ends that clock goes with it, and the size of the
+ *  wait is then the whole news, so the background's own takes the line. */
+export function BackgroundNote({
+  tasks,
+  busy,
+  children,
+}: {
+  tasks: BackgroundTask[];
+  busy: boolean;
+  children: ReactNode;
+}) {
+  // Its own second hand, and only while it is the one drawing a clock. Nothing
+  // on the stream ticks while a background command runs — that is the whole
+  // complaint — so a clock fed by events would sit still for twenty minutes and
+  // read as the stall it is meant to rule out.
   const [, tick] = useState(0);
+  const own = tasks.length > 0 && !busy;
   useEffect(() => {
-    if (tasks.length === 0) return;
+    if (!own) return;
     const timer = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(timer);
-  }, [tasks.length]);
+  }, [own]);
 
   const summary = backgroundSummary(tasks, Date.now());
-  if (!summary) return null;
+  if (!summary) return <>{children}</>;
+  // The oldest run is named; the rest are a number after it. Nothing else fits
+  // on a line that already has a turn's worth of news on it.
+  const label =
+    summary.count === 1 ? summary.label : `${summary.label} +${summary.count - 1}`;
   return (
-    <div className="bgwork" role="status">
+    <>
       <span className="bgwork-dot" aria-hidden="true" />
-      <span className="bgwork-count">
-        {summary.count === 1 ? "still running" : `${summary.count} still running`}
+      {busy && <>{children} · </>}
+      <span className="bgwork-said" role="status" title={label}>
+        {label}
       </span>
-      <span className="bgwork-label" title={summary.label}>
-        {summary.label}
-      </span>
-      <span className="bgwork-time">{elapsedLabel(summary.elapsedMs)}</span>
-    </div>
+      {!busy && (
+        <>
+          {" · "}
+          <span className="bgwork-time">{elapsedLabel(summary.elapsedMs)}</span>
+        </>
+      )}
+    </>
   );
 }

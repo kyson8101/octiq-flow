@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { Block } from "../lib/chat";
 import type { BackgroundTask } from "../lib/background";
-import { BackgroundProvider, BackgroundStrip } from "./Background";
+import { BackgroundNote, BackgroundProvider } from "./Background";
 import { ToolCard } from "./ToolCard";
 
 type Tool = Extract<Block, { kind: "tool" }>;
@@ -74,22 +74,43 @@ describe("the card", () => {
   });
 });
 
-describe("the strip", () => {
-  it("draws nothing at all in a chat with nothing running", () => {
-    expect(renderToStaticMarkup(<BackgroundStrip tasks={[]} />)).toBe("");
+describe("the status line", () => {
+  /** What the line says for itself, with nothing running behind it. */
+  const HINT = "Enter to send";
+  /** And while a turn is running: its own clock, which is the one this must
+   *  not double up on. */
+  const TURN = "2m 19s · thinking with very high effort";
+
+  const line = (tasks: BackgroundTask[], busy: boolean, said: string) =>
+    renderToStaticMarkup(
+      <BackgroundNote tasks={tasks} busy={busy}>
+        {said}
+      </BackgroundNote>,
+    );
+
+  it("is left exactly as it was in a chat with nothing running", () => {
+    expect(line([], false, HINT)).toBe(HINT);
   });
 
-  it("names the run and how long it has been going", () => {
-    const html = renderToStaticMarkup(<BackgroundStrip tasks={[task()]} />);
-    expect(html).toContain("still running");
+  it("names the run after the turn's own words, and adds no second clock", () => {
+    const html = line([task()], true, TURN);
+    expect(html).toContain("bgwork-dot");
+    expect(html).toContain(TURN);
+    expect(html).toContain("codex exec");
+    // The task started 4m 12s ago. The turn's clock is already on the line.
+    expect(html).not.toContain("4m 12s");
+  });
+
+  it("takes the line once the turn it outlived has ended", () => {
+    const html = line([task()], false, HINT);
+    expect(html).toContain("bgwork-dot");
     expect(html).toContain("codex exec");
     expect(html).toContain("4m 12s");
+    expect(html).not.toContain(HINT);
   });
 
-  it("counts them when there is more than one", () => {
-    const html = renderToStaticMarkup(
-      <BackgroundStrip tasks={[task(), task({ id: "b2", toolUseId: "toolu_2" })]} />,
-    );
-    expect(html).toContain("2 still running");
+  it("counts the rest when there is more than one", () => {
+    const html = line([task(), task({ id: "b2", toolUseId: "toolu_2" })], true, TURN);
+    expect(html).toContain("codex exec +1");
   });
 });
