@@ -83,7 +83,9 @@ const THEME = EditorView.theme(
     },
     ".cm-scroller": {
       fontFamily: "var(--mono)",
-      lineHeight: "1.55",
+      // 1.7 rather than 1.55: a file of Chinese at 1.55 is a solid block, and
+      // the extra fifth of a line is what puts a gap back between the rows.
+      lineHeight: "1.7",
       overflow: "auto",
       // Clear of the home indicator, and of the phone's own keyboard toolbar.
       paddingBottom: "calc(28px + env(safe-area-inset-bottom))",

@@ -101,16 +101,18 @@ export function mentionMatches(name: string, id: string | undefined, query: stri
  *  which is also what the slash menu beside it does, and two menus in one box
  *  answering the same key differently is its own bug.
  *
- *  Shift+Enter still writes a new line, and Cmd/Ctrl+Enter still sends:
- *  somebody holding one of those has said what they want, menu or no menu. */
+ *  Every held Enter keeps its own meaning: Shift+Enter, Cmd/Ctrl+Enter and
+ *  Option/Alt+Enter all write a new line, menu or no menu. Somebody holding
+ *  one of those has said what they want. */
 export function mentionPicks(e: {
   key: string;
   shiftKey?: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
+  altKey?: boolean;
 }): boolean {
   if (e.key === "Tab") return true;
-  return e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+  return e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
 }
 
 /** What to put in the box when a name is picked out of the menu. */

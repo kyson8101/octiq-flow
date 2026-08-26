@@ -247,6 +247,11 @@ function ensureEditor(monaco) {
     folding: true,
     bracketPairColorization: { enabled: true },
     minimap: { enabled: false }, // the pane is narrow; a minimap eats a third of it
+    // Monaco boxes every non-ASCII character by default (an em dash, a curly
+    // quote, any CJK). This codebase's own comments are full of them, so the
+    // warning is noise on every file rather than a signal. Ambiguous and
+    // invisible characters stay flagged — those are the ones worth seeing.
+    unicodeHighlight: { nonBasicASCII: false },
     readOnly: true, // the first activated model decides the real value
   });
   return sharedEditor;

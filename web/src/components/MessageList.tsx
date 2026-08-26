@@ -33,26 +33,9 @@ import { copyText } from "../lib/clipboard";
 import { clipMessage } from "../lib/clip";
 import { ProseLink } from "./ProseLink";
 import { ProsePath } from "./ProsePath";
+import { ProseTable } from "./ProseTable";
 import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
-
-/** A table, in a box that scrolls sideways on its own.
- *
- *  The transcript deliberately scrolls one way only — `.msgs` is
- *  `overflow-x: hidden`, because one over-wide child used to drag the whole
- *  app across on a phone and take the header and composer with it. So a table
- *  with more columns than the message column is wide has nowhere to go: it is
- *  cut off at the edge, with nothing to say the rest of it is there.
- *
- *  The box is what gives it somewhere to go. Inside it the table keeps its own
- *  width and is scrolled to; outside it the transcript never moves. */
-function ProseTable({ children }: { children?: React.ReactNode }) {
-  return (
-    <div className="prose-table">
-      <table>{children}</table>
-    </div>
-  );
-}
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence

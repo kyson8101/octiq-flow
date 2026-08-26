@@ -27,10 +27,29 @@
   --r-lg: 14px;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  /* Menlo first where it exists — it is what the terminal draws, so code in
-     the chat and code in the terminal are the same shapes. Everything else
-     falls back to the Apple system font. */
-  --mono: Menlo, ui-monospace, SFMono-Regular, "SF Mono", monospace;
+  /* Sarasa Mono SC first, and the reason is Chinese: its CJK glyphs are
+     EXACTLY twice the Latin advance, so a line of 中文 mixed with `inline
+     code`, and a markdown table drawn in ASCII pipes, both stay in column.
+     Menlo has no CJK at all — every Chinese character fell through to a
+     substitute face at another width, which is what made a table of them
+     ragged. Then JetBrains Mono, then the old chain: neither Sarasa nor
+     JetBrains is installed on a phone, and this client is opened from one.
+
+     This is now a DIFFERENT face from the terminal's, which draws its own
+     hardcoded stack (components/Terminal.tsx) and still lands on Menlo. That
+     was a deliberate call — Sarasa ships a terminal-shaped cut (Sarasa Term)
+     and the terminal can be moved to it, but xterm re-measures its whole grid
+     on a font change and that is not a change to make by side effect. */
+  --mono: "Sarasa Mono SC", "JetBrains Mono", Menlo, ui-monospace, SFMono-Regular, "SF Mono",
+    monospace;
+  /* What RENDERED PROSE is set in — a reply in the chat, a markdown file in
+     the preview. Sarasa Gothic is the proportional-Latin cut of the same
+     family: prose is read, not aligned, so it does not want the monospace
+     Latin. Deliberately NOT `--font`, which stays the Apple system font: that
+     one dresses the chrome — buttons, tabs, the sidebar — and chrome is not
+     what anybody reads a paragraph of Chinese in. */
+  --prose-font: "Sarasa Gothic SC", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
 
   color-scheme: dark;
 }
@@ -1063,6 +1082,23 @@ body {
 }
 
 /* Markdown */
+
+/* Prose is the one thing here that is READ rather than glanced at, and it is
+   often read in Chinese. Two things it wants that the chrome around it does
+   not: a face with real CJK in it (see `--prose-font`), and more air between
+   the lines — 1.5 is set for a Latin x-height, and a column of full-width
+   characters at that leading is a wall. 1.8 is what the same files are read at
+   in the editor next door.
+
+   The SIZE stays 14px on purpose. The headings here are 15px, so raising the
+   body to match would leave a heading told apart by weight alone — and CJK
+   already fills more of its em than Latin does, so 14px Chinese does not read
+   small the way 14px English can. It was the leading that was wrong. */
+.prose {
+  font-family: var(--prose-font);
+  line-height: 1.8;
+}
+
 .prose > :first-child {
   margin-top: 0;
 }
@@ -8092,11 +8128,20 @@ body.is-ultra .eff {
   min-height: 0;
 }
 
+/* One open file. It is also what SCROLLS: a long markdown file is taller than
+   the pane, and with nothing here to hold it the overflow went all the way up
+   to `.app` — which is `overflow-x: hidden`, and a box with one axis hidden
+   scrolls the other. So reading down a README scrolled the whole SHELL, taking
+   the top bar, the tab strip and the project sidebar off the top of the window
+   with it. The scroll is per tab rather than on `.ws-body` so each file comes
+   back where you left it, like its draft and its undo history. The editor is
+   unaffected: CodeMirror scrolls inside `.ws-cm`, which never overflows. */
 .ws-doc {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+  overflow: auto;
 }
 
 .ws-doc[hidden] {
@@ -8141,7 +8186,10 @@ body.is-ultra .eff {
    the one that docks the project drawer. */
 @media (min-width: 980px) {
   .ws {
-    --ws-code-size: 13px;
+    /* 15px, not the 13px this was: 13 is a comfortable size for Latin code and
+       too small to tell 请 from 情 at a glance. Same number the same files are
+       read at in VS Code. */
+    --ws-code-size: 15px;
   }
 
   .ws-tree {

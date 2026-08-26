@@ -1,10 +1,11 @@
 // The prompt box: type, pick a model, send.
 //
-// Enter sends; Shift+Enter or Cmd/Ctrl+Enter makes a new line — the shape
-// every agent chat uses, on a keyboard. Shift+Enter is what a textarea already
-// does, so it is left alone; Cmd+Enter does nothing natively, so the line break
-// is put in by hand. A phone keyboard has no Shift or Cmd to hold, so on a
-// touch screen Enter is a plain new line and the send button is how you send.
+// Enter sends; Shift+Enter, Cmd/Ctrl+Enter or Option/Alt+Enter makes a new
+// line — the shape every agent chat uses, on a keyboard. Shift+Enter is what a
+// textarea already does, so it is left alone; the other two do nothing
+// natively, so the line break is put in by hand. A phone keyboard has no Shift
+// or Cmd to hold, so on a touch screen Enter is a plain new line and the send
+// button is how you send.
 // The field is 16px because anything smaller makes iOS Safari zoom the page the
 // moment it takes focus.
 //
@@ -1034,7 +1035,8 @@ export function Composer({
               }
               // Tab always completes; Enter only when it would add something
               // and is not being held as a new-line key.
-              const plainEnter = e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey;
+              const plainEnter =
+                e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
               if (e.key === "Tab" || (plainEnter && !nothingToComplete)) {
                 e.preventDefault();
                 complete(matches[pick]);
@@ -1073,12 +1075,13 @@ export function Composer({
             if (recall >= 0 && e.key.length === 1) setRecall(-1);
 
             if (e.key === "Enter") {
-              // Cmd/Ctrl+Enter is a new line too, but unlike Shift+Enter the
-              // textarea does nothing with it on its own, so the break goes in
-              // by hand at the caret. `setRangeText` moves the DOM value ahead
-              // of React; mirroring it straight back into state keeps the two
-              // in step and the caret where `"end"` put it.
-              if (e.metaKey || e.ctrlKey) {
+              // Cmd/Ctrl+Enter and Option/Alt+Enter are new lines too, but
+              // unlike Shift+Enter the textarea does nothing with them on its
+              // own, so the break goes in by hand at the caret. `setRangeText`
+              // moves the DOM value ahead of React; mirroring it straight back
+              // into state keeps the two in step and the caret where `"end"`
+              // put it.
+              if (e.metaKey || e.ctrlKey || e.altKey) {
                 e.preventDefault();
                 area.setRangeText("\n", area.selectionStart, area.selectionEnd, "end");
                 setText(area.value);

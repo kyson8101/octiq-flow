@@ -146,11 +146,12 @@ describe("what a key does while the @ menu is open", () => {
     expect(mentionPicks({ key: "Enter", shiftKey: true })).toBe(false);
   });
 
-  it("leaves the send chord alone", () => {
-    // Cmd+Enter and Ctrl+Enter are deliberate sends. Somebody holding one has
-    // said what they want, even with a menu up.
+  it("leaves the other Enter chords alone", () => {
+    // Cmd/Ctrl+Enter and Option/Alt+Enter are the composer's other new-line
+    // keys. Somebody holding one has said what they want, even with a menu up.
     expect(mentionPicks({ key: "Enter", metaKey: true })).toBe(false);
     expect(mentionPicks({ key: "Enter", ctrlKey: true })).toBe(false);
+    expect(mentionPicks({ key: "Enter", altKey: true })).toBe(false);
   });
 
   it("does not pick on an ordinary key", () => {

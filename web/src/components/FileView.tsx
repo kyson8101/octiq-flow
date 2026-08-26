@@ -22,13 +22,20 @@
 // the markdown/raw split, the truncation warning, and what a PDF says instead
 // of nothing.
 import { useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { drawAs, type Preview } from "../lib/fileView";
 import { CodeEditor } from "./CodeEditor";
+import { ProseTable } from "./ProseTable";
+
+/** The same box the transcript puts a table in, for the same reason: a table
+ *  is sized by its cells, so a wide one in a README stuck out of the pane and
+ *  was cut off at the window edge with no way to reach the rest of it. Only
+ *  the table needs it — a `<pre>` already scrolls inside its own frame. */
+const PROSE_COMPONENTS = { table: ProseTable } as Components;
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -91,7 +98,9 @@ export function FileView({
   if (as === "prose") {
     return (
       <div className="prose panel-prose" ref={onProseRef}>
-        <Markdown remarkPlugins={[remarkGfm]}>{draft}</Markdown>
+        <Markdown remarkPlugins={[remarkGfm]} components={PROSE_COMPONENTS}>
+          {draft}
+        </Markdown>
       </div>
     );
   }
