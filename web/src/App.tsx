@@ -102,7 +102,6 @@ import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
-import { UndoToast } from "./components/UndoToast";
 import { CarryOn } from "./components/CarryOn";
 
 /** The editor and its text-editing engine are a third of the app's code and
@@ -128,8 +127,8 @@ type Workspace = Project & {
 const keyFor = (conversationId: string) => `chat:${conversationId}`;
 const convOf = (key: string) => (key.startsWith("chat:") ? key.slice(5) : null);
 
-/** How long a deleted chat can be brought back. Long enough to notice the row
- *  vanish and reach the bar in the corner; short enough that the agent a
+/** How long a deleted chat can be brought back. Long enough to see the ring on
+ *  its row start to empty and press it again; short enough that the agent a
  *  delete is meant to stop is not still running a minute later. */
 const UNDO_MS = 3000;
 
@@ -137,15 +136,18 @@ const UNDO_MS = 3000;
  *
  *  Nothing has reached the server while this is held: the transcript, the index
  *  entry, the room and the agent's own process are all still there, untouched.
- *  That is what lets Undo put the chat BACK rather than build a copy of it —
- *  and it is why the wait is seconds rather than minutes, since a chat that is
- *  still working carries on working for the whole of it. */
+ *  That is what lets a cancel leave the chat ALONE rather than build a copy of
+ *  it — and it is why the wait is seconds rather than minutes, since a chat
+ *  that is still working carries on working for the whole of it.
+ *
+ *  The row does not move either. It used to go at once, and the way back was a
+ *  bar in the corner — which meant that for those seconds the chat was missing
+ *  from the list while still listed by the server, and ANY answer arriving in
+ *  the window (`chat-index-changed` fires on every save, from any device) put
+ *  the row straight back with the bar still on screen. Now the row stays and
+ *  counts down in place, so there is no gap for an index answer to fill. */
 type PendingDelete = {
-  conversation: Conversation;
-  /** Where the row was, so Undo returns it to its place, not to the top. */
-  index: number;
-  /** Whether it was the chat on screen when it went. */
-  wasOpen: boolean;
+  id: string;
   timer: ReturnType<typeof setTimeout>;
 };
 
@@ -1044,13 +1046,16 @@ export default function App() {
   useEffect(() => {
     const timer = setTimeout(() => {
       // A missing row does not always mean a chat nobody has saved yet. It
-      // also means one thrown away seconds ago and waiting on Undo, whose
-      // ChatState and meta are deliberately left alive for those seconds — and
-      // one the server has already deleted, which this page can still be
-      // holding, open, from its cached copy. Rebuilt from either, a deleted
-      // chat came back with a new createdAt and a fresh entry in the server's
-      // index, so deleting it never took.
-      const undoable = pendingDelete.current?.conversation.id;
+      // also means one the server has already deleted, which this page can
+      // still be holding, open, from its cached copy: rebuilt from that, a
+      // deleted chat came back with a new createdAt and a fresh entry in the
+      // server's index, so deleting it never took.
+      //
+      // The chat counting down is skipped for the other half of that. Its row
+      // is still there, so nothing would be rebuilt — but the save also pushes
+      // an index entry, and an entry written in the second before
+      // `removeIndexEntry` is a race the delete can lose.
+      const undoable = pendingDelete.current?.id;
       setConversations((prev) => {
         let list = prev;
         let touched = false;
@@ -1670,10 +1675,17 @@ export default function App() {
    *  Deleting used to ask first, in a dialog in the middle of the screen. The
    *  × that opens it is in the sidebar, so the pointer crossed the window to
    *  answer a question it answered "yes" to every time — which is not a
-   *  question, it is a second click. The row now goes at once and the second
-   *  click is only asked for when the first one was a mistake. */
+   *  question, it is a second click. The delete now starts on the first click
+   *  and the second one is only asked for when the first was a mistake.
+   *
+   *  Where that second click goes is the point: the row stays put and its ×
+   *  becomes a ring emptying over three seconds, so taking a delete back is
+   *  pressing the same pixel again rather than crossing the window to a bar in
+   *  the corner. Nothing else on screen moves, and nothing behind it is
+   *  blocked — the agents keep streaming, and the delete only reaches the
+   *  server once the ring has run out. */
   const pendingDelete = useRef<PendingDelete | null>(null);
-  const [deleted, setDeleted] = useState<{ id: string; title: string } | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   /** Let the pending delete through. THIS is where the chat actually goes. */
   const commitDelete = useCallback(() => {
@@ -1681,8 +1693,8 @@ export default function App() {
     if (!pending) return;
     pendingDelete.current = null;
     clearTimeout(pending.timer);
-    setDeleted(null);
-    const id = pending.conversation.id;
+    setDeleting(null);
+    const id = pending.id;
 
     // Deleting the transcript with the agent still working on it would leave a
     // process nobody can reach, so it goes too.
@@ -1702,76 +1714,66 @@ export default function App() {
     // dropped; leaving it would hold a room, and every process in it, for the
     // life of the server on behalf of a conversation that no longer exists.
     bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
-    // The row went when the × was clicked, and this takes it out again. Not
-    // needless: a delete is only ever as good as its last word, and anything
-    // that wrote the list during the three seconds — a save already on its way
-    // when the click landed — would otherwise leave a row pointing at a chat
-    // that no longer exists anywhere.
+    // NOW the row goes — it stood there counting down until this moment, and
+    // taking it out is the last word on a chat that no longer exists anywhere.
     setConversations((prev) => {
       if (!prev.some((c) => c.id === id)) return prev;
       const list = prev.filter((c) => c.id !== id);
       saveConversations(list);
       return list;
     });
+    // With the screen, if this was the chat on it. Read through the setter
+    // rather than a captured value: the commit can come from the timer, from
+    // another delete starting, or from the tab closing, and the chat on screen
+    // at that moment is not always the one that was there at the click.
+    setConversationId((open) => (open === id ? null : open));
     // And the copy in front of you, which is also what marks the chat gone —
     // without that mark the debounced save would read it as one nobody had got
     // round to writing down, and write it down.
     forgetLocally(id);
   }, [endSession, forgetLocally]);
 
-  const deleteConversation = useCallback(
-    (id: string) => {
-      // One delete waits at a time. Starting another lets the first one
-      // through, so the bar in the corner always belongs to the row that just
-      // disappeared, and a second Undo can never bring back the wrong chat.
-      commitDelete();
-      const index = conversations.findIndex((c) => c.id === id);
-      if (index < 0) return;
-      const conversation = conversations[index];
-      const wasOpen = id === conversationId;
-
-      // Only the row goes, and only here. Everything the chat is made of is
-      // left alone until the timer runs out — see `commitDelete`.
-      pendingDelete.current = {
-        conversation,
-        index,
-        wasOpen,
-        timer: setTimeout(() => commitDelete(), UNDO_MS),
-      };
-      setDeleted({ id, title: conversation.title });
-      setConversations((prev) => {
-        const list = prev.filter((c) => c.id !== id);
-        saveConversations(list);
-        return list;
-      });
-      if (wasOpen) setConversationId(null);
-    },
-    [commitDelete, conversations, conversationId],
-  );
-
-  /** Put it back where it was, whole: the same transcript, the same session,
-   *  the same agent still mid-answer if it was working when it went. */
-  const undoDelete = useCallback(() => {
+  /** Let a pending delete go without doing it. Nothing to put back: the row
+   *  never left, and neither did the transcript, the session, or the agent
+   *  still mid-answer if it was working when the × was pressed. */
+  const cancelDelete = useCallback(() => {
     const pending = pendingDelete.current;
     if (!pending) return;
     pendingDelete.current = null;
     clearTimeout(pending.timer);
-    setDeleted(null);
-    setConversations((prev) => {
-      if (prev.some((c) => c.id === pending.conversation.id)) return prev;
-      const list = [...prev];
-      list.splice(Math.min(pending.index, list.length), 0, pending.conversation);
-      saveConversations(list);
-      return list;
-    });
-    if (pending.wasOpen) setConversationId(pending.conversation.id);
+    setDeleting(null);
   }, []);
 
-  // Closing the tab inside those seconds must not save the chat by accident.
-  // The row is already out of this browser's storage, so a delete left half
-  // done would leave a chat that exists on the server and on every other
-  // device and not here — the one shape nobody asked for. Held in a ref so the
-  // listener is installed once and still calls the current one.
+  const deleteConversation = useCallback(
+    (id: string) => {
+      // Pressed again on the row already counting down: that is the way back.
+      // The ring the second press lands on is the same × that started it, so
+      // this is the whole of Undo.
+      if (pendingDelete.current?.id === id) {
+        cancelDelete();
+        return;
+      }
+      // One delete waits at a time. Starting another lets the first one
+      // through, so the ring always belongs to the row it is drawn on and a
+      // second press can never take back the wrong chat.
+      commitDelete();
+      if (!conversations.some((c) => c.id === id)) return;
+
+      // Nothing happens here but the ring. Everything the chat is made of —
+      // the row included — is left alone until the timer runs out; see
+      // `commitDelete`.
+      pendingDelete.current = { id, timer: setTimeout(() => commitDelete(), UNDO_MS) };
+      setDeleting(id);
+    },
+    [cancelDelete, commitDelete, conversations],
+  );
+
+  // Closing the tab inside those seconds must not quietly forget the delete.
+  // Nothing has been sent yet at that point — the transcript, the index entry
+  // and the room are all still there — so a delete left half done is a delete
+  // that never happened, and the chat is back in the sidebar on the next
+  // visit. Held in a ref so the listener is installed once and still calls the
+  // current one.
   const commitRef = useRef(commitDelete);
   commitRef.current = commitDelete;
   useEffect(() => {
@@ -2665,6 +2667,8 @@ export default function App() {
           currentConversation={conversationId}
           running={running}
           busy={busySet}
+          deleting={deleting}
+          deleteMs={UNDO_MS}
           expanded={expanded}
           onToggle={toggleFolder}
           onPickProject={pickProject}
@@ -3047,11 +3051,6 @@ export default function App() {
         />
       )}
 
-      {/* Keyed by the chat, so a second delete restarts the line rather than
-          inheriting the first one's remaining seconds. */}
-      {deleted && (
-        <UndoToast key={deleted.id} title={deleted.title} ms={UNDO_MS} onUndo={undoDelete} />
-      )}
     </div>
   );
 }

@@ -29,6 +29,8 @@ export function Sidebar({
   currentConversation,
   running,
   busy,
+  deleting = null,
+  deleteMs = 3000,
   expanded,
   onToggle,
   onPickProject,
@@ -62,11 +64,20 @@ export function Sidebar({
   running: Set<string>;
   /** Of those, the ones mid-answer right now. */
   busy: Set<string>;
+  /** The chat that was just deleted and has not gone yet, if there is one. Its
+   *  row stays where it is and counts down, so the way back is the button that
+   *  started it rather than a bar somewhere else on screen. */
+  deleting?: string | null;
+  /** How long that countdown runs, in milliseconds. Drives the ring only — the
+   *  clock that actually commits the delete lives with the chat list. */
+  deleteMs?: number;
   expanded: Set<string>;
   onToggle: (projectId: string) => void;
   onPickProject: (projectId: string) => void;
   onPickConversation: (c: Conversation) => void;
   onNewChat: (projectId: string) => void;
+  /** Delete this chat — and, pressed again on a row already counting down,
+   *  take it back. One call for both, because it is one button. */
   onDelete: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
@@ -118,6 +129,8 @@ export function Sidebar({
             currentConversation={currentConversation}
             running={running}
             busy={busy}
+            deleting={deleting}
+            deleteMs={deleteMs}
             onToggle={onToggle}
             onPickProject={onPickProject}
             onPickConversation={onPickConversation}
@@ -160,6 +173,8 @@ function ProjectNode({
   currentConversation,
   running,
   busy,
+  deleting,
+  deleteMs,
   onToggle,
   onPickProject,
   onPickConversation,
@@ -174,6 +189,8 @@ function ProjectNode({
   currentConversation: string | null;
   running: Set<string>;
   busy: Set<string>;
+  deleting: string | null;
+  deleteMs: number;
   onToggle: (id: string) => void;
   onPickProject: (id: string) => void;
   onPickConversation: (c: Conversation) => void;
@@ -251,48 +268,60 @@ function ProjectNode({
 
       {showing && (
         <ul className="chat-list">
-          {visible.map((c) => (
-            <li key={c.id}>
-              <div
-                className={[
-                  "chat",
-                  c.id === currentConversation ? "is-on" : "",
-                  running.has(c.id) ? "is-live" : "",
-                  busy.has(c.id) ? "is-busy" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-              >
-                {/* State in front of the title, where the eye starts: a dot for
-                    the chat you are in, a grey one for a session that is up but
-                    idle, and a pulsing green one for a chat still working — which is
-                    the whole point of leaving them running. It sits in the
-                    indent, so the titles stay lined up under the project name
-                    whether or not a row has a mark. */}
-                <span
-                  className="chat-mark"
-                  aria-hidden="true"
-                  title={
-                    busy.has(c.id) ? "working" : running.has(c.id) ? "session running" : undefined
-                  }
-                />
-                <button className="chat-btn" type="button" onClick={() => onPickConversation(c)}>
-                  <span className="chat-title">{c.title}</span>
-                </button>
-                <button
-                  className="chat-del"
-                  type="button"
-                  title="Delete this chat"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(c.id);
-                  }}
+          {visible.map((c) => {
+            // Deleted a moment ago and not gone yet. The row is left exactly
+            // where it stood — see the countdown ring below.
+            const going = c.id === deleting;
+            return (
+              <li key={c.id}>
+                <div
+                  className={[
+                    "chat",
+                    c.id === currentConversation ? "is-on" : "",
+                    running.has(c.id) ? "is-live" : "",
+                    busy.has(c.id) ? "is-busy" : "",
+                    going ? "is-going" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                 >
-                  <CloseIcon />
-                </button>
-              </div>
-            </li>
-          ))}
+                  {/* State in front of the title, where the eye starts: a dot
+                      for the chat you are in, a grey one for a session that is
+                      up but idle, and a pulsing green one for a chat still
+                      working — which is the whole point of leaving them
+                      running. It sits in the indent, so the titles stay lined
+                      up under the project name whether or not a row has a
+                      mark. */}
+                  <span
+                    className="chat-mark"
+                    aria-hidden="true"
+                    title={
+                      busy.has(c.id) ? "working" : running.has(c.id) ? "session running" : undefined
+                    }
+                  />
+                  <button className="chat-btn" type="button" onClick={() => onPickConversation(c)}>
+                    <span className="chat-title">{c.title}</span>
+                  </button>
+                  {/* The same button, twice: it deletes, and while the delete
+                      is still counting down it takes it back. Nothing moves
+                      between the two presses, so the second one is aimed at
+                      exactly where the first one landed. */}
+                  <button
+                    className={`chat-del ${going ? "is-going" : ""}`}
+                    type="button"
+                    title={going ? "Cancel delete" : "Delete this chat"}
+                    aria-label={going ? "Cancel delete" : "Delete this chat"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(c.id);
+                    }}
+                  >
+                    {going ? <DrainIcon ms={deleteMs} /> : <CloseIcon />}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
 
           {chats.length > SHOW_AT_FIRST && (
             <li>
@@ -343,6 +372,34 @@ function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+/** How long is left before a deleted chat actually goes, drawn as a ring that
+ *  empties around the × that started it.
+ *
+ *  It is a loader that is also a clock: it says the delete is under way, and
+ *  how much of it is left to take back. Mounted only while the row is counting,
+ *  so a row deleted, taken back, and deleted again starts a fresh ring rather
+ *  than inheriting the first one's remaining seconds.
+ *
+ *  The ring is CSS, not a ticking timer. The clock that actually commits the
+ *  delete lives with the chat list; two clocks counting the same three seconds
+ *  would sooner or later disagree on screen. This one is not load-bearing — it
+ *  runs out a moment either side of the real one and nothing depends on which. */
+function DrainIcon({ ms }: { ms: number }) {
+  return (
+    <svg className="chat-drain" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true">
+      <circle className="chat-drain-track" cx="8" cy="8" r="6.6" />
+      <circle
+        className="chat-drain-arc"
+        cx="8"
+        cy="8"
+        r="6.6"
+        style={{ animationDuration: `${ms}ms` }}
+      />
+      <path className="chat-drain-x" d="M9.9 6.1 6.1 9.9M6.1 6.1l3.8 3.8" />
     </svg>
   );
 }

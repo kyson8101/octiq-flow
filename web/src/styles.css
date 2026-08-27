@@ -4286,6 +4286,77 @@ body.is-ultra .eff {
   color: var(--fg-0);
 }
 
+/* A delete that has started and has not gone through yet.
+
+   The row does not move: it stays where it stood and says what is happening to
+   it, so the press that takes the delete back lands on the same pixel as the
+   press that started it. That is the whole reason there is no bar in the
+   corner any more — see PendingDelete in App.tsx. */
+.chat.is-going .chat-title {
+  color: var(--fg-3);
+  text-decoration: line-through;
+}
+
+/* Visible for the whole countdown, whatever the pointer is doing. It is the
+   only way back, and a way back that has to be hovered for is one nobody finds
+   inside three seconds. */
+.chat-del.is-going {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  color: var(--danger);
+}
+
+/* Stays red under the pointer. The rule above it turns a × the plain text
+   colour on hover, which is right for "delete this" and wrong for the one
+   control that is currently deleting something. */
+.chat-del.is-going:hover {
+  background: var(--bg-2);
+  color: var(--danger);
+}
+
+.chat-drain-track {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+/* How much of the delete is left to take back. Not decoration — it is the
+   clock, so it runs even where motion is reduced; a linear ring emptying over
+   three seconds is the mildest way to show a countdown, and hiding it would
+   leave nothing on screen saying the chat is about to go. */
+.chat-drain-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  /* 2πr at r=6.6, so one whole dash is exactly one turn of the ring. */
+  stroke-dasharray: 41.5;
+  /* Emptying from the top, where a clock is read from. */
+  transform: rotate(-90deg);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation-name: chat-drain;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+.chat-drain-x {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+
+@keyframes chat-drain {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 41.5;
+  }
+}
+
 /* Long lists fold; this opens them. Sits in the same column as the titles,
    which start after the mark's 11px. */
 .chat-more {
@@ -5875,96 +5946,6 @@ body.is-ultra .eff {
 
 .ask-btn.is-primary.is-danger:focus-visible {
   outline-color: var(--danger);
-}
-
-/* ---- Undo bar (bottom left) --------------------------------------------
-   The way back from a deleted chat. Bottom LEFT on purpose: the × that starts
-   a delete is in the sidebar, and a bar in the middle of the screen would make
-   you cross the whole window to take back a click made on the left edge.
-
-   It replaces a confirmation dialog. A question you answer "yes" to every time
-   is only a second click, and this asks for the second click ONLY when the
-   first one was a mistake. */
-.undo {
-  position: fixed;
-  z-index: 300;
-  left: 12px;
-  bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  max-width: min(340px, calc(100vw - 24px));
-  padding: 10px 10px 11px 14px;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-  box-shadow: var(--shadow);
-  animation: ask-rise 0.16s cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .undo {
-    animation: none;
-  }
-}
-
-.undo-text {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 13px;
-  color: var(--fg-2);
-}
-
-.undo-name {
-  color: var(--fg-0);
-}
-
-.undo-btn {
-  flex: 0 0 auto;
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg-2);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-0);
-  cursor: pointer;
-}
-
-.undo-btn:hover {
-  border-color: var(--accent);
-  background: var(--accent-tint);
-}
-
-/* How long is left, as a line that drains along the bottom edge. It is the
-   only clock on screen; the one that actually commits the delete lives with
-   the chat list, and two clocks counting the same seconds drift apart. This
-   one is not load-bearing — it runs out a moment either side of the real one
-   and nothing depends on which. */
-.undo-drain {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  width: 100%;
-  height: 2px;
-  background: var(--accent);
-  transform-origin: left center;
-  animation-name: undo-drain;
-  animation-timing-function: linear;
-  animation-fill-mode: forwards;
-}
-
-@keyframes undo-drain {
-  from {
-    transform: scaleX(1);
-  }
-  to {
-    transform: scaleX(0);
-  }
 }
 
 /* ---- Attachments -------------------------------------------------------

@@ -1,6 +1,7 @@
 // The project column can be put away, and the control that does it exists only
-// where there is a column to put away. And a closed project row says how many
-// chats are inside it, since nothing else on it does.
+// where there is a column to put away. A closed project row says how many chats
+// are inside it, since nothing else on it does. And a chat deleted a moment ago
+// counts down on its own row, which is where the way back has to be.
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -24,6 +25,9 @@ const html = (
     conversations?: Map<string, Conversation[]>;
     running?: Set<string>;
     busy?: Set<string>;
+    deleting?: string | null;
+    deleteMs?: number;
+    expanded?: Set<string>;
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -95,5 +99,42 @@ describe("Sidebar", () => {
       running: new Set(["a"]),
     });
     expect(out).toContain("proj-count is-live");
+  });
+
+  // A chat deleted a moment ago. Its row is still in the list on purpose: it is
+  // where the delete was started, so it is where taking it back belongs.
+  const open = {
+    conversations: new Map([["p1", [chat("a"), chat("b")]]]),
+    expanded: new Set(["p1"]),
+  };
+
+  it("keeps the row of a chat that is on its way out", () => {
+    const out = html({ ...open, deleting: "a" });
+    expect(out).toContain("chat is-going");
+    // Still named, still in its place — nothing has happened to it yet.
+    expect(out).toContain(">a</span>");
+  });
+
+  it("turns that row's × into the way back", () => {
+    const out = html({ ...open, deleting: "a" });
+    expect(out).toContain('aria-label="Cancel delete"');
+    expect(out).toContain("chat-drain-arc");
+  });
+
+  it("leaves every other row's × alone", () => {
+    const out = html({ ...open, deleting: "a" });
+    expect(out).toContain('aria-label="Delete this chat"');
+    // One counting down, one not — not two of either.
+    expect(out.match(/chat-drain-arc/g)).toHaveLength(1);
+  });
+
+  it("counts down for as long as the delete waits", () => {
+    // The ring is the only clock on screen; the one that commits the delete
+    // lives with the chat list, and this has to be told the same number.
+    expect(html({ ...open, deleting: "a", deleteMs: 4200 })).toContain("4200ms");
+  });
+
+  it("counts nothing down when nothing was deleted", () => {
+    expect(html(open)).not.toContain("chat-drain-arc");
   });
 });
