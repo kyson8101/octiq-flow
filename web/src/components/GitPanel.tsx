@@ -39,6 +39,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
+import { remember } from "../lib/remember";
 
 /** One changed file in a repo (git.rs `ChangedFile`). */
 type ChangedFile = {
@@ -630,7 +631,7 @@ export function GitPanel({
             pullMode={pullMode}
             onPullMode={(mode) => {
               setPullMode(mode);
-              localStorage.setItem(PULL_KEY, mode);
+              remember(PULL_KEY, mode);
             }}
             onTick={setTick}
             onTickAll={setAllTicks}

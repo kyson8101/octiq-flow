@@ -31,6 +31,7 @@ import { ContextReport } from "./ContextReport";
 import { parseContextReport } from "../lib/contextReport";
 import { copyText } from "../lib/clipboard";
 import { clipMessage } from "../lib/clip";
+import { ConfigPanel, ConfigWorldProvider, isConfigUsage } from "./ConfigPanel";
 import { ProseLink } from "./ProseLink";
 import { ProsePath } from "./ProsePath";
 import { ProseTable } from "./ProseTable";
@@ -112,6 +113,12 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
   );
 }
 
+/** How far back the `/config` panel looks for the CLI's `Set … to …` answers.
+ *
+ *  Far enough to cover a run of settings changed one after another, short
+ *  enough that the walk is nothing: it is redone on every streaming delta. */
+const CONFIRM_WINDOW = 40;
+
 /** What the reply's markdown renders as. `PATH_TAG` is not an HTML element —
  *  it is the marker `rehypeFilePaths` leaves behind, and this is what turns it
  *  into something clickable. */
@@ -165,6 +172,10 @@ function BlockView({
    *  decides which text that is; this only carries it. */
   note?: Note;
 }) {
+  // The CLI's own settings list, drawn as settings rather than as the thirty
+  // lines of `key=a|b|c` it arrives as. It is the whole of the message when it
+  // is there, so nothing else on the turn is lost by replacing it.
+  if (block.kind === "text" && isConfigUsage(block.text)) return <ConfigPanel text={block.text} />;
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "compacted") return <Compacted block={block} />;
   if (block.kind === "notice") return <Notice text={block.text} />;
@@ -679,10 +690,15 @@ export function MessageList({
   stoppedAt,
   compactingSince,
   conversationId,
+  onSetting,
 }: {
   messages: Message[];
   busy: boolean;
   stoppedAt?: string;
+  /** Send a line to the agent as though it had been typed — how the `/config`
+   *  panel changes a setting. Absent where there is no chat to send into (the
+   *  agent rail's read-only transcript), and the panel then only reads. */
+  onSetting?: (line: string) => void;
   /** When a compaction started, or absent when none is running. It is drawn
    *  at the foot of the conversation, in the SAME line the finished boundary
    *  leaves behind — one thing that starts, runs, and settles in place, rather
@@ -822,8 +838,33 @@ export function MessageList({
   // appearance and a turn cannot see who came before it.
   const tints = useMemo(() => seatTints(messages), [messages]);
 
+  // The short things the CLI has said lately, for the `/config` panel to find
+  // its confirmations among — `Set Verbose output to true`.
+  //
+  // The LAST few messages only, and only the short ones. This is recomputed on
+  // every streaming delta, so it must not be a walk of the whole transcript;
+  // and a confirmation is one line, so an answer of any length is not one.
+  const said = useMemo(() => {
+    const out: string[] = [];
+    for (const m of messages.slice(-CONFIRM_WINDOW)) {
+      if (m.role !== "assistant") continue;
+      for (const b of m.blocks) {
+        if (b.kind !== "text") continue;
+        const line = b.text.trim();
+        if (line && line.length <= 120) out.push(line);
+      }
+    }
+    return out;
+  }, [messages]);
+
+  const world = useMemo(
+    () => ({ say: onSetting ?? (() => {}), said }),
+    [onSetting, said],
+  );
+
   return (
     <div className="msgs" ref={scrollerRef}>
+      <ConfigWorldProvider say={world.say} said={world.said}>
       <div className="msgs-inner" ref={innerRef}>
         {turns.map((turn, i) => (
           <Fragment key={turn[0].id}>
@@ -858,6 +899,7 @@ export function MessageList({
         </div>
         <div ref={endRef} />
       </div>
+      </ConfigWorldProvider>
     </div>
   );
 }

@@ -55,6 +55,20 @@ const KEY = "octiq.v2.conversations";
 /** Plenty to scroll through, few enough to stay inside a localStorage quota. */
 const MAX_CONVERSATIONS = 80;
 
+/** How much of the browser's store the transcripts may take.
+ *
+ *  Eighty is a count, and a count says nothing about size — a chat with a
+ *  thousand tool results in it is worth as much as a hundred short ones. Left
+ *  to a count alone this grew to 4.09 MB of a 5 MB quota on one machine, and
+ *  what it had eaten was everybody else's room: after that, writing the word
+ *  `ultracode` into a four-byte setting threw, and the change it was part of
+ *  never happened (see `lib/remember`).
+ *
+ *  So the transcripts get a budget rather than the whole shelf. The rest is for
+ *  the settings, the drafts and the input history — a few kilobytes between
+ *  them, which is exactly why they should never have to compete for it. */
+const BUDGET = 3 * 1024 * 1024;
+
 export function loadConversations(): Conversation[] {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || "[]");
@@ -75,12 +89,22 @@ export function saveConversations(list: Conversation[]): void {
   // store rather than one entry. This is eviction order only — what the sidebar
   // shows is ordered by byProject, which never moves a row.
   const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
-  for (let attempt = ordered.length; attempt > 0; attempt--) {
+  // Down to nothing, not down to one. A store that will not fit is worse than
+  // an empty one: the chats are on the server too, and reopening one replays it
+  // from there — whereas a browser wedged at its quota breaks every OTHER thing
+  // that wants to write, which is a much quieter and much longer-lived fault.
+  for (let attempt = ordered.length; attempt >= 0; attempt--) {
+    const json = JSON.stringify(ordered.slice(0, attempt));
+    // Over BUDGET is refused before the browser is even asked. The quota is
+    // shared, and a write that succeeds by taking the last of it is the thing
+    // being prevented, not a success.
+    if (attempt > 0 && json.length > BUDGET) continue;
     try {
-      localStorage.setItem(KEY, JSON.stringify(ordered.slice(0, attempt)));
+      localStorage.setItem(KEY, json);
       return;
     } catch {
-      // Over quota: drop the oldest and try again.
+      // Over quota anyway — the budget is this app's guess at the browser's,
+      // and the browser is the one that knows. Drop the oldest and try again.
     }
   }
 }

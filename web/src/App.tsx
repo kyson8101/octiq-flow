@@ -46,6 +46,7 @@ import {
   type Conversation,
 } from "./lib/store";
 import { removeIndexEntry, saveIndexEntry } from "./lib/chatIndex";
+import { recall, remember } from "./lib/remember";
 import { deletedIds, isDeleted, listDeletions, markDeleted } from "./lib/deletions";
 import {
   focusNow,
@@ -326,12 +327,12 @@ export default function App() {
     }
   });
   const [choice, setChoice] = useState<ModelChoice>(
-    () => modelFromId(localStorage.getItem(CHOICE_KEY)) ?? MODELS[0],
+    () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
   );
   // What the agent may do unattended. Defaults to the cautious end: a chat has
   // no way to answer a permission prompt, so this is the whole of the answer.
   const [access, setAccess] = useState<AccessLevel>(() => {
-    const saved = localStorage.getItem(ACCESS_KEY);
+    const saved = recall(ACCESS_KEY);
     // Values written before this was one shared level, when it held Claude's
     // own permission-mode names — plus "edit", the middle level's old id, from
     // when it meant acceptEdits rather than auto. Anyone who picked the middle
@@ -352,20 +353,16 @@ export default function App() {
   // How hard the model thinks. Fixed on the agent's command line, so changing
   // it takes effect from the next message — see changeEffort.
   const [effort, setEffort] = useState<Effort>(
-    () => (localStorage.getItem(EFFORT_KEY) as Effort | null) ?? "medium",
+    () => (recall(EFFORT_KEY) as Effort | null) ?? "medium",
   );
   // A clean chat: none of this machine's skills, hooks or other MCP servers.
   // Read once, when the agent process starts, so turning it on part way through
   // a conversation changes nothing until a new chat begins. Off by default —
   // the skills and hooks are there because somebody installed them.
-  const [lite, setLite] = useState<boolean>(() => localStorage.getItem(LITE_KEY) === "1");
+  const [lite, setLite] = useState<boolean>(() => recall(LITE_KEY) === "1");
   const changeLite = useCallback((on: boolean) => {
     setLite(on);
-    try {
-      localStorage.setItem(LITE_KEY, on ? "1" : "0");
-    } catch {
-      /* storage blocked: the choice holds for this session only */
-    }
+    remember(LITE_KEY, on ? "1" : "0");
   }, []);
 
   // Chats that were picked up from an agent's own history, by conversation id.
@@ -544,17 +541,13 @@ export default function App() {
   const pickMode = useCallback((next: Mode) => {
     setMode(next);
     if (next === "editor") setEditorSeen(true);
-    localStorage.setItem(MODE_KEY, next);
+    remember(MODE_KEY, next);
   }, []);
 
   useEffect(() => bridge.onState(setConn), []);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(OPEN_KEY, JSON.stringify([...expanded]));
-    } catch {
-      /* storage blocked: the tree just forgets again next time */
-    }
+    remember(OPEN_KEY, JSON.stringify([...expanded]));
   }, [expanded]);
 
   /** Read the project list from the backend. Called on load and again after
@@ -620,7 +613,7 @@ export default function App() {
     const next = MODELS.find((m) => installed.includes(m.agent));
     if (!next) return;
     setChoice(next);
-    localStorage.setItem(CHOICE_KEY, next.id);
+    remember(CHOICE_KEY, next.id);
   }, [installed, choice.agent]);
 
   // The chat list lives on the server, so a chat started on the phone shows up
@@ -1039,11 +1032,7 @@ export default function App() {
         next = { ...next, [pid]: s.commands };
       }
       if (next === prev) return prev;
-      try {
-        localStorage.setItem(CMDS_KEY, JSON.stringify(next));
-      } catch {
-        /* storage blocked: the menu falls back to this session only */
-      }
+      remember(CMDS_KEY, JSON.stringify(next));
       return next;
     });
   }, [chats]);
@@ -1146,11 +1135,9 @@ export default function App() {
     // is opened from a saved link and from a home-screen icon, and both are the
     // ORIGINAL address with no `#/p/…/c/…` on the end — so a reload from one of
     // those had nothing to say which chat you were in.
-    try {
-      if (conversationId) localStorage.setItem(LAST_KEY, conversationId);
-    } catch {
-      /* storage blocked: the URL is still the way back */
-    }
+    // A store that will not take it is survivable here: the URL is still the
+    // way back.
+    if (conversationId) remember(LAST_KEY, conversationId);
   }, [projectId, conversationId]);
 
   const project = useMemo(
@@ -1308,11 +1295,7 @@ export default function App() {
       meta.current[id] = { projectId: forProject, modelId: model.id, access };
       setChoice(model);
       setEffort(kept);
-      try {
-        localStorage.setItem(EFFORT_KEY, kept);
-      } catch {
-        /* storage blocked: the effort holds for this session only */
-      }
+      remember(EFFORT_KEY, kept);
       setResumed((prev) => ({ ...prev, [id]: session }));
       patch(id, (s) => ({ ...s, sessionId: session.sessionId }));
 
@@ -1529,19 +1512,13 @@ export default function App() {
   /** Remember whether a side column is open. Split out because two of them do
    *  the same thing, and a flag that drifts from what is on screen is a panel
    *  that comes back closed. */
-  const remember = (key: string, next: boolean) => {
-    try {
-      localStorage.setItem(key, next ? "1" : "0");
-    } catch {
-      /* storage blocked: it just forgets between visits */
-    }
-  };
+  const rememberFlag = (key: string, next: boolean) => remember(key, next ? "1" : "0");
 
   /** Put the project column away, or bring it back. Every way in and out goes
    *  through here so the stored flag cannot drift from what is on screen. */
   const showNav = useCallback((next: boolean) => {
     setNavShut(!next);
-    remember(NAV_KEY, !next);
+    rememberFlag(NAV_KEY, !next);
   }, []);
 
   /** Show or hide the git column, and remember it — every way in and out goes
@@ -1559,9 +1536,9 @@ export default function App() {
     if (next) {
       setGitMounted(true);
       setFilesOpen(false);
-      remember(FILES_KEY, false);
+      rememberFlag(FILES_KEY, false);
     }
-    remember(GIT_KEY, next);
+    rememberFlag(GIT_KEY, next);
   }, []);
 
   /** The same, for the files column. */
@@ -1570,9 +1547,9 @@ export default function App() {
     if (next) {
       setFilesMounted(true);
       setGitOpen(false);
-      remember(GIT_KEY, false);
+      rememberFlag(GIT_KEY, false);
     }
-    remember(FILES_KEY, next);
+    rememberFlag(FILES_KEY, next);
   }, []);
 
   /** The agent column. Unlike the two above it takes no width from a panel and
@@ -1581,7 +1558,7 @@ export default function App() {
    *  not throw the diff away. */
   const showRail = useCallback((next: boolean) => {
     setRailShut(!next);
-    remember(RAIL_KEY, !next);
+    rememberFlag(RAIL_KEY, !next);
   }, []);
 
   useEffect(() => {
@@ -2113,13 +2090,13 @@ export default function App() {
     (c: ModelChoice) => {
       const previous = choice;
       setChoice(c);
-      localStorage.setItem(CHOICE_KEY, c.id);
+      remember(CHOICE_KEY, c.id);
       // The two providers do not offer the same effort levels, so carry the
       // choice across only when it exists over there.
       const kept = effortFor(c.agent, effort);
       if (kept !== effort) {
         setEffort(kept);
-        localStorage.setItem(EFFORT_KEY, kept);
+        remember(EFFORT_KEY, kept);
       }
       if (conversationId && meta.current[conversationId]) {
         meta.current[conversationId].modelId = c.id;
@@ -2171,7 +2148,12 @@ export default function App() {
   const changeEffort = useCallback(
     (e: Effort) => {
       setEffort(e);
-      localStorage.setItem(EFFORT_KEY, e);
+      // Through `remember`, and not `localStorage.setItem`. A full store used
+      // to throw HERE — before the two lines below, which are the ones that
+      // actually change anything — so the level moved on screen, never reached
+      // the agent, and was back to the old word after a reload. See
+      // `lib/remember`.
+      remember(EFFORT_KEY, e);
       // Claude takes `/effort` the same way it takes `/model`, so a running
       // session changes in place rather than being restarted.
       if (choice.agent === "claude" && tellSession(`/effort ${e}`)) return;
@@ -2481,7 +2463,10 @@ export default function App() {
   const changeAccess = useCallback(
     (p: AccessLevel) => {
       setAccess(p);
-      localStorage.setItem(ACCESS_KEY, p);
+      // `remember`, for the same reason `changeEffort` uses it: everything that
+      // matters happens BELOW this line, and a store at its quota used to throw
+      // here and take the rest of the function with it.
+      remember(ACCESS_KEY, p);
       if (!conversationId) return;
       if (meta.current[conversationId]) meta.current[conversationId].access = p;
       if (!runningRef.current.has(conversationId)) return;
@@ -2766,6 +2751,17 @@ export default function App() {
                       stoppedAt={chat.stoppedAt}
                       compactingSince={chat.compactingSince}
                       conversationId={conversationId ?? undefined}
+                      // How the `/config` panel changes a setting: the very
+                      // line you would have typed, sent the way you would have
+                      // sent it — so the CLI's own answer lands under it and
+                      // the transcript still reads as a conversation.
+                      //
+                      // `send`, not `tellSession`: a chat whose agent was
+                      // reaped for being idle has no process to write to, and
+                      // `tellSession` would quietly do nothing. `send` picks
+                      // the session back up first, which is what a tap on a
+                      // setting has every right to expect.
+                      onSetting={send}
                     />
                     {focused && (
                       <AgentFocus
@@ -2862,7 +2858,7 @@ export default function App() {
               onCommandsChanged={loadWorkspaces}
               onHide={() => {
                 setTermOpen(false);
-                localStorage.setItem(TERM_KEY, "0");
+                remember(TERM_KEY, "0");
               }}
             />
           )}
@@ -2912,7 +2908,7 @@ export default function App() {
               project
                 ? () =>
                     setTermOpen((open) => {
-                      localStorage.setItem(TERM_KEY, open ? "0" : "1");
+                      remember(TERM_KEY, open ? "0" : "1");
                       return !open;
                     })
                 : undefined
