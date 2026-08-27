@@ -26,25 +26,41 @@ export type Preview = {
 
 /** How a file should be drawn.
  *
- *  `prose` is markdown rendered; `code` is the editor; `image` is the bytes;
- *  `none` is a size and a plain statement that there is nothing here to edit. */
-export type Drawn = "prose" | "code" | "image" | "none";
+ *  `prose` is markdown rendered; `page` is html rendered; `code` is the editor;
+ *  `image` is the bytes; `none` is a size and a plain statement that there is
+ *  nothing here to edit. */
+export type Drawn = "prose" | "page" | "code" | "image" | "none";
 
 const MARKDOWN = /\.(md|markdown|mdx)$/i;
+const HTML = /\.html?$/i;
 
 /** What to draw, given the path and what came back for it.
  *
  *  The backend's `kind` WINS over the extension every time. It has opened the
  *  file; the name is a claim about it. A `.md` that came back binary is binary.
  *
- *  The one exception is inside `text`: an empty markdown file opens in the
- *  editor rather than rendered, because a rendered empty file is a blank page
- *  with nowhere to start typing. */
+ *  The one exception is inside `text`: an empty markdown file — or an empty
+ *  html one — opens in the editor rather than rendered, because a rendered
+ *  empty file is a blank page with nowhere to start typing. */
 export function drawAs(path: string, preview: Preview): Drawn {
   if (preview.kind === "image") return "image";
   if (preview.kind !== "text") return "none";
-  if (MARKDOWN.test(path) && preview.content.trim()) return "prose";
+  if (!preview.content.trim()) return "code";
+  if (MARKDOWN.test(path)) return "prose";
+  if (HTML.test(path)) return "page";
   return "code";
+}
+
+/** Whether this file has TWO views — the rendering and the source behind it —
+ *  so the frame around it should offer a way between them.
+ *
+ *  The frames ask rather than testing the extension themselves: it is the same
+ *  judgement `drawAs` makes, and the two drifting apart is either a button that
+ *  flips nothing or a file with no way back to its source. */
+export function hasTwoViews(path: string, preview: Preview | null): boolean {
+  if (!preview) return false;
+  const drawn = drawAs(path, preview);
+  return drawn === "prose" || drawn === "page";
 }
 
 export type SaveState = {

@@ -52,3 +52,47 @@ describe("a markdown file, rendered", () => {
     expect(draw("# Title\n\nA line.")).toContain("A line.");
   });
 });
+
+describe("an html file, drawn as the page it is", () => {
+  const page = (content: string): Preview => ({
+    kind: "text",
+    content,
+    truncated: false,
+    size: content.length,
+  });
+
+  const drawPage = (content: string, raw?: boolean) =>
+    renderToStaticMarkup(
+      <FileView
+        path="/repo/report.html"
+        preview={page(content)}
+        draft={content}
+        raw={raw}
+        onDraft={() => {}}
+      />,
+    );
+
+  const PAGE = "<h1>Hi</h1>";
+
+  it("draws the markup in a frame instead of showing it as source", () => {
+    const html = drawPage(PAGE);
+
+    expect(html).toContain("<iframe");
+    expect(html).toContain("&lt;h1&gt;Hi&lt;/h1&gt;");
+  });
+
+  it("keeps the page walled off from the app it is being read in", () => {
+    // `allow-scripts` WITHOUT `allow-same-origin` is the whole point: a page an
+    // agent wrote runs its own charts and toggles, but sits in an origin of its
+    // own, so it can never reach this app's token or storage. The two together
+    // would hand it both.
+    const html = drawPage(PAGE);
+
+    expect(html).toMatch(/sandbox="[^"]*allow-scripts/);
+    expect(html).not.toContain("allow-same-origin");
+  });
+
+  it("goes back to the editor when the frame asks for source", () => {
+    expect(drawPage(PAGE, true)).not.toContain("<iframe");
+  });
+});

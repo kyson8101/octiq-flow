@@ -1,8 +1,9 @@
 // A file, docked down the right-hand side: read it, edit it, quote it, save it.
 //
 // Clicking a file in a reply's list opens this. Markdown renders by default —
-// most of what an agent writes is prose — with a raw view a tap away, and any
-// other text file opens straight in the editor.
+// most of what an agent writes is prose — and so does an html file, as the page
+// it is; both keep a raw view a tap away, and any other text file opens
+// straight in the editor.
 //
 // Three rules matter more than the rest:
 //
@@ -27,7 +28,7 @@ import { createPortal } from "react-dom";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
-import { drawAs } from "../lib/fileView";
+import { drawAs, hasTwoViews } from "../lib/fileView";
 import { canQuote, lineRange, sendQuote, type Quote } from "../lib/quote";
 import { placeKey, placeOf, rememberPlace } from "../lib/scrollMemory";
 import { useConfirm } from "./Confirm";
@@ -51,11 +52,6 @@ const SIZES: Sizes = { initial: 480, min: 320, max: 760 };
  *  OpenFile) but it has to render as a SIBLING of the views to take width from
  *  them, and those two places are nowhere near each other in the tree. */
 const DOCK_ID = "dock";
-
-function isMarkdown(path: string): boolean {
-  const ext = path.split(".").pop()?.toLowerCase();
-  return ext === "md" || ext === "markdown" || ext === "mdx";
-}
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -371,7 +367,11 @@ export function FilePanel({
                 </div>
               </div>
 
-              {preview?.kind === "text" && isMarkdown(path) && (
+              {/* Only for a file with two views to flip between — markdown, and
+                  now an html page. `hasTwoViews` is asked rather than the
+                  extension being tested here, so this button and what the body
+                  actually draws can never disagree. */}
+              {hasTwoViews(path, preview) && (
                 <button className="panel-btn" type="button" onClick={() => setEditing((v) => !v)}>
                   {editing ? "Preview" : "Edit"}
                 </button>

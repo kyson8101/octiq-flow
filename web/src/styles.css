@@ -4971,6 +4971,20 @@ body.is-ultra .eff {
   padding: 16px 18px 40px;
 }
 
+/* An html file, drawn as the page it is — the frame fills whichever body it is
+   in, the chat dock's or an editor tab's.
+
+   White, and not the app's background: a document's canvas is white in every
+   other browser window, and a page that sets no background of its own would
+   otherwise be read as dark grey under its own black text. */
+.panel-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
+
 .panel-note {
   padding: 20px;
   color: var(--fg-3);

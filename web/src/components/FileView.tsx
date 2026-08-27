@@ -19,8 +19,8 @@
 //     would take it off each other.
 //
 // What it does own is everything a reader can see: which surface a file gets,
-// the markdown/raw split, the truncation warning, and what a PDF says instead
-// of nothing.
+// the rendered/source split for the files that have both, the truncation
+// warning, and what a PDF says instead of nothing.
 import { useEffect, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -61,8 +61,9 @@ export function FileView({
   onDraft: (text: string) => void;
   /** Ctrl/Cmd-S from inside the editor. The frame owns what saving means. */
   onSave?: () => void;
-  /** Show markdown as SOURCE rather than rendered. The frame owns this because
-   *  the button that flips it lives in the frame's own header. */
+  /** Show a rendered file — markdown, or an html page — as its SOURCE. The
+   *  frame owns this because the button that flips it lives in its own
+   *  header. */
   raw?: boolean;
   /** Bumped by the frame to force a fresh editor — a reload from disk has to
    *  replace the document rather than leave the old undo history pointing at
@@ -80,9 +81,9 @@ export function FileView({
   if (!preview) return <div className="dots" aria-label="loading" />;
 
   const drawn = drawAs(path, preview);
-  // The frame's toggle only ever turns rendered prose into source. Nothing else
-  // has two ways to be shown.
-  const as = drawn === "prose" && raw ? "code" : drawn;
+  // The frame's toggle only ever turns something RENDERED — prose, or a page —
+  // into the source behind it. Nothing else has two ways to be shown.
+  const as = raw && (drawn === "prose" || drawn === "page") ? "code" : drawn;
 
   if (as === "image") return <ImageDoc path={path} />;
 
@@ -94,6 +95,8 @@ export function FileView({
       </div>
     );
   }
+
+  if (as === "page") return <PageDoc path={path} html={draft} />;
 
   if (as === "prose") {
     return (
@@ -114,6 +117,40 @@ export function FileView({
       onChange={onDraft}
       onSave={() => onSave?.()}
       onSelect={onSelect}
+    />
+  );
+}
+
+/** An html file, drawn as the page it is.
+ *
+ *  The markup goes in as `srcdoc` rather than the frame being pointed at the
+ *  file, because there is no route that would serve it: `/file` hands back
+ *  bytes for one path and knows nothing about a page's own origin. It is fed
+ *  the DRAFT and not what came off disk, so flipping back from the source view
+ *  shows what you just typed.
+ *
+ *  `allow-scripts` WITHOUT `allow-same-origin` is deliberate and is the whole
+ *  security of this. A sandboxed frame with no same-origin grant lives in an
+ *  origin of its own, so a page an agent wrote can run its own charts and
+ *  toggles but can never read this app's token or its storage. Granting both
+ *  would hand it the lot, and is the one combination never to write here.
+ *
+ *  A page that pulls in a stylesheet or an image sitting NEXT to it on disk
+ *  gets neither — a relative url has nothing to resolve against in a frame
+ *  with no url. Self-contained pages, which is most of what an agent writes,
+ *  draw whole.
+ *
+ *  White, not the app's background: an html document's canvas is white
+ *  everywhere else, and a page that sets no background of its own would
+ *  otherwise be dark grey with its own black text on it. */
+function PageDoc({ path, html }: { path: string; html: string }) {
+  return (
+    <iframe
+      className="panel-page"
+      title={`${baseName(path)} — preview`}
+      srcDoc={html}
+      sandbox="allow-scripts allow-popups"
+      referrerPolicy="no-referrer"
     />
   );
 }

@@ -1,7 +1,7 @@
 // Card 89 — the decisions both file frames were making separately.
 import { describe, expect, it } from "vitest";
 
-import { drawAs, saveState, type Preview } from "./fileView";
+import { drawAs, hasTwoViews, saveState, type Preview } from "./fileView";
 
 const text = (over: Partial<Preview> = {}): Preview => ({
   kind: "text",
@@ -79,5 +79,38 @@ describe("whether a file may be saved", () => {
 
     expect(cut.dirty).toBe(true);
     expect(cut.can).toBe(false);
+  });
+});
+
+describe("an html file", () => {
+  it("is drawn as a page, not as its own source", () => {
+    // Same argument markdown already won: what an agent writes is meant to be
+    // read, and a page read as source is worse than source read as a page.
+    expect(drawAs("/p/report.html", text({ content: "<h1>Hi</h1>" }))).toBe("page");
+    expect(drawAs("/p/Report.HTM", text({ content: "<h1>Hi</h1>" }))).toBe("page");
+  });
+
+  it("is the editor while there is nothing in it yet", () => {
+    expect(drawAs("/p/new.html", text({ content: "" }))).toBe("code");
+  });
+
+  it("is nothing to edit when the backend says it is not text", () => {
+    expect(drawAs("/p/odd.html", text({ kind: "binary" }))).toBe("none");
+  });
+});
+
+describe("which files have a second view to flip to", () => {
+  it("is the ones that are RENDERED — prose and pages", () => {
+    expect(hasTwoViews("/p/notes.md", text({ content: "# Hi" }))).toBe(true);
+    expect(hasTwoViews("/p/report.html", text({ content: "<h1>Hi</h1>" }))).toBe(true);
+  });
+
+  it("is not an ordinary source file, which has only the one", () => {
+    expect(hasTwoViews("/p/x.ts", text())).toBe(false);
+    expect(hasTwoViews("/p/spec.pdf", text({ kind: "pdf" }))).toBe(false);
+  });
+
+  it("is not a file that has not been read yet", () => {
+    expect(hasTwoViews("/p/notes.md", null)).toBe(false);
   });
 });

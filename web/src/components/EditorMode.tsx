@@ -23,6 +23,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
+import { hasTwoViews } from "../lib/fileView";
 import { FileView } from "./FileView";
 import { FileTree, rootsOf } from "./FileTree";
 import { useConfirm } from "./Confirm";
@@ -63,6 +64,11 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
   // What each open tab's editor currently holds. The editor owns the text while
   // it is being typed; this is the copy the Save button and the dirty mark read.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Which tabs are being read as SOURCE rather than as what they render to —
+  // markdown, and an html page. Per tab and not one flag for the whole editor:
+  // reading a README next to the page it documents is two different answers,
+  // and one flag would make them the same answer.
+  const [sourceView, setSourceView] = useState<Record<string, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [justSaved, setJustSaved] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -144,6 +150,11 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
       const remaining = tabs.filter((t) => t.path !== path);
       setTabs(remaining);
       setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+      setSourceView((prev) => {
         const next = { ...prev };
         delete next[path];
         return next;
@@ -332,6 +343,20 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
             <span className="ws-path" title={current.path}>
               <bdi>{current.path}</bdi>
             </span>
+            {/* Only for a file with two views to flip between. Without it an
+                html file — or a README — could be READ here and never edited,
+                which is the one thing this mode is for. */}
+            {hasTwoViews(current.path, current.file) && (
+              <button
+                className="ws-mini-btn"
+                type="button"
+                onClick={() =>
+                  setSourceView((prev) => ({ ...prev, [current.path]: !prev[current.path] }))
+                }
+              >
+                {sourceView[current.path] ? "Preview" : "Edit"}
+              </button>
+            )}
             <button className="ws-mini-btn" type="button" onClick={() => void reload(current.path)}>
               Reload
             </button>
@@ -371,6 +396,7 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
                   path={tab.path}
                   preview={tab.file}
                   draft={drafts[tab.path] ?? tab.file.content}
+                  raw={!!sourceView[tab.path]}
                   generation={tab.generation}
                   onDraft={(text) => setDrafts((prev) => ({ ...prev, [tab.path]: text }))}
                   onSave={() => void save()}
