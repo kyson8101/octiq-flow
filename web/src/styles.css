@@ -8778,6 +8778,50 @@ body.is-ultra .eff {
   color: var(--accent-fg);
 }
 
+/* Restart, under the clean-start switch. Built to the same measurements — it
+   is the row below it and a row that did not line up would read as a mistake —
+   but it never takes the `is-on` outline, because it has no state to be in.
+   It happens once and it is over. */
+.mp-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.mp-restart:hover {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+}
+
+.mp-restart:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The one part that is not the switch's: the arrow leans on the accent, since
+   there is no lit border to say which row your eye is on. */
+.mp-restart svg {
+  flex: none;
+  color: var(--fg-3);
+  transition: color 0.12s ease;
+}
+
+.mp-restart:hover svg {
+  color: var(--accent);
+}
+
 /* Card 67 — who a message you typed was addressed to. Only ever present in a
    room, and only when you picked a seat rather than the whole room. Sits above
    the words for the same reason the agent's name sits above its own: it changes

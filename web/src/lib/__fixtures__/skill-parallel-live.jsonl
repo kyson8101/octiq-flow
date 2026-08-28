@@ -1,0 +1,6 @@
+{"type":"assistant","message":{"id":"parallel-tools","role":"assistant","content":[{"type":"tool_use","id":"skill-1","name":"Skill","input":{"skill":"example-skill"}}]}}
+{"type":"assistant","message":{"id":"parallel-tools","role":"assistant","content":[{"type":"tool_use","id":"bash-1","name":"Bash","input":{"command":"echo hi"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"skill-1","content":"Launching skill: example-skill"}]}}
+{"type":"user","isSynthetic":true,"message":{"role":"user","content":[{"type":"text","text":"# Example skill\n\nKeep this short prompt on the Skill card, even when Bash was called in the same assistant message."}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"bash-1","content":"hi"}]}}
+{"type":"assistant","message":{"id":"parallel-answer","role":"assistant","content":[{"type":"text","text":"Both tool calls completed."}]}}

@@ -348,6 +348,7 @@ export function Composer({
   cwd,
   onTerminal,
   terminalOpen,
+  onRestart,
   installed,
 }: {
   /** Which chat this is, so Up walks back through ITS input and no one else's.
@@ -435,6 +436,9 @@ export function Composer({
   /** Show the shell drawer. Absent when there is no project to open one in. */
   onTerminal?: () => void;
   terminalOpen?: boolean;
+  /** End the agent and keep the conversation. Absent when nothing is running:
+   *  the next message spawns a fresh one anyway, so there is nothing to offer. */
+  onRestart?: () => void;
 }) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
@@ -1229,6 +1233,13 @@ export function Composer({
                     started={!!started}
                     lite={lite}
                     onLite={onLite}
+                    onRestart={
+                      onRestart &&
+                      (() => {
+                        onRestart();
+                        setMenu(false);
+                      })
+                    }
                   />
                 </div>
               </>
@@ -1454,6 +1465,13 @@ export function Composer({
               onEffort={onEffort}
               lite={lite}
               onLite={onLite}
+              onRestart={
+                onRestart &&
+                (() => {
+                  onRestart();
+                  setSheet(false);
+                })
+              }
               onDone={() => setSheet(false)}
             />
           </>
@@ -1496,6 +1514,28 @@ function AddAgentIcon() {
   );
 }
 
+/** Round again: an arrow that comes back to where it set off. An open circle
+ *  rather than a closed one, because the gap is what stops it reading as a
+ *  loading spinner frozen mid-spin. */
+function RestartIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M20 11a8 8 0 1 0-2.3 6" />
+      <path d="M20 4.5V11h-6.5" />
+    </svg>
+  );
+}
+
 export function SettingsSheet({
   choice,
   onChoice,
@@ -1509,6 +1549,7 @@ export function SettingsSheet({
   onEffort,
   lite,
   onLite,
+  onRestart,
   onDone,
 }: {
   choice: ModelChoice;
@@ -1523,6 +1564,7 @@ export function SettingsSheet({
   onEffort: (e: Effort) => void;
   lite: boolean;
   onLite: (on: boolean) => void;
+  onRestart?: () => void;
   onDone: () => void;
 }) {
   return (
@@ -1538,6 +1580,7 @@ export function SettingsSheet({
             started={started}
             lite={lite}
             onLite={onLite}
+            onRestart={onRestart}
           />
         </div>
 
@@ -1580,6 +1623,7 @@ function ModelPicker({
   started,
   lite,
   onLite,
+  onRestart,
 }: {
   choice: ModelChoice;
   onChoice: (m: ModelChoice) => void;
@@ -1592,6 +1636,9 @@ function ModelPicker({
   /** New chats start without this machine's skills, hooks and other MCP. */
   lite: boolean;
   onLite: (on: boolean) => void;
+  /** End the running agent, keeping the conversation. Absent when there is no
+   *  process to end. */
+  onRestart?: () => void;
 }) {
   const [tab, setTab] = useState<Provider>(choice.agent);
   // Choosing elsewhere — the Agents page, or restoring a chat — moves the tab
@@ -1666,6 +1713,29 @@ function ModelPicker({
             </span>
           </span>
           <span className="picker-switch">{lite ? "On" : "Off"}</span>
+        </button>
+      )}
+
+      {/* Under the clean-start switch because it answers the same question from
+          the other end: that one decides what a chat is made of BEFORE it
+          starts, this one is how a chat already running gets made again.
+
+          Both live in the model menu rather than beside the terminal button
+          because neither is a thing you do — they are what the agent in this
+          chat IS. And here it reaches a phone for free: the menu is drawn from
+          this one component in two places, the dropdown and the sheet. */}
+      {onRestart && (
+        <button type="button" className="mp-restart" onClick={onRestart}>
+          <span className="mp-lite-text">
+            <span className="mp-lite-name">Restart agent</span>
+            {/* What it keeps first. The word "restart" on a chat you have been
+                talking to for an hour reads as a threat until you know the
+                conversation is not the thing being restarted. */}
+            <span className="mp-lite-hint">
+              Keeps the conversation — your next message picks up new MCP servers and plugins
+            </span>
+          </span>
+          <RestartIcon />
         </button>
       )}
 

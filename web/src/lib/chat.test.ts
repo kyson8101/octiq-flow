@@ -52,6 +52,10 @@ import skillCallStream from "./__fixtures__/skill-call.jsonl?raw";
 // named artifact-diagramming, then reply with one short line. Do not do
 // anything else."
 import skillBundledLive from "./__fixtures__/skill-bundled-live.jsonl?raw";
+// A minimal live-shaped Skill + Bash batch. Its sibling's block opens while
+// the Skill call is still running, so Bash is the newest call in the
+// conversation by the time the skill's prompt arrives.
+import skillParallelLive from "./__fixtures__/skill-parallel-live.jsonl?raw";
 // A live stream of the user typing `/model haiku` and then asking one thing.
 // Recorded on `--model opus` so the switch is visible, with the two prompts
 // piped in on stdin one after the other.
@@ -80,6 +84,7 @@ const FIXTURES: Record<string, string> = {
   "skill-brief-meta.jsonl": skillBriefMeta,
   "skill-bundled-live.jsonl": skillBundledLive,
   "skill-call.jsonl": skillCallStream,
+  "skill-parallel-live.jsonl": skillParallelLive,
   "model-switch.jsonl": modelSwitchStream,
   "config-command.jsonl": configStream,
 };
@@ -177,6 +182,38 @@ describe("a skill run", () => {
     const skill = tools(s.messages).find((t) => t.name === "Skill")!;
     expect(skill.state).toBe("done");
     expect(skill.brief).toContain("Draw as the engineer who has to live with the decision");
+  });
+
+  it("keeps it on the card when the agent called something ELSE in the same breath", () => {
+    const asked =
+      "In ONE assistant message, make two tool calls together: call the Skill tool for the skill named artifact-diagramming, and at the same time call Bash with the command 'echo hi'. Then reply with one short line.";
+    const s = replay("skill-parallel-live.jsonl", addUserTurn(emptyChat(), asked));
+
+    // The batched call is the common shape and it was the blind spot: the
+    // agent asks for a skill and a `cat` of the file it is about to change in
+    // one message, and partial-message streaming opens the Bash block while
+    // the Skill call is still running. Reading only the NEWEST call, the
+    // prompt arrived to find Bash sitting there, and the whole SKILL.md was
+    // drawn as a bubble the user appeared to have typed.
+    expect(s.messages.filter((m) => m.role === "user").map(text)).toEqual([asked]);
+    const skill = tools(s.messages).find((t) => t.name === "Skill")!;
+    expect(skill.state).toBe("done");
+    expect(skill.brief).toContain("Keep this short prompt on the Skill card");
+    // And the sibling is untouched — it never wanted the prompt.
+    expect(tools(s.messages).find((t) => t.name === "Bash")!.brief).toBeUndefined();
+  });
+
+  it("stops being due once the agent has spoken again", () => {
+    // The guard the batch rule must not lose. A Skill call that answered and
+    // was never given a prompt stays "due" only until the agent says something
+    // of its own; after that a synthetic turn is somebody else's business.
+    const done = replay("skill-parallel-live.jsonl");
+    const after = reduceChat(done, {
+      type: "user",
+      isSynthetic: true,
+      message: { role: "user", content: [{ type: "text", text: "some later machinery" }] },
+    });
+    expect(text(after.messages[after.messages.length - 1])).toBe("some later machinery");
   });
 
   it("still lets an ordinary message through when the envelope says nothing", () => {

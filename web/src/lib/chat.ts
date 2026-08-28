@@ -1427,19 +1427,28 @@ function newestSkillCall(state: ChatState): Extract<Block, { kind: "tool" }> | u
   return undefined;
 }
 
-/** Is a skill's prompt DUE — is the newest call in the whole conversation a
- *  Skill call that has answered and has not been given its prompt yet?
+/** Is a skill's prompt DUE — does the newest BATCH of calls hold a Skill call
+ *  that has answered and has not been given its prompt yet?
  *
- *  The newest call, not the newest SKILL call: anything else running means the
- *  agent has moved on and whatever arrives now is not the skill's prompt. */
+ *  The newest batch, not the newest call. A call in a LATER message means the
+ *  agent has spoken since and whatever arrives now is not the skill's prompt —
+ *  but a call it asked for in the same breath as the skill is no such sign. The
+ *  agent batches routinely (`/update-config` and a `cat` of the file it is about
+ *  to change, in one message), and the sibling's card is on screen BEFORE the
+ *  skill's own result lands: partial-message streaming opens a call's block as
+ *  soon as its name arrives, which is while the first one is still running. So
+ *  reading only the newest call, the prompt arrived to find Bash sitting newest,
+ *  was taken for something the user typed, and several screens of instructions
+ *  were drawn in a bubble of theirs. */
 function briefIsDue(state: ChatState): boolean {
   for (let i = state.messages.length - 1; i >= 0; i--) {
-    const blocks = state.messages[i].blocks;
-    for (let j = blocks.length - 1; j >= 0; j--) {
-      const b = blocks[j];
-      if (b.kind !== "tool") continue;
-      return b.name.toLowerCase() === "skill" && b.state !== "running" && b.brief === undefined;
-    }
+    const calls = state.messages[i].blocks.filter(
+      (b): b is Extract<Block, { kind: "tool" }> => b.kind === "tool",
+    );
+    if (calls.length === 0) continue;
+    return calls.some(
+      (b) => b.name.toLowerCase() === "skill" && b.state !== "running" && b.brief === undefined,
+    );
   }
   return false;
 }

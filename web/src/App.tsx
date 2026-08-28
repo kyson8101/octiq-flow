@@ -2198,6 +2198,48 @@ export default function App() {
   );
   onAccessRefused.current = restartForAccess;
 
+  /** Asked for outright: end this chat's agent and keep the conversation.
+   *
+   *  An agent reads its MCP servers, its plugins and the tool list they add up
+   *  to ONCE, when the process spawns. Add a server or enable a plugin while a
+   *  chat is open and that chat never sees it — the only way in is a new
+   *  process. Until this button the only way to get one was to leave the chat
+   *  alone for fifteen minutes and let the idle sweeper do it.
+   *
+   *  Which is all this is: the sweeper's ending, on purpose and now. Nothing is
+   *  thrown away, because nothing here throws anything away — the transcript is
+   *  already on disk and the send path starts a chat it has no process for with
+   *  `resume`. A turn in flight IS lost, so the notice says the process ended
+   *  rather than leaving a chat that went quiet for no visible reason.
+   *
+   *  `chat_restart`, not `chat_stop`, and the difference is not cosmetic:
+   *  stopping drops the standing permissions the person granted this piece of
+   *  work, and ends the host of a room WITHOUT its seats — leaving them running
+   *  against nobody, holding half a gigabyte each until the server goes. The
+   *  fallback is for the gap this repo's two-speed deploy opens: `web/dist` is
+   *  read off disk, so this page can reach a browser before the binary that
+   *  knows the command does. Stopping is worse on both counts and still better
+   *  than a button that does nothing. */
+  const restartAgent = useCallback(() => {
+    const id = conversationId;
+    if (!id) return;
+    bridge.invoke("chat_restart", { key: keyFor(id) }).catch(() => endSession(id));
+    setRunning((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    patch(id, (s) => ({
+      ...s,
+      notices: [
+        ...s.notices,
+        "Agent stopped. The conversation is kept — say anything to start a fresh one, " +
+          "with whatever MCP servers and plugins it can see now.",
+      ].slice(-8),
+    }));
+  }, [conversationId, endSession, patch]);
+
   /** Changing what the agent may do, WITHOUT throwing the conversation away.
    *
    *  The mode is fixed on the agent's command line, so this used to kill the
@@ -2897,6 +2939,12 @@ export default function App() {
             onEffort={changeEffort}
             lite={lite}
             onLite={changeLite}
+            /* Only when there is a process to end. With nothing running the
+               next message already spawns a fresh agent, so the button would
+               promise something that had happened anyway. */
+            onRestart={
+              conversationId && running.has(conversationId) ? restartAgent : undefined
+            }
             room={room}
             seats={mySeats}
             round={myRound}

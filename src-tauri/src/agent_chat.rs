@@ -1814,6 +1814,51 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     end_process(manager, &key).map(|_| ())
 }
 
+/// End this chat's agent on purpose, and keep everything else about the chat.
+///
+/// The sweeper's ending, asked for instead of waited out. An agent reads its
+/// MCP servers, its plugins and the tool list they add up to ONCE, at spawn, so
+/// a chat that was already open when one of them was added never sees it. Until
+/// this there was no way to a fresh process but to leave the chat alone for the
+/// fifteen minutes the sweeper takes.
+///
+/// `end_process`, NOT `chat_stop_impl`, and for both halves of what separates
+/// them. The standing permissions and the access level belong to the WORK, and
+/// the work is carrying straight on — re-asking about a command already allowed
+/// "always" would be a decision quietly taken back. And a room is ended as one
+/// thing, or its seats are left running against nobody, holding their memory
+/// until the server goes.
+///
+/// Unlike the sweeper this ends a seat that is still ANSWERING. The sweeper
+/// spares one because it is guessing at whether a quiet room is finished; there
+/// is no guess here. And a seat left behind would be the one thing the person
+/// pressed this to be rid of — a process still holding the old set of tools.
+///
+/// Answers how many processes went, which is 0 for a chat already stopped.
+#[tauri::command]
+pub fn chat_restart(manager: State<Arc<ChatManager>>, key: String) -> Result<usize, String> {
+    chat_restart_impl(&manager, key)
+}
+
+/// The Tauri-free half of `chat_restart`.
+pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, String> {
+    let mut ended = 0;
+    // The room's seats first, while the room can still be read.
+    let seats = crate::chat_room::room_impl(manager, &key)
+        .map(|room| room.seats)
+        .unwrap_or_default();
+    for seat in seats {
+        let seat_key = crate::chat_room::seat_session_key(&key, &seat.id);
+        if end_process(manager, &seat_key)? {
+            ended += 1;
+        }
+    }
+    if end_process(manager, &key)? {
+        ended += 1;
+    }
+    Ok(ended)
+}
+
 /// End one chat's PROCESS, and change nothing else about the chat.
 ///
 /// The difference from `chat_stop_impl` is everything that is not here, and it
@@ -3139,6 +3184,97 @@ mod idle_tests {
             vec![seat_key],
             "the seat is still there, writing its answer"
         );
+    }
+
+    #[test]
+    fn a_restart_ends_the_room_as_one_thing() {
+        // The same reason the sweeper does it: a host ended alone leaves seats
+        // running against nobody, holding their memory until the server goes.
+        // Pressing a button labelled "restart agent" must not be the way to
+        // leak half a gigabyte.
+        let m = ChatManager::default();
+        let seat = crate::chat_room::add_seat_impl(
+            &m,
+            "restart-room",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .expect("a seat to sit down");
+        let seat_key = crate::chat_room::seat_session_key("restart-room", &seat.id);
+
+        put(&m, "restart-room", still_session(false, Duration::ZERO));
+        put(&m, &seat_key, still_session(false, Duration::ZERO));
+
+        assert_eq!(
+            chat_restart_impl(&m, "restart-room".into()),
+            Ok(2),
+            "the host and the one sitting with it"
+        );
+        assert!(chat_list_impl(&m).unwrap().is_empty());
+        assert_eq!(
+            crate::chat_room::room_impl(&m, "restart-room")
+                .unwrap()
+                .seats
+                .len(),
+            1,
+            "and the ROSTER stays — the seat is coming back with everyone else"
+        );
+    }
+
+    #[test]
+    fn a_restart_ends_a_seat_the_sweeper_would_spare() {
+        // The sweeper leaves a seat mid-answer because it is GUESSING at
+        // whether a quiet room is finished. Nobody is guessing here, and a seat
+        // that lived through the restart would be the one thing it was pressed
+        // to be rid of: a process still holding the old set of tools.
+        let m = ChatManager::default();
+        let seat = crate::chat_room::add_seat_impl(
+            &m,
+            "restart-busy",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .unwrap();
+        let seat_key = crate::chat_room::seat_session_key("restart-busy", &seat.id);
+
+        put(&m, "restart-busy", still_session(false, Duration::ZERO));
+        put(&m, &seat_key, still_session(true, Duration::ZERO));
+
+        assert_eq!(chat_restart_impl(&m, "restart-busy".into()), Ok(2));
+        assert!(
+            chat_list_impl(&m).unwrap().is_empty(),
+            "the answering seat went too"
+        );
+    }
+
+    #[test]
+    fn a_restart_keeps_what_stopping_would_drop() {
+        // The whole reason this is not `chat_stop_impl`. Stopping forgets the
+        // standing permissions and the access level because the person said
+        // they were FINISHED; a restart is the same work carrying on, and
+        // re-asking about a command already allowed "always" would be a
+        // decision quietly taken back.
+        let m = ChatManager::default();
+        put(&m, "restart-access", still_session(false, Duration::ZERO));
+        with_access(|a| a.insert("restart-access".into(), Access::Auto));
+
+        assert_eq!(chat_restart_impl(&m, "restart-access".into()), Ok(1));
+        assert!(
+            with_access(|a| a.contains_key("restart-access")),
+            "the level the work is being done at outlives the process doing it"
+        );
+
+        // And stopping, for contrast, is where it goes.
+        put(&m, "restart-access", still_session(false, Duration::ZERO));
+        chat_stop_impl(&m, "restart-access".into()).unwrap();
+        assert!(!with_access(|a| a.contains_key("restart-access")));
+    }
+
+    #[test]
+    fn restarting_a_chat_with_no_process_ends_nothing() {
+        // The button is only offered while something is running, but a chat can
+        // be swept between the tap and the call. Nothing to end is not a
+        // failure — the next message was going to spawn a fresh agent anyway.
+        let m = ChatManager::default();
+        assert_eq!(chat_restart_impl(&m, "never-started".into()), Ok(0));
     }
 
     #[test]

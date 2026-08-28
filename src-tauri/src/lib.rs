@@ -283,6 +283,7 @@ pub fn run() {
             agent_chat::chat_interrupt,
             agent_chat::chat_set_access,
             agent_chat::chat_stop,
+            agent_chat::chat_restart,
             agent_chat::chat_list,
             chat_room::chat_add_agent,
             chat_room::chat_remove_agent,

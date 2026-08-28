@@ -226,6 +226,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.chats,
             arg(&args, "key")?,
         )),
+        // A fresh process for a conversation that carries on: the only way a
+        // chat already open picks up an MCP server or a plugin added since it
+        // started.
+        "chat_restart" => to_value(crate::agent_chat::chat_restart_impl(
+            &svc.chats,
+            arg(&args, "key")?,
+        )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
         // Card 68 — put one thing to every seat, in order, one at a time.
         "chat_round" => unit(crate::round::start_round_impl(
