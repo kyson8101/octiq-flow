@@ -30,7 +30,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::sync::broadcast;
 
 /// Frames a slow client may fall behind by before it starts losing them. A
@@ -39,10 +39,6 @@ const EVENT_BACKLOG: usize = 512;
 
 /// The fan-out to attached clients. One per process, created on first use.
 static EVENTS: OnceLock<broadcast::Sender<String>> = OnceLock::new();
-
-/// Where events also go when a desktop window exists. `None` headless.
-type DesktopSink = Box<dyn Fn(&str, Value) + Send + Sync>;
-static DESKTOP: OnceLock<DesktopSink> = OnceLock::new();
 
 /// How many browsers are attached. Lives here rather than in the web server's
 /// state because `pty.rs` needs the answer and has no business knowing whether
@@ -128,24 +124,11 @@ pub fn events() -> &'static broadcast::Sender<String> {
     EVENTS.get_or_init(|| broadcast::channel(EVENT_BACKLOG).0)
 }
 
-/// Mirror every event into a desktop window as well. Called once by the Tauri
-/// app at startup; calling it again is ignored, since a second sink would
-/// double every event.
-pub fn set_desktop_sink(sink: impl Fn(&str, Value) + Send + Sync + 'static) {
-    let _ = DESKTOP.set(Box::new(sink));
-}
-
 /// Announce something to everyone listening.
-///
-/// Serialized ONCE and shared: the desktop window and the sockets want the same
-/// bytes, and an event on a busy PTY is emitted often enough for that to matter.
 pub fn emit<S: Serialize>(event: &str, payload: S) {
     let Ok(value) = serde_json::to_value(&payload) else {
         return;
     };
-    if let Some(sink) = DESKTOP.get() {
-        sink(event, value.clone());
-    }
     let tx = events();
     // Nobody attached: the frame would be built and dropped.
     if tx.receiver_count() == 0 {
@@ -160,6 +143,7 @@ pub fn emit<S: Serialize>(event: &str, payload: S) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn an_event_reaches_a_subscriber_as_a_wire_frame() {

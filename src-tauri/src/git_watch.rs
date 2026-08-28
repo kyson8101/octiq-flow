@@ -35,17 +35,6 @@ pub struct GitWatchState(Mutex<Option<RecommendedWatcher>>);
 /// Replaces any previous watcher. An empty list stops watching. Paths that are
 /// missing or unreadable are skipped (best-effort, never an error), matching
 /// how git.rs treats bad paths.
-#[tauri::command]
-pub fn git_watch_paths(
-    state: tauri::State<GitWatchState>,
-    paths: Vec<String>,
-) -> Result<(), String> {
-    git_watch_paths_impl(&state, paths)
-}
-
-/// The Tauri-free half of `git_watch_paths`, so the browser client can install
-/// the watcher too (dispatch.rs). The events it produces already go out over
-/// the bus, which reaches every attached browser — only the way IN was missing.
 pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None; // drop the old watcher first; its debounce thread ends

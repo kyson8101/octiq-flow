@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::State;
 
 /// Upper bound on the OSC scan buffer's retained tail (bytes). An OSC
 /// attention sequence is tiny; anything longer is plain output that can be
@@ -33,13 +32,6 @@ const SCAN_TAIL_CAP: usize = 8 * 1024;
 /// relaxed atomic read per chunk is free next to the read that produced it.
 /// Sessions spawned later pick it up automatically.
 static STATUS_SCAN: AtomicBool = AtomicBool::new(true);
-
-/// Turn OSC attention scanning on or off for every PTY, now and later. Called by
-/// the frontend at boot and whenever the user flips the setting.
-#[tauri::command]
-pub fn pty_set_status_scan(enabled: bool) {
-    STATUS_SCAN.store(enabled, Ordering::Relaxed);
-}
 
 /// Upper bound on the per-session ring that buffers output while a terminal is
 /// HIDDEN (card 16). Output past this is dropped from the FRONT and the session
@@ -199,40 +191,8 @@ struct Session {
     /// Shared with this session's emitter thread: whether the terminal is on
     /// screen, plus the ring that buffers its output while it is not (card 16).
     out: Arc<Mutex<OutBuf>>,
-    /// The tab's stable persist key, if it carries one. Used to map a live
-    /// session back to its saved resume mapping (agent_resume.rs).
+    /// The tab's stable persist key, if it carries one.
     persist_key: Option<String>,
-    /// The spawned shell's pid. At an idle prompt the PTY's foreground process
-    /// group equals this; while an agent runs it differs — that is how we tell a
-    /// tab's agent has exited. Only read on Unix.
-    #[cfg_attr(not(unix), allow(dead_code))]
-    shell_pid: Option<i32>,
-}
-
-/// Whether an agent is currently the foreground process of a PTY (vs the shell
-/// sitting at its prompt). At the prompt the foreground process group equals the
-/// shell's own pid; an agent runs in its own group, a different pid. An unknown
-/// foreground, a missing shell pid, or a poisoned master lock all report `true`,
-/// so we never treat a session we cannot positively disprove as exited.
-///
-/// This performs a `tcgetpgrp` syscall. It takes the per-session master lock and
-/// must be called with the sessions map UNLOCKED.
-#[cfg(unix)]
-fn agent_running(master: &SharedMaster, shell_pid: Option<i32>) -> bool {
-    let Ok(master) = master.lock() else {
-        return true;
-    };
-    match (master.process_group_leader(), shell_pid) {
-        (Some(foreground), Some(shell)) => foreground != shell,
-        _ => true,
-    }
-}
-
-/// Non-Unix has no foreground-process-group query here, so we cannot tell an
-/// agent exited; report running so a mapping is never wrongly dropped.
-#[cfg(not(unix))]
-fn agent_running(_master: &SharedMaster, _shell_pid: Option<i32>) -> bool {
-    true
 }
 
 /// Holds every live PTY session, keyed by the id the frontend gave at spawn.
@@ -242,63 +202,7 @@ pub struct PtyManager {
     sessions: Mutex<HashMap<String, Session>>,
 }
 
-/// One session's identity plus the handles needed to query it, cloned out of the
-/// map so the query can run with the map unlocked (card 22).
-struct ForegroundProbe {
-    id: String,
-    persist_key: Option<String>,
-    master: SharedMaster,
-    shell_pid: Option<i32>,
-}
-
 impl PtyManager {
-    /// Clone the handles needed for a foreground sweep out of the map. Held for
-    /// as long as it takes to clone a few `Arc`s — no syscalls, no blocking.
-    /// A poisoned lock yields nothing.
-    fn foreground_probes(&self) -> Vec<ForegroundProbe> {
-        let Ok(sessions) = self.sessions.lock() else {
-            return Vec::new();
-        };
-        sessions
-            .iter()
-            .map(|(id, s)| ForegroundProbe {
-                id: id.clone(),
-                persist_key: s.persist_key.clone(),
-                master: s.master.clone(),
-                shell_pid: s.shell_pid,
-            })
-            .collect()
-    }
-
-    /// For every live session that carries a persist key, report whether an
-    /// agent is currently its PTY's foreground process. Keyed by persist key so
-    /// agent_resume.rs can clear the resume mapping of any tab whose agent has
-    /// exited — the deterministic signal Codex gives no SessionEnd hook for.
-    /// A poisoned lock yields an empty map (clear nothing).
-    pub fn agent_foreground_by_key(&self) -> HashMap<String, bool> {
-        self.foreground_probes()
-            .into_iter()
-            .filter_map(|p| {
-                let key = p.persist_key.clone()?;
-                Some((key, agent_running(&p.master, p.shell_pid)))
-            })
-            .collect()
-    }
-
-    /// For every live session, whether an agent (a non-shell process) is the
-    /// PTY's current foreground process. Keyed by the session id the frontend
-    /// assigned at spawn, so the frontend can map each result straight to its
-    /// terminal/tab and show a "working" indicator. A poisoned lock yields an
-    /// empty map. On non-Unix every value is `true` (there is no
-    /// foreground-process query — see `agent_running`), so the indicator
-    /// degrades to "an agent is open".
-    pub fn agent_running_by_id(&self) -> HashMap<String, bool> {
-        self.foreground_probes()
-            .into_iter()
-            .map(|p| (p.id, agent_running(&p.master, p.shell_pid)))
-            .collect()
-    }
-
     /// Remove one session and reap its child: kill (best-effort — it may already
     /// be dead), then wait, so the process can never linger as a zombie in the
     /// OS process table. Returns whether a session with this id existed.
@@ -320,19 +224,6 @@ impl PtyManager {
         let _ = session.child.kill();
         let _ = session.child.wait();
         true
-    }
-
-    /// Each live session's shell pid -> its session id. agents.rs walks an agent
-    /// process's ancestors against this map to find the terminal that owns it.
-    /// A poisoned lock yields an empty map (every agent then reads as a stray).
-    pub fn shell_pids(&self) -> HashMap<i32, String> {
-        let Ok(sessions) = self.sessions.lock() else {
-            return HashMap::new();
-        };
-        sessions
-            .iter()
-            .filter_map(|(id, s)| Some((s.shell_pid?, id.clone())))
-            .collect()
     }
 }
 
@@ -707,29 +598,7 @@ fn resolve_home(home: Option<String>, userprofile: Option<String>, is_windows: b
 ///   project's `~/.octiqflow/canvas/<key>` folder) so an agent here can write
 ///   HTML/MD documents the canvas pane renders. Only project terminals pass it;
 ///   chat terminals get no canvas. See canvas.rs.
-#[tauri::command]
-pub fn pty_spawn(
-    manager: State<Arc<PtyManager>>,
-    id: String,
-    cwd: String,
-    start_cmd: Option<String>,
-    persist_key: Option<String>,
-    shell: Option<String>,
-    canvas_key: Option<String>,
-) -> Result<(), String> {
-    pty_spawn_impl(
-        manager.inner().clone(),
-        id,
-        cwd,
-        start_cmd,
-        persist_key,
-        shell,
-        canvas_key,
-    )
-}
-
-/// Start a shell. The Tauri-free half of `pty_spawn`, so the headless server
-/// can open a terminal for a browser with no window in the loop.
+/// Start a shell for a browser.
 #[allow(clippy::too_many_arguments)]
 pub fn pty_spawn_impl(
     manager: Arc<PtyManager>,
@@ -812,9 +681,6 @@ pub fn pty_spawn_impl(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
-    // The shell's pid identifies its foreground process group at the prompt, so
-    // we can later tell whether an agent is still running in this tab.
-    let shell_pid = child.process_id().map(|p| p as i32);
 
     // Optional kickoff command, sent as if typed at the prompt.
     if let Some(cmd_line) = start_cmd {
@@ -1031,7 +897,6 @@ pub fn pty_spawn_impl(
             child,
             out: out_state,
             persist_key: persist_key.filter(|k| !k.is_empty()),
-            shell_pid,
         },
     );
 
@@ -1052,16 +917,6 @@ pub fn pty_spawn_impl(
 ///
 /// Unknown id is a no-op success (the terminal may have just closed), and
 /// setting the value it already holds does nothing.
-#[tauri::command]
-pub fn pty_set_visible(
-    manager: State<Arc<PtyManager>>,
-    id: String,
-    visible: bool,
-) -> Result<(), String> {
-    pty_set_visible_impl(&manager, id, visible)
-}
-
-/// The Tauri-free half of `pty_set_visible`.
 pub fn pty_set_visible_impl(manager: &PtyManager, id: String, visible: bool) -> Result<(), String> {
     // A browser is attached (web.rs): flood control has to stand down. The
     // desktop window's "this terminal is off screen" is only true for THAT
@@ -1118,12 +973,6 @@ pub fn pty_set_visible_impl(manager: &PtyManager, id: String, visible: bool) -> 
 /// It therefore emits ALWAYS, even for an empty tail and even for an id with no
 /// session: the event is the client's go-ahead, not only its data, and a client
 /// still waiting for one would sit there dropping output forever.
-#[tauri::command]
-pub fn pty_attach(manager: State<Arc<PtyManager>>, id: String) -> Result<(), String> {
-    pty_attach_impl(&manager, id)
-}
-
-/// The Tauri-free half of `pty_attach`.
 pub fn pty_attach_impl(manager: &PtyManager, id: String) -> Result<(), String> {
     // Clone the Arc out from under the sessions map and release the map lock
     // before taking the per-session gate — the emit below happens under that
@@ -1161,12 +1010,6 @@ pub fn pty_attach_impl(manager: &PtyManager, id: String) -> Result<(), String> {
 /// PTY blocks whenever the slave's input buffer is full — a Ctrl-S'd shell, or a
 /// big paste into a program that is not reading. Holding the global map across
 /// that stalled every other terminal's commands app-wide.
-#[tauri::command]
-pub fn pty_write(manager: State<Arc<PtyManager>>, id: String, data: String) -> Result<(), String> {
-    pty_write_impl(&manager, id, data)
-}
-
-/// The Tauri-free half of `pty_write`.
 pub fn pty_write_impl(manager: &PtyManager, id: String, data: String) -> Result<(), String> {
     let writer = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -1186,17 +1029,6 @@ pub fn pty_write_impl(manager: &PtyManager, id: String, data: String) -> Result<
 
 /// Resize one session's PTY so the program inside knows the new size. Unknown
 /// id is an error. Like `pty_write`, the map lock is released before the ioctl.
-#[tauri::command]
-pub fn pty_resize(
-    manager: State<Arc<PtyManager>>,
-    id: String,
-    rows: u16,
-    cols: u16,
-) -> Result<(), String> {
-    pty_resize_impl(&manager, id, rows, cols)
-}
-
-/// The Tauri-free half of `pty_resize`.
 pub fn pty_resize_impl(
     manager: &PtyManager,
     id: String,
@@ -1226,24 +1058,12 @@ pub fn pty_resize_impl(
 /// Close one session: kill the child shell (and its children) and drop the
 /// session from the map. The reader thread ends on the resulting EOF. Closing
 /// an unknown id is a no-op success (idempotent).
-#[tauri::command]
-pub fn pty_close(manager: State<Arc<PtyManager>>, id: String) -> Result<(), String> {
-    pty_close_impl(&manager, id)
-}
-
-/// The Tauri-free half of `pty_close`.
 pub fn pty_close_impl(manager: &PtyManager, id: String) -> Result<(), String> {
     manager.reap_session(&id);
     Ok(())
 }
 
 /// List the ids of every live session. Order is unspecified (HashMap).
-#[tauri::command]
-pub fn pty_list_active(manager: State<Arc<PtyManager>>) -> Result<Vec<String>, String> {
-    pty_list_active_impl(&manager)
-}
-
-/// The Tauri-free half of `pty_list_active`.
 pub fn pty_list_active_impl(manager: &PtyManager) -> Result<Vec<String>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions.keys().cloned().collect())
@@ -1263,12 +1083,6 @@ pub struct ActiveSession {
 /// the desktop window spawns the terminals, a browser adopts them. The key maps
 /// each session back to its saved title and scrollback (terminal_layout.rs), so
 /// an attached tab comes up named and with its recent output.
-#[tauri::command]
-pub fn pty_active_sessions(manager: State<Arc<PtyManager>>) -> Result<Vec<ActiveSession>, String> {
-    pty_active_sessions_impl(&manager)
-}
-
-/// The Tauri-free half of `pty_active_sessions`.
 pub fn pty_active_sessions_impl(manager: &PtyManager) -> Result<Vec<ActiveSession>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions
@@ -1285,15 +1099,6 @@ pub fn pty_active_sessions_impl(manager: &PtyManager) -> Result<Vec<ActiveSessio
 /// "working" badge on each terminal tab and a per-project count in the sidebar.
 /// See `Session::agent_running` for the signal and its limits (it stays true
 /// while an agent sits idle at its own prompt; non-Unix always reports true).
-#[tauri::command]
-pub fn pty_agent_running(manager: State<Arc<PtyManager>>) -> HashMap<String, bool> {
-    pty_agent_running_impl(&manager)
-}
-
-/// The Tauri-free half of `pty_agent_running`.
-pub fn pty_agent_running_impl(manager: &PtyManager) -> HashMap<String, bool> {
-    manager.agent_running_by_id()
-}
 
 // `pty_clear_attention` used to live here (card 22 removed it). It lowered a
 // per-session `needs_attention: AtomicBool` that nothing ever read: attention
@@ -1907,7 +1712,6 @@ mod tests {
                 child,
                 out: Arc::new(Mutex::new(OutBuf::new())),
                 persist_key: None,
-                shell_pid: None,
             },
         );
 

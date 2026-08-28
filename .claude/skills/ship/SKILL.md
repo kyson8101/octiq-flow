@@ -28,11 +28,9 @@ A **headless server** (`octiq-server`) plus a **React client** served over
 HTTP. The user reaches it in a browser — on this Mac, on a phone, through the
 cloudflared tunnel. The agents run on the server, with no window anywhere.
 
-**The desktop `.app` / `.dmg` is not part of shipping any more.** The Tauri
-target still builds if anyone asks for it, but this skill does not touch it:
-nothing in the deploy path needs a window, and building one added minutes for
-an artifact nobody installs. If the user explicitly asks for a desktop build,
-that is `pnpm tauri build` and a separate request.
+**There is no desktop build at all any more.** The Tauri desktop app and every
+Tauri dependency were deleted; `octiq-server` is plain Rust. There is no `.app`,
+no `.dmg` and no `pnpm tauri` command to run, so no request can ask for one.
 
 The two moving parts:
 
@@ -44,8 +42,8 @@ The two moving parts:
 They are **deployed separately**, and that asymmetry is the trap: `web/dist` is
 read live, so a client build reaches the browser on the next reload with no
 restart at all, while the backend only changes when the service restarts. Ship
-just the client and you get a new page talking to an old backend, which fails
-by saying a command "needs the desktop app". Always do both.
+just the client and you get a new page calling a command the old backend does
+not have, which fails as an unknown command. Always do both.
 
 Run every command from the repo root: `/Users/kyson/03-projects/octiq-flow`.
 Run the steps in order. Stop and report if any step fails.
@@ -169,9 +167,8 @@ actually answers:
    ```
 
    When the deploy added a backend command, ask for **that** command by name
-   instead — an old binary answers `'<name>' is not available from a browser —
-   it needs the desktop app`, which is exactly the failure this step exists to
-   catch.
+   instead — an old binary rejects it as an unknown command, which is exactly
+   the failure this step exists to catch.
 
 3. Print the URL from the log, token and all — it is what the user opens:
 

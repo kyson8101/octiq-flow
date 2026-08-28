@@ -65,9 +65,9 @@ export function loadHistory(): Promise<HistorySession[]> {
  *
  *  The one failure people will actually hit is a running backend older than the
  *  page it is serving — the browser gets the app's new UI from disk while the
- *  binary answering it was built before this command existed. Its wording ("it
- *  needs the desktop app") is true of desktop-only commands and misleading
- *  here, so it is said plainly instead. */
+ *  binary answering it was built before this command existed. Said plainly here,
+ *  because the server's own wording has to cover every unknown command. The
+ *  "desktop app" match is for a backend old enough to still say that. */
 function explain(err: unknown): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
   if (raw.includes("desktop app") || raw.toLowerCase().includes("not available")) {

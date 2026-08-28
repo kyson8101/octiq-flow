@@ -37,11 +37,8 @@
 //! Prior art for the shape of a room — who sits at it, what each seat is for,
 //! and why the seat that cannot see the project is the most valuable one there
 //! — is Starfall's round-table (`.claude/rules/roundtable.md` in that repo).
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::State;
 
 use crate::agent_chat::{safe_model, ChatAgent, ChatManager};
 
@@ -539,69 +536,10 @@ pub(crate) fn end_seats(manager: &ChatManager, keys: Vec<String>) {
     }
 }
 
-/// Add a seat to a room.
-#[tauri::command]
-pub fn chat_add_agent(
-    manager: State<Arc<ChatManager>>,
-    rounds: State<Arc<crate::round::Rounds>>,
-    key: String,
-    seat: NewSeat,
-) -> Result<Seat, String> {
-    // Card 77 — where this seat came in. The command layer is the one place
-    // that can see both the seats and the discussion record.
-    let joined_at = rounds.said_so_far(&key);
-    let seat = add_seat_at(&manager, &key, seat, joined_at)?;
-    // Card 83 — written after the change, not on a timer. The change we must
-    // not lose is the one made seconds before a restart, and a timer is exactly
-    // what loses that one.
-    remember_rooms(&manager);
-    Ok(seat)
-}
-
-/// Take a seat back out of a room.
-#[tauri::command]
-pub fn chat_remove_agent(
-    manager: State<Arc<ChatManager>>,
-    rounds: State<Arc<crate::round::Rounds>>,
-    key: String,
-    seat_id: String,
-) -> Result<(), String> {
-    let ended = remove_seat_impl(&manager, &key, &seat_id)?;
-    end_seats(&manager, ended);
-    remember_rooms(&manager);
-    // Card 82 — the last one out takes the discussion with them. See
-    // `forget_room`: a record nobody left in the room remembers having is worse
-    // than no record.
-    if is_empty(&manager, &key)? {
-        crate::round::forget_room(&rounds, &key);
-    }
-    Ok(())
-}
-
 /// Is there nobody left in this chat? Read through `room_impl` so there is one
 /// answer to "who is in it", not two that can drift.
 pub(crate) fn is_empty(manager: &ChatManager, key: &str) -> Result<bool, String> {
     Ok(room_impl(manager, key)?.seats.is_empty())
-}
-
-/// The chat has been deleted, so empty its room and end everyone in it.
-#[tauri::command]
-pub fn chat_forget_room(
-    manager: State<Arc<ChatManager>>,
-    rounds: State<Arc<crate::round::Rounds>>,
-    key: String,
-) -> Result<(), String> {
-    let ended = forget_room_impl(&manager, &key)?;
-    end_seats(&manager, ended);
-    remember_rooms(&manager);
-    crate::round::forget_room(&rounds, &key);
-    Ok(())
-}
-
-/// Whether this chat is a room, and who is in it.
-#[tauri::command]
-pub fn chat_room(manager: State<Arc<ChatManager>>, key: String) -> Result<RoomView, String> {
-    room_impl(&manager, &key)
 }
 
 #[cfg(test)]

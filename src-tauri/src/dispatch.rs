@@ -9,8 +9,10 @@
 //! and it turned out to be a fifth of the size the "106 registered commands"
 //! figure suggested, because the v2 client only ever calls twenty of them.
 //!
-//! Everything here calls the SAME `_impl` functions the Tauri commands call, so
-//! there is one implementation of each and no second copy to drift.
+//! Everything here calls the `_impl` functions directly. The split is a leftover
+//! of the days when a Tauri command wrapper called the same body — the wrappers
+//! are gone, this table is the only caller, and the names stayed because
+//! renaming forty functions would say nothing new.
 //!
 //! ## Argument names
 //!
@@ -271,8 +273,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.rounds,
             &arg::<String>(&args, "key")?
         ))),
-        // Card 66 — the room. The browser client does not go through Tauri, so
-        // every command has to be listed here as well as in lib.rs.
+        // Card 66 — the room.
         // Card 82 removed `chat_set_room`: adding a seat is what makes a chat a
         // room, so there is nothing left to switch.
         "chat_add_agent" => {
@@ -435,9 +436,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         ))),
 
         // ---- git ----------------------------------------------------------
-        // No `_impl` split needed: git.rs and git_ops.rs never touch an
-        // AppHandle or managed state, so their `#[tauri::command]` functions are
-        // already plain functions and both callers share one body.
+        // No `_impl` split here: git.rs and git_ops.rs never held managed state,
+        // so they were already plain functions before the window went and there
+        // was never a wrapper to strip.
         "git_status_summary" => to_value(crate::git::git_status_summary(arg(&args, "paths")?)),
         "git_changed_files" => to_value(crate::git::git_changed_files(arg(&args, "paths")?)),
         "git_file_diff" => to_value(crate::git::git_file_diff(
@@ -513,10 +514,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             Ok(Value::Null)
         }
 
-        // Anything else is a command the classic desktop UI owns. Saying so
-        // beats a silent null, which would look like a bug in the client.
+        // Anything else, this backend does not know. Saying so beats a silent
+        // null, which would look like a bug in the client. In practice the
+        // reason is almost always a server older than the page asking it.
         _ => Err(format!(
-            "'{cmd}' is not available from a browser — it needs the desktop app"
+            "'{cmd}' is not available on this backend — it may be older than the page asking for it"
         )),
     }
 }
@@ -556,10 +558,10 @@ mod tests {
         assert_eq!(snake("path"), "path");
     }
 
-    /// The browser can only call what this table lists. Registering a command
-    /// in lib.rs and forgetting this row is the whole failure mode: the desktop
-    /// window works, the phone gets "needs the desktop app", and nothing about
-    /// the code looks wrong.
+    /// The browser can only call what this table lists. Writing the backend
+    /// function and forgetting this row is the whole failure mode: the code
+    /// reads as finished, `cargo test` is green, and the client gets "unknown
+    /// command" for something that is sitting right there.
     #[test]
     fn a_browser_can_ask_which_agents_are_installed() {
         crate::agents::seed_probe_for_test(vec![("codex".into(), "/opt/bin/codex".into())]);

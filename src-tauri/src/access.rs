@@ -100,13 +100,6 @@ pub struct Identity {
 
 static KEYS: Mutex<Option<(Instant, Vec<Jwk>)>> = Mutex::new(None);
 
-/// Drop the cached keys. Only used by tests, and after a config change.
-pub fn forget_keys() {
-    if let Ok(mut guard) = KEYS.lock() {
-        *guard = None;
-    }
-}
-
 fn fetch_keys(cfg: &AccessConfig) -> Result<Vec<Jwk>, String> {
     if let Ok(guard) = KEYS.lock() {
         if let Some((at, keys)) = guard.as_ref() {

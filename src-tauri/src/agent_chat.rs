@@ -36,7 +36,6 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::State;
 
 /// One line of an agent's stdout, on its way to the UI.
 #[derive(Clone, Serialize)]
@@ -391,21 +390,6 @@ impl Access {
     }
 }
 
-impl Access {
-    /// Read back what `as_env` wrote, for the hook reporting the level it was
-    /// started with. An unknown word is the most cautious level, not the most
-    /// permissive — the same rule the spawn side follows.
-    pub fn from_env(word: &str) -> Access {
-        match word {
-            "manual" => Access::Manual,
-            "edits" => Access::Edits,
-            "auto" => Access::Auto,
-            "full" => Access::Full,
-            _ => Access::Read,
-        }
-    }
-}
-
 /// The level each running chat is on RIGHT NOW, by chat key.
 ///
 /// `OCTIQ_ACCESS` is written once, into the environment of a process that has
@@ -416,8 +400,12 @@ impl Access {
 /// halfway through and it went on stopping every command, dial back down from
 /// it and it stood aside from the very asking that level is for.
 ///
-/// So the hook no longer decides. It reports the level it was handed and this
-/// is consulted first — see `permission::ask`.
+/// So the hook no longer decides — and neither, now, does this. `permission::ask`
+/// runs LAST, over the agent's own control channel, so every question that
+/// reaches it is one the agent's own rules already decided a person must answer;
+/// there is nothing left to pre-filter. What is kept here is the WRITE side: a
+/// seat must not overwrite the level its room is on, and that rule is worth
+/// holding on to for the reader that comes back.
 ///
 /// Entries are written by `chat_start` and `chat_set_access` and dropped by
 /// `chat_stop`. A chat that ends on its own leaves its entry behind on purpose:
@@ -450,6 +438,10 @@ pub(crate) fn record_access_for(key: &str, access: Option<Access>, is_seat: bool
 }
 
 /// What a chat may do at this moment, or None when no chat by that key is known.
+///
+/// No production reader since asking moved to the agent's own control channel;
+/// the room tests read it to prove a seat leaves the host's level alone.
+#[allow(dead_code)]
 pub fn access_now(key: &str) -> Option<Access> {
     with_access(|a| a.get(key).copied())
 }
@@ -726,44 +718,6 @@ fn build_command_with_mcp(
 /// Start a chat session. `key` names it for every later call, exactly as a PTY
 /// id does. Starting a key that already runs is an error, not a silent replace —
 /// a second process on the same key would interleave two conversations.
-#[tauri::command]
-pub fn chat_start(
-    manager: State<Arc<ChatManager>>,
-    key: String,
-    cwd: String,
-    agent: ChatAgent,
-    model: Option<String>,
-    access: Option<Access>,
-    prompt: Option<String>,
-    resume: Option<String>,
-    // The project's other folders, so a chat sees the whole project and not
-    // just the folder it starts in. See build_command.
-    extra_dirs: Option<Vec<String>>,
-    // Reasoning effort (Claude only), fixed for the life of the process.
-    effort: Option<String>,
-    // Image files to attach to the first turn.
-    images: Option<Vec<String>>,
-    // Start clean: none of this machine's skills, hooks or other MCP servers.
-    // Claude only, and fixed for the life of the process — the flags it sets
-    // are read once, when the agent starts.
-    lite: Option<bool>,
-) -> Result<(), String> {
-    chat_start_impl(
-        manager.inner().clone(),
-        key,
-        cwd,
-        agent,
-        model,
-        access,
-        prompt,
-        resume,
-        extra_dirs,
-        effort,
-        images,
-        lite,
-    )
-}
-
 /// Which process this is, where its words go, and whose voice they are.
 ///
 /// For the HOST the first two are the same string, which is why one `key` was
@@ -805,8 +759,7 @@ impl Voice {
     }
 }
 
-/// Start a chat. The Tauri-free half of `chat_start`, so a headless server can
-/// call exactly the same code path rather than a copy of it.
+/// Start a chat.
 #[allow(clippy::too_many_arguments)]
 pub fn chat_start_impl(
     manager: Arc<ChatManager>,
@@ -1389,45 +1342,7 @@ fn write_user_message(
 }
 
 /// Send the next user turn to a running chat, with any images attached to it.
-#[tauri::command]
-pub fn chat_send(
-    manager: State<Arc<ChatManager>>,
-    key: String,
-    text: String,
-    images: Option<Vec<String>>,
-    to: Option<String>,
-) -> Result<(), String> {
-    chat_send_impl(manager.inner().clone(), key, text, images, to)
-}
-
-/// Start one seat's process, with its first message.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn chat_seat_start(
-    manager: State<Arc<ChatManager>>,
-    key: String,
-    seat_id: String,
-    cwd: String,
-    prompt: Option<String>,
-    access: Option<Access>,
-    extra_dirs: Option<Vec<String>>,
-    effort: Option<String>,
-    images: Option<Vec<String>>,
-) -> Result<(), String> {
-    chat_seat_start_impl(
-        manager.inner().clone(),
-        key,
-        seat_id,
-        cwd,
-        prompt,
-        access,
-        extra_dirs,
-        effort,
-        images,
-    )
-}
-
-/// The Tauri-free half of `chat_send`.
+/// Send the next user turn to a running chat, with any images attached to it.
 pub fn chat_send_impl(
     manager: Arc<ChatManager>,
     key: String,
@@ -1549,12 +1464,6 @@ pub fn chat_seat_start_impl(
 /// stays alive with its context. Killing the process would work too and is what
 /// `chat_stop` does — but it throws the conversation away, which is a heavy
 /// price for "actually, stop".
-#[tauri::command]
-pub fn chat_interrupt(manager: State<Arc<ChatManager>>, key: String) -> Result<(), String> {
-    chat_interrupt_impl(&manager, key)
-}
-
-/// The Tauri-free half of `chat_interrupt`.
 pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -1758,16 +1667,6 @@ fn refused_access_change(event: &Value) -> Option<String> {
 /// Codex has no such channel and needs none: every `codex exec` turn is its own
 /// process and takes the new `--sandbox` on its command line, so recording the
 /// level is the whole job.
-#[tauri::command]
-pub fn chat_set_access(
-    manager: State<Arc<ChatManager>>,
-    key: String,
-    access: Access,
-) -> Result<(), String> {
-    chat_set_access_impl(&manager, key, access)
-}
-
-/// The Tauri-free half of `chat_set_access`.
 pub fn chat_set_access_impl(
     manager: &ChatManager,
     key: String,
@@ -1777,10 +1676,6 @@ pub fn chat_set_access_impl(
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
     };
-    // Written before the request goes out: a tool call already on its way to
-    // the hook must not be answered under the level being left behind.
-    with_access(|a| a.insert(key, access));
-
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     if guard.agent != ChatAgent::Claude {
         return Ok(());
@@ -1800,12 +1695,6 @@ pub fn chat_set_access_impl(
 
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
-#[tauri::command]
-pub fn chat_stop(manager: State<Arc<ChatManager>>, key: String) -> Result<(), String> {
-    chat_stop_impl(&manager, key)
-}
-
-/// The Tauri-free half of `chat_stop`.
 pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> {
     // Anything the person allowed "always" was allowed for THIS piece of work.
     // Outliving it would be a permission nobody remembers giving.
@@ -1835,12 +1724,6 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
 /// pressed this to be rid of — a process still holding the old set of tools.
 ///
 /// Answers how many processes went, which is 0 for a chat already stopped.
-#[tauri::command]
-pub fn chat_restart(manager: State<Arc<ChatManager>>, key: String) -> Result<usize, String> {
-    chat_restart_impl(&manager, key)
-}
-
-/// The Tauri-free half of `chat_restart`.
 pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, String> {
     let mut ended = 0;
     // The room's seats first, while the room can still be read.
@@ -2105,7 +1988,6 @@ fn attachments_dir() -> Result<std::path::PathBuf, String> {
 ///
 /// The name is ours, never the browser's: a name from the page could carry
 /// `../` and walk out of the folder.
-#[tauri::command]
 pub fn save_attachment(data_base64: String, extension: String) -> Result<String, String> {
     use base64::Engine;
     let ext = extension
@@ -2131,7 +2013,6 @@ pub fn save_attachment(data_base64: String, extension: String) -> Result<String,
 }
 
 /// The chats that exist, newest first.
-#[tauri::command]
 pub fn chat_index_list() -> Vec<crate::chat_index::ChatMeta> {
     crate::chat_index::list()
 }
@@ -2155,7 +2036,6 @@ fn announce_index_change(id: &str, gone: bool) {
 }
 
 /// Record a chat, or update what is known about it.
-#[tauri::command]
 pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> {
     let id = meta.id.clone();
     crate::chat_index::upsert(meta)?;
@@ -2166,7 +2046,6 @@ pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> 
 }
 
 /// Forget a chat entirely — its entry in the list and its transcript.
-#[tauri::command]
 pub fn chat_index_remove(id: String, key: String) -> Result<(), String> {
     crate::transcript::forget(&key);
     crate::chat_index::remove(&id)?;
@@ -2179,25 +2058,17 @@ pub fn chat_index_remove(id: String, key: String) -> Result<(), String> {
 /// How a client catches up. It remembers the highest seq it has seen and asks
 /// for the rest — after a reconnect, a reload, or on a second device that has
 /// never seen this conversation at all.
-#[tauri::command]
 pub fn chat_since(key: String, after: u64) -> Vec<crate::transcript::Recorded> {
     crate::transcript::since(&key, after)
 }
 
 /// Throw away a chat's record. Deleting a conversation should leave nothing.
-#[tauri::command]
 pub fn chat_forget(key: String) {
     crate::transcript::forget(&key);
 }
 
 /// The keys of every running chat. A reconnecting browser uses this the way it
 /// uses pty_active_sessions: to find what is already going.
-#[tauri::command]
-pub fn chat_list(manager: State<Arc<ChatManager>>) -> Result<Vec<String>, String> {
-    chat_list_impl(&manager)
-}
-
-/// The Tauri-free half of `chat_list`.
 pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     Ok(sessions.keys().cloned().collect())
@@ -3006,16 +2877,6 @@ mod access_tests {
         assert!(refused_access_change(&ours_worked).is_none());
         assert!(refused_access_change(&someone_elses).is_none());
         assert!(refused_access_change(&a_message).is_none());
-    }
-
-    #[test]
-    fn a_level_survives_the_round_trip_through_the_hook_environment() {
-        for level in [Access::Read, Access::Auto, Access::Full] {
-            assert_eq!(Access::from_env(level.as_env()), level);
-        }
-        // And an unknown word is the cautious one, not the permissive one.
-        assert_eq!(Access::from_env("bypassPermissions"), Access::Read);
-        assert_eq!(Access::from_env(""), Access::Read);
     }
 
     #[test]

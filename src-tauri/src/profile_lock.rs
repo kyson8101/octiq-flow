@@ -69,15 +69,6 @@ pub fn acquire(kind: &str) -> Result<(), Owner> {
     Ok(())
 }
 
-/// Give it up. Best-effort: a lock left behind is treated as stale next time.
-pub fn release() {
-    if let Some(owner) = current_owner() {
-        if owner.pid == std::process::id() {
-            let _ = fs::remove_file(lock_path());
-        }
-    }
-}
-
 /// What to tell the user, in words that name the fix.
 pub fn conflict_message(owner: &Owner) -> String {
     let other = match owner.kind.as_str() {

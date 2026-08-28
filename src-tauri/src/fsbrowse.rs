@@ -6,10 +6,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::State;
 
 /// One entry (file or folder) directly inside a browsed directory.
 #[derive(Debug, Clone, Serialize)]
@@ -32,7 +30,6 @@ pub struct DirEntry {
 /// The v2 folder picker needs that: it runs in a browser that has no idea what
 /// this machine's home folder is called, so "start me at home" has to be
 /// something it can ask for by name.
-#[tauri::command]
 pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     let expanded = if path.trim().is_empty() || path == "~" {
         crate::paths::home_dir().ok_or("could not find your home folder")?
@@ -136,48 +133,6 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     (ac.len() - i).cmp(&(bc.len() - j)).then_with(|| a.cmp(b))
 }
 
-/// Open `path` (a project folder or a file) in VS Code.
-///
-/// A GUI app does not inherit the interactive shell `PATH`, so the `code`
-/// launcher is often not on `PATH` here (same reason PTY shells are login
-/// shells). On macOS we therefore ask Launch Services for the app by bundle id,
-/// which needs no `PATH` at all; elsewhere we run `code` and report a clear
-/// error when it is missing.
-#[tauri::command]
-pub fn open_in_vscode(path: String) -> Result<(), String> {
-    let target = Path::new(&path);
-    if !target.exists() {
-        return Err(format!("Path not found: {path}"));
-    }
-
-    #[cfg(target_os = "macos")]
-    let mut cmd = {
-        let mut c = Command::new("open");
-        c.arg("-b").arg("com.microsoft.VSCode").arg(&path);
-        c
-    };
-    #[cfg(not(target_os = "macos"))]
-    let mut cmd = {
-        let mut c = Command::new("code");
-        c.arg(&path);
-        c
-    };
-
-    let out = cmd
-        .output()
-        .map_err(|e| format!("Cannot start VS Code: {e}"))?;
-    if out.status.success() {
-        return Ok(());
-    }
-
-    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if err.is_empty() {
-        "Cannot open VS Code. Is it installed?".to_string()
-    } else {
-        format!("Cannot open VS Code: {err}")
-    })
-}
-
 /// A preview descriptor for one file for the in-app preview pane. The frontend
 /// renders it by `kind`:
 ///   * "text"   — show `content` (the capped UTF-8 text).
@@ -212,7 +167,6 @@ const PREVIEW_MAX_BYTES: usize = 512 * 1024;
 /// `Err(message)` when the path is missing, is a directory, or cannot be read.
 /// A file that holds a NUL byte is reported as `kind = "binary"` with empty
 /// content so the frontend shows an "open externally" hint instead of gibberish.
-#[tauri::command]
 pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
     use std::io::Read;
 
@@ -299,7 +253,6 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
 /// that EXISTS on disk (`None` per miss), in one call. Backs the terminal's
 /// file-link provider, which checks a whole hovered line's candidates at once —
 /// one IPC per line instead of a round-trip per candidate.
-#[tauri::command]
 pub fn resolve_paths(paths: Vec<String>, cwd: String) -> Vec<Option<String>> {
     paths.into_iter().map(|p| resolve_path(p, &cwd)).collect()
 }
@@ -339,7 +292,6 @@ fn resolve_path(path: String, cwd: &str) -> Option<String> {
 /// the last change touch" is answered without opening any of them. Paths are
 /// expected to be absolute here: they come back from `resolve_paths`, which has
 /// already expanded and confirmed them.
-#[tauri::command]
 pub fn stat_paths(paths: Vec<String>) -> Vec<Option<i64>> {
     paths.into_iter().map(|p| modified_ms(&p)).collect()
 }
@@ -551,7 +503,6 @@ const MAX_HITS: usize = 60;
 ///
 /// Returns `Err(message)` when ripgrep is missing — it is the only external tool
 /// this needs, and the message tells the user how to install it.
-#[tauri::command]
 pub fn search_files(roots: Vec<String>, query: String) -> Result<SearchResults, String> {
     let query = query.trim().to_string();
     if query.is_empty() || roots.is_empty() {
@@ -656,7 +607,6 @@ const MAX_PROJECT_FILES: usize = 20_000;
 /// (fsbrowse.rs:336) so `.gitignore` and hidden-file rules apply for free.
 ///
 /// Returns `Err(message)` when ripgrep is missing, matching `search_files`.
-#[tauri::command]
 pub fn list_project_files(roots: Vec<String>) -> Result<ProjectFiles, String> {
     if roots.is_empty() {
         return Ok(ProjectFiles {
@@ -716,16 +666,6 @@ fn rg(flags: &[&str], roots: &[String], pattern: &[&str]) -> Result<String, Stri
 /// the write fails. The frontend only enables Save for text files it read in
 /// full (never a truncated one), so a large file can't be saved back as just its
 /// first chunk and lose the tail.
-#[tauri::command]
-pub fn write_file(
-    state: State<Arc<crate::workspaces::WorkspaceState>>,
-    path: String,
-    content: String,
-) -> Result<(), String> {
-    write_file_impl(&state, path, content)
-}
-
-/// The Tauri-free half of `write_file`.
 pub fn write_file_impl(
     state: &crate::workspaces::WorkspaceState,
     path: String,

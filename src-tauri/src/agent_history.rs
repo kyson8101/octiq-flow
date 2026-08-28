@@ -96,7 +96,6 @@ static CACHE: Mutex<Option<HashMap<PathBuf, Parsed>>> = Mutex::new(None);
 ///
 /// `limit` caps the answer; it is a list to search, not an archive to page
 /// through, and the whole thing crosses a WebSocket to a phone.
-#[tauri::command]
 pub fn agent_history_list(limit: Option<usize>) -> Vec<HistorySession> {
     let mut all = scan_claude();
     all.extend(scan_codex());
@@ -243,7 +242,6 @@ fn codex_events(contents: &str) -> Vec<Value> {
 /// was said in one of them, so it can be READ before it is picked up. Nothing
 /// is started here and nothing is resumed — the session id stays on the
 /// conversation, and the first thing typed still goes out as `--resume <id>`.
-#[tauri::command]
 pub fn agent_history_read(agent: String, session_id: String) -> Result<Vec<Value>, String> {
     // The id reaches the filesystem, so it is checked before anything is
     // opened. `agent_chat` already owns this rule and the two must not drift.

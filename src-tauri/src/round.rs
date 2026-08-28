@@ -725,7 +725,7 @@ fn speak_to(
     }
 }
 
-/// Start a round. The Tauri-free half of `chat_round`.
+/// Start a round, as the `chat_round` route asks for it.
 ///
 /// Validates the whole order BEFORE anything runs. A round that discovered a bad
 /// seat halfway through would already have spent money on the seats before it,
@@ -772,35 +772,6 @@ pub fn state_impl(rounds: &Rounds, key: &str) -> serde_json::Value {
             })).collect::<Vec<_>>(),
         }),
     }
-}
-
-/// Put one thing to every seat in turn.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub fn chat_round(
-    rounds: tauri::State<Arc<Rounds>>,
-    manager: tauri::State<Arc<ChatManager>>,
-    key: String,
-    order: Vec<String>,
-    text: String,
-    cwd: String,
-    access: Option<crate::agent_chat::Access>,
-    extra_dirs: Option<Vec<String>>,
-    effort: Option<String>,
-    history: Option<Vec<Said>>,
-) -> Result<(), String> {
-    start_round_impl(
-        rounds.inner().clone(),
-        manager.inner().clone(),
-        key,
-        order,
-        text,
-        cwd,
-        access,
-        extra_dirs,
-        effort,
-        history,
-    )
 }
 
 /// Put ONE thing to ONE seat and wait for its answer.
@@ -889,13 +860,6 @@ pub fn ask_seat_impl(
     ask_seat(&rounds, &manager, &key, &seat_id, &prompt, &cwd)
 }
 
-/// Draw a line under the discussion. Nothing said before now is shown to any
-/// seat again.
-#[tauri::command]
-pub fn chat_new_topic(rounds: tauri::State<Arc<Rounds>>, key: String) {
-    rounds.new_topic(&key);
-}
-
 /// The room is empty, so its discussion goes with it.
 ///
 /// Card 82 removed "close the room", so the trigger is now the LAST SEAT
@@ -904,18 +868,6 @@ pub fn chat_new_topic(rounds: tauri::State<Arc<Rounds>>, key: String) {
 /// to join would be shown a conversation nobody in the room remembers having.
 pub fn forget_room(rounds: &Rounds, key: &str) {
     rounds.forget(key);
-}
-
-/// Cut in. The seats still waiting never run, and nothing further is billed.
-#[tauri::command]
-pub fn chat_round_stop(rounds: tauri::State<Arc<Rounds>>, key: String) {
-    rounds.raise_hand(&key);
-}
-
-/// Whether a round is going here, and how far through it is.
-#[tauri::command]
-pub fn chat_round_state(rounds: tauri::State<Arc<Rounds>>, key: String) -> serde_json::Value {
-    state_impl(&rounds, &key)
 }
 
 #[cfg(test)]

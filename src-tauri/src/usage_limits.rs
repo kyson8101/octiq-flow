@@ -527,7 +527,6 @@ fn claude_usage_cached() -> ProviderUsage {
 
 /// Both providers' 5-hour + weekly usage for the footer. Read-only; each provider
 /// fails independently (one being unavailable never blocks the other).
-#[tauri::command]
 pub fn usage_summary() -> UsageSummary {
     UsageSummary {
         claude: claude_usage_cached(),

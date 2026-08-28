@@ -201,42 +201,6 @@ pub fn alert_for(id: String, source: &str, title: String, body: String) -> Alert
     }
 }
 
-/// What the frontend gets back from `notify_hook_filter`.
-#[derive(Serialize)]
-pub struct FilteredAlert {
-    pub title: String,
-    pub body: String,
-    pub suppress: bool,
-}
-
-/// Run the notify hook over an alert the FRONTEND raised (card 15's silence
-/// monitor), so a user hook filters those exactly as it filters an OSC alert.
-///
-/// The OSC path does not come through here — `pty.rs` calls `filter` directly on
-/// its own thread, because it has the alert before the frontend ever hears of it.
-#[tauri::command]
-pub async fn notify_hook_filter(
-    id: String,
-    source: String,
-    title: String,
-    body: String,
-) -> FilteredAlert {
-    // `async` so Tauri runs this on its thread pool: `filter` blocks for up to
-    // HOOK_TIMEOUT and must not sit on the main thread.
-    match filter(alert_for(id, &source, title.clone(), body.clone())) {
-        Some(alert) => FilteredAlert {
-            title: alert.title,
-            body: alert.body,
-            suppress: false,
-        },
-        None => FilteredAlert {
-            title,
-            body,
-            suppress: true,
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     /// Long enough that a machine busy compiling still gets there. The real

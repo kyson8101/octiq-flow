@@ -12,12 +12,10 @@
 // event path tells us which watched file it was.
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tauri::State;
 
 /// Trailing quiet period: emit once no event has arrived for this long. Shorter
 /// than the git watcher's — this drives a visible pane, not a status count.
@@ -35,15 +33,6 @@ pub struct FileWatchState(Mutex<Option<RecommendedWatcher>>);
 /// (Re)point the watcher at `paths` — the files currently open in the preview
 /// pane. Replaces any previous watcher; an empty list stops watching. Missing or
 /// unreadable paths are skipped (best-effort, never an error).
-#[tauri::command]
-pub fn file_watch_paths(
-    state: State<Arc<FileWatchState>>,
-    paths: Vec<String>,
-) -> Result<(), String> {
-    file_watch_paths_impl(&state, paths)
-}
-
-/// The Tauri-free half of `file_watch_paths`.
 pub fn file_watch_paths_impl(state: &FileWatchState, paths: Vec<String>) -> Result<(), String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     *guard = None; // drop the old watcher first; its debounce thread ends

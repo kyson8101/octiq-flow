@@ -4,11 +4,9 @@
 // launch agents in those folders.
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
-use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 /// A Dev-space action button: a labelled shell command, defined per workspace
@@ -177,12 +175,6 @@ impl WorkspaceState {
 }
 
 /// Return all workspaces in their stored order.
-#[tauri::command]
-pub fn list_workspaces(state: State<Arc<WorkspaceState>>) -> Result<Vec<Workspace>, String> {
-    list_workspaces_impl(&state)
-}
-
-/// The Tauri-free half of `list_workspaces`.
 pub fn list_workspaces_impl(state: &WorkspaceState) -> Result<Vec<Workspace>, String> {
     let data = state.data.lock().map_err(|e| e.to_string())?;
     Ok(data.workspaces.clone())
@@ -224,16 +216,6 @@ fn ensure_folder(path: &str) -> Result<(), String> {
 /// Create a new workspace and return it. A name is required. The primary path
 /// is the main folder the workspace runs in; when it is empty the user's home
 /// folder is used, so a project can be created without picking a folder first.
-#[tauri::command]
-pub fn add_workspace(
-    state: State<Arc<WorkspaceState>>,
-    name: String,
-    primary_path: String,
-) -> Result<Workspace, String> {
-    add_workspace_impl(&state, name, primary_path)
-}
-
-/// The Tauri-free half of `add_workspace`.
 pub fn add_workspace_impl(
     state: &WorkspaceState,
     name: String,
@@ -274,16 +256,6 @@ pub fn add_workspace_impl(
 
 /// Set or change the primary path of an existing workspace. Used both to change
 /// it later and to fill it in for a workspace saved before this field existed.
-#[tauri::command]
-pub fn set_primary_path(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-    path: String,
-) -> Result<(), String> {
-    set_primary_path_impl(&state, id, path)
-}
-
-/// The Tauri-free half of `set_primary_path`.
 pub fn set_primary_path_impl(
     state: &WorkspaceState,
     id: String,
@@ -305,16 +277,6 @@ pub fn set_primary_path_impl(
 }
 
 /// Rename an existing workspace.
-#[tauri::command]
-pub fn rename_workspace(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-    name: String,
-) -> Result<(), String> {
-    rename_workspace_impl(&state, id, name)
-}
-
-/// The Tauri-free half of `rename_workspace`.
 pub fn rename_workspace_impl(
     state: &WorkspaceState,
     id: String,
@@ -335,41 +297,13 @@ pub fn rename_workspace_impl(
 }
 
 /// Delete a workspace and all of its paths.
-#[tauri::command]
-pub fn delete_workspace(state: State<Arc<WorkspaceState>>, id: String) -> Result<(), String> {
-    delete_workspace_impl(&state, id)
-}
-
-/// The Tauri-free half of `delete_workspace`.
 pub fn delete_workspace_impl(state: &WorkspaceState, id: String) -> Result<(), String> {
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.workspaces.retain(|w| w.id != id);
     state.save(&data)
 }
 
-/// Reorder the workspace list to match `ids` (the new top-to-bottom order from
-/// the frontend, after a drag-and-drop). The sort is stable: any workspace whose
-/// id is not in `ids` keeps its relative order at the end, so a partial or stale
-/// list can never drop a workspace.
-#[tauri::command]
-pub fn reorder_workspaces(state: State<WorkspaceState>, ids: Vec<String>) -> Result<(), String> {
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    data.workspaces
-        .sort_by_key(|w| ids.iter().position(|x| x == &w.id).unwrap_or(usize::MAX));
-    state.save(&data)
-}
-
 /// Add a folder path to a workspace. Duplicate paths are ignored.
-#[tauri::command]
-pub fn add_workspace_path(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-    path: String,
-) -> Result<(), String> {
-    add_workspace_path_impl(&state, id, path)
-}
-
-/// The Tauri-free half of `add_workspace_path`.
 pub fn add_workspace_path_impl(
     state: &WorkspaceState,
     id: String,
@@ -389,16 +323,6 @@ pub fn add_workspace_path_impl(
 }
 
 /// Remove a folder path from a workspace.
-#[tauri::command]
-pub fn remove_workspace_path(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-    path: String,
-) -> Result<(), String> {
-    remove_workspace_path_impl(&state, id, path)
-}
-
-/// The Tauri-free half of `remove_workspace_path`.
 pub fn remove_workspace_path_impl(
     state: &WorkspaceState,
     id: String,
@@ -414,52 +338,8 @@ pub fn remove_workspace_path_impl(
     state.save(&data)
 }
 
-/// Set the workspace docs root (where session folders are created). A path
-/// from the folder picker, for example an Obsidian vault folder.
-#[tauri::command]
-pub fn set_docs_path(state: State<WorkspaceState>, id: String, path: String) -> Result<(), String> {
-    let path = path.trim().to_string();
-    if path.is_empty() {
-        return Err("docs path is required".into());
-    }
-    ensure_folder(&path)?;
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.docs_path = path;
-    state.save(&data)
-}
-
-/// Reset the workspace docs root back to the default (the app data dir).
-#[tauri::command]
-pub fn clear_docs_path(state: State<WorkspaceState>, id: String) -> Result<(), String> {
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.docs_path = String::new();
-    state.save(&data)
-}
-
-/// Add a Dev-space action button (label + command) to a workspace.
-#[tauri::command]
-pub fn add_action(
-    state: State<WorkspaceState>,
-    workspace_id: String,
-    label: String,
-    command: String,
-) -> Result<Action, String> {
-    add_action_impl(&state, workspace_id, label, command)
-}
-
-/// The Tauri-free half of `add_action`. A browser reaches it through
-/// `dispatch.rs`: the saved commands are a project's own, so they must not be
-/// desktop-only the way they were when only the vanilla UI could edit them.
+/// Add a Dev-space action button (label + command) to a workspace. A browser
+/// reaches it through `dispatch.rs`: the saved commands are a project's own.
 pub fn add_action_impl(
     state: &WorkspaceState,
     workspace_id: String,
@@ -488,18 +368,6 @@ pub fn add_action_impl(
 }
 
 /// Update an existing Dev-space action button.
-#[tauri::command]
-pub fn update_action(
-    state: State<WorkspaceState>,
-    workspace_id: String,
-    action_id: String,
-    label: String,
-    command: String,
-) -> Result<(), String> {
-    update_action_impl(&state, workspace_id, action_id, label, command)
-}
-
-/// The Tauri-free half of `update_action`.
 pub fn update_action_impl(
     state: &WorkspaceState,
     workspace_id: String,
@@ -529,16 +397,6 @@ pub fn update_action_impl(
 }
 
 /// Delete a Dev-space action button from a workspace.
-#[tauri::command]
-pub fn delete_action(
-    state: State<WorkspaceState>,
-    workspace_id: String,
-    action_id: String,
-) -> Result<(), String> {
-    delete_action_impl(&state, workspace_id, action_id)
-}
-
-/// The Tauri-free half of `delete_action`.
 pub fn delete_action_impl(
     state: &WorkspaceState,
     workspace_id: String,
@@ -554,113 +412,8 @@ pub fn delete_action_impl(
     state.save(&data)
 }
 
-/// Return the commands available in every project.
-#[tauri::command]
-pub fn list_global_actions(state: State<WorkspaceState>) -> Result<Vec<Action>, String> {
-    let data = state.data.lock().map_err(|e| e.to_string())?;
-    Ok(data.global_actions.clone())
-}
-
-/// Replace the whole global command list. The frontend owns the list (it holds
-/// it in memory and sends it back whole after any add / edit / remove), so one
-/// setter covers all three — ponytail: no per-item add/update/delete commands
-/// for a list this small. Rows with an empty label or command are dropped.
-#[tauri::command]
-pub fn set_global_actions(
-    state: State<WorkspaceState>,
-    actions: Vec<Action>,
-) -> Result<(), String> {
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    data.global_actions = actions
-        .into_iter()
-        .map(|a| Action {
-            id: a.id,
-            label: a.label.trim().to_string(),
-            command: a.command.trim().to_string(),
-        })
-        .filter(|a| !a.label.is_empty() && !a.command.is_empty())
-        .collect();
-    state.save(&data)
-}
-
-/// Replace the whole startup layout of a workspace and save. `terminals` is the
-/// ordered list of startup terminals (each: title + optional cmd). `command_ids`
-/// references existing `Action` ids on the same workspace; ids that do not match
-/// an action are dropped, and duplicates are removed while preserving order.
-/// Empty terminal rows (no title and no cmd) are dropped. Passing two empty
-/// vecs clears the layout (project opens with one plain terminal, as before).
-#[tauri::command]
-pub fn set_startup(
-    state: State<WorkspaceState>,
-    id: String,
-    terminals: Vec<StartupTerminal>,
-    command_ids: Vec<String>,
-) -> Result<(), String> {
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-
-    // Trim each terminal and drop rows that carry neither a title nor a cmd.
-    let terminals: Vec<StartupTerminal> = terminals
-        .into_iter()
-        .map(|t| StartupTerminal {
-            title: t.title.trim().to_string(),
-            cmd: t.cmd.trim().to_string(),
-        })
-        .filter(|t| !t.title.is_empty() || !t.cmd.is_empty())
-        .collect();
-
-    // Keep only command ids that point at a real action on this workspace, with
-    // duplicates removed and original order preserved.
-    let mut seen = std::collections::HashSet::new();
-    let command_ids: Vec<String> = command_ids
-        .into_iter()
-        .filter(|cid| ws.actions.iter().any(|a| &a.id == cid))
-        .filter(|cid| seen.insert(cid.clone()))
-        .collect();
-
-    ws.startup = Startup {
-        terminals,
-        command_ids,
-    };
-    state.save(&data)
-}
-
-/// Set (or clear) the command auto-run in every new terminal opened in this
-/// project. The command is trimmed; an empty string clears it, so new terminals
-/// open a plain shell again.
-#[tauri::command]
-pub fn set_terminal_command(
-    state: State<WorkspaceState>,
-    id: String,
-    command: String,
-) -> Result<(), String> {
-    let command = command.trim().to_string();
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.terminal_command = command;
-    state.save(&data)
-}
-
 /// Set (or clear) the short description shown under the project name in the
 /// sidebar tab. The text is trimmed; an empty string clears it.
-#[tauri::command]
-pub fn set_description(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-    description: String,
-) -> Result<(), String> {
-    set_description_impl(&state, id, description)
-}
-
-/// The Tauri-free half of `set_description`.
 pub fn set_description_impl(
     state: &WorkspaceState,
     id: String,
@@ -677,84 +430,10 @@ pub fn set_description_impl(
     state.save(&data)
 }
 
-/// Set (or clear) the project's accent color for its sidebar tab. Accepts a
-/// `#rrggbb` hex string, or an empty string to clear it (the frontend then
-/// derives a color from the name). Any other value is rejected so a malformed
-/// color can never reach the store.
-#[tauri::command]
-pub fn set_color(state: State<WorkspaceState>, id: String, color: String) -> Result<(), String> {
-    let color = color.trim().to_string();
-    if !color.is_empty() && !is_hex_color(&color) {
-        return Err("color must be a #rrggbb hex string".into());
-    }
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.color = color;
-    state.save(&data)
-}
-
-/// Set (or clear) the project's custom initial — the short label shown as its
-/// avatar and on the collapsed sidebar rail. The text is trimmed; an empty
-/// string clears it, so the avatar falls back to the first letter of the name.
-/// Capped at two characters so it always fits the square avatar; a longer value
-/// is rejected so a label that would overflow can never reach the store.
-#[tauri::command]
-pub fn set_initial(
-    state: State<WorkspaceState>,
-    id: String,
-    initial: String,
-) -> Result<(), String> {
-    let initial = initial.trim().to_string();
-    if !is_valid_initial(&initial) {
-        return Err("initial must be at most 2 characters".into());
-    }
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.initial = initial;
-    state.save(&data)
-}
-
-/// Set (or clear) the project's icon/logo. Accepts an empty string (clears the
-/// icon, falling back to the letter avatar) or a `data:image/...` URL. Any other
-/// value is rejected so only an inline image can reach the store.
-#[tauri::command]
-pub fn set_icon(state: State<WorkspaceState>, id: String, icon: String) -> Result<(), String> {
-    let icon = icon.trim().to_string();
-    if !icon.is_empty() && !icon.starts_with("data:image/") {
-        return Err("icon must be a data:image/... URL".into());
-    }
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.icon = icon;
-    state.save(&data)
-}
-
 /// Set or clear a workspace's "shelved" (off-work) flag. A shelved workspace is
 /// moved to the Shelved section of the sidebar and hidden from the active project
 /// list until the user brings it back. The workspace and all of its data are kept
 /// untouched — this is a temporary, fully reversible toggle, not a delete.
-#[tauri::command]
-pub fn set_workspace_shelved(
-    state: State<Arc<WorkspaceState>>,
-    id: String,
-    shelved: bool,
-) -> Result<(), String> {
-    set_workspace_shelved_impl(&state, id, shelved)
-}
-
-/// The Tauri-free half of `set_workspace_shelved`.
 pub fn set_workspace_shelved_impl(
     state: &WorkspaceState,
     id: String,
@@ -769,61 +448,11 @@ pub fn set_workspace_shelved_impl(
     ws.shelved = shelved;
     state.save(&data)
 }
-
-/// Set (or clear) this project's terminal font override. The value is stored
-/// verbatim: `null` clears it (the project falls back to the global app font),
-/// and an object overrides the global font for this project's terminals only.
-/// The frontend owns the font catalog and clamps every value on read, so this
-/// is a straight passthrough — the same trust model as `set_icon`'s inline
-/// image.
-#[tauri::command]
-pub fn set_font_override(
-    state: State<WorkspaceState>,
-    id: String,
-    font_override: serde_json::Value,
-) -> Result<(), String> {
-    let mut data = state.data.lock().map_err(|e| e.to_string())?;
-    let ws = data
-        .workspaces
-        .iter_mut()
-        .find(|w| w.id == id)
-        .ok_or("workspace not found")?;
-    ws.font_override = font_override;
-    state.save(&data)
-}
-
-/// True when `s` is a `#rrggbb` hex color: a leading '#' then exactly six
-/// hex digits.
-fn is_hex_color(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(u8::is_ascii_hexdigit)
-}
-
-/// True when `s` is an acceptable custom initial: at most two characters,
-/// counted by Unicode scalar value so a multi-byte glyph (e.g. an emoji) counts
-/// as one. An empty string is allowed too — it clears the custom initial.
-fn is_valid_initial(s: &str) -> bool {
-    s.chars().count() <= 2
-}
-
-/// Open the native folder picker and return the chosen path, or `None` if the
-/// user cancelled. Done in Rust so the web view needs no bundler or plugin JS.
-/// `blocking_pick_folder` is safe here: the command runs off the main thread,
-/// and the dialog crate marshals the dialog onto the main thread for us.
-#[tauri::command]
-pub async fn pick_folder(app: AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .blocking_pick_folder()
-        .and_then(|p| p.into_path().ok())
-        .map(|p| p.to_string_lossy().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        add_workspace_impl, add_workspace_path_impl, is_hex_color, is_valid_initial,
-        set_primary_path_impl, WorkspaceData, WorkspaceState,
+        add_workspace_impl, add_workspace_path_impl, set_primary_path_impl, WorkspaceData,
+        WorkspaceState,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -917,36 +546,5 @@ mod tests {
         )
         .expect_err("a file is not a folder");
         assert!(err.contains("not a folder"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn accepts_valid_six_digit_hex() {
-        assert!(is_hex_color("#1f6feb"));
-        assert!(is_hex_color("#ABCDEF"));
-        assert!(is_hex_color("#000000"));
-    }
-
-    #[test]
-    fn rejects_malformed_colors() {
-        assert!(!is_hex_color(""), "empty is not a hex color");
-        assert!(!is_hex_color("1f6feb"), "missing leading '#'");
-        assert!(!is_hex_color("#fff"), "shorthand 3-digit not accepted");
-        assert!(!is_hex_color("#1f6feb0"), "too long");
-        assert!(!is_hex_color("#12345g"), "non-hex digit");
-        assert!(!is_hex_color("#12 456"), "whitespace inside");
-    }
-
-    #[test]
-    fn accepts_initial_of_zero_to_two_chars() {
-        assert!(is_valid_initial(""), "empty clears the custom initial");
-        assert!(is_valid_initial("A"));
-        assert!(is_valid_initial("AB"));
-        assert!(is_valid_initial("🦀"), "one multi-byte glyph counts as one");
-    }
-
-    #[test]
-    fn rejects_initial_longer_than_two_chars() {
-        assert!(!is_valid_initial("ABC"));
-        assert!(!is_valid_initial("hello"));
     }
 }

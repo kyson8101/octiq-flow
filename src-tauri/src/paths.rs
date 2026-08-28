@@ -1,12 +1,12 @@
-// Filesystem boundaries for the commands the webview can reach (card 25).
+// Filesystem boundaries for the commands a browser can reach (card 25).
 //
-// CSP is currently disabled (`csp: null` in tauri.conf.json), so a content
-// injection into the webview would run with the full IPC surface. This module
-// exists so the most powerful of those commands — the ones that WRITE — cannot
-// be pointed at arbitrary paths.
+// Anything that reaches `dispatch.rs` runs with this process's own filesystem
+// rights, so a content injection into the client would arrive holding them.
+// This module exists so the most powerful of those commands — the ones that
+// WRITE — cannot be pointed at arbitrary paths.
 //
-// The threat model is a local, single-user desktop app: these are hardening
-// measures, not fixes for a known exploit.
+// The threat model is a single-user backend on the user's own machine: these
+// are hardening measures, not fixes for a known exploit.
 //
 // What is confined, and what deliberately is not:
 //

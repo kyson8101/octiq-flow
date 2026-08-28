@@ -1,5 +1,5 @@
-//! Remote access: serve this app's own UI over HTTP and bridge a browser to
-//! this machine's backend over one WebSocket.
+//! The front door: serve the client over HTTP and bridge a browser to this
+//! machine's backend over one WebSocket.
 //!
 //! The point is a two-part setup: OctiqFlow runs on a machine that stays on (an
 //! old Mac, a mini), owns every PTY, and a browser anywhere else — a laptop
@@ -9,30 +9,19 @@
 //! ```text
 //!   browser                    this process
 //!   ───────                    ────────────
-//!   GET /            ────────► the same files the desktop window loads
-//!   WS  /ws?token=…  ◄───────► invoke requests + event stream
+//!   GET /            ────────► the client in web/dist
+//!   WS  /ws?token=…  ◄───────► command requests + event stream
 //! ```
 //!
-//! ## Why the invokes go back through the desktop webview
+//! A request names a command; `dispatch.rs` routes it by name and runs it here.
+//! There was a time when it went the long way instead — handed to a desktop
+//! window, which called `invoke` on our behalf and sent the answer back, so
+//! that no dispatch table had to be written. That made the window
+//! load-bearing: no window, no answers. The window is gone and the table is
+//! what replaced it.
 //!
-//! There are 96 `#[tauri::command]` functions. Writing a second dispatch table
-//! for them (and keeping it in step forever) is the obvious design and the
-//! wrong one. Instead a remote `invoke` is handed to the app's OWN webview,
-//! which already has full IPC access:
-//!
-//! ```text
-//!   WS  {invoke,id,cmd,args} ──► emit "web-invoke" ──► webbridge.js in the
-//!                                                      desktop window
-//!                                                          │ invoke(cmd,args)
-//!   WS  {reply,id,result}    ◄── web_reply command ◄───────┘
-//! ```
-//!
-//! So every command the desktop UI can call, a browser can call, with no
-//! per-command code here. The cost is that the desktop window must be running —
-//! which it is: it is the server.
-//!
-//! Events go the short way instead (`emit` below): straight from the Rust
-//! emitter to every socket, no JS hop, because `pty-output` is the hot path.
+//! Events never took that detour (`emit` below): straight from the Rust emitter
+//! to every socket, because `pty-output` is the hot path.
 //!
 //! ## Turning it on
 //!
@@ -73,12 +62,9 @@
 //! arrive indistinguishable from a browser on this desk, so the endpoint has to
 //! be closed by hand rather than detected.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -90,17 +76,7 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::{broadcast, oneshot};
-
-/// How long a remote invoke waits for the desktop webview to answer before it
-/// gives up. Long enough for a slow command (a git scan over a big repo), short
-/// enough that a wedged webview cannot leak pending entries forever.
-const INVOKE_TIMEOUT: Duration = Duration::from_secs(45);
-
-/// Backlog of the event fan-out channel. A client that falls this far behind is
-/// dropped from the stream rather than stalling the emitter — terminals must
-/// never block on a slow socket.
+use tokio::sync::broadcast;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -257,146 +233,25 @@ fn private_dir(_path: &std::path::Path) {}
 
 pub struct WebState {
     pub cfg: Mutex<WebConfig>,
-    /// Remote invokes waiting on the desktop webview, by request id.
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>,
-    next_id: AtomicU64,
-    /// Connected browsers. Read by `pty.rs`: while a browser is watching, no
-    /// terminal may be put in the "hidden, buffer it" state, because the
-    /// desktop window's idea of what is on screen is not the browser's.
-    clients: AtomicUsize,
 }
 
 impl WebState {
     pub fn new(cfg: WebConfig) -> Self {
         Self {
             cfg: Mutex::new(cfg),
-            pending: Mutex::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
-            clients: AtomicUsize::new(0),
         }
-    }
-
-    pub fn client_count(&self) -> usize {
-        self.clients.load(Ordering::SeqCst)
     }
 }
 
-/// Whether any browser is attached right now. `false` when the web server was
-/// never started, so the desktop-only path is untouched.
+// ---------------------------------------------------------------------------
+// Running a command
+// ---------------------------------------------------------------------------
 
-/// Send every event this app emits to the desktop window as well.
+/// Run one command on behalf of a browser.
 ///
-/// Called once at startup. Producers emit through `bus::emit`, which knows
-/// nothing about Tauri; this is the part that puts those events in front of the
-/// window too. Headless, nobody calls it and the events go only to sockets.
-pub fn mirror_events_to_desktop(app: &AppHandle) {
-    let app = app.clone();
-    crate::bus::set_desktop_sink(move |event, value| {
-        let _ = app.emit(event, value);
-    });
-}
-
-// ---------------------------------------------------------------------------
-// The invoke proxy
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Serialize)]
-struct WebInvoke {
-    id: u64,
-    cmd: String,
-    args: Value,
-}
-
-/// Run one command on behalf of a browser by handing it to the desktop
-/// webview (see the module docs) and waiting for its answer.
+/// There is nothing in the way: the dispatch table calls the backend directly.
 async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, String> {
-    let app = match &ctx.invoke {
-        // No window in the way: call the backend directly.
-        Invoker::Local(svc) => return crate::dispatch::dispatch(svc, &cmd, args),
-        Invoker::Webview(app) => app,
-    };
-    let st = &ctx.state;
-
-    let id = st.next_id.fetch_add(1, Ordering::SeqCst);
-    let (tx, rx) = oneshot::channel();
-    st.pending.lock().map_err(|_| "bridge lock")?.insert(id, tx);
-
-    if let Err(e) = app.emit("web-invoke", WebInvoke { id, cmd, args }) {
-        st.pending.lock().ok().and_then(|mut p| p.remove(&id));
-        return Err(format!("could not reach the app window: {e}"));
-    }
-
-    match tokio::time::timeout(INVOKE_TIMEOUT, rx).await {
-        Ok(Ok(result)) => result,
-        // The window answered nothing (reloaded mid-call), or the wait expired.
-        Ok(Err(_)) => Err("the app window dropped the request".into()),
-        Err(_) => {
-            st.pending.lock().ok().and_then(|mut p| p.remove(&id));
-            Err("timed out waiting for the app window".into())
-        }
-    }
-}
-
-/// The desktop webview's answer to a `web-invoke` (webbridge.js calls this).
-#[tauri::command]
-pub fn web_reply(
-    state: tauri::State<Arc<WebState>>,
-    id: u64,
-    ok: bool,
-    result: Option<Value>,
-    error: Option<String>,
-) {
-    let Some(tx) = state.pending.lock().ok().and_then(|mut p| p.remove(&id)) else {
-        return; // already timed out; nothing is waiting
-    };
-    let _ = tx.send(if ok {
-        Ok(result.unwrap_or(Value::Null))
-    } else {
-        Err(error.unwrap_or_else(|| "command failed".into()))
-    });
-}
-
-/// What the Settings screen needs to show a "open this on your phone" URL.
-#[tauri::command]
-pub fn web_info(app: AppHandle) -> Value {
-    let cfg = app
-        .try_state::<Arc<WebState>>()
-        .and_then(|st| st.cfg.lock().ok().map(|c| c.clone()))
-        .unwrap_or_else(load_config);
-    let clients = app
-        .try_state::<Arc<WebState>>()
-        .map(|st| st.client_count())
-        .unwrap_or(0);
-    json!({
-        "enabled": cfg.enabled,
-        "port": cfg.port,
-        "bind": cfg.bind,
-        "token": cfg.token,
-        "clients": clients,
-        "running": app.try_state::<Arc<WebState>>().is_some(),
-    })
-}
-
-/// Turn remote access on or off and persist it. A change needs a restart to
-/// take effect (the listener is bound once at startup), which the UI says.
-#[tauri::command]
-pub fn web_set_config(
-    app: AppHandle,
-    enabled: bool,
-    port: u16,
-    bind: String,
-) -> Result<Value, String> {
-    let mut cfg = load_config();
-    cfg.enabled = enabled;
-    cfg.port = port;
-    cfg.bind = bind;
-    save_config(&cfg);
-    if let Some(st) = app.try_state::<Arc<WebState>>() {
-        if let Ok(mut held) = st.cfg.lock() {
-            *held = cfg.clone();
-        }
-    }
-    Ok(json!({ "enabled": cfg.enabled, "port": cfg.port, "bind": cfg.bind, "token": cfg.token }))
+    crate::dispatch::dispatch(&ctx.services, &cmd, args)
 }
 
 // ---------------------------------------------------------------------------
@@ -406,18 +261,7 @@ pub fn web_set_config(
 #[derive(Clone)]
 struct Ctx {
     state: Arc<WebState>,
-    invoke: Invoker,
-}
-
-/// Who actually runs a command a browser asked for.
-///
-/// The desktop app hands it to its own window, because the classic UI's
-/// commands — PTYs above all — only exist inside Tauri. A headless server runs
-/// it here, which is the whole point: no window to hand it to.
-#[derive(Clone)]
-enum Invoker {
-    Webview(AppHandle),
-    Local(crate::dispatch::Services),
+    services: crate::dispatch::Services,
 }
 
 #[derive(Deserialize)]
@@ -425,24 +269,11 @@ struct TokenQuery {
     token: Option<String>,
 }
 
-/// Start the server if `web.json` enables it. Never fails the app: a port
-/// already in use logs and leaves the desktop app working as before.
-pub fn start(app: &AppHandle, state: Arc<WebState>, cfg: WebConfig) {
-    let ctx = Ctx {
-        state,
-        invoke: Invoker::Webview(app.clone()),
-    };
-    let Some(fut) = serve(ctx, cfg) else { return };
-    tauri::async_runtime::spawn(fut);
-}
-
-/// Serve with no Tauri app at all: commands run through the dispatch table and
-/// the client comes from `web/dist`, because the classic UI's assets live in
-/// the bundle this process does not have.
+/// Serve the browser client and dispatch its commands.
 pub async fn start_headless(cfg: WebConfig, services: crate::dispatch::Services) {
     let ctx = Ctx {
         state: Arc::new(WebState::new(cfg.clone())),
-        invoke: Invoker::Local(services),
+        services,
     };
     if let Some(fut) = serve(ctx, cfg) {
         fut.await;
@@ -595,10 +426,9 @@ fn legacy_root_redirect(raw: &str, query: Option<&str>) -> Option<String> {
 /// append. `/v2/` used to be that path; it now redirects to the root, so links
 /// people already saved keep working without the app being served twice.
 ///
-/// The classic UI (the desktop window's own files, read through Tauri's asset
-/// resolver) is now only a fallback, for a checkout where the client has not
-/// been built. A headless server has no bundle to read it from at all.
-async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
+/// The client is read from `web/dist` on disk, so a build reaches the browser on
+/// the next reload with no restart.
+async fn asset_handler(AxumState(_ctx): AxumState<Ctx>, uri: Uri) -> Response {
     let raw = uri.path().trim_start_matches('/');
 
     if let Some(target) = legacy_root_redirect(raw, uri.query()) {
@@ -616,34 +446,13 @@ async fn asset_handler(AxumState(ctx): AxumState<Ctx>, uri: Uri) -> Response {
         return serve_v2(raw);
     }
 
-    let path = if raw.is_empty() { "index.html" } else { raw };
-
-    let Invoker::Webview(app) = &ctx.invoke else {
-        // Headless with no v2 build: there is nothing to serve. The classic
-        // UI's assets live inside the Tauri bundle, which this process does
-        // not have.
-        return (
-            StatusCode::NOT_FOUND,
-            "the client is not built — run `pnpm --dir web build`",
-        )
-            .into_response();
-    };
-    let resolver = app.asset_resolver();
-    let asset = resolver
-        .get(path.to_string())
-        .or_else(|| resolver.get("index.html".to_string()));
-
-    match asset {
-        Some(asset) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, asset.mime_type)
-            // The UI is served from the app binary and changes with it; never
-            // let a phone cache a stale build.
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(asset.bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-        None => (StatusCode::NOT_FOUND, "not found").into_response(),
-    }
+    // The client is read off disk (`web/dist`). Nothing is embedded in this
+    // binary, so with no build there is genuinely nothing to serve.
+    (
+        StatusCode::NOT_FOUND,
+        "the client is not built — run `pnpm --dir web build`",
+    )
+        .into_response()
 }
 
 /// Whether this request reached us through a reverse proxy.
@@ -1144,7 +953,7 @@ async fn room_handler(
     let joined = tokio::task::spawn_blocking({
         let ctx = ctx.clone();
         let cmd = cmd.to_string();
-        move || tauri::async_runtime::block_on(run_command(&ctx, cmd, args))
+        move || tokio::runtime::Handle::current().block_on(run_command(&ctx, cmd, args))
     })
     .await;
     let outcome = match joined {
@@ -1352,7 +1161,9 @@ mod tests {
             ("host", "127.0.0.1:1421"),
             ("origin", "http://localhost:5273"),
         ])));
-        // The desktop webview's own origin, which has no port at all.
+        // An origin with no port at all. The desktop webview used to send this
+        // one; the rule it exercises — a loopback authority is judged on the
+        // host, not the port it omitted — outlived it.
         assert!(origin_ok(&headers(&[
             ("host", "127.0.0.1:1421"),
             ("origin", "tauri://localhost"),

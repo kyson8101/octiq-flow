@@ -137,7 +137,6 @@ const DIFF_MAX_BYTES: usize = 1_500_000;
 /// List the uncommitted changes for every given folder path, grouped by repo.
 /// Paths that are not git repos are skipped, and several paths inside one repo
 /// collapse to a single group (de-duplicated by repo top-level).
-#[tauri::command]
 pub fn git_changed_files(paths: Vec<String>) -> Result<Vec<RepoChanges>, String> {
     let mut seen: HashSet<String> = HashSet::new();
     let mut repos: Vec<RepoChanges> = Vec::new();
@@ -154,7 +153,6 @@ pub fn git_changed_files(paths: Vec<String>) -> Result<Vec<RepoChanges>, String>
 /// The unified diff for one file in one repo. `untracked` (passed from the list)
 /// means there is no HEAD side, so we synthesize an all-additions diff from the
 /// file's current content rather than calling `git diff`.
-#[tauri::command]
 pub fn git_file_diff(
     root: String,
     file: String,
@@ -552,7 +550,6 @@ pub struct BranchList {
 /// List a repo's local branches for the Git tab's switch dropdown. Read-only.
 /// A path that is not a git repo comes back with `is_repo = false` and no
 /// branches rather than an error, so the panel can show a hint instead.
-#[tauri::command]
 pub fn git_local_branches(path: String) -> Result<BranchList, String> {
     let Some(root) = repo_root(&path) else {
         return Ok(BranchList {
@@ -609,7 +606,6 @@ fn parse_branch_lines(text: &str) -> Vec<String> {
 ///
 /// A project with four folders in one repo used to cost ~16 git subprocesses;
 /// it now costs 4 (one `rev-parse` each) plus ~3 for the single repo.
-#[tauri::command]
 pub fn git_status_summary(paths: Vec<String>) -> Result<Vec<GitStatus>, String> {
     // 1. Resolve each DISTINCT path to its repo root, once.
     let mut root_of: HashMap<&str, Option<String>> = HashMap::new();

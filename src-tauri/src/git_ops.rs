@@ -47,7 +47,6 @@ pub struct GitOpResult {
 /// the caller sends BOTH the old and the new path so the pair is committed
 /// together. An empty message or an empty selection is rejected here rather
 /// than handed to git, whose own error for those cases is less clear.
-#[tauri::command]
 pub fn git_commit(
     root: String,
     files: Vec<String>,
@@ -86,7 +85,6 @@ pub fn git_commit(
 /// Push the current branch. A branch with no upstream is pushed with
 /// `--set-upstream` to the repo's default remote, so the first push of a new
 /// branch works from the panel without dropping to a terminal.
-#[tauri::command]
 pub fn git_push(root: String) -> Result<GitOpResult, String> {
     let branch = current_branch(&root)?;
     let output = if has_upstream(&root) {
@@ -110,7 +108,6 @@ pub fn git_push(root: String) -> Result<GitOpResult, String> {
 ///
 /// Pulling needs an upstream, so a branch that was never pushed is rejected up
 /// front with the fix ("Push it first") instead of git's longer advice block.
-#[tauri::command]
 pub fn git_pull(root: String, mode: String) -> Result<GitOpResult, String> {
     let branch = current_branch(&root)?;
     if !has_upstream(&root) {
@@ -135,7 +132,6 @@ pub fn git_pull(root: String, mode: String) -> Result<GitOpResult, String> {
 /// behind the user's back: changes that do not clash come along to the new
 /// branch, and ones that would be overwritten abort the switch with git's own
 /// "Your local changes … would be overwritten" text, which the panel shows.
-#[tauri::command]
 pub fn git_switch_branch(root: String, branch: String) -> Result<GitOpResult, String> {
     let branch = branch.trim().to_string();
     if branch.is_empty() {
