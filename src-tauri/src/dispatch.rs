@@ -591,12 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn a_desktop_only_command_is_refused_by_name() {
+    fn a_command_this_backend_does_not_know_is_refused_by_name() {
         let svc = Services::load();
-        // pick_folder opens a NATIVE dialog, so it can only ever belong to the
-        // desktop app — a dialog on the server would open where nobody is.
-        let err = dispatch(&svc, "pick_folder", json!({})).unwrap_err();
-        assert!(err.contains("pick_folder"), "{err}");
-        assert!(err.contains("desktop app"), "{err}");
+        // This used to be about `pick_folder` and the native dialog it opened,
+        // which is a distinction the code stopped making when the window went:
+        // there is no desktop app to route anything to, so a command that is
+        // not in the table is simply not in the table.
+        //
+        // The arm is still worth a test, for the reason it exists. The two
+        // halves deploy separately, so a page can be newer than the server
+        // answering it, and this message is all the user gets when it is — it
+        // has to name the command, or "something failed" is the whole report.
+        let err = dispatch(&svc, "no_such_command", json!({})).unwrap_err();
+        assert!(err.contains("no_such_command"), "{err}");
+        assert!(err.contains("not available on this backend"), "{err}");
     }
 }
