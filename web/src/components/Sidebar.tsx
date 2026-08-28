@@ -34,7 +34,7 @@ export function Sidebar({
   running,
   busy,
   deleting = NONE_DELETING,
-  deleteMs = 3000,
+  deleteMs = 2000,
   expanded,
   onToggle,
   onPickProject,
@@ -414,7 +414,7 @@ function PlusIcon() {
  *  than inheriting the first one's remaining seconds.
  *
  *  The ring is CSS, not a ticking timer. The clock that actually commits the
- *  delete lives with the chat list; two clocks counting the same three seconds
+ *  delete lives with the chat list; two clocks counting the same two seconds
  *  would sooner or later disagree on screen. This one is not load-bearing — it
  *  runs out a moment either side of the real one and nothing depends on which. */
 function DrainIcon({ ms }: { ms: number }) {

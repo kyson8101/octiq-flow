@@ -4455,7 +4455,7 @@ body.is-ultra .eff {
 
 /* Visible for the whole countdown, whatever the pointer is doing. It is the
    only way back, and a way back that has to be hovered for is one nobody finds
-   inside three seconds. */
+   inside two seconds. */
 .chat-del.is-going {
   opacity: 1;
   transform: none;
@@ -4479,7 +4479,7 @@ body.is-ultra .eff {
 
 /* How much of the delete is left to take back. Not decoration — it is the
    clock, so it runs even where motion is reduced; a linear ring emptying over
-   three seconds is the mildest way to show a countdown, and hiding it would
+   two seconds is the mildest way to show a countdown, and hiding it would
    leave nothing on screen saying the chat is about to go. */
 .chat-drain-arc {
   fill: none;

@@ -130,7 +130,7 @@ const convOf = (key: string) => (key.startsWith("chat:") ? key.slice(5) : null);
 /** How long a deleted chat can be brought back. Long enough to see the ring on
  *  its row start to empty and press it again; short enough that the agent a
  *  delete is meant to stop is not still running a minute later. */
-const UNDO_MS = 3000;
+const UNDO_MS = 2000;
 
 /** A delete that has happened on screen and nowhere else yet.
  *
@@ -1687,7 +1687,7 @@ export default function App() {
    *  and the second one is only asked for when the first was a mistake.
    *
    *  Where that second click goes is the point: the row stays put and its ×
-   *  becomes a ring emptying over three seconds, so taking a delete back is
+   *  becomes a ring emptying over two seconds, so taking a delete back is
    *  pressing the same pixel again rather than crossing the window to a bar in
    *  the corner. Nothing else on screen moves, and nothing behind it is
    *  blocked — the agents keep streaming, and the delete only reaches the
