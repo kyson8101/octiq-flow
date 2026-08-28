@@ -17,10 +17,17 @@
 // single control would serve one of them badly. A question the agent marks as
 // taking a SET is a third: its options tick on and off and are sent together.
 //
-// And the card can be put aside. The answer is often in the conversation the
-// card is sitting on top of — what the agent just did, what it just read — and
-// with the agent blocked the only other way back to it was to close the card,
-// which is itself an answer. Minimising decides nothing.
+// And the card ARRIVES put aside — a strip naming what is waiting, not the
+// question opened out. The answer is nearly always in the conversation the card
+// would be sitting on top of: what the agent just did, what it just read. Drawn
+// open it took that away at the exact moment it was needed, and the way back to
+// it was to minimise a card that had just been opened for you. So the strip is
+// the arrival state and pressing it is the choice to answer now. Nothing about
+// this decides anything — with the agent blocked, the only other way to clear
+// the card was to close it, and closing IS an answer.
+//
+// Being missed is not the risk it looks like: a question is announced when it
+// arrives (`announceOnce` in App.tsx), and the strip keeps the pulsing dot.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
 import { choicesOf, optionIsOn, pendingAnswer, togglePick } from "../lib/questionAnswer";
@@ -57,9 +64,14 @@ const DECLINED =
 export function UserQuestion({
   questions,
   onDone,
+  startOpen = false,
 }: {
   questions: Question[];
   onDone: (ids: string[]) => void;
+  /** Draw it open instead of as the strip. Off everywhere in the app — a
+   *  question always arrives put aside — and on in the tests, which render
+   *  static markup in node and so cannot press the strip themselves. */
+  startOpen?: boolean;
 }) {
   const [page, setPage] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -69,7 +81,12 @@ export function UserQuestion({
   const [picks, setPicks] = useState<Record<string, string[]>>({});
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
-  const [minimised, setMinimised] = useState(false);
+  /** Put aside from the moment it appears — see the note at the top of the
+   *  file. Fresh per batch: the card is keyed on the first question's id, so a
+   *  new batch is a new card and starts put aside again, while a question
+   *  arriving mid-batch leaves an open card open rather than slamming it shut
+   *  under someone mid-answer. */
+  const [minimised, setMinimised] = useState(!startOpen);
 
   const total = questions.length;
   // One page per question, plus a summary — but a single question needs no
@@ -145,10 +162,11 @@ export function UserQuestion({
     onDone(ids);
   };
 
-  // Put aside. The card shrinks to a strip naming what is waiting, and the
-  // transcript underneath — usually where the answer is — comes back into view.
-  // Nothing is sent and nothing is lost: the ticks, the typed line and the page
-  // are all still here when the strip is pressed.
+  // Put aside — which is how it arrives, and where it goes back to on the "–".
+  // A strip naming what is waiting, leaving the transcript beneath it — usually
+  // where the answer is — on screen. Nothing is sent and nothing is lost: the
+  // ticks, the typed line and the page are all still here when the strip is
+  // pressed.
   if (minimised) {
     return (
       <div className="qa-card is-min">

@@ -18,19 +18,18 @@ vi.mock("../lib/bridge", () => ({
 import { UserQuestion } from "./UserQuestion";
 import type { Question } from "./UserQuestion";
 
+const ask = (over: Partial<Question> = {}) =>
+  ({ id: "q1", question: "Which database?", ...over }) as Question;
+
+/** The card opened out. The app never draws it this way on arrival — see the
+ *  arrival tests below — and these run in node with no document, so the strip
+ *  cannot be pressed to get here. */
 const draw = (over: Partial<Question> = {}) =>
-  renderToStaticMarkup(
-    <UserQuestion
-      questions={[
-        {
-          id: "q1",
-          question: "Which database?",
-          ...over,
-        } as Question,
-      ]}
-      onDone={() => {}}
-    />,
-  );
+  renderToStaticMarkup(<UserQuestion questions={[ask(over)]} onDone={() => {}} startOpen />);
+
+/** The card exactly as a question arrives: nothing passed but the question. */
+const arrive = (over: Partial<Question> = {}) =>
+  renderToStaticMarkup(<UserQuestion questions={[ask(over)]} onDone={() => {}} />);
 
 describe("UserQuestion", () => {
   it("puts a labelled choice on the button and its description under it", () => {
@@ -84,5 +83,38 @@ describe("a tap is a choice, not an answer", () => {
   it("keeps the send button dead until something is picked", () => {
     const html = draw({ options: ["a", "b"] });
     expect(html).toMatch(/<button[^>]*class="ask-btn"[^>]*disabled/);
+  });
+});
+
+describe("a question arrives put aside", () => {
+  it("comes as the strip, not the question opened out", () => {
+    // It used to arrive open, above the composer, and the conversation holding
+    // the answer went off screen at the moment it was needed.
+    const html = arrive({ options: ["Postgres", "SQLite"] });
+    expect(html).toContain("qa-card is-min");
+    expect(html).toContain("qa-restore");
+    expect(html).not.toContain('role="alertdialog"');
+  });
+
+  it("draws none of the controls, so there is nothing to mis-tap", () => {
+    const html = arrive({ options: ["Postgres", "SQLite"] });
+    expect(html).not.toContain("qa-options");
+    expect(html).not.toContain("qa-input");
+    expect(html).not.toContain("ask-btn");
+  });
+
+  it("still says what is waiting", () => {
+    // The whole point of a strip over nothing at all: one line of the question,
+    // the pulsing dot, and the word that says pressing it answers.
+    const html = arrive();
+    expect(html).toContain("Which database?");
+    expect(html).toContain("qa-dot");
+    expect(html).toContain("Answer");
+  });
+
+  it("opens on request, controls and all", () => {
+    const html = draw({ options: ["Postgres", "SQLite"] });
+    expect(html).toContain('role="alertdialog"');
+    expect(html).not.toContain("is-min");
   });
 });
