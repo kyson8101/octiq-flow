@@ -11,7 +11,7 @@
 //
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
 import { workingLine } from "../lib/working";
@@ -59,22 +59,26 @@ export type ModelChoice = {
   model: string;
   /** What the backend passes as --model / -m. Empty = the agent's own default. */
   flag: string;
+  /** The one line under the name. A tile in the desktop dropdown has room for
+   *  the name alone; the phone's list is a row per model, and a row of names
+   *  with nothing under them says no more than the flag did. */
+  hint: string;
 };
 
 export const MODELS: ModelChoice[] = [
-  { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus", flag: "opus" },
-  { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet", flag: "sonnet" },
-  { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku" },
-  { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable" },
-  { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "" },
+  { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus", flag: "opus", hint: "for complex work" },
+  { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet", flag: "sonnet", hint: "the everyday balance" },
+  { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku", hint: "fastest, for quick answers" },
+  { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable", hint: "for the toughest problems" },
+  { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "", hint: "whatever the CLI picks" },
   // Codex's three GPT-5.6 models, in the order its own model list puts them:
   // Sol is the frontier one, Terra the everyday balance, Luna the fast and
   // cheap one. The tile shows the short name because the tab above it already
   // says Codex — the flag carries the full slug.
-  { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol" },
-  { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra" },
-  { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna" },
-  { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "" },
+  { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol", hint: "the frontier one" },
+  { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra", hint: "the everyday balance" },
+  { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna", hint: "fast and cheap" },
+  { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "", hint: "whatever the CLI picks" },
 ];
 
 /** The saved choice, if it is still one of the rows above.
@@ -199,6 +203,13 @@ function AccessList({
         >
           <span className="picker-name">{p.label}</span>
           <span className="picker-model">{p.hint}</span>
+          {/* The same mark the model list and the effort list use. A row that
+              is merely tinted reads as hovered; a tick reads as chosen. */}
+          {p.id === access && (
+            <span className="picker-tick" aria-hidden="true">
+              ✓
+            </span>
+          )}
         </button>
       ))}
 
@@ -1308,14 +1319,12 @@ export function Composer({
                     you reached the level you were heading for. The scrim
                     closes it, the same as anywhere else. */}
                 <div className="picker-menu is-effort" role="dialog" aria-label="Effort">
-                  {started && (
-                    <div className="picker-note">
-                      {choice.agent === "claude"
-                        ? "Changes this chat straight away"
-                        : "Applies from your next message"}
-                    </div>
-                  )}
-                  <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
+                  <EffortSlider
+                    agent={choice.agent}
+                    effort={effort}
+                    onEffort={onEffort}
+                    started={!!started}
+                  />
                 </div>
               </>
             )}
@@ -1481,16 +1490,6 @@ export function Composer({
   );
 }
 
-/** Phone only: the same options as the three pickers in the wide bar, stacked,
- *  because a sheet has the room a 360px bar does not.
- *
- *  TWO parts, not one scrolling box. All three controls plus the hints that say
- *  what each row does are taller than a phone, and Done used to sit at the end
- *  of that scroll — so the one button that closes the sheet was the one thing
- *  you could not see. The options scroll inside `.sheet-body`; `.sheet-foot`
- *  does not move. The stylesheet also runs a tighter scale in here than the
- *  desktop dropdowns use: padding gives way, never the hints.
- */
 /** Somebody else joining: two figures, and a plus for the one who is not here
  *  yet. Named on the button rather than in the drawing — the convention every
  *  other icon button in this composer already keeps. */
@@ -1536,6 +1535,26 @@ function RestartIcon() {
   );
 }
 
+/** Phone only: the same settings as the pickers in the wide bar — but as a
+ *  STACK OF PAGES rather than one long scroll.
+ *
+ *  All three lived in one scroller, in the order the toolbar happened to put
+ *  them: the model grid, then five access rows, then effort at the bottom, and
+ *  a Done under all of it. Reaching effort meant scrolling past two decisions
+ *  you were not making, and the sheet was the only surface in the app where
+ *  three questions were asked at once.
+ *
+ *  So the root asks the one question the button is named after — which model —
+ *  and effort and access become ROWS that say what they are set to and open
+ *  their own page. A row that reads "Effort · High" answers the question
+ *  without being opened at all, which the old sheet could only do by drawing
+ *  the whole control.
+ *
+ *  The chrome is one bar rather than two: a title, and one button at its left
+ *  that closes the sheet on the root and goes back on a page. The old Done sat
+ *  in a foot under the scroller — a second commit surface for a sheet where
+ *  every row already takes effect on the tap that chooses it.
+ */
 export function SettingsSheet({
   choice,
   onChoice,
@@ -1567,40 +1586,215 @@ export function SettingsSheet({
   onRestart?: () => void;
   onDone: () => void;
 }) {
+  const [page, setPage] = useState<"root" | "effort" | "access">("root");
+  /** Which way the last move went. The page coming in slides from the side it
+   *  is arriving from, so going back is visibly the reverse of going in. */
+  const [back, setBack] = useState(false);
+
+  const open = (p: "effort" | "access") => {
+    setBack(false);
+    setPage(p);
+  };
+  const pop = () => {
+    setBack(true);
+    setPage("root");
+  };
+
+  // Off the list rather than off the id, so the word in the row is the same
+  // word the page shows. Both can be absent for a moment while a provider
+  // switch is in flight — the level or mode belongs to the OTHER agent until
+  // the fallback lands.
+  const eff = EFFORTS[choice.agent].find((e) => e.id === effort);
+  const acc = accessList.find((a) => a.id === access);
+
+  const title = page === "root" ? "Chat settings" : page === "effort" ? "Effort" : "Access";
+
   return (
     <div className="sheet settings-sheet" role="dialog" aria-label="Chat settings">
-      <div className="sheet-body">
-        <div className="sheet-group">
-          <div className="sheet-head">Model</div>
-          <ModelPicker
-            choice={choice}
-            onChoice={onChoice}
-            missing={missing}
-            noAgents={noAgents}
-            started={started}
-            lite={lite}
-            onLite={onLite}
-            onRestart={onRestart}
-          />
-        </div>
-
-        <div className="sheet-group">
-          <div className="sheet-head">Access</div>
-          <AccessList list={accessList} access={access} onPick={onAccess} />
-        </div>
-
-        <div className="sheet-group">
-          <div className="sheet-head">Effort</div>
-          <EffortSlider agent={choice.agent} effort={effort} onEffort={onEffort} />
-        </div>
+      {/* Fixed, and above the scroller: the way out of the sheet must never be
+          the thing you have to scroll to reach. That was the whole point of
+          the foot this replaces. */}
+      <div className="sheet-nav">
+        <button
+          type="button"
+          className="sheet-nav-btn"
+          aria-label={page === "root" ? "Close" : "Back"}
+          title={page === "root" ? "Close" : "Back"}
+          onClick={page === "root" ? onDone : pop}
+        >
+          {page === "root" ? <CloseIcon /> : <BackIcon />}
+        </button>
+        <span className="sheet-title">{title}</span>
       </div>
 
-      <div className="sheet-foot">
-        <button className="sheet-done" type="button" onClick={onDone}>
-          Done
-        </button>
+      {/* Keyed on the page so React swaps the subtree rather than reusing it:
+          the slide restarts, and a page opened after scrolling the root starts
+          at its own top instead of inheriting how far down you were. */}
+      <div key={page} className={`sheet-body sheet-page ${back ? "is-back" : ""}`}>
+        {page === "root" && (
+          <div className="sheet-group">
+            <div className="sheet-head">Model</div>
+            <ModelPicker
+              rows
+              choice={choice}
+              onChoice={onChoice}
+              missing={missing}
+              noAgents={noAgents}
+              started={started}
+              lite={lite}
+              onLite={onLite}
+              onRestart={onRestart}
+              afterList={
+                <div className="sheet-card">
+                  <SheetLink label="Effort" value={eff?.label} onClick={() => open("effort")} />
+                  <SheetLink label="Access" value={acc?.label} onClick={() => open("access")} />
+                </div>
+              }
+            />
+          </div>
+        )}
+
+        {page === "effort" && (
+          <div className="sheet-group">
+            <EffortList
+              agent={choice.agent}
+              effort={effort}
+              onEffort={onEffort}
+              started={started}
+            />
+          </div>
+        )}
+
+        {page === "access" && (
+          <div className="sheet-group">
+            <div className="sheet-card">
+              <AccessList list={accessList} access={access} onPick={onAccess} />
+            </div>
+            <div className="sheet-foot-note">
+              A chat has no way to answer a permission prompt, so this is what
+              {" "}{AGENT_NAME[choice.agent]} will do unattended.
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+/** A row that says what a setting is on, and opens the page that changes it.
+ *
+ *  The value is the point of it: a settings list you have to open to read is a
+ *  list of questions, and this one answers two of them where it stands. */
+function SheetLink({
+  label,
+  value,
+  onClick,
+}: {
+  label: string;
+  /** Absent only while a provider switch is in flight and the chosen level
+   *  belongs to the agent being left. */
+  value?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className="sheet-link" onClick={onClick}>
+      <span className="sheet-link-name">{label}</span>
+      <span className="sheet-link-value">{value ?? "—"}</span>
+      <ChevronIcon />
+    </button>
+  );
+}
+
+/** Effort on a phone: one row per level, the chosen one ticked.
+ *
+ *  The desktop keeps the slider — it has a mouse, and the scale is worth
+ *  drawing when there is room for it. A phone does not: six rungs across
+ *  360px is a 55px target for a drag, and the labels under them shrink to
+ *  11px to fit. A row is the whole width, says the level in full with the
+ *  sentence that explains it, and takes one tap.
+ *
+ *  Auto is a row here rather than the switch it is on the slider. It was only
+ *  ever a switch because a scale has nowhere to put "stop deciding" — a list
+ *  has: the end of it. */
+export function EffortList({
+  agent,
+  effort,
+  onEffort,
+  started,
+}: {
+  agent: Provider;
+  effort: Effort;
+  onEffort: (e: Effort) => void;
+  /** This conversation already has turns in it, so when the new level takes
+   *  hold is worth saying. */
+  started: boolean;
+}) {
+  return (
+    <>
+      <div className="sheet-card">
+        {EFFORTS[agent].map((e) => (
+          <button
+            key={e.id}
+            type="button"
+            role="menuitemradio"
+            aria-checked={e.id === effort}
+            className={`picker-item ${e.id === effort ? "is-on" : ""}`}
+            onClick={() => {
+              // A tap on the level already on is not a change, and putting it
+              // through would restart a Codex process to arrive where it is.
+              if (e.id === effort) return;
+              if (e.id === "ultracode") quake();
+              onEffort(e.id);
+            }}
+          >
+            <span className="picker-name">{e.label}</span>
+            <span className="picker-model">{e.hint}</span>
+            {e.id === effort && (
+              <span className="picker-tick" aria-hidden="true">
+                ✓
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* What the whole scale costs, and — once there is a chat to change —
+          when the change lands in it. */}
+      <div className="sheet-foot-note">
+        Higher effort means more thorough answers, but takes longer and uses your limits faster.
+        {started &&
+          (agent === "claude"
+            ? " Changes this chat straight away."
+            : " Applies from your next message.")}
+      </div>
+    </>
+  );
+}
+
+/** Back, close, and into a page: the three moves this sheet can make. Drawn
+ *  here rather than pulled from the toolbar's icons because these are chrome,
+ *  and chrome is thinner than a control. */
+function BackIcon() {
+  return (
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m15 18-6-6 6-6" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg className="sheet-link-caret" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m9 18 6-6-6-6" />
+    </svg>
   );
 }
 
@@ -1624,6 +1818,8 @@ function ModelPicker({
   lite,
   onLite,
   onRestart,
+  rows,
+  afterList,
 }: {
   choice: ModelChoice;
   onChoice: (m: ModelChoice) => void;
@@ -1639,6 +1835,16 @@ function ModelPicker({
   /** End the running agent, keeping the conversation. Absent when there is no
    *  process to end. */
   onRestart?: () => void;
+  /** Draw the models as full-width rows with their hints, rather than as the
+   *  grid of name tiles the dropdown uses. The phone's sheet sets it. */
+  rows?: boolean;
+  /** Dropped in straight under the model list, above clean-start and restart.
+   *  The sheet puts its effort and access rows here: they are the next thing
+   *  you would look for after the model, and clean-start and restart are about
+   *  the PROCESS rather than the choice, so they belong under both. The slot
+   *  exists because which agent's shelf is showing is this component's own
+   *  state, and the rows above it have to move with it. */
+  afterList?: ReactNode;
 }) {
   const [tab, setTab] = useState<Provider>(choice.agent);
   // Choosing elsewhere — the Agents page, or restoring a chat — moves the tab
@@ -1669,21 +1875,26 @@ function ModelPicker({
         ))}
       </div>
 
-      <div className="mp-grid" role="tabpanel" aria-label={AGENT_NAME[tab]}>
+      {/* Tiles in a dropdown, rows on a phone. A 300px menu can hold five
+          names in a grid you read in one pass; a sheet has the width for the
+          line that says what each model is FOR, and the height to spend on
+          targets a thumb can hit. Same choice, same order, same tick. */}
+      <div className={rows ? "mp-list" : "mp-grid"} role="tabpanel" aria-label={AGENT_NAME[tab]}>
         {list.map((m) => {
           const on = m.id === choice.id;
           return (
             <button
               key={m.id}
               type="button"
-              className={`mp-card ${on ? "is-on" : ""}`}
+              className={`${rows ? "picker-item" : "mp-card"} ${on ? "is-on" : ""}`}
               aria-pressed={on}
               disabled={gone}
               onClick={() => onChoice(m)}
             >
-              <span className="mp-card-name">{m.model}</span>
+              <span className={rows ? "picker-name" : "mp-card-name"}>{m.model}</span>
+              {rows && <span className="picker-model">{m.hint}</span>}
               {on && (
-                <span className="mp-card-tick" aria-hidden="true">
+                <span className={rows ? "picker-tick" : "mp-card-tick"} aria-hidden="true">
                   ✓
                 </span>
               )}
@@ -1691,6 +1902,8 @@ function ModelPicker({
           );
         })}
       </div>
+
+      {afterList}
 
       {/* Under the tiles because it is the same decision as the model: what
           this chat is made of, chosen before it starts. Claude only — Codex
@@ -1874,18 +2087,30 @@ function quake(): void {
  *  in full above it, with the sentence saying what it costs you, because that
  *  is the part a short tick label cannot carry.
  *
- *  The slider only PROPOSES a level; the button under it applies it. Dragging
- *  crosses every rung on the way, and each one used to reach the agent — one
- *  decision left five `/effort` turns in the transcript and restarted the
- *  process five times. Now nothing is sent until you say so. */
+ *  A drag crosses every rung on the way, and each one used to reach the agent
+ *  — one decision left five `/effort` turns in the transcript and restarted
+ *  the process five times. So the level is sent when the gesture ENDS, not
+ *  while it moves: one drag, one change; a tap on a rung or on Auto is its own
+ *  whole gesture and lands at once.
+ *
+ *  It used to be a button UNDER the slider that sent it, which inside the
+ *  settings sheet put a second commit button above Done — every other row in
+ *  that sheet takes effect on the tap that chooses it, and this one alone
+ *  asked twice, with the two buttons stacked and neither saying which was
+ *  which. Letting go is the confirmation now, and the hollow fill under your
+ *  thumb is what says it has not been sent yet. */
 function EffortSlider({
   agent,
   effort,
   onEffort,
+  started,
 }: {
   agent: Provider;
   effort: Effort;
   onEffort: (e: Effort) => void;
+  /** This conversation already has turns in it, so when the new level takes
+   *  hold is worth saying. */
+  started: boolean;
 }) {
   const steps = effortSteps(agent);
   const autoRow = EFFORTS[agent].find((e) => e.id === "auto");
@@ -1921,9 +2146,8 @@ function EffortSlider({
   }, [draft, agent]);
 
   const cur = isAuto && autoRow ? autoRow : steps[at];
-  /** What the chat is running right now, for the button that offers to change
-   *  it. Absent only while a provider switch is mid-flight. */
-  const live = EFFORTS[agent].find((e) => e.id === effort);
+  /** Moved, but not let go of yet. The fill goes hollow while this is true, so
+   *  a slider under your thumb is never read as the level in force. */
   const dirty = draft !== effort;
   const last = steps.length - 1;
   const pct = (i: number) => (i / Math.max(1, last)) * 100;
@@ -1938,8 +2162,37 @@ function EffortSlider({
     setDraft(id);
   };
 
+  /** The one place a level reaches the agent: the end of the gesture that chose
+   *  it. Off `shown` rather than `draft` because a release lands in the same
+   *  tick as the move before it, and state would still hold the old value. */
+  const release = () => {
+    if (shown.current !== effort) onEffort(shown.current);
+  };
+
+  /** A drag can end anywhere — past the end of the track, off the sheet, out of
+   *  the window — so the release is listened for on the window rather than on
+   *  the input, which only hears the ones that end on top of it. */
+  const armRelease = () => {
+    const up = () => {
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      release();
+    };
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  };
+
   return (
     <div className={`eff ${isAuto ? "is-auto" : ""} ${dirty ? "is-draft" : ""}`}>
+      {/* Belongs to the control, not to one of the two things that hold it:
+          the dropdown said when a change lands and the phone's sheet did not,
+          which is the same control answering the same question twice. */}
+      {started && (
+        <div className="picker-note">
+          {agent === "claude" ? "Changes this chat straight away" : "Applies from your next message"}
+        </div>
+      )}
+
       <div className="eff-head">
         <span className="eff-name">{cur.label}</span>
         <span className="eff-hint">{cur.hint}</span>
@@ -1966,6 +2219,10 @@ function EffortSlider({
           aria-label="Effort"
           aria-valuetext={cur.label}
           onChange={(ev) => pickAt(Number(ev.target.value))}
+          onPointerDown={armRelease}
+          /* Arrow keys step it one rung at a time, and a held key repeats —
+             so the keyboard's end of the gesture is the key coming back up. */
+          onKeyUp={release}
         />
       </div>
 
@@ -1985,7 +2242,10 @@ function EffortSlider({
                   : { left: `${pct(i)}%`, transform: "translateX(-50%)" }
             }
             title={`${e.label} — ${e.hint}`}
-            onClick={() => pickAt(i)}
+            onClick={() => {
+              pickAt(i);
+              release();
+            }}
           >
             {e.short}
           </button>
@@ -2002,6 +2262,7 @@ function EffortSlider({
             const id = isAuto ? steps[held].id : "auto";
             shown.current = id;
             setDraft(id);
+            release();
           }}
         >
           <span className="eff-auto-text">
@@ -2016,13 +2277,6 @@ function EffortSlider({
           <span className="eff-switch" aria-hidden="true" />
         </button>
       )}
-
-      {/* The one thing here that reaches the agent. Off, it names the level
-          the chat is actually on, so a slider parked somewhere else is never
-          read as the answer. */}
-      <button type="button" className="eff-apply" disabled={!dirty} onClick={() => onEffort(draft)}>
-        {dirty ? `Change to ${cur.label}` : `${live?.label ?? cur.label} is on`}
-      </button>
     </div>
   );
 }

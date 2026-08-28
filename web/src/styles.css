@@ -2741,12 +2741,14 @@ body {
 }
 
 /* ---- Compact scale, and only in here ------------------------------------
-   The same three controls are dropdowns on a desktop, where each opens alone
-   and has room to breathe. The sheet shows all three at once on the shortest
-   screen the app runs on, so every row gives up a few pixels of padding —
-   never the hint text, which is the part that says what the row does. Rows
-   that carry two lines still land near 44px; only the model tiles are shorter,
-   and those are full-width-thirds, which is an easy target either way. */
+   The controls are dropdowns on a desktop, where each opens alone and has
+   room to breathe. The sheet is narrower and its rows are thumb targets, so a
+   few pixels of padding give way here — never the hint text, which is the part
+   that says what the row does.
+
+   There is less in here than there was: the sheet used to stack all three
+   controls on one screen and needed a tighter scale for every one of them.
+   Each has a page of its own now, so only the model tabs still ask. */
 .settings-sheet .mp {
   gap: 6px;
 }
@@ -2755,34 +2757,193 @@ body {
   padding: 5px 8px;
 }
 
-.settings-sheet .mp-grid {
-  gap: 5px;
+/* ---- The sheet's chrome, and its pages ----------------------------------
+   ONE bar, and it never scrolls: a title, with a single button at its left —
+   an X on the root, a back chevron on a page. The settings sheet used to
+   carry a Done in a foot under the scroller instead, which was a second
+   commit surface for a list where every row already takes effect on the tap
+   that chooses it. The room sheet still has its Done: it holds ONE thing and
+   has no pages, so it needs a way out and not a title bar. */
+.sheet-nav {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  margin-bottom: 2px;
 }
 
-.settings-sheet .mp-card {
-  padding: 7px 9px;
+.sheet-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--fg-0);
 }
 
-.settings-sheet .picker-item {
+.sheet-nav-btn {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.sheet-nav-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* The sheet holds ITS height while the pages inside it change. A page that
+   resized the sheet under your thumb would move the row you were reaching for
+   — and the back button with it — every time you opened one. So a short page
+   leaves space at the bottom rather than pulling the sheet down over it. */
+.settings-sheet {
+  height: min(82vh, 620px);
+}
+
+/* A page arrives from the side it comes from: forward from the right, back
+   from the left, so returning is visibly the reverse of going in. Short and
+   ease-out, and it moves nothing outside the sheet. */
+.sheet-page {
+  animation: sheet-page-in 0.19s ease-out;
+}
+
+.sheet-page.is-back {
+  animation-name: sheet-page-back;
+}
+
+@keyframes sheet-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes sheet-page-back {
+  from {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sheet-page {
+    animation: none;
+  }
+}
+
+/* A block of rows with hairlines between them — the shape a phone draws a
+   list in. An outline rather than a fill: the sheet is already `--bg-1`, and
+   the only tone above it is the one a row hovers to. */
+.sheet-card,
+.mp-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+/* Drawn as a line ON the row rather than as its border: `.picker-item` sets
+   `border: 0` and would win the tie on specificity, and a hairline that starts
+   where the words start — rather than cutting the whole card in two — is what
+   makes a list read as one block of rows. */
+.sheet-card > * + *::before,
+.mp-list > * + *::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 11px;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.sheet-card > .picker-item,
+.mp-list > .picker-item {
+  border-radius: 0;
+  padding: 9px 30px 9px 11px;
+}
+
+/* Its own rule would sit under the line the card already draws there. */
+.sheet-card > .picker-item.is-bypass {
+  margin-top: 0;
+  border-top: 0;
+  padding-right: 11px;
+}
+
+/* Inside a card the tick is what says "this one", so the tint under it would
+   be saying it twice — and on a phone a filled row reads as one being
+   pressed rather than one already chosen. */
+.sheet-card > .picker-item.is-on,
+.mp-list > .picker-item.is-on {
+  background: transparent;
+}
+
+/* A row that says what a setting is on and opens the page that changes it. */
+.sheet-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
-  padding: 6px 9px;
+  padding: 11px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
 }
 
-.settings-sheet .eff-head {
-  padding-bottom: 4px;
+.sheet-link:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
 }
 
-.settings-sheet .eff-marks {
-  margin-top: 2px;
+.sheet-link-name {
+  font-weight: 500;
 }
 
-.settings-sheet .eff-auto {
-  margin-top: 4px;
-  padding: 6px 9px;
+/* The value, and then the chevron: the answer reads before the affordance. */
+.sheet-link-value {
+  margin-left: auto;
+  color: var(--fg-2);
 }
 
-.settings-sheet .eff-apply {
-  margin-top: 6px;
+.sheet-link-caret {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+/* The sentence under a page's list. Not a `.picker-note`: that one is a menu's
+   first row with a seam under it, this is the last word on a whole page. */
+.sheet-foot-note {
+  padding: 10px 4px 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-3);
 }
 
 /* Outside the scroll. The rule is the seam the options slide under, so it is
@@ -2893,11 +3054,15 @@ body {
    second line hanging off the right edge — "thinks longer, costs / more". A
    stacked row reads in one pass and never wraps against itself. */
 .picker-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 1px;
-  padding: 7px 10px;
+  /* Room on the right for the tick, kept whether one is there or not — a
+     label that shifted sideways when it became the chosen one would make
+     every pick look like a layout bug. */
+  padding: 7px 28px 7px 10px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -2934,6 +3099,18 @@ body {
   font-size: 11.5px;
   line-height: 1.35;
   color: var(--fg-3);
+}
+
+/* Centred on the row rather than on its first line, because a row is two
+   lines and the mark belongs to both. */
+.picker-tick {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* ---- Effort meter -------------------------------------------------------
@@ -3248,36 +3425,9 @@ body {
 }
 
 
-/* The only control here that reaches the agent. Full width and named after
-   the level it will set, because a slider that changed nothing yet needs one
-   obvious place to say "that one". Disabled, it is the receipt: the level the
-   chat is running on right now. */
-.eff-apply {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: var(--accent);
-  color: var(--accent-fg);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  text-align: center;
-  cursor: pointer;
-}
-
-.eff-apply:hover:not(:disabled) {
-  filter: brightness(1.1);
-}
-
-.eff-apply:disabled {
-  background: transparent;
-  color: var(--fg-3);
-  cursor: default;
-}
-
-/* An unconfirmed slider must not read as the setting. The fill goes hollow
-   until the button above is pressed. */
+/* A slider still under your thumb must not read as the setting. The fill goes
+   hollow while it is being moved and fills in on release, which is the moment
+   the level is actually sent. */
 .eff.is-draft .eff-fill {
   background: var(--accent-tint);
 }
@@ -3925,7 +4075,9 @@ body.is-ultra .eff {
   justify-content: space-between;
   gap: 10px;
   margin-top: 4px;
-  padding-top: 9px;
+  /* No tick ever lands on this one — it is a switch — so it keeps the even
+     padding the tick's reservation takes off the rows above it. */
+  padding: 9px 10px 7px;
   border-top: 1px solid var(--border);
 }
 
