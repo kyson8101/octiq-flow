@@ -4043,10 +4043,35 @@ body.is-ultra .eff {
   cursor: pointer;
 }
 
+/* A box of its own 15px, because the two folders live one on top of the other
+   inside it — shut and open, cross-fading rather than swapping. Two absolutely
+   positioned children measure nothing, so the box has to carry the size. */
 .proj-icon {
+  position: relative;
   display: inline-flex;
   flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
   color: var(--fg-3);
+}
+
+.proj-icon svg {
+  position: absolute;
+  inset: 0;
+  transition: opacity 150ms ease;
+}
+
+/* Shut is the resting state, so the open folder is the one that is hidden. */
+.proj-icon .folder-open {
+  opacity: 0;
+}
+
+.proj-icon.is-open .folder-shut {
+  opacity: 0;
+}
+
+.proj-icon.is-open .folder-open {
+  opacity: 1;
 }
 
 .proj.is-on .proj-btn {
@@ -4103,9 +4128,7 @@ body.is-ultra .eff {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 26px;
   height: 26px;
-  margin-right: 3px;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -4118,13 +4141,28 @@ body.is-ultra .eff {
      is what the `hover: none` block at the end of this section is for. On a
      machine WITH a pointer they were two grey shapes on every row, competing
      with the one mark that says something (the chat count).
-     They keep their box while hidden, so nothing shifts when they arrive. */
+
+     They hold NO width while hidden, and that is the point: arriving, each one
+     opens from nothing to 26px, the row's flexible name gives up exactly that
+     much, and the chat count ahead of them is carried left by the same frames.
+     One movement, laid out rather than faked — nothing overlaps and nothing
+     lands anywhere the layout would not have put it anyway.
+
+     Two curves on purpose. The width is a plain ease-out, because it is what
+     moves the count and an overshoot there would end with the number wobbling
+     back. The icons themselves get the faintest spring, which is all a 26px
+     control needs to read as popping out rather than fading in. */
+  width: 0;
+  margin-right: 0;
+  overflow: hidden;
   opacity: 0;
-  transform: translateX(4px);
+  transform: scale(0.82);
   pointer-events: none;
   transition:
-    opacity 140ms ease,
-    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin-right 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(0.34, 1.24, 0.64, 1),
     background-color 120ms ease,
     color 120ms ease;
 }
@@ -4133,14 +4171,17 @@ body.is-ultra .eff {
    opacity alone would leave invisible. */
 .proj:hover .proj-add,
 .proj-add:focus-visible {
+  width: 26px;
+  margin-right: 3px;
   opacity: 1;
   transform: none;
   pointer-events: auto;
   /* On the way IN only — the delay lives here, not on the base rule, so they
-     leave together instead of the gear lingering after the plus. They slide in
-     from the right edge, so the plus is nearest where they come from and
-     arrives first; the gear follows it by a frame. */
-  transition-delay: 45ms;
+     leave together instead of the gear lingering after the plus. They open from
+     the right edge, so the plus is nearest where they come from and goes first;
+     the gear follows it by a beat. Small enough that the count reads as being
+     pushed once, not twice. */
+  transition-delay: 40ms;
 }
 
 .proj:hover .proj-add + .proj-add,
@@ -4154,17 +4195,72 @@ body.is-ultra .eff {
 }
 
 /* ---- Chats ------------------------------------------------------------- */
-/* Indented so a chat title begins exactly under its project's title. The mark
-   in front of each title lives inside that indent (7px wide + a 4px gap), so
-   the padding here is the rest of it — titles line up whether or not a row is
-   marked. */
+/* The fold. Opening a folder is a move, so it moves.
+
+   `grid-template-rows: 0fr → 1fr` is the whole trick: a height transition to a
+   height nobody had to measure. A project holding two chats and one holding
+   twelve open in the same quarter second, with no ResizeObserver and no
+   hard-coded max-height to clip the thirteenth. The list inside IS the grid
+   row, which is why it carries the `overflow: hidden` — and the `min-height: 0`
+   with it, since a grid item otherwise refuses to go below its content and
+   there is nothing left to animate.
+
+   Shut, `visibility: hidden` takes the rows out of the tab order and out of the
+   screen reader's list, which is the job not being in the DOM used to do. Its
+   delay holds that off until they have finished leaving; opening drops the
+   delay, so the first frame of the slide is already reachable. */
+.chat-fold {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 240ms;
+}
+
+.chat-fold > .chat-list {
+  min-height: 0;
+  overflow: hidden;
+  /* With the slide, not instead of it. Opening, the rows arrive rather than
+     being wiped out from under the project row; shutting, they are gone before
+     the last pixels of height are, which is what keeps a row sliced in half off
+     the screen. */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chat-fold.is-open {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s;
+}
+
+.chat-fold.is-open > .chat-list {
+  opacity: 1;
+  transition: opacity 200ms ease 40ms;
+}
+
+/* A chat row runs edge to edge in the same box its project row does, so the two
+   hover pills share their left edge instead of one being inset from the other.
+   What says a chat is INSIDE the project is the mark column below, not a row
+   shoved sideways. */
 .chat-list {
-  padding-left: 13px;
+  padding-left: 0;
 }
 
 .chat {
   display: flex;
   align-items: center;
+  /* This 8px, the 7px mark and the 9px gap after it come to 24px — which is
+     exactly what the project row spends before ITS name: 4px of button padding,
+     a 15px folder icon, the same 9px gap. So the titles line up AND the dot
+     lands on the middle of the folder-icon column, under the folder it belongs
+     to. It was 13 + 7 + 4, which lined the titles up but left every dot 5px
+     right of the icons above it: aligned with nothing, and near enough to the
+     icon column to read as a mistake rather than a decision. */
+  padding-left: 8px;
   border-radius: var(--r-sm);
 }
 
@@ -4207,7 +4303,8 @@ body.is-ultra .eff {
   flex: 0 0 auto;
   width: 7px;
   height: 7px;
-  margin-right: 4px;
+  /* The same gap the project row leaves between its folder and its name. */
+  margin-right: 9px;
   border-radius: 50%;
   background: transparent;
 }
@@ -4227,6 +4324,19 @@ body.is-ultra .eff {
 .chat.is-busy .chat-mark {
   background: var(--ok);
   animation: chat-pulse 1.4s ease-in-out infinite;
+}
+
+/* Except inside a folder that is shut. Those rows are in the DOM now — the fold
+   above needs something to open — and an infinite animation on a row nobody can
+   see is work for nothing. Nothing is lost with it: a shut folder's working
+   chat is already reported by the count on the project row, which is the whole
+   reason that count exists.
+
+   It has to sit AFTER the rule it overrides. Both selectors weigh the same
+   (`:not()` counts as what is inside it), so the tie goes to whichever comes
+   last, and up in the fold block this one quietly lost. */
+.chat-fold:not(.is-open) .chat-mark {
+  animation: none;
 }
 
 @keyframes chat-pulse {
@@ -4261,15 +4371,17 @@ body.is-ultra .eff {
   background: transparent;
   color: var(--fg-3);
   cursor: pointer;
-  /* Already hover-only; it now arrives the same way the project row's buttons
-     do, so a sidebar full of rows does not have one kind snapping in and
-     another sliding. */
+  /* Already hover-only; it pops in the way the project row's buttons do, so a
+     sidebar full of rows has one arrival and not two.
+     It keeps its box, though, where those give theirs up: a project row has a
+     count to push, and a chat row has only its title — which would re-measure
+     its ellipsis every time the pointer crossed it. */
   opacity: 0;
-  transform: translateX(4px);
+  transform: scale(0.82);
   pointer-events: none;
   transition:
-    opacity 140ms ease,
-    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(0.34, 1.24, 0.64, 1),
     background-color 120ms ease,
     color 120ms ease;
 }
@@ -4357,12 +4469,13 @@ body.is-ultra .eff {
   }
 }
 
-/* Long lists fold; this opens them. Sits in the same column as the titles,
-   which start after the mark's 11px. */
+/* Long lists fold; this opens them. Sits in the same column as the titles. */
 .chat-more {
   height: 30px;
-  /* 11px = the mark's width plus its gap, so this starts under the titles. */
-  padding: 0 4px 0 15px;
+  /* 28px = the chat row's own 8px, the 7px mark, the 9px gap after it and the
+     4px the title button pads itself by. It read as 11px + a bit for years and
+     started 8px left of the titles it belongs under. */
+  padding: 0 4px 0 28px;
   border: 0;
   background: transparent;
   color: var(--fg-3);
@@ -4386,10 +4499,24 @@ body.is-ultra .eff {
     transform: none;
     pointer-events: auto;
   }
+
+  /* And with them permanently open, the row's count sits where the pointer
+     version pushes it to — the box is theirs to hold, not to borrow. */
+  .proj-add {
+    width: 26px;
+    margin-right: 3px;
+  }
 }
 
-/* The fade stays — it is the slide that is motion. */
+/* The fade stays — it is the movement that goes. Which means the buttons get
+   their box back and keep it: a width that snaps from 0 to 26 is the count
+   jumping sideways, and jumping is the one thing this is asked not to do. */
 @media (prefers-reduced-motion: reduce) {
+  .proj-add {
+    width: 26px;
+    margin-right: 3px;
+  }
+
   .proj-add,
   .chat-del {
     transform: none;
@@ -4397,6 +4524,17 @@ body.is-ultra .eff {
       opacity 140ms ease,
       background-color 120ms ease,
       color 120ms ease;
+  }
+
+  /* The fold stops sliding and the folder stops cross-fading — both simply are
+     what they are. Visibility flips with the rest, which is the one thing the
+     delay above was holding it behind. */
+  .chat-fold,
+  .chat-fold.is-open,
+  .chat-fold > .chat-list,
+  .chat-fold.is-open > .chat-list,
+  .proj-icon svg {
+    transition: none;
   }
 }
 

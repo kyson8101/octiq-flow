@@ -224,8 +224,8 @@ function ProjectNode({
           onClick={() => onPickProject(project.id)}
           onDoubleClick={() => onToggle(project.id)}
         >
-          <span className="proj-icon" aria-hidden="true">
-            <FolderIcon open={showing} />
+          <span className={`proj-icon ${showing ? "is-open" : ""}`} aria-hidden="true">
+            <FolderIcon />
           </span>
           <span className="proj-name">{project.name}</span>
           {/* How many chats are in here. Written at the right edge of the name,
@@ -271,86 +271,110 @@ function ProjectNode({
         </button>
       </div>
 
-      {showing && (
-        <ul className="chat-list">
-          {visible.map((c) => {
-            // Deleted a moment ago and not gone yet. The row is left exactly
-            // where it stood — see the countdown ring below.
-            const going = deleting.has(c.id);
-            return (
-              <li key={c.id}>
-                <div
-                  className={[
-                    "chat",
-                    c.id === currentConversation ? "is-on" : "",
-                    running.has(c.id) ? "is-live" : "",
-                    busy.has(c.id) ? "is-busy" : "",
-                    going ? "is-going" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                >
-                  {/* State in front of the title, where the eye starts: a dot
-                      for the chat you are in, a grey one for a session that is
-                      up but idle, and a pulsing green one for a chat still
-                      working — which is the whole point of leaving them
-                      running. It sits in the indent, so the titles stay lined
-                      up under the project name whether or not a row has a
-                      mark. */}
-                  <span
-                    className="chat-mark"
-                    aria-hidden="true"
-                    title={
-                      busy.has(c.id) ? "working" : running.has(c.id) ? "session running" : undefined
-                    }
-                  />
-                  <button className="chat-btn" type="button" onClick={() => onPickConversation(c)}>
-                    <span className="chat-title">{c.title}</span>
-                  </button>
-                  {/* The same button, twice: it deletes, and while the delete
-                      is still counting down it takes it back. Nothing moves
-                      between the two presses, so the second one is aimed at
-                      exactly where the first one landed. */}
-                  <button
-                    className={`chat-del ${going ? "is-going" : ""}`}
-                    type="button"
-                    title={going ? "Cancel delete" : "Delete this chat"}
-                    aria-label={going ? "Cancel delete" : "Delete this chat"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDelete(c.id);
-                    }}
+      {/* Mounted whenever the project HAS chats, open or shut, because a folder
+          that opens has to have something to open — a list that appears at full
+          height the frame the class lands has nothing to animate from. Shut, it
+          is a grid row of zero height with `visibility: hidden` over it, so it
+          is out of the tab order and out of the screen reader's list exactly as
+          it was when it did not exist. */}
+      {chats.length > 0 && (
+        <div className={`chat-fold ${showing ? "is-open" : ""}`}>
+          <ul className="chat-list">
+            {visible.map((c) => {
+              // Deleted a moment ago and not gone yet. The row is left exactly
+              // where it stood — see the countdown ring below.
+              const going = deleting.has(c.id);
+              return (
+                <li key={c.id}>
+                  <div
+                    className={[
+                      "chat",
+                      c.id === currentConversation ? "is-on" : "",
+                      running.has(c.id) ? "is-live" : "",
+                      busy.has(c.id) ? "is-busy" : "",
+                      going ? "is-going" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                   >
-                    {going ? <DrainIcon ms={deleteMs} /> : <CloseIcon />}
-                  </button>
-                </div>
-              </li>
-            );
-          })}
+                    {/* State in front of the title, where the eye starts: a dot
+                        for the chat you are in, a grey one for a session that
+                        is up but idle, and a pulsing green one for a chat still
+                        working — which is the whole point of leaving them
+                        running. It sits in the indent, on the middle of the
+                        folder-icon column above, so a dot is under the folder
+                        it belongs to and the titles still line up under the
+                        project name whether or not a row has a mark. */}
+                    <span
+                      className="chat-mark"
+                      aria-hidden="true"
+                      title={
+                        busy.has(c.id)
+                          ? "working"
+                          : running.has(c.id)
+                            ? "session running"
+                            : undefined
+                      }
+                    />
+                    <button
+                      className="chat-btn"
+                      type="button"
+                      onClick={() => onPickConversation(c)}
+                    >
+                      <span className="chat-title">{c.title}</span>
+                    </button>
+                    {/* The same button, twice: it deletes, and while the delete
+                        is still counting down it takes it back. Nothing moves
+                        between the two presses, so the second one is aimed at
+                        exactly where the first one landed. */}
+                    <button
+                      className={`chat-del ${going ? "is-going" : ""}`}
+                      type="button"
+                      title={going ? "Cancel delete" : "Delete this chat"}
+                      aria-label={going ? "Cancel delete" : "Delete this chat"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDelete(c.id);
+                      }}
+                    >
+                      {going ? <DrainIcon ms={deleteMs} /> : <CloseIcon />}
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
 
-          {chats.length > SHOW_AT_FIRST && (
-            <li>
-              <button className="chat-more" type="button" onClick={() => setShowAll((v) => !v)}>
-                {hidden ? "Show more" : "Show less"}
-              </button>
-            </li>
-          )}
-        </ul>
+            {chats.length > SHOW_AT_FIRST && (
+              <li>
+                <button className="chat-more" type="button" onClick={() => setShowAll((v) => !v)}>
+                  {hidden ? "Show more" : "Show less"}
+                </button>
+              </li>
+            )}
+          </ul>
+        </div>
       )}
     </li>
   );
 }
 
-function FolderIcon({ open }: { open: boolean }) {
-  return open ? (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 8V6a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v1" />
-      <path d="M3.5 20h15.3a1.5 1.5 0 0 0 1.45-1.1l1.35-5A1.5 1.5 0 0 0 20.15 12H5.6a1.5 1.5 0 0 0-1.45 1.1l-1.6 5.9" />
-    </svg>
-  ) : (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 7a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-    </svg>
+/** Both folders, stacked, one fading out as the other fades in.
+ *
+ *  Swapping which SVG is mounted is instant, and an instant swap sitting next
+ *  to a list that takes a quarter of a second to open reads as two separate
+ *  events rather than one folder opening. Which is on top is decided in CSS,
+ *  off `.proj-icon.is-open` — see the cross-fade there. */
+function FolderIcon() {
+  return (
+    <>
+      <svg className="folder-shut" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 7a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+      </svg>
+      <svg className="folder-open" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3 8V6a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v1" />
+        <path d="M3.5 20h15.3a1.5 1.5 0 0 0 1.45-1.1l1.35-5A1.5 1.5 0 0 0 20.15 12H5.6a1.5 1.5 0 0 0-1.45 1.1l-1.6 5.9" />
+      </svg>
+    </>
   );
 }
 
