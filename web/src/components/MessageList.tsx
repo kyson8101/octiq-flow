@@ -453,9 +453,13 @@ function TurnView({
   last,
   busy,
   tints,
+  fresh,
 }: {
   messages: Message[];
   kids: Kids;
+  /** Arrived while the transcript was already on screen, rather than having
+   *  been there when it opened. Only these animate in — see `justArrived`. */
+  fresh?: boolean;
   /** The turn at the bottom — the only one a running agent can still add to. */
   last?: boolean;
   /** Whether the chat is working. A turn can only be waiting its turn while
@@ -537,7 +541,9 @@ function TurnView({
 
   return (
     <article
-      className={`msg msg-${role} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""}`}
+      className={`msg msg-${role} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
+        fresh ? "is-new" : ""
+      }`}
       data-tint={tint}
     >
       {/* Above your own words, because it changes how they read: "check this"
@@ -682,6 +688,54 @@ function groupTurns(messages: Message[]): Message[][] {
     else turns.push([m]);
   }
   return turns;
+}
+
+/** The turns that ARRIVED, as opposed to the ones that were already there.
+ *
+ *  A message you just sent should come in rather than blink into being, and
+ *  every other way a turn reaches the screen should not. Opening a chat mounts
+ *  its whole transcript in one frame, and thirty bubbles rising together is not
+ *  an arrival, it is a stampede — the same for switching to a chat, and for a
+ *  resume that lands several turns at once.
+ *
+ *  So the test is deliberately narrow: exactly one turn appended to the end of
+ *  what was already on screen. That is what sending is, and what an agent's
+ *  reply is, and it is nothing else. A whole list being replaced fails it, and
+ *  the cost of failing it is that something does not animate — never that
+ *  everything does.
+ *
+ *  Marked once and marked for good. The class has to outlive the re-renders
+ *  streaming causes, because an animation cut off two frames in looks worse
+ *  than none at all, and leaving it on costs nothing: an animation runs when it
+ *  is applied to an element, and the turn keeps the same DOM node.
+ *
+ *  The ref is written during the render, which StrictMode's double pass handles
+ *  by itself — the second pass sees the list it just recorded, is not one turn
+ *  longer than it, and marks nothing.
+ */
+function useJustArrived(turns: Message[][]) {
+  const before = useRef<string[] | null>(null);
+  const fresh = useRef<Set<string>>(new Set());
+
+  const ids = turns.map((t) => t[0].id);
+  const was = before.current;
+  before.current = ids;
+
+  const arrived = justAppended(was, ids);
+  if (arrived) fresh.current.add(arrived);
+  return fresh.current;
+}
+
+/** The single turn appended to the end of `was`, or null when `ids` is anything
+ *  else at all: a different list, the same list, several at once, or the first
+ *  draw, which has nothing to be different from.
+ *
+ *  Separated out and exported for its test — `useJustArrived` is the only
+ *  caller. The rule is one line but the cases it has to refuse are not. */
+export function justAppended(was: string[] | null, ids: string[]): string | null {
+  if (!was || ids.length !== was.length + 1) return null;
+  for (let i = 0; i < was.length; i++) if (was[i] !== ids[i]) return null;
+  return ids[ids.length - 1];
 }
 
 export function MessageList({
@@ -838,6 +892,8 @@ export function MessageList({
   // appearance and a turn cannot see who came before it.
   const tints = useMemo(() => seatTints(messages), [messages]);
 
+  const fresh = useJustArrived(turns);
+
   // The short things the CLI has said lately, for the `/config` panel to find
   // its confirmations among — `Set Verbose output to true`.
   //
@@ -874,6 +930,7 @@ export function MessageList({
               last={i === turns.length - 1}
               busy={busy}
               tints={tints}
+              fresh={fresh.has(turn[0].id)}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once

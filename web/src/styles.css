@@ -1012,6 +1012,36 @@ body {
   white-space: pre-wrap;
 }
 
+/* A message you just sent arrives rather than appearing. Up and in, because the
+   composer it came from is below the transcript — and slight, because the
+   bubble is already where it belongs and this only says it has just got there.
+   Which turn counts as having arrived is decided in `useJustArrived`, and it is
+   deliberately hard to qualify: a transcript opening is not an arrival.
+
+   Only your own bubble reads the class. An agent's reply gets it too, and is
+   welcome to it — a reply arrives a word at a time and has nothing to announce
+   by moving. */
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.msg-user.is-new {
+  animation: bubble-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-user.is-new {
+    animation: none;
+  }
+}
+
 /* A long message of yours — a pasted log, a pasted json — kept to a readable
    head with the rest one click away. The cut itself is made on the text (see
    lib/clip), so the button only ever appears when there really is more. */
@@ -3648,15 +3678,29 @@ body.is-ultra .eff {
     box-shadow: none;
     width: 260px;
     flex: 0 0 auto;
+    /* It slides out of the row rather than narrowing to nothing. The width is
+       never touched, so nothing inside it reflows on the way — a column of
+       project names squashing as it leaves is what made this a `display: none`
+       for so long. The negative margin below is the only thing that changes,
+       and it does two jobs on one clock: it carries the column left, and it is
+       the space the chat grows into behind it. `.app` already clips its own
+       overflow, so the part that has left is simply not drawn. */
+    transition: margin-left 260ms cubic-bezier(0.22, 1, 0.36, 1);
   }
 
-  /* Put away, and the chat has the width. Gone rather than narrowed: a width
-     transition reflows every row on the way out, and a column of project names
-     squashing to nothing reads worse than one that simply goes. The way back
-     is the project name in the top bar, which gets its caret — and its click —
-     back the moment this is on. */
+  /* Put away, and the chat has the width. The way back is the project name in
+     the top bar, which gets its caret — and its click — back the moment this
+     is on. */
   .app.nav-shut .sidebar {
-    display: none;
+    margin-left: -260px;
+    /* Out of the tab order once it has finished leaving, which is the one thing
+       `display: none` used to do for free. The delay is the slide's length on
+       the way out and gone on the way back, so the column is reachable from the
+       first frame of its return. */
+    visibility: hidden;
+    transition:
+      margin-left 260ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 260ms;
   }
 
   .scrim {
@@ -4534,6 +4578,13 @@ body.is-ultra .eff {
   .chat-fold > .chat-list,
   .chat-fold.is-open > .chat-list,
   .proj-icon svg {
+    transition: none;
+  }
+
+  /* And the whole column stops sliding — both ways it moves: out of the row on
+     a wide screen, and in from the edge as a drawer on a narrow one. */
+  .sidebar,
+  .app.nav-shut .sidebar {
     transition: none;
   }
 }
