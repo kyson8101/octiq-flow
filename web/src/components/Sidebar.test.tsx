@@ -25,7 +25,7 @@ const html = (
     conversations?: Map<string, Conversation[]>;
     running?: Set<string>;
     busy?: Set<string>;
-    deleting?: string | null;
+    deleting?: ReadonlySet<string>;
     deleteMs?: number;
     expanded?: Set<string>;
   } = {},
@@ -109,20 +109,20 @@ describe("Sidebar", () => {
   };
 
   it("keeps the row of a chat that is on its way out", () => {
-    const out = html({ ...open, deleting: "a" });
+    const out = html({ ...open, deleting: new Set(["a"]) });
     expect(out).toContain("chat is-going");
     // Still named, still in its place — nothing has happened to it yet.
     expect(out).toContain(">a</span>");
   });
 
   it("turns that row's × into the way back", () => {
-    const out = html({ ...open, deleting: "a" });
+    const out = html({ ...open, deleting: new Set(["a"]) });
     expect(out).toContain('aria-label="Cancel delete"');
     expect(out).toContain("chat-drain-arc");
   });
 
   it("leaves every other row's × alone", () => {
-    const out = html({ ...open, deleting: "a" });
+    const out = html({ ...open, deleting: new Set(["a"]) });
     expect(out).toContain('aria-label="Delete this chat"');
     // One counting down, one not — not two of either.
     expect(out.match(/chat-drain-arc/g)).toHaveLength(1);
@@ -131,7 +131,17 @@ describe("Sidebar", () => {
   it("counts down for as long as the delete waits", () => {
     // The ring is the only clock on screen; the one that commits the delete
     // lives with the chat list, and this has to be told the same number.
-    expect(html({ ...open, deleting: "a", deleteMs: 4200 })).toContain("4200ms");
+    expect(html({ ...open, deleting: new Set(["a"]), deleteMs: 4200 })).toContain("4200ms");
+  });
+
+  it("counts every deleted row down at once", () => {
+    // Clearing out a handful of chats is several presses in a row. The second
+    // press must not settle the first: both rows stay, both keep counting, and
+    // either one can still be taken back.
+    const out = html({ ...open, deleting: new Set(["a", "b"]) });
+    expect(out.match(/chat-drain-arc/g)).toHaveLength(2);
+    expect(out.match(/aria-label="Cancel delete"/g)).toHaveLength(2);
+    expect(out).not.toContain('aria-label="Delete this chat"');
   });
 
   it("counts nothing down when nothing was deleted", () => {

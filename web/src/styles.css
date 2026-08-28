@@ -6118,6 +6118,7 @@ body.is-ultra .eff {
    out of quota gets its own colour: nothing is broken, so it should not look
    like something is. */
 .failure {
+  position: relative;
   flex: 0 0 auto;
   max-width: 780px;
   width: 100%;
@@ -6126,6 +6127,28 @@ body.is-ultra .eff {
   border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+/* Floated rather than laid out beside the text: the title and detail keep the
+   full width they had before there was a × to make room for, and a one-line
+   banner does not grow a second line to hold the button. */
+.failure-close {
+  float: right;
+  margin: -4px -6px 0 8px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.failure-close:hover {
+  background: color-mix(in srgb, var(--fg-0) 10%, transparent);
+  color: var(--fg-0);
 }
 
 .failure.is-quota {

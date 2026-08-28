@@ -17,6 +17,10 @@ export type Project = { id: string; name: string; primary_path?: string };
  *  progress, short enough that five projects still fit on a phone. */
 const SHOW_AT_FIRST = 5;
 
+/** No row counting down — the default, shared so it is the same object every
+ *  render rather than a new empty set each time. */
+const NONE_DELETING: ReadonlySet<string> = new Set();
+
 export function Sidebar({
   projects,
   shelved,
@@ -29,7 +33,7 @@ export function Sidebar({
   currentConversation,
   running,
   busy,
-  deleting = null,
+  deleting = NONE_DELETING,
   deleteMs = 3000,
   expanded,
   onToggle,
@@ -64,10 +68,11 @@ export function Sidebar({
   running: Set<string>;
   /** Of those, the ones mid-answer right now. */
   busy: Set<string>;
-  /** The chat that was just deleted and has not gone yet, if there is one. Its
-   *  row stays where it is and counts down, so the way back is the button that
-   *  started it rather than a bar somewhere else on screen. */
-  deleting?: string | null;
+  /** The chats that were just deleted and have not gone yet. Each row stays
+   *  where it is and counts down, so the way back is the button that started it
+   *  rather than a bar somewhere else on screen — and a second delete on the
+   *  row below leaves the first row's ring exactly where it was. */
+  deleting?: ReadonlySet<string>;
   /** How long that countdown runs, in milliseconds. Drives the ring only — the
    *  clock that actually commits the delete lives with the chat list. */
   deleteMs?: number;
@@ -189,7 +194,7 @@ function ProjectNode({
   currentConversation: string | null;
   running: Set<string>;
   busy: Set<string>;
-  deleting: string | null;
+  deleting: ReadonlySet<string>;
   deleteMs: number;
   onToggle: (id: string) => void;
   onPickProject: (id: string) => void;
@@ -271,7 +276,7 @@ function ProjectNode({
           {visible.map((c) => {
             // Deleted a moment ago and not gone yet. The row is left exactly
             // where it stood — see the countdown ring below.
-            const going = c.id === deleting;
+            const going = deleting.has(c.id);
             return (
               <li key={c.id}>
                 <div

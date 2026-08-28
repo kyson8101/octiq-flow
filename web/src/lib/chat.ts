@@ -474,11 +474,17 @@ const IMAGE_NOTE = /\[Image:[^\]]*\]/g;
 export function describeFailure(agent: "claude" | "codex", raw: string): Failure {
   const text = raw.trim();
   const outOfCredit =
-    /usage limit|out of credits|quota|rate.?limit|purchase more credits|upgrade to pro/i.test(text);
+    /usage limit|session limit|weekly limit|out of credits|quota|rate.?limit|purchase more credits|upgrade to pro/i.test(
+      text,
+    );
 
   if (outOfCredit) {
     // "try again at Aug 20th, 2026 11:37 AM" — the one fact that matters.
-    const when = /try again (?:at|after|on)\s+([^.()]+)/i.exec(text)?.[1]?.trim();
+    // Claude says the same thing the short way when it is the SESSION limit
+    // rather than the account's: "· resets 2:40am (Asia/Kuala_Lumpur)".
+    const when =
+      /try again (?:at|after|on)\s+([^.()]+)/i.exec(text)?.[1]?.trim() ??
+      /resets\s+([^.·]+)/i.exec(text)?.[1]?.trim();
     return {
       title:
         agent === "codex"

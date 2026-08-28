@@ -68,6 +68,7 @@ import configStream from "./__fixtures__/config-command.jsonl?raw";
 
 import {
   addUserTurn,
+  describeFailure,
   emptyChat,
   isThinking,
   reduceChat,
@@ -1452,5 +1453,38 @@ describe("typing a plugin slash command", () => {
     const mine = state.messages.filter((m) => m.role === "user");
     expect(mine.length).toBeGreaterThan(0);
     expect(mine.every((m) => m.ranSkill === undefined)).toBe(true);
+  });
+});
+
+describe("a turn that failed", () => {
+  // Claude has two ways of saying the same thing, and only one of them was
+  // recognised. The short form is what a five-hour session limit prints, and
+  // read as an ERROR it says "the agent stopped with an error" in danger red —
+  // for a chat where nothing is broken and the answer is to wait.
+  it("reads a session limit as a limit, not a crash", () => {
+    const f = describeFailure(
+      "claude",
+      "You've hit your session limit · resets 2:40am (Asia/Kuala_Lumpur)",
+    );
+
+    expect(f.outOfCredit).toBe(true);
+    expect(f.detail).toBe("It comes back at 2:40am (Asia/Kuala_Lumpur).");
+  });
+
+  it("still reads the long form, which names the hour", () => {
+    const f = describeFailure(
+      "claude",
+      "Claude AI usage limit reached. Please try again at Aug 20th, 2026 11:37 AM.",
+    );
+
+    expect(f.outOfCredit).toBe(true);
+    expect(f.detail).toBe("It comes back at Aug 20th, 2026 11:37 AM.");
+  });
+
+  it("leaves anything else as the error it is", () => {
+    const f = describeFailure("claude", "connection reset by peer");
+
+    expect(f.outOfCredit).toBeUndefined();
+    expect(f.title).toBe("The agent stopped with an error");
   });
 });
