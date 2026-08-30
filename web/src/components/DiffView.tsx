@@ -18,13 +18,30 @@ const FIRST = 240;
 
 const MARK: Record<DiffRow["kind"], string> = { add: "+", del: "−", ctx: " ", gap: " " };
 
-/** `+46 −1`, for the collapsed row of a card. */
+/** `+46 −1 A`, for the row of a card.
+ *
+ *  The letter answers a question the numbers cannot: `+46` alone is a big edit
+ *  and a new file written, and those are not the same news. `A` for a file that
+ *  did not exist a moment ago, `M` for one that did — the two letters git uses
+ *  in a status, because the reader already knows them from there.
+ *
+ *  Only on a single call's card. A folded run builds its own stat from
+ *  `groupDiff` (see ToolGroup), which has no single answer to give: a run that
+ *  created one file and changed three is both letters at once. */
 export function DiffStat({ diff }: { diff: FileDiff }) {
   if (!diff.added && !diff.removed) return null;
+  const made = diff.kind === "create";
   return (
     <span className="diff-stat">
       {diff.added > 0 && <span className="diff-stat-add">+{diff.added}</span>}
       {diff.removed > 0 && <span className="diff-stat-del">−{diff.removed}</span>}
+      <span
+        className="diff-kind"
+        data-kind={diff.kind}
+        title={made ? "A file that did not exist before" : "A file that did, changed"}
+      >
+        {made ? "A" : "M"}
+      </span>
     </span>
   );
 }

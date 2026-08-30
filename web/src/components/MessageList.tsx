@@ -24,6 +24,7 @@ import { useRunningCalls } from "./Background";
 import { SentFiles } from "./Thumb";
 import { roughTokens } from "../lib/tokens";
 import { groupRows, type Note } from "../lib/toolGroups";
+import { folderLabel, rowFolders } from "../lib/folderHead";
 import { useTypewriter } from "../lib/typewriter";
 import { closeFence, splitBlocks } from "../lib/blocks";
 import { rehypeWordFade } from "../lib/wordfade";
@@ -163,6 +164,7 @@ function BlockView({
   animate,
   kids,
   note,
+  folder,
 }: {
   block: Block;
   animate?: boolean;
@@ -171,6 +173,9 @@ function BlockView({
    *  inside the card rather than as a box of its own beneath it. `groupRows`
    *  decides which text that is; this only carries it. */
   note?: Note;
+  /** The folder a header above this row has already named, so the card can show
+   *  its file's name alone. Empty where no header applies. */
+  folder?: string;
 }) {
   // The CLI's own settings list, drawn as settings rather than as the thirty
   // lines of `key=a|b|c` it arrives as. It is the whole of the message when it
@@ -187,6 +192,7 @@ function BlockView({
     <ToolCard
       tool={block}
       note={note}
+      folder={folder}
       agent={own?.length ? { steps: own.length, body: <SubAgent messages={own} kids={kids} /> } : undefined}
     />
   );
@@ -206,23 +212,68 @@ function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boole
     () => groupRows(blocks, (tool) => kids.has(tool.id) || running.has(tool.id)),
     [blocks, kids, running],
   );
+  // Where each row's files are. Two things read it: the header drawn above a
+  // row whose folder is not the one above it, and the cards themselves, which
+  // drop the folder from their detail once a header has said it.
+  const folders = useMemo(() => rowFolders(rows), [rows]);
   const last = blocks.length - 1;
   return (
     <>
-      {rows.map((row) =>
-        row.kind === "group" ? (
-          <ToolGroup key={row.tools[0].id} tools={row.tools} newest={row.newest} />
-        ) : (
-          <BlockView
-            key={row.index}
-            block={row.block}
-            animate={streaming && row.index === last}
-            kids={kids}
-            note={row.note}
-          />
-        ),
-      )}
+      {rows.map((row, i) => {
+        const folder = folders[i];
+        const heads = !!folder && folder !== folders[i - 1];
+        const key = row.kind === "group" ? row.tools[0].id : row.index;
+        return (
+          <Fragment key={key}>
+            {heads && <FolderHead dir={folder} />}
+            {row.kind === "group" ? (
+              <ToolGroup tools={row.tools} newest={row.newest} folder={folder} />
+            ) : (
+              <BlockView
+                block={row.block}
+                animate={streaming && row.index === last}
+                kids={kids}
+                note={row.note}
+                folder={folder}
+              />
+            )}
+          </Fragment>
+        );
+      })}
     </>
+  );
+}
+
+/** The folder the cards under this are in.
+ *
+ *  Not a card itself, and drawn as small and as quiet as it can be while still
+ *  being read: it is a label on a run, not a thing that happened in it. It
+ *  lines up with the NAMES on the rows below rather than with their left edge,
+ *  so the column of names is unbroken and this hangs off the side of it. */
+function FolderHead({ dir }: { dir: string }) {
+  return (
+    <div className="folder-head" title={dir}>
+      <FolderIcon />
+      <span className="folder-head-name">{folderLabel(dir)}</span>
+    </div>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+    </svg>
   );
 }
 
@@ -632,7 +683,31 @@ function TurnView({
           <Blocks blocks={blocks} streaming={streaming} kids={kids} />
         )}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
-        {queued && <div className="queued">queued</div>}
+        {/* Sent, and the agent has not started on it. A clock inside the pill,
+            and deliberately OUT OF FLOW — see `.queued`.
+
+            It was a word on a row of its own, and a row of its own is the one
+            thing this must not be: it appears the moment you send and vanishes
+            the moment the agent picks the message up, which is mid-conversation
+            and unannounced. Going, it took its line AND the column's 10px gap
+            with it, and every message below stepped 23px up the page. The
+            working dots learned this first (`.dots-slot`): a thing that blinks
+            in and out never owns layout.
+
+            The word became an icon for the same reason it moved — a label
+            needs a line, a clock needs a corner. What it MEANT survives on the
+            title and the label, so nothing is lost to a reader who cannot see
+            a picture of a clock. */}
+        {queued && (
+          <span
+            className="queued"
+            role="img"
+            title="Sent — the agent has not started on this yet"
+            aria-label="Sent — the agent has not started on this yet"
+          >
+            <ClockIcon />
+          </span>
+        )}
         {/* Copy, once the turn is over and there is prose worth taking.
             (The files the turn touched used to sit on this row too. They are a
             whole-session question now — see components/SessionFiles.)
@@ -699,6 +774,27 @@ function CopyAnswer({ text, what }: { text: string; what: "reply" | "message" })
   );
 }
 
+/** Waiting its turn. A clock rather than an hourglass or a spinner: nothing is
+ *  HAPPENING to a queued message, which is the whole of what it has to say. */
+function ClockIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5.2l3.2 2" />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -759,18 +855,28 @@ function groupTurns(messages: Message[]): Message[][] {
  *  The ref is written during the render, which StrictMode's double pass handles
  *  by itself — the second pass sees the list it just recorded, is not one turn
  *  longer than it, and marks nothing.
+ *
+ *  `nth` counts the arrivals rather than naming the last one, because it is
+ *  read as an effect's dependency and an id is not enough to fire on: the same
+ *  turn can be the newest across many renders. A count read from a ref also
+ *  survives StrictMode's second pass — that pass marks nothing, so it returns
+ *  the number the first one reached rather than resetting it.
  */
 function useJustArrived(turns: Message[][]) {
   const before = useRef<string[] | null>(null);
   const fresh = useRef<Set<string>>(new Set());
+  const nth = useRef(0);
 
   const ids = turns.map((t) => t[0].id);
   const was = before.current;
   before.current = ids;
 
   const arrived = justAppended(was, ids);
-  if (arrived) fresh.current.add(arrived);
-  return fresh.current;
+  if (arrived) {
+    fresh.current.add(arrived);
+    nth.current++;
+  }
+  return { fresh: fresh.current, nth: nth.current };
 }
 
 /** The single turn appended to the end of `was`, or null when `ids` is anything
@@ -783,6 +889,55 @@ export function justAppended(was: string[] | null, ids: string[]): string | null
   if (!was || ids.length !== was.length + 1) return null;
   for (let i = 0; i < was.length; i++) if (was[i] !== ids[i]) return null;
   return ids[ids.length - 1];
+}
+
+/** How long the conversation takes to travel to a new bottom when a turn
+ *  arrives, instead of jumping there.
+ *
+ *  Sending is ONE gesture and should look like one thing happening: the
+ *  conversation slides up to open a space, and the new turn fades into the
+ *  space it opened. So the bubble's fade is delayed past the start of this
+ *  travel rather than run against it — see `.msg-user.is-new`, and keep the two
+ *  numbers in step if either moves.
+ *
+ *  Only an ARRIVAL glides. A stream's height changes keep the instant pin they
+ *  have always had: those come dozens a second, and easing toward a target that
+ *  is replaced before the ease finishes is a rubber band, not a scroll. */
+const GLIDE_MS = 280;
+
+/** easeOutQuint — the curve `cubic-bezier(0.22, 1, 0.36, 1)` draws, which is
+ *  what every arriving thing in this app already moves on. Written out because
+ *  a scroll is animated in JS and cannot name a CSS curve. */
+const glideEase = (t: number) => 1 - Math.pow(1 - t, 5);
+
+/** Where the scroller sits `p` of the way through a glide that began at `from`,
+ *  given where the bottom is NOW.
+ *
+ *  `bottom` is passed per frame rather than captured when the glide started,
+ *  and that is the whole design: the bottom MOVES while a glide runs — the
+ *  reply that triggered it begins streaming, a tool card's file list lands
+ *  under it, an image finishes loading. Easing toward a target measured once
+ *  would land short and leave the resize observer to snap the remainder, which
+ *  is the jump the glide exists to remove. Re-aimed every frame, `p === 1` is
+ *  the real bottom whatever happened in between.
+ *
+ *  Exported for its test only; `glideToBottom` is the one caller. */
+export function glideAt(from: number, bottom: number, p: number): number {
+  const t = p < 0 ? 0 : p > 1 ? 1 : p;
+  return from + (bottom - from) * glideEase(t);
+}
+
+/** Below this the travel is not worth animating — a one-line turn arriving into
+ *  a half-empty transcript moves the bottom by a few pixels, and a 280ms
+ *  animation of three pixels reads as a hesitation. */
+const GLIDE_MIN_PX = 8;
+
+/** Asked to be spared animation. The stylesheet answers this for itself in 26
+ *  places; a scroll animated in JS has to ask. Guarded because the component's
+ *  tests run in node, where there is no `matchMedia`. */
+function reducedMotion() {
+  if (typeof window === "undefined") return false;
+  return !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
 export function MessageList({
@@ -829,12 +984,88 @@ export function MessageList({
   // of the scrollbar), so only scroll events that follow one are believed.
   const gesture = useRef(false);
 
+  // Whether the reader has left the bottom, which is the only thing on this
+  // path that has to be STATE rather than a ref: it draws the jump button.
+  // Set on every believed scroll event, which sounds expensive and is not —
+  // React compares the value and skips the render when the answer is the same,
+  // so a flick through a long transcript re-renders twice, at the two moments
+  // the answer actually changed.
+  const [away, setAway] = useState(false);
+
+  // The rAF handle of a glide in flight, or 0. It is also the flag that holds
+  // the instant pin below OFF while one runs: two things writing `scrollTop` in
+  // the same frame is what a jerky scroll IS, and the glide is already tracking
+  // the bottom for itself.
+  const glide = useRef(0);
+
+  // Only reads refs, so the copy an effect closes over on the first render
+  // stays correct for the life of the component.
+  const stopGlide = () => {
+    if (glide.current) cancelAnimationFrame(glide.current);
+    glide.current = 0;
+  };
+
+  /** Travel to the bottom over `GLIDE_MS` rather than arriving there. The frame
+   *  math, and why the target is re-read every frame, is in `glideAt`. */
+  const glideToBottom = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    stopGlide();
+
+    const to = el.scrollHeight - el.clientHeight;
+
+    // Where the travel starts. Normally where the reader already is — but the
+    // jump button can be pressed from the top of a very long transcript, and
+    // easing through twenty thousand pixels is a grey blur with no information
+    // in it. So the far part is covered instantly and only the last screenful
+    // is animated: what the reader sees is the end of the conversation sliding
+    // up into place, which is the part that tells them where they landed.
+    const reach = Math.max(el.clientHeight * 1.5, 400);
+    const from = Math.max(el.scrollTop, to - reach);
+
+    // Nothing worth watching: no room to travel, a hair's width of it, or a
+    // reader who has asked not to be moved smoothly.
+    if (to - from < GLIDE_MIN_PX || reducedMotion()) {
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    if (from !== el.scrollTop) el.scrollTop = from;
+
+    const t0 = performance.now();
+    const step = (now: number) => {
+      const p = (now - t0) / GLIDE_MS;
+      el.scrollTop = glideAt(from, el.scrollHeight - el.clientHeight, p);
+      if (p < 1) {
+        glide.current = requestAnimationFrame(step);
+        return;
+      }
+      // Cleared BEFORE the closing pin, so the observer is live again for
+      // whatever else the same frame brings.
+      glide.current = 0;
+      if (stick.current) el.scrollTop = el.scrollHeight;
+    };
+    glide.current = requestAnimationFrame(step);
+  };
+
+  /** The jump button. Going back to the bottom is also a decision to FOLLOW
+   *  again — a reader who has caught up wants the next reply to arrive under
+   *  them, not to have to press this after every turn. */
+  const jumpToBottom = () => {
+    stick.current = true;
+    setAway(false);
+    glideToBottom();
+  };
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
     let until = 0;
     const mark = () => {
       gesture.current = true;
+      // The reader has taken the scroller. An animation still running under
+      // their finger fights them for it, and they win either way — so it ends
+      // here rather than being scrolled against.
+      stopGlide();
       window.clearTimeout(until);
       // Long enough to cover the scroll events one flick produces, short
       // enough that it cannot be mistaken for the next thing that happens.
@@ -849,7 +1080,9 @@ export function MessageList({
       // the reader back to the bottom they had just scrolled away from. The
       // glide is still the reader's gesture, so it keeps the window open.
       mark();
-      stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      stick.current = atBottom;
+      setAway(!atBottom);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     el.addEventListener("wheel", mark, { passive: true });
@@ -859,6 +1092,7 @@ export function MessageList({
     el.addEventListener("keydown", mark);
     return () => {
       window.clearTimeout(until);
+      stopGlide();
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", mark);
       el.removeEventListener("touchstart", mark);
@@ -881,6 +1115,11 @@ export function MessageList({
     // Whatever gesture opened this chat was aimed at the sidebar, not at the
     // transcript; letting it carry over would judge the new chat by it.
     gesture.current = false;
+    // A glide belongs to the conversation it was started in. Left running it
+    // would ease the NEW transcript from the old one's offset — see it as the
+    // wrong chat sliding into place.
+    stopGlide();
+    setAway(false);
     el.scrollTop = el.scrollHeight;
   }, [conversationId]);
 
@@ -897,7 +1136,10 @@ export function MessageList({
     const inner = innerRef.current;
     if (!el || !inner || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (stick.current) el.scrollTop = el.scrollHeight;
+      // Not while a glide is running: it is already following the bottom, one
+      // eased step per frame, and a pin written in the same frame would erase
+      // the step and land the reader at the end before the travel had begun.
+      if (stick.current && !glide.current) el.scrollTop = el.scrollHeight;
     });
     observer.observe(inner);
     return () => observer.disconnect();
@@ -939,7 +1181,24 @@ export function MessageList({
   // appearance and a turn cannot see who came before it.
   const tints = useMemo(() => seatTints(messages), [messages]);
 
-  const fresh = useJustArrived(turns);
+  const { fresh, nth } = useJustArrived(turns);
+
+  // A turn has arrived: take the conversation up to meet it.
+  //
+  // Before paint, and this is the whole reason it is a LAYOUT effect. The new
+  // turn is in the DOM and measured by now, but the scroller still holds the
+  // offset it had before — so `from` is genuinely where the reader was looking
+  // and `to` is where the turn put the bottom. One frame later the observer
+  // would already have pinned them together and there would be nothing to
+  // travel.
+  //
+  // Only when they were at the bottom to begin with. Someone reading back
+  // through a conversation did not ask to be taken anywhere, and an animated
+  // yank is a worse one than an instant one — it is the same rudeness, drawn
+  // out over a third of a second.
+  useLayoutEffect(() => {
+    if (nth && stick.current) glideToBottom();
+  }, [nth]);
 
   // The short things the CLI has said lately, for the `/config` panel to find
   // its confirmations among — `Set Verbose output to true`.
@@ -1003,8 +1262,43 @@ export function MessageList({
         </div>
         <div ref={endRef} />
       </div>
+      {/* Outside `.msgs-inner` and after it: it takes no height and must not
+          take the column's 18px gap either, and it sticks to the bottom of the
+          SCROLLER, which is this element rather than that one. */}
+      <div className="jump-slot" aria-hidden={!away}>
+        <button
+          type="button"
+          className={`jump ${away ? "is-on" : ""}`}
+          onClick={jumpToBottom}
+          // Not just hidden — a button under a reader's tab key that they
+          // cannot see is worse than no button.
+          tabIndex={away ? 0 : -1}
+          title="Jump to the end"
+          aria-label="Jump to the end"
+        >
+          <ChevronDownIcon />
+        </button>
+      </div>
       </ConfigWorldProvider>
     </div>
+  );
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
   );
 }
 

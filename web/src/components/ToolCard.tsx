@@ -23,6 +23,7 @@ import { parseSkillBrief } from "../lib/skillRun";
 import { askAnswer } from "../lib/askAnswer";
 import { toolDetail, toolLook } from "../lib/toolKind";
 import { DiffStat, DiffView } from "./DiffView";
+import { baseOf, dirOf } from "../lib/folderHead";
 import { ToolIcon, ToolState } from "./ToolIcon";
 import { useStillRunning } from "./Background";
 
@@ -82,10 +83,19 @@ export function ToolCard({
   tool,
   agent,
   note,
+  folder,
+  steady,
   open: openFrom,
 }: {
   tool: Tool;
   agent?: AgentRun;
+  /** The folder a header above this card has already named. When the card's
+   *  detail is a file inside it, the card shows the file's NAME — the path is
+   *  said once, above the run, instead of once per card. */
+  folder?: string;
+  /** This card sits somewhere that must not change height, and so must not
+   *  open itself. Only the newest call of a folded run — see ToolGroup. */
+  steady?: boolean;
   /** Card 73 — a fenced block the reply wrote straight after this call.
    *
    *  The AGENT'S prose, not the tool's output. It is drawn under its own label
@@ -99,11 +109,33 @@ export function ToolCard({
   const isAgent = !!agent || AGENT_TOOLS.has(tool.name.toLowerCase());
   const look = toolLook(tool.name, tool.args);
   const isSkill = look.kind === "skill";
-  // A subagent card opens itself while its agent is working: a run takes
-  // minutes, and a folded card through all of it looks like nothing is
-  // happening. It is NOT folded again when the run ends — a card closing itself
-  // mid-read takes the paragraph out from under the reader.
-  const [open, setOpen] = useState(() => openFrom ?? (isAgent && tool.state === "running"));
+  // Edit, Write and MultiEdit are the calls a reader actually wants to SEE, and
+  // the only ones whose arguments are unreadable as arguments: two long
+  // strings, one of which is the other with something changed. The card draws
+  // them as the change they are, and stops quoting the JSON they arrived in.
+  //
+  // Read here rather than further down because the open state below needs it.
+  const diff = fileDiff(tool.name, tool.args, tool.details);
+  // A card holding a change opens itself. What the agent CHANGED is the one
+  // thing on a turn worth reading without having to ask for it, and a diff
+  // behind a fold is a diff nobody reads — the row said `+17 −1` and the reader
+  // took its word for it. It costs less page than it sounds: `.diff-body` caps
+  // its own height and scrolls, so a 3000-line write is still one card tall.
+  //
+  // Decided once, at mount, like every other reason a card starts open — an
+  // edit carries its change in its ARGUMENTS, so the diff is there from the
+  // first frame and there is nothing to wait for. A card that popped open later,
+  // when a result landed, would move the page under whoever was reading it.
+  //
+  // Never where a box has to hold its height; see `steady`.
+  //
+  // A subagent card opens itself for its own reason: a run takes minutes, and a
+  // folded card through all of it looks like nothing is happening. Neither is
+  // folded again when the work ends — a card closing itself mid-read takes the
+  // paragraph out from under the reader.
+  const [open, setOpen] = useState(
+    () => openFrom ?? ((!!diff && !steady) || (isAgent && tool.state === "running")),
+  );
   // A skill's card is the skill, not the call. The prompt it put in front of
   // the agent arrives a moment after the call answers (see `brief` on the
   // block); once it has, the row says what the skill is FOR in its own words,
@@ -118,13 +150,15 @@ export function ToolCard({
   // LEFT so a long path keeps its useful end — and a question's useful end is
   // its start, so half a question would be the half nobody needs. It gets a line
   // of its own below instead.
-  const detail = isSkill ? (brief?.summary ?? "") : ask ? "" : called;
+  const full = isSkill ? (brief?.summary ?? "") : ask ? "" : called;
+  // A header above this card has already named the folder, so the card names
+  // the file. `dirOf` on both sides rather than a prefix test: it is exact —
+  // a file in a SUBFOLDER of the named one keeps its path, which is what a
+  // reader needs, and it costs nothing to be separator-agnostic. `toolDetail`
+  // also hands back commands and patterns, and clipping `rg -n foo src/` at its
+  // last slash would produce a fragment that reads like a path and is not one.
+  const detail = folder && dirOf(full) === folder ? baseOf(full) : full;
   const skillArgs = isSkill ? called : "";
-  // Edit, Write and MultiEdit are the calls a reader actually wants to SEE,
-  // and the only ones whose arguments are unreadable as arguments: two long
-  // strings, one of which is the other with something changed. The card draws
-  // them as the change they are, and stops quoting the JSON they arrived in.
-  const diff = fileDiff(tool.name, tool.args, tool.details);
   // Only for a call that has already ANSWERED. While the call itself is in
   // flight the card is running for its own reasons and says so; and once the
   // ending has landed the card has a real word for how it went.

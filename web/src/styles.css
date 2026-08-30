@@ -25,6 +25,15 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
+  /* Where the text on a tool row begins, in two parts, because the things that
+     line up against it are measured from different origins: the tally sits
+     INSIDE the row's button and starts past its padding already, while the
+     answer strip and the folder header above a run start at the card's own
+     edge. `--tool-pad` is that padding, `--tool-indent` the icon plus the gap
+     after it. Change the icon's size or the row's gap and change these with
+     them, or four things that have always lined up quietly stop. */
+  --tool-pad: 11px;
+  --tool-indent: 34px;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   /* Sarasa Mono SC first, and the reason is Chinese: its CJK glyphs are
@@ -1034,28 +1043,210 @@ body {
   min-width: 0;
 }
 
+/* The way back down, for a reader who has scrolled away from the end.
+   Following the stream is switched OFF the moment they scroll up (see
+   MessageList), and without this the only way back is to scroll the whole
+   distance by hand — a long transcript makes that a real journey.
+
+   It floats OVER the last of the conversation rather than taking a row of its
+   own: a strip reserved at the foot of the transcript would be empty almost
+   always, and would push the composer up by its height for nothing. */
+.jump-slot {
+  position: sticky;
+  bottom: 0;
+  /* No height at all. The transcript ends where it ends; this hangs over it. */
+  height: 0;
+  z-index: 3;
+  /* Aligned to the message column, not to the pane: on a wide window the pane's
+     left edge is a long way from anything the button refers to. */
+  max-width: 780px;
+  margin: 0 auto;
+  /* Only the button takes a click. The rest of this strip is the last message,
+     and it has to stay readable and selectable underneath. */
+  pointer-events: none;
+}
+
+.jump {
+  pointer-events: auto;
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-1) 82%, transparent);
+  /* What makes it read as floating rather than as a hole in the conversation:
+     the words behind it stay faintly visible and out of focus. */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--fg-1);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  /* Hidden by default, and hidden PROPERLY: opacity alone would leave it
+     catching clicks over the last message it is drawn on top of. */
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px) scale(0.92);
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 0s linear 160ms,
+    background 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.jump.is-on {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  /* Visible IMMEDIATELY on the way in, and only delayed on the way out — the
+     0s delay above is what holds it clickable until the fade has finished. */
+  transition-delay: 0s;
+}
+
+.jump:hover {
+  background: var(--bg-2);
+  border-color: var(--border-strong);
+  color: var(--fg-0);
+}
+
+.jump:active {
+  transform: scale(0.94);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jump {
+    transition:
+      opacity 1ms linear,
+      visibility 0s linear 1ms;
+    transform: none;
+  }
+
+  .jump:active {
+    transform: none;
+  }
+}
+
 /* Your turn is a right-hand COLUMN, not itself the bubble: the bubble and the
    copy row under it are two stacked things, and the row has to sit outside the
    tint or it reads as part of what you said. Both hug their own content, so a
    three-word message is still a three-word bubble. */
+/* Your turn spans the column, and it is the only thing in the conversation
+   wearing the accent. Both halves of that are the point: scrolling back through
+   a long run looking for what you last asked, a narrow tinted rectangle in the
+   right-hand margin is something you have to HUNT for among the tool cards, and
+   what you are hunting for should be the one thing that cannot be missed.
+   The reply that follows keeps the plain full-width prose it has always had, so
+   the two are still told apart at a glance — by colour rather than by edge. */
 .msg-user {
-  align-self: flex-end;
-  max-width: 85%;
+  align-self: stretch;
   display: flex;
   flex-direction: column;
+  /* The pill stretches; the small print above and below it does not, and each
+     of those states its own alignment — see `.msg-to`, `.msg-ran`. */
   align-items: flex-end;
-  /* A flex item's floor is its content width unless told otherwise, so one
-     long unbroken line would push this past its 85% rather than wrap in it. */
+  /* A flex item's floor is its content width unless told otherwise, so one long
+     unbroken line would push the column past the transcript's width rather than
+     wrap inside it. */
   min-width: 0;
 }
 
-/* The bubble itself. */
+/* The pill itself. Fully rounded at one line, which is what most messages are,
+   and a generously rounded block when one runs longer.
+
+   A WASH of the accent, not the accent itself. Full width and rounded is what
+   makes your own message findable when you scroll back through a turn's worth
+   of tool cards — the colour only has to whisper which of these it is, and a
+   saturated slab of it repeated down a long conversation is a lot to read past.
+
+   Mixed INTO `--bg-1` rather than laid over it, and that is what makes the rest
+   of this section short: the pill is a surface, so the ordinary foreground
+   colours are legible on it and everything a message can hold — prose, code,
+   links, attachments — keeps the colours it wears everywhere else. A solid
+   `--accent` fill needed every one of those restated in `--accent-fg`, and one
+   it did not get restated was `.chip.is-image`'s placeholder, drawn in
+   `--accent` itself: an icon painted the exact colour behind it, which is how
+   an attachment came to show nothing at all. */
 .msg-user .msg-body {
-  max-width: 100%;
-  padding: 9px 13px;
-  border-radius: var(--r-lg);
-  background: var(--bg-1);
+  width: 100%;
+  /* The right-hand gutter is wider than the left, ALWAYS — queued or not. It is
+     where the clock sits (see `.queued`), and a padding that appeared with the
+     icon would reflow the text under it and put back exactly the jump the icon
+     was moved out of flow to avoid. On a full-width pill the cost is that a
+     wrapping line breaks a few pixels earlier, which nothing can see. */
+  padding: 11px 40px 11px 17px;
+  border-radius: 21px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-1));
   color: var(--fg-0);
+  /* The clock hangs off this. */
+  position: relative;
+  /* The moment the agent picks the message up, `is-queued` lifts and the whole
+     pill comes back to full strength. That is a real state change and the one
+     the reader is waiting for, so it eases rather than snapping. */
+  transition: opacity 200ms ease-out;
+}
+
+/* The one thing the tint does still swallow. A chip's `--bg-2` body lands at
+   almost exactly this surface's lightness, so the box around an attachment
+   disappears and leaves its name and icon floating loose. Lifted off the pill
+   with a wash of the FOREGROUND, which works whatever the accent underneath it
+   happens to be. */
+.msg-user .msg-body .chip {
+  background: color-mix(in srgb, var(--fg-0) 12%, transparent);
+}
+
+.msg-user .msg-body .chip:hover {
+  background: color-mix(in srgb, var(--fg-0) 20%, transparent);
+}
+
+/* Sent, and not started on: a clock in the pill's right-hand gutter.
+   Absolutely positioned, which is the entire point of it. This comes and goes
+   in the middle of a conversation — the agent echoes a message back only when
+   it BEGINS on it — and in the flow it was a row plus the column's 10px gap, so
+   the instant a queued message was picked up everything below it stepped 23px
+   up the page. Out of flow it costs nothing on the way in or the way out.
+
+   Centred on the pill rather than pinned to a corner: a message can be one line
+   or thirty, and the middle of the right edge is the only place that looks
+   deliberate at both. */
+.msg-user .msg-body .queued {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  /* `--fg-2`, not `--fg-3`: the whole pill is already at 0.62 while it waits,
+     and the quietest grey there is, dimmed again, is not a mark. */
+  color: var(--fg-2);
+  animation: queued-in 200ms cubic-bezier(0.22, 1, 0.36, 1) 110ms backwards;
+}
+
+/* It arrives with the message it belongs to, so it waits out the bubble's own
+   entrance before showing up — the same 110ms delay `.msg-user.is-new` uses,
+   for the same reason: one thing arriving, not two. */
+@keyframes queued-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-user .msg-body .queued {
+    animation: none;
+  }
+
+  .msg-user .msg-body {
+    transition: none;
+  }
 }
 
 /* What you typed, laid out the way you typed it. Enter makes a new line in the
@@ -1087,8 +1278,18 @@ body {
   }
 }
 
+/* Delayed past the START of the conversation's travel, rather than run against
+   it. `MessageList` glides the scroller to the new bottom over GLIDE_MS when a
+   turn arrives, so by the time these 110ms are up the space this bubble belongs
+   in has already opened above the composer — and the two read as one movement
+   instead of two things happening at once.
+
+   `backwards` is what makes the delay a WAIT rather than a stutter: without it
+   the bubble holds its final look for those 110ms and only then jumps back to
+   the start of the animation, which is precisely the flash the delay was added
+   to hide. Keep the two numbers in step. */
 .msg-user.is-new {
-  animation: bubble-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: bubble-in 200ms cubic-bezier(0.22, 1, 0.36, 1) 110ms backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1480,8 +1681,12 @@ body {
 /* The icon leads the row, so the row needs a little more air around it than a
    line of text does, and the caret has moved to the far end. */
 .tool-head {
-  gap: 8px;
-  padding: 7px 9px 7px 7px;
+  gap: 10px;
+  padding: 11px 14px 11px var(--tool-pad);
+  /* Clipped by the card's own `overflow: hidden` either way, but stated so the
+     hover fill matches the corner it is drawn into rather than the tighter one
+     this inherits from the row it shares a base with. */
+  border-radius: var(--r-lg);
 }
 
 .thinking-head:hover,
@@ -1512,10 +1717,45 @@ body {
   transform: rotate(90deg);
 }
 
+/* ---- The folder over a run of file cards ------------------------------- */
+/* Where the cards under it are. Not a card itself and deliberately not shaped
+   like one: it is a label ON a run, and giving it a fill and a border would
+   make it a fourth thing that happened.
+
+   It hugs the card below rather than floating between two — `.msg-body` sets a
+   10px gap between everything in it, which reads as "these are separate", and
+   this one is the opposite claim. Pulled down to 4px, so what the eye sees is a
+   header attached to what follows it. */
+.folder-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: -6px;
+  padding-left: var(--tool-pad);
+  color: var(--fg-3);
+  font-size: 11.5px;
+  /* A folder is a place, not a file — the row below it is the mono one. */
+  font-family: var(--font);
+}
+
+.folder-head-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* ---- Tool cards ------------------------------------------------------- */
+/* Flat, open rows rather than tight bordered chips. A turn is mostly these —
+   ten or fifteen in a row — and at the old density they read as a wall of
+   machinery you skim past. Given room and a soft edge each one reads as a
+   thing that happened, which is what it is.
+
+   The border is nearly gone on purpose: the fill already separates the card
+   from the page, and a full-strength line around every one of fifteen cards is
+   fifteen hard edges stacked down the column. */
 .tool {
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: var(--r-lg);
   background: var(--bg-sunken);
   overflow: hidden;
 }
@@ -1533,9 +1773,9 @@ body {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--tint) 15%, transparent);
   color: var(--tint);
   --tint: var(--fg-2);
@@ -1593,11 +1833,14 @@ body {
   --tint: var(--danger);
 }
 
+/* The name carries the row, so it is the one thing in it drawn at full
+   strength. Everything else — the scope, the path, the counts, the caret —
+   stays quiet and is read only once the name has brought you here. */
 .tool-name {
   flex: 0 0 auto;
   font-family: var(--mono);
-  font-size: 12px;
-  color: var(--fg-1);
+  font-size: 12.5px;
+  color: var(--fg-0);
 }
 
 /* Where a call came from — the plugin behind a skill, the server behind an MCP
@@ -1697,7 +1940,7 @@ body {
 }
 
 .tool-body {
-  padding: 0 10px 10px;
+  padding: 0 14px 12px;
 }
 
 .tool-label {
@@ -1868,6 +2111,31 @@ body {
 
 .diff-stat-del {
   color: var(--danger);
+}
+
+/* `A` or `M`, in a chip rather than as a third number — it is a different KIND
+   of fact from the two beside it, and a bare letter after `+46 −1` reads as
+   part of the arithmetic. Sized to be square whichever letter it holds, so a
+   column of cards keeps its right-hand edge. */
+.diff-kind {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tint) 18%, transparent);
+  color: var(--tint);
+  --tint: var(--accent);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* Green for a file that was made, because it is the same claim `+46` is making
+   in the number beside it. */
+.diff-kind[data-kind="create"] {
+  --tint: var(--ok);
 }
 
 /* A note beside a section label, in the label's own quiet voice but not
@@ -7686,13 +7954,11 @@ body.is-ultra .eff {
   opacity: 0.62;
 }
 
-.queued {
-  align-self: flex-end;
-  margin-top: 4px;
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
-  color: var(--fg-3);
-}
+/* `.queued` is drawn by one thing only, and it draws it in the pill — see the
+   rule beside `.msg-user .msg-body`. There is deliberately no base rule here:
+   the one this replaced set `margin-top`, which an absolutely positioned
+   element still obeys, and it pushed the clock 4px off the centre it had just
+   been told to sit on. (AgentRail's "queued" is a `.rail-kind`, not this.) */
 
 /* ---- /context, drawn ---------------------------------------------------
    One bar for the categories, a legend with the numbers, and the ninety-odd
@@ -9004,7 +9270,11 @@ body.is-ultra .eff {
   align-items: stretch;
   justify-content: center;
   gap: 5px;
-  min-height: 52px;
+  /* Room for both lines whether or not the second one has anything in it, so
+     the box is the same height with a tally and without — the whole reason a
+     folded run is one box rather than a row that grows. Raised with the
+     padding above it: the row alone is now 46px, and the tally another 20. */
+  min-height: 66px;
 }
 
 .tool-group-head .tool-row {
@@ -9020,7 +9290,7 @@ body.is-ultra .eff {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding-left: 30px;
+  padding-left: var(--tool-indent);
   overflow: hidden;
 }
 
@@ -9390,7 +9660,7 @@ body.is-ultra .eff {
    and the card that asked for it is long gone by the time anyone reads back.
    Indented under the row it answers, the way a reply is. */
 .tool-answer {
-  padding: 4px 12px 8px 30px;
+  padding: 4px 14px 10px calc(var(--tool-pad) + var(--tool-indent));
   font-size: 12.5px;
   line-height: 1.45;
 }

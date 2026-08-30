@@ -47,7 +47,18 @@ function Chevron() {
   );
 }
 
-export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
+export function ToolGroup({
+  tools,
+  newest,
+  folder,
+}: {
+  tools: Tool[];
+  newest: Tool;
+  /** The folder a header above this run has already named — every call in the
+   *  run is in it, or there would be no header (see lib/folderHead). Passed
+   *  down so each card inside shows its file's name rather than its path. */
+  folder?: string;
+}) {
   const [open, setOpen] = useState(false);
 
   const look = groupLook(tools);
@@ -138,16 +149,21 @@ export function ToolGroup({ tools, newest }: { tools: Tool[]; newest: Tool }) {
       {open && (
         <div className="tool-group-body">
           {tools.map((tool) => (
-            <ToolCard key={tool.id} tool={tool} />
+            <ToolCard key={tool.id} tool={tool} folder={folder} />
           ))}
         </div>
       )}
 
       {/* The bottom half: the call that has not folded yet. Keyed by its id, so
           each new call REPLACES the last rather than being drawn on top of a
-          card that is still holding the previous one's open/closed state. */}
+          card that is still holding the previous one's open/closed state.
+
+          `steady`, because this is the half whose whole job is to not change
+          height — a card that opened its own diff here would make the box tall
+          while an edit is newest and short again the moment the next call folds
+          it in, which is precisely the lurch the two halves exist to remove. */}
       <div className="tool-group-now">
-        <ToolCard key={newest.id} tool={newest} />
+        <ToolCard key={newest.id} tool={newest} folder={folder} steady />
       </div>
     </div>
   );
