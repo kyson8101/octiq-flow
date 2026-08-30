@@ -235,6 +235,71 @@ export function groupTally(tools: Tool[]): Tally[] {
   return [...counts.values()].sort((a, b) => b.count - a.count);
 }
 
+/** A short, human sentence for the collapsed group row.
+ *
+ * The files in a summary are distinct files, not tool invocations: reading and
+ * then editing `chat.ts` is one file being worked on. Commands, searches and
+ * the rest still count calls, because each invocation is a separate action.
+ * Keep the wording broad and limited to three clauses; the row is a status
+ * line, while the disclosure holds the exact commands and paths. */
+export type GroupSummary = { kind: ToolKind; label: string };
+
+const SUMMARY_ORDER: readonly ToolKind[] = [
+  "edit",
+  "run",
+  "read",
+  "search",
+  "web",
+  "mcp",
+  "plan",
+  "other",
+];
+
+const SUMMARY_WORDS: Record<ToolKind, { verb: string; singular: string; plural: string }> = {
+  edit: { verb: "Edited", singular: "file", plural: "files" },
+  run: { verb: "ran", singular: "command", plural: "commands" },
+  read: { verb: "read", singular: "file", plural: "files" },
+  search: { verb: "searched", singular: "time", plural: "times" },
+  web: { verb: "browsed", singular: "page", plural: "pages" },
+  agent: { verb: "started", singular: "agent", plural: "agents" },
+  skill: { verb: "used", singular: "skill", plural: "skills" },
+  mcp: { verb: "used", singular: "tool", plural: "tools" },
+  plan: { verb: "updated", singular: "plan", plural: "plans" },
+  other: { verb: "used", singular: "tool", plural: "tools" },
+};
+
+export function groupSummary(tools: Tool[]): GroupSummary {
+  const calls = new Map<ToolKind, number>();
+  const files = new Map<ToolKind, Set<string>>();
+
+  for (const tool of tools) {
+    const kind = toolLook(tool.name, tool.args).kind;
+    calls.set(kind, (calls.get(kind) ?? 0) + 1);
+    if (kind === "read" || kind === "edit") {
+      const file = fileName(tool.args);
+      if (file) {
+        const seen = files.get(kind) ?? new Set<string>();
+        seen.add(file);
+        files.set(kind, seen);
+      }
+    }
+  }
+
+  const kinds = SUMMARY_ORDER.filter((kind) => calls.has(kind));
+  const shown = kinds.slice(0, 3);
+  const phrases = shown.map((kind) => {
+    const count = files.get(kind)?.size || calls.get(kind) || 0;
+    const words = SUMMARY_WORDS[kind];
+    const amount = count === 1 ? `a ${words.singular}` : `${count} ${words.plural}`;
+    return `${words.verb} ${amount}`;
+  });
+  if (kinds.length > shown.length) phrases.push(`+${kinds.length - shown.length} more`);
+
+  // `groupRows` only hands this function real tool runs. The fallback keeps the
+  // renderer total if a caller ever supplies an otherwise unknown tool shape.
+  return { kind: shown[0] ?? "other", label: phrases.join(", ") || "Used tools" };
+}
+
 function verb(tool: Tool): { label: string; kind: ToolKind } {
   const look = toolLook(tool.name, tool.args);
   if (look.kind === "run") {

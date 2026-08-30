@@ -84,7 +84,6 @@ export function ToolCard({
   agent,
   note,
   folder,
-  steady,
   open: openFrom,
 }: {
   tool: Tool;
@@ -93,9 +92,6 @@ export function ToolCard({
    *  detail is a file inside it, the card shows the file's NAME — the path is
    *  said once, above the run, instead of once per card. */
   folder?: string;
-  /** This card sits somewhere that must not change height, and so must not
-   *  open itself. Only the newest call of a folded run — see ToolGroup. */
-  steady?: boolean;
   /** Card 73 — a fenced block the reply wrote straight after this call.
    *
    *  The AGENT'S prose, not the tool's output. It is drawn under its own label
@@ -118,8 +114,8 @@ export function ToolCard({
   const diff = fileDiff(tool.name, tool.args, tool.details);
   // A card holding a change opens itself. What the agent CHANGED is the one
   // thing on a turn worth reading without having to ask for it, and a diff
-  // behind a fold is a diff nobody reads — the row said `+17 −1` and the reader
-  // took its word for it. It costs less page than it sounds: `.diff-body` caps
+  // behind a fold is a diff nobody reads — the group only says a file changed.
+  // It costs less page than it sounds: `.diff-body` caps
   // its own height and scrolls, so a 3000-line write is still one card tall.
   //
   // Decided once, at mount, like every other reason a card starts open — an
@@ -127,14 +123,12 @@ export function ToolCard({
   // first frame and there is nothing to wait for. A card that popped open later,
   // when a result landed, would move the page under whoever was reading it.
   //
-  // Never where a box has to hold its height; see `steady`.
-  //
   // A subagent card opens itself for its own reason: a run takes minutes, and a
   // folded card through all of it looks like nothing is happening. Neither is
   // folded again when the work ends — a card closing itself mid-read takes the
   // paragraph out from under the reader.
   const [open, setOpen] = useState(
-    () => openFrom ?? ((!!diff && !steady) || (isAgent && tool.state === "running")),
+    () => openFrom ?? (!!diff || (isAgent && tool.state === "running")),
   );
   // A skill's card is the skill, not the call. The prompt it put in front of
   // the agent arrives a moment after the call answers (see `brief` on the

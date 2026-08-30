@@ -1,0 +1,134 @@
+/* The conversation's own minimap. It occupies no transcript space: this is a
+   reading aid over the left gutter, not another sidebar that narrows prose. */
+.conversation-map {
+  position: sticky;
+  top: calc(50% - 104px);
+  z-index: 5;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.conversation-map-body {
+  position: absolute;
+  top: 0;
+  left: 12px;
+  width: 52px;
+  height: 208px;
+  pointer-events: auto;
+}
+
+.conversation-map-track {
+  position: absolute;
+  inset: 0 0 0 4px;
+  pointer-events: none;
+}
+
+.conversation-map-viewport {
+  position: absolute;
+  right: 0;
+  left: 0;
+  border-left: 1px solid color-mix(in srgb, var(--fg-3) 18%, transparent);
+  transition: top 90ms linear, height 140ms ease;
+}
+
+.conversation-map-points {
+  position: absolute;
+  inset: 0;
+}
+
+.conversation-map-point {
+  position: absolute;
+  left: 4px;
+  height: 20px;
+  margin-top: -10px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* The hit target is a comfortable 20px high while the visual stays a compact
+   dash. A literal four-pixel button looks right and feels broken. */
+.conversation-map-point::after {
+  position: absolute;
+  top: 8px;
+  right: 0;
+  left: 0;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg-2) 42%, transparent);
+  content: "";
+  transition: height 130ms ease, background 130ms ease, transform 130ms ease;
+}
+
+.conversation-map-point:hover,
+.conversation-map-point:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--fg-0) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.conversation-map-point:hover::after,
+.conversation-map-point:focus-visible::after,
+.conversation-map-point.is-current::after {
+  height: 5px;
+  background: var(--fg-0);
+  transform: scaleX(1.12);
+}
+
+/* The card takes no mouse events. Leaving a point therefore returns to the
+   scroll-selected preview instead of making it flicker as the cursor crosses
+   a card that is unrelated to the interaction. */
+.conversation-map-preview {
+  position: absolute;
+  top: 0;
+  left: 72px;
+  width: min(640px, calc(100vw - 108px));
+  max-height: 190px;
+  overflow: hidden;
+  padding: 20px 18px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--bg-1) 92%, transparent);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  color: var(--fg-1);
+  pointer-events: none;
+}
+
+.conversation-map-preview-title,
+.conversation-map-preview-body {
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+}
+
+.conversation-map-preview-title {
+  -webkit-line-clamp: 1;
+  color: var(--fg-0);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.conversation-map-preview-body {
+  -webkit-line-clamp: 3;
+  margin-top: 13px;
+  color: var(--fg-2);
+  font-size: 15px;
+  line-height: 1.58;
+}
+
+@media (max-width: 760px) {
+  .conversation-map {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-map-viewport,
+  .conversation-map-point {
+    transition: none;
+  }
+}

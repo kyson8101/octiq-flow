@@ -1,10 +1,8 @@
 // The folded row, as it actually reaches the page.
 //
-// `groupTally` and `groupDiff` are tested on their own in lib/toolGroups.test.ts.
-// What is checked here is the wiring the fold depends on: an edit folds like
-// any other call now, so the row it folds into must SAY that a file changed
-// without being opened. If that stops reaching the markup, the group is back to
-// quietly swallowing the one call the reader came for.
+// `groupSummary` is tested on its own in lib/toolGroups.test.ts. These checks
+// cover the wiring that keeps the compact row honest: it names what happened,
+// counts the whole run, and leaves the exact paths behind its disclosure.
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Tool } from "../lib/toolGroups";
@@ -50,38 +48,22 @@ const html = () =>
   renderToStaticMarkup(<ToolGroup tools={run} newest={bash("5", "pnpm vitest run")} />);
 
 describe("a run with edits folded into it", () => {
-  it("counts the lines it changed on the folded row", () => {
-    // Five lines written across the two calls. The reader never has to open the
-    // group to know the run was not just looking.
-    expect(html()).toContain("+5");
-  });
-
-  it("names the file it changed, not the tool that changed it", () => {
-    // `chat.ts ×4`, not `Read ×2 · Write ×2`: the tool names only repeat the
-    // count already on the row above.
+  it("describes the work as a compact action sentence", () => {
     const markup = html();
-    expect(markup).toContain("chat.ts");
-    expect(markup).not.toContain("Write");
+    expect(markup).toContain("Edited a file");
+    expect(markup).toContain("ran a command");
   });
 
-  it("marks that file as changed, so a fold never reads as a look", () => {
-    expect(html()).toContain('data-kind="edit"');
-  });
-
-  it("still says how many calls folded into it", () => {
-    // The count is a row of wheels now rather than a piece of the name string,
-    // so `4` and `calls` reach the markup as two things. What must survive is
-    // that the row still reads as a count — and that the whole number is in it
-    // once as one string, which is what a screen reader is given.
+  it("counts the entire group, including the newest call", () => {
+    // The rolling counter sits apart from the action words, so its animation
+    // remains meaningful as a new latest call joins the group.
     const markup = html();
-    expect(markup).toContain(">4</span>");
+    expect(markup).toContain(">5</span>");
     expect(markup).toContain("calls");
   });
 
-  it("keeps the folded row clear of the path it repeated four times", () => {
-    // The same absolute path down four rows was half the wall. Folded, the row
-    // says the file once and by its name; the whole path is on the cards
-    // inside, which are drawn only once the group is opened.
+  it("keeps the compact row clear of repeated paths and raw tool names", () => {
     expect(html()).not.toContain("/Users/k/octiq/web/src/lib");
+    expect(html()).not.toContain("Write");
   });
 });

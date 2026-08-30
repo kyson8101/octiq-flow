@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Block } from "./chat";
-import { groupDiff, groupRows, groupTally, type Row, type Tool } from "./toolGroups";
+import { groupDiff, groupRows, groupSummary, groupTally, type Row, type Tool } from "./toolGroups";
 
 function tool(name: string, id = name + Math.random()): Block {
   return { kind: "tool", id, name, argsJson: "", args: {}, state: "done" };
@@ -253,6 +253,58 @@ describe("groupTally", () => {
       { label: "Read", count: 2, kind: "read" },
       { label: "Grep", count: 1, kind: "search" },
     ]);
+  });
+});
+
+describe("groupSummary", () => {
+  const bash = (command: string): Tool => ({
+    kind: "tool",
+    id: command,
+    name: "Bash",
+    argsJson: "",
+    args: { command },
+    state: "done",
+  });
+
+  const file = (name: string, file_path: string): Tool => ({
+    kind: "tool",
+    id: name + file_path,
+    name,
+    argsJson: "",
+    args: { file_path },
+    state: "done",
+  });
+
+  it("uses one plain-language clause per action kind", () => {
+    expect(
+      groupSummary([
+        file("Read", "/work/app.ts"),
+        file("Edit", "/work/app.ts"),
+        file("Edit", "/work/other.ts"),
+        bash("pnpm test"),
+      ]),
+    ).toEqual({ kind: "edit", label: "Edited 2 files, ran a command, read a file" });
+  });
+
+  it("counts a file once when several calls touched it", () => {
+    expect(
+      groupSummary([
+        file("Read", "/work/app.ts"),
+        file("Read", "/work/app.ts"),
+        file("Edit", "/work/app.ts"),
+      ]),
+    ).toEqual({ kind: "edit", label: "Edited a file, read a file" });
+  });
+
+  it("keeps a many-kind summary to a single compact line", () => {
+    const tools = [
+      file("Edit", "/work/app.ts"),
+      bash("pnpm test"),
+      file("Read", "/work/other.ts"),
+      tool("Grep", "search"),
+      tool("WebSearch", "web"),
+    ] as Tool[];
+    expect(groupSummary(tools).label).toBe("Edited a file, ran a command, read a file, +2 more");
   });
 });
 

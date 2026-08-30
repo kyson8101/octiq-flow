@@ -38,6 +38,7 @@ import { ProsePath } from "./ProsePath";
 import { ProseTable } from "./ProseTable";
 import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
+import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -552,6 +553,7 @@ function TurnView({
   busy,
   tints,
   fresh,
+  mapTurnId,
 }: {
   messages: Message[];
   kids: Kids;
@@ -566,6 +568,8 @@ function TurnView({
   /** Which colour each seat in this room speaks in. Empty in an ordinary chat,
    *  which has no seats — see lib/seatTint. */
   tints?: Map<string, number>;
+  /** A person-sent turn is one return point on the conversation map. */
+  mapTurnId?: string;
 }) {
   const role = messages[0].role;
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
@@ -644,6 +648,7 @@ function TurnView({
         fresh ? "is-new" : ""
       }`}
       data-tint={tint}
+      data-map-turn={mapTurnId}
     >
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
@@ -1183,6 +1188,16 @@ export function MessageList({
   const tints = useMemo(() => seatTints(messages), [messages]);
 
   const { fresh, nth } = useJustArrived(turns);
+  const mapTurns = useMemo(() => conversationMapTurns(turns), [turns]);
+
+  // A map point is another way of deliberately reading back. Its programmatic
+  // scroll does not carry a wheel/touch gesture, so tell the transcript's own
+  // follow logic about the intent before the first scroll event arrives.
+  const mapJumped = () => {
+    stopGlide();
+    stick.current = false;
+    setAway(true);
+  };
 
   // A turn has arrived: take the conversation up to meet it.
   //
@@ -1227,6 +1242,7 @@ export function MessageList({
 
   return (
     <div className="msgs" ref={scrollerRef}>
+      <ConversationMap turns={mapTurns} scrollerRef={scrollerRef} innerRef={innerRef} onJump={mapJumped} />
       <ConfigWorldProvider say={world.say} said={world.said}>
       <div className="msgs-inner" ref={innerRef}>
         {turns.map((turn, i) => (
@@ -1238,6 +1254,7 @@ export function MessageList({
               busy={busy}
               tints={tints}
               fresh={fresh.has(turn[0].id)}
+              mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once
