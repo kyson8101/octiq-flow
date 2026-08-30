@@ -2370,8 +2370,9 @@ mod tests {
         // Quoted, so a space in the name stays one argument.
         assert!(x.contains("-i '/tmp/a shot.png'"));
         assert!(x.contains("-i '/tmp/b.webp'"));
-        // ...and the prompt still ends the line, after the images.
-        assert!(x.ends_with("'look'"));
+        // `-i` is variadic, so `--` must keep the positional prompt from
+        // becoming a third image and falling back to stdin.
+        assert!(x.ends_with("-- 'look'"));
 
         // An image by itself is a valid composer message. Codex treats an
         // empty positional argument as no prompt and otherwise reads stdin,
@@ -2387,8 +2388,22 @@ mod tests {
             &shots,
             false,
         );
-        assert!(image_only.ends_with("'Please inspect the attached image.'"));
+        assert!(image_only.ends_with("-- 'Please inspect the attached image.'"));
         assert!(!image_only.ends_with("''"));
+
+        // The delimiter also preserves a user prompt that starts with a dash.
+        let dash_prompt = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "--describe",
+            None,
+            &[],
+            None,
+            &shots,
+            false,
+        );
+        assert!(dash_prompt.ends_with("-- '--describe'"));
 
         // Claude's images ride on stdin instead — see write_user_message.
         let c = build_command(

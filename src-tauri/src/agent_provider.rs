@@ -562,7 +562,11 @@ impl AgentProvider for CodexProvider {
         } else {
             request.prompt
         };
-        cmd.push(' ');
+        // `-i` accepts one or more paths, so without `--` it greedily treats
+        // the positional prompt as another image. That leaves Codex without a
+        // prompt and makes it fall back to the intentionally closed stdin.
+        // The delimiter also lets a user intentionally start a prompt with `-`.
+        cmd.push_str(" -- ");
         cmd.push_str(&sh_quote(prompt));
         cmd
     }
