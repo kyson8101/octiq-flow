@@ -70,18 +70,23 @@ import { DRAWER, useMedia, WIDE } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { neighbour, useChatSwipe } from "./lib/chatSwipe";
 import { MessageList } from "./components/MessageList";
+import { Composer, type Attachment } from "./components/Composer";
 import {
-  ACCESS,
-  Composer,
+  accessFor,
+  accessLabel as providerAccessLabel,
+  effortFor,
+  liveSettingCommand,
   MODELS,
   modelFromId,
-  type Attachment,
-  type Effort,
-  effortFor,
-  type ModelChoice,
+  parseCommandCache,
+  providerCommands,
+  providerFor,
   type AccessLevel,
+  type CommandCache,
+  type Effort,
+  type ModelChoice,
   type Provider,
-} from "./components/Composer";
+} from "./lib/agentProviders";
 import { Connect } from "./components/Connect";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
@@ -356,9 +361,12 @@ export default function App() {
       edit: "auto",
       bypassPermissions: "full",
     };
-    if (saved && legacy[saved]) return legacy[saved];
+    if (saved && legacy[saved]) return accessFor(choice.agent, legacy[saved]);
     const known: AccessLevel[] = ["read", "manual", "edits", "auto", "full"];
-    return known.includes(saved as AccessLevel) ? (saved as AccessLevel) : "read";
+    return accessFor(
+      choice.agent,
+      known.includes(saved as AccessLevel) ? (saved as AccessLevel) : "read",
+    );
   });
   // How hard the model thinks. Fixed on the agent's command line, so changing
   // it takes effect from the next message — see changeEffort.
@@ -1022,21 +1030,19 @@ export default function App() {
     [patch],
   );
 
-  // The slash commands a session reports at startup, kept per project so the
-  // menu works from the moment the composer opens — otherwise it would be empty
-  // until a chat had already been running, which is exactly when nobody needs
-  // to look up a command.
-  const [commands, setCommands] = useState<Record<string, string[]>>(() => {
+  // The commands a session reports at startup, kept per PROJECT AND PROVIDER.
+  // A provider owns its command syntax: Claude's `/compact` must not show up
+  // after the same project is switched to Codex (or a future provider).
+  const [commands, setCommands] = useState<CommandCache>(() => {
     try {
-      const raw = JSON.parse(localStorage.getItem(CMDS_KEY) || "{}");
-      return raw && typeof raw === "object" ? raw : {};
+      return parseCommandCache(JSON.parse(localStorage.getItem(CMDS_KEY) || "{}"));
     } catch {
       return {};
     }
   });
 
   // The command list comes from the session's own startup announcement, and is
-  // cached per project from then on. It cannot be fetched ahead of time: the
+  // cached per provider from then on. It cannot be fetched ahead of time: the
   // agent says nothing at all until it has a prompt, so the first chat in a
   // project is what fills this.
   // Read from every loaded chat, not only the visible one — a chat working in
@@ -1047,9 +1053,13 @@ export default function App() {
       let next = prev;
       for (const [id, s] of Object.entries(chats)) {
         const pid = meta.current[id]?.projectId;
-        if (!pid || !s.commands?.length) continue;
-        if (prev[pid]?.length === s.commands.length) continue;
-        next = { ...next, [pid]: s.commands };
+        const agent = modelFromId(meta.current[id]?.modelId ?? null)?.agent;
+        if (!pid || !agent || !s.commands?.length) continue;
+        const before = prev[pid]?.[agent];
+        if (before?.length === s.commands.length && before.every((command, i) => command === s.commands![i])) {
+          continue;
+        }
+        next = { ...next, [pid]: { ...next[pid], [agent]: s.commands } };
       }
       if (next === prev) return prev;
       remember(CMDS_KEY, JSON.stringify(next));
@@ -1265,9 +1275,10 @@ export default function App() {
   }, []);
 
   const startBlank = useCallback(
-    (forProject: string) => {
+    (forProject: string, settings?: { model: ModelChoice; access: AccessLevel }) => {
       const id = crypto.randomUUID();
-      meta.current[id] = { projectId: forProject, modelId: choice.id, access };
+      const next = settings ?? { model: choice, access };
+      meta.current[id] = { projectId: forProject, modelId: next.model.id, access: next.access };
       setProjectId(forProject);
       setConversationId(id);
       setDrawer(false);
@@ -1340,9 +1351,11 @@ export default function App() {
       const blank = conversationId && (chats[conversationId]?.messages.length ?? 0) === 0;
       const id = blank ? conversationId! : crypto.randomUUID();
 
-      meta.current[id] = { projectId: forProject, modelId: model.id, access };
+      const sessionAccess = accessFor(session.agent, access);
+      meta.current[id] = { projectId: forProject, modelId: model.id, access: sessionAccess };
       setChoice(model);
       setEffort(kept);
+      setAccess(sessionAccess);
       remember(EFFORT_KEY, kept);
       setResumed((prev) => ({ ...prev, [id]: session }));
       patch(id, (s) => ({ ...s, sessionId: session.sessionId }));
@@ -1392,10 +1405,12 @@ export default function App() {
   );
 
   const openConversation = useCallback((c: Conversation) => {
+    const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
+    const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
     meta.current[c.id] = {
       projectId: c.projectId,
-      modelId: c.modelId ?? meta.current[c.id]?.modelId ?? MODELS[0].id,
-      access: (c.permission as AccessLevel) ?? "read",
+      modelId: model.id,
+      access: conversationAccess,
     };
     // Seed the stored transcript unless this page already HOLDS the chat: one
     // that has been running in the background holds more than what was last
@@ -1456,11 +1471,8 @@ export default function App() {
       });
     setProjectId(c.projectId);
     setConversationId(c.id);
-    if (c.modelId) {
-      const model = MODELS.find((m) => m.id === c.modelId);
-      if (model) setChoice(model);
-    }
-    if (c.permission) setAccess(c.permission as AccessLevel);
+    if (c.modelId) setChoice(model);
+    setAccess(conversationAccess);
     setDrawer(false);
   }, [catchUpChat]);
 
@@ -2215,8 +2227,14 @@ export default function App() {
   const changeModel = useCallback(
     (c: ModelChoice) => {
       const previous = choice;
+      const changingProvider = c.agent !== previous.agent;
+      const nextAccess = accessFor(c.agent, access);
       setChoice(c);
       remember(CHOICE_KEY, c.id);
+      if (nextAccess !== access) {
+        setAccess(nextAccess);
+        remember(ACCESS_KEY, nextAccess);
+      }
       // The two providers do not offer the same effort levels, so carry the
       // choice across only when it exists over there.
       const kept = effortFor(c.agent, effort);
@@ -2224,7 +2242,7 @@ export default function App() {
         setEffort(kept);
         remember(EFFORT_KEY, kept);
       }
-      if (conversationId && meta.current[conversationId]) {
+      if (conversationId && meta.current[conversationId] && !changingProvider) {
         meta.current[conversationId].modelId = c.id;
       }
 
@@ -2233,23 +2251,24 @@ export default function App() {
 
       // Changing PROVIDER cannot be done in place at any price: a Claude
       // session id means nothing to Codex, and the two are different programs.
-      if (c.agent !== previous.agent) {
-        if (project) startBlank(project.id);
+      if (changingProvider) {
+        if (project) startBlank(project.id, { model: c, access: nextAccess });
         return;
       }
 
-      // Same provider, mid-conversation. Claude can be told to switch, which
-      // keeps everything said so far. `Default` has no name to pass, so that
-      // one still needs a fresh chat.
-      if (c.agent === "claude" && c.flag && tellSession(`/model ${c.flag}`)) return;
+      // Same provider, mid-conversation. Its adapter may have a native setting
+      // command that keeps everything said so far. `Default` has no name to
+      // pass, so that one still needs a fresh chat.
+      const liveCommand = liveSettingCommand(c.agent, "model", c.flag);
+      if (liveCommand && tellSession(liveCommand)) return;
 
       // Nothing running: the next message respawns the agent, and it will carry
       // the new --model with --resume, so the conversation survives anyway.
       if (!runningRef.current.has(conversationId ?? "")) return;
 
-      if (project) startBlank(project.id);
+      if (project) startBlank(project.id, { model: c, access: nextAccess });
     },
-    [chat.messages.length, project, startBlank, effort, choice, conversationId, tellSession],
+    [chat.messages.length, project, startBlank, effort, access, choice, conversationId, tellSession],
   );
 
   /** Picking an agent on the Agents page.
@@ -2262,7 +2281,7 @@ export default function App() {
   const pickAgent = useCallback(
     (agent: Provider) => {
       if (agent === choice.agent) return;
-      const first = MODELS.find((m) => m.agent === agent);
+      const first = providerFor(agent).models[0];
       if (first) changeModel(first);
     },
     [choice.agent, changeModel],
@@ -2280,9 +2299,8 @@ export default function App() {
       // the agent, and was back to the old word after a reload. See
       // `lib/remember`.
       remember(EFFORT_KEY, e);
-      // Claude takes `/effort` the same way it takes `/model`, so a running
-      // session changes in place rather than being restarted.
-      if (choice.agent === "claude" && tellSession(`/effort ${e}`)) return;
+      const liveCommand = liveSettingCommand(choice.agent, "effort", e);
+      if (liveCommand && tellSession(liveCommand)) return;
       // Otherwise the setting is on the command line, so the process has to go
       // — the conversation does not: the next message resumes the same session
       // under the new level.
@@ -2295,7 +2313,7 @@ export default function App() {
    *  on screen may by then be showing another. */
   const accessLabel = useCallback((id: string, level: AccessLevel) => {
     const agent = modelFromId(meta.current[id]?.modelId ?? null)?.agent ?? "claude";
-    return ACCESS[agent].find((a) => a.id === level)?.label ?? level;
+    return providerAccessLabel(agent, level);
   }, []);
 
   /** The fallback for a change the running agent will not take: end its process
@@ -2886,7 +2904,7 @@ export default function App() {
                 (conversationId && resumed[conversationId] ? (
                   <p className="hero-sub">
                     continuing “{resumed[conversationId].title}” ·{" "}
-                    {resumed[conversationId].agent === "claude" ? "Claude" : "Codex"}
+                    {providerFor(resumed[conversationId].agent).name}
                     {resumed[conversationId].problem && (
                       // The transcript could not be read. Saying so beats the
                       // blank page that looks like the click did nothing —
@@ -3073,7 +3091,7 @@ export default function App() {
             busy={chat.busy && !cutOff}
             disabled={!project}
             installed={installed}
-            commands={(projectId && commands[projectId]) || []}
+            commands={providerCommands(choice.agent, (projectId && commands[projectId]?.[choice.agent]) || [])}
             contextTokens={chat.contextTokens}
             contextWindow={chat.contextWindow}
             activity={chat.activity}

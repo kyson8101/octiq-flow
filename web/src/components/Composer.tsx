@@ -30,6 +30,41 @@ import { BackgroundNote } from "./Background";
 import { useMedia, WIDE } from "../lib/media";
 import { Todos } from "./Todos";
 import type { Todo } from "../lib/todos";
+import {
+  AGENT_NAME,
+  effortSteps,
+  PROVIDERS,
+  providerFor,
+  type AccessLevel,
+  type AgentCommand,
+  type Effort,
+  type ModelChoice,
+  type Provider,
+} from "../lib/agentProviders";
+
+// Kept as exports while the components that use the picker migrate. Their
+// implementation now comes from the provider registry above.
+export {
+  ACCESS,
+  AGENT_NAME,
+  EFFORTS,
+  effortFor,
+  effortSteps,
+  MODELS,
+  modelFromId,
+  providerCommands,
+  providerFor,
+} from "../lib/agentProviders";
+export type {
+  AccessLevel,
+  AccessOption,
+  AgentCommand,
+  AgentProvider,
+  Effort,
+  EffortOption,
+  ModelChoice,
+  Provider,
+} from "../lib/agentProviders";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
@@ -52,124 +87,6 @@ const CAN_PASTE =
   !!navigator.clipboard &&
   !!(navigator.clipboard.read || navigator.clipboard.readText);
 
-export type Provider = "claude" | "codex";
-
-export type ModelChoice = {
-  id: string;
-  agent: Provider;
-  name: string;
-  model: string;
-  /** What the backend passes as --model / -m. Empty = the agent's own default. */
-  flag: string;
-  /** The one line under the name. A tile in the desktop dropdown has room for
-   *  the name alone; the phone's list is a row per model, and a row of names
-   *  with nothing under them says no more than the flag did. */
-  hint: string;
-};
-
-export const MODELS: ModelChoice[] = [
-  { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus", flag: "opus", hint: "for complex work" },
-  { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet", flag: "sonnet", hint: "the everyday balance" },
-  { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku", hint: "fastest, for quick answers" },
-  { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable", hint: "for the toughest problems" },
-  { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "", hint: "whatever the CLI picks" },
-  // Codex's three GPT-5.6 models, in the order its own model list puts them:
-  // Sol is the frontier one, Terra the everyday balance, Luna the fast and
-  // cheap one. The tile shows the short name because the tab above it already
-  // says Codex — the flag carries the full slug.
-  { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol", hint: "the frontier one" },
-  { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra", hint: "the everyday balance" },
-  { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna", hint: "fast and cheap" },
-  { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "", hint: "whatever the CLI picks" },
-];
-
-/** The saved choice, if it is still one of the rows above.
- *
- *  Ids change when a lineup does — `codex:gpt5` became `codex:sol` the day
- *  Codex shipped three models instead of one — and a saved id nobody claims
- *  used to drop the whole choice back to the first row, which silently moved a
- *  Codex user onto Claude. Falling back to the AGENT's first model keeps the
- *  half of the choice that is still true. */
-export function modelFromId(id: string | null): ModelChoice | undefined {
-  if (!id) return undefined;
-  const exact = MODELS.find((m) => m.id === id);
-  if (exact) return exact;
-  const agent = id.split(":")[0];
-  return MODELS.find((m) => m.agent === agent);
-}
-
-/** Each agent's name, taken from its own rows so there is one spelling of it. */
-export const AGENT_NAME: Record<Provider, string> =
-  MODELS.reduce((acc, m) => {
-    acc[m.agent] = m.name;
-    return acc;
-  }, {} as Record<Provider, string>);
-
-/** How much the agent may do without asking.
- *
- *  ONE question, asked once, because that is the decision being made — but the
- *  two agents answer to different flags: Claude to `--permission-mode`, Codex
- *  to `--sandbox`. The backend maps this level to whichever applies, so the
- *  spelling never reaches the UI.
- *
- *  This is NOT a hidden default. A chat has no channel for answering a
- *  permission prompt, so whatever is chosen here is what the agent will do
- *  unattended — and that has to be on screen, next to the send button. */
-export type AccessLevel = "read" | "manual" | "edits" | "auto" | "full";
-
-/* Each agent's OWN words for these, and its own number of them.
- *
- * They were "Read only / Can edit / Full access" for both, which reads well and
- * matches neither. Someone who has used either agent directly, or is reading
- * its docs, should not have to work out which of our words maps to the thing
- * they already know — and Codex's own name for its last one carries the word
- * "danger", which is not ours to soften.
- *
- * So the two lists no longer match each other: Claude offers the four modes its
- * own app offers plus the bypass switch, and Codex its three sandbox policies.
- * That is not an inconsistency to tidy up — the agents genuinely differ, and
- * one shared shape would have to lie about one of them.
- *
- * The `id` is the wire value, and the backend maps it to `--permission-mode` or
- * to `--sandbox` plus `approval_policy` (see `Access` in agent_chat.rs). Only
- * what a person reads changes. */
-export const ACCESS: Record<
-  Provider,
-  { id: AccessLevel; label: string; hint: string; bypass?: boolean }[]
-> = {
-  claude: [
-    // Claude's own modes, in Claude's own words — `--permission-mode` takes
-    // exactly these, and the backend passes them straight through (see `Access`
-    // in agent_chat.rs). Anyone who has used Claude anywhere already knows what
-    // each one means, and a second vocabulary for the same switch is how a
-    // label ends up saying the opposite of the flag under it.
-    //
-    // Ordered as a ladder, least allowed first, which is not the order the
-    // desktop app lists them in — a menu you scan for "how much am I giving it"
-    // is easier to read when that is the axis. The last one is a SWITCH rather
-    // than a rung, again like the desktop: it is not more of the same thing,
-    // it is stepping out of the system.
-    //
-    // `dontAsk` is the sixth mode the CLI accepts and is deliberately not here,
-    // for the same reason the desktop leaves it out.
-    { id: "read", label: "Plan", hint: "create a plan before making changes" },
-    { id: "manual", label: "Manual", hint: "always ask before making changes" },
-    { id: "edits", label: "Accept edits", hint: "automatically accept all file edits" },
-    { id: "auto", label: "Auto", hint: "Claude handles permission decisions" },
-    {
-      id: "full",
-      label: "Bypass permissions",
-      hint: "run anything without asking",
-      bypass: true,
-    },
-  ],
-  codex: [
-    { id: "read", label: "Read-only", hint: "sandboxed, no writes" },
-    { id: "auto", label: "Workspace write", hint: "writes in the project, asks when unsure" },
-    { id: "full", label: "Danger: full access", hint: "no sandbox, no approvals" },
-  ],
-};
-
 /** The access list: modes as rows, and `bypass` as the switch under them.
  *
  *  Drawn in two places — the dropdown on a wide screen and the settings sheet
@@ -181,7 +98,7 @@ function AccessList({
   access,
   onPick,
 }: {
-  list: { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
+  list: readonly { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
   access: AccessLevel;
   onPick: (a: AccessLevel) => void;
 }) {
@@ -230,54 +147,6 @@ function AccessList({
       )}
     </>
   );
-}
-
-/** How hard the model thinks before answering.
- *
- *  Both agents have this and neither has the same levels: Codex has a `minimal`
- *  Claude lacks, Claude has a `max` and an `ultracode` Codex lacks. So the list
- *  is per provider, and the backend refuses anything outside the one it is
- *  given. */
-export type Effort = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode" | "auto";
-
-/** `short` is what fits under a slider stop; `label` is what a sentence uses. */
-export const EFFORTS: Record<Provider, { id: Effort; label: string; short: string; hint: string }[]> = {
-  claude: [
-    { id: "low", label: "Low", short: "Low", hint: "quick answers, least thinking" },
-    { id: "medium", label: "Medium", short: "Med", hint: "the usual balance" },
-    { id: "high", label: "High", short: "High", hint: "thinks longer, costs more" },
-    { id: "xhigh", label: "Very high", short: "V.high", hint: "for problems worth the wait" },
-    { id: "max", label: "Max", short: "Max", hint: "everything it has" },
-    { id: "ultracode", label: "Ultracode", short: "Ultra", hint: "max, and it fans work out to subagents" },
-    { id: "auto", label: "Auto", short: "Auto", hint: "it picks the level itself, per turn" },
-  ],
-  // No `minimal`, and a `max`: Codex's own model list says the GPT-5.6 models
-  // take low / medium / high / xhigh / max, and dropped minimal. (Sol and
-  // Terra also take an `ultra`, Luna does not — that one is per MODEL, not per
-  // agent, so it waits until this list can be asked per model.)
-  codex: [
-    { id: "low", label: "Low", short: "Low", hint: "quick answers" },
-    { id: "medium", label: "Medium", short: "Med", hint: "the usual balance" },
-    { id: "high", label: "High", short: "High", hint: "thinks longer, costs more" },
-    { id: "xhigh", label: "Very high", short: "V.high", hint: "for problems worth the wait" },
-    { id: "max", label: "Max", short: "Max", hint: "everything it has" },
-  ],
-};
-
-/** The rungs of the meter: every level except `auto`.
- *
- *  `auto` is not a rung. Every other level says how hard to think; `auto` says
- *  stop deciding and let the model judge each turn — which is a different kind
- *  of answer, and putting it at one end of a scale would claim it is either
- *  the least or the most of something. It gets its own switch instead. */
-export function effortSteps(provider: Provider) {
-  return EFFORTS[provider].filter((e) => e.id !== "auto");
-}
-
-/** The effort to use for a provider, given what is currently chosen. Falls back
- *  to Medium — which both offer — when the level does not exist over there. */
-export function effortFor(provider: Provider, wanted: Effort): Effort {
-  return EFFORTS[provider].some((e) => e.id === wanted) ? wanted : "medium";
 }
 
 export type Attachment = {
@@ -396,9 +265,9 @@ export function Composer({
    *  existed. An EMPTY array is the opposite: we asked, and this machine has
    *  none of them. */
   installed?: Provider[];
-  /** The slash commands this agent accepts, reported by the session itself.
-   *  Empty until a chat has run at least once in this project. */
-  commands?: string[];
+  /** The provider-owned commands this session advertised. Empty until a chat
+   * has run at least once in this project. */
+  commands?: readonly AgentCommand[];
   /** How much of the model's context this session is holding, and its ceiling.
    *  Both absent until the first turn ends — the agent only reports them with
    *  its `result`. */
@@ -478,8 +347,9 @@ export function Composer({
   const [pick, setPick] = useState(0);
   // Every option list depends on which provider is chosen: the two agents do
   // not offer the same access wording or the same effort levels.
-  const accessList = ACCESS[choice.agent];
-  const effortList = EFFORTS[choice.agent];
+  const provider = providerFor(choice.agent);
+  const accessList = provider.access;
+  const effortList = provider.efforts;
   const effSteps = effortSteps(choice.agent);
   const perm = accessList.find((p) => p.id === access) ?? accessList[0];
   const eff = effortList.find((e) => e.id === effort) ?? effortList[Math.floor(effortList.length / 2)];
@@ -523,15 +393,15 @@ export function Composer({
     slashQuery === undefined
       ? []
       : (commands ?? [])
-          .filter((c) => c.toLowerCase().startsWith(slashQuery.toLowerCase()))
+          .filter((command) => command.id.toLowerCase().startsWith(slashQuery.toLowerCase()))
           // A command you have typed in full sorts to the top, so it is the one
           // highlighted. `/context` still matches `context`, so without this the
           // menu stays up on a finished command and Enter "completes" it to
           // itself — swallowing the send and making you press Enter twice.
           .sort(
             (a, b) =>
-              Number(b.toLowerCase() === slashQuery.toLowerCase()) -
-              Number(a.toLowerCase() === slashQuery.toLowerCase()),
+              Number(b.id.toLowerCase() === slashQuery.toLowerCase()) -
+              Number(a.id.toLowerCase() === slashQuery.toLowerCase()),
           )
           .slice(0, 40);
   const slashOpen = matches.length > 0;
@@ -560,7 +430,7 @@ export function Composer({
    *  completion back. */
   const nothingToComplete =
     slashQuery !== undefined &&
-    matches[pick]?.toLowerCase() === slashQuery.toLowerCase();
+    matches[pick]?.id.toLowerCase() === slashQuery.toLowerCase();
 
   // Keep the highlight inside the list as it narrows.
   useEffect(() => {
@@ -573,8 +443,8 @@ export function Composer({
     setPick((i) => (i < whoList.length ? i : 0));
   }, [whoList.length]);
 
-  function complete(name: string) {
-    setText(`/${name} `);
+  function complete(command: AgentCommand) {
+    setText(command.insert);
     areaRef.current?.focus();
   }
 
@@ -948,17 +818,17 @@ export function Composer({
             {nothingToComplete ? "Enter to send" : "Tab to complete"}
           </div>
           <ul className="slash-list">
-            {matches.map((name, i) => (
-              <li key={name}>
+            {matches.map((command, i) => (
+              <li key={command.id}>
                 <button
                   type="button"
                   role="option"
                   aria-selected={i === pick}
                   className={`slash-item ${i === pick ? "is-on" : ""}`}
                   onMouseEnter={() => setPick(i)}
-                  onClick={() => complete(name)}
+                  onClick={() => complete(command)}
                 >
-                  /{name}
+                  {command.label}
                 </button>
               </li>
             ))}
@@ -1606,7 +1476,7 @@ export function SettingsSheet({
   missing: (p: Provider) => boolean;
   noAgents: boolean;
   started: boolean;
-  accessList: { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
+  accessList: readonly { id: AccessLevel; label: string; hint: string; bypass?: boolean }[];
   access: AccessLevel;
   onAccess: (a: AccessLevel) => void;
   effort: Effort;
@@ -1634,7 +1504,7 @@ export function SettingsSheet({
   // word the page shows. Both can be absent for a moment while a provider
   // switch is in flight — the level or mode belongs to the OTHER agent until
   // the fallback lands.
-  const eff = EFFORTS[choice.agent].find((e) => e.id === effort);
+  const eff = providerFor(choice.agent).efforts.find((e) => e.id === effort);
   const acc = accessList.find((a) => a.id === access);
 
   const title = page === "root" ? "Chat settings" : page === "effort" ? "Effort" : "Access";
@@ -1762,7 +1632,7 @@ export function EffortList({
   return (
     <>
       <div className="sheet-card">
-        {EFFORTS[agent].map((e) => (
+        {providerFor(agent).efforts.map((e) => (
           <button
             key={e.id}
             type="button"
@@ -1793,7 +1663,7 @@ export function EffortList({
       <div className="sheet-foot-note">
         Higher effort means more thorough answers, but takes longer and uses your limits faster.
         {started &&
-          (agent === "claude"
+          (providerFor(agent).capabilities.liveSettings.effort
             ? " Changes this chat straight away."
             : " Applies from your next message.")}
       </div>
@@ -1881,8 +1751,8 @@ function ModelPicker({
   // to whatever is now in use, so reopening this never shows the wrong shelf.
   useEffect(() => setTab(choice.agent), [choice.agent]);
 
-  const agents = Object.keys(AGENT_NAME) as Provider[];
-  const list = MODELS.filter((m) => m.agent === tab);
+  const agents = PROVIDERS.map((provider) => provider.id);
+  const list = providerFor(tab).models;
   const gone = missing(tab);
 
   return (
@@ -1940,7 +1810,7 @@ function ModelPicker({
           keeps its skills in a folder rather than in the config it can be told
           to skip, so the same flags there saved about 2% and are not worth a
           switch that would look like it did something. */}
-      {tab === "claude" && (
+      {providerFor(tab).capabilities.cleanStart && (
         <button
           type="button"
           role="menuitemcheckbox"
@@ -2024,7 +1894,7 @@ function ModelNote({
   }
   // The flags are read once, when the agent starts. Said here rather than on
   // the switch itself, because it is only true of a chat already running.
-  if (started && lite && tab === "claude" && choice.agent === "claude") {
+  if (started && lite && providerFor(tab).capabilities.cleanStart && choice.agent === tab) {
     return <div className="mp-note">Clean start applies to your next new chat</div>;
   }
   if (!started) return null;
@@ -2143,7 +2013,7 @@ function EffortSlider({
   started: boolean;
 }) {
   const steps = effortSteps(agent);
-  const autoRow = EFFORTS[agent].find((e) => e.id === "auto");
+  const autoRow = providerFor(agent).efforts.find((e) => e.id === "auto");
   /** The middle when the level belongs to the OTHER agent — the same fallback
    *  the button makes, so the two never disagree while a switch is in flight. */
   const idxOf = (id: Effort) => {
@@ -2219,7 +2089,9 @@ function EffortSlider({
           which is the same control answering the same question twice. */}
       {started && (
         <div className="picker-note">
-          {agent === "claude" ? "Changes this chat straight away" : "Applies from your next message"}
+          {providerFor(agent).capabilities.liveSettings.effort
+            ? "Changes this chat straight away"
+            : "Applies from your next message"}
         </div>
       )}
 

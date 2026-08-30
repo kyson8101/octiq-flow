@@ -514,26 +514,33 @@ pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> 
 
 /// Start the next queued command-line turn after its preceding process exits.
 /// Its adapter owns the provider's resume syntax and has no persistent stdin
-/// channel (see `start_session`).
+/// channel (see `start_session`). `session_key` identifies the process to
+/// resume; `stream_key` keeps a seat's words in its room transcript.
 fn start_queued_command_turn(
     manager: Arc<ChatManager>,
-    key: &str,
+    session_key: &str,
+    stream_key: &str,
+    seat: Option<crate::chat_room::Seat>,
     turn: QueuedCommandTurn,
 ) -> Result<(), String> {
     let start = manager
-        .host_start(key)
-        .ok_or_else(|| format!("nothing here knows how to resume '{key}'"))?;
+        .start_context(session_key)
+        .ok_or_else(|| format!("nothing here knows how to resume '{session_key}'"))?;
     if provider_for(start.agent)
         .capabilities()
         .input
         .accepts_stdin()
     {
-        return Err(format!("'{key}' no longer uses command-line turns"));
+        return Err(format!("'{session_key}' no longer uses command-line turns"));
     }
     let QueuedCommandTurn { text, images } = turn;
-    chat_start_impl(
+    let voice = match seat {
+        Some(seat) => Voice::seat(stream_key, seat),
+        None => Voice::host(stream_key.to_string()),
+    };
+    start_session(
         manager,
-        key.to_string(),
+        voice,
         start.cwd,
         start.agent,
         start.model,
@@ -573,8 +580,10 @@ pub(crate) fn start_session(
         stream_key: key,
         seat,
     } = voice;
-    // Read before `seat` is moved into the reader thread below.
+    // Read before `seat` is moved into the reader thread below. The reaper
+    // needs its own copy to resume a queued Codex seat under the same voice.
     let is_seat = seat.is_some();
+    let seat_for_reaper = seat.clone();
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
     {
@@ -705,6 +714,7 @@ pub(crate) fn start_session(
     // stdout: one JSON object per line, passed through as-is.
     {
         let key = key.clone();
+        let session_key = session_key.clone();
         let stream_provider = provider;
         let asking = session.clone();
         // Whose stdout this is. `None` is the host, and a host's events go
@@ -812,12 +822,15 @@ pub(crate) fn start_session(
                         // Codex chat would look busy for as long as it lived.
                         // The agent naming its own conversation. Kept so the
                         // backend can RESUME this chat rather than start a
-                        // blank one — see `HostStart`. Both agents announce it
-                        // once, under different names, in their opening event.
-                        // Hosts only: a seat resumes nothing.
-                        if speaker.is_none() {
+                        // blank one — see `StartContext`. Both agents announce
+                        // it once, under different names, in their opening
+                        // event. A host always resumes its own memory; a seat
+                        // needs that record only when its provider is one-shot.
+                        if speaker.is_none()
+                            || !stream_provider.capabilities().input.accepts_stdin()
+                        {
                             if let Some(id) = observed.session_id {
-                                reading.remember_session(&key, id);
+                                reading.remember_session(&session_key, id);
                             }
                         }
                         // Codex says nothing on its full stop, so its closing
@@ -942,10 +955,12 @@ pub(crate) fn start_session(
                         // `chat_send_impl` takes these same locks in this
                         // order. Once this map entry is gone, no newly queued
                         // turn can be stranded on the old process.
-                        let queued_turn =
-                            (!provider_for(agent).capabilities().input.accepts_stdin() && !is_seat)
-                                .then(|| manager_for_exit.take_queued_command_turn(&key))
-                                .flatten();
+                        let queued_turn = (!provider_for(agent)
+                            .capabilities()
+                            .input
+                            .accepts_stdin())
+                        .then(|| manager_for_exit.take_queued_command_turn(&session_key_for_exit))
+                        .flatten();
                         (true, false, queued_turn)
                     } else {
                         (false, sessions.contains_key(&session_key_for_exit), None)
@@ -962,15 +977,20 @@ pub(crate) fn start_session(
             // exit, carry it into the next resume command instead. Keep the
             // UI's running state alive across that handoff: an `exit` here
             // would make a second quick message race the replacement.
-            if was_current && !is_seat && !provider_for(agent).capabilities().input.accepts_stdin()
-            {
+            if was_current && !provider_for(agent).capabilities().input.accepts_stdin() {
                 if let Some(turn) = queued_turn {
-                    match start_queued_command_turn(manager_for_exit.clone(), &key, turn) {
+                    match start_queued_command_turn(
+                        manager_for_exit.clone(),
+                        &session_key_for_exit,
+                        &key,
+                        seat_for_reaper,
+                        turn,
+                    ) {
                         Ok(()) => return,
                         Err(why) => {
                             // Do not let a later, unrelated resume receive
                             // stale words after a failed restart.
-                            manager_for_exit.forget_queued_command_turns(&key);
+                            manager_for_exit.forget_queued_command_turns(&session_key_for_exit);
                             crate::bus::emit(
                                 "chat-status",
                                 ChatStatus {
@@ -1081,20 +1101,20 @@ pub fn chat_send_impl(
         };
 
         // A command-line provider's stdin is deliberately `null`: an open pipe
-        // can make a one-shot command wait for more prompt text forever. Hosts
-        // have enough saved launch context to resume after exit, so queue their
-        // next turn instead.
-        if matches!(&target, crate::chat_room::Target::Host) {
+        // can make a one-shot command wait for more prompt text forever. Every
+        // command-line process, including a resident Codex seat, has launch
+        // context saved under its process key, so queue its next turn instead.
+        {
             let mut guard = session.lock().map_err(|e| e.to_string())?;
             if !provider_for(guard.agent)
                 .capabilities()
                 .input
                 .accepts_stdin()
             {
-                manager.queue_command_turn(&key, QueuedCommandTurn { text, images })?;
-                // A queued turn is still work the person is waiting for. This
-                // also prevents the idle sweeper from ending the process in
-                // the handoff before its reaper starts the resume.
+                manager.queue_command_turn(&session_key, QueuedCommandTurn { text, images })?;
+                // A queued turn is still work the person is waiting for. This also
+                // prevents the idle sweeper from ending the process in the handoff
+                // before its reaper starts the resume.
                 guard.turn_started();
                 return Ok(());
             }
@@ -1152,6 +1172,32 @@ pub fn chat_seat_start_impl(
     // missing path fails the spawn outright.
     let _ = std::fs::create_dir_all(&cwd);
     let extra_dirs = Some(extra_dirs);
+    let session_key = crate::chat_room::seat_session_key(&key, &seat.id);
+    // A resident command-line seat can be a one-shot provider. Its old process
+    // may have exited between messages, so retain the id it announced and
+    // resume it instead of starting a second opinion from an empty
+    // conversation. Stream-provider seats keep their existing fresh-start
+    // behavior when deliberately restarted.
+    let resume = if provider_for(agent).capabilities().input.accepts_stdin() {
+        None
+    } else {
+        manager
+            .start_context(&session_key)
+            .and_then(|start| start.session_id)
+    };
+    manager.remember_start(
+        &session_key,
+        StartContext {
+            cwd: cwd.clone(),
+            agent,
+            model: model.clone(),
+            access,
+            extra_dirs: extra_dirs.clone(),
+            effort: effort.clone(),
+            lite: Some(true),
+            session_id: resume.clone(),
+        },
+    );
     start_session(
         manager,
         Voice::seat(&key, seat),
@@ -1160,9 +1206,7 @@ pub fn chat_seat_start_impl(
         model,
         access,
         prompt,
-        // A seat has no earlier session of its own to resume: it is new the
-        // first time it is spoken to, and after that it has a live process.
-        None,
+        resume,
         extra_dirs,
         effort,
         images,
@@ -1921,7 +1965,12 @@ mod tests {
         // the label promises.
         for (level, claude_flag, sandbox, approval) in [
             (Access::Read, "--permission-mode plan", "read-only", "never"),
-            (Access::Auto, "--permission-mode auto", "workspace-write", "on-request"),
+            (
+                Access::Auto,
+                "--permission-mode auto",
+                "workspace-write",
+                "on-request",
+            ),
             (
                 Access::Full,
                 "--dangerously-skip-permissions",
@@ -1940,10 +1989,7 @@ mod tests {
                 &[],
                 false,
             );
-            assert!(
-                c.contains(claude_flag),
-                "claude {level:?}"
-            );
+            assert!(c.contains(claude_flag), "claude {level:?}");
             assert!(
                 !c.contains("--sandbox"),
                 "claude must not get a sandbox flag"
@@ -2357,6 +2403,75 @@ mod tests {
             false,
         );
         assert!(!c.contains("-i "));
+    }
+
+    #[test]
+    fn a_codex_seat_queues_its_follow_up_by_its_own_process_key() {
+        // Codex has no stdin conversation. A seat still has to be able to
+        // receive a message sent before its previous one-shot process exits,
+        // without putting the next turn in the room host's queue.
+        let manager = Arc::new(ChatManager::default());
+        let seat = crate::chat_room::add_seat_impl(
+            &manager,
+            "chat-a",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .expect("a resident Codex seat");
+        let session_key = crate::chat_room::seat_session_key("chat-a", &seat.id);
+        manager.remember_start(
+            &session_key,
+            StartContext {
+                cwd: "/tmp".into(),
+                agent: ChatAgent::Codex,
+                model: None,
+                access: Some(Access::Read),
+                extra_dirs: None,
+                effort: None,
+                lite: Some(true),
+                session_id: Some("01a0142d-552d-7a93-9152-47530c33e501".into()),
+            },
+        );
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a Codex stand-in");
+        manager.sessions.lock().unwrap().insert(
+            session_key.clone(),
+            Arc::new(Mutex::new(ChatSession {
+                child,
+                stdin: None,
+                agent: ChatAgent::Codex,
+                busy: true,
+                last_active: Instant::now(),
+            })),
+        );
+
+        chat_send_impl(
+            manager.clone(),
+            "chat-a".into(),
+            "follow up".into(),
+            Some(vec!["/tmp/shot.png".into()]),
+            Some(seat.id),
+        )
+        .expect("a Codex seat queues instead of writing to absent stdin");
+
+        assert!(manager.take_queued_command_turn("chat-a").is_none());
+        assert_eq!(
+            manager.take_queued_command_turn(&session_key),
+            Some(QueuedCommandTurn {
+                text: "follow up".into(),
+                images: vec!["/tmp/shot.png".into()],
+            })
+        );
+        assert_eq!(
+            manager
+                .start_context(&session_key)
+                .and_then(|start| start.session_id),
+            Some("01a0142d-552d-7a93-9152-47530c33e501".into()),
+            "the reaper has the exact session it needs for codex exec resume"
+        );
+        end_process(&manager, &session_key).expect("end the stand-in");
     }
 
     #[test]
@@ -2832,7 +2947,7 @@ mod idle_tests {
     fn both_agents_name_the_conversation_they_opened() {
         // One field each, under two names, meaning the same thing: the id that
         // resumes this chat. Kept so the backend can restart a host it swept
-        // and hand it the follow-up — see `HostStart`.
+        // and hand it the follow-up — see `StartContext`.
         assert_eq!(
             provider_for(ChatAgent::Claude)
                 .observe_event(&json!({

@@ -684,6 +684,41 @@ mod tests {
         assert_eq!(codex.capabilities().input, InputTransport::CommandLine);
     }
 
+    /// The common runtime conformance harness. A new provider is registered in
+    /// `AgentKind::ALL`, then must satisfy these lifecycle promises without
+    /// adding a name check to the chat manager's tests.
+    #[test]
+    fn every_registered_provider_satisfies_the_runtime_contract() {
+        for kind in AgentKind::ALL {
+            let provider = provider_for(kind);
+            let capabilities = provider.capabilities();
+            assert_eq!(provider.kind(), kind);
+            assert!(!provider.display_name().is_empty());
+            assert!(!provider.bin().is_empty());
+
+            let command = command(kind, None);
+            assert!(command.starts_with(provider.bin()));
+            assert_eq!(
+                provider.user_message_payload("hello", &[]).is_some(),
+                capabilities.input.accepts_stdin(),
+            );
+            assert_eq!(
+                provider.interrupt_payload().is_some(),
+                capabilities.input.accepts_stdin(),
+            );
+            assert_eq!(
+                provider.access_change_payload(Access::Auto).is_some(),
+                capabilities.supports_live_access_change,
+            );
+            assert!(provider.effort("high").is_some());
+
+            let unknown = json!({ "type": "unknown" });
+            let observed = provider.observe_event(&unknown);
+            assert!(observed.session_id.is_none());
+            assert!(!observed.turn_finished);
+        }
+    }
+
     #[test]
     fn each_adapter_owns_its_command_spelling() {
         let claude = command(AgentKind::Claude, Some(Path::new("octiq-ask.json")));

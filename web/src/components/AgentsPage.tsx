@@ -13,7 +13,7 @@
 // there.
 import { useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
-import type { Provider } from "./Composer";
+import type { Provider } from "../lib/agentProviders";
 
 /** One agent the app can start, as the backend reports it. */
 export type AgentInstall = {
