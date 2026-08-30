@@ -15,6 +15,7 @@
 //     than a dash, and a 429 is the moment you most want to see where you are.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { RollingText } from "./RollingNumber";
 
 type Window = { percent: number; resetsAt?: number | null };
 type Provider = {
@@ -249,7 +250,9 @@ function Pill({
       ) : (
         <span className="usage-num">
           {shown.label && <span className="usage-num-label">{shown.label}</span>}
-          <span className={`usage-val ${severity(percent)}`}>{Math.round(percent)}%</span>
+          <span className={`usage-val ${severity(percent)}`}>
+            <RollingText>{`${Math.round(percent)}%`}</RollingText>
+          </span>
         </span>
       )}
     </span>
@@ -300,9 +303,11 @@ function Row({ label, window }: { label: string; window?: Window | null }) {
         <span className="usage-fill" style={{ width: `${percent}%` }} />
       </span>
       <span className="usage-val">
-        {Number.isInteger(percent) ? percent : percent.toFixed(1)}%
+        <RollingText>{`${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`}</RollingText>
       </span>
-      <span className="usage-reset">{resetIn(window.resetsAt)}</span>
+      <span className="usage-reset">
+        <RollingText>{resetIn(window.resetsAt)}</RollingText>
+      </span>
     </div>
   );
 }

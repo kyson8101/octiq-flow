@@ -38,6 +38,7 @@ import { ProseTable } from "./ProseTable";
 import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
+import { RollingText } from "./RollingNumber";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -394,7 +395,11 @@ function Compacted({ block }: { block: Extract<Block, { kind: "compacted" }> }) 
             {/* The separator ahead of these is drawn in CSS, not written here: on a
                 narrow screen the facts take a line of their own, and a line
                 opening with a stray bullet reads as a list item. */}
-            {facts.length > 0 && <span className="compacted-facts">{facts.join(" · ")}</span>}
+            {facts.length > 0 && (
+              <span className="compacted-facts">
+                <RollingText>{facts.join(" · ")}</RollingText>
+              </span>
+            )}
           </button>
         ) : (
           <span className="compacted-label">
@@ -402,7 +407,11 @@ function Compacted({ block }: { block: Extract<Block, { kind: "compacted" }> }) 
             {/* The separator ahead of these is drawn in CSS, not written here: on a
                 narrow screen the facts take a line of their own, and a line
                 opening with a stray bullet reads as a list item. */}
-            {facts.length > 0 && <span className="compacted-facts">{facts.join(" · ")}</span>}
+            {facts.length > 0 && (
+              <span className="compacted-facts">
+                <RollingText>{facts.join(" · ")}</RollingText>
+              </span>
+            )}
           </span>
         )}
       </CompactRule>
@@ -510,7 +519,9 @@ function Compacting({ since }: { since: number }) {
       <CompactRule running>
         <span className="compacted-label">
           summarising history to make room
-          <span className="compacted-facts">{secs}s</span>
+          <span className="compacted-facts">
+            <RollingText>{`${secs}s`}</RollingText>
+          </span>
         </span>
       </CompactRule>
     </div>

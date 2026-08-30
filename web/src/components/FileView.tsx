@@ -30,6 +30,7 @@ import { baseName } from "../lib/files";
 import { drawAs, type Preview } from "../lib/fileView";
 import { CodeEditor } from "./CodeEditor";
 import { ProseTable } from "./ProseTable";
+import { RollingText } from "./RollingNumber";
 
 /** The same box the transcript puts a table in, for the same reason: a table
  *  is sized by its cells, so a wide one in a README stuck out of the pane and
@@ -90,7 +91,8 @@ export function FileView({
   if (as === "none") {
     return (
       <div className="panel-note">
-        {preview.kind === "pdf" ? "A PDF" : `Not a text file`} · {humanSize(preview.size)}. There is
+        {preview.kind === "pdf" ? "A PDF" : `Not a text file`} ·{" "}
+        <RollingText>{humanSize(preview.size)}</RollingText>. There is
         nothing here to edit.
       </div>
     );

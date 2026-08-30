@@ -10,6 +10,7 @@
 // the edit runs, all the agent has said is what it will replace, not where.
 import { useState } from "react";
 import type { DiffRow, FileDiff } from "../lib/diff";
+import { RollingNumber, RollingText } from "./RollingNumber";
 
 /** Rows drawn before the reader has to ask for the rest. Long enough that a
  *  normal edit is never cut, short enough that a 3000-line file written in one
@@ -33,8 +34,16 @@ export function DiffStat({ diff }: { diff: FileDiff }) {
   const made = diff.kind === "create";
   return (
     <span className="diff-stat">
-      {diff.added > 0 && <span className="diff-stat-add">+{diff.added}</span>}
-      {diff.removed > 0 && <span className="diff-stat-del">−{diff.removed}</span>}
+      {diff.added > 0 && (
+        <span className="diff-stat-add">
+          +<RollingNumber value={diff.added} />
+        </span>
+      )}
+      {diff.removed > 0 && (
+        <span className="diff-stat-del">
+          −<RollingNumber value={diff.removed} />
+        </span>
+      )}
       <span
         className="diff-kind"
         data-kind={diff.kind}
@@ -83,7 +92,7 @@ export function DiffView({ diff }: { diff: FileDiff }) {
       </div>
       {hidden > 0 && (
         <button className="diff-more" type="button" onClick={() => setAll(true)}>
-          Show {hidden} more line{hidden === 1 ? "" : "s"}
+          <RollingText>{`Show ${hidden} more line${hidden === 1 ? "" : "s"}`}</RollingText>
         </button>
       )}
     </div>

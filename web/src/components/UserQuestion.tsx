@@ -32,6 +32,7 @@ import { useState } from "react";
 import { bridge } from "../lib/bridge";
 import { choicesOf, optionIsOn, pendingAnswer, togglePick } from "../lib/questionAnswer";
 import type { Choice } from "../lib/questionAnswer";
+import { RollingText } from "./RollingNumber";
 
 export type Question = {
   id: string;
@@ -183,7 +184,11 @@ export function UserQuestion({
           </span>
           {/* A second question can arrive while the card is put aside, and the
               strip is then the only thing saying so. */}
-          {total > 1 && <span className="qa-count">{`${page + 1} of ${total}`}</span>}
+          {total > 1 && (
+            <span className="qa-count">
+              <RollingText>{`${page + 1} of ${total}`}</RollingText>
+            </span>
+          )}
           <span className="qa-min-cue">{onSummary ? "Review" : "Answer"}</span>
         </button>
       </div>
@@ -197,7 +202,7 @@ export function UserQuestion({
         <span className="qa-label">Claude is asking</span>
         {total > 1 && (
           <span className="qa-count">
-            {onSummary ? "Review" : `${page + 1} of ${total}`}
+            {onSummary ? "Review" : <RollingText>{`${page + 1} of ${total}`}</RollingText>}
           </span>
         )}
         {/* Not a close. The agent is blocked, so closing is an answer — and

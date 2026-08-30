@@ -1,58 +1,71 @@
-// A count that changes by rolling, not by being replaced.
-//
-// The group's row is the one thing on screen that holds still while a run
-// grows, so the only news in it is the number: 13 becomes 14. That is what
-// moves. The digit that changed rolls up to the next one like a wheel,
-// overshoots, settles, and stays lit a beat longer so the eye is told where
-// the change was. Nothing else in the box twitches — the box swelling and
-// glowing was the whole row shouting about one character.
-//
-// Digits that did NOT change do not move: 13 → 14 rolls one wheel, 19 → 20
-// rolls both, 9 → 10 rolls the new leading digit up out of nothing.
+// A changing metric, drawn as the same number turning rather than being
+// replaced. Counts, durations, percentages, token usage, and sizes all use
+// this one primitive so a live number always has the same little bit of motion.
 import { useEffect, useRef, useState } from "react";
 
-/** Kept in step with `roll-digit-up` + `roll-flash` in styles.css: the roll
- *  itself, plus the beat the new number stays lit afterwards. It only decides
- *  when the stacked wheels come back off. */
+/** Kept in step with `roll-digit-up`, `roll-digit-down`, and `roll-flash` in
+ * styles.css: the turn itself, plus the beat the new number stays noticed. */
 const ROLL_MS = 560;
 const FLASH_MS = 900;
 
-/** How far apart the wheels start when more than one turns. The rightmost
- *  leads, because it is the one that rolled over and carried the others. */
+/** The rightmost wheel leads, since it is normally where a carry happens. */
 const STAGGER_MS = 45;
 
-type Roll = { from: string; run: number };
+type Direction = "up" | "down";
+type Roll = { from: string; direction: Direction; run: number };
 
-export function RollingNumber({ value }: { value: number }) {
+/** Compare digit strings without losing precision on large token counts. */
+function compareNumerals(a: string, b: string): number {
+  const left = a.replace(/^0+(?=\d)/, "");
+  const right = b.replace(/^0+(?=\d)/, "");
+  if (left.length !== right.length) return left.length - right.length;
+  return left.localeCompare(right);
+}
+
+export function rollDirection(from: string, to: string): Direction {
+  return compareNumerals(to, from) >= 0 ? "up" : "down";
+}
+
+/** One number. Values must be decimal digits; use `RollingText` for signs,
+ * units, punctuation, or sentences containing one or more metrics. */
+export function RollingNumber({ value }: { value: number | string }) {
   const to = String(value);
   const [roll, setRoll] = useState<Roll | null>(null);
-  const seen = useRef(value);
+  const [ready, setReady] = useState(false);
+  const seen = useRef(to);
+  const numeric = /^\d+$/.test(to);
+
+  // Keep the first frame literal. It avoids an initial-load flourish and keeps
+  // server markup/hydration simple; only a metric that CHANGES gets wheels.
+  useEffect(() => setReady(true), []);
 
   useEffect(() => {
-    const was = seen.current;
-    if (value === was) return;
-    seen.current = value;
-    // A wheel only turns forwards, and only while the number keeps its shape.
-    // A count that fell, or lost a digit, is a different run being drawn — it
-    // takes the new number outright rather than pretending to arrive at it.
-    if (value < was || String(was).length > String(value).length) {
-      setRoll(null);
-      return;
-    }
-    setRoll((r) => ({ from: String(was), run: (r?.run ?? 0) + 1 }));
+    const from = seen.current;
+    if (to === from) return;
+    seen.current = to;
+
+    // A value can legitimately fall: remaining quota, a filtered count, and a
+    // timer's seconds all do. Give that change its own downward turn instead
+    // of replacing it abruptly.
+    const direction = rollDirection(from, to);
+    setRoll((current) => ({ from, direction, run: (current?.run ?? 0) + 1 }));
     const timer = setTimeout(() => setRoll(null), ROLL_MS + FLASH_MS);
     return () => clearTimeout(timer);
-  }, [value]);
+  }, [to]);
+
+  // This is deliberately forgiving for callers that pass an unexpected value.
+  // `RollingText` only sends numeral fragments, but a plain readable value is
+  // preferable to throwing while a status row is updating.
+  if (!ready || !numeric) return <>{to}</>;
 
   const digits = to.split("");
   const before = roll ? roll.from.split("") : [];
-  // Right-aligned: 9 → 10 lines the 9 up with the 0, and leaves the 1 with
-  // nothing above it to have come from.
+  // Right-aligning preserves carries: 9 → 10 lines the old 9 up with the new
+  // 0, while the new leading 1 turns in from an empty wheel.
   const pad = digits.length - before.length;
 
   return (
-    // Re-keyed on every change so a second call landing mid-roll restarts both
-    // animations instead of finishing the first one's.
+    // Re-keyed on every change so a second update during a turn restarts it.
     <span className={`roll ${roll ? "is-fresh" : ""}`} key={roll?.run ?? 0}>
       <span className="roll-sr">{to}</span>
       {digits.map((digit, i) => {
@@ -64,22 +77,60 @@ export function RollingNumber({ value }: { value: number }) {
             </span>
           );
         }
+
+        const beyond =
+          roll.direction === "up" ? (Number(digit) + 1) % 10 : (Number(digit) + 9) % 10;
         return (
           <span className="roll-digit" aria-hidden="true" key={i}>
             <span
-              className="roll-stack"
+              className={`roll-stack is-${roll.direction}`}
               style={{ animationDelay: `${(digits.length - 1 - i) * STAGGER_MS}ms` }}
             >
-              <span className="roll-cell">{was}</span>
-              <span className="roll-cell">{digit}</span>
-              {/* The face after the new one. The overshoot is a real wheel
-                  going past its stop, so what comes into view past it has to
-                  be the next number rather than a gap. */}
-              <span className="roll-cell">{(Number(digit) + 1) % 10}</span>
+              {/* An upward wheel starts at the old value then reaches the new
+                  one. A downward wheel starts at the last cell and settles on
+                  the middle one; its extra face supplies the overshoot. */}
+              {roll.direction === "up" ? (
+                <>
+                  <span className="roll-cell">{was}</span>
+                  <span className="roll-cell">{digit}</span>
+                  <span className="roll-cell">{beyond}</span>
+                </>
+              ) : (
+                <>
+                  <span className="roll-cell">{beyond}</span>
+                  <span className="roll-cell">{digit}</span>
+                  <span className="roll-cell">{was}</span>
+                </>
+              )}
             </span>
           </span>
         );
       })}
+    </span>
+  );
+}
+
+/** A metric sentence or formatted value. It turns every decimal fragment but
+ * keeps punctuation and units still: `1:05`, `$0.004`, and `3 of 5` remain
+ * easy to scan while their live figures roll. */
+export function RollingText({ children }: { children: string | number }) {
+  const [ready, setReady] = useState(false);
+  const parts = String(children).split(/(\d+)/);
+  useEffect(() => setReady(true), []);
+  if (!ready) return <>{children}</>;
+  return (
+    <span className="roll-text">
+      {parts.map((part, index) =>
+        /^\d+$/.test(part) ? (
+          // Index, rather than the current digits, intentionally preserves the
+          // wheel across updates (12 → 13 is one number changing, not two).
+          <RollingNumber key={`number-${index}`} value={part} />
+        ) : (
+          <span className="roll-static" key={`text-${index}`}>
+            {part}
+          </span>
+        ),
+      )}
     </span>
   );
 }

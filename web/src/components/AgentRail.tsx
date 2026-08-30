@@ -13,6 +13,7 @@
 // phases. A Task subagent is a single row: it has no tree to show.
 import { useEffect, useState } from "react";
 import type { AgentRun, WorkflowAgent } from "../lib/chat";
+import { RollingNumber, RollingText } from "./RollingNumber";
 
 import "./AgentRail.css";
 
@@ -88,11 +89,17 @@ function WorkerRow({ worker, now }: { worker: WorkflowAgent; now: number }) {
           {worker.model && <span className="rail-kind">{saidModel(worker.model)}</span>}
           {/* Only ever shown above 1, where it is the reason a phase is slow. */}
           {worker.attempt !== undefined && worker.attempt > 1 && (
-            <span className="rail-retry">retry {worker.attempt}</span>
+            <span className="rail-retry">
+              <RollingText>{`retry ${worker.attempt}`}</RollingText>
+            </span>
           )}
-          {waited && <span className="rail-kind">queued {saidDuration(waited)}</span>}
+          {waited && (
+            <span className="rail-kind">
+              <RollingText>{`queued ${saidDuration(waited)}`}</RollingText>
+            </span>
+          )}
           <span className={running ? "rail-live" : "rail-stats"}>
-            {rowStats(running, now, worker.startedAt, worker.tokens, worker.durationMs)}
+            <RollingText>{rowStats(running, now, worker.startedAt, worker.tokens, worker.durationMs)}</RollingText>
           </span>
         </span>
       </span>
@@ -122,7 +129,7 @@ function Phases({ run, now }: { run: AgentRun; now: number }) {
             <div className="rail-phase-head">
               <span className="rail-phase-title">{phase.title}</span>
               <span className="rail-phase-count">
-                {live > 0 ? `${live}/${own.length}` : `${own.length}`}
+                <RollingText>{live > 0 ? `${live}/${own.length}` : `${own.length}`}</RollingText>
               </span>
             </div>
             <ul className="rail-sub">
@@ -170,8 +177,8 @@ function AgentRow({
           <span className="rail-label">{run.label}</span>
           <span className="rail-meta">
             {run.detail && <span className="rail-kind">{run.detail}</span>}
-            <span className={running ? "rail-live" : "rail-stats"}>
-              {rowStats(running, now, run.startedAt, run.tokens, run.durationMs)}
+          <span className={running ? "rail-live" : "rail-stats"}>
+            <RollingText>{rowStats(running, now, run.startedAt, run.tokens, run.durationMs)}</RollingText>
             </span>
           </span>
         </span>
@@ -229,7 +236,9 @@ export function RailButton({
         <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7z" />
         <path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
       </svg>
-      <span className="rail-count">{count}</span>
+      <span className="rail-count">
+        <RollingNumber value={count} />
+      </span>
     </button>
   );
 }
@@ -269,7 +278,7 @@ export function AgentRail({
         ))}
       </ul>
       <div className="rail-foot">
-        {running > 0 ? `${running} running` : `${agents.length} finished`}
+        <RollingText>{running > 0 ? `${running} running` : `${agents.length} finished`}</RollingText>
       </div>
     </aside>
   );

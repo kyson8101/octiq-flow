@@ -10,6 +10,7 @@ import { toolDetail } from "../lib/toolKind";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon } from "./ToolIcon";
 import { useDelayedToolPeek } from "./useDelayedToolPeek";
+import { RollingText } from "./RollingNumber";
 
 export function ToolGroup({
   tools,
@@ -56,7 +57,9 @@ export function ToolGroup({
         <span className="tool-summary-icon" data-kind={summary.kind} aria-hidden="true">
           <ToolIcon kind={summary.kind} />
         </span>
-        <span className="tool-summary">{summary.label}</span>
+        <span className="tool-summary">
+          <RollingText>{summary.label}</RollingText>
+        </span>
         {showLive && (
           <span className="tool-summary-live" title={detail || "Working"}>
             {detail || "Working"}

@@ -15,6 +15,7 @@
 // consuming it, and colouring it in makes the bar read as far fuller than it is.
 import { useState } from "react";
 import { byServer, type ContextReport as Report } from "../lib/contextReport";
+import { RollingText } from "./RollingNumber";
 
 /** Enough colours for the categories a report actually has. Ordered so the
  *  large, boring ones (prompt, tools) sit at the cool end and the ones you can
@@ -49,12 +50,16 @@ export function ContextReport({ report }: { report: Report }) {
     <div className="ctxr">
       <div className="ctxr-head">
         <span className="ctxr-total">
-          {report.usedTokens !== undefined && report.totalTokens !== undefined
-            ? `${short(report.usedTokens)} of ${short(report.totalTokens)}`
-            : "Context"}
+          <RollingText>
+            {report.usedTokens !== undefined && report.totalTokens !== undefined
+              ? `${short(report.usedTokens)} of ${short(report.totalTokens)}`
+              : "Context"}
+          </RollingText>
         </span>
         {report.usedPercent !== undefined && (
-          <span className="ctxr-pct">{report.usedPercent}% full</span>
+          <span className="ctxr-pct">
+            <RollingText>{`${report.usedPercent}% full`}</RollingText>
+          </span>
         )}
         {report.model && <span className="ctxr-model">{report.model}</span>}
       </div>
@@ -80,8 +85,12 @@ export function ContextReport({ report }: { report: Report }) {
           <li key={slice.label}>
             <span className="ctxr-dot" style={{ background: COLOURS[i % COLOURS.length] }} />
             <span className="ctxr-label">{slice.label}</span>
-            <span className="ctxr-tokens">{short(slice.tokens)}</span>
-            <span className="ctxr-share">{Math.round((slice.tokens / usedTotal) * 100)}%</span>
+            <span className="ctxr-tokens">
+              <RollingText>{short(slice.tokens)}</RollingText>
+            </span>
+            <span className="ctxr-share">
+              <RollingText>{`${Math.round((slice.tokens / usedTotal) * 100)}%`}</RollingText>
+            </span>
           </li>
         ))}
       </ul>
@@ -89,15 +98,19 @@ export function ContextReport({ report }: { report: Report }) {
       {servers.length > 0 && (
         <div className="ctxr-servers">
           <button className="ctxr-more" type="button" onClick={() => setShowServers((v) => !v)}>
-            {showServers ? "Hide" : "Show"} MCP servers · {report.tools.length} tools
+            <RollingText>{`${showServers ? "Hide" : "Show"} MCP servers · ${report.tools.length} tools`}</RollingText>
           </button>
           {showServers && (
             <ul className="ctxr-legend">
               {servers.map((s) => (
                 <li key={s.server}>
                   <span className="ctxr-label">{s.server}</span>
-                  <span className="ctxr-tokens">{short(s.tokens)}</span>
-                  <span className="ctxr-share">{s.count} tools</span>
+                  <span className="ctxr-tokens">
+                    <RollingText>{short(s.tokens)}</RollingText>
+                  </span>
+                  <span className="ctxr-share">
+                    <RollingText>{`${s.count} tools`}</RollingText>
+                  </span>
                 </li>
               ))}
             </ul>

@@ -31,6 +31,7 @@ import {
   settingLabel,
   type Setting,
 } from "../lib/configUsage";
+import { RollingText } from "./RollingNumber";
 import "./ConfigPanel.css";
 
 type ConfigWorld = {
@@ -87,7 +88,7 @@ export function ConfigPanel({ text }: { text: string }) {
       <div className="cfg-head">
         <span className="cfg-title">Settings</span>
         <span className="cfg-note">
-          {settings.length} this agent takes · picking a value sends it
+          <RollingText>{`${settings.length} this agent takes · picking a value sends it`}</RollingText>
         </span>
       </div>
       {groups.map((group) => (

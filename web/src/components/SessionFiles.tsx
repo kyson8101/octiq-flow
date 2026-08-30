@@ -43,6 +43,7 @@ import { useDockWidth, type Sizes } from "../lib/dockWidth";
 import { askPaths, knownPaths, subscribePaths } from "../lib/pathStore";
 import { useOpenFile } from "./OpenFile";
 import type { Message } from "../lib/chat";
+import { RollingNumber, RollingText } from "./RollingNumber";
 
 const WIDTH_KEY = "octiq.v2.filesWidth";
 
@@ -237,7 +238,9 @@ export function FilesButton({
       onClick={onToggle}
     >
       <FileIcon />
-      <span className="sfp-count">{count}</span>
+      <span className="sfp-count">
+        <RollingNumber value={count} />
+      </span>
     </button>
   );
 }
@@ -328,9 +331,11 @@ export function SessionFilesPanel({
             {/* Once a filter is on, the count has to say what it is counting —
                 "12 to read" over a list of three is a lie you have to count the
                 rows to catch. */}
-            {shown.length !== pins.length
-              ? `${shown.length} of ${pins.length}`
-              : `${pins.length} to read`}
+            <RollingText>
+              {shown.length !== pins.length
+                ? `${shown.length} of ${pins.length}`
+                : `${pins.length} to read`}
+            </RollingText>
           </span>
           <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
             ✕
@@ -461,7 +466,7 @@ export function PinRow({
             `formatModified`. Its own title, so hovering the stamp gives the
             whole thing back rather than the path the rest of the row shows. */}
         <span className="file-time" title={modifiedTitle(modified)}>
-          {formatModified(modified)}
+          <RollingText>{formatModified(modified)}</RollingText>
         </span>
         {/* The label and the reason — the whole point of the column, and the
             half no scraper could ever have produced. The label leads because it

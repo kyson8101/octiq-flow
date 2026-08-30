@@ -27,6 +27,7 @@ import { hasTwoViews } from "../lib/fileView";
 import { FileView } from "./FileView";
 import { FileTree, rootsOf } from "./FileTree";
 import { useConfirm } from "./Confirm";
+import { RollingText } from "./RollingNumber";
 
 export type EditorProject = {
   id: string;
@@ -368,8 +369,8 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
 
         {current?.file?.truncated && (
           <div className="panel-warn">
-            Showing the first {humanSize(current.file.content.length)} of{" "}
-            {humanSize(current.file.size)}. This file is read-only here — saving what is on screen
+            Showing the first <RollingText>{humanSize(current.file.content.length)}</RollingText> of{" "}
+            <RollingText>{humanSize(current.file.size)}</RollingText>. This file is read-only here — saving what is on screen
             would cut the rest of it away.
           </div>
         )}
@@ -409,4 +410,3 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
     </div>
   );
 }
-

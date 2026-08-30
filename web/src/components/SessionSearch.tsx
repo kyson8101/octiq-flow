@@ -19,6 +19,7 @@ import {
   whenLabel,
   type HistorySession,
 } from "../lib/history";
+import { RollingNumber, RollingText } from "./RollingNumber";
 
 /** Rows on screen at once. Enough to scan, few enough that the panel does not
  *  swallow the page on a phone. */
@@ -103,7 +104,11 @@ export function SessionSearch({
       <button className="resume-open" type="button" onClick={() => setOpen(true)}>
         <HistoryIcon />
         Resume an earlier session
-        {sessions && sessions.length > 0 && <span className="resume-count">{sessions.length}</span>}
+        {sessions && sessions.length > 0 && (
+          <span className="resume-count">
+            <RollingNumber value={sessions.length} />
+          </span>
+        )}
       </button>
     );
   }
@@ -183,7 +188,7 @@ export function SessionSearch({
               <>
                 Nothing here.{" "}
                 <button className="resume-link" type="button" onClick={() => setHereOnly(false)}>
-                  {elsewhere} in other folders
+                  <RollingText>{`${elsewhere} in other folders`}</RollingText>
                 </button>
               </>
             ) : (
@@ -217,7 +222,9 @@ export function SessionSearch({
                 {hit.session.effort}
               </span>
             </span>
-            <span className="resume-when">{whenLabel(hit.session.updatedAt)}</span>
+            <span className="resume-when">
+              <RollingText>{whenLabel(hit.session.updatedAt)}</RollingText>
+            </span>
           </button>
         ))}
       </div>

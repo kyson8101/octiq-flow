@@ -11,6 +11,7 @@
 // the transcript — so it survives a reload the way the transcript does.
 import { useEffect, useRef, useState } from "react";
 import { todoLook, type Todo } from "../lib/todos";
+import { RollingText } from "./RollingNumber";
 
 export function Todos({ todos }: { todos: Todo[] }) {
   const [open, setOpen] = useState(false);
@@ -60,7 +61,11 @@ export function Todos({ todos }: { todos: Todo[] }) {
       >
         <span className="plan-state" aria-hidden="true" />
         <span className={`plan-count ${moved ? "is-moved" : ""}`}>
-          {look.finished ? `All ${look.total} steps done` : `Step ${Math.min(look.done + 1, look.total)} / ${look.total}`}
+          <RollingText>
+            {look.finished
+              ? `All ${look.total} steps done`
+              : `Step ${Math.min(look.done + 1, look.total)} / ${look.total}`}
+          </RollingText>
         </span>
       </button>
 
@@ -73,7 +78,7 @@ export function Todos({ todos }: { todos: Todo[] }) {
             <div className="plan-pop-head">
               <span className="plan-pop-title">The plan</span>
               <span className="plan-pop-count">
-                {look.done}/{look.total}
+                <RollingText>{`${look.done}/${look.total}`}</RollingText>
               </span>
               {/* The close button is useful on touch screens, where there is no
                   pointer leaving the card. */}

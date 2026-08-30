@@ -30,6 +30,7 @@ import { BackgroundNote } from "./Background";
 import { useMedia, WIDE } from "../lib/media";
 import { Todos } from "./Todos";
 import type { Todo } from "../lib/todos";
+import { RollingText } from "./RollingNumber";
 import {
   AGENT_NAME,
   effortSteps,
@@ -780,7 +781,7 @@ export function Composer({
       {atOpen && (
         <div className="slash" role="listbox" aria-label="Send to">
           <div className="slash-head">
-            {whoList.length} to choose from · Tab to pick
+            <RollingText>{`${whoList.length} to choose from · Tab to pick`}</RollingText>
           </div>
           <ul className="slash-list">
             {whoList.map((w, i) => (
@@ -814,8 +815,9 @@ export function Composer({
       {slashOpen && (
         <div className="slash" role="listbox">
           <div className="slash-head">
-            {matches.length} command{matches.length === 1 ? "" : "s"} ·{" "}
-            {nothingToComplete ? "Enter to send" : "Tab to complete"}
+            <RollingText>
+              {`${matches.length} command${matches.length === 1 ? "" : "s"} · ${nothingToComplete ? "Enter to send" : "Tab to complete"}`}
+            </RollingText>
           </div>
           <ul className="slash-list">
             {matches.map((command, i) => (
@@ -2211,7 +2213,9 @@ function ContextMeter({ tokens, window }: { tokens?: number; window?: number }) 
           transform="rotate(-90 9 9)"
         />
       </svg>
-      <span className="ctx-val">{percent}%</span>
+      <span className="ctx-val">
+        <RollingText>{`${percent}%`}</RollingText>
+      </span>
     </span>
   );
 }
@@ -2246,14 +2250,16 @@ function Working({
 
   return (
     <>
-      {workingLine({
-        elapsedMs: since === undefined ? undefined : Date.now() - since,
-        tokens,
-        approx,
-        activity,
-        thinking,
-        effort,
-      })}
+      <RollingText>
+        {workingLine({
+          elapsedMs: since === undefined ? undefined : Date.now() - since,
+          tokens,
+          approx,
+          activity,
+          thinking,
+          effort,
+        })}
+      </RollingText>
     </>
   );
 }

@@ -33,6 +33,7 @@ import { canQuote, lineRange, sendQuote, type Quote } from "../lib/quote";
 import { placeKey, placeOf, rememberPlace } from "../lib/scrollMemory";
 import { useConfirm } from "./Confirm";
 import { FileView } from "./FileView";
+import { RollingText } from "./RollingNumber";
 
 type Preview = {
   /** "text" | "image" | "pdf" | "binary" */
@@ -409,7 +410,8 @@ export function FilePanel({
 
             {preview?.truncated && (
               <div className="panel-warn">
-                Showing the first {humanSize(preview.content.length)} of {humanSize(preview.size)}.
+                Showing the first <RollingText>{humanSize(preview.content.length)}</RollingText> of{" "}
+                <RollingText>{humanSize(preview.size)}</RollingText>.
                 Saving is off for this file — writing back what is on screen would cut the rest away.
               </div>
             )}

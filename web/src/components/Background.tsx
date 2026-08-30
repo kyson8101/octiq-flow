@@ -24,6 +24,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 
 import { backgroundSummary, type BackgroundTask } from "../lib/background";
 import { elapsedLabel } from "../lib/working";
+import { RollingText } from "./RollingNumber";
 
 const RunningCalls = createContext<ReadonlySet<string>>(new Set());
 
@@ -86,12 +87,14 @@ export function BackgroundNote({
       <span className="bgwork-dot" aria-hidden="true" />
       {busy && <>{children} · </>}
       <span className="bgwork-said" role="status" title={label}>
-        {label}
+        <RollingText>{label}</RollingText>
       </span>
       {!busy && (
         <>
           {" · "}
-          <span className="bgwork-time">{elapsedLabel(summary.elapsedMs)}</span>
+          <span className="bgwork-time">
+            <RollingText>{elapsedLabel(summary.elapsedMs)}</RollingText>
+          </span>
         </>
       )}
     </>

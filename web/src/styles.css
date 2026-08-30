@@ -2512,12 +2512,9 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* A call joining the group above it, said by the only thing that changed.
-   Nothing else in the box moves — it is the one shape on screen holding its
-   size while a run grows, and a box that swelled and glowed every few seconds
-   was the whole row shouting about one character. So the COUNT rolls: the
-   digit that changed turns up to the next one like a wheel, overshoots its
-   stop, and rocks back into place. */
+/* A live metric changes by turning its digit, not replacing the whole label.
+   Counts, durations, usage, and percentages share this small motion; the rest
+   of their sentence stays still, so the changing figure is easy to find. */
 @keyframes roll-digit-up {
   0% {
     transform: translateY(0);
@@ -2539,26 +2536,49 @@ body {
   }
 }
 
-/* And then it stays lit, a beat longer than it moved. The movement says
-   something happened; the colour says which number it happened to, and holds
-   long enough for an eye that arrived late to still catch it. */
-@keyframes roll-flash {
-  0%,
-  46% {
-    color: var(--accent);
+@keyframes roll-digit-down {
+  /* The old digit is the third face of a downward stack. */
+  0% {
+    transform: translateY(-66.6667%);
+  }
+  56% {
+    transform: translateY(-28.2%);
+  }
+  74% {
+    transform: translateY(-35.5%);
+  }
+  88% {
+    transform: translateY(-32.2%);
   }
   100% {
-    color: var(--fg-1);
+    transform: translateY(-33.3333%);
   }
 }
 
-/* The number, as a row of wheels. `tabular-nums` on the group's name keeps
-   each one the same width, so a digit rolling never nudges the words after
-   it. */
+/* And then it stays subtly bright a beat longer than it moved. `filter` keeps
+   semantic colours such as added/removed lines intact. */
+@keyframes roll-flash {
+  0%,
+  46% {
+    filter: brightness(1.25);
+  }
+  100% {
+    filter: none;
+  }
+}
+
+/* The number, as a row of wheels. `tabular-nums` keeps every digit the same
+   width, so a turn never nudges the words after it. */
 .roll {
   position: relative;
   display: inline-flex;
   align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.roll-text,
+.roll-static {
+  display: inline;
 }
 
 .roll.is-fresh {
@@ -2577,6 +2597,10 @@ body {
 .roll-stack {
   display: block;
   animation: roll-digit-up 560ms cubic-bezier(0.33, 0, 0.2, 1) both;
+}
+
+.roll-stack.is-down {
+  animation-name: roll-digit-down;
 }
 
 /* A fixed height, not one taken from the glyph inside: the cell above a new

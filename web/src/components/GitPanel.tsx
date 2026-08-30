@@ -40,6 +40,7 @@ import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
 import { remember } from "../lib/remember";
+import { RollingNumber, RollingText } from "./RollingNumber";
 
 /** One changed file in a repo (git.rs `ChangedFile`). */
 type ChangedFile = {
@@ -302,21 +303,37 @@ export function GitButton({
               <bdi>{repo.branch}</bdi>
             </span>
           )}
-          {repo.changed > 0 && <span className="gitp-badge">{repo.changed}</span>}
+          {repo.changed > 0 && (
+            <span className="gitp-badge">
+              <RollingNumber value={repo.changed} />
+            </span>
+          )}
           {repo.changed === 0 && repo.ahead > 0 && (
-            <span className="gitp-badge is-ahead">↑{repo.ahead}</span>
+            <span className="gitp-badge is-ahead">
+              ↑<RollingNumber value={repo.ahead} />
+            </span>
           )}
         </span>
       ))}
 
       {/* A phone has room for the chat's own repo and nothing else, so the ones
           the stylesheet hides are counted rather than silently dropped. */}
-      {chips.length > 1 && <span className="gitp-more">+{chips.length - 1}</span>}
+      {chips.length > 1 && (
+        <span className="gitp-more">
+          +<RollingNumber value={chips.length - 1} />
+        </span>
+      )}
 
       {/* No repo at all: the old single badge still says whether there is work. */}
-      {chips.length === 0 && changed > 0 && <span className="gitp-badge">{changed}</span>}
+      {chips.length === 0 && changed > 0 && (
+        <span className="gitp-badge">
+          <RollingNumber value={changed} />
+        </span>
+      )}
       {chips.length === 0 && changed === 0 && ahead > 0 && (
-        <span className="gitp-badge is-ahead">↑{ahead}</span>
+        <span className="gitp-badge is-ahead">
+          ↑<RollingNumber value={ahead} />
+        </span>
       )}
     </button>
   );
@@ -670,11 +687,13 @@ export function GitPanel({
             onClick={commit}
             disabled={busy || tickedCount === 0}
           >
-            {tickedCount === 0
-              ? "Commit"
-              : targets.length > 1
-                ? `Commit ${tickedCount} files in ${targets.length} repos`
-                : `Commit ${tickedCount} file${tickedCount === 1 ? "" : "s"}`}
+            <RollingText>
+              {tickedCount === 0
+                ? "Commit"
+                : targets.length > 1
+                  ? `Commit ${tickedCount} files in ${targets.length} repos`
+                  : `Commit ${tickedCount} file${tickedCount === 1 ? "" : "s"}`}
+            </RollingText>
           </button>
         </div>
       )}
@@ -779,8 +798,16 @@ function RepoSection({
         )}
 
         <span className="gitp-sync">
-          {repo.behind > 0 && <span className="gitp-behind">↓{repo.behind}</span>}
-          {repo.ahead > 0 && <span className="gitp-ahead">↑{repo.ahead}</span>}
+          {repo.behind > 0 && (
+            <span className="gitp-behind">
+              ↓<RollingNumber value={repo.behind} />
+            </span>
+          )}
+          {repo.ahead > 0 && (
+            <span className="gitp-ahead">
+              ↑<RollingNumber value={repo.ahead} />
+            </span>
+          )}
         </span>
       </header>
 
@@ -798,7 +825,7 @@ function RepoSection({
               : "This branch does not track a remote branch yet. Push it first."
           }
         >
-          {repo.behind > 0 ? `Pull ${repo.behind}` : "Pull"}
+          <RollingText>{repo.behind > 0 ? `Pull ${repo.behind}` : "Pull"}</RollingText>
         </button>
         <select
           className="gitp-mode"
@@ -814,7 +841,7 @@ function RepoSection({
           ))}
         </select>
         <button className="gitp-btn" type="button" onClick={onPush} disabled={busy} title="git push">
-          {repo.ahead > 0 ? `Push ${repo.ahead}` : "Push"}
+          <RollingText>{repo.ahead > 0 ? `Push ${repo.ahead}` : "Push"}</RollingText>
         </button>
       </div>
 
@@ -896,8 +923,16 @@ function FileRow({
               <span className="gitp-bin">bin</span>
             ) : (
               <>
-                {file.added > 0 && <span className="gitp-add-n">+{file.added}</span>}
-                {file.removed > 0 && <span className="gitp-del-n">−{file.removed}</span>}
+                {file.added > 0 && (
+                  <span className="gitp-add-n">
+                    +<RollingNumber value={file.added} />
+                  </span>
+                )}
+                {file.removed > 0 && (
+                  <span className="gitp-del-n">
+                    −<RollingNumber value={file.removed} />
+                  </span>
+                )}
               </>
             )}
           </span>

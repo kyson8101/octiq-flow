@@ -17,6 +17,7 @@ import {
   wheelScale,
   type Pan,
 } from "../lib/zoom";
+import { RollingText } from "./RollingNumber";
 
 /** The middle of the screen — what a button press zooms towards, having no
  *  pointer of its own to aim at. */
@@ -241,7 +242,7 @@ export function Viewer({ path, onClose }: { path: string; onClose: () => void })
               disabled={view.scale <= MIN_SCALE}
               title="Fit to screen (0)"
             >
-              {Math.round(view.scale * 10) / 10}×
+              <RollingText>{`${Math.round(view.scale * 10) / 10}×`}</RollingText>
             </button>
             <button
               className="viewer-btn"

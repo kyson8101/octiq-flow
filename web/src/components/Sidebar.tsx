@@ -10,6 +10,7 @@
 // breaking the line of text.
 import { useState, type ReactNode } from "react";
 import type { Conversation } from "../lib/store";
+import { RollingNumber } from "./RollingNumber";
 
 export type Project = { id: string; name: string; primary_path?: string };
 
@@ -148,7 +149,7 @@ export function Sidebar({
 
       {shelved.length > 0 && (
         <button className="shelf-open" type="button" onClick={onShowShelved}>
-          Shelved · {shelved.length}
+          Shelved · <RollingNumber value={shelved.length} />
         </button>
       )}
 
@@ -243,7 +244,7 @@ function ProjectNode({
                     : `${chats.length} ${chats.length === 1 ? "chat" : "chats"}`
               }
             >
-              {chats.length}
+              <RollingNumber value={chats.length} />
             </span>
           )}
         </button>

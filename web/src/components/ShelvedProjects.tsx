@@ -9,6 +9,7 @@
 // here to do, so it does not hide behind a menu.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
+import { RollingText } from "./RollingNumber";
 
 export type ShelvedProject = {
   id: string;
@@ -68,7 +69,7 @@ export function ShelvedProjects({
                 when truncated, and a sentence borrowed it drew the count at the
                 far end — "put away · tap one to bring it back 16". */}
             <div className="shelf-sub">
-              {list.length - done.size} put away · tap one to bring it back
+              <RollingText>{`${list.length - done.size} put away · tap one to bring it back`}</RollingText>
             </div>
           </div>
           <button className="panel-close" type="button" onClick={onClose} aria-label="Close">

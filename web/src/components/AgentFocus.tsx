@@ -21,6 +21,7 @@ import { useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
 import type { AgentRun, Message } from "../lib/chat";
 import { AgentTranscript } from "./MessageList";
+import { RollingText } from "./RollingNumber";
 
 import "./AgentFocus.css";
 
@@ -74,11 +75,11 @@ function useOutputFile(path: string | undefined): {
   return state;
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, rolling = false }: { label: string; value: string; rolling?: boolean }) {
   return (
     <div className="focus-stat">
       <span className="focus-stat-label">{label}</span>
-      <span className="focus-stat-value">{value}</span>
+      <span className="focus-stat-value">{rolling ? <RollingText>{value}</RollingText> : value}</span>
     </div>
   );
 }
@@ -104,7 +105,9 @@ function WorkflowBody({ run }: { run: AgentRun }) {
               <div className="focus-worker-head">
                 <span className="focus-worker-label">{w.label || `agent ${w.index}`}</span>
                 {w.tokens !== undefined && (
-                  <span className="focus-worker-cost">{w.tokens.toLocaleString()} tok</span>
+                  <span className="focus-worker-cost">
+                    <RollingText>{`${w.tokens.toLocaleString()} tok`}</RollingText>
+                  </span>
                 )}
               </div>
               {w.resultPreview && <div className="focus-worker-result">{w.resultPreview}</div>}
@@ -161,13 +164,13 @@ export function AgentFocus({
   onBack: () => void;
 }) {
   const stats = [
-    run.detail ? { label: "kind", value: run.detail } : undefined,
-    run.tokens !== undefined ? { label: "tokens", value: run.tokens.toLocaleString() } : undefined,
-    run.toolCalls !== undefined ? { label: "tools", value: `${run.toolCalls}` } : undefined,
+    run.detail ? { label: "kind", value: run.detail, rolling: false } : undefined,
+    run.tokens !== undefined ? { label: "tokens", value: run.tokens.toLocaleString(), rolling: true } : undefined,
+    run.toolCalls !== undefined ? { label: "tools", value: `${run.toolCalls}`, rolling: true } : undefined,
     run.durationMs !== undefined
-      ? { label: "took", value: `${(run.durationMs / 1000).toFixed(1)}s` }
+      ? { label: "took", value: `${(run.durationMs / 1000).toFixed(1)}s`, rolling: true }
       : undefined,
-  ].filter((s): s is { label: string; value: string } => !!s);
+  ].filter((s): s is { label: string; value: string; rolling: boolean } => !!s);
 
   return (
     <div className="focus">
@@ -183,7 +186,7 @@ export function AgentFocus({
         {stats.length > 0 && (
           <div className="focus-stats">
             {stats.map((s) => (
-              <Stat key={s.label} label={s.label} value={s.value} />
+              <Stat key={s.label} label={s.label} value={s.value} rolling={s.rolling} />
             ))}
           </div>
         )}

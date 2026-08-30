@@ -9,6 +9,7 @@
 // drag: the agent owns the state on these cards, so a column you could drop into
 // would be a control that changes nothing — the worst kind.
 import { QUIET_MAX, type Board, type BoardCard, type BoardColumn } from "../lib/board";
+import { RollingNumber, RollingText } from "./RollingNumber";
 
 /** What each column is called, in the order they are read. `lib/board` already
  *  returns them in this order; the names live here because they are wording,
@@ -52,9 +53,11 @@ export function WorkBoard({
           <div className="panel-id">
             <div className="panel-name">Board</div>
             <div className="shelf-sub">
-              {board.needsYou > 0
-                ? `${board.needsYou} waiting on you · tap a card to open it`
-                : "nothing waiting on you · tap a card to open it"}
+              <RollingText>
+                {board.needsYou > 0
+                  ? `${board.needsYou} waiting on you · tap a card to open it`
+                  : "nothing waiting on you · tap a card to open it"}
+              </RollingText>
             </div>
           </div>
           <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
@@ -71,7 +74,9 @@ export function WorkBoard({
                 <header className="board-col-head">
                   <h2 className="board-col-name">
                     {NAMES[col.column]}
-                    <span className="board-count">{col.cards.length}</span>
+                    <span className="board-count">
+                      <RollingNumber value={col.cards.length} />
+                    </span>
                   </h2>
                   <div className="board-col-sub">{SUBS[col.column]}</div>
                 </header>
@@ -93,8 +98,9 @@ export function WorkBoard({
                       twelve reads as the whole truth. */}
                   {col.hidden > 0 && (
                     <div className="board-more">
-                      {col.hidden} older {col.hidden === 1 ? "chat" : "chats"} not shown — the
-                      newest {QUIET_MAX} are.
+                      <RollingText>
+                        {`${col.hidden} older ${col.hidden === 1 ? "chat" : "chats"} not shown — the newest ${QUIET_MAX} are.`}
+                      </RollingText>
                     </div>
                   )}
                 </div>
@@ -134,7 +140,7 @@ function Card({
       {card.plan && card.plan.total > 0 && (
         <span className="board-plan">
           <span className="board-plan-count">
-            {card.plan.done}/{card.plan.total}
+            <RollingText>{`${card.plan.done}/${card.plan.total}`}</RollingText>
           </span>
           {card.plan.finished ? (
             <span className="board-plan-line">all done</span>

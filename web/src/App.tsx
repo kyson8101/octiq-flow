@@ -108,6 +108,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { CarryOn } from "./components/CarryOn";
+import { RollingNumber, RollingText } from "./components/RollingNumber";
 
 /** The editor and its text-editing engine are a third of the app's code and
  *  nobody who only ever chats should download them. Split off here, they arrive
@@ -2774,7 +2775,7 @@ export default function App() {
               <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
               <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
             </svg>
-            {seatCount.total}
+            <RollingNumber value={seatCount.total} />
           </span>
         )}
 
@@ -3148,9 +3149,15 @@ export default function App() {
             <div className="statusline">
               {chat.model && <span>{chat.model}</span>}
               {chat.lastDurationMs !== undefined && (
-                <span>{(chat.lastDurationMs / 1000).toFixed(1)}s</span>
+                <span>
+                  <RollingText>{`${(chat.lastDurationMs / 1000).toFixed(1)}s`}</RollingText>
+                </span>
               )}
-              {chat.lastCostUsd !== undefined && <span>${chat.lastCostUsd.toFixed(3)}</span>}
+              {chat.lastCostUsd !== undefined && (
+                <span>
+                  <RollingText>{`$${chat.lastCostUsd.toFixed(3)}`}</RollingText>
+                </span>
+              )}
             </div>
           )}
         </main>
