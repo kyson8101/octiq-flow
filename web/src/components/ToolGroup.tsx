@@ -6,8 +6,10 @@
 // finishes, the completed run settles back to its short summary.
 import { useMemo, useState } from "react";
 import { groupLook, groupSummary, type Note, type Tool } from "../lib/toolGroups";
+import { toolDetail } from "../lib/toolKind";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon } from "./ToolIcon";
+import { useDelayedToolPeek } from "./useDelayedToolPeek";
 
 export function ToolGroup({
   tools,
@@ -31,9 +33,19 @@ export function ToolGroup({
   const allTools = useMemo(() => [...tools, newest], [tools, newest]);
   const look = groupLook(allTools);
   const summary = groupSummary(allTools);
+  // Calls usually run one at a time, but searching backwards also keeps the
+  // row honest if a provider reports overlapping calls: the detail belongs to
+  // the call that is actually still running, not simply the last one listed.
+  const running = [...allTools].reverse().find((tool) => tool.state === "running");
+  const showLive = useDelayedToolPeek(running?.id);
+  const detail = running ? toolDetail(running.name, running.args) : "";
+  // Before the one-second threshold, a live run is deliberately styled like a
+  // settled row. Its summary is still there, but it does not breathe, spin, or
+  // expose a one-frame command preview that will be obsolete immediately.
+  const shownState = look.state === "running" && !showLive ? "done" : look.state;
 
   return (
-    <div className={`tool tool-group tool-${look.state} ${open ? "is-open" : ""}`}>
+    <div className={`tool tool-group tool-${shownState} ${open ? "is-open" : ""}`}>
       <button
         className="tool-head tool-group-head"
         onClick={() => setOpen((v) => !v)}
@@ -45,12 +57,12 @@ export function ToolGroup({
           <ToolIcon kind={summary.kind} />
         </span>
         <span className="tool-summary">{summary.label}</span>
-        {look.state === "running" && (
-          <span className="tool-summary-live" title={look.detail || "Working"}>
-            {look.detail || "Working"}
+        {showLive && (
+          <span className="tool-summary-live" title={detail || "Working"}>
+            {detail || "Working"}
           </span>
         )}
-        {look.state === "running" && (
+        {showLive && (
           <span className="tool-summary-running" aria-label="running">
             <span className="tool-spinner" aria-hidden="true" />
           </span>
