@@ -39,7 +39,7 @@ export function ToolGroup({
   const running = [...allTools].reverse().find((tool) => tool.state === "running");
   const showLive = useDelayedToolPeek(running?.id);
   const detail = running ? toolDetail(running.name, running.args) : "";
-  // Before the one-second threshold, a live run is deliberately styled like a
+  // Before the two-second threshold, a live run is deliberately styled like a
   // settled row. Its summary is still there, but it does not breathe, spin, or
   // expose a one-frame command preview that will be obsolete immediately.
   const shownState = look.state === "running" && !showLive ? "done" : look.state;

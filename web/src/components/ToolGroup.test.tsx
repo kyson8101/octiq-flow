@@ -67,11 +67,11 @@ describe("a run with edits folded into it", () => {
     expect(html()).not.toContain("Write");
   });
 
-  it("does not flash live detail while a new call is under one second old", () => {
+  it("does not flash live detail while a new call is under two seconds old", () => {
     const markup = renderToStaticMarkup(
       <ToolGroup tools={run} newest={{ ...bash("5", "pnpm vitest run"), state: "running" }} />,
     );
-    // Static markup is the first frame, before the delayed hook's one-second
+    // Static markup is the first frame, before the delayed hook's two-second
     // timer may reveal the live command and its spinner.
     expect(markup).not.toContain("pnpm vitest run");
     expect(markup).not.toContain('aria-label="running"');

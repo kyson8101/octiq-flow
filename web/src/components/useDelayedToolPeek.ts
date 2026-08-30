@@ -3,7 +3,7 @@
 // noisy, so the live affordances wait briefly before arriving.
 import { useEffect, useState } from "react";
 
-export const TOOL_PEEK_DELAY_MS = 1_000;
+export const TOOL_PEEK_DELAY_MS = 2_000;
 
 /** True only after this particular running call has outlasted the quiet
  * threshold. Supplying no id (because the call completed) hides the affordance
