@@ -5,7 +5,7 @@
 // them was never going to read all twelve — they wanted to know THAT the agent
 // went and looked, and roughly at what.
 //
-// So a run of two or more consecutive calls becomes one row: what ran, how
+// So a run of one or more consecutive calls becomes one row: what ran, how
 // often, and the newest call still visible on the row so a live turn does not
 // go quiet. Open it and the cards are exactly the cards that would have been
 // there.
@@ -17,7 +17,7 @@
 // as with three — nothing is added to the page and nothing is taken away, and a
 // run that finishes leaves the box the height it already was.
 //
-// Three kinds of call never fold away:
+// Four kinds of call never fold away:
 //   - a subagent (Task), because its whole transcript hangs off its card;
 //   - a skill, because it is a set of instructions the agent has just taken
 //     on: everything after it reads by its rules, and its card carries those
@@ -26,13 +26,16 @@
 //   - a call that FAILED, because a group that swallows a failure is a group
 //     that lies about the turn. The one row worth reading is the one that
 //     stopped working.
+//   - a question for the user, because it needs a visible, individual card at
+//     the point where the agent is blocked.
 // They also BREAK a run, which is what makes `Bash x5, Task, Bash x3` read as a
 // group, a subagent, and another group.
 //
 // An EDIT used to be on that list, and taking it off is what made grouping
 // work at all. A turn is mostly read, edit, edit, read, edit — and an edit that
 // stands alone AND breaks the run around it leaves every run at one or two
-// calls, under MIN_RUN, so nothing ever folded and the reader got the wall of
+// calls, below the old threshold, so nothing ever folded and the reader got the
+// wall of
 // single cards this file exists to prevent. What the old rule was protecting is
 // kept another way: the tally names the FILE an edit went to, in the edit's own
 // colour, and `groupDiff` puts the run's whole `+adds −dels` on the folded row.
@@ -51,12 +54,12 @@ import { toolDetail, toolLook, type ToolKind } from "./toolKind";
 
 export type Tool = Extract<Block, { kind: "tool" }>;
 
-/** How many calls in a row before folding them is worth it. Two implementation
- * details in sequence are already one piece of work to a reader, so leave the
- * transcript as activity rather than a stack of mini-cards. */
-export const MIN_RUN = 2;
+/** Every foldable call uses the activity-group UI from its first call onward. */
+export const MIN_RUN = 1;
 
 const NEVER_FOLD: ReadonlySet<ToolKind> = new Set<ToolKind>(["agent", "skill"]);
+const QUESTION_TOOLS: ReadonlySet<string> = new Set(["ask_user", "ask_user_questions", "askuserquestion"]);
+const QUESTION_TOOL_SUFFIXES = [...QUESTION_TOOLS].map((name) => `__${name}`);
 
 /** One thing to draw: a block on its own, or a run of calls as a group.
  *
@@ -67,7 +70,7 @@ export type Note = { lang: string; body: string };
 
 export type Row =
   | { kind: "block"; block: Block; index: number; note?: Note }
-  | { kind: "group"; tools: Tool[]; newest: Tool; index: number };
+  | { kind: "group"; tools: Tool[]; newest: Tool; index: number; note?: Note };
 
 /** The fence, when a text block is ENTIRELY one fenced code block.
  *
@@ -101,8 +104,8 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
 
   const flush = () => {
     if (run.length >= MIN_RUN) {
-      // Everything but the newest is folded. `folded` is never empty here:
-      // MIN_RUN is 2, so there is always at least one call to summarise.
+      // Everything but the newest is folded. The first call has an empty
+      // folded section, but still uses the same activity-group UI.
       const folded = run.slice(0, -1);
       const newest = run[run.length - 1];
       rows.push({
@@ -148,10 +151,13 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
     // honest answer to which of them the text belongs to. And only the first,
     // because a second fence is the reply talking again.
     const last = rows[rows.length - 1];
-    if (block.kind === "text" && last?.kind === "block" && last.block.kind === "tool" && !last.note) {
+    const singleTool =
+      (last?.kind === "block" && last.block.kind === "tool" && !last.note) ||
+      (last?.kind === "group" && last.tools.length === 0 && !last.note);
+    if (block.kind === "text" && singleTool) {
       const note = fenceOnly(block.text);
       if (note) {
-        rows[rows.length - 1] = { ...last, note, index };
+        rows[rows.length - 1] = { ...last!, note, index };
         return;
       }
     }
@@ -163,6 +169,12 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
 
 function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
   if (keepOut?.(tool)) return false;
+  const name = tool.name.toLowerCase();
+  // Ask tools sometimes arrive as bare names and sometimes as an MCP-qualified
+  // name such as `mcp__octiq__ask_user`. Both must stay visible on their own.
+  if (QUESTION_TOOLS.has(name) || QUESTION_TOOL_SUFFIXES.some((suffix) => name.endsWith(suffix))) {
+    return false;
+  }
   // A call that did not finish is the one worth seeing in a run of ones that
   // did — and a group rolls up to `done`, so folding either in would report the
   // whole run as finished.

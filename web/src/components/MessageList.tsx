@@ -7,11 +7,10 @@
 // anybody scrolls back through — `groupRows` drops those blocks.
 //
 // A subagent's messages are not part of that stack. They belong to the Task
-// call that started them, and they are drawn INSIDE its card — so they are
-// lifted out of the conversation here and handed to the card by id. The
-// alternative, which is what this did before it knew about them, is a reply
-// where a subagent's thinking, tool calls and prose all read as the main
-// agent's own.
+// call that started them and open in the read-only agent focus view, so they
+// are lifted out of the conversation here and kept by that call's id. The
+// alternative is a reply where a subagent's thinking, tool calls and prose all
+// read as the main agent's own.
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown, { type Components } from "react-markdown";
@@ -164,12 +163,18 @@ function BlockView({
   block,
   animate,
   kids,
+  agentByTool,
+  onOpenAgent,
   note,
   folder,
 }: {
   block: Block;
   animate?: boolean;
   kids: Kids;
+  /** Task call id → agent-run id. Only calls with a real agent run can open
+   * the read-only focus screen. */
+  agentByTool?: ReadonlyMap<string, string>;
+  onOpenAgent?: (id: string) => void;
   /** Card 73 — a fenced block the reply wrote straight after this call, drawn
    *  inside the card rather than as a box of its own beneath it. `groupRows`
    *  decides which text that is; this only carries it. */
@@ -188,13 +193,29 @@ function BlockView({
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
+  const agentId = agentByTool?.get(block.id);
   const own = kids.get(block.id);
   return (
     <ToolCard
       tool={block}
       note={note}
       folder={folder}
-      agent={own?.length ? { steps: own.length, body: <SubAgent messages={own} kids={kids} /> } : undefined}
+      agent={
+        own?.length
+          ? {
+              steps: own.length,
+              body: (
+                <SubAgent
+                  messages={own}
+                  kids={kids}
+                  agentByTool={agentByTool}
+                  onOpenAgent={onOpenAgent}
+                />
+              ),
+            }
+          : undefined
+      }
+      onOpenAgent={agentId && onOpenAgent ? () => onOpenAgent(agentId) : undefined}
     />
   );
 }
@@ -204,7 +225,19 @@ function BlockView({
  *  Only the LAST row can still be arriving, so only it is allowed to animate —
  *  and a row knows where it ended in the original list, which is why grouping
  *  hands back that position rather than just the calls. */
-function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boolean; kids: Kids }) {
+function Blocks({
+  blocks,
+  streaming,
+  kids,
+  agentByTool,
+  onOpenAgent,
+}: {
+  blocks: Block[];
+  streaming: boolean;
+  kids: Kids;
+  agentByTool?: ReadonlyMap<string, string>;
+  onOpenAgent?: (id: string) => void;
+}) {
   // A card that has picked up a subagent transcript is never folded away, even
   // when its name is not one of the ones that says so — nor is one whose
   // background work is still going, which is the same rule for the same reason.
@@ -223,17 +256,19 @@ function Blocks({ blocks, streaming, kids }: { blocks: Block[]; streaming: boole
       {rows.map((row, i) => {
         const folder = folders[i];
         const heads = !!folder && folder !== folders[i - 1];
-        const key = row.kind === "group" ? row.tools[0].id : row.index;
+        const key = row.kind === "group" ? (row.tools[0]?.id ?? row.newest.id) : row.index;
         return (
           <Fragment key={key}>
             {heads && <FolderHead dir={folder} />}
             {row.kind === "group" ? (
-              <ToolGroup tools={row.tools} newest={row.newest} folder={folder} />
+              <ToolGroup tools={row.tools} newest={row.newest} folder={folder} note={row.note} />
             ) : (
               <BlockView
                 block={row.block}
                 animate={streaming && row.index === last}
                 kids={kids}
+                agentByTool={agentByTool}
+                onOpenAgent={onOpenAgent}
                 note={row.note}
                 folder={folder}
               />
@@ -284,12 +319,28 @@ function FolderIcon() {
  *  own subagents if it started any. Not grouped into turns and not labelled with
  *  a role: it is one agent working through one job, and the card above it
  *  already says whose job. */
-function SubAgent({ messages, kids }: { messages: Message[]; kids: Kids }) {
+function SubAgent({
+  messages,
+  kids,
+  agentByTool,
+  onOpenAgent,
+}: {
+  messages: Message[];
+  kids: Kids;
+  agentByTool?: ReadonlyMap<string, string>;
+  onOpenAgent?: (id: string) => void;
+}) {
   const blocks = messages.flatMap((m) => m.blocks);
   const streaming = messages.some((m) => m.streaming);
   return (
     <div className="subagent">
-      <Blocks blocks={blocks} streaming={streaming} kids={kids} />
+      <Blocks
+        blocks={blocks}
+        streaming={streaming}
+        kids={kids}
+        agentByTool={agentByTool}
+        onOpenAgent={onOpenAgent}
+      />
       {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
     </div>
   );
@@ -549,6 +600,8 @@ function StopMark() {
 function TurnView({
   messages,
   kids,
+  agentByTool,
+  onOpenAgent,
   last,
   busy,
   tints,
@@ -557,6 +610,8 @@ function TurnView({
 }: {
   messages: Message[];
   kids: Kids;
+  agentByTool?: ReadonlyMap<string, string>;
+  onOpenAgent?: (id: string) => void;
   /** Arrived while the transcript was already on screen, rather than having
    *  been there when it opened. Only these animate in — see `justArrived`. */
   fresh?: boolean;
@@ -686,7 +741,13 @@ function TurnView({
         {role === "user" && blocks.every((b) => b.kind === "text") ? (
           blocks.map((b, i) => <UserText key={i} text={(b as { text: string }).text} />)
         ) : (
-          <Blocks blocks={blocks} streaming={streaming} kids={kids} />
+          <Blocks
+            blocks={blocks}
+            streaming={streaming}
+            kids={kids}
+            agentByTool={agentByTool}
+            onOpenAgent={onOpenAgent}
+          />
         )}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
         {/* Sent, and the agent has not started on it. A clock inside the pill,
@@ -953,6 +1014,8 @@ export function MessageList({
   compactingSince,
   conversationId,
   onSetting,
+  agentByTool,
+  onOpenAgent,
 }: {
   messages: Message[];
   busy: boolean;
@@ -961,6 +1024,10 @@ export function MessageList({
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
   onSetting?: (line: string) => void;
+  /** A task's tool-use id resolves to the persistent read-only agent run it
+   * started. Kept outside the transcript so the focus view stays live. */
+  agentByTool?: ReadonlyMap<string, string>;
+  onOpenAgent?: (id: string) => void;
   /** When a compaction started, or absent when none is running. It is drawn
    *  at the foot of the conversation, in the SAME line the finished boundary
    *  leaves behind — one thing that starts, runs, and settles in place, rather
@@ -1250,6 +1317,8 @@ export function MessageList({
             <TurnView
               messages={turn}
               kids={kids}
+              agentByTool={agentByTool}
+              onOpenAgent={onOpenAgent}
               last={i === turns.length - 1}
               busy={busy}
               tints={tints}

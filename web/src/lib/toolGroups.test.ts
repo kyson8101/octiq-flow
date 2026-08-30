@@ -24,6 +24,12 @@ function shape(rows: Row[]): string[] {
 }
 
 describe("groupRows", () => {
+  it("folds the first call into the activity row", () => {
+    // The group UI now owns every foldable call, including a run's first one.
+    // Its folded section is empty until a second call arrives.
+    expect(shape(groupRows([tool("Bash")]))).toEqual(["+Bash"]);
+  });
+
   it("folds two calls into one activity row", () => {
     expect(shape(groupRows([tool("Bash"), tool("Bash")]))).toEqual(["Bash+Bash"]);
   });
@@ -152,6 +158,30 @@ describe("groupRows", () => {
     expect(shape(groupRows([t, tool("Bash"), tool("Bash")], (x) => x.id === "kept"))).toEqual(["Bash", "Bash+Bash"]);
   });
 
+  it("never folds an ask_user tool away", () => {
+    expect(shape(groupRows([tool("Bash"), tool("ask_user"), tool("Bash")]))).toEqual([
+      "+Bash",
+      "ask_user",
+      "+Bash",
+    ]);
+  });
+
+  it("never folds an ask_user_questions tool away", () => {
+    expect(shape(groupRows([tool("Bash"), tool("ask_user_questions"), tool("Bash")]))).toEqual([
+      "+Bash",
+      "ask_user_questions",
+      "+Bash",
+    ]);
+  });
+
+  it("never folds an MCP-qualified ask_user tool away", () => {
+    expect(shape(groupRows([tool("Bash"), tool("mcp__octiq__ask_user"), tool("Bash")]))).toEqual([
+      "+Bash",
+      "mcp__octiq__ask_user",
+      "+Bash",
+    ]);
+  });
+
   it("folds a run the agent thought its way through", () => {
     // What an interleaved-thinking turn actually looks like: look, think, look
     // again. Breaking the run on every thought left a wall of single cards.
@@ -164,7 +194,7 @@ describe("groupRows", () => {
     // else. In the transcript it is a row that opens onto the agent talking to
     // itself, between the reader and the work.
     const blocks = [thought("a"), tool("Bash"), thought("b"), text("done")];
-    expect(shape(groupRows(blocks))).toEqual(["Bash", "text"]);
+    expect(shape(groupRows(blocks))).toEqual(["+Bash", "text"]);
   });
 
   it("never lets a thought stand between two calls", () => {
@@ -351,8 +381,8 @@ describe("a code fence following a tool call", () => {
     const rows = groupRows([tool("Bash"), fence("VERIFY RESULT: PASS")]);
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].kind).toBe("block");
-    expect((rows[0] as Extract<Row, { kind: "block" }>).note?.body).toBe("VERIFY RESULT: PASS");
+    expect(rows[0].kind).toBe("group");
+    expect((rows[0] as Extract<Row, { kind: "group" }>).note?.body).toBe("VERIFY RESULT: PASS");
   });
 
   it("keeps the fence's language, so the card can draw it as code", () => {

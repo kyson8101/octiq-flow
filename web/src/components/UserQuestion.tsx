@@ -177,8 +177,10 @@ export function UserQuestion({
           onClick={() => setMinimised(false)}
         >
           <span className="qa-dot" aria-hidden="true" />
-          <span className="qa-label">Claude is asking</span>
-          <span className="qa-min-q">{current?.question ?? "for your answers"}</span>
+          <span className="qa-min-copy">
+            <span className="qa-min-title">Claude is asking</span>
+            <span className="qa-min-q">{current?.question ?? "For your answers"}</span>
+          </span>
           {/* A second question can arrive while the card is put aside, and the
               strip is then the only thing saying so. */}
           {total > 1 && <span className="qa-count">{`${page + 1} of ${total}`}</span>}

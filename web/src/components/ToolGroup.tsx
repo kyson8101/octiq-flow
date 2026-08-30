@@ -5,7 +5,7 @@
 // adds only the latest call's detail and a spinner. Once the agent speaks or
 // finishes, the completed run settles back to its short summary.
 import { useMemo, useState } from "react";
-import { groupLook, groupSummary, type Tool } from "../lib/toolGroups";
+import { groupLook, groupSummary, type Note, type Tool } from "../lib/toolGroups";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon } from "./ToolIcon";
 
@@ -13,6 +13,7 @@ export function ToolGroup({
   tools,
   newest,
   folder,
+  note,
 }: {
   tools: Tool[];
   newest: Tool;
@@ -20,6 +21,8 @@ export function ToolGroup({
    *  run is in it, or there would be no header (see lib/folderHead). Passed
    *  down so each card inside shows its file's name rather than its path. */
   folder?: string;
+  /** A fenced note written straight after this one-call group. */
+  note?: Note;
 }) {
   const [open, setOpen] = useState(false);
   // `tools` is the folded portion of the run and `newest` is the incoming call.
@@ -57,7 +60,12 @@ export function ToolGroup({
       {open && (
         <div className="tool-group-body">
           {allTools.map((tool) => (
-            <ToolCard key={tool.id} tool={tool} folder={folder} />
+            <ToolCard
+              key={tool.id}
+              tool={tool}
+              folder={folder}
+              note={tool.id === newest.id ? note : undefined}
+            />
           ))}
         </div>
       )}

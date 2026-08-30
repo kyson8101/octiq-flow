@@ -52,6 +52,13 @@ describe("a card whose work ran in the background", () => {
     expect(render(backgrounded())).not.toContain("tool-finish");
   });
 
+  it("puts expanded details inside their own reveal panel", () => {
+    const html = renderToStaticMarkup(<ToolCard tool={backgrounded()} open />);
+
+    expect(html).toContain('class="tool-expand"');
+    expect(html).toContain('class="tool-body"');
+  });
+
   it("puts the report itself inside the card, under the answer the call gave", () => {
     // Only a card that opens ITSELF can be read at rest, and that is the
     // subagent card — so the body is checked through one. The section is the
@@ -77,5 +84,31 @@ describe("a card whose work ran in the background", () => {
     expect(html).toContain("finished");
     expect(html).toContain("/tmp/tasks/ba0qlummq.output");
     expect(html).toContain("completed (exit code 0)");
+  });
+});
+
+describe("a subagent call", () => {
+  const task: Tool = {
+    kind: "tool",
+    id: "task-1",
+    name: "Task",
+    argsJson: "",
+    args: { description: "Check the migration" },
+    state: "done",
+  };
+
+  it("uses a normal tool row that opens the agent's read-only chat", () => {
+    const html = renderToStaticMarkup(<ToolCard tool={task} onOpenAgent={() => {}} />);
+
+    expect(html).toContain('class="tool tool-done"');
+    expect(html).not.toContain("tool-agent");
+    expect(html).toContain('aria-label="Open read-only agent chat"');
+    expect(html).toContain('title="Open read-only agent chat"');
+  });
+
+  it("keeps the normal tool-row styling before its agent metadata arrives", () => {
+    const html = renderToStaticMarkup(<ToolCard tool={task} agent={{ steps: 0, body: null }} />);
+
+    expect(html).not.toContain("tool-agent");
   });
 });

@@ -82,12 +82,16 @@ function Chevron() {
 export function ToolCard({
   tool,
   agent,
+  onOpenAgent,
   note,
   folder,
   open: openFrom,
 }: {
   tool: Tool;
   agent?: AgentRun;
+  /** Opens the run's read-only agent chat instead of expanding an inline
+   * transcript. Absent only for old/untracked task cards. */
+  onOpenAgent?: () => void;
   /** The folder a header above this card has already named. When the card's
    *  detail is a file inside it, the card shows the file's NAME — the path is
    *  said once, above the run, instead of once per card. */
@@ -103,6 +107,7 @@ export function ToolCard({
   open?: boolean;
 }) {
   const isAgent = !!agent || AGENT_TOOLS.has(tool.name.toLowerCase());
+  const opensAgent = isAgent && !!onOpenAgent;
   const look = toolLook(tool.name, tool.args);
   const isSkill = look.kind === "skill";
   // Edit, Write and MultiEdit are the calls a reader actually wants to SEE, and
@@ -123,12 +128,10 @@ export function ToolCard({
   // first frame and there is nothing to wait for. A card that popped open later,
   // when a result landed, would move the page under whoever was reading it.
   //
-  // A subagent card opens itself for its own reason: a run takes minutes, and a
-  // folded card through all of it looks like nothing is happening. Neither is
-  // folded again when the work ends — a card closing itself mid-read takes the
-  // paragraph out from under the reader.
+  // An untracked legacy subagent still falls back to the old inline card, so it
+  // opens while running. Tracked agents open the dedicated read-only view.
   const [open, setOpen] = useState(
-    () => openFrom ?? (!!diff || (isAgent && tool.state === "running")),
+    () => openFrom ?? (!!diff || (isAgent && !opensAgent && tool.state === "running")),
   );
   // A skill's card is the skill, not the call. The prompt it put in front of
   // the agent arrives a moment after the call answers (see `brief` on the
@@ -160,16 +163,23 @@ export function ToolCard({
 
   return (
     <div
-      className={`tool tool-${tool.state} ${isAgent ? "tool-agent" : ""} ${isSkill ? "tool-skill" : ""}`}
+      className={[
+        "tool",
+        `tool-${tool.state}`,
+        isSkill ? "tool-skill" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <button
         className="tool-head"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => (opensAgent ? onOpenAgent!() : setOpen((v) => !v))}
         type="button"
         // The name on the row is the thing that ran, which for a skill or an
         // MCP call is not the name the agent used. The real one stays here, for
         // the reader who needs it to search a log.
-        title={tool.name}
+        title={opensAgent ? "Open read-only agent chat" : tool.name}
+        aria-label={opensAgent ? "Open read-only agent chat" : undefined}
       >
         <span className="tool-icon" data-kind={look.kind} aria-hidden="true">
           <ToolIcon kind={look.kind} />
@@ -190,11 +200,6 @@ export function ToolCard({
             stops lining up. */}
         <span className="tool-gap" />
         {diff && <DiffStat diff={diff} />}
-        {agent && (
-          <span className="tool-steps">
-            {agent.steps} step{agent.steps === 1 ? "" : "s"}
-          </span>
-        )}
         {/* Beside the state, and not instead of it, because the two answer
             different questions: the tick says the call went through, this says
             how the work it started actually ended. */}
@@ -243,90 +248,92 @@ export function ToolCard({
       )}
 
       {open && (
-        <div className="tool-body">
-          {/* First, because it is what the card was opened for. The briefing
+        <div className="tool-expand">
+          <div className="tool-body">
+            {/* First, because it is what the card was opened for. The briefing
               that started it and the report that ended it are both fixed text;
               this is the part that moves. */}
-          {agent && (
-            <>
-              <div className="tool-label">working</div>
-              {agent.body}
-            </>
-          )}
-          {diff && (
-            <>
-              {/* A call still in flight has not changed anything yet, so it is
+            {agent && (
+              <>
+                <div className="tool-label">working</div>
+                {agent.body}
+              </>
+            )}
+            {diff && (
+              <>
+                {/* A call still in flight has not changed anything yet, so it is
                   not shown as a change that happened. And a diff worked out
                   from the arguments says what was asked for, which is not
                   quite the same claim as what the file now holds. */}
-              <div className="tool-label">
-                {tool.state === "running" ? "writing" : diff.kind === "create" ? "new file" : "changes"}
-                {tool.state !== "running" && !diff.numbered && (
-                  <span className="tool-note">from the arguments</span>
-                )}
-              </div>
-              <DiffView diff={diff} />
-            </>
-          )}
-          {/* What the skill asked of the agent, as the markdown it was written
+                <div className="tool-label">
+                  {tool.state === "running" ? "writing" : diff.kind === "create" ? "new file" : "changes"}
+                  {tool.state !== "running" && !diff.numbered && (
+                    <span className="tool-note">from the arguments</span>
+                  )}
+                </div>
+                <DiffView diff={diff} />
+              </>
+            )}
+            {/* What the skill asked of the agent, as the markdown it was written
               in. This is the card's whole reason to open: the arguments are
               one word (the skill's name, already on the row) and the result is
               one line ("Launching skill: …"), so neither is shown beside it. */}
-          {brief && (
-            <>
-              <div className="tool-label">
-                instructions
-                {/* Absent for a skill bundled with the agent: there is no
+            {brief && (
+              <>
+                <div className="tool-label">
+                  instructions
+                  {/* Absent for a skill bundled with the agent: there is no
                     folder it was read from to name. */}
-                {brief.dir && <span className="tool-note">{brief.dir}</span>}
-              </div>
-              <div className="tool-brief prose">
-                <Markdown remarkPlugins={[remarkGfm]}>{brief.body}</Markdown>
-              </div>
-            </>
-          )}
-          {/* The arguments of a file edit ARE the diff above, said twice as
+                  {brief.dir && <span className="tool-note">{brief.dir}</span>}
+                </div>
+                <div className="tool-brief prose">
+                  <Markdown remarkPlugins={[remarkGfm]}>{brief.body}</Markdown>
+                </div>
+              </>
+            )}
+            {/* The arguments of a file edit ARE the diff above, said twice as
               long, so they go only when there is no diff to say it better. */}
-          {!diff && !brief && argsText(tool) && (
-            <>
-              <div className="tool-label">arguments</div>
-              <pre className="tool-pre">{argsText(tool)}</pre>
-            </>
-          )}
-          {/* "The file has been updated successfully" under a drawing of the
+            {!diff && !brief && argsText(tool) && (
+              <>
+                <div className="tool-label">arguments</div>
+                <pre className="tool-pre">{argsText(tool)}</pre>
+              </>
+            )}
+            {/* "The file has been updated successfully" under a drawing of the
               update is noise. A FAILED edit is the opposite: the reason it
               failed is the only thing on the card worth reading. A skill's
               "Launching skill: x" is the same noise, and kept the same way:
               only when the launch failed. */}
-          {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && !ask && (
-            <>
-              <div className="tool-label">{isAgent ? "report" : "result"}</div>
-              <pre className="tool-pre">{tool.result}</pre>
-            </>
-          )}
-          {/* The reply's own words, kept with the call they followed. Its own
+            {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && !ask && (
+              <>
+                <div className="tool-label">{isAgent ? "report" : "result"}</div>
+                <pre className="tool-pre">{tool.result}</pre>
+              </>
+            )}
+            {/* The reply's own words, kept with the call they followed. Its own
               label, never "result": see the `note` prop. */}
-          {note && (
-            <>
-              <div className="tool-label">note</div>
-              <pre className="tool-pre tool-note-body">{note.body}</pre>
-            </>
-          )}
-          {/* Last, because it is what happened last. The result above is the
+            {note && (
+              <>
+                <div className="tool-label">note</div>
+                <pre className="tool-pre tool-note-body">{note.body}</pre>
+              </>
+            )}
+            {/* Last, because it is what happened last. The result above is the
               answer the call gave the moment it started — "running in
               background", an id — and this is the same work minutes later,
               reported by the task itself. */}
-          {tool.finish && (
-            <>
-              <div className="tool-label">
-                finished
-                {tool.finish.outputFile && (
-                  <span className="tool-note">{tool.finish.outputFile}</span>
-                )}
-              </div>
-              <pre className="tool-pre">{tool.finish.summary}</pre>
-            </>
-          )}
+            {tool.finish && (
+              <>
+                <div className="tool-label">
+                  finished
+                  {tool.finish.outputFile && (
+                    <span className="tool-note">{tool.finish.outputFile}</span>
+                  )}
+                </div>
+                <pre className="tool-pre">{tool.finish.summary}</pre>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

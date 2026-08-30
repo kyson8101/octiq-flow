@@ -112,6 +112,14 @@ describe("a question arrives put aside", () => {
     expect(html).toContain("Answer");
   });
 
+  it("uses a title and subtitle for the waiting question", () => {
+    const html = arrive();
+
+    expect(html).toContain('class="qa-min-copy"');
+    expect(html).toContain('class="qa-min-title">Claude is asking</span>');
+    expect(html).toContain('class="qa-min-q">Which database?</span>');
+  });
+
   it("opens on request, controls and all", () => {
     const html = draw({ options: ["Postgres", "SQLite"] });
     expect(html).toContain('role="alertdialog"');

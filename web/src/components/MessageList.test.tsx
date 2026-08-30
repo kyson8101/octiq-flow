@@ -111,6 +111,38 @@ describe("the working dots", () => {
   });
 });
 
+describe("a Task card", () => {
+  const started: Message = {
+    id: "a-task",
+    role: "assistant",
+    blocks: [
+      {
+        kind: "tool",
+        id: "tool-task",
+        name: "Task",
+        argsJson: "",
+        args: { description: "Review the change" },
+        state: "done",
+      },
+    ],
+    streaming: false,
+  };
+
+  it("opens its matching read-only agent run instead of an inline transcript", () => {
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[started]}
+        busy={false}
+        agentByTool={new Map([["tool-task", "agent-run"]])}
+        onOpenAgent={() => {}}
+      />,
+    );
+
+    expect(html).toContain('aria-label="Open read-only agent chat"');
+    expect(html).not.toContain("tool-agent");
+  });
+});
+
 describe("a turn the reader stopped", () => {
   const answered = (id: string, text: string): Message => ({
     id,

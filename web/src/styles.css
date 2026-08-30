@@ -1932,10 +1932,62 @@ body {
   .tool-running .tool-icon {
     animation: none;
   }
+  .tool-expand {
+    animation: none;
+  }
+}
+
+.tool-expand {
+  /* The collapsed transcript remains flat; detail gets a clear boundary only
+     while it is being read. The brief ring is a one-time arrival cue, not a
+     distracting pulse that competes with an in-progress tool. */
+  --tool-expand-border: color-mix(in srgb, var(--accent) 42%, var(--border));
+  --tool-expand-glow: color-mix(in srgb, var(--accent) 18%, transparent);
+  margin: 2px 4px 8px 32px;
+  overflow: hidden;
+  border: 1px solid var(--tool-expand-border);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--bg-0) 76%, transparent);
+  animation:
+    tool-expand-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both,
+    tool-expand-border-in 420ms ease-out both;
+}
+
+/* An error's reveal echoes the state already present on the row, so opening a
+   failed command does not borrow the success-path accent. */
+.tool-error .tool-expand {
+  --tool-expand-border: color-mix(in srgb, var(--danger) 58%, var(--border));
+  --tool-expand-glow: color-mix(in srgb, var(--danger) 18%, transparent);
+}
+
+@keyframes tool-expand-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes tool-expand-border-in {
+  0% {
+    border-color: transparent;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  55% {
+    border-color: var(--tool-expand-border);
+    box-shadow: 0 0 0 3px var(--tool-expand-glow);
+  }
+  100% {
+    border-color: var(--tool-expand-border);
+    box-shadow: 0 0 0 0 transparent;
+  }
 }
 
 .tool-body {
-  padding: 0 4px 10px 32px;
+  padding: 8px 10px 10px;
 }
 
 .tool-label {
@@ -2142,24 +2194,13 @@ body {
   letter-spacing: 0;
 }
 
-/* ---- Subagents -------------------------------------------------------- */
-/* A Task card is not a tool call that returned a value — it holds another
-   agent's whole transcript — so it is marked as its own thing. */
-.tool-agent {
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
-  border-radius: var(--r-lg);
-  background: var(--bg-sunken);
-  overflow: hidden;
-}
-
-.tool-agent .tool-head,
+/* ---- Skills ----------------------------------------------------------- */
 .tool-skill .tool-head {
   gap: 10px;
   padding: 11px 14px 11px var(--tool-pad);
   border-radius: var(--r-lg);
 }
 
-.tool-agent .tool-icon,
 .tool-skill .tool-icon {
   width: 24px;
   height: 24px;
@@ -2167,22 +2208,25 @@ body {
   background: color-mix(in srgb, var(--tint) 15%, transparent);
 }
 
-.tool-agent .tool-body,
 .tool-skill .tool-body {
-  padding: 0 14px 12px;
+  padding: 8px 10px 10px;
+}
+
+.tool-skill .tool-expand {
+  --tool-expand-border: color-mix(in srgb, #bf5af3 54%, var(--border));
+  --tool-expand-glow: color-mix(in srgb, #bf5af3 18%, transparent);
+  margin: 0 14px 12px;
 }
 
 /* A description is prose, and prose is read from its start. Only the shared
    rule's path-truncation wants the other end. */
-.tool-agent .tool-detail,
 .tool-skill .tool-detail {
   direction: ltr;
 }
 
-/* ---- Skills ----------------------------------------------------------- */
 /* A skill call is not one action — it is a set of instructions the agent has
    just taken on, and everything after it reads differently because of it. So
-   it is marked like the Task card is, in its own colour. */
+   it is marked in its own colour. */
 .tool-skill {
   border: 1px solid color-mix(in srgb, #bf5af3 32%, var(--border));
   border-radius: var(--r-lg);
@@ -2267,13 +2311,6 @@ body {
 
 .tool-brief table {
   font-size: 12px;
-}
-
-.tool-steps {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-3);
 }
 
 /* How work the call left RUNNING ended — an exit code that arrived minutes
@@ -7755,7 +7792,7 @@ body.is-ultra .eff {
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 9px 13px;
+  padding: 10px 13px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -7768,16 +7805,31 @@ body.is-ultra .eff {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* One line of the question, cut where it runs out of room: enough to know
-   which question is waiting, never enough to take the screen back. */
-.qa-min-q {
+.qa-min-copy {
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.qa-min-title {
+  color: var(--fg-1);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* The question is the subtitle: one quiet line, cut where it runs out of
+   room, enough to identify what is waiting without taking the screen back. */
+.qa-min-q {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-size: 13px;
-  color: var(--fg-1);
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--fg-3);
 }
 
 .qa-min-cue {
@@ -7786,13 +7838,6 @@ body.is-ultra .eff {
   color: var(--accent);
 }
 
-/* The label is the first thing to go on a narrow screen: the pulsing dot and
-   the question itself already say what this is. */
-@media (max-width: 520px) {
-  .qa-restore .qa-label {
-    display: none;
-  }
-}
 
 /* ---- A compaction, start to end ---------------------------------------
    One shape for both halves of the same event: the rule that runs while the

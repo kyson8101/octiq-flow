@@ -1201,6 +1201,15 @@ export default function App() {
   // view updates as its events arrive. It resolves to nothing after switching
   // conversations, which is what closes the panel.
   const focused = focusedAgent ? chat.agents.find((a) => a.id === focusedAgent) : undefined;
+  /** A Task card knows the tool-use id that spawned its agent; the focus view
+   * needs the task id. Keep that bridge here with the live agent roster. */
+  const agentByTool = useMemo(() => {
+    const runs = new Map<string, string>();
+    for (const run of chat.agents) {
+      if (run.toolUseId) runs.set(run.toolUseId, run.id);
+    }
+    return runs;
+  }, [chat.agents]);
 
   // Follow the model the AGENT reports. A `/model sonnet` typed into the chat
   // changes the model for real, and the picker saying "Opus" after that is
@@ -2959,6 +2968,8 @@ export default function App() {
                       // the session back up first, which is what a tap on a
                       // setting has every right to expect.
                       onSetting={send}
+                      agentByTool={agentByTool}
+                      onOpenAgent={setFocusedAgent}
                     />
                     {focused && (
                       <AgentFocus
