@@ -337,10 +337,18 @@ impl AgentProvider for ClaudeProvider {
             cmd.push_str(&format!(" --model {}", sh_quote(&model)));
         }
         if let Some(access) = request.access {
-            cmd.push_str(&format!(
-                " --permission-mode {}",
-                claude_permission_mode(access)
-            ));
+            // Claude refuses a live switch TO `bypassPermissions` unless the
+            // process itself was launched in bypass mode. Starting Full this
+            // way makes the requested level real, and a later switch up is
+            // handled by the chat runtime as a clean restart instead.
+            if matches!(access, Access::Full) {
+                cmd.push_str(" --dangerously-skip-permissions");
+            } else {
+                cmd.push_str(&format!(
+                    " --permission-mode {}",
+                    claude_permission_mode(access)
+                ));
+            }
         }
         if let Some(effort) = request.effort.and_then(|e| self.effort(e)) {
             cmd.push_str(&format!(" --effort {effort}"));
@@ -544,8 +552,18 @@ impl AgentProvider for CodexProvider {
         for path in request.images {
             cmd.push_str(&format!(" -i {}", sh_quote(path)));
         }
+        // The composer deliberately permits sending just an image. Codex
+        // treats an empty positional prompt as absent, then reads stdin for
+        // one; command-line chats close stdin immediately, so that otherwise
+        // fails with "No prompt provided via stdin." Give such a turn the
+        // smallest useful instruction while leaving typed prompts untouched.
+        let prompt = if request.prompt.trim().is_empty() && !request.images.is_empty() {
+            "Please inspect the attached image."
+        } else {
+            request.prompt
+        };
         cmd.push(' ');
-        cmd.push_str(&sh_quote(request.prompt));
+        cmd.push_str(&sh_quote(prompt));
         cmd
     }
 
@@ -571,8 +589,13 @@ impl AgentProvider for CodexProvider {
     }
 
     fn is_expected_stderr(&self, line: &str) -> bool {
-        line.trim()
-            .starts_with("Reading additional input from stdin")
+        let line = line.trim();
+        line.starts_with("Reading additional input from stdin")
+            // Codex can continue normally using its cached model catalogue
+            // when this background cache-TTL renewal fails. It is an internal
+            // compatibility warning, not a failure of the chat or its turn.
+            || (line.contains("codex_models_manager::manager: failed to renew cache TTL")
+                && line.contains("supports_parallel_tool_calls"))
     }
 }
 

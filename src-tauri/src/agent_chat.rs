@@ -140,25 +140,24 @@ fn idle_timeout() -> Option<Duration> {
     }
 }
 
-/// How a chat's HOST was last started, so the backend can start it again.
+/// How an agent process was last started, so the backend can start it again.
 ///
 /// Every one of these fields belongs to the client: the model came from the
 /// picker, the folders from the project, the level from the access control. The
 /// backend has never needed them, because the client has always been the thing
 /// that starts a chat.
 ///
-/// One thing changed that. A room's host is now spoken to by the backend
-/// itself, once the other agents have answered (`round::ask_host`) — and by
-/// then its process may well be gone: the idle sweeper ends the host of a room
-/// whose seats are mid-round, because an idle host is exactly what that looks
-/// like. Without this the follow-up would be dropped in the one case it matters
-/// most, a long round nobody was watching.
+/// A room's host can be spoken to by the backend itself once the other agents
+/// have answered (`round::ask_host`), after its process may have gone idle.
+/// Codex seats need the same record for a different reason: each turn is a new
+/// `resume` process, so a quick follow-up waits for the prior one to exit and
+/// starts again with this context.
 ///
-/// Kept in memory only. A backend restart loses it, and a room whose host has
-/// not spoken since is simply not followed up — the words are all in the
+/// Kept in memory only. A backend restart loses it, and an agent whose process
+/// has not been started since is simply not resumed — the words are all in the
 /// transcript either way.
 #[derive(Debug, Clone)]
-pub(crate) struct HostStart {
+pub(crate) struct StartContext {
     cwd: String,
     agent: ChatAgent,
     model: Option<String>,
@@ -167,7 +166,7 @@ pub(crate) struct HostStart {
     effort: Option<String>,
     lite: Option<bool>,
     /// The agent's own id for this conversation, learned from its opening
-    /// event. Restarting without it would hand the host an empty memory and
+    /// event. Restarting without it would hand the agent an empty memory and
     /// a brief about a discussion it had never heard of.
     session_id: Option<String>,
 }
@@ -192,9 +191,9 @@ pub struct ChatManager {
     /// Stored here because a seat that speaks needs a session and a round
     /// needs both at once — everything ELSE about a room lives in `chat_room`.
     pub(crate) rooms: Mutex<HashMap<String, crate::chat_room::Room>>,
-    /// How each chat's host was last started — see `HostStart`. Hosts only:
-    /// a seat is started from its own record and never needs this.
-    host_starts: Mutex<HashMap<String, HostStart>>,
+    /// How each running agent was last started — see `StartContext`. Keyed by
+    /// process key: a host and each resident seat resume independently.
+    starts: Mutex<HashMap<String, StartContext>>,
     /// A command-line provider is deliberately one-shot. A follow-up sent
     /// while its previous process is still reaping waits here for its resumed
     /// process instead of being written to its intentionally absent stdin.
@@ -202,25 +201,25 @@ pub struct ChatManager {
 }
 
 impl ChatManager {
-    /// Remember how a host was started, so it can be started that way again.
-    fn remember_host(&self, key: &str, start: HostStart) {
-        if let Ok(mut m) = self.host_starts.lock() {
-            m.insert(key.to_string(), start);
+    /// Remember how an agent was started, so it can be started that way again.
+    fn remember_start(&self, session_key: &str, start: StartContext) {
+        if let Ok(mut m) = self.starts.lock() {
+            m.insert(session_key.to_string(), start);
         }
     }
 
-    /// The agent named its own conversation. Kept so a restart can resume it
-    /// rather than beginning a new one.
-    fn remember_session(&self, key: &str, session_id: &str) {
-        if let Ok(mut m) = self.host_starts.lock() {
-            if let Some(start) = m.get_mut(key) {
+    /// The agent named its own conversation. Kept so its next process can
+    /// resume it rather than beginning a new one.
+    fn remember_session(&self, session_key: &str, session_id: &str) {
+        if let Ok(mut m) = self.starts.lock() {
+            if let Some(start) = m.get_mut(session_key) {
                 start.session_id = Some(session_id.to_string());
             }
         }
     }
 
-    fn host_start(&self, key: &str) -> Option<HostStart> {
-        self.host_starts.lock().ok()?.get(key).cloned()
+    fn start_context(&self, session_key: &str) -> Option<StartContext> {
+        self.starts.lock().ok()?.get(session_key).cloned()
     }
 
     fn queue_command_turn(&self, key: &str, turn: QueuedCommandTurn) -> Result<(), String> {
@@ -436,12 +435,12 @@ pub fn chat_start_impl(
     lite: Option<bool>,
 ) -> Result<(), String> {
     // How this host was started, kept so the backend can start it the same way
-    // again — see `HostStart`. Written BEFORE the spawn, and left in place if
+    // again — see `StartContext`. Written BEFORE the spawn, and left in place if
     // the spawn fails: the settings were still the right ones, and a chat that
     // failed to start is retried with them rather than with nothing.
-    manager.remember_host(
+    manager.remember_start(
         &key,
-        HostStart {
+        StartContext {
             cwd: cwd.clone(),
             agent,
             model: model.clone(),
@@ -492,7 +491,7 @@ pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> 
         // Swept while it had nothing to do, or ended with the last restart.
         Err(why) if why.contains("no such chat") => {
             let start = manager
-                .host_start(key)
+                .start_context(key)
                 .ok_or_else(|| format!("nothing here knows how to start '{key}'"))?;
             chat_start_impl(
                 manager,
@@ -1300,13 +1299,16 @@ fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, r
 /// leave it answering for the level the chat started on.
 ///
 /// Not every change can be made this way, and the agent is the one that says
-/// so: `bypassPermissions` is refused unless the process was launched with
-/// `--dangerously-skip-permissions`, and `auto` is refused by models that do not
-/// have it. Those answers arrive on stdout and go out as an `access-refused`
-/// status (see `refused_access_change`); the UI falls back to a restart. The
-/// recorded level is deliberately NOT rolled back when that happens — every
-/// combination of "hook thinks X, agent is on Y" the failure can leave behind
-/// ends in the agent asking or refusing, never in it acting unasked.
+/// so: `bypassPermissions` is available only to a process that was launched
+/// with `--dangerously-skip-permissions`, and `auto` is refused by models that
+/// do not have it. Full is therefore rejected here before anything is written
+/// to Claude's stream; the client restarts cleanly, and its next turn launches
+/// at the requested level. Other provider refusals arrive on stdout and go out
+/// as an `access-refused` status (see `refused_access_change`); the UI falls
+/// back to the same restart. The recorded level is deliberately NOT rolled
+/// back when that happens — every combination of "hook thinks X, agent is on
+/// Y" the failure can leave behind ends in the agent asking or refusing, never
+/// in it acting unasked.
 ///
 /// Command-line providers have no such channel and need none: every turn is a
 /// fresh process and receives its access flags on the command line, so recording
@@ -1324,6 +1326,9 @@ pub fn chat_set_access_impl(
     let provider = provider_for(guard.agent);
     if !provider.capabilities().supports_live_access_change {
         return Ok(());
+    }
+    if matches!(access, Access::Full) {
+        return Err("Full access needs a fresh agent".into());
     }
     let payload = provider
         .access_change_payload(access)
@@ -1914,12 +1919,12 @@ mod tests {
         // unasked. Setting only the sandbox left the middle level asking about
         // everything and the top level asking at all, neither of which is what
         // the label promises.
-        for (level, claude, sandbox, approval) in [
-            (Access::Read, "plan", "read-only", "never"),
-            (Access::Auto, "auto", "workspace-write", "on-request"),
+        for (level, claude_flag, sandbox, approval) in [
+            (Access::Read, "--permission-mode plan", "read-only", "never"),
+            (Access::Auto, "--permission-mode auto", "workspace-write", "on-request"),
             (
                 Access::Full,
-                "bypassPermissions",
+                "--dangerously-skip-permissions",
                 "danger-full-access",
                 "never",
             ),
@@ -1936,7 +1941,7 @@ mod tests {
                 false,
             );
             assert!(
-                c.contains(&format!("--permission-mode {claude}")),
+                c.contains(claude_flag),
                 "claude {level:?}"
             );
             assert!(
@@ -2292,6 +2297,10 @@ mod tests {
         let codex = provider_for(ChatAgent::Codex);
         assert!(codex.is_expected_stderr("Reading additional input from stdin..."));
         assert!(codex.is_expected_stderr("  Reading additional input from stdin... "));
+        assert!(codex.is_expected_stderr(
+            "2026-08-30T09:38:25Z ERROR codex_models_manager::manager: \
+             failed to renew cache TTL: missing field `supports_parallel_tool_calls`"
+        ));
         // Anything else still reaches the user — that is the whole point of
         // surfacing stderr.
         assert!(!codex.is_expected_stderr("Error loading config.toml"));
@@ -2317,6 +2326,23 @@ mod tests {
         assert!(x.contains("-i '/tmp/b.webp'"));
         // ...and the prompt still ends the line, after the images.
         assert!(x.ends_with("'look'"));
+
+        // An image by itself is a valid composer message. Codex treats an
+        // empty positional argument as no prompt and otherwise reads stdin,
+        // which command-line chats intentionally close.
+        let image_only = build_command(
+            ChatAgent::Codex,
+            None,
+            None,
+            "",
+            None,
+            &[],
+            None,
+            &shots,
+            false,
+        );
+        assert!(image_only.ends_with("'Please inspect the attached image.'"));
+        assert!(!image_only.ends_with("''"));
 
         // Claude's images ride on stdin instead — see write_user_message.
         let c = build_command(
@@ -2446,7 +2472,9 @@ mod access_tests {
         };
         assert!(command(Access::Read).contains("--permission-mode plan"));
         assert!(command(Access::Auto).contains("--permission-mode auto"));
-        assert!(command(Access::Full).contains("--permission-mode bypassPermissions"));
+        let full = command(Access::Full);
+        assert!(full.contains("--dangerously-skip-permissions"));
+        assert!(!full.contains("--permission-mode bypassPermissions"));
     }
 }
 
