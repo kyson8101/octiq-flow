@@ -97,6 +97,7 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
+import { FullscreenButton } from "./components/FullscreenButton";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -497,17 +498,25 @@ export default function App() {
   // over. The listeners that raise notices are registered ONCE, and neither the
   // switch changing nor opening another chat may tear them down and rebuild
   // them — the same reason `runningRef` exists.
+  //
+  // The projects are in here for the banner's title, which names the project
+  // before the chat — and a shelved project's chats still announce themselves,
+  // so both lists count.
   const notifying = useRef({
     on: notifyOn,
     push: pushOn,
     reading: conversationId,
     list: conversations,
+    projects: workspaces,
+    shelved,
   });
   notifying.current = {
     on: notifyOn,
     push: pushOn,
     reading: conversationId,
     list: conversations,
+    projects: workspaces,
+    shelved,
   };
   // Set long before `openConversation` exists, like `onAccessRefused` below.
   const onOpenChat = useRef<(id: string) => void>(() => {});
@@ -524,15 +533,17 @@ export default function App() {
 
   /** Put one moment on the desktop, unless it is already in front of you. */
   const announce = useCallback((kind: NoticeKind, id: string, detail: string) => {
-    const { on, push: viaPush, reading, list } = notifying.current;
+    const { on, push: viaPush, reading, list, projects, shelved: away } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
     if (viaPush) return;
     if (!owed({ enabled: on, permission: permissionNow() }, focusNow(reading), id)) return;
+    const chat = list.find((c) => c.id === id);
     const notice = noticeFor({
       kind,
       conversationId: id,
-      chatTitle: list.find((c) => c.id === id)?.title ?? "",
+      projectName: [...projects, ...away].find((w) => w.id === chat?.projectId)?.name ?? "",
+      chatTitle: chat?.title ?? "",
       detail,
     });
     showNotice(notice, (open) => onOpenChat.current(open));
@@ -1442,10 +1453,39 @@ export default function App() {
       const data = event.data;
       if (data?.type === "open-chat" && typeof data.conversationId === "string") {
         onOpenChat.current(data.conversationId);
+        // The worker writes the same tap down as well, for a page that is not
+        // running to find later. This one WAS running, so take the copy out of
+        // the way — otherwise coming back to the app in a few minutes' time
+        // opens the chat all over again.
+        void push.takeTapped();
       }
     };
     navigator.serviceWorker.addEventListener("message", onMessage);
     return () => navigator.serviceWorker.removeEventListener("message", onMessage);
+  }, []);
+
+  // ...and the same tap arriving the other way. A message only reaches a page
+  // that is running, which on a phone it usually is not — the app is suspended
+  // behind whatever you were doing, and iOS will not let the worker raise it.
+  // So the chat is also written down, and this picks it up: on the way in, and
+  // every time the app comes back to the front, which is where a tap that
+  // raised nothing at all finally lands.
+  useEffect(() => {
+    const pickUp = () => {
+      if (document.hidden) return;
+      void push.takeTapped().then((id) => {
+        if (id) onOpenChat.current(id);
+      });
+    };
+    pickUp();
+    window.addEventListener("focus", pickUp);
+    window.addEventListener("pageshow", pickUp);
+    document.addEventListener("visibilitychange", pickUp);
+    return () => {
+      window.removeEventListener("focus", pickUp);
+      window.removeEventListener("pageshow", pickUp);
+      document.removeEventListener("visibilitychange", pickUp);
+    };
   }, []);
 
   // Keep the worker told which chat is on screen, so it can stay quiet about
@@ -2687,6 +2727,18 @@ export default function App() {
         />
 
         <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
+
+        {/* The whole display, given to the app. Beside Settings because it is
+            about the WINDOW rather than about this chat — everything to the
+            left of it counts something in the conversation.
+
+            Wide only, on top of the button's own check that the browser can do
+            it at all. That check already keeps it off an iPhone, where there is
+            no fullscreen outside a video, but Android Chrome would happily draw
+            it — and the phone bar carries four things by decision, not by
+            accident. It is also the screen that gains least: there is no tab
+            strip on a phone to take away. */}
+        {wide && <FullscreenButton />}
 
         <button
           className="icon-btn"

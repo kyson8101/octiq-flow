@@ -114,11 +114,51 @@ fn conversation_of(chat_key: &str) -> Option<&str> {
     chat_key.strip_prefix("chat:")
 }
 
+/// The name of the project a chat belongs to, or nothing when it has none.
+///
+/// Read off disk on each banner rather than held: banners are rare, the store
+/// is small, and a cached name would go stale the moment a project is renamed.
+fn project_name(project_id: &str) -> Option<String> {
+    if project_id.is_empty() {
+        return None;
+    }
+    let state = crate::workspaces::WorkspaceState::load();
+    crate::workspaces::list_workspaces_impl(&state)
+        .ok()?
+        .into_iter()
+        .find(|w| w.id == project_id)
+        .map(|w| w.name.trim().to_string())
+        .filter(|n| !n.is_empty())
+}
+
+/// The bold line: the PROJECT first, then the chat.
+///
+/// Which piece of work this is about is what you need first, and a chat title
+/// alone does not say it — several projects are open at once and their chats
+/// are named after the task, not the codebase, so "Fix the top bar" could be
+/// any of them. The project is the coarser answer, so it goes in front where a
+/// clipped title still shows it.
+///
+/// Either half may be missing: a chat is untitled until its first turn, and a
+/// chat whose project has been deleted has no name to give. Whatever is left
+/// stands alone, and "OctiqFlow" is what is left when nothing is.
+fn banner_title(project: &str, chat: &str) -> String {
+    let parts: Vec<&str> = [project.trim(), chat.trim()]
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        "OctiqFlow".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 /// The banner for one moment in one chat.
 ///
 /// Worded exactly as `noticeFor` in `web/src/lib/notify.ts` words it, because
 /// the same moment can arrive by either route and the two must not disagree
-/// about what they say. Titled after the CHAT rather than the kind: on a phone
+/// about what they say. Titled after the WORK rather than the kind: on a phone
 /// the title is the bold line, and which piece of work this is about is what
 /// you need first.
 pub fn notice_for(chat_key: Option<&str>, kind: &str, detail: &str) -> Option<Notice> {
@@ -144,15 +184,15 @@ pub fn notice_for(chat_key: Option<&str>, kind: &str, detail: &str) -> Option<No
         _ if detail.is_empty() => "Finished.".to_string(),
         _ => detail,
     };
-    // One lookup for both: the title the banner is named after, and the project
-    // the tap has to land in.
+    // One lookup for all three: the chat's own half of the title, the project
+    // that names the other half, and the project the tap has to land in.
     let meta = crate::chat_index::list().into_iter().find(|c| c.id == id);
-    let title = meta
+    let chat_title = meta.as_ref().map(|c| c.title.as_str()).unwrap_or_default();
+    let project_id = meta
         .as_ref()
-        .map(|c| c.title.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "OctiqFlow".to_string());
-    let project_id = meta.map(|c| c.project_id).unwrap_or_default();
+        .map(|c| c.project_id.clone())
+        .unwrap_or_default();
+    let title = banner_title(&project_name(&project_id).unwrap_or_default(), chat_title);
 
     Some(Notice {
         kind: kind.to_string(),
@@ -406,8 +446,13 @@ mod tests {
 
         let id = newest["id"].as_str().unwrap_or_default().to_string();
         let project_id = newest["projectId"].as_str().unwrap_or_default().to_string();
-        let title = newest["title"].as_str().unwrap_or("OctiqFlow").to_string();
         assert!(!project_id.is_empty(), "no project to open the chat in");
+        // Titled the way a real banner is titled, project first — the point of
+        // this send is to see on the phone what a real one will look like.
+        let title = banner_title(
+            &project_name(&project_id).unwrap_or_default(),
+            newest["title"].as_str().unwrap_or_default(),
+        );
         println!("  about: {title} ({id})");
 
         let notice = Notice {
@@ -479,6 +524,23 @@ mod tests {
         assert_eq!(blank("done"), "Finished.");
         assert_eq!(blank("permission"), "Needs permission: a tool call");
         assert_eq!(blank("question"), "Asked: a question");
+    }
+
+    #[test]
+    fn the_project_comes_first_in_the_title() {
+        // The bold line has to say WHICH piece of work before it says what
+        // happened to it, and a chat title alone does not — chats are named
+        // after the task, so "Fix the top bar" could be any project open.
+        assert_eq!(
+            banner_title("OctiqFlow", "Fix the top bar"),
+            "OctiqFlow · Fix the top bar"
+        );
+        // Either half can be missing: a chat is untitled until its first turn,
+        // and a deleted project leaves no name behind. Whatever is left stands
+        // alone rather than trailing a separator with nothing after it.
+        assert_eq!(banner_title("OctiqFlow", ""), "OctiqFlow");
+        assert_eq!(banner_title("", "Fix the top bar"), "Fix the top bar");
+        assert_eq!(banner_title("  ", "  "), "OctiqFlow");
     }
 
     #[test]

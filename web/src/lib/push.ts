@@ -164,6 +164,59 @@ export async function isOn(): Promise<boolean> {
   }
 }
 
+/** The worker's mailbox for a tapped banner. Named the same at both ends; see
+ *  the comment over `rememberTap` in `public/sw.js` for why it exists. */
+const TAPS = "octiq-tap";
+
+/** How long a tap is still worth acting on.
+ *
+ *  It is read on the way in and every time the app comes back to the front, so
+ *  it needs a limit: a banner tapped at breakfast must not drag you out of
+ *  whatever you are doing at lunch. Long enough to cover a tap that failed to
+ *  raise anything and the person opening the app themselves a moment later,
+ *  which is the case this whole path is for. */
+export const TAP_GOOD_FOR = 5 * 60 * 1000;
+
+/** Whether a tap written down at `at` is still the thing you meant. */
+export function stillWanted(at: number, now: number = Date.now()): boolean {
+  return Number.isFinite(at) && now - at < TAP_GOOD_FOR;
+}
+
+/** The chat a tapped banner asked for, if one is waiting.
+ *
+ *  Taken, not read: the record is deleted as it is handed over, so one tap
+ *  opens one chat once however many times the app is resumed afterwards. A tap
+ *  older than `TAP_GOOD_FOR` is dropped the same way — cleared, and not acted
+ *  on.
+ *
+ *  Found by walking the cache rather than by matching a URL: the two halves
+ *  resolve a relative name against their own base, and the mailbox holds
+ *  exactly one letter by construction. */
+export async function takeTapped(now: number = Date.now()): Promise<string | null> {
+  if (typeof caches === "undefined") return null;
+  try {
+    const cache = await caches.open(TAPS);
+    const [key] = await cache.keys();
+    if (!key) return null;
+    let record: { conversationId?: string; at?: number } | null = null;
+    try {
+      // Read BEFORE the entry goes: a body is only guaranteed to be there while
+      // the thing it came out of still is.
+      const hit = await cache.match(key);
+      record = hit ? ((await hit.json()) as { conversationId?: string; at?: number }) : null;
+    } finally {
+      // ...and gone whatever it turned out to say. A letter that cannot be read
+      // is one this would otherwise trip over on every resume forever.
+      await cache.delete(key);
+    }
+    if (typeof record?.conversationId !== "string" || !record.conversationId) return null;
+    return stillWanted(record.at ?? 0, now) ? record.conversationId : null;
+  } catch {
+    /* no store, or a half-written record: the tap is simply lost */
+    return null;
+  }
+}
+
 /** Tell the worker which chat is on screen, so it can stay quiet about that one.
  *
  *  Cheap enough to send on every change, and it has to be: the worker is killed

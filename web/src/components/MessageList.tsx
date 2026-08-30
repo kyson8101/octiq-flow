@@ -329,10 +329,57 @@ function CompactRule({
   const line = `compacted-line ${running ? "is-running" : ""}`;
   return (
     <div className="compacted-bar">
-      <span className={line} aria-hidden="true" />
+      {/* The truck rides the FIRST rule, which is the one rule both layouts
+          keep: on a phone the row restacks and the second rule goes away
+          entirely (see the 700px block in styles.css). */}
+      <span className={line} aria-hidden="true">
+        {running && <HaulTruck />}
+      </span>
       {children}
       <span className={line} aria-hidden="true" />
     </div>
+  );
+}
+
+/** The goods, on their way.
+ *
+ *  A compaction is the longest wait in the app with nothing to report — the
+ *  agent is packing everything said so far into a smaller space, and none of
+ *  that work reaches the stream. The rule already says "still going"; this says
+ *  what is going ON, in the one picture the job actually is: a load being
+ *  carted off, crate by crate.
+ *
+ *  It is decoration and nothing else — no progress is claimed by where the
+ *  truck happens to be, because none is reported. Hidden from the reader that
+ *  cannot see it (the row's own `role="status"` carries the words), and parked
+ *  rather than driven when the machine asks for less movement. */
+function HaulTruck() {
+  return (
+    <span className="compacting-truck" aria-hidden="true">
+      <svg className="compacting-truck-art" viewBox="0 0 32 16" width="28" height="14">
+        {/* The crates stand TALLER than the cab, and are drawn first: at 28px
+            a truck and its load compete for the same few pixels, and the load
+            is the half that means something here. They ride a little loose over
+            the bumps — the only part of this that moves on its own, because a
+            bouncing crate is what makes the rest read as a road rather than a
+            drawing. */}
+        <g className="compacting-truck-load" fill="currentColor">
+          <rect x="1.8" y="4.6" width="7.2" height="5.8" rx="0.7" opacity="0.62" />
+          <rect x="9.6" y="6.6" width="6" height="3.8" rx="0.6" opacity="0.85" />
+        </g>
+        {/* The flatbed under them, then the cab: back, roof, windscreen, bonnet. */}
+        <rect x="0.8" y="10.4" width="15.8" height="1.5" rx="0.5" fill="currentColor" />
+        <path d="M16.2 11.9V6.2h5l4.4 4v1.7z" fill="currentColor" />
+        {/* Glass and hubs are a theme colour rather than a hole: the row sits on
+            whatever the transcript's background is, and a hole punched with
+            `transparent` would show the moving rule through the cab. */}
+        <path d="M20.2 7.4h.9l2.9 2.6h-3.8z" fill="var(--bg-1)" />
+        <circle cx="6.4" cy="13.2" r="1.8" fill="currentColor" />
+        <circle cx="21.4" cy="13.2" r="1.8" fill="currentColor" />
+        <circle cx="6.4" cy="13.2" r="0.65" fill="var(--bg-1)" />
+        <circle cx="21.4" cy="13.2" r="0.65" fill="var(--bg-1)" />
+      </svg>
+    </span>
   );
 }
 

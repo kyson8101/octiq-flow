@@ -221,9 +221,10 @@ const PIN_TOOL = {
     "list they get — nothing else puts a file in front of them. Pin the file " +
     "that answers their question, the one holding the bug, the one they will " +
     "have to edit themselves. Do NOT pin everything you opened: a list of " +
-    "twenty is a list nobody reads. Files you WRITE or EDIT are listed on their " +
-    "own, so this tool is for the ones you only read. Send the WHOLE list every " +
-    "time; it replaces the one on screen, and omitting a file unpins it. " +
+    "twenty is a list nobody reads. A pin is the ONLY way a file reaches that " +
+    "column — nothing is added for you, so the files you WROTE or EDITED that " +
+    "are worth opening have to be pinned like any other. Send the WHOLE list " +
+    "every time; it replaces the one on screen, and omitting a file unpins it. " +
     "Returns immediately: it asks nothing of the user and never blocks a turn.",
   inputSchema: {
     type: "object",
@@ -239,6 +240,15 @@ const PIN_TOOL = {
               description:
                 "Where the file is. Absolute, or relative to the project root. " +
                 "A path that does not exist on disk is dropped.",
+            },
+            label: {
+              type: "string",
+              description:
+                "A word or two tagging the file, shown on the row: \"the bug\", " +
+                "\"entry point\", \"spec\", \"changed\". Your own words — there " +
+                "is no fixed set — but keep them short and reuse them across " +
+                "one list, so the column can be read down. Anything past 24 " +
+                "characters is cut; the sentence goes in `why`.",
             },
             why: {
               type: "string",

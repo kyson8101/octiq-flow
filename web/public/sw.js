@@ -93,6 +93,40 @@ self.addEventListener("push", (event) => {
   );
 });
 
+/** Where a tap is written down for the app to find on its way in.
+ *
+ *  `postMessage` only reaches a page that is RUNNING, and on a phone it usually
+ *  is not: a home-screen app is suspended within seconds of going behind
+ *  something, and killed outright soon after. So the chat that was asked for
+ *  goes somewhere that outlives both the worker and the page, and whatever
+ *  finally brings the app up reads it there — `openWindow`, the OS, or the
+ *  person giving up on the banner and tapping the icon themselves.
+ *
+ *  Cache Storage because it is the one store both halves can reach from here.
+ *  This is a mailbox, not the cache the top of the file swears off: one entry,
+ *  written by the worker, taken by the page, and nothing ever fetches it. */
+const TAPS = "octiq-tap";
+const TAPPED = "./__octiq_tapped__";
+
+async function rememberTap(conversationId, projectId) {
+  if (!conversationId || !self.caches) return;
+  try {
+    const cache = await self.caches.open(TAPS);
+    await cache.put(
+      new Request(TAPPED),
+      new Response(
+        JSON.stringify({
+          conversationId,
+          projectId: projectId ?? null,
+          at: Date.now(),
+        }),
+      ),
+    );
+  } catch {
+    /* no store to write to; the message and the URL are the other two ways in */
+  }
+}
+
 // Tapping the banner. Bring back the window that is already open rather than
 // adding a second one — on a phone a duplicate tab is how you end up with two
 // copies of a chat and no idea which is live.
@@ -101,42 +135,55 @@ self.addEventListener("notificationclick", (event) => {
   const data = event.notification.data || {};
   const id = data.conversationId;
   const project = data.projectId;
+  // The address, for the case where the app has to be started. It reads
+  // `#/p/<project>/c/<chat>`, which is why the notice carries the project as
+  // well as the chat; without both halves it launches and lands wherever it
+  // left off, which is the one thing a tapped banner must not do. The token is
+  // already in the page's own storage, so our own scope is enough to get back
+  // in.
+  const to =
+    id && project
+      ? `./#/p/${encodeURIComponent(project)}/c/${encodeURIComponent(id)}`
+      : "./";
 
   event.waitUntil(
     (async () => {
+      // Written down BEFORE anything is raised, because raising it is the part
+      // that fails.
+      await rememberTap(id, project);
+
       const windows = await self.clients.matchAll({
         type: "window",
         includeUncontrolled: true,
       });
-      if (windows.length > 0) {
-        const client = windows[0];
-        // Focus first, so the page acts on a window already in front — but
-        // `focus()` is allowed to REFUSE, and a phone that has just woken is
-        // where it does. Refused, the window is still ours and the chat is
-        // still the thing that was asked for, so the message goes either way:
-        // one that lands on a window the OS brought forward by itself is worth
-        // more than a tap that threw before it said anything.
-        try {
-          await client.focus();
-        } catch {
-          /* not allowed to raise it; the message below still opens the chat */
-        }
+      for (const client of windows) {
         // A page that is already running owns the conversation list and the
-        // routing, so it only needs the chat id.
+        // routing, so it only needs the chat id. Sent whether or not the window
+        // can be brought forward: one that lands on a window the OS raised by
+        // itself is worth more than a tap that said nothing at all.
         if (id) client.postMessage({ type: "open-chat", conversationId: id });
-        return;
+        let raised = null;
+        try {
+          raised = await client.focus();
+        } catch {
+          /* refused — `openWindow` below is the other way to raise it */
+        }
+        if (raised && raised.focused) return;
       }
-      // Nothing open, so there is no page to ask — the whole address has to be
-      // built here. The app reads `#/p/<project>/c/<chat>`, which is why the
-      // notice carries the project as well as the chat; without both halves it
-      // launches and lands wherever it left off, which is the one thing a
-      // tapped banner must not do. The token is already in the page's own
-      // storage, so our own scope is enough to get back in.
-      const to =
-        id && project
-          ? `./#/p/${encodeURIComponent(project)}/c/${encodeURIComponent(id)}`
-          : "./";
-      if (self.clients.openWindow) await self.clients.openWindow(to);
+      // Either nothing was open, or nothing could be RAISED — and on iOS the
+      // second is the usual answer, which is what two earlier attempts at this
+      // missed. `matchAll` lists a home-screen app that is merely suspended,
+      // `focus()` cannot bring one of those back, and stopping at the refusal
+      // left the tap doing nothing whatsoever. `openWindow` is the call that
+      // launches it, so a window we could not raise has to fall through to
+      // here rather than count as handled.
+      if (self.clients.openWindow) {
+        try {
+          await self.clients.openWindow(to);
+        } catch {
+          /* not allowed to open one either; the note above is what is left */
+        }
+      }
     })(),
   );
 });

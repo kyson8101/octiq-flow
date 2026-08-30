@@ -9,54 +9,48 @@
 // the agent.
 //
 // So the agent says. `pin_file` (scripts/mcp) takes a path, one line of why,
-// and optionally the line to land on. Like `todo_write`, it calls nothing —
-// the tool call itself travels down the chat stream, and this file reads the
-// newest one back out of it. Nothing to fetch, nothing to store, and it
-// survives a reload for free because the transcript does.
+// and optionally a label to tag it with and the line to land on. Like
+// `todo_write`, it calls nothing — the tool call itself travels down the chat
+// stream, and this file reads the newest one back out of it. Nothing to fetch,
+// nothing to store, and it survives a reload for free because the transcript
+// does.
 //
-// There are TWO kinds of row, and the difference is who decided:
-//
-//   * **pinned** — the agent called `pin_file`. Carries a reason, sorts first,
-//     and keeps the agent's own order, because it ranked them.
-//   * **changed** — the agent ran `Write` or `Edit` on it. Nobody had to ask:
-//     altering a file IS a claim that it matters. This is what stops the column
-//     being empty in the ordinary case where the agent never pinned anything,
-//     and it is the half a scraper got right.
-//
-// A file the agent only READ appears nowhere unless it was pinned. That is the
-// whole point of the change: reading is how an agent looks around, and looking
-// around is not news.
+// A pin is the ONLY way a file reaches the column. There was briefly a second
+// kind of row — the files a `Write` or an `Edit` had touched, added unasked on
+// the grounds that changing a file is already a claim that it matters. It was
+// a hedge against an agent that never pins, and it brought the log back in
+// miniature: a refactor across nine files filled the column with nine names
+// and no reasons, which is what the scraper was deleted for. Editing a file is
+// now worth exactly what reading one is — nothing, until the agent says so.
+// The tool's own description asks it to pin what it changed.
 import type { Message } from "./chat";
 
 /** Both spellings of our tool: through MCP, and bare. */
 const PIN_TOOLS = new Set(["mcp__octiq__pin_file", "pin_file"]);
 
-/** Tools that CHANGE a file on disk, as opposed to looking at one. Lowercased
- *  at the point of comparison, so a provider that spells them differently in
- *  case still matches. */
-const WRITE_TOOLS = new Set(["write", "edit", "multiedit", "notebookedit", "apply_patch"]);
-
-/** Tool argument fields that hold the path a write went to. */
-const PATH_KEYS = ["file_path", "filePath", "path", "notebook_path", "target_file"];
-
 /** How many rows the column holds. Past two dozen it has stopped being "what
- *  to read" and gone back to being the log this file replaced. Explicit pins
- *  are counted first, so a well-pinned chat never loses one to a flood of
- *  edits. */
+ *  to read" and gone back to being the log this file replaced. A backstop
+ *  only — the tool's description already asks for a short list. */
 const MAX_PINS = 25;
 
-export type PinKind = "pinned" | "changed";
+/** How long a label may be before it has stopped being one. A tag is a word or
+ *  two; the sentence goes in `why`, which has a whole line to itself. Cut here
+ *  rather than in CSS so that what the row shows is what this file says it
+ *  shows. */
+const MAX_LABEL = 24;
 
 export type Pin = {
   /** As the agent gave it: absolute, or relative to the project root. Resolved
    *  against the filesystem by the panel, which drops what does not exist. */
   path: string;
-  /** One line on why it is worth opening. Only ever set on a `pinned` row —
-   *  nobody wrote a reason for a file that was merely edited. */
+  /** A word or two putting the file in a bucket — "the bug", "entry point",
+   *  "spec". Free text, because a fixed vocabulary would be ours and the
+   *  buckets worth having are the ones this particular piece of work has. */
+  label?: string;
+  /** One line on why it is worth opening. */
   why?: string;
   /** The line to land on, when one place in the file is the point. */
   line?: number;
-  kind: PinKind;
 };
 
 export function pinPaths(pins: Pin[]): string[] {
@@ -64,24 +58,11 @@ export function pinPaths(pins: Pin[]): string[] {
 }
 
 /**
- * The column, as it should look right now.
- *
- * Explicit pins first, in the agent's own order; then the files it changed,
- * newest first. A path in both appears once, as the pin — both facts are true
- * and the reason is the half worth keeping.
+ * The column, as it should look right now: the newest list the agent sent, in
+ * the order it sent it, because it ranked them.
  */
 export function latestPins(messages: Message[]): Pin[] {
-  const pinned = newestPinCall(messages);
-  const seen = new Set(pinned.map((p) => p.path));
-  const out = [...pinned];
-
-  for (const path of changedPaths(messages)) {
-    if (out.length >= MAX_PINS) break;
-    if (seen.has(path)) continue;
-    seen.add(path);
-    out.push({ path, kind: "changed" });
-  }
-  return out.slice(0, MAX_PINS);
+  return newestPinCall(messages).slice(0, MAX_PINS);
 }
 
 /** The newest `pin_file` call in the conversation, read as a list.
@@ -117,10 +98,11 @@ function readPins(args: unknown): Pin[] | null {
   const seen = new Set<string>();
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
-    const row = item as { path?: unknown; why?: unknown; line?: unknown };
+    const row = item as { path?: unknown; label?: unknown; why?: unknown; line?: unknown };
     const path = typeof row.path === "string" ? row.path.trim() : "";
     if (!path || seen.has(path)) continue;
     seen.add(path);
+    const label = readLabel(row.label);
     const why = typeof row.why === "string" ? row.why.trim() : "";
     // A line number is only kept when it is one — a string, a float or a
     // negative would open the file somewhere surprising, and no anchor at all
@@ -128,48 +110,26 @@ function readPins(args: unknown): Pin[] | null {
     const line = typeof row.line === "number" && Number.isInteger(row.line) && row.line > 0
       ? row.line
       : undefined;
-    out.push({ path, kind: "pinned", ...(why ? { why } : {}), ...(line ? { line } : {}) });
+    out.push({
+      path,
+      ...(label ? { label } : {}),
+      ...(why ? { why } : {}),
+      ...(line ? { line } : {}),
+    });
   }
   return out;
 }
 
-/** Every file the conversation WROTE to, newest first.
+/** The tag on a row, or nothing.
  *
- *  Subagents count here, unlike pins. A pin is an opinion about what to read,
- *  and a subagent's opinion is about its own errand; an edit is not an opinion
- *  at all. A subagent that rewrote a file rewrote YOUR file, and leaving it out
- *  of the column would be a lie about what happened. */
-function changedPaths(messages: Message[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    for (let j = messages[i].blocks.length - 1; j >= 0; j -= 1) {
-      const block = messages[i].blocks[j];
-      if (block.kind !== "tool") continue;
-      if (!WRITE_TOOLS.has(bareName(block.name))) continue;
-      const path = writtenPath(block.args);
-      if (!path || seen.has(path)) continue;
-      seen.add(path);
-      out.push(path);
-      if (out.length >= MAX_PINS) return out;
-    }
-  }
-  return out;
+ *  A label that runs long is cut rather than dropped: an agent that wrote a
+ *  sentence here still meant something by it, and the first few words of that
+ *  sentence are a usable tag. Newlines are flattened — the chip is one line,
+ *  and a label that wrapped would push the reason under it out of line with
+ *  every other row. */
+function readLabel(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const flat = raw.replace(/\s+/g, " ").trim();
+  return flat.length > MAX_LABEL ? `${flat.slice(0, MAX_LABEL).trimEnd()}…` : flat;
 }
 
-/** A tool's name without whatever namespace it arrived under: an MCP server
- *  offering its own `Edit` reaches us as `mcp__thing__Edit`. */
-function bareName(name: string): string {
-  const cut = name.lastIndexOf("__");
-  return (cut >= 0 ? name.slice(cut + 2) : name).toLowerCase();
-}
-
-function writtenPath(args: unknown): string {
-  if (!args || typeof args !== "object") return "";
-  const row = args as Record<string, unknown>;
-  for (const key of PATH_KEYS) {
-    const value = row[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return "";
-}

@@ -9,11 +9,10 @@
 // of forty names is a column nobody reads.
 //
 // So it is no longer a guess. The agent SAYS which files matter — `pin_file`,
-// one line of reason each — and this draws what it said. See lib/pins for how
-// the list is read back out of the transcript, and for the second kind of row:
-// the files the agent WROTE to, which pin themselves, because changing a file
-// is already a claim that it matters. A file that was only read appears
-// nowhere. That is the point.
+// one line of reason each and a label to tag it with — and this draws what it
+// said. See lib/pins for how the list is read back out of the transcript. A
+// pin is the only way in: a file the agent merely read, and a file it merely
+// changed, appear nowhere. That is the point.
 //
 // What survives from the scraper era is everything around the list. Paths are
 // still resolved through the backend, so a pin to a file that does not exist is
@@ -62,7 +61,7 @@ const ALL_TYPES = "*";
 // ---------------------------------------------------------------------------
 
 /** The files this conversation says are worth opening, in the order they should
- *  be read: what the agent pinned, then what it changed.
+ *  be read: the agent's newest pin list, as it ranked it.
  *
  *  The ORDER is the agent's and is left alone. The old list sorted A→Z because
  *  a scraped list has no meaningful order to preserve; a pinned one does — the
@@ -127,7 +126,10 @@ export function useSessionPins(
       // what is already on screen is the thing this guards against.
       setPins((prev) =>
         prev.length === out.length &&
-        prev.every((p, i) => p.path === out[i].path && p.why === out[i].why)
+        prev.every(
+          (p, i) =>
+            p.path === out[i].path && p.why === out[i].why && p.label === out[i].label,
+        )
           ? prev
           : out,
       );
@@ -263,10 +265,10 @@ export function SessionFilesPanel({
    *  a dropdown you cannot aim at. */
   const types = useMemo(() => fileTypes(paths), [paths]);
 
-  // Matched on the whole path AND on the reason, so "retry" finds the file
-  // pinned as "the retry loop" even though no part of its name says so. That is
-  // new, and it is the reason a pinned column is worth searching at all: the
-  // words you remember are the agent's, not the filename's.
+  // Matched on the whole path AND on the label and the reason, so "retry" finds
+  // the file pinned as "the retry loop" even though no part of its name says so.
+  // That is new, and it is the reason a pinned column is worth searching at all:
+  // the words you remember are the agent's, not the filename's.
   const needle = filter.trim().toLowerCase();
   const shown = useMemo(() => {
     let out = pins;
@@ -275,6 +277,7 @@ export function SessionFilesPanel({
       out = out.filter(
         (p) =>
           p.path.toLowerCase().includes(needle) ||
+          (p.label ?? "").toLowerCase().includes(needle) ||
           (p.why ?? "").toLowerCase().includes(needle),
       );
     }
@@ -363,8 +366,7 @@ export function SessionFilesPanel({
         <div className="gitp-body sfp-body">
           {pins.length === 0 && (
             <div className="gitp-note">
-              Nothing yet. Files show up here when the agent pins one worth reading, or
-              changes one.
+              Nothing yet. Files show up here when the agent pins one worth reading.
             </div>
           )}
           {pins.length > 0 && shown.length === 0 && (
@@ -382,7 +384,7 @@ export function SessionFilesPanel({
             {shown.map((pin) => (
               <li key={pin.path}>
                 <button
-                  className={`file sfp-pin is-${pin.kind} ${isImage(pin.path) ? "is-image" : ""}`}
+                  className={`file sfp-pin ${isImage(pin.path) ? "is-image" : ""}`}
                   type="button"
                   title={pin.path}
                   onClick={() => openFile(pin.path)}
@@ -401,26 +403,28 @@ export function SessionFilesPanel({
                   <span className="file-time" title={modifiedTitle(modified.get(pin.path))}>
                     {formatModified(modified.get(pin.path))}
                   </span>
-                  {/* The reason, and the whole point of the column. Only a
-                      pinned row has one — nobody wrote a sentence about a file
-                      that was merely edited, and inventing one ("changed this
-                      file") would be filler in the place a reason goes.
+                  {/* The label and the reason — the whole point of the column,
+                      and the half no scraper could ever have produced. The
+                      label leads because it is the shorter answer: a row you
+                      can place without reading the sentence after it. Both are
+                      optional, and a row with neither is still a file the agent
+                      chose to put in front of you.
 
                       A line number rides along when the agent gave one. It is
                       a signpost, not a jump: clicking opens the file, because
                       the editor restores where you last were in it and landing
                       somewhere else would fight that. */}
-                  {pin.why && (
+                  {(pin.label || pin.why || pin.line) && (
                     <span className="sfp-why">
+                      {pin.label && <span className="sfp-label">{pin.label}</span>}
                       {pin.why}
-                      {pin.line ? <span className="sfp-line"> line {pin.line}</span> : null}
+                      {pin.line ? (
+                        <span className="sfp-line">
+                          {pin.why ? " " : ""}line {pin.line}
+                        </span>
+                      ) : null}
                     </span>
                   )}
-                  {!pin.why && pin.line ? (
-                    <span className="sfp-why">
-                      <span className="sfp-line">line {pin.line}</span>
-                    </span>
-                  ) : null}
                 </button>
               </li>
             ))}

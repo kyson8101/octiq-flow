@@ -193,6 +193,61 @@ body {
   color: var(--fg-0);
 }
 
+/* ---- Full screen ------------------------------------------------------ */
+/* The switch that gives the app the whole display. It wears the same held-down
+   look the rail and files buttons wear, because it is the same kind of thing:
+   a mode you are in, not an action you fire.
+
+   The border is what carries that, not the fill: `.icon-btn:hover` is already
+   `--bg-2`, so a tint on its own would make hovering the button look exactly
+   like having pressed it. `box-sizing` is border-box everywhere, so the outline
+   eats inward and the button stays 36px beside its neighbours. */
+.fs-toggle {
+  border: 1px solid transparent;
+}
+
+.fs-toggle.is-on {
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Both arrow sets live in the SVG at once and one is faded out, so going in and
+   coming out is a cross-fade rather than a swap that pops. The scale is 0.82
+   and not 0 — arrows that grow from nothing read as an arrival, and nothing is
+   arriving here; the same four corners are turning round. */
+.fs-arrows {
+  /* Both groups scale about the middle of the icon, not about their own
+     bounding boxes — `fill-box` would give the two sets slightly different
+     centres and the cross-fade would drift sideways as it ran. */
+  transform-box: view-box;
+  transform-origin: center;
+  transition:
+    opacity 160ms ease-out,
+    transform 160ms ease-out;
+}
+
+/* Written as two mutually exclusive halves rather than a base rule and an
+   override: with `:not()` on both sides exactly one of them ever matches, so
+   which arrows show does not rest on which selector is more specific. */
+.fs-toggle:not(.is-on) .fs-arrows-out,
+.fs-toggle.is-on .fs-arrows-in {
+  opacity: 0;
+  transform: scale(0.82);
+}
+
+.fs-toggle:not(.is-on) .fs-arrows-in,
+.fs-toggle.is-on .fs-arrows-out {
+  opacity: 1;
+  transform: scale(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fs-arrows {
+    transition: none;
+  }
+}
+
 /* A phone's top bar has to carry six things: the drawer, the project, a new
    chat, the view switch, git, and plan usage. At 390px they wanted about 450px
    between them, so the project name was squeezed to "octi…" and the branch to
@@ -4924,9 +4979,27 @@ body.is-ultra .eff {
 
 /* `.file-icon` centres itself, which is right on a one-line row and wrong on a
    wrapped one — it would drift to the middle of both lines. Baseline puts it
-   back beside the name. */
+   back beside the name.
+
+   Every row here was CHOSEN — a pin is the only way into this column — and the
+   accent is what says so against the quiet grey `.file-icon` gives file rows
+   everywhere else in the app. Deliberately not a bar down the left edge. */
 .sfp-pin .file-icon {
   align-self: baseline;
+  color: var(--accent);
+}
+
+/* The agent's tag for the row — a word or two, cut to 24 characters in
+   lib/pins. A quiet fill rather than a colour: the labels are the agent's own
+   words with no fixed vocabulary behind them, so there is nothing for a palette
+   to mean, and a column of five different colours would imply there was. */
+.sfp-label {
+  display: inline-block;
+  margin-right: 5px;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-1);
 }
 
 /* What the agent said the file is FOR. Full width, so it sits under the row
@@ -4947,13 +5020,6 @@ body.is-ultra .eff {
 .sfp-line {
   font-family: var(--mono);
   color: var(--fg-3);
-}
-
-/* Pinned vs merely changed. The agent CHOSE the pinned ones, so their icon
-   takes the accent and the changed ones stay in the quiet grey `.file-icon`
-   already gives them. Deliberately not a bar down the left edge. */
-.sfp-pin.is-pinned .file-icon {
-  color: var(--accent);
 }
 
 /* ---- Image viewer ------------------------------------------------------ */
@@ -7353,6 +7419,8 @@ body.is-ultra .eff {
    While it runs the rules travel — the agent reports no progress, only a start
    and an end, so there is no percentage to draw and none is faked. */
 .compacted-line.is-running {
+  /* The road the truck drives on. Positioned so it can carry one. */
+  position: relative;
   background: linear-gradient(
     90deg,
     var(--border) 0%,
@@ -7372,6 +7440,82 @@ body.is-ultra .eff {
   }
 }
 
+/* ---- The load, being carted off ---------------------------------------
+   A truck runs the length of the rule while the agent packs the conversation
+   down. It reports nothing — there is no progress to report — it just says the
+   job is the kind of job that MOVES things, which a bar sweeping left cannot.
+
+   Two elements, and that is the trick: the track is the width of the rule and
+   does the travelling, the truck hangs off its left edge and does the bobbing.
+   A percentage translate is a percentage of the element's OWN width, so a truck
+   asked to cross its parent this way would only ever cross itself; the track,
+   being exactly as wide as the road, turns `100%` into the distance wanted —
+   at which point the truck's nose is at the far end, whatever that end is. */
+.compacting-truck {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 0;
+  animation: compacting-haul 3.6s linear infinite;
+}
+
+.compacting-truck-art {
+  position: absolute;
+  /* Off the left end of the road, waiting to be driven onto it. */
+  right: 100%;
+  /* A pixel low, so the wheels sit ON the rule rather than hovering over it:
+     the drawing keeps a unit of clearance under them for the bob. */
+  bottom: -1px;
+  color: var(--accent);
+  animation: compacting-bob 0.42s ease-in-out infinite alternate;
+}
+
+.compacting-truck-load {
+  animation: compacting-load 0.42s ease-in-out infinite alternate;
+}
+
+/* It fades out at the END OF THE RULE rather than carrying on into the words:
+   the label is in-flow and the truck is positioned, so anything past that point
+   would be drawn straight over the sentence. Arriving and fading also beats a
+   truck that vanishes mid-stride — it reads as delivered. */
+@keyframes compacting-haul {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  7% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
+@keyframes compacting-bob {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-0.5px);
+  }
+}
+
+/* User units, not pixels — inside a viewBox this is about half a device pixel
+   at the size the truck is drawn, which is all a loose crate should be. */
+@keyframes compacting-load {
+  from {
+    transform: translateY(0.5px);
+  }
+  to {
+    transform: translateY(-0.5px);
+  }
+}
+
 .compacted.is-running .compacted-label {
   color: var(--fg-2);
 }
@@ -7382,6 +7526,19 @@ body.is-ultra .eff {
   .compacted-line.is-running {
     background: var(--accent);
     opacity: 0.5;
+    animation: none;
+  }
+
+  /* The truck stays, parked halfway along: it is what says which wait this is,
+     and a still one still says it. */
+  .compacting-truck {
+    transform: translateX(50%);
+    opacity: 1;
+    animation: none;
+  }
+
+  .compacting-truck-art,
+  .compacting-truck-load {
     animation: none;
   }
 }

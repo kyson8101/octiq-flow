@@ -18,8 +18,8 @@ function pin(files: unknown, name = "mcp__octiq__pin_file"): Block {
   };
 }
 
-/** A write/edit call, which pins its own file without being asked. */
-function wrote(path: string, name = "Edit"): Block {
+/** A call that touched a file without pinning it — an edit, a read, a write. */
+function touched(path: string, name = "Edit"): Block {
   return {
     kind: "tool",
     id: uid(),
@@ -43,12 +43,12 @@ describe("latestPins", () => {
     expect(latestPins([turn([{ kind: "text", text: "hello" }])])).toEqual([]);
   });
 
-  it("keeps the reason and the line the agent gave", () => {
+  it("keeps the label, the reason and the line the agent gave", () => {
     const messages = [
-      turn([pin([{ path: "src/a.ts", why: "the retry loop", line: 40 }])]),
+      turn([pin([{ path: "src/a.ts", label: "the bug", why: "the retry loop", line: 40 }])]),
     ];
     expect(latestPins(messages)).toEqual([
-      { path: "src/a.ts", why: "the retry loop", line: 40, kind: "pinned" },
+      { path: "src/a.ts", label: "the bug", why: "the retry loop", line: 40 },
     ]);
   });
 
@@ -104,66 +104,73 @@ describe("latestPins", () => {
         ]),
       ]),
     ];
-    expect(latestPins(messages)).toEqual([
-      { path: "real.ts", kind: "pinned" },
-      { path: "zero.ts", kind: "pinned" },
-    ]);
+    expect(latestPins(messages)).toEqual([{ path: "real.ts" }, { path: "zero.ts" }]);
   });
 
   it("de-dups a path pinned twice, keeping the first reason", () => {
     const messages = [
       turn([pin([{ path: "a.ts", why: "first" }, { path: "a.ts", why: "second" }])]),
     ];
-    expect(latestPins(messages)).toEqual([{ path: "a.ts", why: "first", kind: "pinned" }]);
+    expect(latestPins(messages)).toEqual([{ path: "a.ts", why: "first" }]);
+  });
+
+  it("holds the newest pins and no more", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ path: `/repo/f${i}.ts` }));
+    const out = latestPins([turn([pin(many)])]);
+    expect(out).toHaveLength(25);
+    // The agent's own order, cut from the end: it put the best first.
+    expect(out[0].path).toBe("/repo/f0.ts");
   });
 });
 
-describe("latestPins — files the agent changed", () => {
-  it("pins what Write and Edit touched, without being asked", () => {
-    // Changing a file IS the agent saying it matters. This is what keeps the
-    // column from being empty in the common case where nothing was pinned.
-    const messages = [turn([wrote("/repo/a.rs", "Write"), wrote("/repo/b.ts", "Edit")])];
-    expect(latestPins(messages)).toEqual([
-      { path: "/repo/b.ts", kind: "changed" },
-      { path: "/repo/a.rs", kind: "changed" },
-    ]);
+describe("latestPins — a pin is the only way in", () => {
+  it("does not pin a file the agent merely CHANGED", () => {
+    // The column is what to read, not what happened. An agent that wants an
+    // edited file in front of the person pins it like anything else.
+    const messages = [
+      turn([touched("/repo/a.rs", "Write"), touched("/repo/b.ts", "Edit")]),
+    ];
+    expect(latestPins(messages)).toEqual([]);
   });
 
   it("does not pin a file it merely READ", () => {
-    expect(latestPins([turn([wrote("/repo/a.rs", "Read")])])).toEqual([]);
+    expect(latestPins([turn([touched("/repo/a.rs", "Read")])])).toEqual([]);
   });
 
-  it("puts explicit pins above changed files", () => {
+  it("leaves a pinned file pinned even when it was also edited", () => {
     const messages = [
-      turn([wrote("/repo/changed.ts")]),
-      turn([pin([{ path: "/repo/read-this.ts", why: "the cause" }])]),
-    ];
-    expect(pinPaths(latestPins(messages))).toEqual(["/repo/read-this.ts", "/repo/changed.ts"]);
-  });
-
-  it("an explicit pin wins over the same file being changed", () => {
-    // Both are true; the reason is the half worth keeping.
-    const messages = [
-      turn([wrote("/repo/a.ts")]),
+      turn([touched("/repo/a.ts")]),
       turn([pin([{ path: "/repo/a.ts", why: "here is the bug" }])]),
     ];
+    expect(latestPins(messages)).toEqual([{ path: "/repo/a.ts", why: "here is the bug" }]);
+  });
+});
+
+describe("latestPins — labels", () => {
+  it("flattens a label and drops one that is only whitespace", () => {
+    const messages = [
+      turn([
+        pin([
+          { path: "a.ts", label: "  entry\n point  " },
+          { path: "b.ts", label: "   " },
+          { path: "c.ts", label: 7 },
+        ]),
+      ]),
+    ];
     expect(latestPins(messages)).toEqual([
-      { path: "/repo/a.ts", why: "here is the bug", kind: "pinned" },
+      { path: "a.ts", label: "entry point" },
+      { path: "b.ts" },
+      { path: "c.ts" },
     ]);
   });
 
-  it("counts a subagent's edits — they changed the same tree", () => {
-    // Unlike a pin, an edit is not an opinion about what to read. A subagent
-    // that rewrote a file changed YOUR file, and hiding that is a lie.
-    const messages = [turn([wrote("/repo/sub.ts")], "task-1")];
-    expect(pinPaths(latestPins(messages))).toEqual(["/repo/sub.ts"]);
-  });
-
-  it("holds the newest changed files and no more", () => {
-    const many = Array.from({ length: 40 }, (_, i) => wrote(`/repo/f${i}.ts`));
-    const out = latestPins([turn(many)]);
-    expect(out).toHaveLength(25);
-    // Newest first: the last file written is the one at the top.
-    expect(out[0].path).toBe("/repo/f39.ts");
+  it("cuts a label that is really a sentence", () => {
+    // 24 characters and an ellipsis. The whole thought belongs in `why`.
+    const long = "the file where the retry loop swallows the error";
+    const messages = [turn([pin([{ path: "a.ts", label: long }])])];
+    expect(latestPins(messages)).toEqual([
+      { path: "a.ts", label: "the file where the retry…" },
+    ]);
   });
 });
+

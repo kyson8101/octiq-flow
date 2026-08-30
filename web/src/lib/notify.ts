@@ -76,12 +76,28 @@ export function preview(text: string): string {
   return clean.length > MAX_BODY ? `${clean.slice(0, MAX_BODY)}…` : clean;
 }
 
-/** The banner's words. Titled after the CHAT rather than the kind: on a desktop
+/** The bold line: the PROJECT first, then the chat.
+ *
+ *  Which piece of work this is about is what you need first, and a chat title
+ *  alone does not say it — several projects are open at once and their chats
+ *  are named after the task, not the codebase, so "Fix the top bar" could be
+ *  any of them. The project is the coarser answer, so it goes in front where a
+ *  clipped title still shows it.
+ *
+ *  Either half may be missing: a chat is untitled until its first turn, and a
+ *  project the page does not know about yet has no name to give. Whatever is
+ *  left stands alone, and "OctiqFlow" is what is left when nothing is. */
+export function bannerTitle(projectName: string, chatTitle: string): string {
+  return [projectName.trim(), chatTitle.trim()].filter(Boolean).join(" · ") || "OctiqFlow";
+}
+
+/** The banner's words. Titled after the WORK rather than the kind: on a desktop
  *  the title is the bold line, and which piece of work this is about is the
  *  thing you need first — what happened to it fits in the line below. */
 export function noticeFor(input: {
   kind: NoticeKind;
   conversationId: string;
+  projectName: string;
   chatTitle: string;
   detail: string;
 }): Notice {
@@ -95,7 +111,7 @@ export function noticeFor(input: {
   return {
     kind: input.kind,
     conversationId: input.conversationId,
-    title: input.chatTitle.trim() || "OctiqFlow",
+    title: bannerTitle(input.projectName, input.chatTitle),
     body,
     tag: `octiq:${input.conversationId}:${input.kind}`,
   };
