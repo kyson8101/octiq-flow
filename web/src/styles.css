@@ -9743,15 +9743,20 @@ body.is-ultra .eff {
 /* Card 75 — the skill a typed command resolved to. Typing `/execute` reaches
    the agent as `/pandahrms:execute`, and the rewritten form used to be drawn as
    a second line inside the user's own bubble — something they never said. It is
-   a badge now, quiet and clearly apart from their words. */
+   a badge now, quiet and clearly apart from their words.
+
+   Same chip the tool cards use for a name that is not the row's main claim —
+   `.tool-scope`, `.tool-finish` — rather than a one-off pill: this badge is
+   naming a skill too, so it wears the skill system's own quiet metadata mark
+   instead of inventing a second one. */
 .msg-ran {
   align-self: flex-end;
-  padding: 0 0.375rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: var(--fg-2);
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: var(--bg-1);
+  color: var(--fg-3);
   font-family: var(--mono, ui-monospace, monospace);
-  font-size: 0.625rem;
+  font-size: 10.5px;
 }
 
 /* ---- Card 79: the decision an ask_user call made ----------------------
