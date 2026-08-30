@@ -36,13 +36,13 @@ import {
 } from "./lib/chat";
 import {
   byProject,
+  chatName,
   loadConversations,
   rewriteConversation,
   opensBlank,
   sameIndex,
   saveConversations,
   shortTitle,
-  titleFrom,
   type Conversation,
 } from "./lib/store";
 import { removeIndexEntry, saveIndexEntry } from "./lib/chatIndex";
@@ -63,7 +63,6 @@ import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail, RailButton } from "./components/AgentRail";
 import { BackgroundProvider } from "./components/Background";
 import { backgroundCalls } from "./lib/background";
-import { Todos } from "./components/Todos";
 import { latestTodos } from "./lib/todos";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
@@ -1093,7 +1092,10 @@ export default function App() {
             ...(before ?? ({} as Conversation)),
             id,
             projectId: info.projectId,
-            title: titleFrom(s.messages),
+            // The name it already has, and only otherwise one from the
+            // messages — see `chatName`. Re-deriving it every save renamed a
+            // chat after a partial view of itself.
+            title: chatName(before?.title, s.messages),
             sessionId: s.sessionId ?? before?.sessionId,
             messages: s.messages,
             modelId: info.modelId,
@@ -1273,6 +1275,28 @@ export default function App() {
     [choice.id, access],
   );
 
+  /** A new chat someone ASKED for — the + in the top bar, the + on a project
+   *  row. The same blank chat as `startBlank`, and then the box takes the
+   *  focus, because pressing that button is someone saying they are about to
+   *  write something.
+   *
+   *  The other callers of `startBlank` deliberately do not come through here.
+   *  Landing in a blank chat because the project you opened had none, or
+   *  because changing provider could not be done in the chat you were in, is
+   *  the app arriving somewhere — not a person reaching for the keyboard.
+   *
+   *  A counter rather than a flag: two new chats in a row are two requests,
+   *  and a boolean's second `true` is not a change for an effect to see. The
+   *  number itself means nothing. */
+  const [focusBox, setFocusBox] = useState(0);
+  const newChat = useCallback(
+    (forProject: string) => {
+      startBlank(forProject);
+      setFocusBox((n) => n + 1);
+    },
+    [startBlank],
+  );
+
   /** Carry on a session the AGENT remembers — one from ~/.claude or ~/.codex,
    *  found through the search on the empty-chat page (components/SessionSearch).
    *
@@ -1373,11 +1397,35 @@ export default function App() {
       modelId: c.modelId ?? meta.current[c.id]?.modelId ?? MODELS[0].id,
       access: (c.permission as AccessLevel) ?? "read",
     };
-    // Seed the stored transcript ONLY when this conversation is not already
-    // loaded: one that has been running in the background holds more than what
-    // was last written to storage, and must not be rewound to it.
+    // Seed the stored transcript unless this page already HOLDS the chat: one
+    // that has been running in the background holds more than what was last
+    // written to storage, and must not be rewound to it.
+    //
+    // "Already in `chats`" was the wrong test for that. A running chat's live
+    // events fold into a page that holds nothing of it, so its working dot
+    // moves in the sidebar (lib/catchUp), and what that leaves is the newest
+    // few events with a HOLE under them. Read as "already loaded", the seed was
+    // skipped — and the catch-up below starts from the STORED mark for a chat
+    // this page does not hold, so it filled in only what came after it. The
+    // conversation opened without its beginning, and the debounced save then
+    // named it after what was left. Reloading with a chat still working was the
+    // whole recipe.
+    //
+    // Replacing that preview loses nothing: `holds` is false for it, so the
+    // catch-up re-asks from the stored mark and fetches those same events back.
+    // Its session id is the exception — that came from the live process, and is
+    // fresher than the one written down.
     setChats((prev) =>
-      prev[c.id] ? prev : { ...prev, [c.id]: { ...emptyChat(), messages: c.messages, sessionId: c.sessionId } },
+      catchUp.current.holds(keyFor(c.id))
+        ? prev
+        : {
+            ...prev,
+            [c.id]: {
+              ...emptyChat(),
+              messages: c.messages,
+              sessionId: prev[c.id]?.sessionId ?? c.sessionId,
+            },
+          },
     );
 
     // Fill in anything this device has not seen. On the device that held the
@@ -2703,9 +2751,6 @@ export default function App() {
           </span>
         )}
 
-        {/* The plan: a count on the bar, the list one tap under it. */}
-        <Todos todos={todos} />
-
         {/* The agents this chat has started: a count on the bar, the column
             one tap under it — and the only way back once the column's ✕ has
             put it away. */}
@@ -2762,7 +2807,7 @@ export default function App() {
             type="button"
             aria-label={`New chat in ${project.name}`}
             title="New chat"
-            onClick={() => startBlank(project.id)}
+            onClick={() => newChat(project.id)}
           >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <path d="M12 5v14M5 12h14" />
@@ -2803,7 +2848,7 @@ export default function App() {
           onToggle={toggleFolder}
           onPickProject={pickProject}
           onPickConversation={openConversation}
-          onNewChat={startBlank}
+          onNewChat={newChat}
           onDelete={deleteConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
@@ -3016,6 +3061,8 @@ export default function App() {
 
           <Composer
             session={conversationId ?? undefined}
+            focusOn={focusBox}
+            todos={todos}
             choice={choice}
             onChoice={changeModel}
             started={chat.messages.length > 0}

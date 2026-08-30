@@ -274,6 +274,11 @@ export type Message = {
    *  written down. Stamping the echo's uuid onto the bubble is what lets both
    *  routes end at one message instead of two. */
   echo?: string;
+  /** Codex's equivalent of `echo`: it does not replay the prompt, but its
+   *  `turn.started` says it has begun this exact turn. Kept separate from the
+   *  replay id because it is a state signal, not a second copy of the message.
+   *  The queue mark only belongs on a turn neither kind of signal has claimed. */
+  takenUp?: boolean;
   /** The `tool_use` id of the Task call that owns this message, when a SUBAGENT
    *  wrote it. Undefined for the main agent — which is most messages, and the
    *  whole conversation when nothing has spawned one. */
@@ -1021,6 +1026,12 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     return id ? { ...state, sessionId: id } : state;
   }
 
+  // Codex never replays the user prompt. Its `turn.started` is therefore the
+  // one moment the optimistic bubble can learn that it has left the queue.
+  // It also restores the busy flag when this browser caught up after Codex had
+  // already started, rather than being the browser that pressed Send.
+  if (type === "turn.started") return codexTurnStarted(state, parent, speaker, now);
+
   // Codex reports a failed turn twice: once as a bare `error`, once wrapped in
   // `turn.failed`. Either is enough, and taking both means an older or newer
   // Codex that sends only one is still covered.
@@ -1602,6 +1613,40 @@ function foldCodex(
       },
     ],
   }));
+}
+
+/** Codex's one-shot turn has accepted its prompt.
+ *
+ * Claude proves this by replaying the user message and stamps its uuid in
+ * `echo`. Codex deliberately sends no such item, so leave that identity field
+ * alone and record the equivalent fact separately. A seat's `turn.started`
+ * belongs to the seat, not the host chat; it must never claim the host's most
+ * recent message or light the host's working state. */
+function codexTurnStarted(
+  state: ChatState,
+  parent: string | undefined,
+  speaker: Speaker | undefined,
+  now: number,
+): ChatState {
+  if (parent || speaker) return state;
+
+  // Codex gets one prompt per process, so the newest host-directed bubble it
+  // has not already taken is the prompt this turn began. A message sent to a
+  // room seat is deliberately excluded: that is a different process and its
+  // start event arrives stamped with that seat.
+  const at = state.messages
+    .map((m) => m.role === "user" && !m.echo && !m.takenUp && !m.to)
+    .lastIndexOf(true);
+
+  return {
+    ...state,
+    busy: true,
+    turnStartedAt: state.turnStartedAt ?? now,
+    messages:
+      at < 0
+        ? state.messages
+        : state.messages.map((m, i) => (i === at ? { ...m, takenUp: true } : m)),
+  };
 }
 
 /** The opening line the agent writes on a compaction summary. Recognised on

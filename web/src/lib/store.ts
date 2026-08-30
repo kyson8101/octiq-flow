@@ -125,13 +125,17 @@ export function opensBlank(stored: Conversation, loaded?: { messages: Message[] 
   return (loaded?.messages.length ?? 0) === 0 && stored.messages.length === 0;
 }
 
+/** What a chat is called when there is nothing to name it after. A placeholder
+ *  rather than a name, and `chatName` is careful never to write it over one. */
+export const UNNAMED = "New chat";
+
 /** A short name from a line of prose. Split out from `titleFrom` because the
  *  chat is now named the moment it starts, when the only thing to name it after
  *  is the raw text on its way to the agent — one rule, so the name does not
  *  change under you when the message lands. */
 export function shortTitle(text: string): string {
   const clean = text.replace(/\s+/g, " ").trim();
-  if (!clean) return "New chat";
+  if (!clean) return UNNAMED;
   return clean.length > 48 ? `${clean.slice(0, 48)}…` : clean;
 }
 
@@ -139,6 +143,29 @@ export function shortTitle(text: string): string {
 export function titleFrom(messages: Message[]): string {
   const first = messages.find((m) => m.role === "user");
   return shortTitle(first?.blocks.map((b) => ("text" in b ? b.text : "")).join(" ") ?? "");
+}
+
+/** The name a chat keeps: the one it already has, or one derived from what is
+ *  on screen when it has none yet.
+ *
+ *  A chat is named after the FIRST thing asked in it. The send path has always
+ *  said so — it names a new chat and leaves an existing one alone — but the
+ *  debounced save then RE-DERIVED the name from whatever messages happened to
+ *  be loaded, and that is not the same list.
+ *
+ *  A running chat's live events fold into a page that holds nothing of it, so
+ *  its working dot moves in the sidebar (lib/catchUp). What that leaves is the
+ *  newest few messages with a hole under them — often not one user turn among
+ *  them. Re-derived from that, the chat was renamed `New chat`, written to
+ *  storage, and pushed to the server's index, where every other device picked
+ *  the placeholder up. Reloading the page was enough to do it.
+ *
+ *  So a name that exists wins, and the placeholder is never a name: a row that
+ *  did end up holding it can still be named properly once the transcript
+ *  arrives. */
+export function chatName(had: string | undefined, messages: Message[]): string {
+  const kept = (had ?? "").trim();
+  return kept && kept !== UNNAMED ? kept : titleFrom(messages);
 }
 
 /** Group conversations under their project, newest chat first.

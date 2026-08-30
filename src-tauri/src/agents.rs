@@ -6,6 +6,7 @@
 // That whole overview was reachable only from the desktop app's Agents screen,
 // which no longer exists, so it went. Recover it from git history if the browser
 // client ever wants it back.
+use crate::agent_provider::{provider_for, AgentKind, AgentProvider};
 use crate::proc::no_console;
 use serde::Serialize;
 use std::process::Command;
@@ -23,10 +24,12 @@ use std::time::{Duration, Instant};
 // shell), so the check runs through the login shell too — otherwise an agent
 // installed by a version manager would look missing.
 
-/// Every agent the app knows how to launch, in menu order. A fixed compile-time
-/// list: the frontend never supplies a name, so nothing user-typed is ever
-/// interpolated into the probe script or a launch command.
-pub const KNOWN_AGENTS: [&str; 2] = ["claude", "codex"];
+/// Every provider the app knows how to launch, in picker order. The provider
+/// registry is the single source of truth for its id, display name, and binary,
+/// so this probe cannot drift from the runtime that actually starts a chat.
+fn known_agents() -> impl Iterator<Item = &'static dyn AgentProvider> {
+    AgentKind::ALL.into_iter().map(provider_for)
+}
 
 /// How long a probe result is trusted before the login shell is asked again.
 /// Installing an agent mid-session is rare, and a login shell costs a few
@@ -94,30 +97,19 @@ pub fn seed_probe_for_test(found: Vec<(String, String)>) {
 /// Turn the probe's hits into one row per known agent. Pure, so the "a missing
 /// agent is still a row" rule is testable without a shell.
 fn install_rows(found: &[(String, String)]) -> Vec<AgentInstall> {
-    KNOWN_AGENTS
-        .iter()
-        .map(|a| {
-            let hit = found.iter().find(|(name, _)| name == a);
+    known_agents()
+        .map(|provider| {
+            let id = provider.kind().id();
+            let hit = found.iter().find(|(name, _)| name == id);
             AgentInstall {
-                id: (*a).to_string(),
-                name: display_name(a).to_string(),
-                bin: (*a).to_string(),
+                id: id.to_string(),
+                name: provider.display_name().to_string(),
+                bin: provider.bin().to_string(),
                 installed: hit.is_some(),
                 path: hit.map(|(_, p)| p.clone()).filter(|p| !p.is_empty()),
             }
         })
         .collect()
-}
-
-/// The name the CLI goes by, as opposed to the command it is typed as.
-fn display_name(agent: &str) -> &'static str {
-    match agent {
-        "claude" => "Claude Code",
-        "codex" => "Codex",
-        // Unreachable while KNOWN_AGENTS holds only those two; a new entry that
-        // forgets a name shows its command rather than nothing.
-        _ => "Agent",
-    }
 }
 
 /// The probe result, taken at most once per `AGENT_PROBE_TTL`.
@@ -145,14 +137,13 @@ fn probe_agents() -> Vec<(String, String)> {
         // Could not even start a shell — fail OPEN, with no path to show for any
         // of them. A menu that silently loses both agents is far worse than one
         // offering an agent that turns out to be missing.
-        Err(_) => KNOWN_AGENTS
-            .iter()
-            .map(|a| ((*a).to_string(), String::new()))
+        Err(_) => known_agents()
+            .map(|provider| (provider.kind().id().to_string(), String::new()))
             .collect(),
     }
 }
 
-/// Keep only lines that name a known agent, in `KNOWN_AGENTS` order and without
+/// Keep only lines that name a known provider, in registry order and without
 /// duplicates. A login shell prints whatever the user's rc files print (banners,
 /// version notices, fastfetch), so the output is filtered against the fixed list
 /// rather than trusted line by line.
@@ -170,11 +161,11 @@ fn parse_probe_output(stdout: &str) -> Vec<(String, String)> {
             None => (l, ""),
         })
         .collect();
-    KNOWN_AGENTS
-        .iter()
-        .filter_map(|a| {
-            let (_, path) = lines.iter().find(|(name, _)| name == a)?;
-            Some(((*a).to_string(), (*path).to_string()))
+    known_agents()
+        .filter_map(|provider| {
+            let id = provider.kind().id();
+            let (_, path) = lines.iter().find(|(name, _)| *name == id)?;
+            Some((id.to_string(), (*path).to_string()))
         })
         .collect()
 }
@@ -189,7 +180,10 @@ fn probe_command() -> Command {
     // nothing extra here — it is kept rather than thrown at /dev/null.
     let script = format!(
         "for a in {}; do p=$(command -v \"$a\" 2>/dev/null) && printf '%s\\t%s\\n' \"$a\" \"$p\"; done",
-        KNOWN_AGENTS.join(" ")
+        known_agents()
+            .map(AgentProvider::bin)
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     let mut cmd = Command::new(shell);
     // `-l` populates PATH the way pty.rs does for a real terminal; `-c` runs
@@ -212,9 +206,8 @@ fn probe_command() -> Command {
 /// equivalent step that fills PATH, so the profile is deliberately NOT skipped.
 #[cfg(windows)]
 fn probe_command() -> Command {
-    let names = KNOWN_AGENTS
-        .iter()
-        .map(|a| format!("'{a}'"))
+    let names = known_agents()
+        .map(|provider| format!("'{}'", provider.bin()))
         .collect::<Vec<_>>()
         .join(",");
     // "`t" is PowerShell's tab escape — the same name<TAB>path shape the Unix
@@ -282,7 +275,7 @@ mod tests {
         // saying "not installed" — never a row that quietly vanishes.
         let found = vec![("codex".to_string(), "/opt/homebrew/bin/codex".to_string())];
         let rows = install_rows(&found);
-        assert_eq!(rows.len(), KNOWN_AGENTS.len());
+        assert_eq!(rows.len(), known_agents().count());
 
         assert_eq!(rows[0].id, "claude");
         assert!(!rows[0].installed);
@@ -332,8 +325,12 @@ mod tests {
             .collect();
         assert_eq!(args[0], "-lic", "probe shell must be login AND interactive");
         // The script itself asks about exactly the agents the menu offers.
-        for a in KNOWN_AGENTS {
-            assert!(args[1].contains(a), "probe script must ask about {a}");
+        for provider in known_agents() {
+            assert!(
+                args[1].contains(provider.bin()),
+                "probe script must ask about {}",
+                provider.bin()
+            );
         }
     }
 }

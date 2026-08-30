@@ -2609,18 +2609,44 @@ body {
   }
 }
 
-/* ---- The plan, as a dropdown from the top bar -------------------------- */
+/* ---- The plan, held above the chat box --------------------------------- */
 .plan {
   position: relative;
-  flex: 0 0 auto;
+  z-index: 142;
+  display: flex;
+  justify-content: center;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 0 auto 8px;
 }
 
 .plan-btn {
-  width: auto;
-  min-width: 34px;
-  padding: 0 7px;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.18);
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.plan-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.plan-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .plan-btn.is-on {
@@ -2629,8 +2655,27 @@ body {
 }
 
 /* Finished: still there, still countable, no longer asking to be watched. */
+.plan-btn.is-done {
+  color: var(--fg-2);
+}
+
 .plan-btn.is-done .plan-count {
   color: var(--fg-3);
+}
+
+.plan-state {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border: 3px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--accent-tint);
+}
+
+.plan-btn.is-done .plan-state {
+  border-color: var(--ok);
+  background: var(--ok);
+  box-shadow: none;
 }
 
 .plan-count {
@@ -2650,45 +2695,37 @@ body {
   z-index: 140;
 }
 
-/* Jelly: it overshoots, squashes past the line, and settles. The origin is the
-   top right because that is the button it comes out of — a pop-out that grows
-   from anywhere else reads as a thing that arrived rather than a thing that
-   opened. */
+/* The list grows out of the pill toward the conversation it describes. */
 @keyframes plan-pop {
   0% {
     opacity: 0;
-    transform: scale(0.78, 0.62) translateY(-6px);
+    transform: translateX(-50%) scale(0.94) translateY(8px);
   }
-  45% {
+  60% {
     opacity: 1;
-    transform: scale(1.04, 1.07) translateY(0);
-  }
-  68% {
-    transform: scale(0.985, 0.965);
-  }
-  85% {
-    transform: scale(1.008, 1.012);
+    transform: translateX(-50%) scale(1.01) translateY(-1px);
   }
   100% {
-    transform: scale(1, 1);
+    transform: translateX(-50%) scale(1) translateY(0);
   }
 }
 
 .plan-pop {
   position: absolute;
-  z-index: 141;
-  top: calc(100% + 6px);
-  right: 0;
-  width: min(320px, calc(100vw - 20px));
-  max-height: min(60vh, 26rem);
+  z-index: 143;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  width: min(640px, calc(100vw - 40px));
+  max-height: min(46vh, 22rem);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: 20px;
   background: var(--bg-1);
   box-shadow: var(--shadow);
-  transform-origin: top right;
-  animation: plan-pop 340ms cubic-bezier(0.22, 1.2, 0.36, 1);
+  transform: translateX(-50%);
+  transform-origin: bottom center;
+  animation: plan-pop 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2703,7 +2740,7 @@ body {
   justify-content: space-between;
   gap: 8px;
   flex: 0 0 auto;
-  padding: 9px 12px 7px;
+  padding: 12px 16px 9px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -2748,17 +2785,17 @@ body {
   min-height: 0;
   overflow-y: auto;
   margin: 0;
-  padding: 6px 12px 10px;
+  padding: 8px 20px 14px;
   list-style: none;
 }
 
 .todo {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 4px 0;
-  font-size: 12.5px;
-  line-height: 1.45;
+  gap: 13px;
+  padding: 6px 0;
+  font-size: 15px;
+  line-height: 1.35;
   color: var(--fg-2);
 }
 
@@ -2767,22 +2804,29 @@ body {
    tick-green dot done. */
 .todo-mark {
   flex: 0 0 auto;
-  width: 9px;
-  height: 9px;
-  margin-top: 5px;
-  border: 1.5px solid var(--fg-3);
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  border: 2px solid var(--fg-2);
   border-radius: 999px;
 }
 
 .todo.is-in_progress .todo-mark {
   border-color: var(--accent);
-  background: var(--accent);
+  border-right-color: transparent;
   box-shadow: 0 0 0 3px var(--accent-tint);
+  animation: todo-working 1.1s linear infinite;
 }
 
 .todo.is-completed .todo-mark {
   border-color: var(--ok);
   background: var(--ok);
+}
+
+@keyframes todo-working {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .todo.is-completed .todo-text {
@@ -2794,46 +2838,16 @@ body {
   color: var(--fg-0);
 }
 
-/* Phone: the plan IS the screen, the way the file panel is. A 320px card over
-   a 390px screen leaves a 35px rim of chat that can be neither read nor
-   tapped — it costs the plan its width and gives nothing back, and a plan is a
-   column of sentences, so a step that wrapped at four words now does not.
-   Close is the × in the head, since the scrim it used to be dismissed by is
-   underneath it now. */
-@keyframes plan-sheet {
-  from {
-    opacity: 0.4;
-    transform: translateY(-14px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @media (max-width: 700px) {
   .plan-pop {
-    position: fixed;
-    inset: 0;
-    width: auto;
-    max-height: none;
-    border: 0;
-    border-radius: 0;
-    background: var(--bg-0);
-    box-shadow: none;
-    /* Down from the bar it came out of — the jelly pop is a small thing
-       overshooting, and a whole screen doing that is a lurch. */
-    animation: plan-sheet 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    width: min(640px, calc(100vw - 24px));
+    max-height: min(48vh, 24rem);
+    border-radius: 16px;
   }
 
-  /* A bar of its own, the same colour as the top bar it replaces, clear of the
-     notch. `center` rather than `baseline` because the × has no text to sit
-     on. */
   .plan-pop-head {
     align-items: center;
-    padding: 11px 8px 11px 16px;
-    padding-top: calc(11px + env(safe-area-inset-top));
-    background: var(--bg-sunken);
+    padding: 10px 8px 8px 14px;
   }
 
   .plan-pop-count {
@@ -2845,26 +2859,24 @@ body {
   }
 
   .todos-list {
-    padding: 10px 16px calc(24px + env(safe-area-inset-bottom));
+    padding: 8px 16px 12px;
   }
 
-  /* Room to breathe, now that there is room: a full screen of nine 12.5px
-     lines packed at 4px apart reads as a wall. */
   .todo {
-    padding: 8px 0;
+    padding: 6px 0;
     font-size: 14px;
-    line-height: 1.5;
+    line-height: 1.4;
   }
 
   .todo-mark {
-    width: 10px;
-    height: 10px;
-    margin-top: 6px;
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
   }
 }
 
-@media (max-width: 700px) and (prefers-reduced-motion: reduce) {
-  .plan-pop {
+@media (prefers-reduced-motion: reduce) {
+  .todo.is-in_progress .todo-mark {
     animation: none;
   }
 }
@@ -5238,11 +5250,93 @@ body.is-ultra .eff {
   gap: 1px;
 }
 
+/* The row is the file button PLUS the two buttons that copy without opening
+   it. They are siblings rather than children because a button inside a button
+   is not something a browser will draw — see `PinRow`. */
+.sfp-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
 /* A pinned row is two lines: the file, then the agent's reason for it. The
    row wraps rather than being a nested column, so the name/folder/stamp line
    keeps the exact layout every other `.file` row in the app has. */
 .sfp-pin {
   flex-wrap: wrap;
+  /* `.file` is `width: 100%`, which beside a sibling would push it off the
+     edge. Both of these let it give way instead — the folder inside it is
+     already the part built to be truncated. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Copy the path, copy the contents. Pinned to the row's right edge and level
+   with the FIRST line of it, not floating down the middle of a wrapped one. */
+.sfp-acts {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-top: 2px;
+}
+
+/* Quiet until the row is hovered, and never hidden outright: a phone has no
+   hover, and this column exists to be read on one. The width is reserved on
+   every row whatever the state, so nothing moves under the cursor. */
+.sfp-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 0.15s ease, color 0.15s ease, background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.sfp-row:hover .sfp-act,
+.sfp-act:focus-visible {
+  opacity: 1;
+}
+
+.sfp-act:hover {
+  border-color: var(--border);
+  background: var(--bg-1);
+  color: var(--fg-1);
+}
+
+/* What it did. Green for a copy that landed, amber for one that had nothing to
+   copy or only got half the file, red for one the browser refused — each
+   spelled out in the button's own title, which is where the sentence goes. */
+.sfp-act.is-done {
+  opacity: 1;
+  color: var(--ok);
+}
+
+.sfp-act.is-warn {
+  opacity: 1;
+  color: var(--warn);
+}
+
+.sfp-act.is-failed {
+  opacity: 1;
+  color: var(--danger);
+}
+
+/* Nothing here will ever be hovered, so the resting state has to be readable
+   on its own. */
+@media (hover: none) {
+  .sfp-act {
+    opacity: 0.7;
+  }
 }
 
 /* `.file-icon` centres itself, which is right on a one-line row and wrong on a

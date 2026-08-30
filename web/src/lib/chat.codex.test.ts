@@ -95,6 +95,17 @@ describe("a Codex seat answering", () => {
 });
 
 describe("a Codex chat of its own", () => {
+  it("takes the sent message out of the queue when its turn starts", () => {
+    // Claude replays a user message when it begins it. Codex does not: this is
+    // the one protocol event that says the prompt is no longer waiting.
+    const sent = addUserTurn(emptyChat(), "do the thing");
+    expect(sent.messages[0].takenUp).toBeUndefined();
+
+    const working = reduceChat(sent, { type: "turn.started" }, 2);
+    expect(working.busy).toBe(true);
+    expect(working.messages[0].takenUp).toBe(true);
+  });
+
   it("ends its turn on its own full stop", () => {
     // No seat, no room: `turn.completed` is this conversation's full stop, the
     // same thing Claude's `result` is. Left unread, the chat went on saying it

@@ -28,6 +28,8 @@ import type { Seat } from "../lib/chat";
 import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
 import { useMedia, WIDE } from "../lib/media";
+import { Todos } from "./Todos";
+import type { Todo } from "../lib/todos";
 
 const TYPES_ON_GLASS =
   typeof window !== "undefined" &&
@@ -324,6 +326,8 @@ function saveHistory(session: string | undefined, list: string[]): void {
 
 export function Composer({
   session,
+  focusOn,
+  todos,
   choice,
   onChoice,
   access,
@@ -365,6 +369,12 @@ export function Composer({
   /** Which chat this is, so Up walks back through ITS input and no one else's.
    *  Absent for a chat that has not been saved yet. */
   session?: string;
+  /** Changes when someone has asked for a new chat by pressing a button, and
+   *  the box should take the focus. Only the CHANGE is read — the number is
+   *  a way of saying "again", not a value. */
+  focusOn?: number;
+  /** The main agent's current checklist, rendered beside the point of reply. */
+  todos?: Todo[];
   choice: ModelChoice;
   onChoice: (c: ModelChoice) => void;
   access: AccessLevel;
@@ -817,6 +827,25 @@ export function Composer({
     // precisely so that typing does not re-run it.
   }, [session, forget]);
 
+  /** A new chat, asked for by pressing "+": the box takes the focus, so the
+   *  thing you do next is type rather than aim.
+   *
+   *  Not on glass. There the focus is what RAISES the keyboard, and half the
+   *  screen would go to it before anyone had said they wanted to write —
+   *  covering the empty page's own way in, the search for a session to carry
+   *  on. A phone gets the blank chat and nothing else, and the box is one tap
+   *  away where it always was.
+   *
+   *  The first run is skipped by starting the ref where the prop starts: a
+   *  page that has just loaded has not had a button pressed on it. */
+  const focusedOn = useRef(focusOn);
+  useEffect(() => {
+    if (focusedOn.current === focusOn) return;
+    focusedOn.current = focusOn;
+    if (TYPES_ON_GLASS || disabled) return;
+    areaRef.current?.focus();
+  }, [focusOn, disabled]);
+
   function send() {
     const value = text.trim();
     if ((!value && attached.length === 0) || disabled) return;
@@ -973,6 +1002,7 @@ export function Composer({
           )}
         </div>
       </div>
+      <Todos todos={todos ?? []} />
       <div className="composer-box">
         {(attached.length > 0 || attachError || cleared) && (
           <div className="attach">

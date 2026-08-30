@@ -12,6 +12,7 @@ mod access;
 mod agent_api;
 mod agent_chat;
 mod agent_history;
+mod agent_provider;
 mod agents;
 mod bus;
 mod canvas;

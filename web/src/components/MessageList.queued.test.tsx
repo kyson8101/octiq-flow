@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
 import { MessageList } from "./MessageList";
-import type { Message } from "../lib/chat";
+import { addUserTurn, emptyChat, reduceChat, type Message } from "../lib/chat";
 
 const sent: Message[] = [
   { id: "m1", role: "user", blocks: [{ kind: "text", text: "do the thing" }] } as Message,
@@ -22,6 +22,19 @@ const draw = (busy: boolean) =>
   renderToStaticMarkup(<MessageList messages={sent} busy={busy} />);
 
 describe("the queued mark", () => {
+  it("comes off when Codex says it has started the turn", () => {
+    const working = reduceChat(
+      addUserTurn(emptyChat(), "do the thing"),
+      { type: "turn.started" },
+    );
+    const html = renderToStaticMarkup(
+      <MessageList messages={working.messages} busy={working.busy} />,
+    );
+
+    expect(html).not.toContain('class="queued"');
+    expect(html).not.toContain("is-queued");
+  });
+
   it("is a mark on the message, not a row under it", () => {
     const html = draw(true);
     // Inside the pill. A sibling of `.msg-body` would be a row again whatever

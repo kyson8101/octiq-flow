@@ -19,9 +19,16 @@
 // dropped rather than drawn. Modified times are still read from disk rather
 // than the transcript. The filter row, the type dropdown, the phone sheet and
 // the drag-resize are unchanged — they were never the part that was wrong.
+//
+// Each row also carries two quiet buttons: copy the path, and copy what is in
+// the file. Both answer the same question the column does — this file matters —
+// for the case where the answer is wanted somewhere else: a terminal, another
+// chat, a message to somebody. See `PinRow`.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { bridge } from "../lib/bridge";
+import { copyText } from "../lib/clipboard";
+import type { Preview } from "../lib/fileView";
 import {
   baseName,
   fileExt,
@@ -382,56 +389,279 @@ export function SessionFilesPanel({
 
           <ul className="sfp-list">
             {shown.map((pin) => (
-              <li key={pin.path}>
-                <button
-                  className={`file sfp-pin ${isImage(pin.path) ? "is-image" : ""}`}
-                  type="button"
-                  title={pin.path}
-                  onClick={() => openFile(pin.path)}
-                >
-                  <span className="file-icon" aria-hidden="true">
-                    {isImage(pin.path) ? <ImageIcon /> : <FileIcon />}
-                  </span>
-                  <span className="file-name">{baseName(pin.path)}</span>
-                  <span className="file-dir">
-                    <bdi>{pin.path.slice(0, pin.path.length - baseName(pin.path).length)}</bdi>
-                  </span>
-                  {/* Last written. A clock time today, a date before that —
-                      see `formatModified`. Its own title, so hovering the stamp
-                      gives the whole thing back rather than the path the rest
-                      of the row shows. */}
-                  <span className="file-time" title={modifiedTitle(modified.get(pin.path))}>
-                    {formatModified(modified.get(pin.path))}
-                  </span>
-                  {/* The label and the reason — the whole point of the column,
-                      and the half no scraper could ever have produced. The
-                      label leads because it is the shorter answer: a row you
-                      can place without reading the sentence after it. Both are
-                      optional, and a row with neither is still a file the agent
-                      chose to put in front of you.
-
-                      A line number rides along when the agent gave one. It is
-                      a signpost, not a jump: clicking opens the file, because
-                      the editor restores where you last were in it and landing
-                      somewhere else would fight that. */}
-                  {(pin.label || pin.why || pin.line) && (
-                    <span className="sfp-why">
-                      {pin.label && <span className="sfp-label">{pin.label}</span>}
-                      {pin.why}
-                      {pin.line ? (
-                        <span className="sfp-line">
-                          {pin.why ? " " : ""}line {pin.line}
-                        </span>
-                      ) : null}
-                    </span>
-                  )}
-                </button>
-              </li>
+              <PinRow
+                key={pin.path}
+                pin={pin}
+                modified={modified.get(pin.path)}
+                onOpen={openFile}
+              />
             ))}
           </ul>
         </div>
       </aside>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// One row
+// ---------------------------------------------------------------------------
+
+/** How long an already-read file stays good enough to put on the clipboard.
+ *
+ *  Short on purpose. This column's whole subject is files an agent is CHANGING,
+ *  so a cached read is a copy of what the file used to say — and a clipboard
+ *  holding the previous version of a file is worse than a slower button. Long
+ *  enough to cover a hover followed by a click, and no longer. */
+const FILE_FRESH_MS = 2500;
+
+/** What a copy button found to copy: the text, or `null` for "there is nothing
+ *  here to put on a clipboard". `partial` when only the head of the file came
+ *  back — the backend caps a preview read, and a silently half-copied file is
+ *  exactly the kind of quiet lie a copy button must not tell. */
+type Copyable = { text: string | null; partial?: boolean };
+
+/** One pinned file.
+ *
+ *  The row opens the file. The two buttons beside it offer what you may want
+ *  WITHOUT opening it — where the file is, and what is in it — and they live
+ *  outside the row's own button rather than inside it, because a button inside
+ *  a button is not something a browser will draw. That is the only reason this
+ *  is a component of its own. */
+export function PinRow({
+  pin,
+  modified,
+  onOpen,
+}: {
+  pin: Pin;
+  /** Epoch milliseconds; `null` when the backend could not stat the file, and
+   *  missing entirely until the first answer comes back. */
+  modified: number | null | undefined;
+  onOpen: (path: string) => void;
+}) {
+  const image = isImage(pin.path);
+  const file = useFileText(pin.path);
+
+  return (
+    <li className="sfp-row">
+      <button
+        className={`file sfp-pin ${image ? "is-image" : ""}`}
+        type="button"
+        title={pin.path}
+        onClick={() => onOpen(pin.path)}
+      >
+        <span className="file-icon" aria-hidden="true">
+          {image ? <ImageIcon /> : <FileIcon />}
+        </span>
+        <span className="file-name">{baseName(pin.path)}</span>
+        <span className="file-dir">
+          <bdi>{pin.path.slice(0, pin.path.length - baseName(pin.path).length)}</bdi>
+        </span>
+        {/* Last written. A clock time today, a date before that — see
+            `formatModified`. Its own title, so hovering the stamp gives the
+            whole thing back rather than the path the rest of the row shows. */}
+        <span className="file-time" title={modifiedTitle(modified)}>
+          {formatModified(modified)}
+        </span>
+        {/* The label and the reason — the whole point of the column, and the
+            half no scraper could ever have produced. The label leads because it
+            is the shorter answer: a row you can place without reading the
+            sentence after it. Both are optional, and a row with neither is
+            still a file the agent chose to put in front of you.
+
+            A line number rides along when the agent gave one. It is a signpost,
+            not a jump: clicking opens the file, because the editor restores
+            where you last were in it and landing somewhere else would fight
+            that. */}
+        {(pin.label || pin.why || pin.line) && (
+          <span className="sfp-why">
+            {pin.label && <span className="sfp-label">{pin.label}</span>}
+            {pin.why}
+            {pin.line ? (
+              <span className="sfp-line">
+                {pin.why ? " " : ""}line {pin.line}
+              </span>
+            ) : null}
+          </span>
+        )}
+      </button>
+
+      {/* Dim until the row is hovered, never hidden outright: a phone has no
+          hover, and a control that exists only under a pointer does not exist
+          at all on the device this column was drawn for. The space they take is
+          reserved on every row, so nothing shifts under the cursor. */}
+      <span className="sfp-acts">
+        <CopyBit
+          icon={<CopyIcon />}
+          idle="Copy the path"
+          done="Path copied"
+          read={() => ({ text: pin.path })}
+        />
+        {/* Absent for a picture, which has no text to hand over and would only
+            ever answer "nothing to copy". Everything else is offered and the
+            backend decides — a PDF, an executable and a .ts with a NUL in it
+            all come back as not-text, which the button says plainly. */}
+        {!image && (
+          <CopyBit
+            icon={<TextIcon />}
+            idle="Copy what is in the file"
+            done="File copied"
+            empty="Nothing to copy — this file is not text"
+            partial="Copied the first part — the file is too big to read whole"
+            arm={file.arm}
+            read={file.read}
+          />
+        )}
+      </span>
+    </li>
+  );
+}
+
+/** Read a file's text for the clipboard, ahead of the click where the browser
+ *  gives us the chance.
+ *
+ *  The chance matters. A clipboard write is only allowed while the page still
+ *  holds the user gesture that asked for it, and an `await` in front of it
+ *  spends that gesture — so "read the file, then copy it" is a copy that some
+ *  browsers refuse outright. Hovering a row is a gesture-free moment to do the
+ *  reading in, and by the time the click lands the text is already here and the
+ *  copy is synchronous.
+ *
+ *  Touch has no hover, so there the read really does happen inside the click
+ *  and the copy really can be refused. It is attempted anyway and the button
+ *  says whether it landed, which is the honest half of the same problem —
+ *  `copyText` reports rather than assumes. */
+function useFileText(path: string) {
+  const cached = useRef<{ at: number; value: Copyable } | null>(null);
+  const inflight = useRef<Promise<Copyable> | null>(null);
+
+  const fresh = () =>
+    cached.current && Date.now() - cached.current.at < FILE_FRESH_MS ? cached.current.value : null;
+
+  const fetchText = (): Promise<Copyable> => {
+    if (inflight.current) return inflight.current;
+    const run = bridge
+      .invoke<Preview>("read_file_preview", { path })
+      .then<Copyable>((preview) =>
+        preview?.kind === "text"
+          ? { text: preview.content, partial: preview.truncated }
+          : { text: null },
+      )
+      // An older backend with no `read_file_preview`, a file deleted since it
+      // was pinned, a permission we do not have: all the same answer here.
+      .catch<Copyable>(() => ({ text: null }))
+      .then((value) => {
+        cached.current = { at: Date.now(), value };
+        inflight.current = null;
+        return value;
+      });
+    inflight.current = run;
+    return run;
+  };
+
+  return {
+    /** Start reading, because a click looks likely. */
+    arm: () => {
+      if (!fresh()) void fetchText();
+    },
+    read: (): Copyable | Promise<Copyable> => fresh() ?? fetchText(),
+  };
+}
+
+/** One of a row's copy buttons.
+ *
+ *  Says what actually happened rather than always claiming success: this app is
+ *  reached over plain http from a phone, where the modern clipboard API does
+ *  not exist and the fallback can be refused, and "copied" over an unchanged
+ *  clipboard is worse than being told it did not work. */
+function CopyBit({
+  icon,
+  idle,
+  done,
+  empty,
+  partial,
+  arm,
+  read,
+}: {
+  icon: React.ReactNode;
+  /** What the button offers, before it has been pressed. */
+  idle: string;
+  /** What it says after it worked. */
+  done: string;
+  /** What it says when there was nothing worth copying. */
+  empty?: string;
+  /** What it says when only part of the file came back. */
+  partial?: string;
+  /** Called when a click looks likely, to get any reading out of the way. */
+  arm?: () => void;
+  read: () => Copyable | Promise<Copyable>;
+}) {
+  const [state, setState] = useState<"idle" | "done" | "warn" | "failed">("idle");
+  const [said, setSaid] = useState(idle);
+
+  const settle = (next: "done" | "warn" | "failed", words: string) => {
+    setState(next);
+    setSaid(words);
+    setTimeout(() => {
+      setState("idle");
+      setSaid(idle);
+    }, 1600);
+  };
+
+  return (
+    <button
+      className={`sfp-act is-${state}`}
+      type="button"
+      title={said}
+      aria-label={said}
+      onPointerEnter={arm}
+      onPointerDown={arm}
+      onFocus={arm}
+      onClick={async () => {
+        const found = read();
+        const { text, partial: cut } = found instanceof Promise ? await found : found;
+        if (text === null || text === "") {
+          settle("warn", empty ?? "Nothing to copy");
+          return;
+        }
+        if (!(await copyText(text))) {
+          settle("failed", "Could not copy");
+          return;
+        }
+        settle(cut ? "warn" : "done", cut ? (partial ?? done) : done);
+      }}
+    >
+      {state === "done" ? <TickIcon /> : icon}
+    </button>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+/** A page with words on it — the file's contents, as against its address. */
+function TextIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
+      <path d="M14 2v6h6" />
+      <path d="M8 13h8" />
+      <path d="M8 17h5" />
+    </svg>
+  );
+}
+
+function TickIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m20 6-11 11-5-5" />
+    </svg>
   );
 }
 

@@ -27,15 +27,19 @@
 //! all the same, for the reason pty.rs does it — a GUI app does not inherit the
 //! interactive shell's PATH, so `claude` would simply not be found.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
+
+use crate::agent_provider::{ask_mcp_config, provider_for, AgentCommand};
+pub(crate) use crate::agent_provider::{safe_model, safe_session_id};
+pub use crate::agent_provider::{Access, AgentKind as ChatAgent};
 
 /// One line of an agent's stdout, on its way to the UI.
 #[derive(Clone, Serialize)]
@@ -168,6 +172,18 @@ pub(crate) struct HostStart {
     session_id: Option<String>,
 }
 
+/// A follow-up for a command-line provider, held while its one-shot process
+/// finishes exiting.
+///
+/// Persistent providers accept the next message on stdin. A command-line
+/// provider instead starts a fresh resume command, so its attachment stays
+/// with the next command rather than disappearing with the old process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueuedCommandTurn {
+    text: String,
+    images: Vec<String>,
+}
+
 #[derive(Default)]
 pub struct ChatManager {
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
@@ -179,6 +195,10 @@ pub struct ChatManager {
     /// How each chat's host was last started — see `HostStart`. Hosts only:
     /// a seat is started from its own record and never needs this.
     host_starts: Mutex<HashMap<String, HostStart>>,
+    /// A command-line provider is deliberately one-shot. A follow-up sent
+    /// while its previous process is still reaping waits here for its resumed
+    /// process instead of being written to its intentionally absent stdin.
+    queued_command_turns: Mutex<HashMap<String, VecDeque<QueuedCommandTurn>>>,
 }
 
 impl ChatManager {
@@ -202,190 +222,32 @@ impl ChatManager {
     fn host_start(&self, key: &str) -> Option<HostStart> {
         self.host_starts.lock().ok()?.get(key).cloned()
     }
-}
 
-/// Which agents this module can start. The name from the UI only ever picks
-/// between these literals — it is never interpolated into the command line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChatAgent {
-    Claude,
-    Codex,
-}
+    fn queue_command_turn(&self, key: &str, turn: QueuedCommandTurn) -> Result<(), String> {
+        self.queued_command_turns
+            .lock()
+            .map_err(|e| e.to_string())?
+            .entry(key.to_string())
+            .or_default()
+            .push_back(turn);
+        Ok(())
+    }
 
-impl ChatAgent {
-    pub(crate) fn bin(self) -> &'static str {
-        match self {
-            ChatAgent::Claude => "claude",
-            ChatAgent::Codex => "codex",
+    fn take_queued_command_turn(&self, key: &str) -> Option<QueuedCommandTurn> {
+        let mut turns = self.queued_command_turns.lock().ok()?;
+        let next = turns.get_mut(key)?.pop_front();
+        if turns.get(key).is_some_and(VecDeque::is_empty) {
+            turns.remove(key);
         }
-    }
-}
-
-/// Single-quote a value for the login shell that launches the agent.
-///
-/// Everything the UI can influence — a model alias, a working directory, the
-/// first prompt — goes through here. Inside single quotes a POSIX shell expands
-/// nothing at all, so the only character that needs care is the quote itself.
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// One TOML basic string, quoted and escaped.
-///
-/// `sh_quote` makes a value safe to sit on a command line and nothing more. A
-/// couple of Codex settings are TOML written by hand (`-c key=value`), and a
-/// value going in there passes through TWO parsers: the shell's, then Codex's
-/// TOML. A folder named `a", evil = "yes` survives the first untouched and
-/// closes the string in the second, after which the rest of the path is read as
-/// further config. So the TOML layer gets its own escaping, applied first.
-fn toml_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
-}
-
-/// Model aliases we will pass on. An unknown value is dropped rather than
-/// forwarded: the model name reaches a command line, so it is an allowlist, not
-/// an escaping problem.
-pub(crate) fn safe_model(model: &str) -> Option<String> {
-    let ok = model
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_');
-    if ok && !model.is_empty() && model.len() <= 64 {
-        Some(model.to_string())
-    } else {
-        None
-    }
-}
-
-/// Session ids are uuids the agent gave us. Checked, not escaped: like the
-/// model name it lands on a command line, so the shape is the guard.
-pub(crate) fn safe_session_id(id: &str) -> Option<String> {
-    let ok = id.len() <= 64
-        && !id.is_empty()
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-    ok.then(|| id.to_string())
-}
-
-/// Reasoning effort, per agent.
-///
-/// Both support the idea and neither spells it the same way: Claude takes
-/// `--effort`, Codex takes a config override. The levels differ too — Codex has
-/// a `minimal` that Claude does not, Claude has a `max` and an `ultracode` that
-/// Codex does not — so the UI offers each agent its own list and this refuses
-/// anything else. Same reasoning as the model allowlist: it reaches a command
-/// line.
-///
-/// `auto` is the one level with no flag behind it. Claude takes it from the
-/// `/effort` command inside a running session, but NOT on the command line —
-/// `claude --effort auto` warns and falls back — and it means the agent picks
-/// the level itself, which is exactly what passing no `--effort` at all does.
-/// So it maps to None: no flag, same as an unknown value, and by design.
-fn safe_effort(agent: ChatAgent, level: &str) -> Option<&'static str> {
-    match (agent, level) {
-        (_, "low") => Some("low"),
-        (_, "medium") => Some("medium"),
-        (_, "high") => Some("high"),
-        (_, "xhigh") => Some("xhigh"),
-        (_, "max") => Some("max"),
-        (ChatAgent::Claude, "ultracode") => Some("ultracode"),
-        _ => None,
-    }
-}
-
-/// How much the agent may do unattended, as ONE idea across both agents.
-///
-/// The UI asks one question — look only, edit files, or anything — because that
-/// is the decision the user is actually making. Each agent then gets its own
-/// flag for it: Claude a permission mode, Codex a sandbox policy. Mapping here
-/// rather than in the UI keeps the two spellings out of the frontend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Access {
-    /// Look and plan, change nothing. Claude's `plan`.
-    Read,
-    /// Ask before every change. Claude's `manual`.
-    ///
-    /// The PreToolUse hook does the asking, as it does on every level below
-    /// Full — the difference is only how much it is asked about.
-    Manual,
-    /// File edits go through; everything else still asks. Claude's `acceptEdits`.
-    ///
-    /// The mode name is Claude's and so is the behaviour, but the FLAG cannot
-    /// deliver it here on its own: the hook runs before `--permission-mode` is
-    /// consulted, so an edit would be stopped by the hook before the mode ever
-    /// got the chance to accept it. `permission::ask` knows about this level and
-    /// stands aside for the edit tools — see EDIT_TOOLS there.
-    Edits,
-    /// Get on with it, and ask when something looks unsafe. Claude's `auto`.
-    ///
-    /// This was once `Edit`, mapped to `acceptEdits`, and was the middle rung on
-    /// its own: that auto-accepted FILE EDITS and nothing else, so every shell
-    /// command still stopped — not what a chat wants, and not what the label
-    /// promised. Both rungs exist now, which is what Claude itself offers.
-    Auto,
-    /// Run anything without asking. Claude's `bypassPermissions`.
-    Full,
-}
-
-impl Access {
-    /// Claude's `--permission-mode` value.
-    fn claude(self) -> &'static str {
-        match self {
-            Access::Read => "plan",
-            Access::Manual => "manual",
-            Access::Edits => "acceptEdits",
-            Access::Auto => "auto",
-            Access::Full => "bypassPermissions",
-        }
+        next
     }
 
-    /// What the PreToolUse hook is told, in `OCTIQ_ACCESS`.
-    ///
-    /// The hook runs BEFORE `--permission-mode` is consulted — it is the first
-    /// step of the permission chain — so "run anything without asking" never
-    /// reaches it through that flag, and the hook went on asking about every
-    /// command even under bypassPermissions. It has to be told separately.
-    fn as_env(self) -> &'static str {
-        match self {
-            Access::Read => "read",
-            Access::Manual => "manual",
-            Access::Edits => "edits",
-            Access::Auto => "auto",
-            Access::Full => "full",
-        }
-    }
-
-    /// Codex's `--sandbox` value — what a command may TOUCH.
-    /// `workspace-write` is the direct match for the middle level: writes inside
-    /// the workspace, nothing outside it.
-    fn codex(self) -> &'static str {
-        match self {
-            Access::Read => "read-only",
-            // Codex has no per-change asking and no edits-only mode: its sandbox
-            // says what a command may TOUCH, not what may happen unasked. Both
-            // middle rungs are therefore the same sandbox here — the difference
-            // between them is Claude's, and the Codex picker does not offer
-            // them (see ACCESS in Composer.tsx, which is per provider).
-            Access::Manual | Access::Edits | Access::Auto => "workspace-write",
-            Access::Full => "danger-full-access",
-        }
-    }
-
-    /// Codex's `approval_policy` value — whether a command RUNS unasked.
-    ///
-    /// Codex splits in two what Claude answers with one flag, and only the
-    /// sandbox half was ever set. Left alone, the approval policy fell back to
-    /// the user's own config, so both outer levels could behave as the opposite
-    /// of their label: `Full` stopping to ask, `Read` prompting about a sandbox
-    /// that would have refused the write anyway. `on-request` — "the model
-    /// decides when to ask" — is the one that matches Claude's `auto`.
-    fn codex_approval(self) -> &'static str {
-        match self {
-            // The sandbox already refuses the write; asking on top of it is a
-            // question whose only honest answer is "it would fail regardless".
-            Access::Read => "never",
-            Access::Manual | Access::Edits | Access::Auto => "on-request",
-            Access::Full => "never",
+    /// Ending a process deliberately is also the end of any turn waiting only
+    /// for that process to exit. Otherwise a later, unrelated resume could
+    /// unexpectedly receive words the person meant to cancel.
+    fn forget_queued_command_turns(&self, key: &str) {
+        if let Ok(mut turns) = self.queued_command_turns.lock() {
+            turns.remove(key);
         }
     }
 }
@@ -453,12 +315,7 @@ pub(crate) fn remember_access(key: &str, access: Access) {
     with_access(|a| a.insert(key.to_string(), access));
 }
 
-/// Build the agent's command line.
-///
-/// Claude speaks stream-json in both directions, so one process handles the
-/// whole conversation. Codex's `exec --json` is one-shot, so a Codex chat sends
-/// its prompt on the command line and the session ends with the answer; the UI
-/// starts a new one for the next turn.
+/// Build one provider-owned command from the normalized chat request.
 fn build_command(
     agent: ChatAgent,
     model: Option<&str>,
@@ -468,13 +325,14 @@ fn build_command(
     extra_dirs: &[String],
     effort: Option<&str>,
     images: &[String],
-    // A chat started clean: none of this machine's skills, hooks or other MCP
-    // servers. Claude only — see the branch below.
     lite: bool,
 ) -> String {
-    // Codex has no use for this Claude MCP config. Keep its command builder
-    // free of an unrelated home-directory write.
-    let mcp = (agent == ChatAgent::Claude).then(ask_mcp_config).flatten();
+    let provider = provider_for(agent);
+    let mcp = provider
+        .capabilities()
+        .uses_octiq_mcp
+        .then(ask_mcp_config)
+        .flatten();
     build_command_with_mcp(
         agent,
         model,
@@ -489,9 +347,8 @@ fn build_command(
     )
 }
 
-/// The pure command builder. Keeping the already-written MCP config as an
-/// input makes the command-line rules testable without requiring a unit test
-/// to write into the user's home directory.
+/// The testable command-builder seam. Provider-specific syntax lives in the
+/// selected adapter, while this function preserves the shared chat input shape.
 #[allow(clippy::too_many_arguments)]
 fn build_command_with_mcp(
     agent: ChatAgent,
@@ -505,214 +362,17 @@ fn build_command_with_mcp(
     lite: bool,
     mcp_config: Option<&std::path::Path>,
 ) -> String {
-    match agent {
-        ChatAgent::Claude => {
-            let mut cmd = String::from(
-                "claude -p --output-format stream-json --input-format stream-json \
-                 --include-partial-messages --replay-user-messages --verbose",
-            );
-            // Continuing an earlier conversation: the agent comes back with its
-            // own context, rather than being handed a transcript to read.
-            if let Some(id) = resume.and_then(|id| safe_session_id(id)) {
-                cmd.push_str(&format!(" --resume {}", sh_quote(&id)));
-            }
-            if let Some(m) = model.and_then(|m| safe_model(m)) {
-                cmd.push_str(&format!(" --model {}", sh_quote(&m)));
-            }
-            if let Some(a) = access {
-                cmd.push_str(&format!(" --permission-mode {}", a.claude()));
-            }
-            if let Some(e) = effort.and_then(|e| safe_effort(agent, e)) {
-                cmd.push_str(&format!(" --effort {e}"));
-            }
-            // How the agent asks the user for permission.
-            //
-            // `stdio` means: send the question down this process's own stdout as
-            // a `can_use_tool` control request, and wait for a `control_response`
-            // on stdin. Both directions are channels this module already owns —
-            // see the stdout loop in `chat_start` and `write_control_response`.
-            //
-            // This replaced a PreToolUse hook, and the difference is WHEN it
-            // fires. A hook is the FIRST step of the permission chain: it runs
-            // before the deny rules, before the allow rules, and before
-            // `--permission-mode`, so it has to answer for calls the chain was
-            // about to wave through on its own. It cannot tell them apart, so it
-            // asked about everything — including reads, and including a user's
-            // own `Bash(git commit:*)` allow rule, which it never gets to see.
-            //
-            // This fires LAST, only once the chain has decided that a person has
-            // to answer. Auto is as quiet here as it is in a terminal, every
-            // rule in the user's settings.json counts again, and the questions
-            // that do reach the phone are the ones Claude genuinely stopped for.
-            //
-            // The flag is real but undocumented — `claude --help` does not list
-            // it. It is what `@anthropic-ai/claude-agent-sdk` passes when a
-            // `canUseTool` callback is supplied; the literal string is `stdio`.
-            cmd.push_str(" --permission-prompt-tool stdio");
-            // The tool that flag turns on behind our back.
-            //
-            // `--permission-prompt-tool` reads as though it only says WHERE a
-            // permission question goes. It also decides which tools the model
-            // is shown: with it, print mode offers `AskUserQuestion`, which
-            // without it it never does.
-            //
-            // We cannot answer that one. It does not arrive as a `can_use_tool`
-            // request — permission passes, and the CLI then runs the tool
-            // itself, looking for the interactive prompt a `-p` process has no
-            // way to draw. It gives up immediately and hands the agent "The
-            // user did not answer the questions", so a question the user never
-            // saw comes back looking like one they refused.
-            //
-            // `ask_user` is the one that reaches them, so it is left as the
-            // only way to ask. Not conditional on the MCP config below: if that
-            // could not be written there is no way to ask at all, which is what
-            // this command line did before the flag existed — better than a
-            // tool that fails every time it is used.
-            cmd.push_str(" --disallowedTools AskUserQuestion");
-            // Our own two tools, plus the sentences that make the agent reach
-            // for them. Both are pre-approved: a tool whose whole purpose is to
-            // talk to the user must not itself raise a permission question, and
-            // a TODO list that had to be approved item by item would be worse
-            // than none.
-            if let Some(mcp) = mcp_config {
-                cmd.push_str(&format!(
-                    " --mcp-config {} --allowedTools {} --append-system-prompt {}",
-                    sh_quote(&mcp.to_string_lossy()),
-                    // The room tools (card 70) are pre-approved alongside the
-                    // other two, and offered in EVERY chat. Since card 82 there
-                    // is nothing to gate them on: a chat becomes a room by
-                    // taking a seat, so the tool that adds one has to work in a
-                    // chat that is not a room yet.
-                    sh_quote(
-                        "mcp__octiq__ask_user mcp__octiq__todo_write \
-                         mcp__octiq__add_agent mcp__octiq__ask_agent",
-                    ),
-                    sh_quote(ASK_PROMPT),
-                ));
-            }
-            // A clean chat: this machine's skills, hooks and other MCP servers
-            // left out of it.
-            //
-            // Measured in this repo, a first turn costs 60.4k of context before
-            // anyone has said anything, and the skill list is about half of
-            // that. These three flags bring it to 30.2k:
-            //
-            //   --strict-mcp-config     only the servers named above — ours
-            //   --disable-slash-commands   no skills
-            //   --setting-sources ''    no user/project/local settings, so no
-            //                           SessionStart hooks and no rules
-            //
-            // What it deliberately does NOT use is `--bare`, the flag that
-            // looks like this feature's name. Bare never reads the OAuth login
-            // or the keychain — auth is strictly ANTHROPIC_API_KEY — so on a
-            // subscription every bare chat ends at "Not logged in" without
-            // reaching the model. `--safe-mode` keeps the login but drops MCP
-            // servers even when we pass them ourselves, taking `ask_user` and
-            // the todo list with them, and still costs more (31.6k) because it
-            // goes on listing the built-in skills.
-            //
-            // CLAUDE.md still loads. Only bare and safe mode drop it, and both
-            // cost more than they save.
-            if lite {
-                cmd.push_str(" --strict-mcp-config --disable-slash-commands --setting-sources ''");
-            }
-            // A project can group several folders. The agent starts in one of
-            // them (`cwd`) and can already read that one; every OTHER folder of
-            // the project has to be named or the agent cannot touch it.
-            for dir in extra_dirs {
-                cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
-            }
-            cmd
-        }
-        ChatAgent::Codex => {
-            // Codex ends after each turn, so every turn is a new process. That
-            // makes continuing a conversation a RESUME rather than something
-            // written to a running stdin — `codex exec resume <id> <prompt>`,
-            // where the id is the `thread_id` from its own `thread.started`.
-            //
-            // The resume subcommand takes a narrower set of flags than a fresh
-            // exec: no `--sandbox`, no `--add-dir`. Both have config keys
-            // instead, so the same settings are expressed with `-c` and the
-            // conversation is kept.
-            let resuming = resume.and_then(|id| safe_session_id(id));
-            let mut cmd = match &resuming {
-                Some(id) => format!("codex exec resume --json {}", sh_quote(id)),
-                None => String::from("codex exec --json"),
-            };
-            // Codex refuses to start in a folder that is neither a git repo nor
-            // a trusted project in its own config, and says so before it reads
-            // the prompt: "Not inside a trusted directory and
-            // --skip-git-repo-check was not specified."
-            //
-            // An OUTSIDE seat is started in an empty scratch folder on purpose
-            // (`chat_room::seat_workspace`) — that is the whole point of it, a
-            // place the project cannot be read from. So that check killed every
-            // room-only Codex seat at birth, and the room sat waiting on an
-            // answer that was never coming.
-            //
-            // Passed always rather than only for that case: which folder a chat
-            // runs in is OctiqFlow's own decision, made deliberately at spawn
-            // time, and what may be touched there is already said properly by
-            // the sandbox. Codex guessing from the presence of a `.git` adds
-            // nothing here.
-            cmd.push_str(" --skip-git-repo-check");
-            if let Some(m) = model.and_then(|m| safe_model(m)) {
-                cmd.push_str(&format!(" -m {}", sh_quote(&m)));
-            }
-            // Codex calls it a sandbox policy rather than a permission mode,
-            // and splits into two what Claude answers with one flag: the sandbox
-            // says what a command may touch, the approval policy says whether it
-            // runs without being asked. Both are needed — a sandbox alone leaves
-            // the asking to whatever the user's own config happens to say.
-            //
-            // The approval half travels as a CONFIG KEY on both forms.
-            // `--ask-for-approval` survives only on the interactive `codex`;
-            // `codex exec` dropped it (0.147.0 answers the flag with "error:
-            // unexpected argument '--ask-for-approval' found" and refuses to
-            // start), and `codex exec resume` never took it. `-c
-            // approval_policy=` is the one spelling both accept.
-            if let Some(a) = access {
-                if resuming.is_some() {
-                    cmd.push_str(&format!(" -c sandbox_mode={}", sh_quote(a.codex())));
-                } else {
-                    cmd.push_str(&format!(" --sandbox {}", a.codex()));
-                }
-                cmd.push_str(&format!(
-                    " -c approval_policy={}",
-                    sh_quote(a.codex_approval())
-                ));
-            }
-            // Effort has no flag of its own on either form: it is a config key.
-            // The value comes from the allowlist, so it is a bare word — which
-            // fails to parse as TOML and is taken as the literal string, which
-            // is what we want.
-            if let Some(e) = effort.and_then(|e| safe_effort(agent, e)) {
-                cmd.push_str(&format!(" -c model_reasoning_effort={}", sh_quote(e)));
-            }
-            // Extra folders: the same idea as Claude's, and the reason a chat
-            // in a multi-folder project can reach all of it.
-            for dir in extra_dirs {
-                if resuming.is_some() {
-                    // `--add-dir` is not offered on resume; the config key is.
-                    cmd.push_str(&format!(
-                        " -c sandbox_workspace_write.writable_roots={}",
-                        sh_quote(&format!("[{}]", toml_string(dir)))
-                    ));
-                } else {
-                    cmd.push_str(&format!(" --add-dir {}", sh_quote(dir)));
-                }
-            }
-            // Images are FILES on the command line here, where Claude takes
-            // them inline on stdin (see write_user_message). Same attachment
-            // either way — only the delivery differs.
-            for path in images {
-                cmd.push_str(&format!(" -i {}", sh_quote(path)));
-            }
-            cmd.push(' ');
-            cmd.push_str(&sh_quote(prompt));
-            cmd
-        }
-    }
+    provider_for(agent).build_command(&AgentCommand {
+        model,
+        access,
+        prompt,
+        resume,
+        extra_dirs,
+        effort,
+        images,
+        lite,
+        mcp_config,
+    })
 }
 
 /// Start a chat session. `key` names it for every later call, exactly as a PTY
@@ -853,6 +513,41 @@ pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> 
     }
 }
 
+/// Start the next queued command-line turn after its preceding process exits.
+/// Its adapter owns the provider's resume syntax and has no persistent stdin
+/// channel (see `start_session`).
+fn start_queued_command_turn(
+    manager: Arc<ChatManager>,
+    key: &str,
+    turn: QueuedCommandTurn,
+) -> Result<(), String> {
+    let start = manager
+        .host_start(key)
+        .ok_or_else(|| format!("nothing here knows how to resume '{key}'"))?;
+    if provider_for(start.agent)
+        .capabilities()
+        .input
+        .accepts_stdin()
+    {
+        return Err(format!("'{key}' no longer uses command-line turns"));
+    }
+    let QueuedCommandTurn { text, images } = turn;
+    chat_start_impl(
+        manager,
+        key.to_string(),
+        start.cwd,
+        start.agent,
+        start.model,
+        start.access,
+        Some(text),
+        start.session_id,
+        start.extra_dirs,
+        start.effort,
+        Some(images),
+        start.lite,
+    )
+}
+
 /// Start one agent process — the host's, or a seat's.
 ///
 /// Everything below reads `key` as the CONVERSATION: the transcript it appends
@@ -899,6 +594,7 @@ pub(crate) fn start_session(
         .filter(|p| !p.trim().is_empty() && p != &cwd && seen.insert(p.clone()))
         .collect();
 
+    let provider = provider_for(agent);
     let prompt = prompt.unwrap_or_default();
     let images = images.unwrap_or_default();
     let line = build_command(
@@ -922,12 +618,9 @@ pub(crate) fn start_session(
         } else {
             cwd.clone()
         })
-        // Claude reads every turn off stdin, so it needs a pipe. Codex must
-        // NOT have one: `codex exec` treats piped stdin as MORE INPUT to append
-        // to the prompt, so an open pipe leaves it sitting on
-        // "Reading additional input from stdin..." waiting for an end that
-        // never comes. Its prompt is on the command line; there is nothing to
-        // send it.
+        // The selected provider declares whether it owns a persistent stdin
+        // protocol. A command-line provider must receive EOF immediately so a
+        // one-shot CLI does not wait for a second prompt.
         // The hook answers only for agents we started, and needs to know
         // which chat is asking so the UI can attach the question to it.
         .env("OCTIQ_CHAT_KEY", &key)
@@ -955,14 +648,15 @@ pub(crate) fn start_session(
         //
         // Harmless for Codex, which shares this spawn and has never read it.
         .env("CLAUDE_CODE_ARTIFACT", "1")
-        .stdin(match agent {
-            ChatAgent::Claude => Stdio::piped(),
-            ChatAgent::Codex => Stdio::null(),
+        .stdin(if provider.capabilities().input.accepts_stdin() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("could not start {}: {e}", agent.bin()))?;
+        .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
 
     let stdout = child
         .stdout
@@ -995,21 +689,12 @@ pub(crate) fn start_session(
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     record_access_for(&key, access, is_seat);
 
-    // Say hello, or never be asked anything.
-    //
-    // `--permission-prompt-tool stdio` alone is not enough: without this the
-    // agent decides there is nobody on the other end and denies outright rather
-    // than asking — measured, not assumed. It is the first thing the Agent SDK
-    // writes, and the agent answers it with its own capabilities before any
-    // conversation starts.
-    //
-    // Claude only. Codex has no stdin at all here (see the pipe above).
-    if agent == ChatAgent::Claude {
-        let hello = json!({
-            "type": "control_request",
-            "request_id": format!("{HELLO_REQUEST_ID}{}", uuid::Uuid::new_v4()),
-            "request": { "subtype": "initialize" }
-        });
+    // Providers that use a control channel initialize it before the first turn.
+    // The handshake is not transcript content; its response is recognized by
+    // that provider's event adapter below.
+    if let Some(hello) =
+        provider.initialize_payload(&format!("octiq-hello-{}", uuid::Uuid::new_v4()))
+    {
         if let Ok(mut guard) = session.lock() {
             if let Some(stdin) = guard.stdin.as_mut() {
                 let _ = writeln!(stdin, "{hello}");
@@ -1021,6 +706,7 @@ pub(crate) fn start_session(
     // stdout: one JSON object per line, passed through as-is.
     {
         let key = key.clone();
+        let stream_provider = provider;
         let asking = session.clone();
         // Whose stdout this is. `None` is the host, and a host's events go
         // through completely untouched — see `stamp_speaker`. A seat names
@@ -1051,6 +737,7 @@ pub(crate) fn start_session(
                 }
                 match serde_json::from_str::<Value>(trimmed) {
                     Ok(event) => {
+                        let observed = stream_provider.observe_event(&event);
                         // Anything the agent asks US, named in the log first.
                         //
                         // This whole path is invisible otherwise: a
@@ -1069,15 +756,21 @@ pub(crate) fn start_session(
                                     .unwrap_or("?")
                             );
                         }
-                        if let Some((id, request)) = can_use_tool(&event) {
-                            answer_permission(&asking, &key, rt.as_ref(), id, request);
+                        if let Some(permission) = observed.permission {
+                            answer_permission(
+                                &asking,
+                                &key,
+                                rt.as_ref(),
+                                permission.id.to_string(),
+                                permission.request.clone(),
+                            );
                             continue;
                         }
                         // The answer to our hello. It is the agent listing its
                         // own commands and capabilities — several kilobytes of
                         // it — and it is not conversation, so it goes no further
                         // than here rather than into the transcript.
-                        if answered_hello(&event) {
+                        if observed.is_initialize_response {
                             // Whether it WORKED is worth a line: the agent only
                             // asks over stdio once this is accepted, and a
                             // rejected handshake is otherwise silent.
@@ -1096,13 +789,13 @@ pub(crate) fn start_session(
                         // agent said. A refused mode change has to be known
                         // here or the picker would promise a level the agent is
                         // not on. See `chat_set_access`.
-                        if let Some(error) = refused_access_change(&event) {
+                        if let Some(error) = observed.access_refusal {
                             crate::bus::emit(
                                 "chat-status",
                                 ChatStatus {
                                     key: key.clone(),
                                     kind: "access-refused".into(),
-                                    text: error,
+                                    text: error.to_string(),
                                     code: None,
                                 },
                             );
@@ -1124,22 +817,22 @@ pub(crate) fn start_session(
                         // once, under different names, in their opening event.
                         // Hosts only: a seat resumes nothing.
                         if speaker.is_none() {
-                            if let Some(id) = announced_session(&event) {
+                            if let Some(id) = observed.session_id {
                                 reading.remember_session(&key, id);
                             }
                         }
                         // Codex says nothing on its full stop, so its closing
                         // words have to be kept as they go past — see
                         // `codex_said`.
-                        if let Some(text) = codex_said(&event) {
+                        if let Some(text) = observed.spoken_text {
                             carried.clear();
                             carried.push_str(text);
                         }
-                        if turn_is_over(&event) {
+                        if observed.turn_finished {
                             if let Ok(mut s) = asking.lock() {
                                 s.turn_ended();
                             }
-                            let said = closing_words(&event, &carried).to_string();
+                            let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
                             crate::push::notify_chat(Some(&key), "done", &said);
                             // A full stop is the only honest signal that an
@@ -1197,10 +890,11 @@ pub(crate) fn start_session(
     // stderr: never JSON, always worth showing.
     {
         let key = key.clone();
+        let stderr_provider = provider;
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                if line.trim().is_empty() || is_expected_chatter(&line) {
+                if line.trim().is_empty() || stderr_provider.is_expected_stderr(&line) {
                     continue;
                 }
                 crate::bus::emit(
@@ -1234,6 +928,63 @@ pub(crate) fn start_session(
                     None => thread::sleep(std::time::Duration::from_millis(200)),
                 }
             };
+
+            // An old reaper must never remove a replacement that was started
+            // under the same key. That was harmless while every process lived
+            // for a whole persistent conversation, but command-line providers
+            // deliberately start a fresh process for every turn.
+            let (was_current, was_replaced, queued_turn) = match manager_for_exit.sessions.lock() {
+                Ok(mut sessions) => {
+                    if sessions
+                        .get(&session_key_for_exit)
+                        .is_some_and(|current| Arc::ptr_eq(current, &session))
+                    {
+                        sessions.remove(&session_key_for_exit);
+                        // `chat_send_impl` takes these same locks in this
+                        // order. Once this map entry is gone, no newly queued
+                        // turn can be stranded on the old process.
+                        let queued_turn =
+                            (!provider_for(agent).capabilities().input.accepts_stdin() && !is_seat)
+                                .then(|| manager_for_exit.take_queued_command_turn(&key))
+                                .flatten();
+                        (true, false, queued_turn)
+                    } else {
+                        (false, sessions.contains_key(&session_key_for_exit), None)
+                    }
+                }
+                Err(_) => (false, false, None),
+            };
+            if was_replaced {
+                return;
+            }
+
+            // A command-line provider has no second-input channel. If somebody
+            // sent a message after its full-stop but before this reaper saw the
+            // exit, carry it into the next resume command instead. Keep the
+            // UI's running state alive across that handoff: an `exit` here
+            // would make a second quick message race the replacement.
+            if was_current && !is_seat && !provider_for(agent).capabilities().input.accepts_stdin()
+            {
+                if let Some(turn) = queued_turn {
+                    match start_queued_command_turn(manager_for_exit.clone(), &key, turn) {
+                        Ok(()) => return,
+                        Err(why) => {
+                            // Do not let a later, unrelated resume receive
+                            // stale words after a failed restart.
+                            manager_for_exit.forget_queued_command_turns(&key);
+                            crate::bus::emit(
+                                "chat-status",
+                                ChatStatus {
+                                    key: key.clone(),
+                                    kind: "error".into(),
+                                    text: format!("could not resume queued message: {why}"),
+                                    code: None,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
             crate::bus::emit(
                 "chat-status",
                 ChatStatus {
@@ -1243,91 +994,31 @@ pub(crate) fn start_session(
                     code,
                 },
             );
-            // Forget the session now it is gone, so its key is free to be
-            // started again. The manager is held by Arc rather than looked up
-            // through an AppHandle: this thread outlives the call, and a
-            // headless server has no app to look anything up in.
-            manager_for_exit
-                .sessions
-                .lock()
-                .ok()
-                .map(|mut m| m.remove(&session_key_for_exit));
             // And nothing may go on waiting for a turn it will never finish —
             // see `round::session_gone`.
             crate::round::session_gone(&session_key_for_exit);
         });
     }
 
-    // Claude's first turn rides in on stdin like every later one, so the send
-    // path is the same code for turn 1 and turn 9. Codex already has the prompt
-    // on its command line.
-    if agent == ChatAgent::Claude && !prompt.trim().is_empty() {
+    // Persistent-stream providers receive the first user turn after startup;
+    // command-line providers received it in `build_command` already.
+    if provider.capabilities().input.accepts_stdin() && !prompt.trim().is_empty() {
         write_user_message(&session, &prompt, &images)?;
     }
 
     Ok(())
 }
 
-/// Lines an agent writes to stderr as a matter of course, which are noise here.
-///
-/// `codex exec` announces "Reading additional input from stdin..." whenever its
-/// stdin is not a terminal — which is always, for a process we spawned. Nothing
-/// is wrong and nothing is waiting: it reads EOF and carries on. Showing it as
-/// a notice on every Codex turn trains the user to ignore notices, which is
-/// exactly what a real one needs them not to do.
-fn is_expected_chatter(line: &str) -> bool {
-    let line = line.trim();
-    line.starts_with("Reading additional input from stdin")
-}
-
-/// The media type for an image path, or None when it is not an image we can
-/// hand to the model. Anthropic accepts these four and nothing else.
-fn image_media_type(path: &str) -> Option<&'static str> {
-    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
-}
-
-/// Read an image off disk as a base64 content block. `None` when it is not a
-/// readable image — a failed attachment must not stop the message being sent.
-fn image_block(path: &str) -> Option<Value> {
-    use base64::Engine;
-    let media_type = image_media_type(path)?;
-    let bytes = std::fs::read(path).ok()?;
-    // A ceiling, because this whole payload goes down a pipe as one line.
-    if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
-        return None;
-    }
-    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Some(json!({
-        "type": "image",
-        "source": { "type": "base64", "media_type": media_type, "data": data }
-    }))
-}
-
-/// Write one user message to a Claude session's stdin, in the shape
-/// `--input-format stream-json` expects.
-///
-/// Images go in as content blocks beside the text, which is how the model
-/// actually SEES them — as opposed to being told a path and having to open it
-/// with a tool. They come first: a picture followed by the question about it
-/// reads better to a model than the reverse.
+/// Write one user turn through the running provider's persistent input channel.
 fn write_user_message(
     session: &Arc<Mutex<ChatSession>>,
     text: &str,
     images: &[String],
 ) -> Result<(), String> {
-    let mut content: Vec<Value> = images.iter().filter_map(|p| image_block(p)).collect();
-    content.push(json!({ "type": "text", "text": text }));
-    let payload = json!({
-        "type": "user",
-        "message": { "role": "user", "content": content }
-    });
+    let agent = session.lock().map_err(|e| e.to_string())?.agent;
+    let payload = provider_for(agent)
+        .user_message_payload(text, images)
+        .ok_or("this chat does not take more input")?;
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     let stdin = guard
         .stdin
@@ -1341,7 +1032,6 @@ fn write_user_message(
     Ok(())
 }
 
-/// Send the next user turn to a running chat, with any images attached to it.
 /// Send the next user turn to a running chat, with any images attached to it.
 pub fn chat_send_impl(
     manager: Arc<ChatManager>,
@@ -1369,24 +1059,50 @@ pub fn chat_send_impl(
             return Ok(());
         }
     }
+    let images = images.unwrap_or_default();
     let session = {
+        // A command-line follow-up and its reaper share this lock order.
+        // Holding the sessions entry until the turn reaches the queue means the
+        // reaper either sees that queued turn or this call sees no session and
+        // the client starts a normal resume — never a successful send that
+        // vanishes in between.
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&session_key).cloned()
-    };
-    let Some(session) = session else {
-        // Two different failures, said differently on purpose. A seat is a
-        // RECORD until someone talks to it, so "it has not started yet" is an
-        // ordinary state the client answers by starting it — the same thing it
-        // already does for the host's own first message. "No such chat" is not
-        // recoverable and must not be mistaken for it.
-        return Err(match target {
-            crate::chat_room::Target::Seat(seat) => {
-                format!("seat '{}' is not running", seat.name)
+        let Some(session) = sessions.get(&session_key).cloned() else {
+            // Two different failures, said differently on purpose. A seat is a
+            // RECORD until someone talks to it, so "it has not started yet" is
+            // an ordinary state the client answers by starting it — the same
+            // thing it already does for the host's own first message. "No such
+            // chat" is not recoverable and must not be mistaken for it.
+            return Err(match target {
+                crate::chat_room::Target::Seat(seat) => {
+                    format!("seat '{}' is not running", seat.name)
+                }
+                crate::chat_room::Target::Host => "no such chat".into(),
+            });
+        };
+
+        // A command-line provider's stdin is deliberately `null`: an open pipe
+        // can make a one-shot command wait for more prompt text forever. Hosts
+        // have enough saved launch context to resume after exit, so queue their
+        // next turn instead.
+        if matches!(&target, crate::chat_room::Target::Host) {
+            let mut guard = session.lock().map_err(|e| e.to_string())?;
+            if !provider_for(guard.agent)
+                .capabilities()
+                .input
+                .accepts_stdin()
+            {
+                manager.queue_command_turn(&key, QueuedCommandTurn { text, images })?;
+                // A queued turn is still work the person is waiting for. This
+                // also prevents the idle sweeper from ending the process in
+                // the handoff before its reaper starts the resume.
+                guard.turn_started();
+                return Ok(());
             }
-            crate::chat_room::Target::Host => "no such chat".into(),
-        });
+        }
+        session
     };
-    write_user_message(&session, &text, &images.unwrap_or_default())
+    write_user_message(&session, &text, &images)
 }
 
 /// Start ONE seat's process, with its first message.
@@ -1469,12 +1185,10 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
     };
-    let payload = json!({
-        "type": "control_request",
-        "request_id": format!("int-{}", uuid::Uuid::new_v4()),
-        "request": { "subtype": "interrupt" }
-    });
     let mut guard = session.lock().map_err(|e| e.to_string())?;
+    let payload = provider_for(guard.agent)
+        .interrupt_payload()
+        .ok_or("this chat does not take more input")?;
     let stdin = guard
         .stdin
         .as_mut()
@@ -1487,38 +1201,6 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
     // spoken to again is exactly what the sweeper is for.
     guard.turn_ended();
     Ok(())
-}
-
-/// Is this line the agent asking whether it may use a tool? Its request id and
-/// the request itself if so.
-///
-/// Control requests travel in BOTH directions on this channel. The ones we send
-/// — `interrupt`, `set_permission_mode` — are answered by the agent with a
-/// `control_response`. This is the other way round: `--permission-prompt-tool
-/// stdio` makes the agent send `can_use_tool`, and the response is ours to
-/// write.
-fn can_use_tool(event: &Value) -> Option<(String, Value)> {
-    if event.get("type")?.as_str()? != "control_request" {
-        return None;
-    }
-    let request = event.get("request")?;
-    if request.get("subtype")?.as_str()? != "can_use_tool" {
-        return None;
-    }
-    Some((
-        event.get("request_id")?.as_str()?.to_string(),
-        request.clone(),
-    ))
-}
-
-/// Was this line the agent answering our handshake?
-fn answered_hello(event: &Value) -> bool {
-    event.get("type").and_then(Value::as_str) == Some("control_response")
-        && event
-            .get("response")
-            .and_then(|r| r.get("request_id"))
-            .and_then(Value::as_str)
-            .is_some_and(|id| id.starts_with(HELLO_REQUEST_ID))
 }
 
 /// Put the question to the person, then write the answer back to the agent.
@@ -1590,15 +1272,11 @@ fn answer_permission(
 /// Write one `control_response` back to the agent. Best-effort: a chat whose
 /// stdin has gone is a chat that is no longer waiting for this.
 fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, response: Value) {
-    let payload = json!({
-        "type": "control_response",
-        "response": {
-            "subtype": "success",
-            "request_id": request_id,
-            "response": response,
-        }
-    });
     let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(payload) = provider_for(guard.agent).control_response_payload(request_id, response)
+    else {
         return;
     };
     let Some(stdin) = guard.stdin.as_mut() else {
@@ -1606,40 +1284,6 @@ fn write_control_response(session: &Arc<Mutex<ChatSession>>, request_id: &str, r
     };
     let _ = writeln!(stdin, "{payload}");
     let _ = stdin.flush();
-}
-
-/// Marks a control request as ours, so its answer can be told apart from every
-/// other one on the wire. Claude echoes the id back on the `control_response`.
-const ACCESS_REQUEST_ID: &str = "octiq-access-";
-
-/// The same, for the handshake. Its answer carries the agent's own capabilities
-/// and is of no use to the UI, so it is recognised here and dropped.
-const HELLO_REQUEST_ID: &str = "octiq-hello-";
-
-/// Was this line Claude refusing a mode change we asked for? The error text if
-/// so, and None for every other line — including our own successful answers.
-fn refused_access_change(event: &Value) -> Option<String> {
-    if event.get("type")?.as_str()? != "control_response" {
-        return None;
-    }
-    let response = event.get("response")?;
-    if response.get("subtype")?.as_str()? != "error" {
-        return None;
-    }
-    if !response
-        .get("request_id")?
-        .as_str()?
-        .starts_with(ACCESS_REQUEST_ID)
-    {
-        return None;
-    }
-    Some(
-        response
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("the agent refused the change")
-            .to_string(),
-    )
 }
 
 /// Change what a RUNNING chat may do, WITHOUT ending it.
@@ -1664,9 +1308,9 @@ fn refused_access_change(event: &Value) -> Option<String> {
 /// combination of "hook thinks X, agent is on Y" the failure can leave behind
 /// ends in the agent asking or refusing, never in it acting unasked.
 ///
-/// Codex has no such channel and needs none: every `codex exec` turn is its own
-/// process and takes the new `--sandbox` on its command line, so recording the
-/// level is the whole job.
+/// Command-line providers have no such channel and need none: every turn is a
+/// fresh process and receives its access flags on the command line, so recording
+/// the level is the whole job.
 pub fn chat_set_access_impl(
     manager: &ChatManager,
     key: String,
@@ -1677,14 +1321,13 @@ pub fn chat_set_access_impl(
         sessions.get(&key).cloned().ok_or("no such chat")?
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    if guard.agent != ChatAgent::Claude {
+    let provider = provider_for(guard.agent);
+    if !provider.capabilities().supports_live_access_change {
         return Ok(());
     }
-    let payload = json!({
-        "type": "control_request",
-        "request_id": format!("{ACCESS_REQUEST_ID}{}", uuid::Uuid::new_v4()),
-        "request": { "subtype": "set_permission_mode", "mode": access.claude() }
-    });
+    let payload = provider
+        .access_change_payload(access)
+        .ok_or("this chat does not take more input")?;
     let stdin = guard
         .stdin
         .as_mut()
@@ -1742,101 +1385,31 @@ pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, St
     Ok(ended)
 }
 
-/// End one chat's PROCESS, and change nothing else about the chat.
+/// End one chat process while preserving its transcript and remembered settings.
 ///
-/// The difference from `chat_stop_impl` is everything that is not here, and it
-/// is the difference between a person ending a piece of work and this app
-/// tidying up after itself. Standing permissions and the access level belong to
-/// the WORK: the sweeper's chat is coming back on the next message, at the same
-/// level, and re-asking about a command already allowed "always" would be a
-/// decision quietly taken away. `chat_stop` drops both because the person said
-/// they were finished.
-///
-/// Answers whether there WAS one, so a caller reporting what it ended does not
-/// name a key that had already gone.
+/// Unlike stopping a chat, this intentionally retains standing permissions and
+/// access settings so the next message can resume the same work. Any queued
+/// one-shot-provider follow-up is discarded: the person explicitly ended the
+/// process it was waiting to resume.
 fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
     let session = {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.remove(key)
     };
+    // Removal from the session map happens before clearing the queue, so a
+    // concurrent send cannot add a new deferred turn after this cleanup.
+    manager.forget_queued_command_turns(key);
     let Some(session) = session else {
         return Ok(false);
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    // Closing stdin asks Claude to finish; the kill is the backstop.
+    // Closing stdin asks persistent providers to finish; kill is the backstop.
     guard.stdin.take();
     let _ = guard.child.kill();
     Ok(true)
 }
 
-/// Did this event end a turn? Both agents' way of saying so.
-///
-/// Claude's `result` is its own full stop, the same line the push notice and a
-/// round already read. Codex says `turn.completed`, or `turn.failed` when it
-/// went wrong — and a failed turn has ended just as surely as a good one.
-fn turn_is_over(event: &Value) -> bool {
-    matches!(
-        event.get("type").and_then(Value::as_str),
-        Some("result") | Some("turn.completed") | Some("turn.failed")
-    )
-}
-
-/// The id the agent gave this conversation, if this event announces one.
-///
-/// Both agents say it once and then never again, in different words: Claude's
-/// `system`/`init` carries `session_id`, and Codex's `thread.started` carries
-/// `thread_id` — which is what `codex exec resume` takes, so the two are the
-/// same thing under two names and land in one field.
-fn announced_session(event: &Value) -> Option<&str> {
-    match event.get("type").and_then(Value::as_str) {
-        Some("system") if event.get("subtype").and_then(Value::as_str) == Some("init") => {
-            event.get("session_id").and_then(Value::as_str)
-        }
-        Some("thread.started") => event.get("thread_id").and_then(Value::as_str),
-        _ => None,
-    }
-}
-
-/// The words a Codex turn ended on, if this event carries any.
-///
-/// Codex's full stop is EMPTY: `turn.completed` has a usage block and nothing
-/// else. What it said is in the last `item.completed` of type `agent_message`
-/// before it — so the reader keeps that line as it goes past, and hands it over
-/// when the turn stops.
-///
-/// This is the half a round was missing. `turn_ended` only ever fired on
-/// Claude's `result`, so a Codex seat in a round said its piece, was never
-/// heard, and was written down as "did not answer in time" twenty minutes
-/// later.
-fn codex_said(event: &Value) -> Option<&str> {
-    if event.get("type").and_then(Value::as_str) != Some("item.completed") {
-        return None;
-    }
-    let item = event.get("item")?;
-    if item.get("type").and_then(Value::as_str) != Some("agent_message") {
-        return None;
-    }
-    item.get("text").and_then(Value::as_str)
-}
-
-/// The words a turn ended on, whichever agent ended it.
-///
-/// Claude puts them on the full stop itself; Codex's have to have been kept as
-/// they went past, which is what `carried` holds.
-fn closing_words<'a>(event: &'a Value, carried: &'a str) -> &'a str {
-    match event.get("type").and_then(Value::as_str) {
-        Some("result") => event
-            .get("result")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        _ => carried,
-    }
-}
-
-/// The chats that have been sitting still for longer than `timeout`.
-///
-/// Split out from the sweeper so the rule can be tested without waiting a
-/// quarter of an hour for one.
+/// The chats that have been sitting still for longer than timeout.
 fn still_keys(manager: &ChatManager, timeout: Duration) -> Vec<String> {
     let Ok(sessions) = manager.sessions.lock() else {
         return Vec::new();
@@ -1907,12 +1480,6 @@ fn sweep_still_chats(manager: &ChatManager, timeout: Duration) -> Vec<String> {
 }
 
 /// Watch for chats nobody is using and give their memory back.
-///
-/// Started once, by whichever half of the app is running. Nothing announces a
-/// swept chat to the client: the process exiting already emits `chat-status`
-/// `exit`, which is what turns the live mark off, and there is nothing else to
-/// report — the conversation is all still there and the next message picks it
-/// straight back up.
 pub fn start_idle_reaper(manager: Arc<ChatManager>) {
     let Some(timeout) = idle_timeout() else {
         println!("[chat] idle sweeper off (OCTIQ_CHAT_IDLE_MINS=0)");
@@ -1930,46 +1497,9 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
     });
 }
 
-/// An MCP server carrying the two tools print mode has no answer for: asking
-/// the user something, and keeping a TODO list on their screen.
-///
-/// Print mode is never offered `AskUserQuestion` or `TodoWrite` — there is
-/// nobody to answer and nowhere to draw, so neither tool reaches the model. It
-/// does load MCP servers in full, so this hands it ours instead.
-const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
-
-/// Told to the agent so it knows the tool is there and when it is wanted.
-/// Without this it has a tool it never thinks to reach for.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
-
-/// Write the ask-user MCP server and its config, and return the config path.
-///
-/// Rewritten on every start, like the hook, so an upgraded OctiqFlow cannot
-/// leave an old copy behind. Best-effort: without it the chat simply runs
-/// without the tool, which is how it behaved before this existed.
-fn ask_mcp_config() -> Option<std::path::PathBuf> {
-    let dir = crate::paths::home_dir()?.join(".octiqflow").join("mcp");
-    std::fs::create_dir_all(&dir).ok()?;
-
-    let script = dir.join("octiq-ask.cjs");
-    std::fs::write(&script, ASK_MCP).ok()?;
-
-    let config = dir.join("octiq-ask.json");
-    let body = json!({
-        "mcpServers": {
-            "octiq": {
-                "command": "node",
-                "args": [script.to_string_lossy()],
-            }
-        }
-    });
-    std::fs::write(&config, serde_json::to_vec_pretty(&body).ok()?).ok()?;
-    Some(config)
-}
-
-/// Where pasted images are kept. Under `~/.octiqflow` rather than in the
-/// project, because a screenshot you pasted into a chat is not part of anyone's
-/// repository and must never turn up in `git status`.
+/// Where pasted images are kept. Under ~/.octiqflow rather than in the
+/// project, because a screenshot pasted into a chat is not part of a
+/// repository and must never turn up in git status.
 fn attachments_dir() -> Result<std::path::PathBuf, String> {
     let dir = crate::paths::home_dir()
         .ok_or("could not find your home folder")?
@@ -2076,8 +1606,11 @@ pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    use crate::agent_provider::{
+        test_image_media_type as image_media_type, test_sh_quote as sh_quote,
+        test_toml_string as toml_string,
+    };
 
     #[test]
     fn full_access_is_named_in_the_environment_the_hook_reads() {
@@ -2105,9 +1638,10 @@ mod tests {
                 }]
             }
         });
-        let (id, request) = can_use_tool(&asking).expect("the question");
-        assert_eq!(id, "req-1");
-        assert_eq!(request["tool_name"], "Bash");
+        let observed = provider_for(ChatAgent::Claude).observe_event(&asking);
+        let permission = observed.permission.expect("the question");
+        assert_eq!(permission.id, "req-1");
+        assert_eq!(permission.request["tool_name"], "Bash");
 
         // Control requests travel BOTH ways on this channel. Ours must not be
         // mistaken for the agent's, or setting the mode would raise a question.
@@ -2116,8 +1650,15 @@ mod tests {
             "request_id": "octiq-access-1",
             "request": { "subtype": "set_permission_mode", "mode": "auto" }
         });
-        assert!(can_use_tool(&ours).is_none());
-        assert!(can_use_tool(&json!({ "type": "assistant" })).is_none());
+        assert!(provider_for(ChatAgent::Claude)
+            .observe_event(&ours)
+            .permission
+            .is_none());
+        let assistant = json!({ "type": "assistant" });
+        assert!(provider_for(ChatAgent::Claude)
+            .observe_event(&assistant)
+            .permission
+            .is_none());
     }
 
     #[test]
@@ -2748,16 +2289,13 @@ mod tests {
 
     #[test]
     fn the_stdin_notice_codex_always_prints_is_not_a_notice() {
-        assert!(is_expected_chatter(
-            "Reading additional input from stdin..."
-        ));
-        assert!(is_expected_chatter(
-            "  Reading additional input from stdin... "
-        ));
+        let codex = provider_for(ChatAgent::Codex);
+        assert!(codex.is_expected_stderr("Reading additional input from stdin..."));
+        assert!(codex.is_expected_stderr("  Reading additional input from stdin... "));
         // Anything else still reaches the user — that is the whole point of
         // surfacing stderr.
-        assert!(!is_expected_chatter("Error loading config.toml"));
-        assert!(!is_expected_chatter("You've hit your usage limit."));
+        assert!(!codex.is_expected_stderr("Error loading config.toml"));
+        assert!(!codex.is_expected_stderr("You've hit your usage limit."));
     }
 
     #[test]
@@ -2850,13 +2388,15 @@ mod access_tests {
             "type": "control_response",
             "response": {
                 "subtype": "error",
-                "request_id": format!("{ACCESS_REQUEST_ID}1"),
+                "request_id": "octiq-access-1",
                 "error": "Cannot set permission mode to bypassPermissions \
                           because the session was not launched with \
                           --dangerously-skip-permissions"
             }
         });
-        assert!(refused_access_change(&refused)
+        assert!(provider_for(ChatAgent::Claude)
+            .observe_event(&refused)
+            .access_refusal
             .expect("a refusal")
             .contains("bypassPermissions"));
     }
@@ -2867,16 +2407,23 @@ mod access_tests {
         // message. None of these means the picker is lying about the level.
         let ours_worked = json!({
             "type": "control_response",
-            "response": { "subtype": "success", "request_id": format!("{ACCESS_REQUEST_ID}1") }
+            "response": { "subtype": "success", "request_id": "octiq-access-1" }
         });
         let someone_elses = json!({
             "type": "control_response",
             "response": { "subtype": "error", "request_id": "int-1", "error": "no" }
         });
         let a_message = json!({ "type": "assistant", "message": { "content": [] } });
-        assert!(refused_access_change(&ours_worked).is_none());
-        assert!(refused_access_change(&someone_elses).is_none());
-        assert!(refused_access_change(&a_message).is_none());
+        let provider = provider_for(ChatAgent::Claude);
+        assert!(provider
+            .observe_event(&ours_worked)
+            .access_refusal
+            .is_none());
+        assert!(provider
+            .observe_event(&someone_elses)
+            .access_refusal
+            .is_none());
+        assert!(provider.observe_event(&a_message).access_refusal.is_none());
     }
 
     #[test]
@@ -2884,9 +2431,22 @@ mod access_tests {
         // Verified against the CLI's own control channel: `plan` and `auto` are
         // accepted mid-session, `bypassPermissions` only when the process was
         // launched for it — which is why a switch UP to Full still restarts.
-        assert_eq!(Access::Read.claude(), "plan");
-        assert_eq!(Access::Auto.claude(), "auto");
-        assert_eq!(Access::Full.claude(), "bypassPermissions");
+        let command = |access| {
+            build_command(
+                ChatAgent::Claude,
+                None,
+                Some(access),
+                "",
+                None,
+                &[],
+                None,
+                &[],
+                false,
+            )
+        };
+        assert!(command(Access::Read).contains("--permission-mode plan"));
+        assert!(command(Access::Auto).contains("--permission-mode auto"));
+        assert!(command(Access::Full).contains("--permission-mode bypassPermissions"));
     }
 }
 
@@ -3140,26 +2700,50 @@ mod idle_tests {
 
     #[test]
     fn both_agents_full_stops_end_a_turn_and_nothing_else_does() {
-        assert!(turn_is_over(
-            &json!({ "type": "result", "subtype": "success" })
-        ));
-        assert!(turn_is_over(&json!({ "type": "turn.completed" })));
+        assert!(
+            provider_for(ChatAgent::Claude)
+                .observe_event(&json!({ "type": "result", "subtype": "success" }))
+                .turn_finished
+        );
+        assert!(
+            provider_for(ChatAgent::Codex)
+                .observe_event(&json!({ "type": "turn.completed" }))
+                .turn_finished
+        );
         // A failed turn has ended just as surely as a good one. Reading only
         // the happy word would leave a Codex chat that errored looking busy
         // for the rest of its life, and it would never be swept.
-        assert!(turn_is_over(&json!({ "type": "turn.failed" })));
+        assert!(
+            provider_for(ChatAgent::Codex)
+                .observe_event(&json!({ "type": "turn.failed" }))
+                .turn_finished
+        );
 
-        assert!(!turn_is_over(&json!({ "type": "assistant" })));
-        assert!(!turn_is_over(&json!({ "type": "stream_event" })));
-        assert!(!turn_is_over(&json!({ "type": "thread.started" })));
+        assert!(
+            !provider_for(ChatAgent::Claude)
+                .observe_event(&json!({ "type": "assistant" }))
+                .turn_finished
+        );
+        assert!(
+            !provider_for(ChatAgent::Claude)
+                .observe_event(&json!({ "type": "stream_event" }))
+                .turn_finished
+        );
+        assert!(
+            !provider_for(ChatAgent::Codex)
+                .observe_event(&json!({ "type": "thread.started" }))
+                .turn_finished
+        );
     }
 
     #[test]
     fn claude_puts_its_closing_words_on_its_own_full_stop() {
         let end = json!({ "type": "result", "result": "the migration is reversible" });
         assert_eq!(
-            closing_words(&end, "stale"),
-            "the migration is reversible",
+            provider_for(ChatAgent::Claude)
+                .observe_event(&end)
+                .final_text,
+            Some("the migration is reversible"),
             "the carried line must never win over words the event carries itself"
         );
     }
@@ -3173,30 +2757,47 @@ mod idle_tests {
             "type": "item.completed",
             "item": { "id": "item_4", "type": "agent_message", "text": "Hi! I am Codex." },
         });
-        assert_eq!(codex_said(&spoke), Some("Hi! I am Codex."));
+        assert_eq!(
+            provider_for(ChatAgent::Codex)
+                .observe_event(&spoke)
+                .spoken_text,
+            Some("Hi! I am Codex.")
+        );
 
         // Everything else it says as it works is machinery, not an answer.
         assert_eq!(
-            codex_said(&json!({
-                "type": "item.completed",
-                "item": { "id": "item_1", "type": "command_execution" },
-            })),
+            provider_for(ChatAgent::Codex)
+                .observe_event(&json!({
+                    "type": "item.completed",
+                    "item": { "id": "item_1", "type": "command_execution" },
+                }))
+                .spoken_text,
             None
         );
         assert_eq!(
-            codex_said(&json!({
-                "type": "item.started",
-                "item": { "id": "item_4", "type": "agent_message", "text": "half a" },
-            })),
+            provider_for(ChatAgent::Codex)
+                .observe_event(&json!({
+                    "type": "item.started",
+                    "item": { "id": "item_4", "type": "agent_message", "text": "half a" },
+                }))
+                .spoken_text,
             None,
             "only a COMPLETED message is what the turn ended on"
         );
 
         let end = json!({ "type": "turn.completed", "usage": { "output_tokens": 448 } });
-        assert_eq!(closing_words(&end, "Hi! I am Codex."), "Hi! I am Codex.");
+        assert!(
+            provider_for(ChatAgent::Codex)
+                .observe_event(&end)
+                .turn_finished
+        );
         // A turn that failed before saying anything ends on nothing, which is
         // honest — better than the last thing said two turns ago.
-        assert_eq!(closing_words(&json!({ "type": "turn.failed" }), ""), "");
+        assert!(
+            provider_for(ChatAgent::Codex)
+                .observe_event(&json!({ "type": "turn.failed" }))
+                .turn_finished
+        );
     }
 
     #[test]
@@ -3205,24 +2806,35 @@ mod idle_tests {
         // resumes this chat. Kept so the backend can restart a host it swept
         // and hand it the follow-up — see `HostStart`.
         assert_eq!(
-            announced_session(&json!({
-                "type": "system", "subtype": "init", "session_id": "abc-123",
-            })),
+            provider_for(ChatAgent::Claude)
+                .observe_event(&json!({
+                    "type": "system", "subtype": "init", "session_id": "abc-123",
+                }))
+                .session_id,
             Some("abc-123")
         );
         assert_eq!(
-            announced_session(&json!({ "type": "thread.started", "thread_id": "01a0-2f39" })),
+            provider_for(ChatAgent::Codex)
+                .observe_event(&json!({ "type": "thread.started", "thread_id": "01a0-2f39" }))
+                .session_id,
             Some("01a0-2f39")
         );
         // Said once, in the opening event, and never again. Anything else that
         // happens to carry the field is not the announcement.
         assert_eq!(
-            announced_session(&json!({
-                "type": "system", "subtype": "status", "session_id": "abc-123",
-            })),
+            provider_for(ChatAgent::Claude)
+                .observe_event(&json!({
+                    "type": "system", "subtype": "status", "session_id": "abc-123",
+                }))
+                .session_id,
             None
         );
-        assert_eq!(announced_session(&json!({ "type": "assistant" })), None);
+        assert_eq!(
+            provider_for(ChatAgent::Claude)
+                .observe_event(&json!({ "type": "assistant" }))
+                .session_id,
+            None
+        );
     }
 
     #[test]

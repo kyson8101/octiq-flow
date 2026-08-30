@@ -1,18 +1,10 @@
-// The plan, behind the counter in the top bar.
+// The plan, held just above the chat box.
 //
-// An agent that takes a request and goes quiet gives the person waiting nothing
-// to hold on to — being understood and being ignored look exactly the same. So
-// the count is always on the bar, `4/5`, which answers "did it get my request"
-// and "how far in is it" in five characters. The list itself is one tap under
-// it, or one hover on a machine with a mouse.
-//
-// A dropdown rather than a panel because the plan is glanced at, not read: a
-// column of its own said the same five characters and cost 14rem of the screen
-// to say them, and on a phone there is no column to give.
-//
-// Open on a phone, though, that dropdown takes the whole screen: a 320px card
-// over a 390px one leaves a rim of chat too thin to read or tap, so the width
-// it costs buys nothing, and the plan is a column of sentences that wants it.
+// It belongs to the conversation rather than the window chrome: when an agent
+// is working, the next step is most useful at the point where someone might
+// send a follow-up. The closed state is deliberately only one compact pill;
+// opening it reveals the complete checklist upward, without pushing the
+// composer away from the bottom of the chat.
 //
 // It costs no round trip. The agent's `todo_write` call travels down the chat
 // stream like any other tool call, and this reads the newest one back out of
@@ -28,9 +20,8 @@ export function Todos({ todos }: { todos: Todo[] }) {
   const [pinned, setPinned] = useState(false);
   const look = todoLook(todos);
 
-  // A quiet nudge when the list moves on. The counter is five characters at the
-  // edge of a busy bar, and a change that draws no attention at all is a change
-  // nobody notices — but it is also not worth a bang, so it is a fade.
+  // A quiet nudge when the list moves on. The pill is intentionally modest, but
+  // a progress change should still be noticeable without competing with chat.
   const [moved, setMoved] = useState(false);
   const before = useRef(look.done);
   useEffect(() => {
@@ -57,7 +48,7 @@ export function Todos({ todos }: { todos: Todo[] }) {
       onPointerLeave={(e) => e.pointerType === "mouse" && !pinned && setOpen(false)}
     >
       <button
-        className={`icon-btn plan-btn ${open ? "is-on" : ""} ${look.finished ? "is-done" : ""}`}
+        className={`plan-btn ${open ? "is-on" : ""} ${look.finished ? "is-done" : ""}`}
         type="button"
         aria-expanded={open}
         aria-label={`The plan — ${look.done} of ${look.total} done`}
@@ -67,8 +58,9 @@ export function Todos({ todos }: { todos: Todo[] }) {
           setOpen(!open || !pinned);
         }}
       >
+        <span className="plan-state" aria-hidden="true" />
         <span className={`plan-count ${moved ? "is-moved" : ""}`}>
-          {look.done}/{look.total}
+          {look.finished ? `All ${look.total} steps done` : `Step ${Math.min(look.done + 1, look.total)} / ${look.total}`}
         </span>
       </button>
 
@@ -83,9 +75,8 @@ export function Todos({ todos }: { todos: Todo[] }) {
               <span className="plan-pop-count">
                 {look.done}/{look.total}
               </span>
-              {/* On a phone the list takes the whole screen, so there is no
-                  scrim left to tap and no pointer to leave — this × is the only
-                  way out. Off the phone it is hidden; see styles.css. */}
+              {/* The close button is useful on touch screens, where there is no
+                  pointer leaving the card. */}
               <button className="plan-pop-close" type="button" aria-label="Close" onClick={close}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
                   <path d="M18 6 6 18M6 6l12 12" />

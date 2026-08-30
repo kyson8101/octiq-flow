@@ -568,7 +568,7 @@ mod tests {
         let svc = Services::load();
         let out = dispatch(&svc, "agent_installs", json!({})).expect("routed");
         let rows = out.as_array().expect("an array of agents");
-        assert_eq!(rows.len(), crate::agents::KNOWN_AGENTS.len());
+        assert_eq!(rows.len(), crate::agent_provider::AgentKind::ALL.len());
         // Every agent is named, installed or not — that IS the answer the page
         // renders, so a missing agent must not be a missing row.
         assert_eq!(rows[0]["id"], "claude");

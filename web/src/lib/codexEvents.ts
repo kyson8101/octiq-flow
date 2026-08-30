@@ -48,9 +48,11 @@ function runState(status: string, completed: boolean): ToolState {
   return completed ? "done" : "running";
 }
 
-/** Read one Codex event, or `null` when it is not one — which includes
- *  `thread.started` and `turn.started`, both of which say only that something is
- *  about to happen and draw nothing. */
+/** Read one Codex content event, or `null` when it has no content to draw.
+ *
+ * `thread.started` names the session in the main reducer and `turn.started`
+ * marks the optimistic user bubble as taken up there. Neither is a transcript
+ * item, so neither becomes a `CodexRead` here. */
 export function readCodexEvent(raw: unknown): CodexRead | null {
   const e = obj(raw);
   const type = str(e.type);

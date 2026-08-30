@@ -596,15 +596,16 @@ function TurnView({
     .join("\n\n")
     .trim();
 
-  // A user turn the agent has not picked up yet. It echoes a message back when
-  // it STARTS on it, not when it receives it — measured: a second message sent
-  // mid-answer is echoed only after the first turn's result. So an un-echoed
-  // bubble is one sitting in the queue, and saying so is the difference between
+  // A user turn the agent has not picked up yet. Claude echoes a message back
+  // when it STARTS on it; Codex says `turn.started` instead. Either signal
+  // takes the clock off the optimistic bubble. A second message sent
+  // mid-answer is only acknowledged after the first turn's result, so a bubble
+  // with neither signal is one sitting in the queue — the difference between
   // "it is ignoring me" and "it will get to it".
   // Only while the chat is actually working. A slash command like /context is
   // answered locally and is never echoed back at all, so "no echo" on its own
   // would leave it marked queued forever — which is how this was first wrong.
-  const queued = !!busy && role === "user" && messages.every((m) => !m.echo);
+  const queued = !!busy && role === "user" && messages.every((m) => !m.echo && !m.takenUp);
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
