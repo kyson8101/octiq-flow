@@ -15,11 +15,7 @@ export type ConversationMapTurn = {
   reply: string;
 };
 
-type Spot = ConversationMapTurn & { offset: number; position: number };
-
-type Viewport = { top: number; size: number };
-
-const EMPTY_VIEWPORT: Viewport = { top: 0, size: 1 };
+type Spot = ConversationMapTurn & { offset: number; rank: number };
 
 /** A readable, compact line for the map card. Markdown still belongs in the
  * transcript; this is only enough language to recognise a place at a glance. */
@@ -56,32 +52,29 @@ export function conversationMapTurns(turns: Message[][]): ConversationMapTurn[] 
   });
 }
 
-function viewportFor(el: HTMLDivElement): Viewport {
-  const height = Math.max(el.scrollHeight, 1);
-  return {
-    top: Math.max(0, Math.min(1, el.scrollTop / height)),
-    size: Math.max(0, Math.min(1, el.clientHeight / height)),
-  };
-}
-
 /** The user-message nearest the centre of the visible transcript. It is the
- * bright mark in the rail; the large preview waits for an explicit hover or
- * keyboard focus, so it never covers a reader's conversation by itself. */
-function closestSpot(spots: Spot[], view: Viewport): Spot | undefined {
-  const centre = view.top + view.size / 2;
+ * bright mark in the rail and the default preview. The rail itself is ordered
+ * by turn, not document pixels — a tall tool result must not leave a canyon
+ * between two neighbouring conversation points. */
+function closestSpot(spots: Spot[], centre: number): Spot | undefined {
   return spots.reduce<Spot | undefined>((nearest, spot) => {
-    if (!nearest || Math.abs(spot.position - centre) < Math.abs(nearest.position - centre)) return spot;
+    if (!nearest || Math.abs(spot.offset - centre) < Math.abs(nearest.offset - centre)) return spot;
     return nearest;
   }, undefined);
 }
 
-/** Short prompts should read as a small dash; a long prompt with a substantial
- * answer earns more of the minimap's width. The active point still gets the
- * full line, which is the fast way to find the place you are reading. */
-function pointWidth(spot: Spot, current: boolean): number {
-  if (current) return 52;
-  const characters = spot.prompt.length + spot.reply.length;
-  return Math.min(44, Math.max(12, 10 + Math.round(Math.log2(characters + 1) * 4.5)));
+/** Every point gets an even slot in a compact rail, with a little breathing
+ * room at each end so the first and last marks never look clipped. */
+export function conversationMapRank(index: number, total: number): number {
+  if (total <= 1) return 0.5;
+  return 0.07 + (index / (total - 1)) * 0.86;
+}
+
+/** Marks are deliberately content-blind. A map is a rhythm of return points,
+ * not a bar chart of which replies happened to be long; the only expansion is
+ * the direct hover/focus affordance. */
+export function conversationMapPointWidth(pointedAt: boolean): number {
+  return pointedAt ? 52 : 12;
 }
 
 export function ConversationMap({
@@ -98,7 +91,7 @@ export function ConversationMap({
   onJump?: () => void;
 }) {
   const [spots, setSpots] = useState<Spot[]>([]);
-  const [viewport, setViewport] = useState<Viewport>(EMPTY_VIEWPORT);
+  const [scrollCentre, setScrollCentre] = useState(0);
   const [pointedAt, setPointedAt] = useState<string | null>(null);
   const frame = useRef(0);
 
@@ -118,16 +111,15 @@ export function ConversationMap({
           element,
         ]),
       );
-      const height = Math.max(scroller.scrollHeight, 1);
       setSpots(
-        turns.flatMap((turn) => {
+        turns.flatMap((turn, index) => {
           const anchor = anchors.get(turn.id);
           if (!anchor) return [];
           const offset = scroller.scrollTop + anchor.getBoundingClientRect().top - box.top;
-          return [{ ...turn, offset, position: Math.max(0, Math.min(1, offset / height)) }];
+          return [{ ...turn, offset, rank: conversationMapRank(index, turns.length) }];
         }),
       );
-      setViewport(viewportFor(scroller));
+      setScrollCentre(scroller.scrollTop + scroller.clientHeight / 2);
     };
 
     const scheduleMeasure = () => {
@@ -152,7 +144,7 @@ export function ConversationMap({
     if (!scroller) return;
     const onScroll = () => {
       cancelAnimationFrame(frame.current);
-      frame.current = requestAnimationFrame(() => setViewport(viewportFor(scroller)));
+      frame.current = requestAnimationFrame(() => setScrollCentre(scroller.scrollTop + scroller.clientHeight / 2));
     };
     scroller.addEventListener("scroll", onScroll, { passive: true });
     return () => {
@@ -162,11 +154,11 @@ export function ConversationMap({
   }, [scrollerRef]);
 
   const selected = useMemo(() => spots.find((spot) => spot.id === pointedAt), [pointedAt, spots]);
-  const current = useMemo(() => closestSpot(spots, viewport), [spots, viewport]);
+  const current = useMemo(() => closestSpot(spots, scrollCentre), [scrollCentre, spots]);
+  const mapHeight = Math.max(208, Math.min(360, 28 + spots.length * 18));
 
   if (turns.length === 0) return null;
 
-  const viewTop = Math.min(1 - viewport.size, viewport.top);
   const jumpTo = (spot: Spot) => {
     const scroller = scrollerRef.current;
     if (!scroller) return;
@@ -180,23 +172,16 @@ export function ConversationMap({
 
   return (
     <aside className="conversation-map" aria-label="Conversation map">
-      <div className="conversation-map-body">
-        <div className="conversation-map-track" aria-hidden="true">
-          <span
-            className="conversation-map-viewport"
-            style={{ top: `${viewTop * 100}%`, height: `${viewport.size * 100}%` }}
-          />
-        </div>
+      <div className="conversation-map-body" style={{ height: `${mapHeight}px` }}>
         <div className="conversation-map-points">
           {spots.map((spot) => (
             <button
               key={spot.id}
               className={`conversation-map-point ${current?.id === spot.id ? "is-current" : ""}`}
               type="button"
-              style={{ top: `${spot.position * 100}%`, width: `${pointWidth(spot, current?.id === spot.id)}px` }}
+              style={{ top: `${spot.rank * mapHeight}px`, width: `${conversationMapPointWidth(pointedAt === spot.id)}px` }}
               aria-label={`Jump to message: ${spot.prompt}`}
               aria-current={current?.id === spot.id ? "location" : undefined}
-              title={spot.prompt}
               onPointerEnter={() => setPointedAt(spot.id)}
               onPointerLeave={() => setPointedAt(null)}
               onFocus={() => setPointedAt(spot.id)}
@@ -206,7 +191,11 @@ export function ConversationMap({
           ))}
         </div>
         {selected && (
-          <div className="conversation-map-preview" aria-hidden="true">
+          <div
+            className="conversation-map-preview"
+            aria-hidden="true"
+            style={{ top: `${Math.max(0, selected.rank * mapHeight - 100)}px` }}
+          >
             <div className="conversation-map-preview-title">{selected.prompt}</div>
             {selected.reply && <div className="conversation-map-preview-body">{selected.reply}</div>}
           </div>

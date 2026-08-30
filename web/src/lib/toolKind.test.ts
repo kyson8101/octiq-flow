@@ -44,7 +44,13 @@ describe("toolLook", () => {
     expect(kindOf("WebSearch")).toBe("web");
     expect(kindOf("Task")).toBe("agent");
     expect(kindOf("Workflow")).toBe("agent");
+    expect(kindOf("SendMessage")).toBe("message");
     expect(kindOf("TodoWrite")).toBe("plan");
+  });
+
+  it("uses reader-facing labels for the internal routing helpers", () => {
+    expect(toolLook("ToolSearch", {}).label).toBe("Search tools");
+    expect(toolLook("SendMessage", {}).label).toBe("Send message");
   });
 
   it("is case-insensitive, because the agent is not consistent about it", () => {

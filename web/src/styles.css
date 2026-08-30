@@ -1681,12 +1681,10 @@ body {
 /* The icon leads the row, so the row needs a little more air around it than a
    line of text does, and the caret has moved to the far end. */
 .tool-head {
-  gap: 10px;
-  padding: 11px 14px 11px var(--tool-pad);
-  /* Clipped by the card's own `overflow: hidden` either way, but stated so the
-     hover fill matches the corner it is drawn into rather than the tighter one
-     this inherits from the row it shares a base with. */
-  border-radius: var(--r-lg);
+  gap: 8px;
+  min-height: 34px;
+  padding: 5px 4px;
+  border-radius: var(--r-md);
 }
 
 .thinking-head:hover,
@@ -1745,38 +1743,32 @@ body {
 }
 
 /* ---- Tool cards ------------------------------------------------------- */
-/* Flat, open rows rather than tight bordered chips. A turn is mostly these —
-   ten or fifteen in a row — and at the old density they read as a wall of
-   machinery you skim past. Given room and a soft edge each one reads as a
-   thing that happened, which is what it is.
-
-   The border is nearly gone on purpose: the fill already separates the card
-   from the page, and a full-strength line around every one of fifteen cards is
-   fifteen hard edges stacked down the column. */
+/* A transcript action is a quiet line, not a card. A reply can have dozens of
+   them, so framing every one makes the machinery louder than the answer. The
+   disclosure body is still there on demand; only its resting state is flat. */
 .tool {
-  border: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
-  border-radius: var(--r-lg);
-  background: var(--bg-sunken);
-  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
 }
 
 .tool-error {
-  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
 }
 
-/* The icon badge. One tint per family of call, stated here and nowhere else:
-   the icon takes it as its stroke, the badge as a wash behind it. A tint is
-   never the ONLY thing carrying a meaning — the name is right beside it — so
-   the colours can stay quiet. */
+/* The action mark is a small line icon. Colour tells a reader its family, but
+   the words carry the meaning — a big tinted tile turns a quiet event into a
+   dashboard card. */
 .tool-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--tint) 15%, transparent);
+  width: 20px;
+  height: 20px;
+  border-radius: 0;
+  background: transparent;
   color: var(--tint);
   --tint: var(--fg-2);
 }
@@ -1801,6 +1793,9 @@ body {
   --tint: #0a84ff;
 }
 .tool-icon[data-kind="agent"] {
+  --tint: #0a84ff;
+}
+.tool-icon[data-kind="message"] {
   --tint: #0a84ff;
 }
 .tool-icon[data-kind="skill"] {
@@ -1838,9 +1833,9 @@ body {
    stays quiet and is read only once the name has brought you here. */
 .tool-name {
   flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 12.5px;
-  color: var(--fg-0);
+  font-family: var(--font);
+  font-size: 13px;
+  color: var(--fg-2);
 }
 
 /* Where a call came from — the plugin behind a skill, the server behind an MCP
@@ -1940,7 +1935,7 @@ body {
 }
 
 .tool-body {
-  padding: 0 14px 12px;
+  padding: 0 4px 10px 32px;
 }
 
 .tool-label {
@@ -2151,7 +2146,30 @@ body {
 /* A Task card is not a tool call that returned a value — it holds another
    agent's whole transcript — so it is marked as its own thing. */
 .tool-agent {
-  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--r-lg);
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.tool-agent .tool-head,
+.tool-skill .tool-head {
+  gap: 10px;
+  padding: 11px 14px 11px var(--tool-pad);
+  border-radius: var(--r-lg);
+}
+
+.tool-agent .tool-icon,
+.tool-skill .tool-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--tint) 15%, transparent);
+}
+
+.tool-agent .tool-body,
+.tool-skill .tool-body {
+  padding: 0 14px 12px;
 }
 
 /* A description is prose, and prose is read from its start. Only the shared
@@ -2166,12 +2184,14 @@ body {
    just taken on, and everything after it reads differently because of it. So
    it is marked like the Task card is, in its own colour. */
 .tool-skill {
-  border-color: color-mix(in srgb, #bf5af3 32%, var(--border));
+  border: 1px solid color-mix(in srgb, #bf5af3 32%, var(--border));
+  border-radius: var(--r-lg);
   background: linear-gradient(
     to right,
     color-mix(in srgb, #bf5af3 7%, var(--bg-sunken)),
     var(--bg-sunken) 60%
   );
+  overflow: hidden;
 }
 
 /* The skill's own name is the point of the row, so it is the one tool name
@@ -9393,27 +9413,30 @@ body.is-ultra .eff {
   font-size: 13px;
 }
 
-.tool-summary-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-3);
-}
-
 .tool-summary-running {
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--accent);
 }
 
+/* The only changing text while a chain is active: which call is running now.
+   Finished runs deliberately settle back to just their final sentence. */
+.tool-summary-live {
+  flex: 0 1 38%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tool-group-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
   padding-top: 3px;
 }
 

@@ -24,11 +24,17 @@ function shape(rows: Row[]): string[] {
 }
 
 describe("groupRows", () => {
-  it("leaves two calls in a row alone", () => {
-    expect(shape(groupRows([tool("Bash"), tool("Bash")]))).toEqual(["Bash", "Bash"]);
+  it("folds two calls into one activity row", () => {
+    expect(shape(groupRows([tool("Bash"), tool("Bash")]))).toEqual(["Bash+Bash"]);
   });
 
-  it("folds three or more, and leaves the newest of them out", () => {
+  it("keeps tool discovery and a sent message in the same activity row", () => {
+    expect(shape(groupRows([tool("ToolSearch"), tool("SendMessage")]))).toEqual([
+      "ToolSearch+SendMessage",
+    ]);
+  });
+
+  it("folds a run and leaves its newest call out", () => {
     // The newest call is the one being watched — while a turn runs it is what
     // is happening right now, and when the turn is over it is where the run got
     // to. It never goes inside the fold.
@@ -68,7 +74,7 @@ describe("groupRows", () => {
       state: "error",
     };
     const blocks = [tool("Read"), tool("Edit"), failed, tool("Read"), tool("Edit"), tool("Read")];
-    expect(shape(groupRows(blocks))).toEqual(["Read", "Edit", "Edit", "Read|Edit+Read"]);
+    expect(shape(groupRows(blocks))).toEqual(["Read+Edit", "Edit", "Read|Edit+Read"]);
   });
 
   // Same reason a failed one is left out: the row it would fold into reports
@@ -102,7 +108,7 @@ describe("groupRows", () => {
       tool("Bash"),
       tool("Bash"),
     ];
-    expect(shape(groupRows(blocks))).toEqual(["Bash", "Bash", "text", "Bash|Bash+Bash"]);
+    expect(shape(groupRows(blocks))).toEqual(["Bash+Bash", "text", "Bash|Bash+Bash"]);
   });
 
   it("leaves a failed call where the reader can see it", () => {
@@ -115,7 +121,7 @@ describe("groupRows", () => {
       state: "error",
     };
     const blocks = [tool("Bash"), tool("Bash"), failed, tool("Bash"), tool("Bash"), tool("Bash")];
-    expect(shape(groupRows(blocks))).toEqual(["Bash", "Bash", "Bash", "Bash|Bash+Bash"]);
+    expect(shape(groupRows(blocks))).toEqual(["Bash+Bash", "Bash", "Bash|Bash+Bash"]);
   });
 
   it("never folds a subagent card away", () => {
@@ -126,24 +132,24 @@ describe("groupRows", () => {
     ]);
   });
 
+  it("ends one activity chain before and after a subagent event", () => {
+    expect(
+      shape(groupRows([tool("Read"), tool("Bash"), tool("Task"), tool("Read"), tool("Bash")])),
+    ).toEqual(["Read+Bash", "Task", "Read+Bash"]);
+  });
+
   it("never folds a skill away, because what follows it reads by its rules", () => {
     const skill: Block = { kind: "tool", id: "s1", name: "Skill", argsJson: "", args: { skill: "ship" }, state: "done" };
     expect(shape(groupRows([tool("Bash"), tool("Bash"), skill, tool("Bash"), tool("Bash")]))).toEqual([
-      "Bash",
-      "Bash",
+      "Bash+Bash",
       "Skill",
-      "Bash",
-      "Bash",
+      "Bash+Bash",
     ]);
   });
 
   it("keeps out any call the caller says has its own transcript", () => {
     const t = tool("Bash", "kept");
-    expect(shape(groupRows([t, tool("Bash"), tool("Bash")], (x) => x.id === "kept"))).toEqual([
-      "Bash",
-      "Bash",
-      "Bash",
-    ]);
+    expect(shape(groupRows([t, tool("Bash"), tool("Bash")], (x) => x.id === "kept"))).toEqual(["Bash", "Bash+Bash"]);
   });
 
   it("folds a run the agent thought its way through", () => {
@@ -166,8 +172,8 @@ describe("groupRows", () => {
     expect(shape(groupRows(blocks))).toEqual(["Bash|Bash+Bash", "text"]);
   });
 
-  it("still leaves two calls with a thought between them as two rows", () => {
-    expect(shape(groupRows([tool("Bash"), thought("a"), tool("Bash")]))).toEqual(["Bash", "Bash"]);
+  it("folds two calls with a thought between them", () => {
+    expect(shape(groupRows([tool("Bash"), thought("a"), tool("Bash")]))).toEqual(["Bash+Bash"]);
   });
 
   it("carries each row's position in the original block list", () => {
@@ -283,7 +289,7 @@ describe("groupSummary", () => {
         file("Edit", "/work/other.ts"),
         bash("pnpm test"),
       ]),
-    ).toEqual({ kind: "edit", label: "Edited 2 files, ran a command, read a file" });
+    ).toEqual({ kind: "edit", label: "Edited files, read files, ran a command" });
   });
 
   it("counts a file once when several calls touched it", () => {
@@ -293,7 +299,7 @@ describe("groupSummary", () => {
         file("Read", "/work/app.ts"),
         file("Edit", "/work/app.ts"),
       ]),
-    ).toEqual({ kind: "edit", label: "Edited a file, read a file" });
+    ).toEqual({ kind: "edit", label: "Edited files, read files" });
   });
 
   it("keeps a many-kind summary to a single compact line", () => {
@@ -304,7 +310,12 @@ describe("groupSummary", () => {
       tool("Grep", "search"),
       tool("WebSearch", "web"),
     ] as Tool[];
-    expect(groupSummary(tools).label).toBe("Edited a file, ran a command, read a file, +2 more");
+    expect(groupSummary(tools).label).toBe("Edited files, read files, ran a command, +2 more");
+  });
+
+  it("orders every summary by edit, then read, then commands", () => {
+    const tools = [bash("pnpm test"), file("Read", "/work/app.ts"), file("Edit", "/work/app.ts")] as Tool[];
+    expect(groupSummary(tools).label).toBe("Edited files, read files, ran a command");
   });
 });
 

@@ -5,7 +5,7 @@
 // them was never going to read all twelve — they wanted to know THAT the agent
 // went and looked, and roughly at what.
 //
-// So a run of three or more consecutive calls becomes one row: what ran, how
+// So a run of two or more consecutive calls becomes one row: what ran, how
 // often, and the newest call still visible on the row so a live turn does not
 // go quiet. Open it and the cards are exactly the cards that would have been
 // there.
@@ -51,9 +51,10 @@ import { toolDetail, toolLook, type ToolKind } from "./toolKind";
 
 export type Tool = Extract<Block, { kind: "tool" }>;
 
-/** How many calls in a row before folding them is worth it. Two rows are
- *  already readable; the third is where a stack starts to look like a wall. */
-export const MIN_RUN = 3;
+/** How many calls in a row before folding them is worth it. Two implementation
+ * details in sequence are already one piece of work to a reader, so leave the
+ * transcript as activity rather than a stack of mini-cards. */
+export const MIN_RUN = 2;
 
 const NEVER_FOLD: ReadonlySet<ToolKind> = new Set<ToolKind>(["agent", "skill"]);
 
@@ -101,7 +102,7 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
   const flush = () => {
     if (run.length >= MIN_RUN) {
       // Everything but the newest is folded. `folded` is never empty here:
-      // MIN_RUN is 3, so there are at least two left to fold.
+      // MIN_RUN is 2, so there is always at least one call to summarise.
       const folded = run.slice(0, -1);
       const newest = run[run.length - 1];
       rows.push({
@@ -245,11 +246,14 @@ export function groupTally(tools: Tool[]): Tally[] {
 export type GroupSummary = { kind: ToolKind; label: string };
 
 const SUMMARY_ORDER: readonly ToolKind[] = [
+  // The eye needs to land on the consequence before the evidence that led to
+  // it: a changed file, then what was inspected, then what was executed.
   "edit",
-  "run",
   "read",
+  "run",
   "search",
   "web",
+  "message",
   "mcp",
   "plan",
   "other",
@@ -262,6 +266,7 @@ const SUMMARY_WORDS: Record<ToolKind, { verb: string; singular: string; plural: 
   search: { verb: "searched", singular: "time", plural: "times" },
   web: { verb: "browsed", singular: "page", plural: "pages" },
   agent: { verb: "started", singular: "agent", plural: "agents" },
+  message: { verb: "sent", singular: "message", plural: "messages" },
   skill: { verb: "used", singular: "skill", plural: "skills" },
   mcp: { verb: "used", singular: "tool", plural: "tools" },
   plan: { verb: "updated", singular: "plan", plural: "plans" },
@@ -290,6 +295,7 @@ export function groupSummary(tools: Tool[]): GroupSummary {
   const phrases = shown.map((kind) => {
     const count = files.get(kind)?.size || calls.get(kind) || 0;
     const words = SUMMARY_WORDS[kind];
+    if (kind === "edit" || kind === "read") return `${words.verb} files`;
     const amount = count === 1 ? `a ${words.singular}` : `${count} ${words.plural}`;
     return `${words.verb} ${amount}`;
   });

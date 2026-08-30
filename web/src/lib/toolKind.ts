@@ -18,6 +18,7 @@ export type ToolKind =
   | "search"
   | "web"
   | "agent"
+  | "message"
   | "skill"
   | "mcp"
   | "plan"
@@ -56,8 +57,11 @@ const FAMILY: Record<string, ToolKind> = {
   task: "agent",
   agent: "agent",
   workflow: "agent",
-  sendmessage: "agent",
-  listagents: "agent",
+  // These talk about agents but do not CREATE one or own a nested transcript.
+  // Keep them foldable activity, so `ToolSearch → SendMessage` reads as one
+  // compact action instead of two unrelated cards.
+  sendmessage: "message",
+  listagents: "other",
   todowrite: "plan",
   exitplanmode: "plan",
   enterplanmode: "plan",
@@ -98,7 +102,15 @@ export function toolLook(name: string, args: unknown): ToolLook {
     return { kind: "mcp", label: raw.slice(5) || raw };
   }
 
-  return { kind: FAMILY[lower] ?? "other", label: raw || "tool" };
+  const kind = FAMILY[lower] ?? "other";
+  const label = lower === "toolsearch"
+    ? "Search tools"
+    : lower === "sendmessage"
+      ? "Send message"
+      : lower === "listagents"
+        ? "List agents"
+        : raw || "tool";
+  return { kind, label };
 }
 
 /** The one detail worth showing on a collapsed row: which file, which pattern,

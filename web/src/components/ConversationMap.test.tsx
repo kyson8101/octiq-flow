@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "../lib/chat";
-import { conversationMapTurns } from "./ConversationMap";
+import { conversationMapPointWidth, conversationMapRank, conversationMapTurns } from "./ConversationMap";
 
 const message = (id: string, role: Message["role"], text: string): Message => ({
   id,
@@ -36,5 +36,16 @@ describe("conversation map point breaks", () => {
     expect(conversationMapTurns([[message("u1", "user", "Still working?")]])).toEqual([
       { id: "u1", prompt: "Still working?", reply: "" },
     ]);
+  });
+
+  it("lays out points by turn order, not by the height of their replies", () => {
+    expect(conversationMapRank(0, 3)).toBeCloseTo(0.07);
+    expect(conversationMapRank(1, 3)).toBeCloseTo(0.5);
+    expect(conversationMapRank(2, 3)).toBeCloseTo(0.93);
+  });
+
+  it("uses a fixed dash width, expanding only for the pointed-at turn", () => {
+    expect(conversationMapPointWidth(false)).toBe(12);
+    expect(conversationMapPointWidth(true)).toBe(52);
   });
 });

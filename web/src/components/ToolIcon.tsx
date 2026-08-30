@@ -54,6 +54,14 @@ const PATHS: Record<ToolKind, React.ReactNode> = {
       <path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
     </>
   ),
+  // A message is work sent to another participant, not a subagent run. It
+  // shares the small sparkle mark but stays a foldable transcript event.
+  message: (
+    <>
+      <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7z" />
+      <path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
+    </>
+  ),
   // A puzzle piece: a skill is a packaged piece that clicks into the agent.
   skill: (
     <path d="M9 6a2 2 0 1 1 4 0h3a1 1 0 0 1 1 1v3a2 2 0 1 1 0 4v3a1 1 0 0 1-1 1h-3a2 2 0 1 0-4 0H6a1 1 0 0 1-1-1v-3a2 2 0 1 0 0-4V7a1 1 0 0 1 1-1z" />

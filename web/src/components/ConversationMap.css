@@ -2,7 +2,7 @@
    reading aid over the left gutter, not another sidebar that narrows prose. */
 .conversation-map {
   position: sticky;
-  top: calc(50% - 104px);
+  top: 36px;
   z-index: 5;
   width: 0;
   height: 0;
@@ -12,24 +12,10 @@
 .conversation-map-body {
   position: absolute;
   top: 0;
-  left: 12px;
+  left: 2px;
   width: 52px;
   height: 208px;
   pointer-events: auto;
-}
-
-.conversation-map-track {
-  position: absolute;
-  inset: 0 0 0 4px;
-  pointer-events: none;
-}
-
-.conversation-map-viewport {
-  position: absolute;
-  right: 0;
-  left: 0;
-  border-left: 1px solid color-mix(in srgb, var(--fg-3) 18%, transparent);
-  transition: top 90ms linear, height 140ms ease;
 }
 
 .conversation-map-points {
@@ -44,8 +30,10 @@
   margin-top: -10px;
   padding: 0;
   border: 0;
+  outline: 0;
   background: transparent;
   cursor: pointer;
+  transition: width 150ms ease;
 }
 
 /* The hit target is a comfortable 20px high while the visual stays a compact
@@ -62,26 +50,18 @@
   transition: height 130ms ease, background 130ms ease, transform 130ms ease;
 }
 
-.conversation-map-point:hover,
-.conversation-map-point:focus-visible {
-  outline: 1px solid color-mix(in srgb, var(--fg-0) 70%, transparent);
-  outline-offset: 2px;
-}
-
 .conversation-map-point:hover::after,
 .conversation-map-point:focus-visible::after,
 .conversation-map-point.is-current::after {
   height: 5px;
   background: var(--fg-0);
-  transform: scaleX(1.12);
 }
 
-/* The card takes no mouse events. Leaving a point therefore returns to the
-   scroll-selected preview instead of making it flicker as the cursor crosses
-   a card that is unrelated to the interaction. */
+/* The preview is only shown for the hovered/focused point. It takes no mouse
+   events, so moving off a dash simply dismisses it rather than making the map
+   flicker while the cursor crosses a card that is unrelated to interaction. */
 .conversation-map-preview {
   position: absolute;
-  top: 0;
   left: 72px;
   width: min(640px, calc(100vw - 108px));
   max-height: 190px;
@@ -127,8 +107,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .conversation-map-viewport,
   .conversation-map-point {
+    transition: none;
+  }
+
+  .conversation-map-point::after {
     transition: none;
   }
 }

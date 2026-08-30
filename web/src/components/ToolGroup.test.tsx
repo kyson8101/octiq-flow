@@ -50,20 +50,28 @@ const html = () =>
 describe("a run with edits folded into it", () => {
   it("describes the work as a compact action sentence", () => {
     const markup = html();
-    expect(markup).toContain("Edited a file");
+    expect(markup).toContain("Edited files");
     expect(markup).toContain("ran a command");
   });
 
-  it("counts the entire group, including the newest call", () => {
-    // The rolling counter sits apart from the action words, so its animation
-    // remains meaningful as a new latest call joins the group.
+  it("keeps counts in its disclosure label, not in the settled activity line", () => {
+    // Finished activity is just the short sentence. The exact call total is
+    // still available to a reader who hovers or opens the disclosure.
     const markup = html();
-    expect(markup).toContain(">5</span>");
-    expect(markup).toContain("calls");
+    expect(markup).toContain('title="Show all 5 calls"');
+    expect(markup).not.toContain(">5</span>");
   });
 
   it("keeps the compact row clear of repeated paths and raw tool names", () => {
     expect(html()).not.toContain("/Users/k/octiq/web/src/lib");
     expect(html()).not.toContain("Write");
+  });
+
+  it("shows only the newest call's detail while a chain is live", () => {
+    const markup = renderToStaticMarkup(
+      <ToolGroup tools={run} newest={{ ...bash("5", "pnpm vitest run"), state: "running" }} />,
+    );
+    expect(markup).toContain("pnpm vitest run");
+    expect(markup).toContain('aria-label="running"');
   });
 });

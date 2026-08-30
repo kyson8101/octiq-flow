@@ -1,34 +1,13 @@
 // A run of tool calls, folded into one quiet, Codex-style action line.
 //
-// The line names the work in plain language — `Edited 2 files, ran a command`
-// — rather than exposing a strip of implementation details. Its total remains
-// separate and rolling, because that is the one part that changes as a live run
-// grows. Opening the line reveals every call, including the newest one.
+// The line names the work in plain language — `Edited files, read files` —
+// rather than exposing implementation details. While a call is in flight it
+// adds only the latest call's detail and a spinner. Once the agent speaks or
+// finishes, the completed run settles back to its short summary.
 import { useMemo, useState } from "react";
 import { groupLook, groupSummary, type Tool } from "../lib/toolGroups";
-import { RollingNumber } from "./RollingNumber";
 import { ToolCard } from "./ToolCard";
 import { ToolIcon } from "./ToolIcon";
-
-/** The same drawn arrow the cards use — see ToolCard: at this size the ▸
- *  character is at the mercy of whatever font owns it. */
-function Chevron() {
-  return (
-    <svg
-      width="11"
-      height="11"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M9 5l7 7-7 7" />
-    </svg>
-  );
-}
 
 export function ToolGroup({
   tools,
@@ -43,9 +22,9 @@ export function ToolGroup({
   folder?: string;
 }) {
   const [open, setOpen] = useState(false);
-  // `tools` is the folded portion of the run and `newest` is the incoming call
-  // that used to be drawn as a second card. They are one action group now, so
-  // both the sentence and the rolling total must include it.
+  // `tools` is the folded portion of the run and `newest` is the incoming call.
+  // Together they are one action group; the latest call only becomes visible
+  // inline while it is still working.
   const allTools = useMemo(() => [...tools, newest], [tools, newest]);
   const look = groupLook(allTools);
   const summary = groupSummary(allTools);
@@ -63,18 +42,16 @@ export function ToolGroup({
           <ToolIcon kind={summary.kind} />
         </span>
         <span className="tool-summary">{summary.label}</span>
-        <span className="tool-summary-count">
-          <RollingNumber value={look.count} />
-          <span>calls</span>
-        </span>
+        {look.state === "running" && (
+          <span className="tool-summary-live" title={look.detail || "Working"}>
+            {look.detail || "Working"}
+          </span>
+        )}
         {look.state === "running" && (
           <span className="tool-summary-running" aria-label="running">
             <span className="tool-spinner" aria-hidden="true" />
           </span>
         )}
-        <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
-          <Chevron />
-        </span>
       </button>
 
       {open && (
