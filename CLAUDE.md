@@ -145,6 +145,7 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | workspaces | profile dir (JSON) | `workspaces.rs` |
 | server config (port, bind, token, Access) | `<profile dir>/web.json` | `web.rs` |
 | chat transcripts | profile dir | `chat_index.rs`, `transcript.rs` |
+| agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than

@@ -18,6 +18,7 @@ mod bus;
 mod canvas;
 mod chat_index;
 mod chat_room;
+mod diagnostics;
 mod dispatch;
 mod file_watch;
 mod fsbrowse;

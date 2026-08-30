@@ -66,6 +66,16 @@ struct ChatStatus {
     code: Option<i32>,
 }
 
+/// Emit a visible agent status and preserve unexpected diagnostics outside the
+/// transcript. The journal is intentionally limited to failure-like statuses:
+/// normal exits are state changes, not warnings future diagnosis needs.
+fn emit_status(agent: ChatAgent, status: ChatStatus) {
+    if matches!(status.kind.as_str(), "stderr" | "error" | "access-refused") {
+        crate::diagnostics::record(agent, &status.key, &status.kind, &status.text);
+    }
+    crate::bus::emit("chat-status", status);
+}
+
 struct ChatSession {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -799,8 +809,8 @@ pub(crate) fn start_session(
                         // here or the picker would promise a level the agent is
                         // not on. See `chat_set_access`.
                         if let Some(error) = observed.access_refusal {
-                            crate::bus::emit(
-                                "chat-status",
+                            emit_status(
+                                stream_provider.kind(),
                                 ChatStatus {
                                     key: key.clone(),
                                     kind: "access-refused".into(),
@@ -885,8 +895,8 @@ pub(crate) fn start_session(
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
                     // produced nothing. The one exception is below.
-                    Err(_) => crate::bus::emit(
-                        "chat-status",
+                    Err(_) => emit_status(
+                        stream_provider.kind(),
                         ChatStatus {
                             key: key.clone(),
                             kind: "stderr".into(),
@@ -909,8 +919,8 @@ pub(crate) fn start_session(
                 if line.trim().is_empty() || stderr_provider.is_expected_stderr(&line) {
                     continue;
                 }
-                crate::bus::emit(
-                    "chat-status",
+                emit_status(
+                    stderr_provider.kind(),
                     ChatStatus {
                         key: key.clone(),
                         kind: "stderr".into(),
@@ -991,8 +1001,8 @@ pub(crate) fn start_session(
                             // Do not let a later, unrelated resume receive
                             // stale words after a failed restart.
                             manager_for_exit.forget_queued_command_turns(&session_key_for_exit);
-                            crate::bus::emit(
-                                "chat-status",
+                            emit_status(
+                                agent,
                                 ChatStatus {
                                     key: key.clone(),
                                     kind: "error".into(),
@@ -1004,8 +1014,8 @@ pub(crate) fn start_session(
                     }
                 }
             }
-            crate::bus::emit(
-                "chat-status",
+            emit_status(
+                agent,
                 ChatStatus {
                     key: key.clone(),
                     kind: "exit".into(),
