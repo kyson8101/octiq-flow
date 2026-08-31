@@ -1,26 +1,28 @@
 ---
-name: ship
+name: release
 description: >-
-  Manually invoked as `/ship` (or by an explicit "ship it" / "deploy this" /
-  "ship this build" mention) to run the fixed deploy sequence for OctiqFlow:
-  (1) commit every working-tree change to the current branch, (2) run the Rust
-  and web test suites, (3) build the web client and the `octiq-server` binary,
-  (4) ASK before restarting the backend service — the restart stops every live
-  agent chat INCLUDING this one — then restart it by touching
+  Manually invoked as `/release` (or by an explicit "ship it" / "release it" /
+  "deploy this" / "release this build" mention) to run the fixed deploy
+  sequence for OctiqFlow: (1) commit every working-tree change to the current
+  branch, (2) push the current branch to its remote, (3) run the Rust and web
+  test suites, (4) build the web client and the `octiq-server` binary, (5) ASK
+  before restarting the backend service — the restart stops every live agent
+  chat INCLUDING this one — then restart it by touching
   `~/.octiqflow/restart.request`, never by running `install-service.sh`, which
-  would kill its own shell mid-restart and leave the backend down, and (5) print
-  the URL to open.
+  would kill its own shell mid-restart and leave the backend down, and (6)
+  print the URL to open.
   OctiqFlow is a SERVER plus a browser client; there is no desktop app step and
   no `.dmg`. Commits with a conventional message and no AI attribution; skips
-  the commit step when the tree is already clean. Never pushes, never branches,
-  never opens a PR. Does NOT auto-trigger — only on the `/ship` slash command or
-  an explicit ship/deploy mention; a finished task alone is not enough.
+  the commit step when the tree is already clean but still pushes. Never
+  branches, never opens a PR. Does NOT auto-trigger — only on the `/release`
+  slash command or an explicit ship/release/deploy mention; a finished task
+  alone is not enough.
 ---
 
-# Ship
+# Release
 
-Deploy OctiqFlow end to end: **commit → test → build → restart the service →
-print the URL**.
+Deploy OctiqFlow end to end: **commit → push → test → build → restart the
+service → print the URL**.
 
 ## What OctiqFlow is now
 
@@ -60,12 +62,26 @@ Run the steps in order. Stop and report if any step fails.
    - Commit to the **current branch** with a **conventional-commit** message
      (`feat:` / `fix:` / `chore:` / `refactor:` …) that summarizes the change.
      **No AI attribution** in the message or trailer.
-   - Do **not** push. Do **not** create or switch branches. Do **not** amend or
-     run any destructive git command.
+   - Do **not** create or switch branches. Do **not** amend or run any
+     destructive git command.
 
-## Step 2 — Test
+## Step 2 — Push
 
-The restart in Step 4 stops every running agent chat. Finding out afterwards
+Push the current branch to its remote, even when Step 1 had nothing to
+commit — there may already be local commits the remote doesn't have.
+
+```bash
+git push -u origin HEAD
+```
+
+If it fails (no remote configured, diverged history, a rejected
+non-fast-forward push), **stop** and show the error. Do not force-push, do
+not rebase to force it through — surface the conflict and let the user
+resolve it.
+
+## Step 3 — Test
+
+The restart in Step 5 stops every running agent chat. Finding out afterwards
 that the new binary is broken costs the user real work, so the suites run
 first — they take seconds.
 
@@ -77,7 +93,7 @@ cd web && pnpm test
 If either fails, **stop** and show the failing output. Do not build, do not
 restart. The old server keeps running, which is the right outcome.
 
-## Step 3 — Build both halves
+## Step 4 — Build both halves
 
 ```bash
 pnpm --dir web build                                    # tsc -b && vite build
@@ -90,7 +106,7 @@ minute or two on a cold tree; run it in the background and wait.
 If either fails (non-zero exit, `error[...]`), **stop** and show the relevant
 tail. Nothing has been swapped yet, so the running server is untouched.
 
-## Step 4 — Restart the service (ASK FIRST)
+## Step 5 — Restart the service (ASK FIRST)
 
 **This is a stop-gate. Do not run it without the user's explicit go-ahead in
 this turn.**
@@ -104,9 +120,11 @@ name how many agents are currently running, and wait for an answer:
 ps -ax -o command | grep -cE "claude -p|codex exec" | cat
 ```
 
-Before triggering it, **commit and push everything** — you will not get another
-turn. The restart kills this chat too: it is a grandchild of the server
-(`zsh ← claude -p ← octiq-server`), and nothing can keep it alive.
+Everything is already committed and pushed (Steps 1–2), so no work is lost
+when this chat ends at the trigger — but you still will not get another turn
+in it, so make sure the go-ahead is unambiguous before triggering it. The
+restart kills this chat too: it is a grandchild of the server (`zsh ← claude
+-p ← octiq-server`), and nothing can keep it alive.
 
 Once they agree:
 
@@ -141,7 +159,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kyson.octiqflow.serv
 lsof -nP -iTCP:1421 -sTCP:LISTEN
 ```
 
-## Step 5 — Verify, then print the URL
+## Step 6 — Verify, then print the URL
 
 Do not report a deploy on the strength of a build succeeding. Check the thing
 actually answers:
@@ -184,9 +202,12 @@ actually answers:
 
 ## Rules
 
-- This skill is **commit + test + build + restart** only. It never pushes,
-  opens a PR, signs, or notarizes. If the user wants any of those, they ask
+- This skill is **commit + push + test + build + restart**. It never opens a
+  PR, signs, or notarizes. If the user wants any of those, they ask
   separately.
+- **Always pushes** the current branch after committing (Step 2), not just as
+  a last-minute save right before the restart. Never force-pushes, never
+  branches, never rebases to force a push through a conflict.
 - **Never restart without asking in the same turn.** Approval on a previous
   deploy does not carry over.
 - Ship **both halves or neither**. A client-only deploy leaves a new page on an

@@ -298,25 +298,6 @@ function ProjectNode({
                       .filter(Boolean)
                       .join(" ")}
                   >
-                    {/* State in front of the title, where the eye starts: a dot
-                        for the chat you are in, a grey one for a session that
-                        is up but idle, and a pulsing green one for a chat still
-                        working — which is the whole point of leaving them
-                        running. It sits in the indent, on the middle of the
-                        folder-icon column above, so a dot is under the folder
-                        it belongs to and the titles still line up under the
-                        project name whether or not a row has a mark. */}
-                    <span
-                      className="chat-mark"
-                      aria-hidden="true"
-                      title={
-                        busy.has(c.id)
-                          ? "working"
-                          : running.has(c.id)
-                            ? "session running"
-                            : undefined
-                      }
-                    />
                     <button
                       className="chat-btn"
                       type="button"
@@ -324,22 +305,37 @@ function ProjectNode({
                     >
                       <span className="chat-title">{c.title}</span>
                     </button>
-                    {/* The same button, twice: it deletes, and while the delete
-                        is still counting down it takes it back. Nothing moves
-                        between the two presses, so the second one is aimed at
-                        exactly where the first one landed. */}
-                    <button
-                      className={`chat-del ${going ? "is-going" : ""}`}
-                      type="button"
-                      title={going ? "Cancel delete" : "Delete this chat"}
-                      aria-label={going ? "Cancel delete" : "Delete this chat"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDelete(c.id);
-                      }}
-                    >
-                      {going ? <DrainIcon ms={deleteMs} /> : <CloseIcon />}
-                    </button>
+                    <span className="chat-tail">
+                      {/* State follows the title: a dot for the chat you are
+                          in, a grey one for a session that is up but idle, and
+                          a pulsing green one for a chat still working. On hover
+                          it gives this same slot to the delete control. */}
+                      <span
+                        className="chat-mark"
+                        aria-hidden="true"
+                        title={
+                          busy.has(c.id)
+                            ? "working"
+                            : running.has(c.id)
+                              ? "session running"
+                              : undefined
+                        }
+                      />
+                      {/* The same button, twice: it deletes, and while the
+                          delete is still counting down it takes it back. */}
+                      <button
+                        className={`chat-del ${going ? "is-going" : ""}`}
+                        type="button"
+                        title={going ? "Cancel delete" : "Delete this chat"}
+                        aria-label={going ? "Cancel delete" : "Delete this chat"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDelete(c.id);
+                        }}
+                      >
+                        {going ? <DrainIcon ms={deleteMs} /> : <CloseIcon />}
+                      </button>
+                    </span>
                   </div>
                 </li>
               );

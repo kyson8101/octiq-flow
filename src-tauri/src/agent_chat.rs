@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::agent_provider::{ask_mcp_config, provider_for, AgentCommand};
+use crate::agent_provider::{ask_mcp_config, provider_for, AgentCommand, OutputDisposition};
 pub(crate) use crate::agent_provider::{safe_model, safe_session_id};
 pub use crate::agent_provider::{Access, AgentKind as ChatAgent};
 
@@ -74,6 +74,32 @@ fn emit_status(agent: ChatAgent, status: ChatStatus) {
         crate::diagnostics::record(agent, &status.key, &status.kind, &status.text);
     }
     crate::bus::emit("chat-status", status);
+}
+
+/// Route one unstructured line without losing an internal diagnostic to a
+/// distracting transcript card. Providers classify their own known chatter;
+/// the common path deliberately stays visible.
+fn emit_unstructured_output(
+    agent: ChatAgent,
+    key: &str,
+    text: String,
+    disposition: OutputDisposition,
+) {
+    match disposition {
+        OutputDisposition::Ignore => {}
+        OutputDisposition::DiagnosticsOnly => {
+            crate::diagnostics::record(agent, key, "stderr", &text);
+        }
+        OutputDisposition::Visible => emit_status(
+            agent,
+            ChatStatus {
+                key: key.to_string(),
+                kind: "stderr".into(),
+                text,
+                code: None,
+            },
+        ),
+    }
 }
 
 struct ChatSession {
@@ -895,39 +921,31 @@ pub(crate) fn start_session(
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
                     // produced nothing. The one exception is below.
-                    Err(_) => emit_status(
+                    Err(_) => emit_unstructured_output(
                         stream_provider.kind(),
-                        ChatStatus {
-                            key: key.clone(),
-                            kind: "stderr".into(),
-                            text: trimmed.to_string(),
-                            code: None,
-                        },
+                        &key,
+                        trimmed.to_string(),
+                        stream_provider.output_disposition(trimmed),
                     ),
                 }
             }
         });
     }
 
-    // stderr: never JSON, always worth showing.
+    // stderr is normally worth showing. A provider can classify known internal
+    // recovery details as diagnostics-only without losing them from the local
+    // error journal.
     {
         let key = key.clone();
         let stderr_provider = provider;
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
-                if line.trim().is_empty() || stderr_provider.is_expected_stderr(&line) {
+                if line.trim().is_empty() {
                     continue;
                 }
-                emit_status(
-                    stderr_provider.kind(),
-                    ChatStatus {
-                        key: key.clone(),
-                        kind: "stderr".into(),
-                        text: line,
-                        code: None,
-                    },
-                );
+                let disposition = stderr_provider.output_disposition(&line);
+                emit_unstructured_output(stderr_provider.kind(), &key, line, disposition);
             }
         });
     }
@@ -2349,18 +2367,39 @@ mod tests {
     }
 
     #[test]
-    fn the_stdin_notice_codex_always_prints_is_not_a_notice() {
+    fn codex_internal_output_is_ignored_or_kept_in_diagnostics() {
         let codex = provider_for(ChatAgent::Codex);
-        assert!(codex.is_expected_stderr("Reading additional input from stdin..."));
-        assert!(codex.is_expected_stderr("  Reading additional input from stdin... "));
-        assert!(codex.is_expected_stderr(
-            "2026-08-30T09:38:25Z ERROR codex_models_manager::manager: \
-             failed to renew cache TTL: missing field `supports_parallel_tool_calls`"
-        ));
-        // Anything else still reaches the user — that is the whole point of
-        // surfacing stderr.
-        assert!(!codex.is_expected_stderr("Error loading config.toml"));
-        assert!(!codex.is_expected_stderr("You've hit your usage limit."));
+        assert_eq!(
+            codex.output_disposition("Reading additional input from stdin..."),
+            OutputDisposition::Ignore,
+        );
+        assert_eq!(
+            codex.output_disposition("  Reading additional input from stdin... "),
+            OutputDisposition::Ignore,
+        );
+        assert_eq!(
+            codex.output_disposition(
+                "2026-08-30T09:38:25Z ERROR codex_models_manager::manager: \
+                 failed to renew cache TTL: missing field `supports_parallel_tool_calls`"
+            ),
+            OutputDisposition::Ignore,
+        );
+        assert_eq!(
+            codex.output_disposition(
+                "2026-08-31T00:00:05.370617Z ERROR codex_core::tools::router: \
+                 error=apply_patch verification failed: Failed to find expected lines"
+            ),
+            OutputDisposition::DiagnosticsOnly,
+        );
+        // Real agent failures still reach the user.
+        assert_eq!(
+            codex.output_disposition("Error loading config.toml"),
+            OutputDisposition::Visible,
+        );
+        assert_eq!(
+            codex.output_disposition("You've hit your usage limit."),
+            OutputDisposition::Visible,
+        );
     }
 
     #[test]

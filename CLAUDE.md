@@ -36,9 +36,9 @@ and never again from inside an agent chat:
 ./scripts/install-restart-agent.sh            # first install of the restart helper
 ```
 
-- **Deploying** is done by the `/ship` skill (commit → test → build the client
-  AND `octiq-server` → ask, then restart the service → print the URL). It never
-  pushes, signs, or notarizes.
+- **Deploying** is done by the `/release` skill (commit → push → test → build
+  the client AND `octiq-server` → ask, then restart the service → print the
+  URL). It never signs or notarizes.
 - **The client is served at the root** (`http://127.0.0.1:1421/?token=…`) and
   only there; `/v2/` redirects to the root, query intact, so saved links keep
   working.

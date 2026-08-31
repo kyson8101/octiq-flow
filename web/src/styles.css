@@ -86,6 +86,9 @@ body {
 /* The app is sized to the VISUAL viewport (see main layout note): on a phone
    the soft keyboard shrinks that, and the composer has to stay above it. */
 .app {
+  /* Every chat-facing element shares this cap. Full-width chat temporarily
+     removes it, so the transcript and composer keep their edges aligned. */
+  --chat-column: 780px;
   display: flex;
   flex-direction: column;
   height: 100dvh;
@@ -95,6 +98,10 @@ body {
      Anything genuinely wide scrolls inside its own box instead (pre, table),
      which is where a horizontal scroll belongs. */
   overflow-x: hidden;
+}
+
+.app.chat-wide {
+  --chat-column: none;
 }
 
 .conn-strip {
@@ -202,20 +209,20 @@ body {
   color: var(--fg-0);
 }
 
-/* ---- Full screen ------------------------------------------------------ */
-/* The switch that gives the app the whole display. It wears the same held-down
-   look the rail and files buttons wear, because it is the same kind of thing:
-   a mode you are in, not an action you fire.
+/* ---- Full-width chat -------------------------------------------------- */
+/* The switch that gives the chat the available body width. It wears the same
+   held-down look the rail and files buttons wear, because it is a mode you are
+   in, not an action you fire.
 
    The border is what carries that, not the fill: `.icon-btn:hover` is already
    `--bg-2`, so a tint on its own would make hovering the button look exactly
    like having pressed it. `box-sizing` is border-box everywhere, so the outline
    eats inward and the button stays 36px beside its neighbours. */
-.fs-toggle {
+.chat-width-toggle {
   border: 1px solid transparent;
 }
 
-.fs-toggle.is-on {
+.chat-width-toggle.is-on {
   border-color: var(--border);
   background: var(--bg-2);
   color: var(--fg-0);
@@ -225,7 +232,7 @@ body {
    coming out is a cross-fade rather than a swap that pops. The scale is 0.82
    and not 0 — arrows that grow from nothing read as an arrival, and nothing is
    arriving here; the same four corners are turning round. */
-.fs-arrows {
+.chat-width-arrows {
   /* Both groups scale about the middle of the icon, not about their own
      bounding boxes — `fill-box` would give the two sets slightly different
      centres and the cross-fade would drift sideways as it ran. */
@@ -239,20 +246,20 @@ body {
 /* Written as two mutually exclusive halves rather than a base rule and an
    override: with `:not()` on both sides exactly one of them ever matches, so
    which arrows show does not rest on which selector is more specific. */
-.fs-toggle:not(.is-on) .fs-arrows-out,
-.fs-toggle.is-on .fs-arrows-in {
+.chat-width-toggle:not(.is-on) .chat-width-arrows-out,
+.chat-width-toggle.is-on .chat-width-arrows-in {
   opacity: 0;
   transform: scale(0.82);
 }
 
-.fs-toggle:not(.is-on) .fs-arrows-in,
-.fs-toggle.is-on .fs-arrows-out {
+.chat-width-toggle:not(.is-on) .chat-width-arrows-in,
+.chat-width-toggle.is-on .chat-width-arrows-out {
   opacity: 1;
   transform: scale(1);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .fs-arrows {
+  .chat-width-arrows {
     transition: none;
   }
 }
@@ -1031,7 +1038,7 @@ body {
 }
 
 .msgs-inner {
-  max-width: 780px;
+  max-width: var(--chat-column);
   margin: 0 auto;
   padding: 18px 16px 4px;
   display: flex;
@@ -1059,7 +1066,7 @@ body {
   z-index: 3;
   /* Aligned to the message column, not to the pane: on a wide window the pane's
      left edge is a long way from anything the button refers to. */
-  max-width: 780px;
+  max-width: var(--chat-column);
   margin: 0 auto;
   /* Only the button takes a click. The rest of this strip is the last message,
      and it has to stay readable and selectable underneath. */
@@ -2387,7 +2394,7 @@ body {
 
 /* ---- Notices ---------------------------------------------------------- */
 .notices {
-  max-width: 780px;
+  max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto;
   padding: 0 16px;
@@ -2423,7 +2430,7 @@ body {
   align-items: center;
   gap: 10px;
   width: calc(100% - 24px);
-  max-width: 780px;
+  max-width: var(--chat-column);
   margin: 0 auto;
   padding: 8px 10px;
   border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
@@ -2969,7 +2976,7 @@ body {
 .think-live {
   display: flex;
   flex-direction: column-reverse;
-  max-width: 780px;
+  max-width: var(--chat-column);
   max-height: 32px;
   margin: 0 auto 6px;
   padding: 0 12px;
@@ -2984,7 +2991,7 @@ body {
 }
 
 .composer-box {
-  max-width: 780px;
+  max-width: var(--chat-column);
   margin: 0 auto;
   padding: 9px 10px 7px;
   border: 1px solid var(--border);
@@ -3035,7 +3042,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 780px;
+  max-width: var(--chat-column);
   margin: 0 auto 5px;
   padding: 0 13px;
   font-size: 11.5px;
@@ -4274,6 +4281,53 @@ body.is-ultra .eff {
   }
 }
 
+/* ---- Full-width chat layout ------------------------------------------ */
+/* This is deliberately a layout mode, not the browser Fullscreen API. The
+   top bar and browser chrome stay exactly where they are; only the chat gets
+   the body width. Side panes stay mounted and retain their state, ready to
+   return when this mode is toggled back off. */
+.app.chat-wide .rail-toggle,
+.app.chat-wide .sfp-toggle,
+.app.chat-wide .gitp-toggle {
+  display: none;
+}
+
+.app.chat-wide .side,
+.app.chat-wide .gitp-panel,
+.app.chat-wide .sfp-panel,
+.app.chat-wide .fpanel,
+.app.chat-wide .gitp-scrim,
+.app.chat-wide .fpanel-scrim {
+  display: none;
+}
+
+/* Below the column breakpoint the project list is a drawer. Keep it shut and
+   out of the focus order while the chat owns the body. */
+@media (max-width: 859px) {
+  .app.chat-wide .sidebar {
+    transform: translateX(-102%);
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .app.chat-wide .scrim {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* Above it the project list is a real column, so reclaim its actual width. */
+@media (min-width: 860px) {
+  .app.chat-wide .sidebar {
+    margin-left: -260px;
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      margin-left 260ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 260ms;
+  }
+}
+
 /* ---- Connect gate ------------------------------------------------------ */
 .gate {
   display: flex;
@@ -4865,14 +4919,11 @@ body.is-ultra .eff {
 .chat {
   display: flex;
   align-items: center;
-  /* This 8px, the 7px mark and the 9px gap after it come to 24px — which is
-     exactly what the project row spends before ITS name: 4px of button padding,
-     a 15px folder icon, the same 9px gap. So the titles line up AND the dot
-     lands on the middle of the folder-icon column, under the folder it belongs
-     to. It was 13 + 7 + 4, which lined the titles up but left every dot 5px
-     right of the icons above it: aligned with nothing, and near enough to the
-     icon column to read as a mistake rather than a decision. */
-  padding-left: 8px;
+  /* The title still begins directly below the project name: 24px of row inset
+     plus 4px of button padding matches the project row's 4px button padding,
+     15px folder icon, and 9px gap. The state mark follows the title instead
+     of taking a leading column. */
+  padding-left: 24px;
   border-radius: var(--r-sm);
 }
 
@@ -4909,16 +4960,31 @@ body.is-ultra .eff {
   text-overflow: ellipsis;
 }
 
-/* The mark in front of the title. Only a chat that HAS state carries one, so
-   the column reads as "these ones" rather than as decoration on every row. */
-.chat-mark {
+/* One fixed trailing slot keeps the title from shifting. Normally it shows the
+   state mark; hovering the row hands the same slot to the delete control. */
+.chat-tail {
+  position: relative;
   flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-left: 9px;
+  margin-right: 3px;
+}
+
+/* The mark after the title. Only a chat that HAS state carries one, so the
+   trailing edge reads as "these ones" rather than as decoration on every row. */
+.chat-mark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
   width: 7px;
   height: 7px;
-  /* The same gap the project row leaves between its folder and its name. */
-  margin-right: 9px;
   border-radius: 50%;
   background: transparent;
+  transform: translate(-50%, -50%);
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .chat.is-on .chat-mark {
@@ -4969,14 +5035,22 @@ body.is-ultra .eff {
   }
 }
 
+/* Hover and keyboard focus exchange the dot for the × without creating a
+   second trailing control or making the title remeasure. */
+.chat:hover .chat-mark,
+.chat-tail:focus-within .chat-mark,
+.chat.is-going .chat-mark {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.7);
+  animation: none;
+}
+
 .chat-del {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-  margin-right: 3px;
+  position: absolute;
+  inset: 0;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -4999,6 +5073,7 @@ body.is-ultra .eff {
 }
 
 .chat:hover .chat-del,
+.chat-tail:focus-within .chat-del,
 .chat-del:focus-visible {
   opacity: 1;
   transform: none;
@@ -5627,7 +5702,7 @@ body.is-ultra .eff {
 
 /* ---- Slash command menu ------------------------------------------------ */
 .slash {
-  max-width: 780px;
+  max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 6px;
   max-height: 40vh;
@@ -6970,7 +7045,7 @@ body.is-ultra .eff {
 .failure {
   position: relative;
   flex: 0 0 auto;
-  max-width: 780px;
+  max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 12px 14px;
@@ -7034,7 +7109,7 @@ body.is-ultra .eff {
    on a phone. */
 .drawer {
   flex: 0 0 auto;
-  max-width: 780px;
+  max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 8px;
   display: flex;
@@ -7357,7 +7432,7 @@ body.is-ultra .eff {
    to be loud. Amber rather than red: nothing is wrong, something is waiting. */
 .ask-card {
   flex: 0 0 auto;
-  max-width: 780px;
+  max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 13px 15px;
@@ -7454,7 +7529,7 @@ body.is-ultra .eff {
    simply a decision only you can make. */
 .qa-card {
   flex: 0 0 auto;
-  max-width: 780px;
+  max-width: var(--chat-column);
   width: 100%;
   margin: 0 auto 10px;
   padding: 13px 15px;
@@ -9890,7 +9965,7 @@ body.is-ultra .eff {
   /* Lined up with `.composer-box` and `.composer-hint`, which is what was
      missing. The strip belongs to the box; sharing the box's own measurements
      is the only thing that keeps it there at every width. */
-  max-width: 780px;
+  max-width: var(--chat-column);
   margin: 0 auto;
   padding: 0 13px;
 }

@@ -1,42 +1,22 @@
-// The switch that hands the app the whole display.
-//
-// On a wide screen the top hundred pixels of the window are tabs, a URL bar and
-// a bookmarks row, none of which have anything to do with the work; on a 34"
-// panel that is a strip of browser the width of a desk. This takes them away.
-//
-// Two things it deliberately does NOT do:
-//
-//   · It does not remember. Fullscreen is a mode you are in, not a preference
-//     you hold — the browser drops it on Escape, on F11 and on some tab
-//     switches, and a page that let itself back in on the next load would be
-//     taking the display without being asked. `useFullscreen` reads the state
-//     off the document every time for the same reason.
-//   · It does not draw itself where it cannot work. iOS Safari has no
-//     fullscreen for anything that is not a video, and a control that is
-//     present and does nothing is worse than one that was never offered.
-//
-// See lib/fullscreen for the browser differences underneath.
-import { canFullscreen, toggle, useFullscreen } from "../lib/fullscreen";
-
-export function FullscreenButton() {
-  // Before the early return: a hook may not sit behind a condition, and the
-  // condition here is about the browser rather than about this render.
-  const on = useFullscreen();
-
-  if (!canFullscreen()) return null;
-
+// The switch that gives the CHAT the available width, without asking the
+// browser to hide its tabs, URL bar, or other chrome. It is view state only:
+// opening or closing it temporarily puts side panes away, then restores their
+// previous state on the next press.
+export function FullscreenButton({
+  expanded,
+  onToggle,
+}: {
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   return (
     <button
-      className={`icon-btn fs-toggle ${on ? "is-on" : ""}`}
+      className={`icon-btn chat-width-toggle ${expanded ? "is-on" : ""}`}
       type="button"
-      // `aria-pressed`, not `aria-expanded`: this is a switch that stays down,
-      // not a disclosure that reveals something beneath it.
-      aria-pressed={on}
-      aria-label={on ? "Leave full screen" : "Full screen"}
-      title={on ? "Leave full screen (Esc)" : "Full screen"}
-      // The click IS the gesture the browser requires. Anything that deferred
-      // this — a confirm, an await before it — would have the request refused.
-      onClick={() => void toggle()}
+      aria-pressed={expanded}
+      aria-label={expanded ? "Restore standard chat width" : "Expand chat to full width"}
+      title={expanded ? "Restore standard chat width" : "Expand chat to full width"}
+      onClick={onToggle}
     >
       <svg
         width="17"
@@ -49,15 +29,15 @@ export function FullscreenButton() {
         strokeLinejoin="round"
         aria-hidden="true"
       >
-        {/* Both arrow sets are always in the DOM and one is faded out, so the
-            swap is a cross-fade rather than a replacement that pops. */}
-        <g className="fs-arrows fs-arrows-in">
+        {/* Both arrow sets stay in the DOM so the swap cross-fades rather than
+            popping between two separate icons. */}
+        <g className="chat-width-arrows chat-width-arrows-in">
           <path d="M8 3H5a2 2 0 0 0-2 2v3" />
           <path d="M21 8V5a2 2 0 0 0-2-2h-3" />
           <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
           <path d="M3 16v3a2 2 0 0 0 2 2h3" />
         </g>
-        <g className="fs-arrows fs-arrows-out">
+        <g className="chat-width-arrows chat-width-arrows-out">
           <path d="M8 3v3a2 2 0 0 1-2 2H3" />
           <path d="M21 8h-3a2 2 0 0 1-2-2V3" />
           <path d="M16 21v-3a2 2 0 0 1 2-2h3" />

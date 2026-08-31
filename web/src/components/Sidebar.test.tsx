@@ -101,6 +101,18 @@ describe("Sidebar", () => {
     expect(out).toContain("proj-count is-live");
   });
 
+  it("puts a chat's state mark after its title", () => {
+    const out = html(open);
+    expect(out.indexOf('class="chat-title"')).toBeLessThan(out.indexOf('class="chat-mark"'));
+  });
+
+  it("shares the trailing slot between a chat's mark and delete control", () => {
+    const out = html(open);
+    expect(out).toMatch(
+      /<span class="chat-tail"><span class="chat-mark"[^>]*><\/span><button class="chat-del\b/,
+    );
+  });
+
   // A chat deleted a moment ago. Its row is still in the list on purpose: it is
   // where the delete was started, so it is where taking it back belongs.
   const open = {

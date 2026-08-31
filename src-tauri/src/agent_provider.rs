@@ -59,6 +59,19 @@ pub enum InputTransport {
     CommandLine,
 }
 
+/// How OctiqFlow should handle an unstructured line emitted by an agent.
+///
+/// Most lines should stay visible: they are often the only explanation for a
+/// chat that did not answer. A few lines are internal, recoverable tool
+/// details, though. Those remain in the local diagnostic journal without
+/// turning into a large transcript warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputDisposition {
+    Ignore,
+    DiagnosticsOnly,
+    Visible,
+}
+
 impl InputTransport {
     pub const fn accepts_stdin(self) -> bool {
         matches!(self, Self::StreamJson)
@@ -191,9 +204,9 @@ pub trait AgentProvider: Send + Sync {
     /// Extract lifecycle metadata from one untouched raw stream event.
     fn observe_event<'a>(&self, event: &'a Value) -> AgentEvent<'a>;
 
-    /// Known stderr chatter that should not become a visible chat warning.
-    fn is_expected_stderr(&self, _line: &str) -> bool {
-        false
+    /// Decide how a non-JSON stdout line or stderr line reaches the person.
+    fn output_disposition(&self, _line: &str) -> OutputDisposition {
+        OutputDisposition::Visible
     }
 }
 
@@ -592,14 +605,31 @@ impl AgentProvider for CodexProvider {
         observed
     }
 
-    fn is_expected_stderr(&self, line: &str) -> bool {
+    fn output_disposition(&self, line: &str) -> OutputDisposition {
         let line = line.trim();
-        line.starts_with("Reading additional input from stdin")
+        if line.starts_with("Reading additional input from stdin")
             // Codex can continue normally using its cached model catalogue
             // when this background cache-TTL renewal fails. It is an internal
             // compatibility warning, not a failure of the chat or its turn.
             || (line.contains("codex_models_manager::manager: failed to renew cache TTL")
                 && line.contains("supports_parallel_tool_calls"))
+        {
+            return OutputDisposition::Ignore;
+        }
+
+        // A patch's context can change between inspection and write. Codex
+        // receives this detail and normally re-reads the file before retrying;
+        // exposing the raw router line as a transcript error makes that normal
+        // recovery look like a failed chat. Keep it queryable in diagnostics
+        // instead. Actual turn failures and every other stderr line stay
+        // visible.
+        if line.contains("codex_core::tools::router:")
+            && line.contains("apply_patch verification failed")
+        {
+            return OutputDisposition::DiagnosticsOnly;
+        }
+
+        OutputDisposition::Visible
     }
 }
 

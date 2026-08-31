@@ -277,6 +277,10 @@ export default function App() {
   /** Wide enough for a sidebar column — and so for a top bar that can hold the
    *  view switch and the usage meter. Below it those live in the drawer. */
   const wide = useMedia(WIDE);
+  /** A temporary focus view: chat gets the body width, while the panes keep
+   *  their own open/closed state ready for the next toggle. */
+  const [chatWide, setChatWide] = useState(false);
+  const chatExpanded = chatWide && wide && mode === "chat";
   /** The project column, put away, on the screens where it is a column.
    *  Remembered: someone who works with the chat full width wants it that way
    *  the next time too. */
@@ -294,7 +298,12 @@ export default function App() {
   // Drag in from the left edge to pull the drawer out, and back to put it away.
   // Touch only, and only while the drawer exists — see lib/swipe for how the
   // gesture keeps out of the way of scrolling and of highlighting text.
-  useDrawerSwipe(shell, { enabled: hasDrawer, open: drawer, onChange: setDrawer });
+  useDrawerSwipe(shell, { enabled: hasDrawer && !chatExpanded, open: drawer, onChange: setDrawer });
+  // There must always be a visible way back. A narrow layout already gives the
+  // chat the whole body, and the editor owns a different kind of workspace.
+  useEffect(() => {
+    if (!wide || mode !== "chat") setChatWide((was) => (was ? false : was));
+  }, [wide, mode]);
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
@@ -1644,6 +1653,15 @@ export default function App() {
     rememberFlag(NAV_KEY, !next);
   }, []);
 
+  /** Give the chat the whole body without changing browser fullscreen. */
+  const toggleChatWidth = useCallback(() => {
+    // A drawer over the transcript defeats the point of widening it. Its
+    // previous open/closed preference is not changed; this only puts it away
+    // for the focused view.
+    setDrawer(false);
+    setChatWide((was) => !was);
+  }, []);
+
   /** Show or hide the git column, and remember it — every way in and out goes
    *  through here, so the stored flag cannot drift from what is on screen.
    *
@@ -2718,7 +2736,10 @@ export default function App() {
   );
 
   return (
-    <div className={`app ${drawer ? "drawer-open" : ""} ${navShut ? "nav-shut" : ""}`} ref={shell}>
+    <div
+      className={`app ${drawer ? "drawer-open" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""}`}
+      ref={shell}
+    >
       {conn !== "open" && (
         <div className="conn-strip">
           {conn === "connecting" ? "Connecting to OctiqFlow…" : "Reconnecting…"}
@@ -2739,9 +2760,13 @@ export default function App() {
           className="topbar-title"
           type="button"
           aria-label="Projects and chats"
-          aria-expanded={hasDrawer ? drawer : !navShut}
-          onClick={() => (hasDrawer ? setDrawer((v) => !v) : showNav(true))}
-          disabled={!hasDrawer && !navShut}
+          aria-expanded={chatExpanded ? false : hasDrawer ? drawer : !navShut}
+          onClick={() => {
+            if (chatExpanded) return;
+            if (hasDrawer) setDrawer((v) => !v);
+            else showNav(true);
+          }}
+          disabled={chatExpanded || (!hasDrawer && !navShut)}
         >
           <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
           <span className="topbar-caret" aria-hidden="true">
@@ -2801,17 +2826,11 @@ export default function App() {
 
         <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
 
-        {/* The whole display, given to the app. Beside Settings because it is
-            about the WINDOW rather than about this chat — everything to the
-            left of it counts something in the conversation.
-
-            Wide only, on top of the button's own check that the browser can do
-            it at all. That check already keeps it off an iPhone, where there is
-            no fullscreen outside a video, but Android Chrome would happily draw
-            it — and the phone bar carries four things by decision, not by
-            accident. It is also the screen that gains least: there is no tab
-            strip on a phone to take away. */}
-        {wide && <FullscreenButton />}
+        {/* The chat's width, not browser fullscreen. It is useful only where
+            there are panes to put away; narrow layouts already use the body. */}
+        {wide && mode === "chat" && (
+          <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
+        )}
 
         <button
           className="icon-btn"
