@@ -95,6 +95,32 @@ describe("a Codex seat answering", () => {
 });
 
 describe("a Codex chat of its own", () => {
+  const durablePrompt = {
+    type: "user",
+    uuid: "user-1",
+    octiq_user_turn: true,
+    message: { role: "user", content: [{ type: "text", text: "do the thing" }] },
+  };
+
+  it("rebuilds the prompt Codex itself never echoes", () => {
+    const rebuilt = reduceChat(emptyChat(), durablePrompt);
+
+    expect(rebuilt.messages).toHaveLength(1);
+    expect(rebuilt.messages[0].role).toBe("user");
+    expect(said(rebuilt.messages[0])).toBe("do the thing");
+
+    const working = reduceChat(rebuilt, { type: "turn.started" }, 2);
+    expect(working.messages[0].takenUp).toBe(true);
+  });
+
+  it("reconciles the durable prompt with its optimistic bubble in either order", () => {
+    const sent = addUserTurn(emptyChat(), "do the thing", [], 1, undefined, "user-1");
+    expect(reduceChat(sent, durablePrompt).messages).toHaveLength(1);
+
+    const eventFirst = reduceChat(emptyChat(), durablePrompt);
+    expect(addUserTurn(eventFirst, "do the thing", [], 1, undefined, "user-1").messages).toHaveLength(1);
+  });
+
   it("takes the sent message out of the queue when its turn starts", () => {
     // Claude replays a user message when it begins it. Codex does not: this is
     // the one protocol event that says the prompt is no longer waiting.

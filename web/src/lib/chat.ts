@@ -274,6 +274,13 @@ export type Message = {
    *  written down. Stamping the echo's uuid onto the bubble is what lets both
    *  routes end at one message instead of two. */
   echo?: string;
+  /** A browser-generated id for a prompt OctiqFlow itself persisted.
+   *
+   * Codex has no native user-message event, so the backend emits a canonical
+   * one after accepting a prompt. Keeping this id apart from `echo` lets that
+   * event reconcile with the optimistic bubble without changing Codex's own
+   * `turn.started` queue marker. */
+  turnId?: string;
   /** Codex's equivalent of `echo`: it does not replay the prompt, but its
    *  `turn.started` says it has begun this exact turn. Kept separate from the
    *  replay id because it is a state signal, not a second copy of the message.
@@ -1191,6 +1198,75 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // the whole bubble path below is skipped.
     if (parent) return foldToolResults(state, content, e);
 
+    // Codex's command-line protocol never writes the prompt back on stdout.
+    // The backend records this canonical envelope alongside Codex's events so
+    // a full replay has the words the browser optimistically drew at send time.
+    // Keep it out of the provider-specific machinery below: a person can type
+    // text that happens to resemble a local-command report or a skill brief.
+    if (e.octiq_user_turn === true) {
+      const turnId = asStr(e.uuid);
+      const text = content
+        .filter((c) => asStr(asObj(c).type) === "text")
+        .map((c) => asStr(asObj(c).text))
+        .join("")
+        .replace(IMAGE_NOTE, "");
+      const attachments = asArr(e.octiq_attachments).flatMap((raw) => {
+        const attachment = asObj(raw);
+        const path = asStr(attachment.path);
+        if (!path) return [];
+        return [
+          {
+            path,
+            name: asStr(attachment.name) || path.split(/[\\/]/).pop() || path,
+            isImage: attachment.isImage !== false,
+          },
+        ];
+      });
+      const rawTo = asObj(e.octiq_to);
+      const toId = asStr(rawTo.id);
+      const to = toId ? { id: toId, name: asStr(rawTo.name) || "Unknown" } : undefined;
+
+      // Live, the browser normally added this message first. The id handles
+      // exact reconciliation even for repeated wording; the text fallback
+      // keeps a just-upgraded browser from duplicating a prompt sent by an
+      // older page that had no client id yet.
+      const mine = [...state.messages]
+        .reverse()
+        .find(
+          (m) =>
+            m.role === "user" &&
+            ((turnId && m.turnId === turnId) ||
+              (!m.turnId &&
+                !m.echo &&
+                !m.takenUp &&
+                m.blocks.some((b) => b.kind === "text" && "text" in b && b.text === text))),
+        );
+      if (mine) {
+        if (!turnId || mine.turnId === turnId) return state;
+        return {
+          ...state,
+          messages: state.messages.map((m) => (m === mine ? { ...m, turnId } : m)),
+        };
+      }
+
+      return {
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: turnId ? `u:${turnId}` : `u${state.messages.length}`,
+            role: "user",
+            blocks: [{ kind: "text", text }],
+            streaming: false,
+            ...(attachments.length ? { attachments } : {}),
+            ...(to ? { to } : {}),
+            ...(turnId ? { turnId } : {}),
+            ...(asOneLine(text) ? { relay: asOneLine(text) } : {}),
+          },
+        ],
+      };
+    }
+
     // The interrupt marker is the agent telling us the turn was cut short. Show
     // it as a state of that turn, not as a message the user typed.
     if (content.some((c) => INTERRUPT_MARKER.test(asStr(asObj(c).text).trim()))) {
@@ -1910,8 +1986,11 @@ function reduceStream(
   }
 }
 
-/** Add the user's own turn. The agent echoes it back (--replay-user-messages),
- *  but showing it immediately is what makes the UI feel like a chat. */
+/** Add the user's own turn before the durable protocol event arrives.
+ *
+ * Claude echoes its prompt back; Codex gets an OctiqFlow-owned canonical event
+ * after acceptance. Showing either optimistically is what makes the UI feel
+ * like a chat. */
 export function addUserTurn(
   state: ChatState,
   text: string,
@@ -1920,6 +1999,8 @@ export function addUserTurn(
   /** The seat this was addressed to (card 67). Absent for the whole room,
    *  which is where every message has always gone. */
   to?: { id: string; name: string },
+  /** Stable id shared with OctiqFlow's durable Codex prompt event. */
+  turnId?: string,
 ): ChatState {
   // `/model haiku` changes the model for real, and nothing in the stream will
   // say so until the next turn — see MODEL_COMMAND. The picker reads this
@@ -1932,6 +2013,10 @@ export function addUserTurn(
   // the chat busy here was the flag `lib/carryOn` reads as a cut-off turn, put
   // up by `@dee look at this` and never taken down by anything.
   const mine = !to;
+  // The backend can publish a fast Codex event before this React update runs.
+  // In that order the durable event already made the bubble; never append it a
+  // second time just because this was the optimistic path.
+  if (turnId && state.messages.some((m) => m.turnId === turnId)) return state;
   return {
     ...state,
     ...(asked ? { model: asked, modelAsked: true } : {}),
@@ -1955,6 +2040,7 @@ export function addUserTurn(
         streaming: false,
         ...(attachments.length ? { attachments } : {}),
         ...(to ? { to } : {}),
+        ...(turnId ? { turnId } : {}),
         ...(asOneLine(text) ? { relay: asOneLine(text) } : {}),
       },
     ],

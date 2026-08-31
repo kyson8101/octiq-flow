@@ -39,13 +39,17 @@
   transition: width 150ms ease;
 }
 
-/* Each turn owns one thin, edge-to-edge slice of the map. The inline height
-   scales the stack for unusually long conversations, but there is never a
-   visual gap between adjacent turns. */
+/* The button fills its slice for an easy target. Its visible dash stays at
+   most two pixels and uses only part of that slice, leaving clear air between
+   neighbouring turns even as a long conversation is compressed. */
 .conversation-map-point::after {
   position: absolute;
-  inset: 0;
-  border-radius: 0;
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: min(2px, 55%);
+  transform: translateY(-50%);
+  border-radius: 999px;
   background: color-mix(in srgb, var(--fg-2) 42%, transparent);
   content: "";
   transition: background 130ms ease;

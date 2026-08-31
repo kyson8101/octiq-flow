@@ -32,6 +32,26 @@ const arrive = (over: Partial<Question> = {}) =>
   renderToStaticMarkup(<UserQuestion questions={[ask(over)]} onDone={() => {}} />);
 
 describe("UserQuestion", () => {
+  it("shows every question in a batch together, with one final submit", () => {
+    const html = renderToStaticMarkup(
+      <UserQuestion
+        questions={[
+          ask({ id: "q1", question: "Which database?", options: ["Postgres", "SQLite"] }),
+          ask({ id: "q2", question: "Which region?", options: ["Europe", "Asia"] }),
+        ]}
+        onDone={() => {}}
+        startOpen
+      />,
+    );
+
+    expect(html).toContain("Which database?");
+    expect(html).toContain("Which region?");
+    expect(html).toContain("2 questions");
+    expect(html).toContain("Send answers");
+    expect(html).not.toContain(">Next<");
+    expect((html.match(/class="ask-btn/g) ?? []).length).toBe(1);
+  });
+
   it("puts a labelled choice on the button and its description under it", () => {
     const html = draw({
       options: [{ label: "SQLite", description: "One file, no server" }],
@@ -75,14 +95,15 @@ describe("a tap is a choice, not an answer", () => {
     expect(html).toContain('role="radiogroup"');
   });
 
-  it("says how to send it, in the words on the button", () => {
+  it("says how to send it, in the words on the shared button", () => {
     const html = draw({ options: ["a", "b"] });
-    expect(html).toContain("Pick one, then press Answer");
+    expect(html).toContain("Pick one or type another answer");
+    expect(html).toContain("Send answers");
   });
 
   it("keeps the send button dead until something is picked", () => {
     const html = draw({ options: ["a", "b"] });
-    expect(html).toMatch(/<button[^>]*class="ask-btn"[^>]*disabled/);
+    expect(html).toMatch(/<button[^>]*class="ask-btn is-primary qa-submit"[^>]*disabled/);
   });
 });
 

@@ -7833,70 +7833,32 @@ body.is-ultra .eff {
   color: var(--accent-fg);
 }
 
-.qa-summary {
+.qa-questions {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 14px;
+  margin-top: 12px;
 }
 
-/* Each row goes BACK to its question rather than editing a copy of the answer:
-   the wording of the question is half the decision. */
-.qa-review {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+.qa-question-item + .qa-question-item {
+  padding-top: 14px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
 }
 
-.qa-review:hover:not(:disabled) {
-  background: var(--bg-1);
-}
-
-.qa-review-q {
-  font-size: 12px;
+.qa-question-number {
   color: var(--fg-3);
-  white-space: pre-wrap;
-}
-
-.qa-review-a {
+  font-size: 11px;
   font-weight: 600;
-  color: var(--fg-0);
-  white-space: pre-wrap;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.qa-review-a.is-empty {
-  font-weight: 400;
-  font-style: italic;
-  color: var(--fg-3);
+.qa-question-number + .qa-question {
+  margin-top: 4px;
 }
 
 .qa-submit {
-  margin-top: 4px;
-}
-
-.qa-back {
-  align-self: flex-start;
-  margin-top: 8px;
-  padding: 4px 2px;
-  border: 0;
-  background: transparent;
-  color: var(--fg-3);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.qa-back:hover:not(:disabled) {
-  color: var(--fg-1);
+  margin-top: 14px;
 }
 
 .qa-count {

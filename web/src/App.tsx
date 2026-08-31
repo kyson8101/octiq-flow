@@ -134,6 +134,15 @@ type Workspace = Project & {
 const keyFor = (conversationId: string) => `chat:${conversationId}`;
 const convOf = (key: string) => (key.startsWith("chat:") ? key.slice(5) : null);
 
+/** One send's identity across the optimistic browser bubble and the durable
+ *  Codex prompt event the backend emits after accepting it. */
+function userTurnId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `user-${crypto.randomUUID()}`;
+  }
+  return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 /** How long a deleted chat can be brought back. Long enough to see the ring on
  *  its row start to empty and press it again; short enough that the agent a
  *  delete is meant to stop is not still running a minute later. */
@@ -2067,7 +2076,7 @@ export default function App() {
       if (text.trim() === "/clear") {
         const key = keyFor(id);
         if (runningRef.current.has(id)) {
-          bridge.invoke("chat_send", { key, text }).catch(() => undefined);
+          bridge.invoke("chat_send", { key, text, recordUser: false }).catch(() => undefined);
         }
         bridge.invoke("chat_forget", { key }).catch(() => undefined);
         // Held again, from nothing: `transcript::forget` drops the server's
@@ -2159,6 +2168,7 @@ export default function App() {
       // not part of the question, so a seat is asked what you asked rather than
       // being told its own name first.
       text = addressed.text;
+      const turnId = userTurnId();
       patch(id, (s) =>
         addUserTurn(
           s,
@@ -2166,6 +2176,7 @@ export default function App() {
           attachments.map((a) => ({ path: a.path, name: a.name, isImage: !!a.isImage })),
           undefined,
           seat ? { id: seat.id, name: seat.name } : undefined,
+          turnId,
         ),
       );
 
@@ -2206,7 +2217,7 @@ export default function App() {
       // reads like the branch below it rather than like something new.
       if (seat) {
         try {
-          await bridge.invoke("chat_send", { key: keyFor(id), text, images, to: seat.id });
+          await bridge.invoke("chat_send", { key: keyFor(id), text, images, to: seat.id, turnId });
         } catch (err) {
           const said = String((err as Error).message ?? err);
           if (!said.includes("not running")) {
@@ -2224,6 +2235,7 @@ export default function App() {
               effort,
               images,
               prompt: text,
+              turnId,
             });
           } catch (second) {
             fail(second);
@@ -2235,7 +2247,7 @@ export default function App() {
       // Already running: this is the next turn of a conversation in flight.
       if (runningRef.current.has(id)) {
         try {
-          await bridge.invoke("chat_send", { key: keyFor(id), text, images });
+          await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
         } catch (err) {
           fail(err);
         }
@@ -2274,6 +2286,7 @@ export default function App() {
           lite,
           images,
           prompt: text,
+          turnId,
           // Continuing an earlier conversation: the agent picks its own
           // context back up instead of being handed a transcript to read.
           resume,
@@ -2284,7 +2297,7 @@ export default function App() {
         // rather than reporting a collision as a failure.
         if (String((err as Error).message ?? err).includes("already running")) {
           try {
-            await bridge.invoke("chat_send", { key: keyFor(id), text, images });
+            await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
             return;
           } catch (second) {
             fail(second);
@@ -2338,10 +2351,13 @@ export default function App() {
   const tellSession = useCallback(
     (command: string): boolean => {
       if (!conversationId || !runningRef.current.has(conversationId)) return false;
-      bridge.invoke("chat_send", { key: keyFor(conversationId), text: command }).catch(() => {});
+      const turnId = userTurnId();
       // Show it in the transcript. It IS a turn — the agent answers it — and a
       // setting that changed with no trace is a setting you cannot trust.
-      patch(conversationId, (st) => addUserTurn(st, command));
+      patch(conversationId, (st) => addUserTurn(st, command, [], undefined, undefined, turnId));
+      bridge
+        .invoke("chat_send", { key: keyFor(conversationId), text: command, turnId })
+        .catch(() => {});
       return true;
     },
     [conversationId, patch],
@@ -3266,13 +3282,9 @@ export default function App() {
             />
           ))}
 
-          {/* A whole batch as ONE card.
-
-              An agent can ask several things in a single turn — Claude batches
-              independent tool calls — and every one of them blocks. Shown side
-              by side they read as a form dumped on you at once, and the later
-              ones often depend on the earlier answers. The card pages through
-              them one at a time and sends the set together. */}
+          {/* A whole batch as ONE card. Every question is open at once, so the
+              person can compare related decisions before using the one Submit
+              that sends the complete set together. */}
           {(() => {
             const pending = conversationId ? questions[conversationId] ?? [] : [];
             if (pending.length === 0) return null;
@@ -3281,7 +3293,7 @@ export default function App() {
                 // Keyed on the FIRST question, not the whole list. Keying on
                 // the list meant a question arriving mid-batch changed the key,
                 // remounting the card and throwing away the answers already
-                // given and the page you were on. The first id is stable until
+                // given. The first id is stable until
                 // the batch is submitted, which is exactly when a fresh card is
                 // wanted.
                 key={pending[0].id}

@@ -180,7 +180,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
 
         // ---- chats --------------------------------------------------------
-        "chat_start" => unit(crate::agent_chat::chat_start_impl(
+        "chat_start" => unit(crate::agent_chat::chat_start_user_impl(
             svc.chats.clone(),
             arg(&args, "key")?,
             arg(&args, "cwd")?,
@@ -193,18 +193,21 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "effort")?,
             arg(&args, "images")?,
             arg(&args, "lite")?,
+            arg(&args, "turnId")?,
         )),
-        "chat_send" => unit(crate::agent_chat::chat_send_impl(
+        "chat_send" => unit(crate::agent_chat::chat_send_user_impl(
             svc.chats.clone(),
             arg(&args, "key")?,
             arg(&args, "text")?,
             arg(&args, "images")?,
             arg(&args, "to")?,
+            arg(&args, "turnId")?,
+            arg(&args, "recordUser")?,
         )),
         // Card 67 — a seat's own process, started by its first message. The
         // mirror of `chat_start`, and the same two-call shape the client
         // already uses for the host.
-        "chat_seat_start" => unit(crate::agent_chat::chat_seat_start_impl(
+        "chat_seat_start" => unit(crate::agent_chat::chat_seat_start_user_impl(
             svc.chats.clone(),
             arg(&args, "key")?,
             arg(&args, "seatId")?,
@@ -214,6 +217,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "extraDirs")?,
             arg(&args, "effort")?,
             arg(&args, "images")?,
+            arg(&args, "turnId")?,
         )),
         "chat_interrupt" => unit(crate::agent_chat::chat_interrupt_impl(
             &svc.chats,

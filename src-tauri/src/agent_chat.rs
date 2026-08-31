@@ -58,6 +58,76 @@ struct ChatEvent {
     event: Value,
 }
 
+/// One typed turn that a command-line provider cannot echo back to us.
+///
+/// Claude's stream already contains a `user` event for each accepted prompt.
+/// Codex's command-line protocol does not, so the transcript needs this small
+/// canonical envelope in order to rebuild the conversation after a refresh.
+fn durable_user_event(
+    turn_id: &str,
+    text: &str,
+    images: &[String],
+    to: Option<&crate::chat_room::Seat>,
+) -> Value {
+    let mut event = json!({
+        "type": "user",
+        "uuid": turn_id,
+        "octiq_user_turn": true,
+        "message": {
+            "role": "user",
+            "content": [{ "type": "text", "text": text }],
+        },
+    });
+
+    let attachments: Vec<Value> = images
+        .iter()
+        .map(|path| {
+            let name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(path);
+            json!({ "path": path, "name": name, "isImage": true })
+        })
+        .collect();
+    if !attachments.is_empty() {
+        event["octiq_attachments"] = Value::Array(attachments);
+    }
+    if let Some(seat) = to {
+        event["octiq_to"] = json!({ "id": seat.id, "name": seat.name });
+    }
+    event
+}
+
+/// Persist and fan out one prompt that Codex accepted.
+///
+/// This uses the same transcript-before-bus ordering as agent stdout. A page
+/// that reconnects therefore sees the prompt before the Codex events it caused,
+/// while the current page reconciles it with its optimistic bubble by `uuid`.
+fn record_durable_user_turn(
+    key: &str,
+    turn_id: &str,
+    text: &str,
+    images: &[String],
+    to: Option<&crate::chat_room::Seat>,
+) {
+    let event = durable_user_event(turn_id, text, images, to);
+    let seq = crate::transcript::append(key, &event);
+    crate::bus::emit(
+        "chat-event",
+        ChatEvent {
+            key: key.to_string(),
+            seq,
+            event,
+        },
+    );
+}
+
+fn fresh_turn_id(turn_id: Option<String>) -> String {
+    turn_id
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| format!("octiq-user-{}", uuid::Uuid::new_v4()))
+}
+
 /// The agent said something on stderr, or the process ended.
 #[derive(Clone, Serialize)]
 struct ChatStatus {
@@ -472,6 +542,66 @@ pub fn chat_start_impl(
     images: Option<Vec<String>>,
     lite: Option<bool>,
 ) -> Result<(), String> {
+    chat_start_with_user_turn(
+        manager, key, cwd, agent, model, access, prompt, resume, extra_dirs, effort, images, lite,
+        None,
+    )
+}
+
+/// Start a chat from a person-visible send action.
+///
+/// The optional id is supplied by newer browsers so their optimistic bubble and
+/// this durable event are the same turn. Generate one for an older browser;
+/// preserving the prompt matters more than requiring a coordinated upgrade.
+#[allow(clippy::too_many_arguments)]
+pub fn chat_start_user_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    lite: Option<bool>,
+    turn_id: Option<String>,
+) -> Result<(), String> {
+    chat_start_with_user_turn(
+        manager,
+        key,
+        cwd,
+        agent,
+        model,
+        access,
+        prompt,
+        resume,
+        extra_dirs,
+        effort,
+        images,
+        lite,
+        Some(fresh_turn_id(turn_id)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chat_start_with_user_turn(
+    manager: Arc<ChatManager>,
+    key: String,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    lite: Option<bool>,
+    user_turn_id: Option<String>,
+) -> Result<(), String> {
     // How this host was started, kept so the backend can start it the same way
     // again — see `StartContext`. Written BEFORE the spawn, and left in place if
     // the spawn fails: the settings were still the right ones, and a chat that
@@ -502,6 +632,7 @@ pub fn chat_start_impl(
         effort,
         images,
         lite,
+        user_turn_id,
     )
 }
 
@@ -589,6 +720,7 @@ fn start_queued_command_turn(
         start.effort,
         Some(images),
         start.lite,
+        None,
     )
 }
 
@@ -612,6 +744,7 @@ pub(crate) fn start_session(
     effort: Option<String>,
     images: Option<Vec<String>>,
     lite: Option<bool>,
+    user_turn_id: Option<String>,
 ) -> Result<(), String> {
     let Voice {
         session_key,
@@ -641,6 +774,7 @@ pub(crate) fn start_session(
         .collect();
 
     let provider = provider_for(agent);
+    let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
     let images = images.unwrap_or_default();
     let line = build_command(
@@ -734,6 +868,15 @@ pub(crate) fn start_session(
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     record_access_for(&key, access, is_seat);
+
+    // A command-line provider has no user-message event in its stdout. Once
+    // its process exists, the prompt is accepted; write our canonical copy
+    // before the reader can forward the first Codex event.
+    if has_prompt && !provider.capabilities().input.accepts_stdin() {
+        if let Some(turn_id) = user_turn_id.as_deref() {
+            record_durable_user_turn(&key, turn_id, &prompt, &images, seat.as_ref());
+        }
+    }
 
     // Providers that use a control channel initialize it before the first turn.
     // The handshake is not transcript content; its response is recognized by
@@ -1093,10 +1236,45 @@ pub fn chat_send_impl(
     // chat that is not a room, and the default inside one.
     to: Option<String>,
 ) -> Result<(), String> {
+    chat_send_with_user_turn(manager, key, text, images, to, None)
+}
+
+/// The browser-facing counterpart of `chat_send_impl`.
+///
+/// Internal callers use the function above for agent-to-agent briefs. Only a
+/// person-visible send gets a canonical prompt envelope in the transcript.
+pub fn chat_send_user_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+    to: Option<String>,
+    turn_id: Option<String>,
+    record_user: Option<bool>,
+) -> Result<(), String> {
+    let user_turn_id = (record_user != Some(false)).then(|| fresh_turn_id(turn_id));
+    chat_send_with_user_turn(manager, key, text, images, to, user_turn_id)
+}
+
+fn chat_send_with_user_turn(
+    manager: Arc<ChatManager>,
+    key: String,
+    text: String,
+    images: Option<Vec<String>>,
+    // Who this is for. `None` is the chat's own agent — every message of every
+    // chat that is not a room, and the default inside one.
+    to: Option<String>,
+    user_turn_id: Option<String>,
+) -> Result<(), String> {
     // WHO first, because an unknown seat must be refused before anything is
     // written anywhere. Falling through to the host would put a message meant
     // for one agent in front of a different one.
     let target = crate::chat_room::target_impl(&manager, &key, to.as_deref())?;
+    let images = images.unwrap_or_default();
+    let target_seat = match &target {
+        crate::chat_room::Target::Host => None,
+        crate::chat_room::Target::Seat(seat) => Some(seat),
+    };
     let session_key = match &target {
         crate::chat_room::Target::Host => key.clone(),
         crate::chat_room::Target::Seat(seat) => crate::chat_room::seat_session_key(&key, &seat.id),
@@ -1106,11 +1284,15 @@ pub fn chat_send_impl(
     // already back by the time this returns.
     if let crate::chat_room::Target::Seat(seat) = &target {
         if seat.kind == crate::chat_room::SeatKind::OnDemand {
+            // It has no stdout stream that could echo the prompt. Write before
+            // asking so a replay preserves the same user → answer order.
+            if let Some(turn_id) = user_turn_id.as_deref() {
+                record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+            }
             crate::agent_api::ask(seat, &key, &text)?;
             return Ok(());
         }
     }
-    let images = images.unwrap_or_default();
     let session = {
         // A command-line follow-up and its reaper share this lock order.
         // Holding the sessions entry until the turn reaches the queue means the
@@ -1143,7 +1325,17 @@ pub fn chat_send_impl(
                 .input
                 .accepts_stdin()
             {
+                // A Codex process is one-shot, so this prompt has been
+                // accepted once it entered the queue. Keep a canonical copy
+                // NOW, at the moment the person sent it, not when the next
+                // process eventually begins it.
+                let recorded = user_turn_id
+                    .as_deref()
+                    .map(|turn_id| (turn_id.to_string(), text.clone(), images.clone()));
                 manager.queue_command_turn(&session_key, QueuedCommandTurn { text, images })?;
+                if let Some((turn_id, text, images)) = recorded {
+                    record_durable_user_turn(&key, &turn_id, &text, &images, target_seat);
+                }
                 // A queued turn is still work the person is waiting for. This also
                 // prevents the idle sweeper from ending the process in the handoff
                 // before its reaper starts the resume.
@@ -1178,6 +1370,52 @@ pub fn chat_seat_start_impl(
     extra_dirs: Option<Vec<String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
+) -> Result<(), String> {
+    chat_seat_start_with_user_turn(
+        manager, key, seat_id, cwd, prompt, access, extra_dirs, effort, images, None,
+    )
+}
+
+/// Start a seat from a person-visible send action.
+#[allow(clippy::too_many_arguments)]
+pub fn chat_seat_start_user_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    seat_id: String,
+    cwd: String,
+    prompt: Option<String>,
+    access: Option<Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    turn_id: Option<String>,
+) -> Result<(), String> {
+    chat_seat_start_with_user_turn(
+        manager,
+        key,
+        seat_id,
+        cwd,
+        prompt,
+        access,
+        extra_dirs,
+        effort,
+        images,
+        Some(fresh_turn_id(turn_id)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn chat_seat_start_with_user_turn(
+    manager: Arc<ChatManager>,
+    key: String,
+    seat_id: String,
+    cwd: String,
+    prompt: Option<String>,
+    access: Option<Access>,
+    extra_dirs: Option<Vec<String>>,
+    effort: Option<String>,
+    images: Option<Vec<String>>,
+    user_turn_id: Option<String>,
 ) -> Result<(), String> {
     let crate::chat_room::Target::Seat(seat) =
         crate::chat_room::target_impl(&manager, &key, Some(&seat_id))?
@@ -1245,6 +1483,7 @@ pub fn chat_seat_start_impl(
         // A seat is a second opinion, not a second copy of this machine's
         // setup. It starts clean for the same reason `lite` exists.
         Some(true),
+        user_turn_id,
     )
 }
 
@@ -1705,6 +1944,34 @@ mod tests {
         test_image_media_type as image_media_type, test_sh_quote as sh_quote,
         test_toml_string as toml_string,
     };
+
+    #[test]
+    fn codex_prompt_event_keeps_text_attachments_and_target() {
+        let seat = crate::chat_room::Seat {
+            id: "s1".into(),
+            name: "Second opinion".into(),
+            agent: ChatAgent::Codex,
+            model: None,
+            role: None,
+            context: Default::default(),
+            kind: Default::default(),
+            joined_at: 0,
+            provider: None,
+        };
+        let event = durable_user_event(
+            "user-1",
+            "look at this",
+            &["/tmp/screenshot.png".into()],
+            Some(&seat),
+        );
+
+        assert_eq!(event["type"], "user");
+        assert_eq!(event["uuid"], "user-1");
+        assert_eq!(event["octiq_user_turn"], true);
+        assert_eq!(event["message"]["content"][0]["text"], "look at this");
+        assert_eq!(event["octiq_attachments"][0]["path"], "/tmp/screenshot.png");
+        assert_eq!(event["octiq_to"]["id"], "s1");
+    }
 
     #[test]
     fn full_access_is_named_in_the_environment_the_hook_reads() {
@@ -2585,6 +2852,53 @@ mod tests {
             "the reaper has the exact session it needs for codex exec resume"
         );
         end_process(&manager, &session_key).expect("end the stand-in");
+    }
+
+    #[test]
+    fn a_queued_codex_user_turn_is_durable_before_its_next_process_starts() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("codex-durable-{}", uuid::Uuid::new_v4().simple());
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a Codex stand-in");
+        manager.sessions.lock().unwrap().insert(
+            key.clone(),
+            Arc::new(Mutex::new(ChatSession {
+                child,
+                stdin: None,
+                agent: ChatAgent::Codex,
+                busy: true,
+                last_active: Instant::now(),
+            })),
+        );
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "persist this prompt".into(),
+            Some(vec!["/tmp/prompt.png".into()]),
+            None,
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a queued Codex user turn");
+
+        let events = crate::transcript::since(&key, 0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event["uuid"], "user-1");
+        assert_eq!(
+            events[0].event["message"]["content"][0]["text"],
+            "persist this prompt"
+        );
+        assert_eq!(
+            events[0].event["octiq_attachments"][0]["path"],
+            "/tmp/prompt.png"
+        );
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
     }
 
     #[test]

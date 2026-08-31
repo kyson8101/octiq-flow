@@ -63,8 +63,8 @@ function closestSpot(spots: Spot[], centre: number): Spot | undefined {
   }, undefined);
 }
 
-/** Each point owns the next contiguous slice of the map. The map itself stays
- * centred; its marks should read as one unbroken stack, not scattered ticks. */
+/** Each point owns the next slice of the map. The full slice stays clickable,
+ * while its dash is deliberately smaller so neighbouring turns stay distinct. */
 export function conversationMapRank(index: number, total: number): number {
   if (total <= 1) return 0;
   return index / total;
@@ -162,11 +162,11 @@ export function ConversationMap({
 
   const selected = useMemo(() => spots.find((spot) => spot.id === pointedAt), [pointedAt, spots]);
   const current = useMemo(() => closestSpot(spots, scrollCentre), [scrollCentre, spots]);
-  // Two CSS pixels per line keeps the visual rail fine and continuous. For a
-  // very long conversation, the cap gently compresses the slices instead of
-  // letting the map grow beyond a useful glanceable height.
-  const mapHeight = Math.min(360, Math.max(2, spots.length * 2));
-  const mapLineHeight = mapHeight / Math.max(spots.length, 1);
+  // Give the normal two-pixel dash three pixels of air before the next turn.
+  // At the cap, the dash scales down with its slot rather than turning the map
+  // into one dense, continuous line.
+  const mapHeight = Math.min(360, Math.max(5, spots.length * 5));
+  const mapSlotHeight = mapHeight / Math.max(spots.length, 1);
 
   if (turns.length === 0) return null;
 
@@ -192,7 +192,7 @@ export function ConversationMap({
               type="button"
               style={{
                 top: `${spot.rank * mapHeight}px`,
-                height: `${mapLineHeight}px`,
+                height: `${mapSlotHeight}px`,
                 width: `${conversationMapPointWidth(pointedAt === spot.id)}px`,
               }}
               aria-label={`Jump to message: ${spot.prompt}`}
@@ -209,8 +209,8 @@ export function ConversationMap({
           <div
             className="conversation-map-preview"
             aria-hidden="true"
-            // Lifted by half the card's height so it sits centred on its line.
-            style={{ top: `${selected.rank * mapHeight + mapLineHeight / 2 - 54}px` }}
+            // Lifted by half the card's height so it sits centred on its dash.
+            style={{ top: `${selected.rank * mapHeight + mapSlotHeight / 2 - 54}px` }}
           >
             <div className="conversation-map-preview-title">{selected.prompt}</div>
             {selected.reply && <div className="conversation-map-preview-body">{selected.reply}</div>}
