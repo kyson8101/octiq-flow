@@ -1489,21 +1489,19 @@ export function MessageList({
           </Fragment>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}
-        {/* The dots come and go SEVERAL TIMES A MINUTE — the agent stops
-            streaming at every tool call and starts again after it — so the row
-            they live in is held open whether they are showing or not. Drawn
-            only when working, it would add its own height and the gap above it
-            each time, and the whole transcript would step up and down under
-            the reader for the length of a turn.
+        {/* There were working dots here, in a slot held open so the transcript
+            did not step up and down as they came and went several times a
+            minute. They are gone, and the slot with them — not because the
+            motion was wrong but because it was the SECOND thing saying it. The
+            status line above the composer sits about forty pixels below this
+            point and says the same "still going" with the time, the token
+            count and the effort attached, and the two pulsed at each other for
+            the length of every turn.
 
-            Not while compacting: the line above already says what the silence
-            is, and two "something is happening" marks under each other say it
-            twice. */}
-        <div className="dots-slot">
-          {busy && compactingSince === undefined && !messages.some((m) => m.streaming) && (
-            <div className="dots" aria-label="working" />
-          )}
-        </div>
+            The dots inside a streaming bubble stay (see `Blocks`): those fill a
+            bubble that has arrived with nothing in it yet, and they never draw
+            at the same moment as this did — this one required that NO message
+            was streaming. */}
         <div ref={endRef} />
       </div>
       {/* Outside `.msgs-inner` and after it: it takes no height and must not

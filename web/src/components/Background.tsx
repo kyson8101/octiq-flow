@@ -93,7 +93,11 @@ export function BackgroundNote({
         <>
           {" · "}
           <span className="bgwork-time">
-            <RollingText>{elapsedLabel(summary.elapsedMs)}</RollingText>
+            {/* Not rolled, for the same reason the turn's own clock is not:
+                this one ticks every second too, and a wheel that turns for
+                560ms and then stays bright for 900ms never finishes before the
+                next second starts it again. */}
+            {elapsedLabel(summary.elapsedMs)}
           </span>
         </>
       )}

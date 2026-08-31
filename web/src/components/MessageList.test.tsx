@@ -106,16 +106,29 @@ describe("the working dots", () => {
   const at = (busy: boolean) =>
     renderToStaticMarkup(<MessageList messages={[said("read that file")]} busy={busy} />);
 
-  it("show only while something is working", () => {
-    expect(at(true)).toContain('aria-label="working"');
+  it("do not sit at the foot of the transcript, busy or not", () => {
+    // The status line above the composer says "still going" already, with the
+    // time and the token count attached. A second pulse a few pixels under it
+    // was the same news twice, and it is the half with less to say.
+    expect(at(true)).not.toContain('aria-label="working"');
     expect(at(false)).not.toContain('aria-label="working"');
   });
 
-  it("keep their row open either way, so the transcript does not jump", () => {
-    // They come and go once per tool call. If the row came with them, the
-    // whole transcript would shift under the reader several times a minute.
-    expect(at(true)).toContain("dots-slot");
-    expect(at(false)).toContain("dots-slot");
+  it("take no row with them, so the transcript cannot jump", () => {
+    // The slot existed to stop the transcript stepping as the dots came and
+    // went once per tool call. Nothing comes or goes there now.
+    expect(at(true)).not.toContain("dots-slot");
+    expect(at(false)).not.toContain("dots-slot");
+  });
+
+  it("still fill a streaming bubble that has arrived empty", () => {
+    // The one place they are not redundant: a bubble that exists with nothing
+    // in it yet. This never overlapped the foot-of-transcript pair — that one
+    // required no message to be streaming at all.
+    const opening: Message = { id: "a0", role: "assistant", blocks: [], streaming: true };
+    expect(renderToStaticMarkup(<MessageList messages={[opening]} busy />)).toContain(
+      'aria-label="working"',
+    );
   });
 });
 

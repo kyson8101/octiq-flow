@@ -14,7 +14,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
-import { workingLine } from "../lib/working";
+import { elapsedLabel, workingLine } from "../lib/working";
+import { Mascot } from "./Mascot";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
@@ -2248,11 +2249,27 @@ function Working({
     return () => clearInterval(timer);
   }, []);
 
+  // The clock is the one figure on this line that is NOT rolled. It changes
+  // every second, and a wheel that turns and then flashes takes 1.46s to do it
+  // — so the line was never once still for the length of a turn, which is the
+  // whole of what a reader notices about it. Rolling exists to make a change
+  // findable; a change that happens every second finds itself. Tabular digits
+  // keep it from nudging the words after it, which was the other half of the
+  // wheel's job. The token count and the words keep theirs: they move rarely,
+  // and rarely is exactly when the motion earns its keep.
   return (
     <>
+      {/* Only ever here while the turn is in flight, which is the whole of what
+          it is for — it arrives with the work and leaves with it. */}
+      <Mascot />
+      {since !== undefined && (
+        <>
+          <span className="working-clock">{elapsedLabel(Date.now() - since)}</span>
+          {" · "}
+        </>
+      )}
       <RollingText>
         {workingLine({
-          elapsedMs: since === undefined ? undefined : Date.now() - since,
           tokens,
           approx,
           activity,

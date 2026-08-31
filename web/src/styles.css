@@ -1841,21 +1841,12 @@ body {
   --tint: #ff375f;
 }
 
-/* While a call is in flight its icon breathes, so a long-running row is
-   findable in a scrolled-past reply without reading a word of it. */
-.tool-running .tool-icon {
-  animation: tool-breathe 1.6s ease-in-out infinite;
-}
-
-@keyframes tool-breathe {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
+/* The icon used to breathe while a call was in flight, so a long-running row
+   was findable in a scrolled-past reply. The SPINNER at the other end of the
+   same row already does that, and better — it turns rather than fades, which
+   survives a glance, and it is the conventional mark for it. Two loops on one
+   12px row saying one thing is one loop too many; the fade was the one to go,
+   because a dimming icon also reads as "disabled" at the edge of vision. */
 
 .tool-error .tool-icon {
   --tint: var(--danger);
@@ -1960,9 +1951,6 @@ body {
 /* Everything that moves stops for a reader who asked for that. */
 @media (prefers-reduced-motion: reduce) {
   .tool-spinner {
-    animation: none;
-  }
-  .tool-running .tool-icon {
     animation: none;
   }
   .tool-expand {
@@ -2384,14 +2372,10 @@ body {
 }
 
 /* ---- Working indicator ------------------------------------------------ */
-/* The place the working dots live, kept open whether they are in it or not.
-   Exactly their own height, so holding it costs nothing when idle and the
-   transcript stops stepping up and down once per tool call. */
-.dots-slot {
-  flex: 0 0 auto;
-  min-height: 8px;
-}
-
+/* The dots that once sat at the foot of the transcript are gone — the status
+   line above the composer was saying the same thing a few pixels below them.
+   What is left draws only INSIDE a streaming bubble that has no blocks yet, so
+   it owns a box that would otherwise be empty and needs no slot held for it. */
 .dots {
   width: 22px;
   height: 8px;
@@ -2565,6 +2549,132 @@ body {
 .bgwork-time {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
+}
+
+/* The turn's own clock. Tabular figures because it is not rolled any more and
+   nothing else is holding its width: a proportional `1` would let the whole
+   line breathe in and out once a second, which is the fidget the roll was
+   removed to stop. */
+.working-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- The working mascot ------------------------------------------------
+   A small robot at the head of the status line, drawn only while a turn is in
+   flight. A step brighter than the words after it (`--fg-2` against the row's
+   `--fg-3`), because it is the face of the line and they are its caption. */
+.mascot {
+  flex: 0 0 auto;
+  display: inline-block;
+  vertical-align: middle;
+  /* Lifted by the pixel that puts an 18px box on the middle of an 11.5px line
+     rather than a hair under it — the same correction `.bgwork-dot` makes. */
+  margin: -1px 5px 0 0;
+  color: var(--fg-2);
+}
+
+.mascot-head {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+}
+
+.mascot-stalk {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+
+.mascot-ear {
+  fill: currentColor;
+}
+
+/* The heaviest stroke on the drawing relative to its length, and deliberately:
+   at 18px on a 1x screen a 1.25 smile rasterised to a grey smudge under the
+   eyes, which is worse than no mouth at all. */
+.mascot-smile {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+/* The two accent pieces, and the only accent on this line. They are three
+   pixels across: enough to read as lit, not enough to argue with the tool
+   spinner about which of them is the thing you are waiting on. */
+.mascot-lamp,
+.mascot-eye {
+  fill: var(--accent);
+}
+
+/* A float, not a bounce. Under a pixel of travel at eighteen pixels tall, which
+   is the difference between a robot idling and a robot being jostled. */
+.mascot-body {
+  animation: mascot-bob 2.4s ease-in-out infinite;
+}
+
+@keyframes mascot-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-0.9px);
+  }
+}
+
+.mascot-lamp {
+  animation: mascot-lamp 1.8s ease-in-out infinite;
+}
+
+@keyframes mascot-lamp {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* `fill-box` so the squash happens about each eye's own middle; without it the
+   origin is the whole SVG's, and both eyes slide off the face instead. */
+.mascot-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mascot-blink 3.8s ease-in-out infinite;
+}
+
+/* Not quite together. Two eyes that shut on the same frame read as a shutter;
+   forty milliseconds apart reads as a face. */
+.mascot-eye.is-right {
+  animation-delay: 0.04s;
+}
+
+/* Open for nine tenths of the cycle, and the shut is the fast half of it —
+   about 110ms down and 190ms back up, which is roughly what a blink is. */
+@keyframes mascot-blink {
+  0%,
+  92% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.14);
+  }
+  98%,
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+/* Still present, still says a turn is running — it just stops performing. */
+@media (prefers-reduced-motion: reduce) {
+  .mascot-body,
+  .mascot-lamp,
+  .mascot-eye {
+    animation: none;
+  }
 }
 
 /* A live metric changes by turning its digit, not replacing the whole label.
@@ -2799,19 +2909,24 @@ body {
   color: var(--fg-3);
 }
 
+/* A ring, and deliberately NOT an accent one. It was accent with an accent-tint
+   halo, which put a third blue circle on a screen that already had the tool
+   spinner turning and the context ring beside Send — and of the three only the
+   spinner meant "in flight". This one means "here is where you are in the
+   plan", which is a fact, not an event, so it is drawn in the same grey as the
+   words beside it. The accent still arrives when the plan actually MOVES: see
+   `.plan-count.is-moved`, which is the event this pill exists to report. */
 .plan-state {
   flex: 0 0 auto;
   width: 10px;
   height: 10px;
-  border: 2px solid var(--accent);
+  border: 2px solid var(--fg-3);
   border-radius: 50%;
-  box-shadow: 0 0 0 1px var(--accent-tint);
 }
 
 .plan-btn.is-done .plan-state {
   border-color: var(--ok);
   background: var(--ok);
-  box-shadow: none;
 }
 
 .plan-count {
@@ -3097,6 +3212,12 @@ body {
   padding: 0 13px;
   font-size: 11.5px;
   color: var(--fg-3);
+  /* Tall enough for the mascot whether it is here or not. An 18px robot
+     dropping into an 11.5px line would otherwise push the whole composer down
+     the moment a turn started and pull it back up when the turn ended — the
+     same jump the working dots' slot was built to avoid, at the same spot on
+     the screen. The idle row is a few pixels taller for it, once, forever. */
+  min-height: 20px;
 }
 
 /* The words take what is left and cut, rather than pushing the mode off the
