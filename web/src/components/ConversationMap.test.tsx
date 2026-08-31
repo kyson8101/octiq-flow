@@ -44,8 +44,17 @@ describe("conversation map point breaks", () => {
     expect(conversationMapRank(2, 3)).toBeCloseTo(2 / 3);
   });
 
-  it("uses a fixed dash width, expanding only for the pointed-at turn", () => {
-    expect(conversationMapPointWidth(false)).toBe(12);
-    expect(conversationMapPointWidth(true)).toBe(52);
+  it("uses a fixed dash width until a turn is pointed at", () => {
+    expect(conversationMapPointWidth(null)).toBe(12);
+    expect(conversationMapPointWidth(0)).toBe(32);
+  });
+
+  it("lifts the neighbours with the pointed-at turn, symmetrically and to a limit", () => {
+    const hill = [-4, -3, -2, -1, 0, 1, 2, 3, 4].map(conversationMapPointWidth);
+
+    expect(hill).toEqual([12, 12, 17, 27, 32, 27, 17, 12, 12]);
+    // A hill, not a step: every dash between the base and the peak is taller
+    // than the one further from the pointer.
+    expect(hill.slice(0, 5)).toEqual([...hill.slice(0, 5)].sort((a, b) => a - b));
   });
 });

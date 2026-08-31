@@ -36,7 +36,10 @@
   outline: 0;
   background: transparent;
   cursor: pointer;
-  transition: width 150ms ease;
+  /* Every dash within reach of the pointer animates on the same curve, so the
+     rail rises and falls as one shape rather than as a row of separate dashes
+     each arriving in its own time. */
+  transition: width 160ms ease-out;
 }
 
 /* The button fills its slice for an easy target. Its visible dash stays at

@@ -70,11 +70,27 @@ export function conversationMapRank(index: number, total: number): number {
   return index / total;
 }
 
+/** How many turns either side of the pointer are lifted with it. */
+export const CONVERSATION_MAP_REACH = 3;
+
 /** Marks are deliberately content-blind. A map is a rhythm of return points,
  * not a bar chart of which replies happened to be long; the only expansion is
- * the direct hover/focus affordance. */
-export function conversationMapPointWidth(pointedAt: boolean): number {
-  return pointedAt ? 52 : 12;
+ * the direct hover/focus affordance.
+ *
+ * That affordance is a hill, not a single spike. The pointed-at dash reaches
+ * full width and its neighbours follow it down a cosine bell, so the rail
+ * swells around the cursor the way a dock does rather than flicking one dash
+ * out of a flat line. `distance` is counted in turns, not pixels — the slices
+ * are uniform, so a hill measured in turns keeps its shape whether the map is
+ * showing eight of them or eighty. `null` means nothing is pointed at. */
+export function conversationMapPointWidth(distance: number | null): number {
+  const base = 12;
+  const peak = 32;
+  if (distance === null) return base;
+
+  const reach = Math.abs(distance);
+  if (reach >= CONVERSATION_MAP_REACH) return base;
+  return Math.round(base + (peak - base) * 0.5 * (1 + Math.cos((Math.PI * reach) / CONVERSATION_MAP_REACH)));
 }
 
 export function ConversationMap({
@@ -161,6 +177,12 @@ export function ConversationMap({
   }, [scrollerRef]);
 
   const selected = useMemo(() => spots.find((spot) => spot.id === pointedAt), [pointedAt, spots]);
+  // The hill is drawn around a position in the rail, so the pointed-at turn is
+  // wanted as an index rather than an id.
+  const pointedIndex = useMemo(
+    () => (pointedAt === null ? -1 : spots.findIndex((spot) => spot.id === pointedAt)),
+    [pointedAt, spots],
+  );
   const current = useMemo(() => closestSpot(spots, scrollCentre), [scrollCentre, spots]);
   // Give the normal two-pixel dash three pixels of air before the next turn.
   // At the cap, the dash scales down with its slot rather than turning the map
@@ -185,7 +207,7 @@ export function ConversationMap({
     <aside className="conversation-map" aria-label="Conversation map">
       <div className="conversation-map-body" style={{ height: `${mapHeight}px` }}>
         <div className="conversation-map-points">
-          {spots.map((spot) => (
+          {spots.map((spot, index) => (
             <button
               key={spot.id}
               className={`conversation-map-point ${current?.id === spot.id ? "is-current" : ""}`}
@@ -193,7 +215,7 @@ export function ConversationMap({
               style={{
                 top: `${spot.rank * mapHeight}px`,
                 height: `${mapSlotHeight}px`,
-                width: `${conversationMapPointWidth(pointedAt === spot.id)}px`,
+                width: `${conversationMapPointWidth(pointedIndex < 0 ? null : index - pointedIndex)}px`,
               }}
               aria-label={`Jump to message: ${spot.prompt}`}
               aria-current={current?.id === spot.id ? "location" : undefined}
