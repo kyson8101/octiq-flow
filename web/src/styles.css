@@ -2608,6 +2608,22 @@ body {
   fill: var(--accent);
 }
 
+/* Work the turn started that is still running behind it. The orange used to be
+   a dot of its own, pulsing beside the robot's head; it is the robot's EYES
+   now, which is one thing carrying two facts instead of two things each
+   carrying one. The lamp keeps the accent — it means "this turn is alive",
+   which is a different fact and still true.
+
+   It fades rather than switching, because the news arrives mid-turn and a
+   colour that snaps on a face reads as a glitch. */
+.mascot-eye {
+  transition: fill 260ms ease;
+}
+
+.mascot.is-alert .mascot-eye {
+  fill: var(--warn);
+}
+
 /* A float, not a bounce. Under a pixel of travel at eighteen pixels tall, which
    is the difference between a robot idling and a robot being jostled. */
 .mascot-body {

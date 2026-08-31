@@ -94,15 +94,21 @@ describe("the status line", () => {
 
   it("names the run after the turn's own words, and adds no second clock", () => {
     const html = line([task()], true, TURN);
-    expect(html).toContain("bgwork-dot");
     expect(html).toContain(TURN);
     expect(html).toContain("codex exec");
     // The task started 4m 12s ago. The turn's clock is already on the line.
     expect(html).not.toContain("4m 12s");
   });
 
+  /** The mascot is on this line while the turn runs, with the same news on its
+   *  face — its eyes go warn-coloured. A dot beside it said it twice. */
+  it("leaves the dot to the mascot while a turn is running", () => {
+    expect(line([task()], true, TURN)).not.toContain("bgwork-dot");
+  });
+
   it("takes the line once the turn it outlived has ended", () => {
     const html = line([task()], false, HINT);
+    // Nothing else is left holding the news once the robot goes with the turn.
     expect(html).toContain("bgwork-dot");
     expect(html).toContain("codex exec");
     expect(html).toContain("4m 12s");

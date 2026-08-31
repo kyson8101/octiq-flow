@@ -84,7 +84,12 @@ export function BackgroundNote({
     summary.count === 1 ? summary.label : `${summary.label} +${summary.count - 1}`;
   return (
     <>
-      <span className="bgwork-dot" aria-hidden="true" />
+      {/* Only when there is no mascot to say it. While a turn runs the robot is
+          sitting a few pixels to the right of this dot with the same news on
+          its face — its eyes go warn-coloured — and a dot beside it was the
+          same orange pulse twice. Once the turn ends the robot goes with it,
+          and this is the only thing left holding the news, so it comes back. */}
+      {!busy && <span className="bgwork-dot" aria-hidden="true" />}
       {busy && <>{children} · </>}
       <span className="bgwork-said" role="status" title={label}>
         <RollingText>{label}</RollingText>

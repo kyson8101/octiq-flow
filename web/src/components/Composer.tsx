@@ -768,6 +768,7 @@ export function Composer({
             activity={activity}
             thinking={thinking}
             effort={eff.label.toLowerCase()}
+            background={(background ?? []).length > 0}
           />
         ) : (
           activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")
@@ -2235,6 +2236,7 @@ function Working({
   activity,
   thinking,
   effort,
+  background,
 }: {
   since?: number;
   tokens?: number;
@@ -2242,6 +2244,9 @@ function Working({
   activity?: string;
   thinking?: boolean;
   effort: string;
+  /** Something started by this turn is still running behind it. It reaches the
+   *  mascot's eyes rather than a dot of its own — see `BackgroundNote`. */
+  background?: boolean;
 }) {
   const [, tick] = useState(0);
   useEffect(() => {
@@ -2261,7 +2266,7 @@ function Working({
     <>
       {/* Only ever here while the turn is in flight, which is the whole of what
           it is for — it arrives with the work and leaves with it. */}
-      <Mascot />
+      <Mascot alert={background} />
       {since !== undefined && (
         <>
           <span className="working-clock">{elapsedLabel(Date.now() - since)}</span>

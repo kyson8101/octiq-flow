@@ -33,4 +33,13 @@ describe("Mascot", () => {
     expect(drawn).toContain('class="mascot-body"');
     expect(drawn).not.toMatch(/<svg[^>]*class="mascot-body"/);
   });
+
+  /** Work still running behind the turn used to be an orange dot pulsing beside
+   *  the robot's head. It is the robot's eyes now — `BackgroundNote` stops
+   *  drawing the dot while a turn runs precisely because this carries it, so
+   *  losing the class loses the news entirely rather than merely its colour. */
+  it("wears the alert on its face when work is running behind the turn", () => {
+    expect(renderToStaticMarkup(<Mascot alert />)).toContain("is-alert");
+    expect(drawn).not.toContain("is-alert");
+  });
 });

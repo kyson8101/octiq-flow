@@ -23,14 +23,25 @@
  *  drawing keeps a unit of headroom inside the viewBox instead, and moves
  *  around inside a box that never moves.
  */
-export function Mascot({ size = 18 }: { size?: number }) {
+export function Mascot({
+  size = 18,
+  alert = false,
+}: {
+  size?: number;
+  /** Something the turn started is STILL running behind it. The eyes go
+   *  warn-coloured and carry that on the robot's face, which is what lets the
+   *  orange dot that used to pulse beside it stop being drawn — see
+   *  `BackgroundNote`. Only the eyes change: the lamp stays accent because it
+   *  means "this turn is alive", which is still true and is not this news. */
+  alert?: boolean;
+}) {
   return (
     // Decorative: the words immediately after it say "thinking with max effort"
     // and how long it has been at it. A reader who cannot see the robot loses a
     // joke, not a fact, and a second "Working" announced here would be read out
     // over the top of the line that says it properly.
     <svg
-      className="mascot"
+      className={`mascot ${alert ? "is-alert" : ""}`}
       width={size}
       height={size}
       viewBox="0 0 24 24"
