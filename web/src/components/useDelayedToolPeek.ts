@@ -24,5 +24,9 @@ export function useDelayedToolPeek(runningToolId?: string): boolean {
   // When one call ends and the next begins, the previous id stays in state
   // until React runs the cleanup. Comparing the ids prevents its already-open
   // peek from leaking into the next call's first frame.
-  return shownFor === runningToolId;
+  //
+  // The `!runningToolId` guard is not redundant: with nothing running, both
+  // sides are `undefined` and comparing them alone reads as a match, which is
+  // how a settled run — every row of a reloaded transcript — showed a spinner.
+  return !!runningToolId && shownFor === runningToolId;
 }

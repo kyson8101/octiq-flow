@@ -72,6 +72,14 @@ pub(crate) enum OutputDisposition {
     Visible,
 }
 
+/// Per-stream context for providers whose diagnostic records can span several
+/// physical stderr lines. The chat runtime owns one of these for stdout and one
+/// for stderr, while each provider decides how (or whether) to use it.
+#[derive(Debug, Default)]
+pub(crate) struct OutputState {
+    multiline_diagnostic: bool,
+}
+
 impl InputTransport {
     pub const fn accepts_stdin(self) -> bool {
         matches!(self, Self::StreamJson)
@@ -207,6 +215,13 @@ pub trait AgentProvider: Send + Sync {
     /// Decide how a non-JSON stdout line or stderr line reaches the person.
     fn output_disposition(&self, _line: &str) -> OutputDisposition {
         OutputDisposition::Visible
+    }
+
+    /// Classify one output line in the context of earlier lines from the same
+    /// stream. Most providers are line-oriented, so their default is the
+    /// stateless decision above. Codex uses this for multi-line tool errors.
+    fn classify_output(&self, line: &str, _state: &mut OutputState) -> OutputDisposition {
+        self.output_disposition(line)
     }
 }
 
@@ -631,6 +646,52 @@ impl AgentProvider for CodexProvider {
 
         OutputDisposition::Visible
     }
+
+    fn classify_output(&self, line: &str, state: &mut OutputState) -> OutputDisposition {
+        let line = line.trim();
+
+        // `apply_patch` puts its failed context on separate stderr lines after
+        // the router error. Those lines are source text, not fresh warnings.
+        // Keep them queryable in the diagnostic journal, but never turn a
+        // chapter heading or CSS selector into an amber chat card.
+        if state.multiline_diagnostic {
+            if !is_codex_log_record(line) {
+                return OutputDisposition::DiagnosticsOnly;
+            }
+            state.multiline_diagnostic = false;
+        }
+
+        let disposition = self.output_disposition(line);
+        if line.contains("codex_core::tools::router:")
+            && line.contains("apply_patch verification failed")
+        {
+            state.multiline_diagnostic = true;
+        }
+        disposition
+    }
+}
+
+/// Codex's tracing output begins each independent record with an ISO-like
+/// timestamp and one of its log levels. A patch error's following lines do not,
+/// which lets the adapter keep its source-context block together without
+/// hiding the next real diagnostic.
+fn is_codex_log_record(line: &str) -> bool {
+    let mut fields = line.split_ascii_whitespace();
+    let Some(timestamp) = fields.next() else {
+        return false;
+    };
+    let bytes = timestamp.as_bytes();
+    let timestamp_shape = bytes.len() >= 19
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':';
+    timestamp_shape
+        && matches!(
+            fields.next(),
+            Some("TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR")
+        )
 }
 
 fn claude_permission_mode(access: Access) -> &'static str {

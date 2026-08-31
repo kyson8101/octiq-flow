@@ -39,6 +39,7 @@ import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
+import { newConversationPin, type ConversationPin } from "../lib/conversationPins";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -618,11 +619,16 @@ function TurnView({
   tints,
   fresh,
   mapTurnId,
+  pinTargetTurnId,
+  hostName,
 }: {
   messages: Message[];
   kids: Kids;
   agentByTool?: ReadonlyMap<string, string>;
   onOpenAgent?: (id: string) => void;
+  /** What to call the host — the provider this conversation is running, in its
+   *  own name. See the same prop on `MessageList`. */
+  hostName?: string;
   /** Arrived while the transcript was already on screen, rather than having
    *  been there when it opened. Only these animate in — see `justArrived`. */
   fresh?: boolean;
@@ -636,6 +642,8 @@ function TurnView({
   tints?: Map<string, number>;
   /** A person-sent turn is one return point on the conversation map. */
   mapTurnId?: string;
+  /** The pin list just brought the reader back to this turn. */
+  pinTargetTurnId?: string | null;
 }) {
   const role = messages[0].role;
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
@@ -707,14 +715,16 @@ function TurnView({
   // identify, and marking it too would make a one-seat room read as two
   // strangers talking.
   const tint = speaker ? tints?.get(seatKey(speaker)) : undefined;
+  const pinTarget = messages[0].id === pinTargetTurnId;
 
   return (
     <article
       className={`msg msg-${role} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
         fresh ? "is-new" : ""
-      }`}
+      } ${pinTarget ? "is-pin-target" : ""}`}
       data-tint={tint}
       data-map-turn={mapTurnId}
+      data-pin-turn={messages[0].id}
     >
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
@@ -726,17 +736,22 @@ function TurnView({
       )}
       {role === "assistant" && !allEvent && (
         <div className="msg-role">
-          {/* Whoever wrote it. The host has no seat and keeps the plain word it
-              has always had; a seat says its own name, with its mark, because
-              in a room "which of these is talking" is the first question the
-              eye asks. */}
+          {/* Whoever wrote it. The host has no seat and keeps the plain word,
+              with no mark beside it; a seat says its own name AND draws its
+              mark, because in a room "which of these is talking" is the first
+              question the eye asks.
+
+              The word is the PROVIDER's, not the literal "Claude" it was until
+              Codex became selectable — a Codex chat labelled every one of its
+              own answers "Claude", which is the one thing a name over a reply
+              must never do. */}
           {speaker ? (
             <>
               <AgentLogo agent={speaker.agent === "claude" ? "claude" : "codex"} size={13} />
               {speaker.name}
             </>
           ) : (
-            "Claude"
+            hostName ?? "Claude"
           )}
         </div>
       )}
@@ -1018,6 +1033,48 @@ function reducedMotion() {
   return !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
+type SelectedPassage = {
+  text: string;
+  turnId: string;
+  x: number;
+  y: number;
+};
+
+/** Read only a selection that belongs to the transcript. The browser keeps one
+ * selection for the whole page, so checking both ends keeps a highlighted
+ * project name, editor selection, or toolbar label out of the conversation’s
+ * pin list. */
+function selectedPassage(root: HTMLElement): SelectedPassage | null {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  const start = elementFor(range.startContainer);
+  const end = elementFor(range.endContainer);
+  if (!start || !end || !root.contains(start) || !root.contains(end)) return null;
+  // Text in a Copy control is chrome, not a passage; it should not become a
+  // bookmark simply because a drag ended over the button below a message.
+  if (start.closest("button, input, textarea, select, [contenteditable='true']")) return null;
+  const turn = start.closest<HTMLElement>("[data-pin-turn]");
+  const turnId = turn?.dataset.pinTurn;
+  const text = selection.toString().trim();
+  if (!turnId || !text) return null;
+
+  // A range over a line break can report a zero-sized bounding box; one of its
+  // client rects is the real visual anchor in that case.
+  const rect = range.getBoundingClientRect();
+  const box = rect.width || rect.height ? rect : range.getClientRects()[0];
+  if (!box) return null;
+  const x = Math.max(50, Math.min(window.innerWidth - 50, box.left + box.width / 2));
+  // The button sits above the selection. Keep enough air at the top edge for
+  // its own height, otherwise a first-line highlight puts half the control
+  // behind the browser chrome.
+  return { text, turnId, x, y: Math.max(46, box.top) };
+}
+
+function elementFor(node: Node): Element | null {
+  return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+}
+
 export function MessageList({
   messages,
   busy,
@@ -1027,10 +1084,25 @@ export function MessageList({
   onSetting,
   agentByTool,
   onOpenAgent,
+  hostName,
+  onPin,
+  jumpToPin,
 }: {
   messages: Message[];
   busy: boolean;
   stoppedAt?: string;
+  /** What to call the host over its replies: the name of the PROVIDER this
+   *  conversation runs, from `providerFor`.
+   *
+   *  A conversation is only ever one provider — changing it cannot be done in
+   *  place at any price (a Claude session id means nothing to Codex), so
+   *  `changeModel` opens a fresh chat instead. That is what makes one name for
+   *  the whole transcript right rather than a guess: there are no turns in here
+   *  that some other agent wrote.
+   *
+   *  Defaults to "Claude" for a caller that does not know — which is only the
+   *  tests; the app always passes it. */
+  hostName?: string;
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1039,6 +1111,11 @@ export function MessageList({
    * started. Kept outside the transcript so the focus view stays live. */
   agentByTool?: ReadonlyMap<string, string>;
   onOpenAgent?: (id: string) => void;
+  /** Keep a selected passage in this conversation’s sidebar index. */
+  onPin?: (pin: ConversationPin) => void;
+  /** A sidebar label the reader picked. `nonce` makes picking the same label
+   * twice a real second jump rather than a no-op state update. */
+  jumpToPin?: { id: string; turnId: string; nonce: number };
   /** When a compaction started, or absent when none is running. It is drawn
    *  at the foot of the conversation, in the SAME line the finished boundary
    *  leaves behind — one thing that starts, runs, and settles in place, rather
@@ -1053,6 +1130,8 @@ export function MessageList({
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  const [selection, setSelection] = useState<SelectedPassage | null>(null);
+  const [pinTargetTurnId, setPinTargetTurnId] = useState<string | null>(null);
   // Only follow the stream while the reader is already at the bottom: yanking
   // the view down while someone is reading back is the worst thing a streaming
   // chat can do.
@@ -1140,6 +1219,69 @@ export function MessageList({
     glideToBottom();
   };
 
+  // Selection belongs to the document rather than one component. Watch it
+  // there, then keep only the parts that are actually inside this transcript.
+  // The rAF lets a pointer drag finish moving its endpoint before its menu is
+  // positioned; without it the Pin button trails one word behind the highlight.
+  useEffect(() => {
+    if (!onPin) {
+      setSelection(null);
+      return;
+    }
+    let frame = 0;
+    const sync = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const next = innerRef.current ? selectedPassage(innerRef.current) : null;
+        setSelection((before) =>
+          before?.text === next?.text &&
+          before?.turnId === next?.turnId &&
+          before?.x === next?.x &&
+          before?.y === next?.y
+            ? before
+            : next,
+        );
+      });
+    };
+    document.addEventListener("selectionchange", sync);
+    window.addEventListener("resize", sync);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      document.removeEventListener("selectionchange", sync);
+      window.removeEventListener("resize", sync);
+    };
+  }, [onPin, conversationId]);
+
+  // A pin click is an intentional trip back into the transcript. Keep the
+  // regular stream-following logic off, move only this scroller (never the page
+  // around it), and give the returned-to turn a brief, quiet ring.
+  useEffect(() => {
+    if (!jumpToPin) return;
+    const scroller = scrollerRef.current;
+    const inner = innerRef.current;
+    if (!scroller || !inner) return;
+    const target = [...inner.querySelectorAll<HTMLElement>("[data-pin-turn]")].find(
+      (element) => element.dataset.pinTurn === jumpToPin.turnId,
+    );
+    if (!target) return;
+
+    stopGlide();
+    stick.current = false;
+    setAway(true);
+    const to = Math.max(
+      0,
+      scroller.scrollTop + target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 20,
+    );
+    scroller.scrollTo({ top: to, behavior: reducedMotion() ? "auto" : "smooth" });
+    setPinTargetTurnId(jumpToPin.turnId);
+    const timer = window.setTimeout(() => setPinTargetTurnId(null), 1500);
+    return () => window.clearTimeout(timer);
+    // `stopGlide` and `stick` are refs owned by this component. Only a new
+    // request should start another journey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpToPin?.nonce, conversationId]);
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -1204,6 +1346,8 @@ export function MessageList({
     // wrong chat sliding into place.
     stopGlide();
     setAway(false);
+    setSelection(null);
+    setPinTargetTurnId(null);
     el.scrollTop = el.scrollHeight;
   }, [conversationId]);
 
@@ -1335,6 +1479,8 @@ export function MessageList({
               tints={tints}
               fresh={fresh.has(turn[0].id)}
               mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
+              pinTargetTurnId={pinTargetTurnId}
+              hostName={hostName}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once
@@ -1378,7 +1524,34 @@ export function MessageList({
         </button>
       </div>
       </ConfigWorldProvider>
+      {selection && onPin && (
+        <button
+          className="conversation-pin-btn"
+          type="button"
+          style={{ left: selection.x, top: selection.y }}
+          // Holding onto the range is the whole point: a normal pointer-down
+          // moves focus and collapses the browser selection before Click gets
+          // to read it.
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            onPin(newConversationPin({ text: selection.text, turnId: selection.turnId }));
+            window.getSelection()?.removeAllRanges();
+            setSelection(null);
+          }}
+        >
+          <PinIcon /> Pin
+        </button>
+      )}
     </div>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 17v5" />
+      <path d="m8 3 8 0 1 6 3 3v2H4v-2l3-3z" />
+    </svg>
   );
 }
 

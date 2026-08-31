@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sameIndex, type Conversation } from "./store";
+import { rewriteConversation, sameIndex, type Conversation } from "./store";
 import type { Message } from "./chat";
 
 const said = (text: string): Message => ({
@@ -56,5 +56,24 @@ describe("sameIndex", () => {
     // `synced` is what tells a missing row from a deleted one, so a change to
     // it has to be written down even though nothing on screen moves.
     expect(sameIndex([chat({ synced: undefined })], [chat({ synced: true })])).toBe(false);
+  });
+});
+
+describe("rewriteConversation", () => {
+  it("keeps the reader’s conversation pins while the transcript is saved again", () => {
+    const before = chat({
+      conversationPins: [
+        {
+          id: "pin-1",
+          label: "the decision",
+          text: "keep the sidebar narrow",
+          turnId: "a1",
+          createdAt: 1,
+        },
+      ],
+    });
+    const next = rewriteConversation(before, { ...before, messages: [said("new answer")] });
+
+    expect(next.conversationPins).toEqual(before.conversationPins);
   });
 });

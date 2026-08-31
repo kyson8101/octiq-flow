@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { Conversation } from "../lib/store";
+import type { ConversationPin } from "../lib/conversationPins";
 import { Sidebar, type Project } from "./Sidebar";
 
 const projects: Project[] = [{ id: "p1", name: "octiq-flow" }];
@@ -26,8 +27,11 @@ const html = (
     running?: Set<string>;
     busy?: Set<string>;
     deleting?: ReadonlySet<string>;
+    leaving?: ReadonlySet<string>;
     deleteMs?: number;
     expanded?: Set<string>;
+    pins?: ConversationPin[];
+    activePinId?: string | null;
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -56,6 +60,24 @@ const html = (
   );
 
 describe("Sidebar", () => {
+  it("keeps pinned passages in the project column, keyed by their labels", () => {
+    const pins: ConversationPin[] = [
+      {
+        id: "pin-1",
+        label: "Release decision",
+        text: "Ship the small patch first, then schedule the redesign.",
+        turnId: "a1",
+        createdAt: 1,
+      },
+    ];
+    const out = html({ pins, activePinId: "pin-1" });
+
+    expect(out).toContain("Pinned conversation passages");
+    expect(out).toContain("Release decision");
+    expect(out).toContain("Ship the small patch first");
+    expect(out).toContain('aria-current="true"');
+  });
+
   it("offers to put the column away when there is a column", () => {
     expect(html({ onHide: () => {} })).toContain('aria-label="Hide projects"');
   });
@@ -125,6 +147,15 @@ describe("Sidebar", () => {
     expect(out).toContain("chat is-going");
     // Still named, still in its place — nothing has happened to it yet.
     expect(out).toContain(">a</span>");
+  });
+
+  it("collapses a chat only after its delete has committed", () => {
+    const out = html({ ...open, leaving: new Set(["a"]) });
+    expect(out).toContain('class="chat-row is-leaving"');
+    expect(out).toContain("chat is-leaving");
+    // The row cannot offer Undo once the committed delete is collapsing it.
+    expect(out).not.toContain('aria-label="Cancel delete"');
+    expect(out.match(/disabled=""/g)).toHaveLength(2);
   });
 
   it("turns that row's × into the way back", () => {

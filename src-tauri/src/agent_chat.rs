@@ -37,7 +37,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::agent_provider::{ask_mcp_config, provider_for, AgentCommand, OutputDisposition};
+use crate::agent_provider::{
+    ask_mcp_config, provider_for, AgentCommand, OutputDisposition, OutputState,
+};
 pub(crate) use crate::agent_provider::{safe_model, safe_session_id};
 pub use crate::agent_provider::{Access, AgentKind as ChatAgent};
 
@@ -770,6 +772,7 @@ pub(crate) fn start_session(
         let reading = manager.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
+            let mut output_state = OutputState::default();
             // The last thing a Codex turn said, kept until the turn stops and
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
@@ -925,7 +928,7 @@ pub(crate) fn start_session(
                         stream_provider.kind(),
                         &key,
                         trimmed.to_string(),
-                        stream_provider.output_disposition(trimmed),
+                        stream_provider.classify_output(trimmed, &mut output_state),
                     ),
                 }
             }
@@ -940,11 +943,12 @@ pub(crate) fn start_session(
         let stderr_provider = provider;
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
+            let mut output_state = OutputState::default();
             for line in reader.lines().map_while(Result::ok) {
                 if line.trim().is_empty() {
                     continue;
                 }
-                let disposition = stderr_provider.output_disposition(&line);
+                let disposition = stderr_provider.classify_output(&line, &mut output_state);
                 emit_unstructured_output(stderr_provider.kind(), &key, line, disposition);
             }
         });
@@ -1248,16 +1252,29 @@ pub fn chat_seat_start_impl(
 ///
 /// Claude's init event advertises `interrupt_receipt_v1`, so the running turn
 /// can be cancelled over the same stdin the prompts go down and the session
-/// stays alive with its context. Killing the process would work too and is what
-/// `chat_stop` does — but it throws the conversation away, which is a heavy
-/// price for "actually, stop".
+/// stays alive with its context. Codex runs each turn as a one-shot command
+/// with stdin intentionally closed, so its equivalent is ending only that
+/// process. `end_process` retains the transcript and remembered thread id, and
+/// the next message resumes the same Codex conversation.
 pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
     };
+    let agent = {
+        let guard = session.lock().map_err(|e| e.to_string())?;
+        guard.agent
+    };
+    // Command-line providers cannot receive a control message after startup.
+    // Remove and kill their current one-shot process, but deliberately leave
+    // `StartContext` intact so the next user turn can resume it.
+    if !provider_for(agent).capabilities().input.accepts_stdin() {
+        end_process(manager, &key)?;
+        return Ok(());
+    }
+
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    let payload = provider_for(guard.agent)
+    let payload = provider_for(agent)
         .interrupt_payload()
         .ok_or("this chat does not take more input")?;
     let stdin = guard
@@ -2403,6 +2420,38 @@ mod tests {
     }
 
     #[test]
+    fn codex_patch_error_context_stays_out_of_chat_notices() {
+        let codex = provider_for(ChatAgent::Codex);
+        let mut output_state = OutputState::default();
+
+        assert_eq!(
+            codex.classify_output(
+                "2026-08-31T06:50:38.687616Z ERROR codex_core::tools::router: \
+                 error=apply_patch verification failed: Failed to find expected lines",
+                &mut output_state,
+            ),
+            OutputDisposition::DiagnosticsOnly,
+        );
+        assert_eq!(
+            codex.classify_output("- I03 — 作者选定横幅名", &mut output_state),
+            OutputDisposition::DiagnosticsOnly,
+        );
+        assert_eq!(
+            codex.classify_output(".msgs-inner {", &mut output_state),
+            OutputDisposition::DiagnosticsOnly,
+        );
+        // The following timestamped record is new output, rather than failed
+        // patch context, so its normal visibility rule takes over again.
+        assert_eq!(
+            codex.classify_output(
+                "2026-08-31T06:50:39Z ERROR codex_core::auth: token expired",
+                &mut output_state,
+            ),
+            OutputDisposition::Visible,
+        );
+    }
+
+    #[test]
     fn codex_takes_images_as_files_and_claude_does_not() {
         let shots = vec!["/tmp/a shot.png".to_string(), "/tmp/b.webp".to_string()];
         let x = build_command(
@@ -2536,6 +2585,60 @@ mod tests {
             "the reaper has the exact session it needs for codex exec resume"
         );
         end_process(&manager, &session_key).expect("end the stand-in");
+    }
+
+    #[test]
+    fn interrupting_codex_ends_its_one_shot_process_but_keeps_its_thread() {
+        // Codex has no stdin control channel: stopping its current turn means
+        // killing this one process. Its remembered thread is the context the
+        // next `codex exec resume` needs, so an interrupt must not erase it.
+        let manager = ChatManager::default();
+        let key = "codex-interrupt";
+        let thread = "01a0142d-552d-7a93-9152-47530c33e501";
+        manager.remember_start(
+            key,
+            StartContext {
+                cwd: "/tmp".into(),
+                agent: ChatAgent::Codex,
+                model: None,
+                access: Some(Access::Read),
+                extra_dirs: None,
+                effort: None,
+                lite: Some(false),
+                session_id: Some(thread.into()),
+            },
+        );
+        let session = Arc::new(Mutex::new(ChatSession {
+            child: Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("a Codex stand-in"),
+            stdin: None,
+            agent: ChatAgent::Codex,
+            busy: true,
+            last_active: Instant::now(),
+        }));
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(key.into(), session.clone());
+
+        chat_interrupt_impl(&manager, key.into()).expect("Codex can be stopped");
+
+        assert!(chat_list_impl(&manager).unwrap().is_empty());
+        assert_eq!(
+            manager
+                .start_context(key)
+                .and_then(|start| start.session_id),
+            Some(thread.into()),
+            "the next message resumes the interrupted Codex conversation"
+        );
+        assert!(
+            !session.lock().unwrap().child.wait().unwrap().success(),
+            "the one-shot process was killed"
+        );
     }
 
     #[test]

@@ -67,6 +67,14 @@ describe("a run with edits folded into it", () => {
     expect(html()).not.toContain("Write");
   });
 
+  it("says nothing about working once every call in the run has finished", () => {
+    // What a reloaded transcript renders: no call is in flight, so the row is
+    // history and must not spin or claim to be working.
+    const markup = html();
+    expect(markup).not.toContain("Working");
+    expect(markup).not.toContain('aria-label="running"');
+  });
+
   it("does not flash live detail while a new call is under two seconds old", () => {
     const markup = renderToStaticMarkup(
       <ToolGroup tools={run} newest={{ ...bash("5", "pnpm vitest run"), state: "running" }} />,

@@ -60,6 +60,14 @@ describe("a long message of your own", () => {
   });
 });
 
+describe("conversation pin return points", () => {
+  it("marks every rendered turn as a stable destination for a pinned passage", () => {
+    const html = render(said("keep this decision"));
+
+    expect(html).toContain('data-pin-turn="u0"');
+  });
+});
+
 describe("copying a message of your own", () => {
   it("offers a copy, the same one a reply has", () => {
     const html = render(said("what does this do?"));

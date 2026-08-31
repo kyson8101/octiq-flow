@@ -38,10 +38,10 @@ describe("conversation map point breaks", () => {
     ]);
   });
 
-  it("lays out points by turn order, not by the height of their replies", () => {
-    expect(conversationMapRank(0, 3)).toBeCloseTo(0.07);
-    expect(conversationMapRank(1, 3)).toBeCloseTo(0.5);
-    expect(conversationMapRank(2, 3)).toBeCloseTo(0.93);
+  it("lays out points as contiguous slices in turn order", () => {
+    expect(conversationMapRank(0, 3)).toBe(0);
+    expect(conversationMapRank(1, 3)).toBeCloseTo(1 / 3);
+    expect(conversationMapRank(2, 3)).toBeCloseTo(2 / 3);
   });
 
   it("uses a fixed dash width, expanding only for the pointed-at turn", () => {

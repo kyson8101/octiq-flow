@@ -63,11 +63,11 @@ function closestSpot(spots: Spot[], centre: number): Spot | undefined {
   }, undefined);
 }
 
-/** Every point gets an even slot in a compact rail, with a little breathing
- * room at each end so the first and last marks never look clipped. */
+/** Each point owns the next contiguous slice of the map. The map itself stays
+ * centred; its marks should read as one unbroken stack, not scattered ticks. */
 export function conversationMapRank(index: number, total: number): number {
-  if (total <= 1) return 0.5;
-  return 0.07 + (index / (total - 1)) * 0.86;
+  if (total <= 1) return 0;
+  return index / total;
 }
 
 /** Marks are deliberately content-blind. A map is a rhythm of return points,
@@ -111,13 +111,20 @@ export function ConversationMap({
           element,
         ]),
       );
+      const measured = turns.flatMap((turn) => {
+        const anchor = anchors.get(turn.id);
+        if (!anchor) return [];
+        const offset = scroller.scrollTop + anchor.getBoundingClientRect().top - box.top;
+        return [{ ...turn, offset }];
+      });
+      // An anchor can be temporarily absent while the transcript is changing.
+      // Pack only the marks that actually rendered, so a missing one never
+      // leaves a blank slice in the visual stack.
       setSpots(
-        turns.flatMap((turn, index) => {
-          const anchor = anchors.get(turn.id);
-          if (!anchor) return [];
-          const offset = scroller.scrollTop + anchor.getBoundingClientRect().top - box.top;
-          return [{ ...turn, offset, rank: conversationMapRank(index, turns.length) }];
-        }),
+        measured.map((spot, index) => ({
+          ...spot,
+          rank: conversationMapRank(index, measured.length),
+        })),
       );
       setScrollCentre(scroller.scrollTop + scroller.clientHeight / 2);
     };
@@ -155,7 +162,11 @@ export function ConversationMap({
 
   const selected = useMemo(() => spots.find((spot) => spot.id === pointedAt), [pointedAt, spots]);
   const current = useMemo(() => closestSpot(spots, scrollCentre), [scrollCentre, spots]);
-  const mapHeight = Math.max(208, Math.min(360, 28 + spots.length * 18));
+  // Two CSS pixels per line keeps the visual rail fine and continuous. For a
+  // very long conversation, the cap gently compresses the slices instead of
+  // letting the map grow beyond a useful glanceable height.
+  const mapHeight = Math.min(360, Math.max(2, spots.length * 2));
+  const mapLineHeight = mapHeight / Math.max(spots.length, 1);
 
   if (turns.length === 0) return null;
 
@@ -179,7 +190,11 @@ export function ConversationMap({
               key={spot.id}
               className={`conversation-map-point ${current?.id === spot.id ? "is-current" : ""}`}
               type="button"
-              style={{ top: `${spot.rank * mapHeight}px`, width: `${conversationMapPointWidth(pointedAt === spot.id)}px` }}
+              style={{
+                top: `${spot.rank * mapHeight}px`,
+                height: `${mapLineHeight}px`,
+                width: `${conversationMapPointWidth(pointedAt === spot.id)}px`,
+              }}
               aria-label={`Jump to message: ${spot.prompt}`}
               aria-current={current?.id === spot.id ? "location" : undefined}
               onPointerEnter={() => setPointedAt(spot.id)}
@@ -194,7 +209,8 @@ export function ConversationMap({
           <div
             className="conversation-map-preview"
             aria-hidden="true"
-            style={{ top: `${Math.max(0, selected.rank * mapHeight - 100)}px` }}
+            // Lifted by half the card's height so it sits centred on its line.
+            style={{ top: `${selected.rank * mapHeight + mapLineHeight / 2 - 54}px` }}
           >
             <div className="conversation-map-preview-title">{selected.prompt}</div>
             {selected.reply && <div className="conversation-map-preview-body">{selected.reply}</div>}

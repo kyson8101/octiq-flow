@@ -8,8 +8,9 @@
 // — the indent already says what they are — and any state they have is a mark
 // on the RIGHT, where it can be scanned down the edge of the list without
 // breaking the line of text.
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Conversation } from "../lib/store";
+import type { ConversationPin } from "../lib/conversationPins";
 import { RollingNumber } from "./RollingNumber";
 
 export type Project = { id: string; name: string; primary_path?: string };
@@ -21,6 +22,15 @@ const SHOW_AT_FIRST = 5;
 /** No row counting down — the default, shared so it is the same object every
  *  render rather than a new empty set each time. */
 const NONE_DELETING: ReadonlySet<string> = new Set();
+
+/** A delete has committed and this row is using its last frames to collapse.
+ *  Kept separately from `deleting`: the latter means it can still be taken
+ *  back, while this one is already gone for good. */
+const NONE_LEAVING: ReadonlySet<string> = new Set();
+
+/** No pinned passages is the ordinary state, and keeping this shared stops the
+ * sidebar from seeing a new empty list on every transcript update. */
+const NO_CONVERSATION_PINS: readonly ConversationPin[] = [];
 
 export function Sidebar({
   projects,
@@ -35,6 +45,7 @@ export function Sidebar({
   running,
   busy,
   deleting = NONE_DELETING,
+  leaving = NONE_LEAVING,
   deleteMs = 2000,
   expanded,
   onToggle,
@@ -44,6 +55,10 @@ export function Sidebar({
   onDelete,
   onSettings,
   onNewProject,
+  pins = NO_CONVERSATION_PINS,
+  activePinId,
+  onPickPin,
+  onRemovePin,
   onHide,
   head,
   foot,
@@ -77,6 +92,9 @@ export function Sidebar({
   /** How long that countdown runs, in milliseconds. Drives the ring only — the
    *  clock that actually commits the delete lives with the chat list. */
   deleteMs?: number;
+  /** Chats whose delete has committed but whose rows are still collapsing out
+   *  of the list. They are no longer undoable or interactive. */
+  leaving?: ReadonlySet<string>;
   expanded: Set<string>;
   onToggle: (projectId: string) => void;
   onPickProject: (projectId: string) => void;
@@ -87,6 +105,13 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
+  /** The selected passages in the chat currently on screen. They stay in the
+   * project column because this is a reading aid, not another view to open. */
+  pins?: readonly ConversationPin[];
+  /** Which label most recently took the reader back into the transcript. */
+  activePinId?: string | null;
+  onPickPin?: (pin: ConversationPin) => void;
+  onRemovePin?: (id: string) => void;
   /** Put the whole column away, on the screens where it IS a column. Absent
    *  below 860px, where the sidebar is a drawer that the scrim and the top
    *  bar's own title already close — a third control there would be a third
@@ -136,6 +161,7 @@ export function Sidebar({
             running={running}
             busy={busy}
             deleting={deleting}
+            leaving={leaving}
             deleteMs={deleteMs}
             onToggle={onToggle}
             onPickProject={onPickProject}
@@ -146,6 +172,13 @@ export function Sidebar({
           />
         ))}
       </ul>
+
+      <ConversationPins
+        pins={pins}
+        activePinId={activePinId}
+        onPick={onPickPin}
+        onRemove={onRemovePin}
+      />
 
       {shelved.length > 0 && (
         <button className="shelf-open" type="button" onClick={onShowShelved}>
@@ -171,6 +204,64 @@ export function Sidebar({
   );
 }
 
+/** A short, always-visible index into the current conversation. The label is
+ * the button: it is what the reader scans, and it returns them to the full turn
+ * rather than opening a competing detail pane. */
+function ConversationPins({
+  pins,
+  activePinId,
+  onPick,
+  onRemove,
+}: {
+  pins: readonly ConversationPin[];
+  activePinId?: string | null;
+  onPick?: (pin: ConversationPin) => void;
+  onRemove?: (id: string) => void;
+}) {
+  if (pins.length === 0) return null;
+
+  return (
+    <section className="conversation-pins" aria-label="Pinned conversation passages">
+      <div className="conversation-pins-head">
+        <span className="conversation-pins-title">
+          <PinIcon /> Pins
+        </span>
+        <RollingNumber value={pins.length} />
+      </div>
+      <ul className="conversation-pin-list">
+        {pins.map((pin) => {
+          const active = pin.id === activePinId;
+          return (
+            <li className={`conversation-pin-row ${active ? "is-active" : ""}`} key={pin.id}>
+              <button
+                className="conversation-pin-jump"
+                type="button"
+                title={`Jump to “${pin.label}”`}
+                aria-current={active ? "true" : undefined}
+                onClick={() => onPick?.(pin)}
+              >
+                <span className="conversation-pin-label">{pin.label}</span>
+                <span className="conversation-pin-excerpt">{pin.text}</span>
+              </button>
+              {onRemove && (
+                <button
+                  className="conversation-pin-remove"
+                  type="button"
+                  title={`Remove “${pin.label}”`}
+                  aria-label={`Remove pinned passage: ${pin.label}`}
+                  onClick={() => onRemove(pin.id)}
+                >
+                  <CloseIcon />
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 function ProjectNode({
   project,
   chats,
@@ -180,6 +271,7 @@ function ProjectNode({
   running,
   busy,
   deleting,
+  leaving,
   deleteMs,
   onToggle,
   onPickProject,
@@ -196,6 +288,7 @@ function ProjectNode({
   running: Set<string>;
   busy: Set<string>;
   deleting: ReadonlySet<string>;
+  leaving: ReadonlySet<string>;
   deleteMs: number;
   onToggle: (id: string) => void;
   onPickProject: (id: string) => void;
@@ -205,6 +298,13 @@ function ProjectNode({
   onSettings: (id: string) => void;
 }) {
   const [showAll, setShowAll] = useState(false);
+  // The chats present on this project's first paint are already here — making
+  // all of history slide in every time the sidebar mounts would be noise. A
+  // later id is a new row, and gets the short expand transition below.
+  const seenChatIds = useRef<ReadonlySet<string>>(new Set(chats.map((c) => c.id)));
+  useEffect(() => {
+    seenChatIds.current = new Set(chats.map((c) => c.id));
+  }, [chats]);
   const showing = open && chats.length > 0;
   const hidden = showAll ? 0 : Math.max(0, chats.length - SHOW_AT_FIRST);
   const visible = hidden ? chats.slice(0, SHOW_AT_FIRST) : chats;
@@ -285,8 +385,10 @@ function ProjectNode({
               // Deleted a moment ago and not gone yet. The row is left exactly
               // where it stood — see the countdown ring below.
               const going = deleting.has(c.id);
+              const isLeaving = leaving.has(c.id);
+              const isEntering = !seenChatIds.current.has(c.id);
               return (
-                <li key={c.id}>
+                <AnimatedChatRow entering={isEntering} leaving={isLeaving} key={c.id}>
                   <div
                     className={[
                       "chat",
@@ -294,6 +396,7 @@ function ProjectNode({
                       running.has(c.id) ? "is-live" : "",
                       busy.has(c.id) ? "is-busy" : "",
                       going ? "is-going" : "",
+                      isLeaving ? "is-leaving" : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
@@ -301,6 +404,7 @@ function ProjectNode({
                     <button
                       className="chat-btn"
                       type="button"
+                      disabled={isLeaving}
                       onClick={() => onPickConversation(c)}
                     >
                       <span className="chat-title">{c.title}</span>
@@ -328,6 +432,7 @@ function ProjectNode({
                         type="button"
                         title={going ? "Cancel delete" : "Delete this chat"}
                         aria-label={going ? "Cancel delete" : "Delete this chat"}
+                        disabled={isLeaving}
                         onClick={(e) => {
                           e.stopPropagation();
                           onDelete(c.id);
@@ -337,7 +442,7 @@ function ProjectNode({
                       </button>
                     </span>
                   </div>
-                </li>
+                </AnimatedChatRow>
               );
             })}
 
@@ -351,6 +456,44 @@ function ProjectNode({
           </ul>
         </div>
       )}
+    </li>
+  );
+}
+
+/** A newly added chat gets the inverse of a delete: it starts at zero height,
+ *  then opens on the next frame. Existing history skips this entirely; see the
+ *  `seenChatIds` ref above. */
+function AnimatedChatRow({
+  entering,
+  leaving,
+  children,
+}: {
+  entering: boolean;
+  leaving: boolean;
+  children: ReactNode;
+}) {
+  const [isEntering, setIsEntering] = useState(
+    () =>
+      entering &&
+      !(
+        typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+      ),
+  );
+
+  useEffect(() => {
+    if (!isEntering) return;
+    const frame = requestAnimationFrame(() => setIsEntering(false));
+    return () => cancelAnimationFrame(frame);
+  }, [isEntering]);
+
+  return (
+    <li
+      className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      {children}
     </li>
   );
 }
@@ -398,6 +541,15 @@ function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 17v5" />
+      <path d="m8 3 8 0 1 6 3 3v2H4v-2l3-3z" />
     </svg>
   );
 }

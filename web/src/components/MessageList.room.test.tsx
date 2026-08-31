@@ -35,13 +35,16 @@ const answered = (text: string, speaker?: Speaker): Message => ({
 const render = (...messages: Message[]) =>
   renderToStaticMarkup(<MessageList messages={messages} busy={false} />);
 
+const renderAs = (hostName: string, ...messages: Message[]) =>
+  renderToStaticMarkup(<MessageList messages={messages} busy={false} hostName={hostName} />);
+
 describe("a message written by a seat", () => {
   it("is labelled with the seat's own name, not the host's", () => {
     const html = render(answered("I checked the repo.", CODEX));
 
     expect(html).toContain("Codex");
-    // The host label is hardcoded "Claude". A seat that still said Claude would
-    // be the whole feature failing quietly.
+    // The host label defaults to "Claude" here. A seat that still said Claude
+    // would be the whole feature failing quietly.
     expect(html).not.toContain(">Claude<");
   });
 
@@ -57,6 +60,40 @@ describe("a message written by a seat", () => {
 
     expect(html).toContain("Claude");
     expect(html).not.toContain("agent-logo");
+  });
+});
+
+// The label over a host reply used to be the literal "Claude", written when
+// Claude was the only agent there was. A Codex chat then signed every one of
+// its own answers with the other agent's name.
+describe("the label over a host reply", () => {
+  it("is the provider this conversation runs, not the word Claude", () => {
+    const html = renderAs("Codex", answered("I checked the repo."));
+
+    expect(html).toContain(">Codex<");
+    expect(html).not.toContain("Claude");
+  });
+
+  it("still draws no mark beside it — that is the seats' distinction", () => {
+    expect(renderAs("Codex", answered("the host speaking"))).not.toContain("agent-logo");
+  });
+
+  it("leaves a seat's own name alone", () => {
+    // The host is Claude and the seat is Codex: the two names must not swap,
+    // and neither may be applied to the other's words.
+    const html = renderAs("Claude", answered("the host speaking"), answered("a seat speaking", CODEX));
+
+    expect(html).toContain(">Claude<");
+    expect(html).toContain("Codex");
+  });
+
+  it("says the host's name over a turn a Claude SEAT did not write", () => {
+    // A room whose host is Codex and whose seat is Claude — the arrangement
+    // that made the old literal look right for the wrong reason.
+    const html = renderAs("Codex", answered("the host speaking"), answered("a seat speaking", CLAUDE));
+
+    expect(html).toContain(">Codex<");
+    expect(html).toContain("Second opinion");
   });
 });
 

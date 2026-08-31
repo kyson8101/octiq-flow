@@ -660,6 +660,7 @@ body {
 
 .proj-list {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   margin: 0;
   padding: 0 8px 8px;
@@ -1048,6 +1049,31 @@ body {
      long line inside a message would widen this whole column rather than
      scroll within its own block. */
   min-width: 0;
+}
+
+/* A return point from the pin list. It is a brief cue on the whole turn, not a
+ * permanent highlighter: the pin keeps the selected words in the sidebar, and
+ * this only tells the reader where the surrounding context begins. */
+.msg.is-pin-target {
+  border-radius: var(--r-md);
+  animation: pin-return 1.5s ease-out;
+}
+
+@keyframes pin-return {
+  0%,
+  28% {
+    box-shadow: 0 0 0 2px var(--accent-tint), 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg.is-pin-target {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent-tint);
+  }
 }
 
 /* The way back down, for a reader who has scrolled away from the end.
@@ -2400,6 +2426,28 @@ body {
   padding: 0 16px;
 }
 
+.notices-dismiss {
+  display: block;
+  margin: 0 0 6px auto;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  padding: 3px 5px;
+  color: var(--fg-2);
+  font: 11.5px var(--mono);
+  cursor: pointer;
+}
+
+.notices-dismiss:hover {
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+.notices-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .notice {
   margin-bottom: 6px;
   padding: 7px 10px;
@@ -2705,24 +2753,24 @@ body {
   justify-content: center;
   width: fit-content;
   max-width: calc(100% - 24px);
-  margin: 0 auto 8px;
+  margin: 0 auto 6px;
 }
 
 .plan-btn {
   display: inline-flex;
   align-items: center;
-  gap: 9px;
-  min-height: 42px;
-  padding: 0 18px;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-1);
   color: var(--fg-1);
   font: inherit;
-  font-size: 14px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
   transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 
@@ -2753,9 +2801,9 @@ body {
 
 .plan-state {
   flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
-  border: 3px solid var(--accent);
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--accent);
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--accent-tint);
 }
@@ -2801,14 +2849,14 @@ body {
 .plan-pop {
   position: absolute;
   z-index: 143;
-  bottom: calc(100% + 8px);
+  bottom: calc(100% + 6px);
   left: 50%;
-  width: min(640px, calc(100vw - 40px));
-  max-height: min(46vh, 22rem);
+  width: min(440px, calc(100vw - 40px));
+  max-height: min(42vh, 18rem);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
-  border-radius: 20px;
+  border-radius: 13px;
   background: var(--bg-1);
   box-shadow: var(--shadow);
   transform: translateX(-50%);
@@ -2828,19 +2876,19 @@ body {
   justify-content: space-between;
   gap: 8px;
   flex: 0 0 auto;
-  padding: 12px 16px 9px;
+  padding: 7px 12px 6px;
   border-bottom: 1px solid var(--border);
 }
 
 .plan-pop-title {
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--fg-3);
 }
 
 .plan-pop-count {
-  font-size: 12px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--fg-2);
 }
@@ -2854,8 +2902,8 @@ body {
   justify-content: center;
   flex: 0 0 auto;
   margin-left: auto;
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   border: 0;
   border-radius: var(--r-md);
   background: transparent;
@@ -2873,17 +2921,17 @@ body {
   min-height: 0;
   overflow-y: auto;
   margin: 0;
-  padding: 8px 20px 14px;
+  padding: 5px 13px 8px;
   list-style: none;
 }
 
 .todo {
   display: flex;
   align-items: flex-start;
-  gap: 13px;
-  padding: 6px 0;
-  font-size: 15px;
-  line-height: 1.35;
+  gap: 9px;
+  padding: 3px 0;
+  font-size: 12.5px;
+  line-height: 1.4;
   color: var(--fg-2);
 }
 
@@ -2892,9 +2940,9 @@ body {
    tick-green dot done. */
 .todo-mark {
   flex: 0 0 auto;
-  width: 17px;
-  height: 17px;
-  margin-top: 1px;
+  width: 13px;
+  height: 13px;
+  margin-top: 2px;
   border: 2px solid var(--fg-2);
   border-radius: 999px;
 }
@@ -2902,7 +2950,7 @@ body {
 .todo.is-in_progress .todo-mark {
   border-color: var(--accent);
   border-right-color: transparent;
-  box-shadow: 0 0 0 3px var(--accent-tint);
+  box-shadow: 0 0 0 2px var(--accent-tint);
   animation: todo-working 1.1s linear infinite;
 }
 
@@ -2928,18 +2976,20 @@ body {
 
 @media (max-width: 700px) {
   .plan-pop {
-    width: min(640px, calc(100vw - 24px));
-    max-height: min(48vh, 24rem);
-    border-radius: 16px;
+    width: min(440px, calc(100vw - 24px));
+    max-height: min(44vh, 20rem);
+    border-radius: 12px;
   }
 
+  /* Still a shade roomier than the desktop card: every row here is a tap
+     target, and the × has to be one. */
   .plan-pop-head {
     align-items: center;
-    padding: 10px 8px 8px 14px;
+    padding: 6px 6px 6px 12px;
   }
 
   .plan-pop-count {
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .plan-pop-close {
@@ -2947,18 +2997,18 @@ body {
   }
 
   .todos-list {
-    padding: 8px 16px 12px;
+    padding: 6px 12px 10px;
   }
 
   .todo {
-    padding: 6px 0;
-    font-size: 14px;
+    padding: 5px 0;
+    font-size: 13px;
     line-height: 1.4;
   }
 
   .todo-mark {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     margin-top: 2px;
   }
 }
@@ -4677,6 +4727,159 @@ body.is-ultra .eff {
   padding: 0 8px 14px;
 }
 
+/* ---- Pinned conversation passages ------------------------------------
+   A pin is part of reading this chat, so it lives under its project list rather
+   than behind another view button. The projects above remain the flexible
+   region; this gets a bounded window of its own, which keeps several saved
+   passages within reach without turning the whole sidebar into pins. */
+.conversation-pins {
+  display: flex;
+  flex: 0 1 220px;
+  flex-direction: column;
+  min-height: 70px;
+  max-height: 34%;
+  margin: 0 8px 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 7px;
+}
+
+.conversation-pins-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 0 6px 5px;
+  color: var(--fg-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.conversation-pins-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.conversation-pin-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.conversation-pin-row {
+  position: relative;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+}
+
+.conversation-pin-row + .conversation-pin-row {
+  margin-top: 2px;
+}
+
+.conversation-pin-jump {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 30px 7px 7px;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conversation-pin-jump:hover,
+.conversation-pin-jump:focus-visible,
+.conversation-pin-row.is-active .conversation-pin-jump {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.conversation-pin-row.is-active .conversation-pin-jump {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.conversation-pin-label {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.conversation-pin-excerpt {
+  display: -webkit-box;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.conversation-pin-remove {
+  position: absolute;
+  top: 5px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.84);
+  pointer-events: none;
+  transition:
+    opacity 130ms ease,
+    transform 180ms cubic-bezier(0.34, 1.24, 0.64, 1),
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.conversation-pin-row:hover .conversation-pin-remove,
+.conversation-pin-row:focus-within .conversation-pin-remove {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.conversation-pin-remove:hover {
+  background: var(--bg-2);
+  color: var(--danger);
+}
+
+@media (hover: none) {
+  .conversation-pin-remove {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-pin-remove {
+    transform: none;
+    transition: opacity 140ms ease, background-color 120ms ease, color 120ms ease;
+  }
+}
+
 /* ---- Project ----------------------------------------------------------- */
 .proj-node + .proj-node {
   margin-top: 6px;
@@ -4916,6 +5119,47 @@ body.is-ultra .eff {
   padding-left: 0;
 }
 
+/* The final part of deleting a chat. The row stays mounted for this short
+   transition, so the rows below it glide up instead of jumping when React
+   removes it. `min-height: 0` is essential: a grid item otherwise refuses to
+   become smaller than the 30px button it holds. */
+.chat-row {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-row > .chat {
+  min-height: 0;
+  overflow: hidden;
+  transition:
+    opacity 120ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.chat-row.is-leaving {
+  grid-template-rows: 0fr;
+  pointer-events: none;
+}
+
+.chat-row.is-leaving > .chat {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+
+/* A new row starts from the same zero-height shape that a deleted row ends
+   with. React drops this class on the next frame, so it grows into its natural
+   height and carries the rows below it down instead of inserting a jump. */
+.chat-row.is-entering {
+  grid-template-rows: 0fr;
+  pointer-events: none;
+}
+
+.chat-row.is-entering > .chat {
+  opacity: 0;
+  transform: translateY(-2px);
+}
+
 .chat {
   display: flex;
   align-items: center;
@@ -5032,6 +5276,11 @@ body.is-ultra .eff {
 @media (prefers-reduced-motion: reduce) {
   .chat.is-busy .chat-mark {
     animation: none;
+  }
+
+  .chat-row,
+  .chat-row > .chat {
+    transition: none;
   }
 }
 
@@ -5989,6 +6238,36 @@ body.is-ultra .eff {
 
 /* ---- Quoting a highlight into the prompt box -------------------------- */
 
+/* The transcript gets its own selection action. It deliberately mirrors the
+ * file quote control’s placement, while Pin means “keep this aside” rather
+ * than “send this back into the prompt”. */
+.conversation-pin-btn {
+  position: fixed;
+  z-index: 200;
+  transform: translate(-50%, calc(-100% - 9px));
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-0);
+  box-shadow: var(--shadow);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+  animation: quote-in 0.12s ease-out;
+}
+
+.conversation-pin-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
 /* Follows the selection, in viewport coordinates, sitting just above it and
    centred on it — `translate` rather than maths in the component, so the anchor
    the component gives is simply "where the text is". */
@@ -6053,7 +6332,8 @@ body.is-ultra .eff {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .quote-btn {
+  .quote-btn,
+  .conversation-pin-btn {
     animation: none;
   }
 }

@@ -109,6 +109,7 @@ import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk"
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { CarryOn } from "./components/CarryOn";
 import { RollingNumber, RollingText } from "./components/RollingNumber";
+import { appendConversationPin, type ConversationPin } from "./lib/conversationPins";
 
 /** The editor and its text-editing engine are a third of the app's code and
  *  nobody who only ever chats should download them. Split off here, they arrive
@@ -138,6 +139,11 @@ const convOf = (key: string) => (key.startsWith("chat:") ? key.slice(5) : null);
  *  delete is meant to stop is not still running a minute later. */
 const UNDO_MS = 2000;
 
+/** The final visual beat after an undoable delete commits. Keep this aligned
+ *  with `.chat-row`'s transition in styles.css: the row must stay mounted for
+ *  the full collapse, or the chats below it snap up at the end. */
+const DELETE_COLLAPSE_MS = 180;
+
 /** A delete that has happened on screen and nowhere else yet.
  *
  *  Nothing has reached the server while this is held: the transcript, the index
@@ -160,10 +166,19 @@ const UNDO_MS = 2000;
  *  now runs its own clock and its own way back. */
 type PendingDeletes = Map<string, ReturnType<typeof setTimeout>>;
 
+/** Rows whose delete is settled but which have one short collapse left before
+ *  they can be removed from React's list. */
+type PendingRemovals = Map<string, ReturnType<typeof setTimeout>>;
+
 /** No row counting down. A shared object so the empty case is the SAME set
  *  every time: a fresh one each render would tell every memo below that the
  *  sidebar had changed when nothing had. */
 const NONE_DELETING: ReadonlySet<string> = new Set();
+
+/** No rows are in their final collapse. Kept stable for the same reason as
+ *  `NONE_DELETING`: it keeps the sidebar from seeing a change that did not
+ *  happen. */
+const NONE_LEAVING: ReadonlySet<string> = new Set();
 
 /** The state of a chat that has nothing in it yet. One shared object: nothing
  *  mutates a ChatState in place, so every not-yet-started conversation can
@@ -270,6 +285,14 @@ export default function App() {
     loadConversations().filter((c) => !isDeleted(c.id)),
   );
   const [conversationId, setConversationId] = useState<string | null>(null);
+  /** A pin list click is an instruction for the transcript, not a durable chat
+   * setting. The nonce lets the same label take the reader back twice. */
+  const [pinJump, setPinJump] = useState<{
+    id: string;
+    turnId: string;
+    nonce: number;
+  } | null>(null);
+  const [activePinId, setActivePinId] = useState<string | null>(null);
   /** Which agent the rail has opened, by `task_id`, or null for the whole
    *  conversation. View state, not chat state: it is about what this person is
    *  reading, and it must not survive into another conversation. */
@@ -307,7 +330,11 @@ export default function App() {
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
-  useEffect(() => setFocusedAgent(null), [conversationId]);
+  useEffect(() => {
+    setFocusedAgent(null);
+    setPinJump(null);
+    setActivePinId(null);
+  }, [conversationId]);
   // Which project's settings are open: an id, "new" while creating one, or
   // null for closed.
   const [settingsFor, setSettingsFor] = useState<string | "new" | null>(null);
@@ -445,6 +472,11 @@ export default function App() {
    *  were deleted; those need no tombstone, since the same list will say so
    *  again. See lib/deletions. */
   const gone = useRef<Set<string>>(deletedIds());
+
+  /** A committed delete keeps its row in React just long enough for its height
+   *  to collapse. The index refresh reads this ref too, so an answer from the
+   *  server cannot unmount the row before that transition gets a frame. */
+  const leavingRef = useRef<Set<string>>(new Set());
 
   /** Drop everything this page holds of a chat. The record on the server is
    *  someone else's business — `commitDelete` deletes it, and the index says so
@@ -717,7 +749,12 @@ export default function App() {
         // chat was back in the sidebar every time it was thrown away.
         const known = new Set(remote.map((r) => r.id));
         for (const c of conversationsRef.current) {
-          if (c.synced && !known.has(c.id)) forgetLocally(c.id);
+          // A local delete has already committed, but its sidebar row gets a
+          // brief collapse before React unmounts it. Do not let the index
+          // answer cut that visual transition short.
+          if (c.synced && !known.has(c.id) && !leavingRef.current.has(c.id)) {
+            forgetLocally(c.id);
+          }
         }
         setConversations((local) => {
           const byId = new Map(local.map((c) => [c.id, c]));
@@ -731,6 +768,11 @@ export default function App() {
               // seen has none, and replays in full.
               messages: cached?.messages ?? [],
               seq: cached?.seq,
+              // Pins are a reader’s local index into the transcript. They are
+              // deliberately not server-index metadata, so keep them through a
+              // routine index refresh instead of letting an unrelated rename
+              // make them disappear.
+              conversationPins: cached?.conversationPins,
               // Listed by the server, so from now on its absence means
               // something: see `synced` in lib/store.ts.
               synced: true,
@@ -745,7 +787,9 @@ export default function App() {
           //
           // Dropped when the server HAS listed them before, because then the
           // list is authoritative and the chat was deleted on another device.
-          const mine = local.filter((c) => !known.has(c.id) && !c.synced);
+          const mine = local.filter(
+            (c) => !known.has(c.id) && (!c.synced || leavingRef.current.has(c.id)),
+          );
           const all = [...merged, ...mine];
           // Most answers say exactly what this page already holds — a
           // reconnection, or the echo of this page's own save — and folding one
@@ -1194,6 +1238,12 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  /** The reader’s bookmarks live beside the stored transcript, not inside an
+   * agent session. That makes them survive a reload without changing what the
+   * agent itself remembers. */
+  const conversationPins =
+    (conversationId ? conversations.find((conversation) => conversation.id === conversationId) : undefined)
+      ?.conversationPins ?? [];
   /** The newest plan this chat wrote down — see lib/todos. */
   const todos = useMemo(() => latestTodos(chat.messages), [chat.messages]);
   /** The files this chat says are worth opening — see lib/pins. Read once up
@@ -1823,6 +1873,8 @@ export default function App() {
    *  each on its own clock; see `PendingDeletes`. */
   const pendingDelete = useRef<PendingDeletes>(new Map());
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(NONE_DELETING);
+  const pendingRemoval = useRef<PendingRemovals>(new Map());
+  const [leaving, setLeaving] = useState<ReadonlySet<string>>(NONE_LEAVING);
 
   /** Take one row off the countdown — its clock and its ring both — and say
    *  whether there was one to take off. Both ways out of a countdown end here,
@@ -1840,6 +1892,30 @@ export default function App() {
       return next.size ? next : NONE_DELETING;
     });
     return true;
+  }, []);
+
+  /** Remove the row only after CSS has had time to collapse its height. This is
+   *  deliberately separate from `commitDelete`: by then the chat is already
+   *  deleted everywhere that matters, and this is just the last visual frame. */
+  const finishLeaving = useCallback((id: string) => {
+    const timer = pendingRemoval.current.get(id);
+    if (timer !== undefined) {
+      pendingRemoval.current.delete(id);
+      clearTimeout(timer);
+    }
+    if (!leavingRef.current.delete(id)) return;
+    setLeaving((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next.size ? next : NONE_LEAVING;
+    });
+    setConversations((prev) => {
+      if (!prev.some((c) => c.id === id)) return prev;
+      const list = prev.filter((c) => c.id !== id);
+      saveConversations(list);
+      return list;
+    });
   }, []);
 
   /** Let one pending delete through. THIS is where the chat actually goes. */
@@ -1864,32 +1940,35 @@ export default function App() {
       // `removeIndexEntry`, which supersedes any unsent save for this chat and
       // keeps trying: a removal sent once and forgotten is a delete that can
       // quietly not happen.
+      //
+      // The local record stays in the list for one last visual beat. The ref
+      // is set before the server can answer, so that answer cannot unmount the
+      // row before its height has had a chance to animate to zero.
+      leavingRef.current.add(id);
+      setLeaving((prev) => new Set(prev).add(id));
+      // Drop the transcript and remember the tombstone now, not after the
+      // animation. The row is only lingering for layout; the chat is already
+      // gone as far as saves and a reload are concerned.
+      forgetLocally(id);
       removeIndexEntry(id, keyFor(id));
       // The room goes with the chat. Everyone in it is ended and the record
       // dropped; leaving it would hold a room, and every process in it, for the
       // life of the server on behalf of a conversation that no longer exists.
       bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
-      // NOW the row goes — it stood there counting down until this moment, and
-      // taking it out is the last word on a chat that no longer exists
-      // anywhere.
-      setConversations((prev) => {
-        if (!prev.some((c) => c.id === id)) return prev;
-        const list = prev.filter((c) => c.id !== id);
-        saveConversations(list);
-        return list;
-      });
-      // With the screen, if this was the chat on it. Read through the setter
-      // rather than a captured value: the commit can come from this row's
-      // timer, from the tab closing, or from another row's delete landing
-      // first, and the chat on screen at that moment is not always the one that
-      // was there at the click.
-      setConversationId((open) => (open === id ? null : open));
-      // And the copy in front of you, which is also what marks the chat gone —
-      // without that mark the debounced save would read it as one nobody had
-      // got round to writing down, and write it down.
-      forgetLocally(id);
+
+      // Motion-reduced users get the settled result immediately. Everyone else
+      // sees the row fold itself out, carrying the chats below it rather than
+      // making them jump to their new positions.
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+        finishLeaving(id);
+      } else {
+        pendingRemoval.current.set(
+          id,
+          setTimeout(() => finishLeaving(id), DELETE_COLLAPSE_MS),
+        );
+      }
     },
-    [stopCountdown, endSession, forgetLocally],
+    [stopCountdown, endSession, forgetLocally, finishLeaving],
   );
 
   /** Let a pending delete go without doing it. Nothing to put back: the row
@@ -1911,6 +1990,9 @@ export default function App() {
         cancelDelete(id);
         return;
       }
+      // A settled delete is already collapsing its row. It no longer has an
+      // Undo action, and a late click cannot start a second countdown for it.
+      if (leavingRef.current.has(id)) return;
       if (!conversations.some((c) => c.id === id)) return;
 
       // Nothing happens here but the ring, and it is this row's ring alone.
@@ -1945,6 +2027,17 @@ export default function App() {
     window.addEventListener("pagehide", flush);
     return () => window.removeEventListener("pagehide", flush);
   }, []);
+
+  // A page can leave while a committed row is mid-collapse. The tombstone was
+  // already saved, so there is nothing to finish after unmounting; clearing
+  // the short timers just prevents a stale state update on a closed page.
+  useEffect(
+    () => () => {
+      for (const timer of pendingRemoval.current.values()) clearTimeout(timer);
+      pendingRemoval.current.clear();
+    },
+    [],
+  );
 
   const send = useCallback(
     async (text: string, attachments: Attachment[] = []) => {
@@ -1988,7 +2081,9 @@ export default function App() {
         // kept its old messages on disk and got them all back on reload.
         setConversations((prev) => {
           const list = prev.map((c) =>
-            c.id === id ? { ...c, messages: [], seq: 0, updatedAt: Date.now() } : c,
+            c.id === id
+              ? { ...c, messages: [], seq: 0, conversationPins: [], updatedAt: Date.now() }
+              : c,
           );
           saveConversations(list);
           return list;
@@ -2702,6 +2797,100 @@ export default function App() {
     [conversationId, restartForAccess],
   );
 
+  /** Save a selected passage against this chat. A response can be visible a
+   * beat before the normal transcript save creates its sidebar row, so this
+   * also knows how to create that first local record instead of making an early
+   * Pin click disappear. */
+  const pinConversation = useCallback(
+    (pin: ConversationPin) => {
+      const id = conversationId;
+      if (!id) return;
+      const duplicate = conversationPins.find(
+        (held) => held.turnId === pin.turnId && held.text === pin.text,
+      );
+      setActivePinId(duplicate?.id ?? pin.id);
+      setConversations((prev) => {
+        const existing = prev.find((conversation) => conversation.id === id);
+        if (existing) {
+          const before = existing.conversationPins ?? [];
+          const pins = appendConversationPin(before, pin);
+          if (pins.length === before.length) return prev;
+          const list = prev.map((conversation) =>
+            conversation.id === id
+              ? { ...conversation, conversationPins: pins, updatedAt: Date.now() }
+              : conversation,
+          );
+          saveConversations(list);
+          return list;
+        }
+
+        const info = meta.current[id];
+        const projectIdForPin = info?.projectId ?? project?.id;
+        if (!projectIdForPin) return prev;
+        const now = Date.now();
+        const created: Conversation = {
+          id,
+          projectId: projectIdForPin,
+          title: chatName(undefined, chat.messages),
+          sessionId: chat.sessionId,
+          // A new array is intentional: the ordinary transcript save still
+          // has to see a fresh record and publish its index entry after this
+          // early pin created the browser copy.
+          messages: [...chat.messages],
+          modelId: info?.modelId ?? choice.id,
+          permission: info?.access ?? access,
+          createdAt: now,
+          updatedAt: now,
+          conversationPins: [pin],
+        };
+        const list = [created, ...prev];
+        saveConversations(list);
+        return list;
+      });
+    },
+    [conversationId, project?.id, chat.messages, chat.sessionId, choice.id, access, conversationPins],
+  );
+
+  /** The sidebar labels are switches: take the reader to the full turn that
+   * gave the passage its context, without opening another panel over it. */
+  const pickConversationPin = useCallback((pin: ConversationPin) => {
+    setActivePinId(pin.id);
+    // In the phone drawer the returned-to turn is otherwise hidden directly
+    // behind the label just pressed. On a wide screen this is already false,
+    // so the same line is a no-op there.
+    setDrawer(false);
+    setPinJump((before) => ({
+      id: pin.id,
+      turnId: pin.turnId,
+      nonce: (before?.nonce ?? 0) + 1,
+    }));
+  }, []);
+
+  const removeConversationPin = useCallback(
+    (pinId: string) => {
+      const id = conversationId;
+      if (!id) return;
+      setActivePinId((active) => (active === pinId ? null : active));
+      setPinJump((jump) => (jump?.id === pinId ? null : jump));
+      setConversations((prev) => {
+        const existing = prev.find((conversation) => conversation.id === id);
+        if (!existing?.conversationPins?.some((pin) => pin.id === pinId)) return prev;
+        const list = prev.map((conversation) =>
+          conversation.id === id
+            ? {
+                ...conversation,
+                conversationPins: conversation.conversationPins?.filter((pin) => pin.id !== pinId),
+                updatedAt: Date.now(),
+              }
+            : conversation,
+        );
+        saveConversations(list);
+        return list;
+      });
+    },
+    [conversationId],
+  );
+
   if (conn === "unauthorized") return <Connect />;
 
   /* Chat or Files. Marked by a filled pill, not an edge stripe: on a 48px-tall
@@ -2890,6 +3079,7 @@ export default function App() {
           running={running}
           busy={busySet}
           deleting={deleting}
+          leaving={leaving}
           deleteMs={UNDO_MS}
           expanded={expanded}
           onToggle={toggleFolder}
@@ -2899,6 +3089,10 @@ export default function App() {
           onDelete={deleteConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
+          pins={conversationPins}
+          activePinId={activePinId}
+          onPickPin={pickConversationPin}
+          onRemovePin={removeConversationPin}
           onHide={hasDrawer ? undefined : () => showNav(false)}
           head={wide ? undefined : viewSwitch}
           foot={wide ? undefined : <Usage />}
@@ -2977,6 +3171,12 @@ export default function App() {
                       stoppedAt={chat.stoppedAt}
                       compactingSince={chat.compactingSince}
                       conversationId={conversationId ?? undefined}
+                      // What the host's replies are signed with. `choice` is
+                      // this conversation's own provider, not a stale global:
+                      // opening a chat sets it from the stored model, resuming
+                      // sets it from the session, and changing provider cannot
+                      // happen in place — it opens a new chat.
+                      hostName={providerFor(choice.agent).name}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and
@@ -2990,6 +3190,8 @@ export default function App() {
                       onSetting={send}
                       agentByTool={agentByTool}
                       onOpenAgent={setFocusedAgent}
+                      onPin={pinConversation}
+                      jumpToPin={pinJump ?? undefined}
                     />
                     {focused && (
                       <AgentFocus
@@ -3034,8 +3236,15 @@ export default function App() {
             </div>
           )}
 
-          {chat.notices.length > 0 && (
+          {conversationId && chat.notices.length > 0 && (
             <div className="notices">
+              <button
+                className="notices-dismiss"
+                type="button"
+                onClick={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
+              >
+                Dismiss all
+              </button>
               {chat.notices.map((n, i) => (
                 <div key={i} className="notice">
                   {n}
