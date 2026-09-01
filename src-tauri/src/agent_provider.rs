@@ -632,15 +632,11 @@ impl AgentProvider for CodexProvider {
             return OutputDisposition::Ignore;
         }
 
-        // A patch's context can change between inspection and write. Codex
-        // receives this detail and normally re-reads the file before retrying;
-        // exposing the raw router line as a transcript error makes that normal
-        // recovery look like a failed chat. Keep it queryable in diagnostics
-        // instead. Actual turn failures and every other stderr line stay
-        // visible.
-        if line.contains("codex_core::tools::router:")
-            && line.contains("apply_patch verification failed")
-        {
+        // Codex receives tool failures through its structured tool result and
+        // can normally recover by re-reading or choosing a safer command. Its
+        // tracing layer writes the same failure to stderr; showing that copy
+        // makes a healthy turn look broken. Keep it queryable in diagnostics.
+        if is_recoverable_codex_router_diagnostic(line) {
             return OutputDisposition::DiagnosticsOnly;
         }
 
@@ -650,10 +646,10 @@ impl AgentProvider for CodexProvider {
     fn classify_output(&self, line: &str, state: &mut OutputState) -> OutputDisposition {
         let line = line.trim();
 
-        // `apply_patch` puts its failed context on separate stderr lines after
-        // the router error. Those lines are source text, not fresh warnings.
-        // Keep them queryable in the diagnostic journal, but never turn a
-        // chapter heading or CSS selector into an amber chat card.
+        // Router diagnostics can contain a multi-line patch or shell command.
+        // Those continuation lines are source/command text, not fresh
+        // warnings. Keep the whole record queryable without turning each line
+        // into its own amber chat card.
         if state.multiline_diagnostic {
             if !is_codex_log_record(line) {
                 return OutputDisposition::DiagnosticsOnly;
@@ -662,19 +658,27 @@ impl AgentProvider for CodexProvider {
         }
 
         let disposition = self.output_disposition(line);
-        if line.contains("codex_core::tools::router:")
-            && line.contains("apply_patch verification failed")
-        {
+        if is_recoverable_codex_router_diagnostic(line) {
             state.multiline_diagnostic = true;
         }
         disposition
     }
 }
 
+/// Tool failures are already returned to Codex as structured tool output. The
+/// router's stderr trace is therefore duplicate recovery detail, not a chat
+/// failure. A genuine process/turn failure is emitted separately and remains
+/// visible.
+fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
+    line.contains("codex_core::tools::router:")
+        && (line.contains("apply_patch verification failed")
+            || line.contains("error=exec_command failed for"))
+}
+
 /// Codex's tracing output begins each independent record with an ISO-like
-/// timestamp and one of its log levels. A patch error's following lines do not,
-/// which lets the adapter keep its source-context block together without
-/// hiding the next real diagnostic.
+/// timestamp and one of its log levels. A router error's following lines do
+/// not, which lets the adapter keep its context block together without hiding
+/// the next real diagnostic.
 fn is_codex_log_record(line: &str) -> bool {
     let mut fields = line.split_ascii_whitespace();
     let Some(timestamp) = fields.next() else {

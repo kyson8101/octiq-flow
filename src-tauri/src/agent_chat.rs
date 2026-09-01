@@ -2719,6 +2719,37 @@ mod tests {
     }
 
     #[test]
+    fn codex_exec_command_router_failure_stays_out_of_chat_notices() {
+        let codex = provider_for(ChatAgent::Codex);
+        let mut output_state = OutputState::default();
+
+        // Codex logs a shell command containing newlines as one tracing record,
+        // but BufRead delivers it as several physical lines. None should become
+        // a separate amber notice.
+        for line in [
+            "2026-09-01T03:56:54.470794Z ERROR codex_core::tools::router: \
+             error=exec_command failed for `/bin/zsh -lc 'rm -f /tmp/probe.json",
+            "test ! -e /workspace/output",
+            "lsof -nP -iTCP:4321 -sTCP:LISTEN'`: CreateProcess { message: \
+             rejected: rm -f style commands are not permitted }",
+        ] {
+            assert_eq!(
+                codex.classify_output(line, &mut output_state),
+                OutputDisposition::DiagnosticsOnly,
+            );
+        }
+
+        // A later, independent failure must still reach the user.
+        assert_eq!(
+            codex.classify_output(
+                "2026-09-01T03:56:55Z ERROR codex_core::auth: token expired",
+                &mut output_state,
+            ),
+            OutputDisposition::Visible,
+        );
+    }
+
+    #[test]
     fn codex_takes_images_as_files_and_claude_does_not() {
         let shots = vec!["/tmp/a shot.png".to_string(), "/tmp/b.webp".to_string()];
         let x = build_command(
