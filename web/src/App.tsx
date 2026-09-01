@@ -309,8 +309,9 @@ export default function App() {
   /** Wide enough for a sidebar column — and so for a top bar that can hold the
    *  view switch and the usage meter. Below it those live in the drawer. */
   const wide = useMedia(WIDE);
-  /** A temporary focus view: chat gets the body width, while the panes keep
-   *  their own open/closed state ready for the next toggle. */
+  /** A temporary focus view for the tablet layout. On a desktop the project
+   *  and Git columns are permanent parts of the three-column workspace, so
+   *  there is no full-width chat mode to hide either of them. */
   const [chatWide, setChatWide] = useState(false);
   const chatExpanded = chatWide && wide && mode === "chat";
   /** The project column, put away, on the screens where it is a column.
@@ -334,8 +335,8 @@ export default function App() {
   // There must always be a visible way back. A narrow layout already gives the
   // chat the whole body, and the editor owns a different kind of workspace.
   useEffect(() => {
-    if (!wide || mode !== "chat") setChatWide((was) => (was ? false : was));
-  }, [wide, mode]);
+    if (!wide || !hasDrawer || mode !== "chat") setChatWide((was) => (was ? false : was));
+  }, [wide, hasDrawer, mode]);
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
@@ -356,14 +357,17 @@ export default function App() {
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
-  // The git column beside the chat. It lives up here rather than inside the
-  // panel because the button that opens it is in the top bar and the panel it
-  // opens is a column in the body — two places, one piece of state.
+  // Below the desktop breakpoint the Git column can still be opened as before.
+  // On a desktop it is permanent; this state then only remembers what the
+  // smaller layout should do when the window is narrowed again.
   const [gitOpen, setGitOpen] = useState(() => localStorage.getItem(GIT_KEY) === "1");
   /** Kept mounted while the panel slides away, so closing it on a phone is the
    *  reverse of opening rather than the panel blinking out. Unmounting on
    *  `gitOpen` alone would cut the animation off at its first frame. */
   const [gitMounted, setGitMounted] = useState(gitOpen);
+  const desktopGit = !hasDrawer;
+  const visibleGitOpen = desktopGit || gitOpen;
+  const visibleGitMounted = desktopGit || gitMounted;
   // The files column, on the same terms as the git one beside it: the button
   // that opens it is in the top bar, the panel it opens is a column in the
   // body, and only one piece of state joins them.
@@ -2952,122 +2956,142 @@ export default function App() {
       )}
 
       <header className="topbar">
-        {/* The project name IS the way back to the project list.
-            A hamburger beside a project name is two controls saying "projects"
-            where one will do, and on a phone the bar has four things to carry
-            and 390px to carry them in.
-
-            Two sidebars, one control: under 860px it is a drawer that slides
-            over the chat, above that a column that takes width from it. This
-            brings back whichever of the two is away, and while the column is
-            out it is not a button at all — just the title, its caret gone. */}
-        <button
-          className="topbar-title"
-          type="button"
-          aria-label="Projects and chats"
-          aria-expanded={chatExpanded ? false : hasDrawer ? drawer : !navShut}
-          onClick={() => {
-            if (chatExpanded) return;
-            if (hasDrawer) setDrawer((v) => !v);
-            else showNav(true);
-          }}
-          disabled={chatExpanded || (!hasDrawer && !navShut)}
-        >
-          <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
-          <span className="topbar-caret" aria-hidden="true">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-          </span>
-        </button>
-
-        <span className="topbar-gap" />
-
-        {/* The view switch and the usage meter are HERE only on a wide screen.
-            On a phone they are in the drawer — see the Sidebar below. Both are
-            rendered once, in one place or the other, rather than twice with one
-            hidden: the meter polls an endpoint that rate-limits per account. */}
-        {wide && viewSwitch}
-
-        {/* Card 84 — how many agents are in this chat. Card 82 took away the
-            mode switch, and with it the only thing on screen that said a chat
-            was a group before anybody had spoken.
-
-            READ ONLY, unlike everything else on this bar. The controls for who
-            is in the room live in the composer and stay there — the user was
-            explicit about that ("my dialog should only came from composer
-            input"), and a second way in from up here would be a second thing to
-            keep in step with the first. */}
-        {seatCount && (
-          <span className="topbar-room" title={seatCount.label} aria-label={seatCount.label}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="9" cy="8" r="3.2" />
-              <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
-              <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
-            </svg>
-            <RollingNumber value={seatCount.total} />
-          </span>
-        )}
-
-        {/* The agents this chat has started: a count on the bar, the column
-            one tap under it — and the only way back once the column's ✕ has
-            put it away. */}
-        <RailButton
-          count={chat.agents.length}
-          open={!railShut}
-          onToggle={() => showRail(railShut)}
-        />
-
-        {/* The files the chat has touched: a count on the bar, the column one
-            tap under it. Beside Git because they are the same kind of thing —
-            a column about the code, opened from the bar — and because they take
-            turns, so having them next to each other is what makes that read as
-            a switch rather than as one closing on its own. */}
-        <FilesButton
-          count={sessionFiles.length}
-          open={filesOpen}
-          onToggle={() => showFiles(!filesOpen)}
-        />
-
-        <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
-
-        {/* The chat's width, not browser fullscreen. It is useful only where
-            there are panes to put away; narrow layouts already use the body. */}
-        {wide && mode === "chat" && (
-          <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
-        )}
-
-        <button
-          className="icon-btn"
-          type="button"
-          aria-label="Settings"
-          title="Settings"
-          onClick={() => setAppSettings(true)}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </button>
-
-        {/* A new chat in the project named on the left. Last, at the thumb end
-            of the bar, because it is the one thing here you press rather than
-            read. */}
-        {project && (
+        <div className="topbar-leading">
+          {/* The project name is also the way back to the project list. The
+              same control opens the drawer below desktop and restores the
+              project column above it. */}
           <button
-            className="icon-btn new-chat"
+            className="topbar-title"
             type="button"
-            aria-label={`New chat in ${project.name}`}
-            title="New chat"
-            onClick={() => newChat(project.id)}
+            aria-label="Projects and chats"
+            aria-expanded={chatExpanded ? false : hasDrawer ? drawer : !navShut}
+            onClick={() => {
+              if (chatExpanded) return;
+              if (hasDrawer) setDrawer((v) => !v);
+              else showNav(true);
+            }}
+            disabled={chatExpanded || (!hasDrawer && !navShut)}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" />
+            <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
+            <span className="topbar-caret" aria-hidden="true">
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </span>
+          </button>
+        </div>
+
+        {/* A dedicated middle slot keeps the view switch centred instead of
+            letting the changing number of actions on the right push it. */}
+        <div className="topbar-center">{wide && viewSwitch}</div>
+
+        <div className="topbar-actions">
+          {/* A read-only room count. Membership is still managed only from the
+              composer, beside the conversation it changes. */}
+          {seatCount && (
+            <span className="topbar-room" title={seatCount.label} aria-label={seatCount.label}>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.9"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <circle cx="9" cy="8" r="3.2" />
+                <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
+                <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
+              </svg>
+              <RollingNumber value={seatCount.total} />
+            </span>
+          )}
+
+          <RailButton
+            count={chat.agents.length}
+            open={!railShut}
+            onToggle={() => showRail(railShut)}
+          />
+
+          <FilesButton
+            count={sessionFiles.length}
+            open={filesOpen}
+            onToggle={() => showFiles(!filesOpen)}
+          />
+
+          {/* Git lives in the permanent third column once the project drawer
+              becomes a desktop column. Smaller layouts keep the toggle. */}
+          {hasDrawer && (
+            <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
+          )}
+
+          {/* Full-width chat remains available in the intermediate drawer
+              layout. Desktop deliberately remains a three-column workspace. */}
+          {wide && hasDrawer && mode === "chat" && (
+            <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
+          )}
+
+          <button
+            className="icon-btn"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            onClick={() => setAppSettings(true)}
+          >
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.9"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
           </button>
-        )}
 
-        {wide && <Usage />}
+          {project && (
+            <button
+              className="icon-btn new-chat"
+              type="button"
+              aria-label={`New chat in ${project.name}`}
+              title="New chat"
+              onClick={() => newChat(project.id)}
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            </button>
+          )}
+
+          {/* Rendered once: the meter polls a rate-limited endpoint, so on a
+              smaller screen this same instance moves into the drawer. */}
+          {wide && <Usage />}
+        </div>
       </header>
 
       {/* `id` so the file panel can render INTO this row from where its state
@@ -3433,14 +3457,16 @@ export default function App() {
           </aside>
         )}
 
-        {/* On a wide screen a sibling of the views, not something laid over
-            them: whichever view is showing gives up width while this is open and
-            takes it straight back when it closes. It sits beside the editor too
-            — reading a diff next to the file it belongs to is the whole point.
-            On a phone the stylesheet turns the same element into a sheet that
-            slides in from the right. */}
-        {gitMounted && (
-          <GitPanel project={project} open={gitOpen} onClose={() => showGit(false)} />
+        {/* The third desktop column, kept at the far right for both Chat and
+            Files. In the intermediate drawer layout it is still toggleable;
+            on a phone the stylesheet turns it into a slide-over sheet. */}
+        {visibleGitMounted && (
+          <GitPanel
+            project={project}
+            open={visibleGitOpen}
+            persistent={desktopGit}
+            onClose={() => showGit(false)}
+          />
         )}
 
         {filesMounted && (

@@ -7,12 +7,11 @@
 // from a phone is the point of v2 — a build broke, you are not at the desk, and
 // the fix is a one-line commit.
 //
-// It is a COLUMN, not an overlay. Opening it takes width from the chat and
-// closing it gives the width back; nothing is ever drawn on top of the
-// conversation, so you can read a reply and stage a file at the same time. That
-// is also why there is no scrim and no drop shadow: both would say "this hovers
-// above the page", which it does not. Its left edge is a drag handle, and the
-// width it is dragged to is remembered.
+// On a desktop it is the permanent third COLUMN, not an overlay: project list,
+// chat/editor, Git. Nothing is drawn on top of the conversation, so you can
+// read a reply and stage a file at the same time. That is also why there is no
+// scrim and no drop shadow: both would say "this hovers above the page", which
+// it does not. Its left edge is a drag handle, and the width is remembered.
 //
 // The phone is the deliberate exception. Two columns do not fit in 390px — a
 // 300px panel would leave the chat at 90px, which helps nobody — so under 700px
@@ -342,6 +341,7 @@ export function GitButton({
 export function GitPanel({
   project,
   open,
+  persistent = false,
   onClose,
 }: {
   project: GitProject | null;
@@ -349,6 +349,10 @@ export function GitPanel({
    *  slide finishes, so closing looks like the reverse of opening rather than
    *  the panel simply vanishing. */
   open: boolean;
+  /** The desktop workspace always owns this third column. In that layout the
+   *  panel has no close affordance and also owns the live Git watcher, because
+   *  its old top-bar toggle is deliberately absent. */
+  persistent?: boolean;
   onClose: () => void;
 }) {
   const [repos, setRepos] = useState<RepoChanges[] | null>(null);
@@ -458,6 +462,25 @@ export function GitPanel({
     void load();
   }, [load]);
 
+  // On smaller layouts GitButton is always mounted and owns this subscription.
+  // The permanent desktop panel replaces that button, so it has to install the
+  // same watcher itself or agent/terminal changes would leave the overview
+  // stale until the window was focused.
+  useEffect(() => {
+    if (!persistent || folders.length === 0) return;
+    const offState = bridge.onState((state) => {
+      if (state !== "open") return;
+      bridge.invoke("git_watch_paths", { paths: folders }).catch(() => {});
+    });
+    const offWatch = bridge.on("git-status-changed", () => {
+      window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
+    });
+    return () => {
+      offState();
+      offWatch();
+    };
+  }, [persistent, folders]);
+
   // The same refresh the toolbar button takes: the button turns the backend's
   // `git-status-changed` into this window event, so an agent that switches
   // branch or commits mid-turn repaints the open panel too — branch name, file
@@ -542,6 +565,23 @@ export function GitPanel({
 
   const tickedCount = targets.reduce((n, t) => n + t.files.length, 0);
 
+  /** The at-a-glance read at the top of the permanent column. The file rows
+   *  still carry their own counts; this is the project-wide answer before the
+   *  reader chooses a repo or opens a diff. */
+  const overview = useMemo(() => {
+    let files = 0;
+    let additions = 0;
+    let deletions = 0;
+    for (const repo of repos ?? []) {
+      for (const file of repo.files ?? []) {
+        files += 1;
+        additions += file.added;
+        deletions += file.removed;
+      }
+    }
+    return { files, additions, deletions };
+  }, [repos]);
+
   /** Commit every repo that has something ticked, all under the one message. One
    *  commit per repo, because a project that holds a frontend and a backend repo
    *  side by side is exactly why this groups by repo at all. */
@@ -591,8 +631,10 @@ export function GitPanel({
         aria-hidden="true"
       />
     <aside
-      className={`gitp-panel ${entered && open ? "is-open" : ""}`}
-      aria-label="Git"
+      className={`gitp-panel ${entered && open ? "is-open" : ""} ${
+        persistent ? "is-persistent" : ""
+      }`}
+      aria-label="Git changes"
       // A custom property, not `width`: the phone rule in styles.css has to be
       // able to drop the column width, and an inline `width` would outrank it.
       style={{ "--gitp-w": `${width}px` } as React.CSSProperties}
@@ -606,7 +648,7 @@ export function GitPanel({
       />
 
       <header className="gitp-head">
-        <span className="gitp-title">Git</span>
+        <span className="gitp-title">{persistent ? "Changes" : "Git"}</span>
         <span className="gitp-project">{project?.name ?? "No project"}</span>
         <button
           className="gitp-btn"
@@ -616,9 +658,11 @@ export function GitPanel({
         >
           {loading ? "…" : "Refresh"}
         </button>
-        <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
-          ✕
-        </button>
+        {!persistent && (
+          <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
+            ✕
+          </button>
+        )}
       </header>
 
       {op && (
@@ -629,6 +673,27 @@ export function GitPanel({
       )}
 
       <div className="gitp-body">
+        {!listError && repos !== null && repos.length > 0 && (
+          <div
+            className="gitp-overview"
+            aria-label={`${overview.files} ${overview.files === 1 ? "changed file" : "changed files"}`}
+          >
+            <span className="gitp-overview-item is-files">
+              <span className="gitp-overview-value">
+                <RollingNumber value={overview.files} />
+              </span>
+              <span className="gitp-overview-label">
+                {overview.files === 1 ? "file changed" : "files changed"}
+              </span>
+            </span>
+            <span className="gitp-overview-item is-additions">
+              +<RollingNumber value={overview.additions} />
+            </span>
+            <span className="gitp-overview-item is-deletions">
+              −<RollingNumber value={overview.deletions} />
+            </span>
+          </div>
+        )}
         {folders.length === 0 && (
           <div className="gitp-note">This project has no folders to look at.</div>
         )}

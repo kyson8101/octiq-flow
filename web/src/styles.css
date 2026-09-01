@@ -136,6 +136,59 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* Three deliberate regions: project, the view switch, and actions. The middle
+   region is a real centre on a desktop, so Git activity changing on the right
+   no longer nudges Chat / Files sideways. */
+.topbar-leading,
+.topbar-center,
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.topbar-leading {
+  flex: 1 1 auto;
+}
+
+.topbar-center,
+.topbar-actions {
+  flex: 0 0 auto;
+}
+
+.topbar-actions {
+  gap: 8px;
+  margin-left: auto;
+}
+
+.topbar-leading .topbar-title {
+  max-width: 100%;
+}
+
+.topbar-center:empty {
+  display: none;
+}
+
+@media (min-width: 860px) {
+  .topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .topbar-leading {
+    justify-self: start;
+  }
+
+  .topbar-center {
+    justify-self: center;
+  }
+
+  .topbar-actions {
+    justify-self: end;
+    margin-left: 0;
+  }
+}
+
 /* The project name, which is also the way into the drawer. It shrinks before
    anything else on the bar does, and it is the only thing here that is allowed
    to. */
@@ -180,12 +233,6 @@ body {
 /* No caret when the drawer is not a drawer. */
 .topbar-title:disabled .topbar-caret {
   display: none;
-}
-
-/* Everything after this is pushed to the right end of the bar. */
-.topbar-gap {
-  flex: 1 1 auto;
-  min-width: 4px;
 }
 
 .icon-btn {
@@ -281,6 +328,10 @@ body {
   .topbar {
     gap: 3px;
     padding: 0 max(4px, env(safe-area-inset-right)) 0 max(4px, env(safe-area-inset-left));
+  }
+
+  .topbar-actions {
+    gap: 3px;
   }
 
   .topbar .icon-btn {
@@ -7001,6 +7052,23 @@ body.is-ultra .eff {
   box-shadow: var(--shadow);
 }
 
+/* On a phone the meter lives in the drawer footer, not the top bar. Opening
+   down and right-aligning from that 300px drawer placed a 340px card partly to
+   the LEFT of the viewport (and below the control, against the browser chrome).
+   Keep the card inside the drawer and open it into the available space above
+   the footer instead. A short landscape viewport can scroll the breakdown
+   without making the app shell itself scroll. */
+@media (max-width: 700px) {
+  .sidebar-slot.is-foot .usage-pop {
+    inset: auto 0 calc(100% + 6px);
+    width: auto;
+    max-height: calc(100dvh - 96px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
 .usage-block {
   display: flex;
   flex-direction: column;
@@ -8864,6 +8932,21 @@ body.is-ultra .eff {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* The desktop workspace always ends in this column. It remains a normal flex
+   item — so the chat genuinely ends at its left edge — while its own body is
+   the only part that scrolls. */
+.gitp-panel.is-persistent {
+  order: 100;
+  align-self: stretch;
+  margin-left: auto;
+}
+
+/* A tablet can be enlarged while its temporary full-width-chat state is still
+   settling. The permanent desktop column wins even during that transition. */
+.app.chat-wide .gitp-panel.is-persistent {
+  display: flex;
+}
+
 /* The drag handle sits ON the dividing line and reaches a few pixels either
    side of it, because a 1px target is not a target. */
 .gitp-resizer {
@@ -9115,6 +9198,58 @@ body.is-ultra .eff {
   min-height: 0;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Project-wide first, repo detail second. The overview is deliberately compact
+   enough to remain visible above a long branch/file list without becoming a
+   dashboard inside a utility column. */
+.gitp-overview {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-variant-numeric: tabular-nums;
+}
+
+.gitp-overview-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.gitp-overview-item.is-files {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font);
+  color: var(--fg-0);
+}
+
+.gitp-overview-value {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.gitp-overview-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
+.gitp-overview-item.is-additions {
+  color: var(--ok);
+}
+
+.gitp-overview-item.is-deletions {
+  color: var(--danger);
 }
 
 .gitp-note {
