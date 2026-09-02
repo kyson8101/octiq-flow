@@ -7,11 +7,13 @@
 // from a phone is the point of v2 — a build broke, you are not at the desk, and
 // the fix is a one-line commit.
 //
-// On a desktop it is the permanent third COLUMN, not an overlay: project list,
-// chat/editor, Git. Nothing is drawn on top of the conversation, so you can
-// read a reply and stage a file at the same time. That is also why there is no
-// scrim and no drop shadow: both would say "this hovers above the page", which
-// it does not. Its left edge is a drag handle, and the width is remembered.
+// On a desktop it is the workspace's third COLUMN, not an overlay: project
+// list, chat/editor, Git. Nothing is drawn on top of the conversation, so you
+// can read a reply and stage a file at the same time. That is also why there is
+// no scrim and no drop shadow: both would say "this hovers above the page",
+// which it does not. Its left edge is a drag handle, and the width is
+// remembered. It is a column you can put away — the ✕ here and the top bar's
+// Git button both do it — and a desktop simply opens with it already out.
 //
 // The phone is the deliberate exception. Two columns do not fit in 390px — a
 // 300px panel would leave the chat at 90px, which helps nobody — so under 700px
@@ -349,9 +351,10 @@ export function GitPanel({
    *  slide finishes, so closing looks like the reverse of opening rather than
    *  the panel simply vanishing. */
   open: boolean;
-  /** The desktop workspace always owns this third column. In that layout the
-   *  panel has no close affordance and also owns the live Git watcher, because
-   *  its old top-bar toggle is deliberately absent. */
+  /** A column of the desktop workspace rather than a sheet over the chat: it
+   *  keeps its place in the flex row, and the overview at the top of it is what
+   *  a column that stays open is for. It closes the same way the sheet does —
+   *  this is about SHAPE, not about permanence. */
   persistent?: boolean;
   onClose: () => void;
 }) {
@@ -462,25 +465,6 @@ export function GitPanel({
     void load();
   }, [load]);
 
-  // On smaller layouts GitButton is always mounted and owns this subscription.
-  // The permanent desktop panel replaces that button, so it has to install the
-  // same watcher itself or agent/terminal changes would leave the overview
-  // stale until the window was focused.
-  useEffect(() => {
-    if (!persistent || folders.length === 0) return;
-    const offState = bridge.onState((state) => {
-      if (state !== "open") return;
-      bridge.invoke("git_watch_paths", { paths: folders }).catch(() => {});
-    });
-    const offWatch = bridge.on("git-status-changed", () => {
-      window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
-    });
-    return () => {
-      offState();
-      offWatch();
-    };
-  }, [persistent, folders]);
-
   // The same refresh the toolbar button takes: the button turns the backend's
   // `git-status-changed` into this window event, so an agent that switches
   // branch or commits mid-turn repaints the open panel too — branch name, file
@@ -565,9 +549,9 @@ export function GitPanel({
 
   const tickedCount = targets.reduce((n, t) => n + t.files.length, 0);
 
-  /** The at-a-glance read at the top of the permanent column. The file rows
-   *  still carry their own counts; this is the project-wide answer before the
-   *  reader chooses a repo or opens a diff. */
+  /** The at-a-glance read at the top of the column. The file rows still carry
+   *  their own counts; this is the project-wide answer before the reader
+   *  chooses a repo or opens a diff. */
   const overview = useMemo(() => {
     let files = 0;
     let additions = 0;
@@ -658,11 +642,11 @@ export function GitPanel({
         >
           {loading ? "…" : "Refresh"}
         </button>
-        {!persistent && (
-          <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
-            ✕
-          </button>
-        )}
+        {/* Both shapes close from here. A column with no way out is furniture
+            you cannot move, and the width it takes is the chat's. */}
+        <button className="gitp-close" type="button" aria-label="Close" onClick={onClose}>
+          ✕
+        </button>
       </header>
 
       {op && (

@@ -53,14 +53,19 @@ export function ProjectSettings({
   const primary = project?.primary_path ?? "";
   const extras = project?.paths ?? [];
 
-  const run = async (fn: () => Promise<unknown>) => {
+  // Returns whether it succeeded, so a caller that closes the panel on
+  // completion (create, below) can choose not to — closing on a rejected
+  // call would carry the error off screen along with the panel that shows it.
+  const run = async (fn: () => Promise<unknown>): Promise<boolean> => {
     setBusy(true);
     setError(null);
     try {
       await fn();
       onChanged();
+      return true;
     } catch (e) {
       setError(String((e as Error).message ?? e));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -97,10 +102,12 @@ export function ProjectSettings({
       setError("Give the project a name first.");
       return;
     }
-    await run(async () => {
+    const ok = await run(async () => {
       await bridge.invoke("add_workspace", { name: trimmed, primaryPath: path });
     });
-    onClose();
+    // Only on success — a rejected create (e.g. a colliding label) leaves the
+    // panel open with `error` showing, same as every other failed call here.
+    if (ok) onClose();
   }
 
   function chosen(path: string) {

@@ -171,6 +171,12 @@ export function ToolCard({
         .filter(Boolean)
         .join(" ")}
     >
+      {/* The row and its fold are two controls, not one, wherever the row does
+          something other than fold — a tracked agent's row opens that agent's
+          own screen, and a caret that navigates instead of folding is a promise
+          the card cannot keep. With nothing else on the row the wrapper holds
+          the head alone and changes nothing. */}
+      <div className="tool-head-row">
       <button
         className="tool-head"
         onClick={() => (opensAgent ? onOpenAgent!() : setOpen((v) => !v))}
@@ -219,10 +225,27 @@ export function ToolCard({
         ) : (
           <ToolState state={tool.state} />
         )}
-        <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
-          <Chevron />
-        </span>
+        {!opensAgent && (
+          <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
+            <Chevron />
+          </span>
+        )}
       </button>
+      {opensAgent && (
+        <button
+          className="tool-fold"
+          onClick={() => setOpen((v) => !v)}
+          type="button"
+          aria-expanded={open}
+          aria-label={open ? "Collapse this call" : "Expand this call"}
+          title={open ? "Collapse" : "Expand"}
+        >
+          <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
+            <Chevron />
+          </span>
+        </button>
+      )}
+      </div>
 
       {/* Outside the fold, on purpose. Everything else on a card is detail you
           go looking for; this is a decision that was made, and a decision you

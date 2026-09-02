@@ -106,6 +106,24 @@ describe("a subagent call", () => {
     expect(html).toContain('title="Open read-only agent chat"');
   });
 
+  it("gives the caret its own control, so the card still folds", () => {
+    const html = renderToStaticMarkup(<ToolCard tool={task} onOpenAgent={() => {}} />);
+
+    // The caret is no longer inside the head — clicking it would have opened
+    // the agent's screen instead of folding the card.
+    expect(html).toContain('class="tool-fold"');
+    expect(html).toContain('aria-label="Expand this call"');
+    // The only caret on the card is the one inside that control.
+    expect(html.indexOf("tool-fold")).toBeLessThan(html.indexOf("tool-caret"));
+  });
+
+  it("folds from the head itself when there is no agent screen to open", () => {
+    const html = renderToStaticMarkup(<ToolCard tool={task} />);
+
+    expect(html).not.toContain("tool-fold");
+    expect(html).toContain("tool-caret");
+  });
+
   it("keeps the normal tool-row styling before its agent metadata arrives", () => {
     const html = renderToStaticMarkup(<ToolCard tool={task} agent={{ steps: 0, body: null }} />);
 

@@ -1,6 +1,7 @@
-// The desktop inspector is furniture, while the smaller-screen Git panel is a
-// dismissible sheet. Their headers and close affordances are the accessible
-// contract that keeps those two layouts from drifting back together.
+// The desktop panel is a column of the workspace, the smaller-screen one a
+// sheet over the chat. Their headers are the accessible contract that keeps
+// those two layouts from drifting back together — and BOTH of them close, which
+// is the part that has been taken away once already.
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -30,20 +31,23 @@ const render = (persistent: boolean) =>
   );
 
 describe("the Git side panel", () => {
-  it("is a permanent Changes column on desktop", () => {
+  it("is the Changes column on desktop", () => {
     const html = render(true);
 
     expect(html).toContain("gitp-panel");
     expect(html).toContain("is-persistent");
     expect(html).toContain(">Changes<");
-    expect(html).not.toContain('aria-label="Close"');
   });
 
-  it("remains a dismissible Git sheet below desktop", () => {
+  it("remains a Git sheet below desktop", () => {
     const html = render(false);
 
     expect(html).toContain(">Git<");
-    expect(html).toContain('aria-label="Close"');
     expect(html).not.toContain("is-persistent");
+  });
+
+  it("can be closed in either shape", () => {
+    expect(render(true)).toContain('aria-label="Close"');
+    expect(render(false)).toContain('aria-label="Close"');
   });
 });

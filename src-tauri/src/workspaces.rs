@@ -213,6 +213,51 @@ fn ensure_folder(path: &str) -> Result<(), String> {
     fs::create_dir_all(target).map_err(|e| format!("could not create {path}: {e}"))
 }
 
+/// A workspace label said as an address — the browser puts this in the chat
+/// URL (`#/p/<slug>/c/…`, see web/src/lib/projectSlug.ts, which must match).
+/// Lower-cased, every run of non-alphanumerics folded to one dash. Two labels
+/// that collide here are the same address, which is why `ensure_unique_name`
+/// refuses them.
+fn name_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut dash = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            dash = false;
+        } else if !dash && !out.is_empty() {
+            out.push('-');
+            dash = true;
+        }
+    }
+    if out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Refuse a label another workspace already answers to. `except` is the
+/// workspace being renamed, which is allowed to keep its own name.
+fn ensure_unique_name(
+    data: &WorkspaceData,
+    name: &str,
+    except: Option<&str>,
+) -> Result<(), String> {
+    let slug = name_slug(name);
+    for w in &data.workspaces {
+        if Some(w.id.as_str()) == except {
+            continue;
+        }
+        if name_slug(&w.name) == slug {
+            return Err(format!(
+                "a project named \"{}\" already exists — labels address the chat URL, so each must be unique",
+                w.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Create a new workspace and return it. A name is required. The primary path
 /// is the main folder the workspace runs in; when it is empty the user's home
 /// folder is used, so a project can be created without picking a folder first.
@@ -233,6 +278,7 @@ pub fn add_workspace_impl(
     };
     ensure_folder(&primary_path)?;
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    ensure_unique_name(&data, &name, None)?;
     let workspace = Workspace {
         id: Uuid::new_v4().to_string(),
         name,
@@ -287,6 +333,7 @@ pub fn rename_workspace_impl(
         return Err("workspace name cannot be empty".into());
     }
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    ensure_unique_name(&data, &name, Some(&id))?;
     let ws = data
         .workspaces
         .iter_mut()
@@ -451,8 +498,8 @@ pub fn set_workspace_shelved_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_workspace_impl, add_workspace_path_impl, set_primary_path_impl, WorkspaceData,
-        WorkspaceState,
+        add_workspace_impl, add_workspace_path_impl, name_slug, rename_workspace_impl,
+        set_primary_path_impl, WorkspaceData, WorkspaceState,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -546,5 +593,54 @@ mod tests {
         )
         .expect_err("a file is not a folder");
         assert!(err.contains("not a folder"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn refuses_a_second_project_whose_label_slugs_the_same() {
+        let (state, _missing) = scratch("dup-create");
+        add_workspace_impl(&state, "My App".into(), String::new()).expect("create the first");
+
+        // "my-app" is a different string but the same address once slugged —
+        // the whole point of the guard.
+        let err = add_workspace_impl(&state, "my-app".into(), String::new())
+            .expect_err("a colliding slug must be refused");
+        assert!(err.contains("My App"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn refuses_a_rename_onto_another_projects_label() {
+        let (state, _missing) = scratch("dup-rename");
+        add_workspace_impl(&state, "My App".into(), String::new()).expect("create the first");
+        let second = add_workspace_impl(&state, "Other App".into(), String::new())
+            .expect("create the second");
+
+        let err = rename_workspace_impl(&state, second.id, "my-app".into())
+            .expect_err("renaming onto a colliding slug must be refused");
+        assert!(err.contains("My App"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn allows_renaming_a_project_to_a_slug_variant_of_its_own_name() {
+        let (state, _missing) = scratch("self-rename");
+        let ws = add_workspace_impl(&state, "My App".into(), String::new()).expect("create");
+
+        // Same slug as before ("my-app"), but the project being renamed is
+        // excepted from the collision check — it is allowed to keep its own
+        // address.
+        rename_workspace_impl(&state, ws.id, "my-app".into())
+            .expect("renaming onto your own slug must be allowed");
+    }
+
+    #[test]
+    fn name_slug_matches_the_frontend_rule() {
+        assert_eq!(name_slug("octiq-flow"), "octiq-flow");
+        assert_eq!(name_slug("OctiqFlow"), "octiqflow");
+        assert_eq!(name_slug("pandahrms-sso (Legacy)"), "pandahrms-sso-legacy");
+        assert_eq!(
+            name_slug("Api Extraction from HCM Web"),
+            "api-extraction-from-hcm-web"
+        );
+        assert_eq!(name_slug("My App"), name_slug("my-app"));
+        assert_eq!(name_slug("  --x--  "), "x");
     }
 }

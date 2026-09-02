@@ -110,6 +110,7 @@ import { UserQuestion, type Question } from "./components/UserQuestion";
 import { CarryOn } from "./components/CarryOn";
 import { RollingNumber, RollingText } from "./components/RollingNumber";
 import { appendConversationPin, type ConversationPin } from "./lib/conversationPins";
+import { projectSlug } from "./lib/projectSlug";
 
 /** The editor and its text-editing engine are a third of the app's code and
  *  nobody who only ever chats should download them. Split off here, they arrive
@@ -213,8 +214,13 @@ const TERM_KEY = "octiq.v2.terminalOpen";
  *  `?token=…` already owns the query string (it is read once and stripped).
  *  A hash needs no server route and survives a reload.
  *
- *  Shape: #/p/<projectId>/c/<chatId> — the chat half is dropped for a project
- *  with nothing open yet. */
+ *  Shape: #/p/<projectSlug>/c/<chatId> — the project half is the label's slug
+ *  (see `lib/projectSlug`), so the link says where it goes rather than a UUID
+ *  that says nothing. Older saved links carry the raw workspace id instead —
+ *  both forms are resolved against the workspace list once it arrives (the
+ *  `list_workspaces` handler below), never here: this function only returns
+ *  the raw decoded token. The chat half is dropped for a project with nothing
+ *  open yet. */
 function readLocation(): { project?: string; chat?: string } {
   const m = /^#\/p\/([^/]+)(?:\/c\/([^/]+))?/.exec(location.hash);
   return m ? { project: decodeURIComponent(m[1]), chat: m[2] && decodeURIComponent(m[2]) } : {};
@@ -233,7 +239,13 @@ function writeLocation(project: string | null, chat: string | null): void {
 
 /** The chat that was on screen when the page was last left. */
 const LAST_KEY = "octiq.v2.lastChat";
-const GIT_KEY = "octiq.v2.gitOpen";
+/** The git column, open. A NEW key rather than the old `gitOpen`: for a while
+ *  the desktop column was permanent and this flag only tracked what the smaller
+ *  layouts did, so most saved copies of it read "shut" for reasons that no
+ *  longer apply — and reading one of those would open the desktop with no
+ *  changes column, which is exactly what the column was added to stop. A
+ *  missing key means the layout decides; see `gitOpen`. */
+const GIT_KEY = "octiq.v2.gitColumn";
 /** The project column, put away. Only means anything at 860px and up, where
  *  the sidebar is a column; below that it is a drawer and `drawer` is the flag
  *  that says whether it is out. */
@@ -309,9 +321,9 @@ export default function App() {
   /** Wide enough for a sidebar column — and so for a top bar that can hold the
    *  view switch and the usage meter. Below it those live in the drawer. */
   const wide = useMedia(WIDE);
-  /** A temporary focus view for the tablet layout. On a desktop the project
-   *  and Git columns are permanent parts of the three-column workspace, so
-   *  there is no full-width chat mode to hide either of them. */
+  /** A temporary focus view for the tablet layout. On a desktop each column
+   *  already has its own control on the bar — the project name, the Git
+   *  button — so one more that sweeps both away at once adds nothing. */
   const [chatWide, setChatWide] = useState(false);
   const chatExpanded = chatWide && wide && mode === "chat";
   /** The project column, put away, on the screens where it is a column.
@@ -357,17 +369,31 @@ export default function App() {
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
-  // Below the desktop breakpoint the Git column can still be opened as before.
-  // On a desktop it is permanent; this state then only remembers what the
-  // smaller layout should do when the window is narrowed again.
-  const [gitOpen, setGitOpen] = useState(() => localStorage.getItem(GIT_KEY) === "1");
+  // The git column beside the chat. It lives up here rather than inside the
+  // panel because the button that opens it is in the top bar and the panel it
+  // opens is a column in the body — two places, one piece of state.
+  //
+  // A desktop OPENS with it, because there the workspace is three columns and
+  // one you have to fetch on every visit is not one of them. Anywhere it would
+  // cover the chat instead, it starts shut. Both are defaults only: the moment
+  // it is toggled the remembered flag answers, at every width.
+  const [gitOpen, setGitOpen] = useState(() => {
+    const saved = recall(GIT_KEY);
+    if (saved !== null) return saved === "1";
+    // The same question `hasDrawer` answers, asked one render earlier: the
+    // media hook has not run yet, and a column that appears a frame late reads
+    // as the page still loading.
+    return typeof window !== "undefined" && !window.matchMedia(DRAWER).matches;
+  });
   /** Kept mounted while the panel slides away, so closing it on a phone is the
    *  reverse of opening rather than the panel blinking out. Unmounting on
    *  `gitOpen` alone would cut the animation off at its first frame. */
   const [gitMounted, setGitMounted] = useState(gitOpen);
+  /** Column, not overlay: above the drawer breakpoint the panel is the third
+   *  column of the workspace and takes its width from the chat rather than
+   *  covering it. About its SHAPE, not about whether it can be put away — it
+   *  can, in either shape, from the same top-bar button. */
   const desktopGit = !hasDrawer;
-  const visibleGitOpen = desktopGit || gitOpen;
-  const visibleGitMounted = desktopGit || gitMounted;
   // The files column, on the same terms as the git one beside it: the button
   // that opens it is in the top bar, the panel it opens is a column in the
   // body, and only one piece of state joins them.
@@ -650,9 +676,16 @@ export default function App() {
         setProjectId((cur) => {
           if (cur && active.some((w) => w.id === cur)) return cur;
           // The link wins over "first in the list", but only if it still exists
-          // — a shelved or deleted project must not leave you on nothing.
+          // — a shelved or deleted project must not leave you on nothing. An
+          // old saved link carries the raw id rather than a slug, and still
+          // lands: matched against both.
           const asked = opened.current.project;
-          if (asked && active.some((w) => w.id === asked)) return asked;
+          if (asked) {
+            const hit = active.find(
+              (w) => w.id === asked || projectSlug(w.name) === projectSlug(asked),
+            );
+            if (hit) return hit.id;
+          }
           return active[0]?.id ?? null;
         });
         // The project you land in is open; anything else keeps its saved state.
@@ -1233,7 +1266,16 @@ export default function App() {
   // just the URL — which is the only way to get back to one specific
   // conversation from a phone's home screen or another device.
   useEffect(() => {
-    writeLocation(projectId, conversationId);
+    // The label's slug, not the id: the id is a UUID that says nothing about
+    // where the link goes. The raw id fills in only while the workspace list
+    // has not arrived, so a reload does not blank the address.
+    const ws = workspaces.find((w) => w.id === projectId);
+    writeLocation(ws ? projectSlug(ws.name) : projectId, conversationId);
+    // Said to the browser chrome too: the tab, the phone's top bar, and a
+    // home-screen shortcut all name the page by its <title>, and with several
+    // OctiqFlow tabs open a static one makes them indistinguishable. The raw
+    // label rather than the slug — this line is read, not typed.
+    document.title = ws ? `${ws.name} — OctiqFlow` : "OctiqFlow";
     // And in storage, because the URL is not always there to carry it. The app
     // is opened from a saved link and from a home-screen icon, and both are the
     // ORIGINAL address with no `#/p/…/c/…` on the end — so a reload from one of
@@ -1241,7 +1283,7 @@ export default function App() {
     // A store that will not take it is survivable here: the URL is still the
     // way back.
     if (conversationId) remember(LAST_KEY, conversationId);
-  }, [projectId, conversationId]);
+  }, [projectId, conversationId, workspaces]);
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -1765,6 +1807,17 @@ export default function App() {
     rememberFlag(RAIL_KEY, !next);
   }, []);
 
+  /** Put the git column away where leaving it up would be in the way — and
+   *  only there. Below the drawer breakpoint it is a sheet ON the chat, so
+   *  switching project or opening a conversation has to close it or the thing
+   *  you asked for lands underneath it. On a desktop it is a column BESIDE the
+   *  chat which repoints itself at whatever project is now showing, so closing
+   *  it would only leave a column to open again — and, worse, remember the
+   *  closing as a preference nobody expressed. */
+  const dismissGit = useCallback(() => {
+    if (!desktopGit) showGit(false);
+  }, [desktopGit, showGit]);
+
   useEffect(() => {
     if (gitOpen) return;
     const timer = setTimeout(() => setGitMounted(false), GIT_SLIDE_MS);
@@ -1789,17 +1842,21 @@ export default function App() {
    *  way in is covered: picking a conversation out of another project's folder
    *  switches project too. The FIRST project of a visit is not a switch, which
    *  is what the ref is for — a panel reopened from storage on arrival stays
-   *  open. */
+   *  open.
+   *
+   *  The desktop git column is the exception — see `dismissGit`: it is a column
+   *  of the workspace rather than something over the chat, and it reads the new
+   *  project's repos the moment the folders under it change. */
   const closeFile = useCloseFile();
   const wasProject = useRef<string | null>(null);
   useEffect(() => {
     const before = wasProject.current;
     wasProject.current = projectId;
     if (!before || before === projectId) return;
-    showGit(false);
+    dismissGit();
     showFiles(false);
     closeFile();
-  }, [projectId, showGit, showFiles, closeFile]);
+  }, [projectId, dismissGit, showFiles, closeFile]);
 
   /** Open a conversation AND put it in front of you, whatever was over it.
    *
@@ -1814,11 +1871,11 @@ export default function App() {
     (c: Conversation) => {
       openConversation(c);
       pickMode("chat");
-      showGit(false);
+      dismissGit();
       showFiles(false);
       closeFile();
     },
-    [openConversation, pickMode, showGit, showFiles, closeFile],
+    [openConversation, pickMode, dismissGit, showFiles, closeFile],
   );
 
   // Tapping a notification brings the window forward — this is what then puts
@@ -3030,14 +3087,15 @@ export default function App() {
             onToggle={() => showFiles(!filesOpen)}
           />
 
-          {/* Git lives in the permanent third column once the project drawer
-              becomes a desktop column. Smaller layouts keep the toggle. */}
-          {hasDrawer && (
-            <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
-          )}
+          {/* The way in and out of the changes column at every width, and the
+              only way back once its ✕ has put it away. What it opens differs by
+              layout — the workspace's third column on a desktop, a sheet over
+              the chat on a phone — but which button does it never does. */}
+          <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
 
           {/* Full-width chat remains available in the intermediate drawer
-              layout. Desktop deliberately remains a three-column workspace. */}
+              layout, where the columns it sweeps away are the ones with no room
+              to spare. A desktop puts each of them away by its own control. */}
           {wide && hasDrawer && mode === "chat" && (
             <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
           )}
@@ -3458,12 +3516,14 @@ export default function App() {
         )}
 
         {/* The third desktop column, kept at the far right for both Chat and
-            Files. In the intermediate drawer layout it is still toggleable;
-            on a phone the stylesheet turns it into a slide-over sheet. */}
-        {visibleGitMounted && (
+            Files: a sibling of the views rather than something laid over them,
+            so whichever view is showing gives up width while this is open and
+            takes it straight back when it closes. On a phone the stylesheet
+            turns the same element into a sheet that slides in from the right. */}
+        {gitMounted && (
           <GitPanel
             project={project}
-            open={visibleGitOpen}
+            open={gitOpen}
             persistent={desktopGit}
             onClose={() => showGit(false)}
           />

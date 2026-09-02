@@ -1786,6 +1786,39 @@ body {
   white-space: pre-wrap;
 }
 
+/* Holds the row and, where the row leads somewhere else, the fold beside it.
+   A card whose head only folds keeps the head alone in here: the button is
+   still `width: 100%`, so the row is the same row it was. */
+.tool-head-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-md);
+}
+
+.tool-head-row .tool-head {
+  min-width: 0;
+}
+
+/* The fold, for a card whose row opens an agent's screen. Same size and colour
+   as the caret it replaced, with enough padding either side to be hit. */
+.tool-fold {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 7px 5px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition: background 0.13s ease, color 0.13s ease;
+}
+
+.tool-fold:hover {
+  background: var(--bg-1);
+  color: var(--fg-2);
+}
+
 .tool-caret {
   display: inline-flex;
   align-items: center;
@@ -8932,7 +8965,7 @@ body.is-ultra .eff {
   padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* The desktop workspace always ends in this column. It remains a normal flex
+/* Open, the desktop workspace ends in this column. It remains a normal flex
    item — so the chat genuinely ends at its left edge — while its own body is
    the only part that scrolls. */
 .gitp-panel.is-persistent {
@@ -8942,7 +8975,7 @@ body.is-ultra .eff {
 }
 
 /* A tablet can be enlarged while its temporary full-width-chat state is still
-   settling. The permanent desktop column wins even during that transition. */
+   settling. The desktop column wins even during that transition. */
 .app.chat-wide .gitp-panel.is-persistent {
   display: flex;
 }
