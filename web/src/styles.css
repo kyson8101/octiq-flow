@@ -364,19 +364,9 @@ body {
     font-size: 14px;
   }
 
-  /* The branch keeps its own width; the project name is what yields. A branch
-     cut to one character says less than no branch at all. */
-  .topbar .gitp-chip {
-    flex: 0 0 auto;
-  }
-
   .topbar .gitp-toggle {
     gap: 4px;
     padding: 0 5px;
-  }
-
-  .topbar .gitp-toggle-branch {
-    max-width: 9ch;
   }
 
   /* Files becomes a plain round button. The count is the first thing to go: on
@@ -2830,10 +2820,19 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---- The working mascot ------------------------------------------------
-   A small robot at the head of the status line, drawn only while a turn is in
-   flight. A step brighter than the words after it (`--fg-2` against the row's
-   `--fg-3`), because it is the face of the line and they are its caption. */
+/* ---- The mascots -------------------------------------------------------
+   Nine small robots, one per model. One sits at the head of the status line
+   while a turn is in flight; the same one stands still on the idle prompt box,
+   and every tile in the model menu draws its own. A step brighter than the
+   words after it (`--fg-2` against the row's `--fg-3`), because it is the face
+   of the line and they are its caption.
+
+   Two customs hold this section together. Every robot's lit parts take
+   `--robot-accent`, set once per `data-robot` below so the drawing carries its
+   model's colour ANYWHERE — the menu draws nine of them side by side, each
+   needing its own, which inheriting the composer's one could never do. And
+   every dance is `var(--dance)` at `var(--dance-beat)`, so the mood only has to
+   scale two numbers rather than restate nine animations. */
 .mascot {
   flex: 0 0 auto;
   display: inline-block;
@@ -2842,12 +2841,110 @@ body {
      rather than a hair under it — the same correction `.bgwork-dot` makes. */
   margin: -1px 5px 0 0;
   color: var(--fg-2);
+  --robot-accent: var(--accent);
+  --dance: mascot-bob;
+  --dance-beat: 2.4s;
+  /* How long a step takes, and how far it travels. `work` leaves both alone. */
+  --dance-speed: 1;
+  --dance-amp: 1;
 }
 
+/* Reasoning is not the same activity as running a build and should not look
+   like it: the same steps, half again as slow and two thirds the travel. The
+   robot is thinking, not working. */
+.mascot[data-mood="think"] {
+  --dance-speed: 1.55;
+  --dance-amp: 0.62;
+}
+
+/* The robot you are about to talk to, on an idle prompt box and on the menu
+   tiles. It holds the slot the dancing one will take, so a turn starting does
+   not shove the line along — it makes the robot already there start moving,
+   which is the change worth noticing. Nothing on it moves: an idle screen with
+   a jigging robot on it is a screen that is never once still. */
+.mascot[data-mood="still"] {
+  color: var(--fg-3);
+}
+
+.mascot[data-mood="still"] .mascot-body,
+.mascot[data-mood="still"] .mascot-lamp,
+.mascot[data-mood="still"] .mascot-eye {
+  animation: none;
+}
+
+/* ---- The nine, and their colours ---------------------------------------
+   The same palette the composer wears (`--composer-accent`), restated here
+   rather than inherited: a tile in the model menu draws a robot that is NOT
+   the chosen model, and inheriting would paint all nine in the current one. */
+.mascot[data-robot="opus"] {
+  --robot-accent: #b99cff;
+  --dance: mascot-ponder;
+  --dance-beat: 3.4s;
+}
+
+.mascot[data-robot="sonnet"] {
+  --robot-accent: #e07a59;
+  --dance: mascot-bob;
+  --dance-beat: 2.4s;
+}
+
+.mascot[data-robot="haiku"] {
+  --robot-accent: #59c9c5;
+  --dance: mascot-hop;
+  --dance-beat: 1.15s;
+}
+
+.mascot[data-robot="fable"] {
+  --robot-accent: #e48db7;
+  --dance: mascot-weave;
+  --dance-beat: 2.9s;
+}
+
+.mascot[data-robot="claude"] {
+  --robot-accent: #d97757;
+  --dance: mascot-bob;
+  --dance-beat: 2.7s;
+}
+
+.mascot[data-robot="sol"] {
+  --robot-accent: #f1b84b;
+  --dance: mascot-flare;
+  --dance-beat: 2s;
+}
+
+.mascot[data-robot="terra"] {
+  --robot-accent: #78c892;
+  --dance: mascot-waddle;
+  --dance-beat: 1.9s;
+}
+
+.mascot[data-robot="luna"] {
+  --robot-accent: #84a9ff;
+  --dance: mascot-drift;
+  --dance-beat: 4.4s;
+}
+
+.mascot[data-robot="codex"] {
+  --robot-accent: #8eb3c3;
+  --dance: mascot-scan;
+  --dance-beat: 2.2s;
+}
+
+/* One rule for nine heads — a rect, a circle and a shield among them. The
+   drawing decides the shape; the stylesheet only ever decides the weight. */
 .mascot-head {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.9;
+  stroke-linejoin: round;
+}
+
+/* Codex's default wears a visor instead of a face. Lighter than the head it
+   sits in, or at 18px the two strokes merge into a filled band. */
+.mascot-visor {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
 }
 
 .mascot-stalk {
@@ -2876,7 +2973,15 @@ body {
    spinner about which of them is the thing you are waiting on. */
 .mascot-lamp,
 .mascot-eye {
-  fill: var(--accent);
+  fill: var(--robot-accent);
+}
+
+/* Opus has a halo rather than a bulb: the same part, drawn open. It keeps the
+   lamp's class so it keeps the lamp's pulse — what it means is unchanged. */
+.mascot-lamp.is-halo {
+  fill: none;
+  stroke: var(--robot-accent);
+  stroke-width: 1.5;
 }
 
 /* Work the turn started that is still running behind it. The orange used to be
@@ -2895,24 +3000,131 @@ body {
   fill: var(--warn);
 }
 
-/* A float, not a bounce. Under a pixel of travel at eighteen pixels tall, which
-   is the difference between a robot idling and a robot being jostled. */
+/* ---- The dance ---------------------------------------------------------
+   Each robot has its own step and its own tempo, and every one of them is a
+   float rather than a bounce: around a pixel of travel at eighteen pixels tall,
+   which is the difference between a robot dancing and a robot being jostled.
+   The amplitudes are written as multiples of `--dance-amp` so `think` can take
+   the whole set down without any keyframe knowing that moods exist.
+
+   `fill-box` puts the origin on the drawing rather than on the SVG's corner,
+   which is what lets the rocking steps pivot on the robot's feet. */
 .mascot-body {
-  animation: mascot-bob 2.4s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: var(--dance) calc(var(--dance-beat) * var(--dance-speed)) ease-in-out infinite;
 }
 
+/* Sonnet, and Claude's default: the original float. */
 @keyframes mascot-bob {
   0%,
   100% {
     transform: translateY(0);
   }
   50% {
-    transform: translateY(-0.9px);
+    transform: translateY(calc(-0.9px * var(--dance-amp)));
+  }
+}
+
+/* Opus: a slow rock, weight shifting foot to foot. The longest beat of the
+   nine — the model you send the hard problems to is not in a hurry. */
+@keyframes mascot-ponder {
+  0%,
+  100% {
+    transform: rotate(calc(-2.4deg * var(--dance-amp)));
+  }
+  50% {
+    transform: rotate(calc(2.4deg * var(--dance-amp)));
+  }
+}
+
+/* Haiku: two quick hops and a rest, over and over. The rest is most of the
+   cycle and is what keeps the fastest robot from reading as a vibration. */
+@keyframes mascot-hop {
+  0% {
+    transform: translateY(0);
+  }
+  18% {
+    transform: translateY(calc(-1.7px * var(--dance-amp)));
+  }
+  36%,
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* Fable: a figure of eight — the only step that moves sideways as much as up,
+   so the odd model out is the one you can pick from across the room. */
+@keyframes mascot-weave {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(calc(-0.8px * var(--dance-amp)), calc(-0.7px * var(--dance-amp)));
+  }
+  50% {
+    transform: translate(0, calc(-1px * var(--dance-amp)));
+  }
+  75% {
+    transform: translate(calc(0.8px * var(--dance-amp)), calc(-0.7px * var(--dance-amp)));
+  }
+}
+
+/* Sol: a breath rather than a step. It is a sun, so it swells. */
+@keyframes mascot-flare {
+  0%,
+  100% {
+    transform: scale(1) translateY(0);
+  }
+  50% {
+    transform: scale(calc(1 + 0.05 * var(--dance-amp))) translateY(calc(-0.5px * var(--dance-amp)));
+  }
+}
+
+/* Terra: a waddle. A rover rocks on its wheels; it does not float. */
+@keyframes mascot-waddle {
+  0%,
+  100% {
+    transform: rotate(calc(-3.2deg * var(--dance-amp))) translateY(0);
+  }
+  50% {
+    transform: rotate(calc(3.2deg * var(--dance-amp))) translateY(calc(-0.4px * var(--dance-amp)));
+  }
+}
+
+/* Luna: the slowest of the nine and the furthest travelled — a drift, with the
+   tilt of something that is not standing on anything. */
+@keyframes mascot-drift {
+  0%,
+  100% {
+    transform: translateY(0) rotate(calc(-1.6deg * var(--dance-amp)));
+  }
+  50% {
+    transform: translateY(calc(-1.4px * var(--dance-amp))) rotate(calc(1.6deg * var(--dance-amp)));
+  }
+}
+
+/* Codex's default: a scan. It has a visor and no mouth, so it looks left and
+   right instead of nodding. */
+@keyframes mascot-scan {
+  0%,
+  100% {
+    transform: translateX(calc(-0.85px * var(--dance-amp)));
+  }
+  50% {
+    transform: translateX(calc(0.85px * var(--dance-amp)));
   }
 }
 
 .mascot-lamp {
   animation: mascot-lamp 1.8s ease-in-out infinite;
+}
+
+/* Terra is the one robot with two lamps. Out of phase, so they read as a pair
+   of indicators rather than as one lamp that happens to be drawn twice. */
+.mascot-lamp.is-right {
+  animation-delay: calc(var(--dance-beat) * 0.5);
 }
 
 @keyframes mascot-lamp {
@@ -3273,6 +3485,43 @@ body {
   text-overflow: ellipsis;
 }
 
+/* The last turn's receipt, at the right end of the eyebrow: which model
+   answered, how long it took, what it cost. It had a centred row of its own
+   under the box, which is a third line of chrome below the thing you type in
+   for three facts you glance at. Never grows — the words on the left are what
+   yields, and they already ellipsise. */
+.composer-last {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 10.5px;
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-last-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+/* Quieter than the number it labels: the icon says which number this is, and
+   is not itself worth reading. */
+.composer-last svg {
+  flex: 0 0 auto;
+  opacity: 0.62;
+}
+
+/* The exact id, not the picker's friendly name — `claude-opus-5`, not "Opus".
+   Capped because a provider id can be half a line long. */
+.composer-last-model {
+  max-width: 15ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Holds the place the status line used to take in the row, so Send stays at
    the right end of it. */
 .composer-gap {
@@ -3311,6 +3560,17 @@ body {
      it is the spring that holds Send against the right edge — hiding it dropped
      Send into the middle of the bar. It also still has something to say here:
      "working…" and the activity line matter more on a phone, not less. */
+
+  /* The two numbers stay; the model id goes. It is the one part of the receipt
+     that never changes between turns, and 15 characters of it here come
+     straight out of what the line to its left can say. */
+  .composer-last-model {
+    display: none;
+  }
+
+  .composer-last {
+    gap: 7px;
+  }
 }
 
 .sheet-scrim {
@@ -3766,6 +4026,22 @@ body {
 .picker-item.is-on {
   background: var(--accent-tint);
   color: var(--fg-0);
+}
+
+/* A model row, which is the one kind of picker row with a face on it. The
+   robot spans both text lines rather than sitting on the first — it belongs to
+   the row, the way the tick on the other side does. Its own margin is dropped:
+   the grid owns the spacing here. */
+.picker-item.has-robot {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 9px;
+  align-items: center;
+}
+
+.picker-item.has-robot .mascot {
+  grid-row: 1 / span 2;
+  margin: 0;
 }
 
 .picker-name {
@@ -4405,9 +4681,12 @@ body.is-ultra .eff {
   color: var(--accent);
 }
 
+/* Wider than it was: a tile now carries a robot as well as a name, and a
+   column narrow enough to ellipsise "Sonnet" is a column that has stopped
+   doing its job. */
 .mp-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
   gap: 6px;
 }
 
@@ -4450,7 +4729,14 @@ body.is-ultra .eff {
   cursor: default;
 }
 
+/* The tile's own spacing, not the status line's — the robot there is nudged up
+   a pixel to sit on a line of text, and there is no line of text here. */
+.mp-card .mascot {
+  margin: 0;
+}
+
 .mp-card-name {
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4474,18 +4760,6 @@ body.is-ultra .eff {
 
 .mp-note.is-warn {
   color: var(--warn);
-}
-
-/* ---- Status line ------------------------------------------------------ */
-.statusline {
-  display: flex;
-  gap: 14px;
-  justify-content: center;
-  flex: 0 0 auto;
-  padding: 0 12px calc(6px + env(safe-area-inset-bottom));
-  font-size: 11px;
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
 }
 
 /* ---- Wider screens: the drawer becomes a column ----------------------- */
@@ -8735,65 +9009,10 @@ body.is-ultra .eff {
    width from the chat and closing it gives the width back, so a reply stays
    readable while you stage a file. No scrim and no shadow: both would say this
    hovers above the page, and it does not. */
-/* One chip per repo. A project spanning several repos has several answers to
-   "what branch am I on", so they sit side by side rather than being summed. */
-.gitp-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
-/* The chat's own repo is the one the agent is working in. Marked by weight and
-   full-strength text; the others stay quieter. */
-.gitp-chip.is-here .gitp-toggle-branch {
-  color: var(--fg-1);
-  font-weight: 600;
-}
-
-.gitp-chip:not(.is-here) .gitp-toggle-branch {
-  color: var(--fg-3);
-}
-
-.gitp-chip + .gitp-chip::before {
-  content: "·";
-  color: var(--fg-3);
-  margin-right: 5px;
-}
-
-/* Capped off the phone too. A branch like `security/forwarded-headers-trust-gate`
-   is 36 characters, and four repos of them would push the bar past any window.
-   The end is kept for the same reason as on a phone; the tooltip has all of it. */
-.gitp-toggle-branch {
-  max-width: 150px;
-  overflow: hidden;
-  white-space: nowrap;
-  direction: rtl;
-  text-overflow: ellipsis;
-}
-
-/* The whole run of chips yields before the window does. */
-.gitp-toggle {
-  min-width: 0;
-}
-/* Truncated from the LEFT, like the branch beside it and for the same reason:
-   `Pandahrms_PerformanceApi` and `Pandahrms_Api` both cut from the right to
-   `Pandahrms_…`, so two different repos drew as the same label. */
-.gitp-chip-repo {
-  font-size: 10px;
-  color: var(--fg-3);
-  max-width: 74px;
-  overflow: hidden;
-  white-space: nowrap;
-  direction: rtl;
-  text-overflow: ellipsis;
-}
-
-/* Off the phone every repo is on screen, so there is nothing left to count. */
-.gitp-more {
-  display: none;
-}
-
+/* The button in the bar is an icon and, at most, two numbers — what is
+   uncommitted and what is unpushed. It named every repo and every branch until
+   now, which is the panel's job: this is the thing you glance at to decide
+   whether to open the panel at all. */
 .gitp-toggle {
   display: flex;
   align-items: center;
@@ -8820,15 +9039,6 @@ body.is-ultra .eff {
   border-color: var(--border);
   background: var(--bg-2);
   color: var(--fg-0);
-}
-
-/* The branch is the useful half of this button on a desk, and the first thing
-   worth dropping on a phone — the icon and the count still say enough. */
-.gitp-toggle-branch {
-  max-width: 12ch;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .gitp-badge {
@@ -8992,29 +9202,6 @@ body.is-ultra .eff {
     display: none;
   }
 
-  /* A phone bar fits one repo. The chat's own is the one kept — a worktree
-     looks exactly like the main checkout until something names it — and the
-     rest become a count, so none of them is silently dropped. */
-  .gitp-chip:not(.is-first),
-  .gitp-chip-repo {
-    display: none;
-  }
-
-  .gitp-more {
-    display: inline;
-    font-size: 10px;
-    color: var(--fg-3);
-  }
-
-  /* Truncated from the LEFT: branch names share their prefix (`feature/`,
-     `security/`) and differ at the end, so the end is the half worth keeping. */
-  .gitp-toggle-branch {
-    max-width: 72px;
-    overflow: hidden;
-    white-space: nowrap;
-    direction: rtl;
-    text-overflow: ellipsis;
-  }
 }
 
 /* Someone who asked the system for less movement gets the sheet without the

@@ -118,7 +118,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { CarryOn } from "./components/CarryOn";
-import { RollingNumber, RollingText } from "./components/RollingNumber";
+import { RollingNumber } from "./components/RollingNumber";
 import { projectSlug } from "./lib/projectSlug";
 
 /** The editor and its text-editing engine are a third of the app's code and
@@ -3364,6 +3364,11 @@ export default function App() {
             onAddSeat={addSeat}
             onRemoveSeat={removeSeat}
             cwd={project?.primary_path ?? ""}
+            /* The last turn's receipt. It had a row of its own under the box
+               until now; it rides on the composer's own eyebrow instead. */
+            model={chat.model}
+            lastDurationMs={chat.lastDurationMs}
+            lastCostUsd={chat.lastCostUsd}
             terminalOpen={termOpen}
             onTerminal={
               project
@@ -3376,21 +3381,6 @@ export default function App() {
             }
           />
 
-          {(chat.lastDurationMs !== undefined || chat.model) && (
-            <div className="statusline">
-              {chat.model && <span>{chat.model}</span>}
-              {chat.lastDurationMs !== undefined && (
-                <span>
-                  <RollingText>{`${(chat.lastDurationMs / 1000).toFixed(1)}s`}</RollingText>
-                </span>
-              )}
-              {chat.lastCostUsd !== undefined && (
-                <span>
-                  <RollingText>{`$${chat.lastCostUsd.toFixed(3)}`}</RollingText>
-                </span>
-              )}
-            </div>
-          )}
         </main>
 
         {editorSeen && (

@@ -51,6 +51,14 @@ describe("a markdown file, rendered", () => {
   it("still draws the file's own prose around it", () => {
     expect(draw("# Title\n\nA line.")).toContain("A line.");
   });
+
+  it("sends a web link to a browser tab instead of navigating OctiqFlow", () => {
+    const html = draw("Read [the docs](https://example.com/docs).");
+
+    expect(html).toContain('href="https://example.com/docs"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noreferrer noopener"');
+  });
 });
 
 describe("an html file, drawn as the page it is", () => {

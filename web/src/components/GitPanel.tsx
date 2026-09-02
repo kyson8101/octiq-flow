@@ -257,16 +257,29 @@ export function GitButton({
       className={`gitp-toggle ${open ? "is-on" : ""}`}
       type="button"
       aria-expanded={open}
-      // The full picture, since the chips are truncated and a phone shows only
-      // the first. Each repo on its own line, named, so nothing here is a
-      // number you cannot attribute.
+      // The button itself is an icon and two numbers, so its NAME is here: what
+      // it opens, and what a screen reader would otherwise read as "↑ 3".
+      aria-label={[
+        "Git",
+        changed > 0 ? `${changed} changed` : null,
+        ahead > 0 ? `${ahead} to push` : null,
+      ]
+        .filter(Boolean)
+        .join(", ")}
+      // The full picture, since the bar shows totals only. Each repo on its own
+      // line, named, so nothing here is a number you cannot attribute.
       title={
         project
           ? [
               `Git — ${project.name}`,
               ...chips.map((r, i) => {
                 const name = r.repo_root.split("/").pop() ?? r.repo_root;
-                const state = r.changed > 0 ? `${r.changed} changed` : "clean";
+                const state = [
+                  r.changed > 0 ? `${r.changed} changed` : "clean",
+                  r.ahead > 0 ? `↑${r.ahead} to push` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
                 return `${name} · ${r.branch || "(detached)"} · ${state}${
                   i === 0 && sessionRepo ? " — this chat" : ""
                 }`;
@@ -278,60 +291,22 @@ export function GitButton({
     >
       <BranchIcon />
 
-      {chips.map((repo, i) => (
-        <span
-          key={repo.repo_root}
-          // `is-first` is marked here rather than matched with :first-child,
-          // because the button's first child is the icon — no chip is ever the
-          // first child, and a phone rule keyed on that hid every one of them.
-          className={`gitp-chip ${i === 0 ? "is-first" : ""} ${
-            i === 0 && sessionRepo ? "is-here" : ""
-          }`}
-        >
-          {/* Named only when there is more than one, where a branch on its own
-              cannot say which repo it belongs to. */}
-          {chips.length > 1 && (
-            <span className="gitp-chip-repo">
-              <bdi>{repo.repo_root.split("/").pop()}</bdi>
-            </span>
-          )}
-          {/* The <bdi> is load-bearing. The span is RTL so the ellipsis lands on
-              the LEFT — branch names share their prefix and differ at the end —
-              but RTL alone also reorders the text, drawing `feature/a` as
-              `a/feature`. <bdi> isolates the run inside the box. */}
-          {repo.branch && (
-            <span className="gitp-toggle-branch">
-              <bdi>{repo.branch}</bdi>
-            </span>
-          )}
-          {repo.changed > 0 && (
-            <span className="gitp-badge">
-              <RollingNumber value={repo.changed} />
-            </span>
-          )}
-          {repo.changed === 0 && repo.ahead > 0 && (
-            <span className="gitp-badge is-ahead">
-              ↑<RollingNumber value={repo.ahead} />
-            </span>
-          )}
-        </span>
-      ))}
+      {/* Two numbers and nothing else: how much is uncommitted, and how much is
+          committed and waiting to be pushed. Both are totals across the
+          project's repos.
 
-      {/* A phone has room for the chat's own repo and nothing else, so the ones
-          the stylesheet hides are counted rather than silently dropped. */}
-      {chips.length > 1 && (
-        <span className="gitp-more">
-          +<RollingNumber value={chips.length - 1} />
-        </span>
-      )}
-
-      {/* No repo at all: the old single badge still says whether there is work. */}
-      {chips.length === 0 && changed > 0 && (
+          It used to draw a chip per repo — each with its name and its branch —
+          which on a four-repo project was most of the bar, in text you cannot
+          act on and cannot finish reading. Which repo, which branch and which
+          file are what the PANEL is, one click away; the bar's job is to say
+          whether there is anything in there. The tooltip still names every
+          repo, for the glance that does not want to open it. */}
+      {changed > 0 && (
         <span className="gitp-badge">
           <RollingNumber value={changed} />
         </span>
       )}
-      {chips.length === 0 && changed === 0 && ahead > 0 && (
+      {ahead > 0 && (
         <span className="gitp-badge is-ahead">
           ↑<RollingNumber value={ahead} />
         </span>

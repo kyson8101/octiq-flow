@@ -11,7 +11,8 @@
 // a function, and the caller does not have to know which of the two windows a
 // given file wants.
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { isImage, isPdf } from "../lib/files";
+import { bridge } from "../lib/bridge";
+import { isHtml, isImage, isPdf } from "../lib/files";
 import { FilePanel } from "./FilePanel";
 import { Viewer } from "./Viewer";
 
@@ -24,8 +25,8 @@ const CloseFileContext = createContext<() => void>(() => {});
  *  transition in styles.css — unmount sooner and it disappears mid-slide. */
 const SLIDE_MS = 220;
 
-/** Open a file: a picture or a PDF full screen, anything else in the column
- *  beside the chat, where it can also be edited and quoted. */
+/** Open a file: an HTML page in the native browser, a picture or PDF full
+ *  screen, anything else in the column beside the chat. */
 export function useOpenFile(): Open {
   return useContext(OpenFileContext);
 }
@@ -56,6 +57,12 @@ export function OpenFileProvider({ children }: { children: React.ReactNode }) {
   const open = useCallback<Open>((path) => {
     // Whichever window this file wants, the other one closes. Two files on
     // screen at once is never what the click meant.
+    if (isHtml(path)) {
+      setOpened(null);
+      setViewing(null);
+      bridge.openFileInBrowser(path);
+      return;
+    }
     if (isImage(path) || isPdf(path)) {
       setOpened(null);
       setViewing(path);

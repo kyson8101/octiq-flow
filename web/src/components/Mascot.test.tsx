@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Mascot } from "./Mascot";
+import { MODELS } from "../lib/agentProviders";
 
 describe("Mascot", () => {
   const drawn = renderToStaticMarkup(<Mascot />);
@@ -41,5 +42,40 @@ describe("Mascot", () => {
   it("wears the alert on its face when work is running behind the turn", () => {
     expect(renderToStaticMarkup(<Mascot alert />)).toContain("is-alert");
     expect(drawn).not.toContain("is-alert");
+  });
+
+  /** The whole of the per-model idea: the drawing that reaches the page has to
+   *  differ, not merely its colour. A recolour of one body would pass every
+   *  other test in this file and be nine robots that are all the same robot. */
+  it("draws a different robot for every model", () => {
+    const bodies = MODELS.map((m) => {
+      const svg = renderToStaticMarkup(<Mascot robot={m.composerStyle} />);
+      // Everything inside the animated group — the drawing itself, with the
+      // wrapper's own attributes (which carry the style name) left out.
+      return svg.slice(svg.indexOf('class="mascot-body"'));
+    });
+    expect(new Set(bodies).size).toBe(MODELS.length);
+  });
+
+  /** Nine drawings, and every one of them still a face: two blinking eyes, a
+   *  head to put them in, and the lamp that means the turn is alive. It is easy
+   *  to add a tenth robot that is a lovely shape and animates nothing. */
+  it("gives every robot the parts the stylesheet animates", () => {
+    for (const m of MODELS) {
+      const svg = renderToStaticMarkup(<Mascot robot={m.composerStyle} />);
+      expect(svg, m.id).toContain("mascot-head");
+      expect(svg, m.id).toContain("mascot-lamp");
+      expect(svg.match(/mascot-eye/g) ?? [], m.id).toHaveLength(2);
+      expect(svg, m.id).toContain("mascot-eye is-right");
+    }
+  });
+
+  /** The stylesheet does the rest off these two attributes — which palette and
+   *  which dance from the first, how fast and how far from the second. */
+  it("names its model and its mood for the stylesheet", () => {
+    const still = renderToStaticMarkup(<Mascot robot="luna" mood="still" />);
+    expect(still).toContain('data-robot="luna"');
+    expect(still).toContain('data-mood="still"');
+    expect(drawn).toContain('data-mood="work"');
   });
 });

@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, State as AxumState};
+use axum::extract::{ConnectInfo, Form, Query, State as AxumState};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -297,7 +297,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/ws", get(ws_handler))
             .route("/auth", get(auth_handler))
             .route("/token", get(token_handler))
-            .route("/file", get(file_handler))
+            .route("/file", get(file_handler).post(file_post_handler))
             .route("/hook/permission", post(permission_handler))
             .route("/hook/ask", post(ask_handler))
             .route("/hook/room", post(room_handler))
@@ -730,12 +730,28 @@ async fn file_handler(
     Query(q): Query<FileQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    serve_file(&ctx, q, &headers)
+}
+
+/// A top-level HTML navigation uses POST so its own address never contains the
+/// command-socket token. The response body cannot inspect the POST fields; a
+/// GET query would be visible to any script as `location.href` even inside the
+/// unique-origin sandbox below.
+async fn file_post_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    headers: axum::http::HeaderMap,
+    Form(q): Form<FileQuery>,
+) -> Response {
+    serve_file(&ctx, q, &headers)
+}
+
+fn serve_file(ctx: &Ctx, q: FileQuery, headers: &axum::http::HeaderMap) -> Response {
     // This reads any file on the machine, so the same origin rule as the socket
     // applies. An `<img src>` sends no Origin at all and is unaffected.
-    if !origin_ok(&headers) {
+    if !origin_ok(headers) {
         return (StatusCode::FORBIDDEN, "wrong origin").into_response();
     }
-    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+    if !token_ok(ctx, q.token.as_deref().unwrap_or_default()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
     let path = PathBuf::from(q.path.unwrap_or_default());
@@ -756,7 +772,36 @@ async fn file_handler(
         _ => {}
     }
 
-    let mime = match path
+    let mime = file_mime(&path);
+    let html = matches!(mime, "text/html; charset=utf-8");
+
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mut response = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, mime)
+                .header(header::CACHE_CONTROL, "no-store")
+                .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff");
+            // This is agent-authored HTML served beside an endpoint that can
+            // start shells. A unique origin is non-negotiable: without this,
+            // the page could read localStorage's token and call the command
+            // socket. Popups may escape so links from the page still become
+            // ordinary native-browser tabs.
+            if html {
+                response = response.header(header::CONTENT_SECURITY_POLICY, HTML_FILE_CSP);
+            }
+            response
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+const HTML_FILE_CSP: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads";
+
+fn file_mime(path: &std::path::Path) -> &'static str {
+    match path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
@@ -768,17 +813,8 @@ async fn file_handler(
         Some("webp") => "image/webp",
         Some("svg") => "image/svg+xml",
         Some("pdf") => "application/pdf",
+        Some("html") | Some("htm") => "text/html; charset=utf-8",
         _ => "application/octet-stream",
-    };
-
-    match std::fs::read(&path) {
-        Ok(bytes) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, mime)
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
     }
 }
 
@@ -1273,5 +1309,26 @@ mod tests {
                 "{raw} should be served, not redirected"
             );
         }
+    }
+
+    // ---- /file: browser pages are pages, but never our origin -------------
+
+    #[test]
+    fn html_files_are_served_as_browser_pages() {
+        assert_eq!(
+            file_mime(std::path::Path::new("report.html")),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            file_mime(std::path::Path::new("REPORT.HTM")),
+            "text/html; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn html_file_sandbox_never_grants_our_origin() {
+        assert!(HTML_FILE_CSP.starts_with("sandbox"));
+        assert!(!HTML_FILE_CSP.contains("allow-same-origin"));
+        assert!(HTML_FILE_CSP.contains("allow-popups-to-escape-sandbox"));
     }
 }

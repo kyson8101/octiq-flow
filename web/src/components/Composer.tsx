@@ -37,6 +37,7 @@ import {
   providerFor,
   type AccessLevel,
   type AgentCommand,
+  type ComposerStyle,
   type Effort,
   type ModelChoice,
   type Provider,
@@ -234,6 +235,9 @@ export function Composer({
   terminalOpen,
   onRestart,
   installed,
+  model,
+  lastDurationMs,
+  lastCostUsd,
 }: {
   /** Which chat this is, so Up walks back through ITS input and no one else's.
    *  Absent for a chat that has not been saved yet. */
@@ -327,6 +331,13 @@ export function Composer({
   /** End the agent and keep the conversation. Absent when nothing is running:
    *  the next message spawns a fresh one anyway, so there is nothing to offer. */
   onRestart?: () => void;
+  /** What the last turn was: which model actually answered, how long it took
+   *  and what it cost. All three arrive with the agent's `result`, so there is
+   *  nothing to draw until a turn has finished. Drawn on the eyebrow's right
+   *  half rather than on a row under the box — see `.composer-last`. */
+  model?: string;
+  lastDurationMs?: number;
+  lastCostUsd?: number;
 }) {
   const [text, setText] = useState("");
   const [menu, setMenu] = useState(false);
@@ -765,12 +776,61 @@ export function Composer({
             thinking={thinking}
             effort={eff.label.toLowerCase()}
             background={(background ?? []).length > 0}
+            robot={choice.composerStyle}
           />
         ) : (
-          activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")
+          <>
+            {/* The same robot, standing still: who you are about to talk to,
+                in the slot it will dance in. Quieter than the working one
+                (`--fg-3`) because between turns this line is a hint, not
+                news — and nothing on it moves, which is the whole point of
+                putting a character on an idle screen. */}
+            <Mascot robot={choice.composerStyle} mood="still" size={16} />
+            {activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")}
+          </>
         )}
         </BackgroundNote>
         </span>
+
+        {/* The last turn's receipt, on the half of this row that was empty the
+            whole time. It used to be a row of its own UNDER the box — a third
+            line of chrome below the thing you type in, holding three facts you
+            glance at once. Icons rather than words because it sits at the end
+            of a line that a running turn writes a whole sentence on: what it
+            says has to survive being read in a quarter of a second, and the
+            tooltip spells all of it out. */}
+        {(model || lastDurationMs !== undefined || lastCostUsd !== undefined) && (
+          <span
+            className="composer-last"
+            title={[
+              model && `Model · ${model}`,
+              lastDurationMs !== undefined &&
+                `Last turn · ${(lastDurationMs / 1000).toFixed(1)}s`,
+              lastCostUsd !== undefined && `Cost · $${lastCostUsd.toFixed(3)}`,
+            ]
+              .filter(Boolean)
+              .join("\n")}
+          >
+            {model && <span className="composer-last-model">{model}</span>}
+            {lastDurationMs !== undefined && (
+              <span className="composer-last-item">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M12 7v5l3 2" />
+                </svg>
+                <RollingText>{`${(lastDurationMs / 1000).toFixed(1)}s`}</RollingText>
+              </span>
+            )}
+            {lastCostUsd !== undefined && (
+              <span className="composer-last-item">
+                {/* No icon here on purpose: the `$` in front of the number is
+                    one, and a coin drawn at 11px beside it read as a circled
+                    dollar next to a dollar — the same mark twice. */}
+                <RollingText>{`$${lastCostUsd.toFixed(3)}`}</RollingText>
+              </span>
+            )}
+          </span>
+        )}
       </div>
 
       {/* Card 85 — who this message is for. Same shape and same keys as the
@@ -1785,11 +1845,17 @@ function ModelPicker({
             <button
               key={m.id}
               type="button"
-              className={`${rows ? "picker-item" : "mp-card"} ${on ? "is-on" : ""}`}
+              className={`${rows ? "picker-item has-robot" : "mp-card"} ${on ? "is-on" : ""}`}
               aria-pressed={on}
               disabled={gone}
               onClick={() => onChoice(m)}
             >
+              {/* Its own robot, standing still. This grid is the only place
+                  the cast is ever seen together, and it is the place the
+                  choice is made — so the face you will be watching for the
+                  next hour is shown while you are picking it, rather than
+                  introduced later by a robot you have to guess at. */}
+              <Mascot robot={m.composerStyle} mood="still" size={rows ? 18 : 22} />
               <span className={rows ? "picker-name" : "mp-card-name"}>{m.model}</span>
               {rows && <span className="picker-model">{m.hint}</span>}
               {on && (
@@ -2232,6 +2298,7 @@ function Working({
   thinking,
   effort,
   background,
+  robot,
 }: {
   since?: number;
   tokens?: number;
@@ -2239,6 +2306,10 @@ function Working({
   activity?: string;
   thinking?: boolean;
   effort: string;
+  /** Which of the nine robots is doing this turn — the chosen model's
+   *  `composerStyle`. It is the one fact on this line you can read without
+   *  reading: a face you already know, moving the way that model moves. */
+  robot: ComposerStyle;
   /** Something started by this turn is still running behind it. It reaches the
    *  mascot's eyes rather than a dot of its own — see `BackgroundNote`. */
   background?: boolean;
@@ -2259,9 +2330,11 @@ function Working({
   // and rarely is exactly when the motion earns its keep.
   return (
     <>
-      {/* Only ever here while the turn is in flight, which is the whole of what
-          it is for — it arrives with the work and leaves with it. */}
-      <Mascot alert={background} />
+      {/* The robot for the model doing the work, dancing its own step. It was
+          here before the turn started, standing still on the idle line — a turn
+          starting sets it moving rather than making a robot appear, so the
+          words after it never shift along. */}
+      <Mascot robot={robot} alert={background} mood={thinking ? "think" : "work"} />
       {since !== undefined && (
         <>
           <span className="working-clock">{elapsedLabel(Date.now() - since)}</span>

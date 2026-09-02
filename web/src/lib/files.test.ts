@@ -8,7 +8,7 @@
 // depend on the machine's timezone.
 import { describe, expect, it } from "vitest";
 
-import { fileExt, fileTypes, formatModified, modifiedTitle, typeLabel } from "./files";
+import { fileExt, fileTypes, formatModified, isHtml, modifiedTitle, typeLabel } from "./files";
 
 describe("fileExt", () => {
   it("takes the extension from the NAME, not the path", () => {
@@ -25,6 +25,14 @@ describe("fileExt", () => {
   it("gives a dotfile and an extensionless file no type at all", () => {
     expect(fileExt("/repo/.gitignore")).toBe("");
     expect(fileExt("/repo/Makefile")).toBe("");
+  });
+});
+
+describe("isHtml", () => {
+  it("recognises both browser-page extensions without caring about case", () => {
+    expect(isHtml("/repo/report.html")).toBe(true);
+    expect(isHtml("/repo/report.HTM")).toBe(true);
+    expect(isHtml("/repo/report.md")).toBe(false);
   });
 });
 
@@ -84,5 +92,4 @@ describe("formatModified", () => {
     expect(modifiedTitle(null)).toBe("");
   });
 });
-
 

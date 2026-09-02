@@ -29,6 +29,7 @@ import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { drawAs, type Preview } from "../lib/fileView";
 import { CodeEditor } from "./CodeEditor";
+import { ProseLink } from "./ProseLink";
 import { ProseTable } from "./ProseTable";
 import { RollingText } from "./RollingNumber";
 
@@ -36,7 +37,7 @@ import { RollingText } from "./RollingNumber";
  *  is sized by its cells, so a wide one in a README stuck out of the pane and
  *  was cut off at the window edge with no way to reach the rest of it. Only
  *  the table needs it — a `<pre>` already scrolls inside its own frame. */
-const PROSE_COMPONENTS = { table: ProseTable } as Components;
+const PROSE_COMPONENTS = { a: ProseLink, table: ProseTable } as Components;
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

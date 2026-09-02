@@ -38,6 +38,13 @@ export function isPdf(path: string): boolean {
   return fileExt(path) === "pdf";
 }
 
+/** HTML is a page, not a document preview. File clicks send these to the
+ *  browser instead of putting a browser-inside-a-browser beside the chat. */
+export function isHtml(path: string): boolean {
+  const ext = fileExt(path);
+  return ext === "html" || ext === "htm";
+}
+
 /** Every kind present in a list of paths, with how many there are of it.
  *
  *  Commonest first, because the type worth filtering to is usually the one the

@@ -194,11 +194,50 @@ class Bridge {
    *  because an image in a JSON frame would have to be base64, and this way the
    *  browser decodes it itself. */
   async fetchFile(path: string): Promise<Blob> {
-    const scheme = location.protocol === "https:" ? "https" : "http";
-    const url = `${scheme}://${serverHost()}/file?path=${encodeURIComponent(path)}&token=${encodeURIComponent(readToken())}`;
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(this.fileUrl(path), { cache: "no-store" });
     if (!res.ok) throw new Error(`could not read the file (${res.status})`);
     return res.blob();
+  }
+
+  /** Open an HTML file as the browser page it is.
+   *
+   *  The file lives on the server machine, so a client on a phone cannot use a
+   *  `file://` URL. A form POST carries the path and token to `/file` without
+   *  putting either in the page's address — agent-authored JavaScript can read
+   *  its own URL, so a token-bearing GET would quietly hand it the command
+   *  socket key. `_blank` gets it out of OctiqFlow without navigating the live
+   *  chat away; the response is also put in a unique-origin CSP sandbox. */
+  openFileInBrowser(path: string): void {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = this.fileEndpoint();
+    form.target = "_blank";
+    form.rel = "noreferrer noopener";
+    form.hidden = true;
+
+    for (const [name, value] of [
+      ["path", path],
+      ["token", readToken()],
+    ]) {
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = name;
+      field.value = value;
+      form.appendChild(field);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+  }
+
+  private fileUrl(path: string): string {
+    return `${this.fileEndpoint()}?path=${encodeURIComponent(path)}&token=${encodeURIComponent(readToken())}`;
+  }
+
+  private fileEndpoint(): string {
+    const scheme = location.protocol === "https:" ? "https" : "http";
+    return `${scheme}://${serverHost()}/file`;
   }
 
   /** Save a token the user pasted in and reconnect with it. */

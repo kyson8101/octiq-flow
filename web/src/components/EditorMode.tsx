@@ -22,7 +22,7 @@
 //     on disk against what we last read before it writes.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
-import { baseName } from "../lib/files";
+import { baseName, isHtml } from "../lib/files";
 import { hasTwoViews } from "../lib/fileView";
 import { FileView } from "./FileView";
 import { FileTree, rootsOf } from "./FileTree";
@@ -121,6 +121,13 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
 
   const openFile = useCallback(
     (path: string) => {
+      // HTML is already a complete browser document. Opening it in an editor
+      // preview makes its links and navigation live inside OctiqFlow; a click
+      // in the file tree should show the page in the browser instead.
+      if (isHtml(path)) {
+        bridge.openFileInBrowser(path);
+        return;
+      }
       setSaveError(null);
       setTreeOpen(false);
       setActive(path);

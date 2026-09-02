@@ -26,6 +26,7 @@ import { DiffStat, DiffView } from "./DiffView";
 import { baseOf, dirOf } from "../lib/folderHead";
 import { ToolIcon, ToolState } from "./ToolIcon";
 import { useStillRunning } from "./Background";
+import { ProseLink } from "./ProseLink";
 
 type Tool = Extract<Block, { kind: "tool" }>;
 
@@ -310,7 +311,9 @@ export function ToolCard({
                   {brief.dir && <span className="tool-note">{brief.dir}</span>}
                 </div>
                 <div className="tool-brief prose">
-                  <Markdown remarkPlugins={[remarkGfm]}>{brief.body}</Markdown>
+                  <Markdown remarkPlugins={[remarkGfm]} components={{ a: ProseLink }}>
+                    {brief.body}
+                  </Markdown>
                 </div>
               </>
             )}
