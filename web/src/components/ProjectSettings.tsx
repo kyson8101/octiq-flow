@@ -12,6 +12,7 @@
 // typing, so a rename is not 14 writes.
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { moveProjectBy } from "../lib/projectOrder";
 import { FolderPicker } from "./FolderPicker";
 import { useConfirm } from "./Confirm";
 
@@ -22,6 +23,7 @@ export type ProjectDetail = {
   paths?: string[];
   description?: string;
   shelved?: boolean;
+  sibling_ids?: string[];
 };
 
 /** How long to wait after the last keystroke before saving text. */
@@ -29,12 +31,15 @@ const TYPING_SETTLE_MS = 600;
 
 export function ProjectSettings({
   project,
+  projects,
   onChanged,
   onClose,
   onDeleted,
 }: {
   /** The project to edit, or null to create a new one. */
   project: ProjectDetail | null;
+  /** Every project, including shelved ones, for ordering and sibling links. */
+  projects: ProjectDetail[];
   /** Something was saved: reload the project list. */
   onChanged: () => void;
   onClose: () => void;
@@ -48,10 +53,20 @@ export function ProjectSettings({
   // Which folder the picker is choosing: the main one, or another to add.
   const [picking, setPicking] = useState<"primary" | "extra" | null>(null);
   const [newPath, setNewPath] = useState("");
+  const [siblingChoice, setSiblingChoice] = useState("");
   const confirm = useConfirm();
 
   const primary = project?.primary_path ?? "";
   const extras = project?.paths ?? [];
+  const siblingIds = new Set(project?.sibling_ids ?? []);
+  const siblings = projects.filter((candidate) => siblingIds.has(candidate.id));
+  const availableSiblings = projects.filter(
+    (candidate) => candidate.id !== project?.id && !siblingIds.has(candidate.id),
+  );
+  const orderedPeers = project
+    ? projects.filter((candidate) => Boolean(candidate.shelved) === Boolean(project.shelved))
+    : [];
+  const position = project ? orderedPeers.findIndex((candidate) => candidate.id === project.id) : -1;
 
   // Returns whether it succeeded, so a caller that closes the panel on
   // completion (create, below) can choose not to — closing on a rejected
@@ -126,6 +141,28 @@ export function ProjectSettings({
     }
   }
 
+  function move(direction: -1 | 1) {
+    if (!project) return;
+    const orderedIds = moveProjectBy(
+      orderedPeers.map((candidate) => candidate.id),
+      project.id,
+      direction,
+    );
+    void run(() => bridge.invoke("reorder_workspaces", { orderedIds }));
+  }
+
+  async function linkSibling() {
+    if (!project || !siblingChoice) return;
+    const linked = await run(() =>
+      bridge.invoke("set_workspace_sibling", {
+        id: project.id,
+        siblingId: siblingChoice,
+        linked: true,
+      }),
+    );
+    if (linked) setSiblingChoice("");
+  }
+
   return (
     <>
       <div className="panel-scrim" onClick={onClose} />
@@ -168,6 +205,95 @@ export function ProjectSettings({
                 onChange={(e) => setDescription(e.target.value)}
               />
             </label>
+          )}
+
+          {!creating && (
+            <div className="set-field">
+              <span className="set-label">Position</span>
+              <p className="set-hint">Drag this project in the sidebar, or move it here.</p>
+              <div className="set-order">
+                <button
+                  className="set-row-btn"
+                  type="button"
+                  disabled={busy || position <= 0}
+                  onClick={() => move(-1)}
+                >
+                  Move up
+                </button>
+                <span className="set-order-at">
+                  {position + 1} of {orderedPeers.length}
+                </span>
+                <button
+                  className="set-row-btn"
+                  type="button"
+                  disabled={busy || position < 0 || position >= orderedPeers.length - 1}
+                  onClick={() => move(1)}
+                >
+                  Move down
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!creating && project && (
+            <div className="set-field">
+              <span className="set-label">Sibling projects</span>
+              <p className="set-hint">
+                Link related projects in both directions. Linked projects are marked in the
+                sidebar.
+              </p>
+
+              {siblings.length === 0 && <div className="set-empty">No sibling projects yet.</div>}
+
+              {siblings.map((sibling) => (
+                <div className="set-row" key={sibling.id}>
+                  <span className="set-project-name">{sibling.name}</span>
+                  {sibling.shelved && <span className="set-project-state">Shelved</span>}
+                  <button
+                    className="set-row-btn is-quiet"
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(() =>
+                        bridge.invoke("set_workspace_sibling", {
+                          id: project.id,
+                          siblingId: sibling.id,
+                          linked: false,
+                        }),
+                      )
+                    }
+                  >
+                    Unlink
+                  </button>
+                </div>
+              ))}
+
+              {availableSiblings.length > 0 && (
+                <div className="set-add set-sibling-add">
+                  <select
+                    className="set-input"
+                    value={siblingChoice}
+                    aria-label="Project to link"
+                    onChange={(event) => setSiblingChoice(event.target.value)}
+                  >
+                    <option value="">Choose a project…</option>
+                    {availableSiblings.map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.name}{candidate.shelved ? " · Shelved" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="set-row-btn"
+                    type="button"
+                    disabled={busy || !siblingChoice}
+                    onClick={() => void linkSibling()}
+                  >
+                    Link
+                  </button>
+                </div>
+              )}
+            </div>
           )}
 
           <div className="set-field">

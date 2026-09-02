@@ -70,6 +70,11 @@ export function ToolGroup({
             <span className="tool-spinner" aria-hidden="true" />
           </span>
         )}
+        {look.failed > 0 && (
+          <span className="tool-state is-error">
+            {look.failed === 1 ? "failed" : `${look.failed} failed`}
+          </span>
+        )}
       </button>
 
       {open && (

@@ -11,9 +11,15 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type React from "react";
 import type { Conversation } from "../lib/store";
+import { moveProjectAt, moveProjectBy } from "../lib/projectOrder";
 import { RollingNumber } from "./RollingNumber";
 
-export type Project = { id: string; name: string; primary_path?: string };
+export type Project = {
+  id: string;
+  name: string;
+  primary_path?: string;
+  sibling_ids?: string[];
+};
 
 /** Chats shown before the list folds. Long enough to recognise the work in
  *  progress, short enough that five projects still fit on a phone. */
@@ -51,6 +57,7 @@ export function Sidebar({
   onDelete,
   onSettings,
   onNewProject,
+  onReorder,
   onHide,
   onResize,
   head,
@@ -98,6 +105,8 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
+  /** Persist a complete ordering of the visible project rows. */
+  onReorder: (orderedIds: string[]) => void;
   /** Put the whole column away, on the screens where it IS a column. Absent
    *  below 860px, where the sidebar is a drawer that the scrim and the top
    *  bar's own title already close — a third control there would be a third
@@ -115,6 +124,22 @@ export function Sidebar({
   head?: ReactNode;
   foot?: ReactNode;
 }) {
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ id: string; edge: "before" | "after" } | null>(
+    null,
+  );
+  const names = new Map([...projects, ...shelved].map((project) => [project.id, project.name]));
+
+  const reorder = (next: string[]) => {
+    const current = projects.map((project) => project.id);
+    if (next.some((id, index) => id !== current[index])) onReorder(next);
+  };
+
+  const endDrag = () => {
+    setDragging(null);
+    setDropAt(null);
+  };
+
   return (
     <nav className="sidebar">
       {head && <div className="sidebar-slot">{head}</div>}
@@ -159,6 +184,46 @@ export function Sidebar({
             onNewChat={onNewChat}
             onDelete={onDelete}
             onSettings={onSettings}
+            siblingNames={(p.sibling_ids ?? []).flatMap((id) =>
+              names.has(id) ? [names.get(id)!] : [],
+            )}
+            dragging={dragging === p.id}
+            dropEdge={dropAt?.id === p.id ? dropAt.edge : null}
+            onDragStart={(e) => {
+              setDragging(p.id);
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", p.id);
+            }}
+            onDragOver={(e) => {
+              if (!dragging || dragging === p.id) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              const box = e.currentTarget.getBoundingClientRect();
+              setDropAt({
+                id: p.id,
+                edge: e.clientY < box.top + box.height / 2 ? "before" : "after",
+              });
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const moving = dragging || e.dataTransfer.getData("text/plain");
+              if (moving && moving !== p.id) {
+                const box = e.currentTarget.getBoundingClientRect();
+                reorder(
+                  moveProjectAt(
+                    projects.map((project) => project.id),
+                    moving,
+                    p.id,
+                    e.clientY < box.top + box.height / 2 ? "before" : "after",
+                  ),
+                );
+              }
+              endDrag();
+            }}
+            onDragEnd={endDrag}
+            onMove={(direction) =>
+              reorder(moveProjectBy(projects.map((project) => project.id), p.id, direction))
+            }
           />
         ))}
       </ul>
@@ -218,6 +283,14 @@ function ProjectNode({
   onNewChat,
   onDelete,
   onSettings,
+  siblingNames,
+  dragging,
+  dropEdge,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  onMove,
 }: {
   project: Project;
   chats: Conversation[];
@@ -235,6 +308,14 @@ function ProjectNode({
   onNewChat: (id: string) => void;
   onDelete: (id: string) => void;
   onSettings: (id: string) => void;
+  siblingNames: string[];
+  dragging: boolean;
+  dropEdge: "before" | "after" | null;
+  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  onMove: (direction: -1 | 1) => void;
 }) {
   const [showAll, setShowAll] = useState(false);
   // The chats present on this project's first paint are already here — making
@@ -256,8 +337,33 @@ function ProjectNode({
   const live = !working && chats.some((c) => running.has(c.id));
 
   return (
-    <li className="proj-node">
-      <div className={`proj ${current ? "is-on" : ""}`}>
+    <li
+      className={[
+        "proj-node",
+        dragging ? "is-dragging" : "",
+        dropEdge ? `is-drop-${dropEdge}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <div className={`proj ${current ? "is-on" : ""}`} onDragOver={onDragOver} onDrop={onDrop}>
+        <button
+          className="proj-drag"
+          type="button"
+          draggable
+          title="Drag or use the arrow keys to reorder"
+          aria-label={`Reorder ${project.name}`}
+          aria-keyshortcuts="ArrowUp ArrowDown"
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+            event.preventDefault();
+            onMove(event.key === "ArrowUp" ? -1 : 1);
+          }}
+        >
+          <GripIcon />
+        </button>
         <button
           className="proj-btn"
           type="button"
@@ -268,6 +374,14 @@ function ProjectNode({
             <FolderIcon />
           </span>
           <span className="proj-name">{project.name}</span>
+          {siblingNames.length > 0 && (
+            <span
+              className="proj-siblings"
+              title={`Sibling ${siblingNames.length === 1 ? "project" : "projects"}: ${siblingNames.join(", ")}`}
+            >
+              <LinkIcon />
+            </span>
+          )}
           {/* How many chats are in here. Written at the right edge of the name,
               so the numbers line up in a column that can be read straight down
               the list — and left out entirely at zero, because an empty project
@@ -462,6 +576,28 @@ function GearIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+    </svg>
+  );
+}
+
+function GripIcon() {
+  return (
+    <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" aria-hidden="true">
+      <circle cx="3" cy="3" r="1" />
+      <circle cx="9" cy="3" r="1" />
+      <circle cx="3" cy="7" r="1" />
+      <circle cx="9" cy="7" r="1" />
+      <circle cx="3" cy="11" r="1" />
+      <circle cx="9" cy="11" r="1" />
+    </svg>
+  );
+}
+
+function LinkIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1" />
+      <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1" />
     </svg>
   );
 }

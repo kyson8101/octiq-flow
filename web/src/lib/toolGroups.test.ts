@@ -70,7 +70,7 @@ describe("groupRows", () => {
     expect(shape(groupRows(blocks))).toEqual(["Read|Edit|Edit|Read+Bash"]);
   });
 
-  it("still leaves a failed edit where the reader can see it", () => {
+  it("folds a failed edit while keeping the whole run marked failed", () => {
     const failed: Block = {
       kind: "tool",
       id: "boom",
@@ -80,12 +80,12 @@ describe("groupRows", () => {
       state: "error",
     };
     const blocks = [tool("Read"), tool("Edit"), failed, tool("Read"), tool("Edit"), tool("Read")];
-    expect(shape(groupRows(blocks))).toEqual(["Read+Edit", "Edit", "Read|Edit+Read"]);
+    expect(shape(groupRows(blocks))).toEqual(["Read|Edit|Edit|Read|Edit+Read"]);
   });
 
-  // Same reason a failed one is left out: the row it would fold into reports
-  // itself done, and a call the stop cut off is exactly the one call in the run
-  // that did not finish.
+  // A stop is different from a failure: it belongs at the exact point where
+  // the reader interrupted it, while failures can be counted honestly on a
+  // collapsed activity row.
   it("leaves the call a stop cut off where the reader can see it too", () => {
     const cut: Block = {
       kind: "tool",
@@ -117,7 +117,7 @@ describe("groupRows", () => {
     expect(shape(groupRows(blocks))).toEqual(["Bash+Bash", "text", "Bash|Bash+Bash"]);
   });
 
-  it("leaves a failed call where the reader can see it", () => {
+  it("folds failed calls into the surrounding activity run", () => {
     const failed: Block = {
       kind: "tool",
       id: "boom",
@@ -127,7 +127,32 @@ describe("groupRows", () => {
       state: "error",
     };
     const blocks = [tool("Bash"), tool("Bash"), failed, tool("Bash"), tool("Bash"), tool("Bash")];
-    expect(shape(groupRows(blocks))).toEqual(["Bash+Bash", "Bash", "Bash|Bash+Bash"]);
+    expect(shape(groupRows(blocks))).toEqual(["Bash|Bash|Bash|Bash|Bash+Bash"]);
+  });
+
+  it("splits failed-call groups only when the agent speaks between them", () => {
+    const failed = (id: string): Block => ({
+      kind: "tool",
+      id,
+      name: "Bash",
+      argsJson: "",
+      args: {},
+      state: "error",
+    });
+    const blocks = [
+      failed("first"),
+      tool("Bash", "success-between"),
+      failed("second"),
+      text("The first approach did not work, so I changed direction."),
+      failed("third"),
+      tool("Bash", "success-after"),
+    ];
+
+    expect(shape(groupRows(blocks))).toEqual([
+      "Bash|Bash+Bash",
+      "text",
+      "Bash+Bash",
+    ]);
   });
 
   it("never folds a subagent card away", () => {

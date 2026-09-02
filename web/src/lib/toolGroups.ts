@@ -23,13 +23,20 @@
 //     on: everything after it reads by its rules, and its card carries those
 //     rules. Folded into "Bash × 7" it would be the one call that explains the
 //     other six, hidden among them;
-//   - a call that FAILED, because a group that swallows a failure is a group
-//     that lies about the turn. The one row worth reading is the one that
-//     stopped working.
 //   - a question for the user, because it needs a visible, individual card at
 //     the point where the agent is blocked.
+//   - a stopped call, because it belongs at the exact point where the reader
+//     interrupted it rather than inside a run that completed.
 // They also BREAK a run, which is what makes `Bash x5, Task, Bash x3` read as a
 // group, a subagent, and another group.
+//
+// Failed calls DO fold. A failed command used to split the activity chain, so
+// a validation loop rendered as a wall of alternating `failed` cards and tiny
+// success groups. The group carries the failure count on its collapsed row and
+// keeps every failed card in its disclosure, so folding removes the wall
+// without hiding that anything broke. A stopped call still stays out: it was
+// interrupted rather than completed and should remain at the exact point the
+// reader stopped it.
 //
 // An EDIT used to be on that list, and taking it off is what made grouping
 // work at all. A turn is mostly read, edit, edit, read, edit — and an edit that
@@ -175,10 +182,10 @@ function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
   if (QUESTION_TOOLS.has(name) || QUESTION_TOOL_SUFFIXES.some((suffix) => name.endsWith(suffix))) {
     return false;
   }
-  // A call that did not finish is the one worth seeing in a run of ones that
-  // did — and a group rolls up to `done`, so folding either in would report the
-  // whole run as finished.
-  if (tool.state === "error" || tool.state === "stopped") return false;
+  // A stopped call did not finish and should remain at the point where the
+  // reader interrupted it. Errors are foldable: the group reports their count
+  // explicitly and preserves the full failed cards inside its disclosure.
+  if (tool.state === "stopped") return false;
   return !NEVER_FOLD.has(toolLook(tool.name, tool.args).kind);
 }
 
@@ -192,9 +199,12 @@ export type GroupLook = {
   /** What follows the count: `× Bash` when the run was all one tool, `calls`
    *  when it was not. */
   noun: string;
-  /** Running while any call in it is, and never anything worse: a failed call
-   *  is never in a group at all, it is a row of its own. */
+  /** Running while any call is still active; otherwise failed when at least
+   *  one call failed, and done only when every call completed successfully. */
   state: Tool["state"];
+  /** How many calls failed, shown on the collapsed row so the fold cannot hide
+   *  the most important fact about the run. */
+  failed: number;
   /** The newest call in the run, kept on the row: during a turn this is the
    *  command running right now, and afterwards it is where the run got to. */
   detail: string;
@@ -204,13 +214,19 @@ export function groupLook(tools: Tool[]): GroupLook {
   const looks = tools.map((t) => toolLook(t.name, t.args));
   const last = tools[tools.length - 1];
   const oneName = tools.every((t) => t.name === tools[0].name);
+  const failed = tools.filter((t) => t.state === "error").length;
   return {
     // A mixed run takes the kind of the call whose detail is on the row, so the
     // icon and the text beside it are talking about the same call.
     kind: oneName ? looks[0].kind : toolLook(last.name, last.args).kind,
     count: tools.length,
     noun: oneName ? `× ${looks[0].label}` : "calls",
-    state: tools.some((t) => t.state === "running") ? "running" : "done",
+    state: tools.some((t) => t.state === "running")
+      ? "running"
+      : failed
+        ? "error"
+        : "done",
+    failed,
     detail: toolDetail(last.name, last.args),
   };
 }

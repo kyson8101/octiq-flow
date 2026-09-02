@@ -153,6 +153,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "id")?,
             arg(&args, "shelved")?,
         )),
+        "reorder_workspaces" => unit(crate::workspaces::reorder_workspaces_impl(
+            &svc.workspaces,
+            arg(&args, "orderedIds")?,
+        )),
+        "set_workspace_sibling" => unit(crate::workspaces::set_workspace_sibling_impl(
+            &svc.workspaces,
+            arg(&args, "id")?,
+            arg(&args, "siblingId")?,
+            arg(&args, "linked")?,
+        )),
 
         // ---- saved commands -----------------------------------------------
         // A project's own commands — `pnpm dev`, `cargo test` — kept on the

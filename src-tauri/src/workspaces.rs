@@ -98,6 +98,12 @@ pub struct Workspace {
     /// before this field existed loads with every project active.
     #[serde(default)]
     pub shelved: bool,
+    /// Other projects deliberately linked to this one. The relationship is
+    /// symmetric: every mutation below writes (or removes) both directions, so
+    /// either project can answer which siblings it has without a store-wide
+    /// reverse lookup. Old stores load with no links.
+    #[serde(default)]
+    pub sibling_ids: Vec<String>,
     /// Per-project terminal font override, stored verbatim from the frontend
     /// (which owns the font catalog and clamps every value on read). `null` —
     /// the default — means no override: this project uses the global app font.
@@ -293,6 +299,7 @@ pub fn add_workspace_impl(
         initial: String::new(),
         icon: String::new(),
         shelved: false,
+        sibling_ids: Vec::new(),
         font_override: serde_json::Value::Null,
     };
     data.workspaces.push(workspace.clone());
@@ -347,6 +354,93 @@ pub fn rename_workspace_impl(
 pub fn delete_workspace_impl(state: &WorkspaceState, id: String) -> Result<(), String> {
     let mut data = state.data.lock().map_err(|e| e.to_string())?;
     data.workspaces.retain(|w| w.id != id);
+    for workspace in &mut data.workspaces {
+        workspace.sibling_ids.retain(|sibling_id| sibling_id != &id);
+    }
+    state.save(&data)
+}
+
+/// Reorder the named workspaces while leaving every workspace not named in its
+/// current slot. The browser sends the active-project ids, so shelved projects
+/// keep their relative order and do not jump around merely because the visible
+/// list was rearranged. Accepting any valid subset also makes the command safe
+/// for an older browser whose list predates a newly-created workspace.
+pub fn reorder_workspaces_impl(
+    state: &WorkspaceState,
+    ordered_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::with_capacity(ordered_ids.len());
+    if ordered_ids.iter().any(|id| !seen.insert(id.as_str())) {
+        return Err("project order contains a duplicate id".into());
+    }
+
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let positions: Vec<usize> = data
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter_map(|(index, workspace)| seen.contains(workspace.id.as_str()).then_some(index))
+        .collect();
+    if positions.len() != ordered_ids.len() {
+        return Err("project order contains an unknown project".into());
+    }
+
+    let ordered: Vec<Workspace> = ordered_ids
+        .iter()
+        .map(|id| {
+            data.workspaces
+                .iter()
+                .find(|workspace| workspace.id == *id)
+                .cloned()
+                .expect("all ordered project ids were validated above")
+        })
+        .collect();
+    for (position, workspace) in positions.into_iter().zip(ordered) {
+        data.workspaces[position] = workspace;
+    }
+    state.save(&data)
+}
+
+/// Link or unlink two projects as siblings. A sibling link is deliberately
+/// written to both projects in the same locked save, so it cannot be half-made
+/// by a failed second request or by two browser tabs acting at once.
+pub fn set_workspace_sibling_impl(
+    state: &WorkspaceState,
+    id: String,
+    sibling_id: String,
+    linked: bool,
+) -> Result<(), String> {
+    if id == sibling_id {
+        return Err("a project cannot be its own sibling".into());
+    }
+
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let left = data
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.id == id)
+        .ok_or("workspace not found")?;
+    let right = data
+        .workspaces
+        .iter()
+        .position(|workspace| workspace.id == sibling_id)
+        .ok_or("sibling workspace not found")?;
+
+    if linked {
+        if !data.workspaces[left].sibling_ids.contains(&sibling_id) {
+            data.workspaces[left].sibling_ids.push(sibling_id.clone());
+        }
+        if !data.workspaces[right].sibling_ids.contains(&id) {
+            data.workspaces[right].sibling_ids.push(id);
+        }
+    } else {
+        data.workspaces[left]
+            .sibling_ids
+            .retain(|candidate| candidate != &sibling_id);
+        data.workspaces[right]
+            .sibling_ids
+            .retain(|candidate| candidate != &id);
+    }
     state.save(&data)
 }
 
@@ -498,8 +592,9 @@ pub fn set_workspace_shelved_impl(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_workspace_impl, add_workspace_path_impl, name_slug, rename_workspace_impl,
-        set_primary_path_impl, WorkspaceData, WorkspaceState,
+        add_workspace_impl, add_workspace_path_impl, delete_workspace_impl, list_workspaces_impl,
+        name_slug, rename_workspace_impl, reorder_workspaces_impl, set_primary_path_impl,
+        set_workspace_shelved_impl, set_workspace_sibling_impl, WorkspaceData, WorkspaceState,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -642,5 +737,113 @@ mod tests {
         );
         assert_eq!(name_slug("My App"), name_slug("my-app"));
         assert_eq!(name_slug("  --x--  "), "x");
+    }
+
+    #[test]
+    fn reorders_projects_in_the_order_the_browser_supplies() {
+        let (state, _missing) = scratch("reorder");
+        let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
+        let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
+        let third = add_workspace_impl(&state, "third".into(), String::new()).unwrap();
+
+        reorder_workspaces_impl(
+            &state,
+            vec![third.id.clone(), first.id.clone(), second.id.clone()],
+        )
+        .expect("reorder projects");
+
+        let ids: Vec<String> = list_workspaces_impl(&state)
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        assert_eq!(ids, vec![third.id, first.id, second.id]);
+    }
+
+    #[test]
+    fn reordering_active_projects_leaves_shelved_projects_in_place() {
+        let (state, _missing) = scratch("reorder-subset");
+        let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
+        let shelved = add_workspace_impl(&state, "shelved".into(), String::new()).unwrap();
+        let third = add_workspace_impl(&state, "third".into(), String::new()).unwrap();
+        set_workspace_shelved_impl(&state, shelved.id.clone(), true).unwrap();
+
+        reorder_workspaces_impl(&state, vec![third.id.clone(), first.id.clone()])
+            .expect("reorder only visible projects");
+
+        let ids: Vec<String> = list_workspaces_impl(&state)
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        assert_eq!(ids, vec![third.id, shelved.id, first.id]);
+    }
+
+    #[test]
+    fn refuses_an_invalid_project_order_without_changing_the_store() {
+        let (state, _missing) = scratch("reorder-invalid");
+        let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
+        let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
+
+        let duplicate = reorder_workspaces_impl(&state, vec![first.id.clone(), first.id.clone()])
+            .expect_err("duplicate ids must be refused");
+        assert!(duplicate.contains("duplicate"));
+
+        let unknown = reorder_workspaces_impl(&state, vec!["missing".into()])
+            .expect_err("unknown ids must be refused");
+        assert!(unknown.contains("unknown"));
+
+        let ids: Vec<String> = list_workspaces_impl(&state)
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        assert_eq!(ids, vec![first.id, second.id]);
+    }
+
+    #[test]
+    fn sibling_links_are_symmetric_and_can_be_unlinked() {
+        let (state, _missing) = scratch("siblings");
+        let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
+        let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
+
+        set_workspace_sibling_impl(&state, first.id.clone(), second.id.clone(), true)
+            .expect("link the projects");
+        // Repeating a link is idempotent rather than duplicating the ids.
+        set_workspace_sibling_impl(&state, first.id.clone(), second.id.clone(), true)
+            .expect("link the projects again");
+        let linked = list_workspaces_impl(&state).unwrap();
+        assert_eq!(linked[0].sibling_ids, vec![second.id.clone()]);
+        assert_eq!(linked[1].sibling_ids, vec![first.id.clone()]);
+
+        set_workspace_sibling_impl(&state, second.id.clone(), first.id.clone(), false)
+            .expect("unlink from either direction");
+        let unlinked = list_workspaces_impl(&state).unwrap();
+        assert!(unlinked[0].sibling_ids.is_empty());
+        assert!(unlinked[1].sibling_ids.is_empty());
+    }
+
+    #[test]
+    fn deleting_a_project_removes_its_sibling_links() {
+        let (state, _missing) = scratch("sibling-delete");
+        let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
+        let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
+        set_workspace_sibling_impl(&state, first.id.clone(), second.id.clone(), true).unwrap();
+
+        delete_workspace_impl(&state, second.id).expect("delete the sibling");
+
+        let remaining = list_workspaces_impl(&state).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, first.id);
+        assert!(remaining[0].sibling_ids.is_empty());
+    }
+
+    #[test]
+    fn a_project_cannot_link_to_itself() {
+        let (state, _missing) = scratch("sibling-self");
+        let project = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
+        let error = set_workspace_sibling_impl(&state, project.id.clone(), project.id, true)
+            .expect_err("self-links must be refused");
+        assert!(error.contains("own sibling"));
     }
 }

@@ -35,6 +35,12 @@ const bash = (id: string, command: string): Tool => ({
   state: "done",
 });
 
+const failedBash = (id: string, command: string): Tool => ({
+  ...bash(id, command),
+  state: "error",
+  result: "exit code 1",
+});
+
 /** The turn from the screenshot this change came out of: read, edit, read,
  *  edit, then the tests. Before edits folded it was eight cards in a column. */
 const run = [
@@ -83,5 +89,34 @@ describe("a run with edits folded into it", () => {
     // timer may reveal the live command and its spinner.
     expect(markup).not.toContain("pnpm vitest run");
     expect(markup).not.toContain('aria-label="running"');
+  });
+});
+
+describe("a run containing failed calls", () => {
+  it("groups the failures but keeps their count visible", () => {
+    const markup = renderToStaticMarkup(
+      <ToolGroup
+        tools={[
+          failedBash("1", "npm test -- --runInBand"),
+          bash("2", "npm run lint"),
+          failedBash("3", "npm run type-check"),
+        ]}
+        newest={failedBash("4", "npm run build")}
+      />,
+    );
+
+    expect(markup).toContain("ran 4 commands");
+    expect(markup).toContain("3 failed");
+    expect(markup).toContain('title="Show all 4 calls"');
+    expect(markup).toContain("tool-error");
+  });
+
+  it("uses the natural single-failure label", () => {
+    const markup = renderToStaticMarkup(
+      <ToolGroup tools={[bash("1", "npm run lint")]} newest={failedBash("2", "npm test")} />,
+    );
+
+    expect(markup).toContain(">failed</span>");
+    expect(markup).not.toContain("1 failed");
   });
 });

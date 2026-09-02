@@ -718,6 +718,24 @@ export default function App() {
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
 
+  /** Reordering is optimistic: the dragged row lands with the pointer, while
+   *  the backend persists that exact visible order. If the write loses the
+   *  connection, reload the server-owned list instead of leaving this tab
+   *  showing an order that will disappear on refresh. */
+  const reorderWorkspaces = useCallback(
+    (orderedIds: string[]) => {
+      setWorkspaces((current) => {
+        const byId = new Map(current.map((workspace) => [workspace.id, workspace]));
+        const ordered = orderedIds.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+        return ordered.length === current.length ? ordered : current;
+      });
+      void bridge
+        .invoke("reorder_workspaces", { orderedIds })
+        .catch(() => loadWorkspaces());
+    },
+    [loadWorkspaces],
+  );
+
   /** Ask the backend which agent CLIs resolve on this machine.
    *
    *  Fails SOFT, to an empty list: a backend too old to know this command still
@@ -3098,6 +3116,7 @@ export default function App() {
           onDelete={deleteConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
+          onReorder={reorderWorkspaces}
           onHide={hasDrawer ? undefined : () => showNav(false)}
           onResize={hasDrawer ? undefined : nav.startDrag}
           head={wide ? undefined : viewSwitch}
@@ -3502,6 +3521,7 @@ export default function App() {
               ? null
               : [...workspaces, ...shelved].find((w) => w.id === settingsFor) ?? null
           }
+          projects={[...workspaces, ...shelved]}
           onChanged={loadWorkspaces}
           onClose={() => setSettingsFor(null)}
           onDeleted={(id) => {

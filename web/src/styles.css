@@ -4891,13 +4891,66 @@ body.is-ultra .eff {
 }
 
 .proj {
+  position: relative;
   display: flex;
   align-items: center;
   border-radius: var(--r-md);
 }
 
+/* The dragged row stays in the list as an origin, while the hairline on a
+   target says exactly which side it will land on. */
+.proj-node.is-dragging {
+  opacity: 0.45;
+}
+
+.proj-node.is-drop-before > .proj::before,
+.proj-node.is-drop-after > .proj::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.proj-node.is-drop-before > .proj::before {
+  top: -4px;
+}
+
+.proj-node.is-drop-after > .proj::after {
+  bottom: -4px;
+}
+
 .proj:hover {
   background: var(--bg-1);
+}
+
+.proj-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-3);
+  opacity: 0.5;
+  cursor: grab;
+}
+
+.proj-drag:hover,
+.proj-drag:focus-visible {
+  color: var(--fg-1);
+  opacity: 1;
+}
+
+.proj-drag:active {
+  cursor: grabbing;
 }
 
 .proj-btn {
@@ -4960,6 +5013,13 @@ body.is-ultra .eff {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.proj-siblings {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--fg-3);
 }
 
 /* The chat count on a project row. Quiet by default — it is a fact about the
@@ -6510,6 +6570,36 @@ body.is-ultra .eff {
   background: rgba(255, 69, 58, 0.22);
 }
 
+.set-order {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.set-order-at {
+  flex: 1 1 auto;
+  color: var(--fg-3);
+  font-size: 12px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.set-project-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.set-project-state {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+
 .set-choose {
   padding: 10px 14px;
   border: 1px dashed var(--border-strong);
@@ -6544,6 +6634,10 @@ body.is-ultra .eff {
   min-width: 0;
   font-family: var(--mono);
   font-size: 13px;
+}
+
+.set-sibling-add .set-input {
+  font-family: inherit;
 }
 
 .set-danger {
@@ -9176,9 +9270,10 @@ body.is-ultra .eff {
 }
 
 .gitp-file-btn {
-  display: flex;
+  display: grid;
+  grid-template-columns: 13px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 8px;
+  column-gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
   padding: 7px 0;
@@ -9191,7 +9286,6 @@ body.is-ultra .eff {
 }
 
 .gitp-st {
-  flex: 0 0 auto;
   width: 13px;
   font-family: var(--mono);
   font-size: 11px;
@@ -9216,43 +9310,42 @@ body.is-ultra .eff {
   color: var(--warn);
 }
 
-/* The filename is what identifies the row, and this panel is narrow enough that
-   one end-ellipsis over the whole path eats it — "deeply/nested/folder/very-lo…"
-   names nothing. So only the dimmed folder shrinks (flex-shrink 0 on the name,
-   not merely a smaller share: at these widths a shrink share of a fraction of a
-   pixel is still enough to trip the ellipsis). A filename long enough to fill
-   the row on its own is capped by max-width and truncates then, and only then. */
-.gitp-file-path {
+/* The filename is the primary scan target. The containing path gets a quieter
+   second line, and each line truncates independently without pushing the git
+   change counts off the right edge. */
+.gitp-file-copy {
   display: flex;
+  flex-direction: column;
+  gap: 1px;
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  font-family: var(--mono);
-  font-size: 12px;
 }
 
-.gitp-file-dir,
+.gitp-file-path,
 .gitp-file-name {
+  display: block;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.gitp-file-dir {
-  flex: 0 1 auto;
-  color: var(--fg-3);
+  font-family: var(--mono);
 }
 
 .gitp-file-name {
-  flex: 0 0 auto;
-  max-width: 100%;
   color: var(--fg-0);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.gitp-file-path {
+  color: var(--fg-3);
+  font-size: 10.5px;
+  line-height: 1.3;
 }
 
 .gitp-counts {
   display: flex;
-  flex: 0 0 auto;
   gap: 5px;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -9868,6 +9961,13 @@ body.is-ultra .eff {
   display: inline-flex;
   flex: 0 0 auto;
   color: var(--accent);
+}
+
+/* A folded run may contain several failed calls. The count stays on the
+   collapsed row so grouping removes repetition without making the run look
+   successful. */
+.tool-group.tool-error .tool-summary-icon {
+  color: var(--danger);
 }
 
 /* The only changing text while a chain is active: which call is running now.

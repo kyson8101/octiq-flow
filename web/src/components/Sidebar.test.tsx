@@ -30,6 +30,7 @@ const html = (
     leaving?: ReadonlySet<string>;
     deleteMs?: number;
     expanded?: Set<string>;
+    onReorder?: (orderedIds: string[]) => void;
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -53,6 +54,7 @@ const html = (
       onDelete={() => {}}
       onSettings={() => {}}
       onNewProject={() => {}}
+      onReorder={() => {}}
       {...over}
     />,
   );
@@ -75,6 +77,44 @@ describe("Sidebar", () => {
 
   it("has no handle as a drawer, where the column is the width of the screen", () => {
     expect(html()).not.toContain("nav-resizer");
+  });
+
+  it("gives every project an accessible reorder handle", () => {
+    expect(html()).toContain('aria-label="Reorder octiq-flow"');
+    expect(html()).toContain('draggable="true"');
+  });
+
+  it("marks projects that have a sibling link", () => {
+    const linked: Project[] = [
+      { id: "p1", name: "octiq-flow", sibling_ids: ["p2"] },
+      { id: "p2", name: "octiq-site", sibling_ids: ["p1"] },
+    ];
+    const out = renderToStaticMarkup(
+      <Sidebar
+        projects={linked}
+        shelved={[]}
+        onShowShelved={() => {}}
+        onShowBoard={() => {}}
+        onShowAgents={() => {}}
+        agentName="Claude"
+        conversations={new Map()}
+        currentProject="p1"
+        currentConversation={null}
+        running={new Set()}
+        busy={new Set()}
+        expanded={new Set()}
+        onToggle={() => {}}
+        onPickProject={() => {}}
+        onPickConversation={() => {}}
+        onNewChat={() => {}}
+        onDelete={() => {}}
+        onSettings={() => {}}
+        onNewProject={() => {}}
+        onReorder={() => {}}
+      />,
+    );
+    expect(out).toContain('title="Sibling project: octiq-site"');
+    expect(out.match(/class="proj-siblings"/g)).toHaveLength(2);
   });
 
   it("counts the chats a closed project holds", () => {

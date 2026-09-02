@@ -143,10 +143,10 @@ function byRepo(list: GitStatus[]): GitStatus[] {
   return [...seen.values()];
 }
 
-/** Split a path so the folder can be dimmed and the filename kept legible. */
+/** Split a path into the filename users scan for and its quieter parent path. */
 function splitPath(path: string): { dir: string; name: string } {
   const at = path.lastIndexOf("/");
-  return at < 0 ? { dir: "", name: path } : { dir: path.slice(0, at + 1), name: path.slice(at + 1) };
+  return at < 0 ? { dir: "", name: path } : { dir: path.slice(0, at), name: path.slice(at + 1) };
 }
 
 /** A width the chat can live with, whatever was dragged or stored.
@@ -940,9 +940,10 @@ function FileRow({
   onOpen: () => void;
 }) {
   const mark = STATUS_MARK[file.status] ?? MODIFIED;
-  // Renames already read as "old → new", so they are shown whole rather than
-  // split into a dimmed folder and a filename.
-  const parts = file.status === "renamed" ? null : splitPath(file.display);
+  const parts = splitPath(file.path);
+  // A rename needs both paths to remain visible. For every other status the
+  // quieter second line is just the containing directory.
+  const secondaryPath = file.status === "renamed" ? file.display : parts.dir;
 
   return (
     <>
@@ -957,15 +958,9 @@ function FileRow({
         />
         <button className="gitp-file-btn" type="button" onClick={onOpen} title={file.display}>
           <span className={`gitp-st ${mark.cls}`}>{mark.letter}</span>
-          <span className="gitp-file-path">
-            {parts ? (
-              <>
-                {parts.dir && <span className="gitp-file-dir">{parts.dir}</span>}
-                <span className="gitp-file-name">{parts.name}</span>
-              </>
-            ) : (
-              <span className="gitp-file-name">{file.display}</span>
-            )}
+          <span className="gitp-file-copy">
+            <span className="gitp-file-name">{parts.name}</span>
+            {secondaryPath && <span className="gitp-file-path">{secondaryPath}</span>}
           </span>
           <span className="gitp-counts">
             {file.binary ? (
