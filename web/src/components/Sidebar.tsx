@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
 import type { Conversation } from "../lib/store";
-import { moveProjectAt, moveProjectBy } from "../lib/projectOrder";
+import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/projectOrder";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 
@@ -200,7 +200,7 @@ export function Sidebar({
       </div>
 
       <ul className="proj-list">
-        {projects.map((p) => (
+        {projects.map((p, index) => (
           <ProjectNode
             key={p.id}
             rowRef={(node) => {
@@ -226,6 +226,9 @@ export function Sidebar({
             siblingNames={(p.sibling_ids ?? []).flatMap((id) =>
               names.has(id) ? [names.get(id)!] : [],
             )}
+            siblingBelow={
+              index < projects.length - 1 && siblingGroupIds(projects, p.id).has(projects[index + 1].id)
+            }
             dragging={dragging === p.id}
             dropEdge={dropAt?.id === p.id ? dropAt.edge : null}
             onDragStart={(e) => {
@@ -249,8 +252,8 @@ export function Sidebar({
               if (moving && moving !== p.id) {
                 const box = e.currentTarget.getBoundingClientRect();
                 reorder(
-                  moveProjectAt(
-                    projects.map((project) => project.id),
+                  moveSiblingGroupAt(
+                    projects,
                     moving,
                     p.id,
                     e.clientY < box.top + box.height / 2 ? "before" : "after",
@@ -261,7 +264,7 @@ export function Sidebar({
             }}
             onDragEnd={endDrag}
             onMove={(direction) =>
-              reorder(moveProjectBy(projects.map((project) => project.id), p.id, direction))
+              reorder(moveSiblingGroupBy(projects, p.id, direction))
             }
           />
         ))}
@@ -343,6 +346,7 @@ function ProjectNode({
   onPin,
   onSettings,
   siblingNames,
+  siblingBelow,
   dragging,
   dropEdge,
   onDragStart,
@@ -369,6 +373,8 @@ function ProjectNode({
   onPin: (id: string) => void;
   onSettings: (id: string) => void;
   siblingNames: string[];
+  /** Continue the visual link to the next row in this connected group. */
+  siblingBelow: boolean;
   dragging: boolean;
   dropEdge: "before" | "after" | null;
   onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
@@ -401,6 +407,7 @@ function ProjectNode({
       ref={rowRef}
       className={[
         "proj-node",
+        siblingBelow ? "has-sibling-below" : "",
         dragging ? "is-dragging" : "",
         dropEdge ? `is-drop-${dropEdge}` : "",
       ]

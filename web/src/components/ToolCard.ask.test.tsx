@@ -92,3 +92,64 @@ describe("an answered question, on the call that asked it", () => {
     expect(renderToStaticMarkup(<ToolCard tool={bash} open />)).not.toContain("tool-answer");
   });
 });
+
+describe("a batch of several questions, on the one call that asked them all", () => {
+  const Q1 = "Ship it now, or wait for the review?";
+  const Q2 = "Which environment?";
+  const Q3 = "Anything else before we go?";
+
+  const batch = (result: string): Tool =>
+    ({
+      kind: "tool",
+      id: "t3",
+      name: "mcp__octiq__ask_user",
+      argsJson: "{}",
+      args: { questions: [{ question: Q1 }, { question: Q2 }, { question: Q3 }] },
+      result,
+      state: "done",
+    }) as Tool;
+
+  it("shows all three questions and all three answers without being opened", () => {
+    const said = [
+      `Q1: ${Q1}`,
+      "A1: Ship it now",
+      "",
+      `Q2: ${Q2}`,
+      "A2: staging",
+      "",
+      `Q3: ${Q3}`,
+      "A3: No, that's everything",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(<ToolCard tool={batch(said)} />);
+
+    expect(html).toContain(Q1);
+    expect(html).toContain(Q2);
+    expect(html).toContain(Q3);
+    expect(html).toContain("Ship it now");
+    expect(html).toContain("staging");
+    expect(html).toContain("No, that&#x27;s everything");
+  });
+
+  it("shows the app's words for an excuse on one answer, never the machine sentence", () => {
+    const said = [
+      `Q1: ${Q1}`,
+      "A1: Ship it now",
+      "",
+      `Q2: ${Q2}`,
+      "A2: The user did not answer in time. Do not assume an answer — " +
+        "say what you need and stop, or continue in a way that does not depend on it.",
+      "",
+      `Q3: ${Q3}`,
+      "A3: No, that's everything",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(<ToolCard tool={batch(said)} />);
+
+    expect(html).toContain("not answered in time");
+    expect(html).not.toContain("The user did not answer in time");
+    // The other two answers are real and must not be swallowed by the excuse.
+    expect(html).toContain("Ship it now");
+    expect(html).toContain("No, that&#x27;s everything");
+  });
+});

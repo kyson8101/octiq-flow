@@ -6,8 +6,21 @@
 //!
 //! We can hand it one. `-p` loads MCP servers in full (78 skills, 8 servers,
 //! all present), so a tool of our own is a first-class tool as far as the agent
-//! is concerned. It calls `ask_user`, the call blocks, the question appears
-//! wherever you are, and your answer comes back as the tool result.
+//! is concerned. It calls `ask_user`, the call blocks, the questions appear
+//! wherever you are, and your answers come back as the tool result.
+//!
+//! A call carries a LIST, and that is the shape rather than a convenience.
+//! Claude Code runs MCP tool calls one at a time, so an agent with five things
+//! to settle used to produce five cards, each of them waiting on the last and
+//! each costing another round trip to whoever's phone was nearest. Asked in one
+//! call they arrive on one card, and the person settles them the way they were
+//! thought of — together, seeing all of it.
+//!
+//! Nothing is returned until every answer is in. Handing back the first while
+//! the person is still deciding the third would let the agent start building on
+//! half a decision — the same trap one question per call had, moved inside the
+//! call rather than removed. So the whole list blocks and the whole list is
+//! reported.
 //!
 //! This is the same shape as `permission.rs` and differs in what an answer IS:
 //! a permission is allow-or-deny with a safe default, a question is a choice
@@ -34,6 +47,26 @@ pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 /// somebody who has genuinely gone is far smaller than the cost of speaking for
 /// somebody who has not.
 pub const RELOAD_GRACE: Duration = Duration::from_secs(20);
+
+/// What the agent is told when there was nobody to ask in the first place.
+///
+/// Said once for the whole call however many questions it carried: the reason
+/// is the room, not the question, and repeating it per question would read like
+/// several separate failures.
+const NOBODY_TO_ASK: &str = "Nobody is watching OctiqFlow, so this question could not be asked. \
+                             Proceed without it, or say what you would need to know.";
+
+/// What an individual question is told when the clock ran out on it.
+const NOT_IN_TIME: &str = "The user did not answer in time. Do not assume an answer — say what \
+                           you need and stop, or continue in a way that does not depend on it.";
+
+/// What an individual question is told when the person left mid-answer.
+const NOBODY_LEFT: &str = "Nobody is watching OctiqFlow any more, so this question went \
+                           unanswered. Proceed without it, or say what you would need to know.";
+
+/// A call with an empty list. Not an error: the agent asked for nothing and is
+/// told it got nothing, rather than being left to read silence as an answer.
+const NOTHING_ASKED: &str = "No question was given, so nothing was asked.";
 
 /// One thing you can pick.
 ///
@@ -140,12 +173,47 @@ pub struct Question {
 }
 
 /// The question, once it has an id to answer against.
+///
+/// One of these goes out per QUESTION even when a call asked several, so a
+/// browser that has only ever handled one at a time keeps working unchanged.
+/// What tells it there are others is `batch`: an id shared by every question of
+/// one call, and the count beside it so a card can be drawn complete before the
+/// rest of the events have arrived. Both are absent for a lone question, which
+/// makes those events byte-for-byte what they were before batching existed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Asked {
     id: String,
     #[serde(flatten)]
     question: Question,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch_size: Option<usize>,
+}
+
+/// A `/hook/ask` body, in either of the two shapes that arrive.
+///
+/// `Many` is tried first and a legacy single-question body simply fails it —
+/// there is no `questions` key to read — so it falls through to `One`. Ordering
+/// is the whole mechanism here: put `One` first and a batch would match it on
+/// the strength of `chatKey` alone and lose every question.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum Request {
+    Many(Batch),
+    One(Question),
+}
+
+/// Everything one `ask_user` call wants to know.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Batch {
+    /// Which chat is asking. Named once for the call rather than on each
+    /// question: the sub-questions arrive without it, and it is the call that
+    /// belongs to a chat.
+    pub chat_key: Option<String>,
+    pub questions: Vec<Question>,
 }
 
 /// One question, and the channel its answer goes back down.
@@ -176,65 +244,170 @@ pub fn pending() -> Vec<Asked> {
     with_pending(|p| p.values().map(|w| w.asked.clone()).collect())
 }
 
-/// Put the question in front of the user and wait.
+/// Ask whatever a `/hook/ask` body carried, in whichever shape it arrived in.
+pub async fn ask_request(request: Request) -> String {
+    match request {
+        Request::Many(batch) => ask_many(batch.chat_key, batch.questions).await,
+        Request::One(question) => ask(question).await,
+    }
+}
+
+/// Put one question in front of the user and wait.
+///
+/// A batch of one, on purpose. The single question is the case that must never
+/// regress, so it goes down the same code every batch does rather than a copy
+/// of it that would be free to drift.
+pub async fn ask(question: Question) -> String {
+    ask_many(question.chat_key.clone(), vec![question]).await
+}
+
+/// Put a whole call's questions in front of the user and wait for all of them.
 ///
 /// The string that comes back is what the agent is told. When nobody is there
 /// to ask, or nobody answers, it is told exactly that — a question with no
 /// answer must never be reported as an answer, because the agent will act on
 /// whatever it is given.
-pub async fn ask(question: Question) -> String {
+pub async fn ask_many(chat_key: Option<String>, questions: Vec<Question>) -> String {
+    // Answered before we look at who is watching: an empty call failed on what
+    // it sent, and "nobody is there" would blame the room for it.
+    if questions.is_empty() {
+        return NOTHING_ASKED.into();
+    }
     if !crate::bus::watched_within(RELOAD_GRACE) {
-        return "Nobody is watching OctiqFlow, so this question could not be asked. \
-                Proceed without it, or say what you would need to know."
-            .into();
+        return NOBODY_TO_ASK.into();
     }
 
-    let id = uuid::Uuid::new_v4().to_string();
-    let (tx, rx) = oneshot::channel();
-    let asked = Asked {
-        id: id.clone(),
-        question,
-    };
-    with_pending(|p| {
-        p.insert(
-            id.clone(),
-            Waiting {
-                tx,
-                asked: asked.clone(),
-            },
-        )
-    });
+    // Only a real batch is marked as one, so a client cannot be left holding a
+    // card of one waiting for a second question that was never coming.
+    let batch = (questions.len() > 1).then(|| uuid::Uuid::new_v4().to_string());
+    let batch_size = batch.as_ref().map(|_| questions.len());
 
-    crate::bus::emit("user-question", asked.clone());
-    // Ten minutes to answer this one, and the agent is stopped until it is
-    // answered — so it goes to the phone as well as to any open browser.
-    crate::push::notify_chat(
-        asked.question.chat_key.as_deref(),
-        "question",
-        &asked.question.question,
-    );
+    let mut asked = Vec::with_capacity(questions.len());
+    let mut ids = Vec::with_capacity(questions.len());
+    let mut waiting = Vec::with_capacity(questions.len());
+    for mut question in questions {
+        // The chat is named once for the call and the sub-questions arrive
+        // bare. A question that does not know its chat cannot be pushed to a
+        // phone, and could be answered into the wrong conversation.
+        if question.chat_key.is_none() {
+            question.chat_key.clone_from(&chat_key);
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let (tx, rx) = oneshot::channel();
+        let announced = Asked {
+            id: id.clone(),
+            question: question.clone(),
+            batch: batch.clone(),
+            batch_size,
+        };
+        with_pending(|p| {
+            p.insert(
+                id.clone(),
+                Waiting {
+                    tx,
+                    asked: announced.clone(),
+                },
+            )
+        });
+        crate::bus::emit("user-question", announced);
+        ids.push(id);
+        waiting.push(rx);
+        asked.push(question);
+    }
+
+    // Ten minutes to answer, and the agent is stopped until they are answered —
+    // so it goes to the phone as well as to any open browser. ONE notification
+    // for the call whatever it carried: a buzz per question is the pile-up that
+    // asking them together exists to end, moved to the lock screen.
+    let summary = match asked.as_slice() {
+        [only] => only.question.clone(),
+        many => format!("{} questions · {}", many.len(), many[0].question),
+    };
+    crate::push::notify_chat(asked[0].chat_key.as_deref(), "question", &summary);
 
     // Three ways this ends, and they are not the same thing to tell an agent.
     //
     // The watcher is why a reload is survivable. A gap in the connection no
-    // longer decides anything: the question stays up, the browser coming back
-    // asks for it through `pending`, and only somebody who is really gone —
+    // longer decides anything: the questions stay up, the browser coming back
+    // asks for them through `pending`, and only somebody who is really gone —
     // away for `RELOAD_GRACE` without returning — releases the turn.
-    let outcome = tokio::select! {
-        answered = tokio::time::timeout(ANSWER_TIMEOUT, rx) => match answered {
-            Ok(Ok(answer)) => return answer,
-            _ => "The user did not answer in time. Do not assume an answer — say what \
-                  you need and stop, or continue in a way that does not depend on it.",
-        },
-        _ = crate::bus::once_unwatched(RELOAD_GRACE) => {
-            "Nobody is watching OctiqFlow any more, so this question went unanswered. \
-             Proceed without it, or say what you would need to know."
-        }
+    let mut answers: Vec<Option<String>> = vec![None; asked.len()];
+    // ONE deadline for the call rather than one per question. The person is
+    // reading a card, not a queue, and a clock that started per question would
+    // expire the ones at the bottom of it while they were still on the first.
+    let deadline = tokio::time::Instant::now() + ANSWER_TIMEOUT;
+    let unanswered = tokio::select! {
+        // The receivers live OUTSIDE the select — borrowed here, not moved —
+        // because the other branch has to be able to go through them afterwards
+        // for answers that did arrive.
+        _ = async {
+            for (answer, rx) in answers.iter_mut().zip(waiting.iter_mut()) {
+                // Still reads an answer already sitting in the channel once the
+                // deadline is past: `Timeout` polls what it wraps before it
+                // looks at the clock. Nothing answered in time is thrown away
+                // for having been late in the list.
+                if let Ok(Ok(said)) = tokio::time::timeout_at(deadline, rx).await {
+                    *answer = Some(said);
+                }
+            }
+        } => NOT_IN_TIME,
+        _ = crate::bus::once_unwatched(RELOAD_GRACE) => NOBODY_LEFT,
     };
 
-    with_pending(|p| p.remove(&id));
-    crate::bus::emit("question-expired", serde_json::json!({ "id": id }));
-    outcome.into()
+    // Somebody who walked off will often have answered half the card first.
+    // Those answers were made and the agent gets them; only what is genuinely
+    // missing is reported missing.
+    for (answer, rx) in answers.iter_mut().zip(waiting.iter_mut()) {
+        if answer.is_none() {
+            *answer = rx.try_recv().ok();
+        }
+    }
+
+    // Everything still on the board comes down. `answer()` already took the
+    // answered ones off it, so a `remove` that finds nothing is how the two are
+    // told apart — including one answered a second ago on another device.
+    for id in &ids {
+        if with_pending(|p| p.remove(id)).is_some() {
+            crate::bus::emit("question-expired", serde_json::json!({ "id": id }));
+        }
+    }
+
+    let outcome: Vec<Result<String, &str>> = answers
+        .into_iter()
+        .map(|answer| answer.ok_or(unanswered))
+        .collect();
+    report(&asked, &outcome)
+}
+
+/// What the agent ends up reading.
+///
+/// One question answers with the answer and nothing else — no numbering, no
+/// framing — because that is what `ask_user` has always returned and what every
+/// prompt written against it expects. The common case pays nothing for batching.
+///
+/// Several come back numbered, each answer under the words it answers. The
+/// agent asked them in one breath and hears them in one, and the pairing is
+/// what stops "Postgres / yes / tomorrow" being read against the wrong three
+/// questions — an ordering it has no way to check and every reason to trust.
+fn report(questions: &[Question], answers: &[Result<String, &str>]) -> String {
+    let said = |answer: &Result<String, &str>| match answer {
+        Ok(words) => words.to_string(),
+        Err(excuse) => (*excuse).to_string(),
+    };
+    match answers {
+        [] => NOTHING_ASKED.into(),
+        [only] => said(only),
+        _ => questions
+            .iter()
+            .zip(answers)
+            .enumerate()
+            .map(|(i, (question, answer))| {
+                let n = i + 1;
+                format!("Q{n}: {}\nA{n}: {}", question.question, said(answer))
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    }
 }
 
 /// Answer a waiting question. `false` when it is already gone.
@@ -274,6 +447,17 @@ mod tests {
                 },
             ],
             recommended: Some(0),
+            multiple: false,
+        }
+    }
+
+    /// A bare free-text question, for the cases where only the words matter.
+    fn asking(text: &str) -> Question {
+        Question {
+            chat_key: None,
+            question: text.into(),
+            options: vec![],
+            recommended: None,
             multiple: false,
         }
     }
@@ -345,6 +529,8 @@ mod tests {
                     asked: Asked {
                         id: id.clone(),
                         question: question(),
+                        batch: None,
+                        batch_size: None,
                     },
                 },
             )
@@ -379,6 +565,8 @@ mod tests {
                     asked: Asked {
                         id: id.clone(),
                         question: question(),
+                        batch: None,
+                        batch_size: None,
                     },
                 },
             )
@@ -461,5 +649,135 @@ mod tests {
         )
         .expect("parses their name");
         assert!(theirs.multiple);
+    }
+
+    #[test]
+    fn a_body_with_a_list_is_a_batch_and_one_without_is_still_a_question() {
+        // Both shapes arrive at `/hook/ask`. The MCP server sends a list now,
+        // but a `claude -p` started before this change is still running the
+        // script it was handed, and that one sends a question flat.
+        //
+        // Untagged tries `Many` first: the flat body has no `questions` to
+        // read, fails it, and lands on `One`. The ORDER of the variants is the
+        // entire mechanism — put `One` first and every batch would match it on
+        // the strength of `chatKey` alone and arrive with nothing in it.
+        let many: Request = serde_json::from_str(
+            r#"{"chatKey":"c1","questions":[{"question":"Which database?"},
+                {"question":"What should it be called?"}]}"#,
+        )
+        .expect("parses the list shape");
+        match many {
+            Request::Many(batch) => {
+                assert_eq!(batch.chat_key.as_deref(), Some("c1"));
+                assert_eq!(batch.questions.len(), 2);
+                // The chat is named once for the call; the questions come bare.
+                assert_eq!(batch.questions[0].chat_key, None);
+            }
+            Request::One(_) => panic!("a body carrying a list is not one question"),
+        }
+
+        let one: Request = serde_json::from_str(
+            r#"{"chatKey":"c1","question":"Which database?","options":["a","b"],"recommended":0}"#,
+        )
+        .expect("parses the flat shape");
+        match one {
+            Request::One(q) => {
+                assert_eq!(q.question, "Which database?");
+                assert_eq!(q.chat_key.as_deref(), Some("c1"));
+                assert_eq!(q.recommended, Some(0));
+            }
+            Request::Many(_) => panic!("a body with no list is one question"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_that_asked_nothing_is_told_so() {
+        // Answered before anything looks at who is watching, because the call
+        // failed on what it sent rather than on who was there. Told it that
+        // nobody was watching, an agent would go off "proceeding without" a
+        // question it never actually managed to ask.
+        assert_eq!(ask_many(Some("c1".into()), vec![]).await, NOTHING_ASKED);
+    }
+
+    #[tokio::test]
+    async fn with_nobody_watching_a_whole_batch_is_told_so_at_once() {
+        // The room is the reason, not the questions, so the whole call is
+        // refused in one breath rather than fanned out into five cards nobody
+        // will see and five identical excuses.
+        //
+        // Read loosely on wording: `watched_within` is process-global and
+        // another test in this binary counts a browser in and straight out
+        // again, which can land this call inside somebody else's reload grace.
+        // What must hold either way is that the agent is told nobody was there
+        // and is never handed an answer to a question nobody saw.
+        let reply = ask_many(Some("c1".into()), vec![question(), question()]).await;
+        assert!(reply.contains("Nobody is watching"), "{reply}");
+        assert!(
+            !reply.contains("Postgres") && !reply.contains("SQLite"),
+            "an unasked question must not come back looking answered: {reply}"
+        );
+    }
+
+    #[test]
+    fn one_question_comes_back_as_the_bare_answer() {
+        // What `ask_user` has always returned, and what every prompt written
+        // against it expects. Number a single question and every existing agent
+        // starts reading "A1: " as part of what the person said.
+        assert_eq!(report(&[question()], &[Ok("SQLite".into())]), "SQLite");
+        // An unanswered one is its excuse, equally unframed.
+        assert_eq!(report(&[question()], &[Err(NOT_IN_TIME)]), NOT_IN_TIME);
+    }
+
+    #[test]
+    fn several_answers_come_back_under_the_questions_they_answer() {
+        // The agent cannot check an ordering it is handed and has every reason
+        // to trust it, so three bare answers in a row are three chances to act
+        // on the wrong one. Each is quoted under its own question.
+        //
+        // And the one nobody got to carries its own excuse rather than a blank
+        // line, which an agent would read as an answer of "nothing".
+        let asked = [
+            asking("Which database?"),
+            asking("What should it be called?"),
+            asking("Ship it today?"),
+        ];
+        let answers = [Ok("SQLite".to_string()), Err(NOT_IN_TIME), Ok("Yes".into())];
+        assert_eq!(
+            report(&asked, &answers),
+            format!(
+                "Q1: Which database?\nA1: SQLite\n\n\
+                 Q2: What should it be called?\nA2: {NOT_IN_TIME}\n\n\
+                 Q3: Ship it today?\nA3: Yes"
+            )
+        );
+    }
+
+    #[test]
+    fn only_a_real_batch_says_that_it_is_one() {
+        // A client builds its card out of these events and nothing else.
+        // `batch` is what gathers several of them onto one card and `batchSize`
+        // is what tells it the card is whole before the last event has landed.
+        //
+        // So a lone question must carry NEITHER, and carry it by being absent
+        // rather than null: a page that has never heard of batching has to see
+        // byte-for-byte the event it always saw.
+        let alone = Asked {
+            id: "a".into(),
+            question: question(),
+            batch: None,
+            batch_size: None,
+        };
+        let json = serde_json::to_string(&alone).expect("serialises");
+        assert!(!json.contains("batch"), "{json}");
+
+        let together = Asked {
+            id: "b".into(),
+            question: question(),
+            batch: Some("one-call".into()),
+            batch_size: Some(3),
+        };
+        let json = serde_json::to_string(&together).expect("serialises");
+        assert!(json.contains(r#""batch":"one-call""#), "{json}");
+        assert!(json.contains(r#""batchSize":3"#), "{json}");
     }
 }

@@ -122,6 +122,7 @@ describe("Sidebar", () => {
     );
     expect(out).toContain('title="Sibling project: octiq-site"');
     expect(out.match(/class="proj-siblings"/g)).toHaveLength(2);
+    expect(out).toContain("proj-node has-sibling-below");
   });
 
   it("counts the chats a closed project holds", () => {

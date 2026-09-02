@@ -9,8 +9,13 @@
  * ways you want something either guesses or stops.
  *
  * It loads MCP servers in full, though, so we can hand it tools of our own.
- * `ask_user` blocks, the question appears wherever you are — a phone will do —
- * and your answer comes back as the tool result.
+ * `ask_user` blocks, the questions appear wherever you are — a phone will do —
+ * and your answers come back as the tool result. One call carries the WHOLE
+ * list, and that is the shape rather than a convenience: Claude Code runs MCP
+ * calls one at a time, so a tool taking a single question turned five things to
+ * settle into five cards, each waiting on the last and each costing another
+ * round trip to whoever's phone was nearest. Asked together they arrive on one
+ * card and are answered together.
  *
  * `pin_file` is the same trick again, and it replaced a scraper. The files
  * column used to be built by reading every path-shaped word out of the
@@ -51,8 +56,12 @@ function serverConfig() {
   return cfg;
 }
 
-/** Put a question to OctiqFlow and wait for the answer. */
-function askOctiq(question, options, recommended, multiple) {
+/** Put a call's questions to OctiqFlow and wait for every answer.
+ *
+ *  Always the list shape, even for one. The server still reads the old flat
+ *  body — a `claude -p` started before this change is running the script it was
+ *  handed — but there is no reason for anything NEW to speak two dialects. */
+function askOctiq(questions) {
   return new Promise((resolve) => {
     let cfg;
     try {
@@ -60,7 +69,7 @@ function askOctiq(question, options, recommended, multiple) {
     } catch {
       return resolve("OctiqFlow is not reachable, so the user could not be asked.");
     }
-    const body = JSON.stringify({ chatKey: CHAT_KEY, question, options, recommended, multiple });
+    const body = JSON.stringify({ chatKey: CHAT_KEY, questions });
     const req = http.request(
       {
         host: "127.0.0.1",
@@ -96,73 +105,103 @@ function askOctiq(question, options, recommended, multiple) {
   });
 }
 
+/** One question's shape. Described once and used twice: inside `questions`,
+ *  which is the real argument, and flat at the top level, which is the
+ *  shorthand for a call carrying exactly one. */
+const QUESTION_PROPS = {
+  question: {
+    type: "string",
+    description: "The question, in one sentence, as you would say it aloud.",
+  },
+  options: {
+    type: "array",
+    items: {
+      anyOf: [
+        { type: "string" },
+        {
+          type: "object",
+          properties: {
+            label: {
+              type: "string",
+              description: "The words on the button, and what comes back as the answer.",
+            },
+            description: {
+              type: "string",
+              description: "One short line under the label, saying what picking it means.",
+            },
+          },
+          required: ["label"],
+        },
+      ],
+    },
+    description:
+      "Two to four choices, each a string or {label, description}. " +
+      "Omit for a free-text answer.",
+  },
+  recommended: {
+    type: "integer",
+    description:
+      "Index into options of the one you would pick, if you have a view. " +
+      "Shown as a hint next to that choice; it is not selected for them " +
+      "and does not become the answer if they say nothing. Omit when you " +
+      "genuinely have no preference — marking one anyway is noise.",
+  },
+  multiple: {
+    type: "boolean",
+    description:
+      "True when several options may be picked at once, and the answer " +
+      "comes back as all of them — use it for any question whose honest " +
+      "answer is a set rather than one winner. Leave it out for a real " +
+      "either/or: offering two ticks where you can only act on one answer " +
+      "invites a reply you cannot use. Needs options.",
+  },
+};
+
 const TOOL = {
   name: "ask_user",
   description:
-    "Ask the person you are working with a question and wait for their answer. " +
-    "Use this when a decision is theirs to make rather than yours: which of two " +
-    "approaches to take, what something should be called, whether an assumption " +
-    "is right. Prefer it over guessing, and over stopping to ask in prose. " +
-    "Offer options when the choice is between a few known answers; leave options " +
-    "empty when any answer will do. Each option is either a plain string or " +
-    "{label, description} — give it a description whenever the label alone does " +
-    "not say what picking it means. Set multiple when the answer is a SET rather " +
-    "than a choice: which files to include, which checks to run, which of these " +
-    "to fix now. Reach for it whenever the honest answer is \"any number of " +
-    "these\" — they then tick as many as they like and you get all of them back. " +
-    "Leave it out only for a real either/or.",
+    "Ask the person you are working with one or several questions and wait for " +
+    "the answers. Put EVERY question you have into the same call: each call " +
+    "blocks until it is answered and the person answers a call's questions " +
+    "together on one card, so one question per call means one card per " +
+    "question, each waiting on the last. Use it when a decision is theirs to " +
+    "make rather than yours: which of two approaches to take, what something " +
+    "should be called, whether an assumption is right. Prefer it over guessing, " +
+    "and over stopping to ask in prose. Offer options when the choice is " +
+    "between a few known answers; leave options empty when any answer will do. " +
+    "Each option is either a plain string or {label, description} — give it a " +
+    "description whenever the label alone does not say what picking it means. " +
+    "Set multiple when the answer is a SET rather than a choice: which files to " +
+    "include, which checks to run, which of these to fix now. Reach for it " +
+    "whenever the honest answer is \"any number of these\" — they then tick as " +
+    "many as they like and you get all of them back. Leave it out only for a " +
+    "real either/or. The answers come back numbered against the questions they " +
+    "answer; a single question answers with the bare answer.",
   inputSchema: {
     type: "object",
     properties: {
+      questions: {
+        type: "array",
+        minItems: 1,
+        description:
+          "Everything you want to know, in the order it should be read. They " +
+          "go on ONE card and come back together — so ask now for anything you " +
+          "would otherwise have to come back for.",
+        items: {
+          type: "object",
+          properties: QUESTION_PROPS,
+          required: ["question"],
+        },
+      },
+      ...QUESTION_PROPS,
       question: {
         type: "string",
-        description: "The question, in one sentence, as you would say it aloud.",
-      },
-      options: {
-        type: "array",
-        items: {
-          anyOf: [
-            { type: "string" },
-            {
-              type: "object",
-              properties: {
-                label: {
-                  type: "string",
-                  description: "The words on the button, and what comes back as the answer.",
-                },
-                description: {
-                  type: "string",
-                  description:
-                    "One short line under the label, saying what picking it means.",
-                },
-              },
-              required: ["label"],
-            },
-          ],
-        },
         description:
-          "Two to four choices, each a string or {label, description}. " +
-          "Omit for a free-text answer.",
-      },
-      recommended: {
-        type: "integer",
-        description:
-          "Index into options of the one you would pick, if you have a view. " +
-          "Shown as a hint next to that choice; it is not selected for them " +
-          "and does not become the answer if they say nothing. Omit when you " +
-          "genuinely have no preference — marking one anyway is noise.",
-      },
-      multiple: {
-        type: "boolean",
-        description:
-          "True when several options may be picked at once, and the answer " +
-          "comes back as all of them — use it for any question whose honest " +
-          "answer is a set rather than one winner. Leave it out for a real " +
-          "either/or: offering two ticks where you can only act on one answer " +
-          "invites a reply you cannot use. Needs options.",
+          "Shorthand for a call carrying exactly one question, the same as a " +
+          "`questions` list of one. The moment you have two, use `questions`.",
       },
     },
-    required: ["question"],
+    required: [],
   },
 };
 
@@ -383,14 +422,17 @@ async function handle(msg) {
         // anything is created.
         if (msg.params.name === "add_agent" && a.kind === "on_demand") {
           const service = a.provider || "an outside service";
-          const answer = await askOctiq(
-            `Add ${a.name || service} to this chat? It runs on ${service}, so what is ` +
-              `said in this room from now on is sent there — including anything ` +
-              `quoted into the chat. It cannot open your files.`,
-            ["Add it", "No"],
-            1,
-            false,
-          );
+          const answer = await askOctiq([
+            {
+              question:
+                `Add ${a.name || service} to this chat? It runs on ${service}, so what is ` +
+                `said in this room from now on is sent there — including anything ` +
+                `quoted into the chat. It cannot open your files.`,
+              options: ["Add it", "No"],
+              recommended: 1,
+              multiple: false,
+            },
+          ]);
           if (!/add it/i.test(String(answer || ""))) {
             return reply(msg.id, {
               content: [
@@ -463,31 +505,48 @@ async function handle(msg) {
         });
       }
       const args = msg.params.arguments || {};
-      // Passed through in whatever shape it arrived: strings and
-      // {label, description} objects are both real, and the server decides
-      // which entries are usable. Coercing here is what once turned a list of
-      // objects into four buttons reading "[object Object]" — a question
-      // nobody could answer, with the agent blocked behind it.
-      const options = Array.isArray(args.options) ? args.options : [];
-      // Only a whole number that actually names one of the options survives.
-      // A stray index would otherwise mark nothing and look like a bug in the
-      // UI rather than a bad argument here.
-      const pick = Number(args.recommended);
-      const recommended =
-        Number.isInteger(pick) && pick >= 0 && pick < options.length ? pick : undefined;
-      // Several answers only where there are several things to pick. Asked of
-      // a free-text question the flag means nothing, and passing it on would
-      // draw a card promising ticks it has none of.
-      // `multiSelect` is `AskUserQuestion`'s name for this, and an agent going
-      // on training rather than on our schema sends that one. Reading only our
-      // name is why a set-shaped question quietly arrived as a one-of card.
-      const multiple = (args.multiple === true || args.multiSelect === true) && options.length > 0;
-      const answer = await askOctiq(
-        String(args.question || "").trim(),
-        options,
-        recommended,
-        multiple,
-      );
+      // One list, however the call was written. `questions` is the real
+      // argument; a flat `question` is the shorthand, and it is the same call
+      // with one item in it — so everything below sees one shape.
+      const raw = Array.isArray(args.questions) ? args.questions : [args];
+      const list = [];
+      for (const entry of raw) {
+        const item = entry && typeof entry === "object" ? entry : {};
+        const question = String(item.question || "").trim();
+        // A card with a blank line on it asks nothing. Dropped rather than
+        // sent, and the whole call only fails if nothing is left.
+        if (!question) continue;
+        // Passed through in whatever shape it arrived: strings and
+        // {label, description} objects are both real, and the server decides
+        // which entries are usable. Coercing here is what once turned a list of
+        // objects into four buttons reading "[object Object]" — a question
+        // nobody could answer, with the agent blocked behind it.
+        const options = Array.isArray(item.options) ? item.options : [];
+        // Only a whole number that actually names one of the options survives.
+        // A stray index would otherwise mark nothing and look like a bug in the
+        // UI rather than a bad argument here.
+        const pick = Number(item.recommended);
+        const recommended =
+          Number.isInteger(pick) && pick >= 0 && pick < options.length ? pick : undefined;
+        // Several answers only where there are several things to pick. Asked of
+        // a free-text question the flag means nothing, and passing it on would
+        // draw a card promising ticks it has none of.
+        // `multiSelect` is `AskUserQuestion`'s name for this, and an agent going
+        // on training rather than on our schema sends that one. Reading only our
+        // name is why a set-shaped question quietly arrived as a one-of card.
+        // `header` comes from the same reflex and is simply not carried: the
+        // card has no room for one, and refusing the call over it would fail
+        // the very question it was decorating.
+        const multiple = (item.multiple === true || item.multiSelect === true) && options.length > 0;
+        list.push({ question, options, recommended, multiple });
+      }
+      if (!list.length) {
+        return reply(msg.id, {
+          content: [{ type: "text", text: "No question was given, so nothing was asked." }],
+          isError: true,
+        });
+      }
+      const answer = await askOctiq(list);
       return reply(msg.id, { content: [{ type: "text", text: answer }] });
     }
 

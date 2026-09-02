@@ -5276,8 +5276,29 @@ body.is-ultra .eff {
   margin-top: 6px;
 }
 
+/* Sibling projects stay together, so a single quiet rail can connect the
+   centres of their folder icons. It lives behind the row and its chat fold,
+   which keeps a long expanded project from breaking the relationship line. */
+.proj-node {
+  position: relative;
+}
+
+.proj-node.has-sibling-below::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  left: 29px;
+  top: 17px;
+  bottom: -23px;
+  width: 1px;
+  background: var(--accent);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .proj {
   position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   border-radius: var(--r-md);
@@ -10685,6 +10706,11 @@ body.is-ultra .eff {
   min-width: 0;
   color: var(--fg-3);
   font-style: italic;
+}
+
+/* Several decisions from one call read as a LIST, not a paragraph. */
+.tool-answer-item + .tool-answer-item {
+  margin-top: 6px;
 }
 
 /* ---- Card 80: the CLI reporting on a command it answered itself -------

@@ -139,16 +139,19 @@ export function ToolCard({
   // block); once it has, the row says what the skill is FOR in its own words,
   // and what it was called with moves into a chip beside the name.
   const brief = isSkill && tool.brief ? parseSkillBrief(tool.brief) : null;
-  // Card 79 — a question put to the person, and what they decided. The live
-  // card that asked is long gone by the time anyone reads this, so the decision
-  // has to live on the call that made it.
+  // Card 79 — one or several questions put to the person, and what they
+  // decided. The live card that asked is long gone by the time anyone reads
+  // this, so the decision has to live on the call that made it. An agent can
+  // ask several things in one call now; the list is still one thing to check
+  // truthiness of.
   const ask = askAnswer(tool.name, tool.args, tool.result);
+  const hasAsk = !!ask && ask.length > 0;
   const called = toolDetail(tool.name, tool.args, isAgent);
   // A question takes no share of the row. `tool-detail` ellipsises from the
   // LEFT so a long path keeps its useful end — and a question's useful end is
   // its start, so half a question would be the half nobody needs. It gets a line
   // of its own below instead.
-  const full = isSkill ? (brief?.summary ?? "") : ask ? "" : called;
+  const full = isSkill ? (brief?.summary ?? "") : hasAsk ? "" : called;
   // A header above this card has already named the folder, so the card names
   // the file. `dirOf` on both sides rather than a prefix test: it is exact —
   // a file in a SUBFOLDER of the named one keeps its path, which is what a
@@ -251,23 +254,31 @@ export function ToolCard({
       {/* Outside the fold, on purpose. Everything else on a card is detail you
           go looking for; this is a decision that was made, and a decision you
           have to open a card to find is one you will not find. */}
-      {ask && (
+      {ask && ask.length > 0 && (
         <div className="tool-answer">
-          <div className="tool-answer-q">{ask.question}</div>
-          {(ask.answer || ask.unanswered) && (
-            <div className="tool-answer-row">
-              <span className="tool-answer-mark" aria-hidden="true">
-                &#8627;
-              </span>
-              {ask.answer ? (
-                <span className="tool-answer-said">{ask.answer}</span>
-              ) : (
-                // Never the machine's own sentence. "The question timed out" put
-                // on this line reads as a decision to time out.
-                <span className="tool-answer-none">{ask.unanswered}</span>
+          {ask.map((item, index) => (
+            <div className="tool-answer-item" key={index}>
+              <div className="tool-answer-q">
+                {/* Numbered only once there is more than one — a single
+                    question does not need to say "1." of itself. */}
+                {ask.length > 1 ? `${index + 1}. ${item.question}` : item.question}
+              </div>
+              {(item.answer || item.unanswered) && (
+                <div className="tool-answer-row">
+                  <span className="tool-answer-mark" aria-hidden="true">
+                    &#8627;
+                  </span>
+                  {item.answer ? (
+                    <span className="tool-answer-said">{item.answer}</span>
+                  ) : (
+                    // Never the machine's own sentence. "The question timed out"
+                    // put on this line reads as a decision to time out.
+                    <span className="tool-answer-none">{item.unanswered}</span>
+                  )}
+                </div>
               )}
             </div>
-          )}
+          ))}
         </div>
       )}
 
@@ -330,7 +341,7 @@ export function ToolCard({
               failed is the only thing on the card worth reading. A skill's
               "Launching skill: x" is the same noise, and kept the same way:
               only when the launch failed. */}
-            {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && !ask && (
+            {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && !hasAsk && (
               <>
                 <div className="tool-label">{isAgent ? "report" : "result"}</div>
                 <pre className="tool-pre">{tool.result}</pre>

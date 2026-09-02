@@ -894,12 +894,12 @@ async fn permission_handler(
 async fn ask_handler(
     AxumState(ctx): AxumState<Ctx>,
     Query(q): Query<TokenQuery>,
-    Json(question): Json<crate::question::Question>,
+    Json(request): Json<crate::question::Request>,
 ) -> Response {
     if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
-    let answer = crate::question::ask(question).await;
+    let answer = crate::question::ask_request(request).await;
     axum::Json(json!({ "answer": answer })).into_response()
 }
 

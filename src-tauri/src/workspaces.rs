@@ -401,6 +401,68 @@ pub fn reorder_workspaces_impl(
     state.save(&data)
 }
 
+/// Compact each connected sibling group without changing the order of the
+/// groups themselves. Active and shelved projects use separate slots: linking
+/// an active project to a shelved one remains useful metadata, but cannot make
+/// rows from two different lists appear beside each other.
+fn keep_sibling_groups_together(workspaces: &mut [Workspace]) {
+    for shelved in [false, true] {
+        let slots: Vec<usize> = workspaces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, workspace)| (workspace.shelved == shelved).then_some(index))
+            .collect();
+        let mut assigned = std::collections::HashSet::with_capacity(slots.len());
+        let mut ordered = Vec::with_capacity(slots.len());
+
+        for &start in &slots {
+            if assigned.contains(&workspaces[start].id) {
+                continue;
+            }
+
+            // Treat links as undirected here, which also repairs the visual
+            // grouping of an old store that predates symmetric link writes.
+            let mut group = std::collections::HashSet::from([workspaces[start].id.clone()]);
+            loop {
+                let mut changed = false;
+                for &index in &slots {
+                    let workspace = &workspaces[index];
+                    if group.contains(&workspace.id) {
+                        continue;
+                    }
+                    let linked_from_group =
+                        workspace.sibling_ids.iter().any(|id| group.contains(id));
+                    let linked_to_group = workspaces.iter().any(|candidate| {
+                        group.contains(&candidate.id)
+                            && candidate.sibling_ids.iter().any(|id| id == &workspace.id)
+                    });
+                    if linked_from_group || linked_to_group {
+                        group.insert(workspace.id.clone());
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+
+            assigned.extend(group.iter().cloned());
+
+            ordered.extend(
+                slots
+                    .iter()
+                    .copied()
+                    .filter(|&index| group.contains(&workspaces[index].id))
+                    .map(|index| workspaces[index].clone()),
+            );
+        }
+
+        for (slot, workspace) in slots.into_iter().zip(ordered) {
+            workspaces[slot] = workspace;
+        }
+    }
+}
+
 /// Link or unlink two projects as siblings. A sibling link is deliberately
 /// written to both projects in the same locked save, so it cannot be half-made
 /// by a failed second request or by two browser tabs acting at once.
@@ -433,6 +495,7 @@ pub fn set_workspace_sibling_impl(
         if !data.workspaces[right].sibling_ids.contains(&id) {
             data.workspaces[right].sibling_ids.push(id);
         }
+        keep_sibling_groups_together(&mut data.workspaces);
     } else {
         data.workspaces[left]
             .sibling_ids
@@ -821,6 +884,41 @@ mod tests {
         let unlinked = list_workspaces_impl(&state).unwrap();
         assert!(unlinked[0].sibling_ids.is_empty());
         assert!(unlinked[1].sibling_ids.is_empty());
+    }
+
+    #[test]
+    fn linking_projects_compacts_their_whole_sibling_group() {
+        let (state, _missing) = scratch("sibling-order");
+        let first = add_workspace_impl(&state, "first".into(), String::new()).unwrap();
+        let second = add_workspace_impl(&state, "second".into(), String::new()).unwrap();
+        let third = add_workspace_impl(&state, "third".into(), String::new()).unwrap();
+        let fourth = add_workspace_impl(&state, "fourth".into(), String::new()).unwrap();
+        let fifth = add_workspace_impl(&state, "fifth".into(), String::new()).unwrap();
+
+        reorder_workspaces_impl(
+            &state,
+            vec![
+                first.id.clone(),
+                third.id.clone(),
+                fifth.id.clone(),
+                second.id.clone(),
+                fourth.id.clone(),
+            ],
+        )
+        .unwrap();
+        set_workspace_sibling_impl(&state, first.id.clone(), third.id.clone(), true).unwrap();
+        set_workspace_sibling_impl(&state, second.id.clone(), fourth.id.clone(), true).unwrap();
+        set_workspace_sibling_impl(&state, third.id.clone(), fourth.id.clone(), true).unwrap();
+
+        let ids: Vec<String> = list_workspaces_impl(&state)
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![first.id, third.id, second.id, fourth.id, fifth.id]
+        );
     }
 
     #[test]

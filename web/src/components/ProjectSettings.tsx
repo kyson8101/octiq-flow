@@ -12,7 +12,7 @@
 // typing, so a rename is not 14 writes.
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
-import { moveProjectBy } from "../lib/projectOrder";
+import { moveSiblingGroupBy } from "../lib/projectOrder";
 import { FolderPicker } from "./FolderPicker";
 import { useConfirm } from "./Confirm";
 
@@ -143,11 +143,7 @@ export function ProjectSettings({
 
   function move(direction: -1 | 1) {
     if (!project) return;
-    const orderedIds = moveProjectBy(
-      orderedPeers.map((candidate) => candidate.id),
-      project.id,
-      direction,
-    );
+    const orderedIds = moveSiblingGroupBy(orderedPeers, project.id, direction);
     void run(() => bridge.invoke("reorder_workspaces", { orderedIds }));
   }
 
@@ -239,8 +235,8 @@ export function ProjectSettings({
             <div className="set-field">
               <span className="set-label">Sibling projects</span>
               <p className="set-hint">
-                Link related projects in both directions. Linked projects are marked in the
-                sidebar.
+                Link related projects in both directions. Linked active projects are kept
+                together in the sidebar.
               </p>
 
               {siblings.length === 0 && <div className="set-empty">No sibling projects yet.</div>}

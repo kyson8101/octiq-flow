@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { moveProjectAt, moveProjectBy } from "./projectOrder";
+import {
+  moveProjectAt,
+  moveProjectBy,
+  moveSiblingGroupAt,
+  moveSiblingGroupBy,
+} from "./projectOrder";
 
 describe("project ordering", () => {
   it("moves a project before another project", () => {
@@ -30,5 +35,32 @@ describe("project ordering", () => {
     expect(moveProjectBy(["a", "b", "c"], "b", -1)).toEqual(["b", "a", "c"]);
     expect(moveProjectBy(["a", "b", "c"], "b", 1)).toEqual(["a", "c", "b"]);
     expect(moveProjectBy(["a", "b", "c"], "a", -1)).toEqual(["a", "b", "c"]);
+  });
+
+  it("carries a whole sibling group when a member is dragged", () => {
+    const projects = [
+      { id: "a", sibling_ids: ["c"] },
+      { id: "c", sibling_ids: ["a", "d"] },
+      { id: "b" },
+      { id: "d", sibling_ids: ["c"] },
+      { id: "e" },
+    ];
+    expect(moveSiblingGroupAt(projects, "c", "e", "after")).toEqual([
+      "b",
+      "e",
+      "a",
+      "c",
+      "d",
+    ]);
+  });
+
+  it("moves a sibling group past its neighbouring group", () => {
+    const projects = [
+      { id: "a", sibling_ids: ["b"] },
+      { id: "b", sibling_ids: ["a"] },
+      { id: "c" },
+      { id: "d" },
+    ];
+    expect(moveSiblingGroupBy(projects, "b", 1)).toEqual(["c", "a", "b", "d"]);
   });
 });

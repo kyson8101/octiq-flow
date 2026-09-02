@@ -50,6 +50,15 @@ export type Question = {
   /** Whether several of options may be picked at once. The agent asks for it
    *  per question: it is the only one that knows whether it can act on a set. */
   multiple?: boolean;
+  /** A uuid shared by every question of the same `ask_user` call, present only
+   *  when that call carried more than one. The card itself has no use for
+   *  it — it already draws every pending question of the conversation as one
+   *  card — this is for App.tsx, so it can announce the call once rather than
+   *  once per question. */
+  batch?: string;
+  /** How many questions the call this one belongs to carried. Present only
+   *  alongside `batch`. */
+  batchSize?: number;
 };
 
 /** What it says when you close the card instead of answering.

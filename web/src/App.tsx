@@ -1025,7 +1025,12 @@ export default function App() {
     const offQuestion = bridge.on<Question>("user-question", (q) => {
       const id = q?.chatKey ? convOf(q.chatKey) : null;
       if (!id || !q.id) return;
-      announceOnce(q.id, "question", id, q.question ?? "");
+      // Five questions in one call are one interruption, not five: every
+      // question of a batch shares `batch`, so they share one announcement
+      // (keyed on it instead of the per-question id) and it names the count.
+      const detail =
+        q.batchSize && q.batchSize > 1 ? `${q.batchSize} questions · ${q.question}` : q.question ?? "";
+      announceOnce(q.batch ?? q.id, "question", id, detail);
       setQuestions((prev) =>
         prev[id]?.some((x) => x.id === q.id)
           ? prev
