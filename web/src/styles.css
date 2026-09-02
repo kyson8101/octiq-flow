@@ -262,6 +262,21 @@ body {
   color: var(--fg-0);
 }
 
+/* ---- Reload, for an installed window ---------------------------------- */
+/* Drawn only when there is no browser chrome to reload from. It spins from the
+   press until the document goes away, which on a phone over a tunnel is long
+   enough that a still icon reads as a dead button. It reuses `tool-spin`
+   rather than declaring a second identical rotation. */
+.installed-reload.is-spinning svg {
+  animation: tool-spin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .installed-reload.is-spinning svg {
+    animation: none;
+  }
+}
+
 /* ---- Full-width chat -------------------------------------------------- */
 /* The switch that gives the chat the available body width. It wears the same
    held-down look the rail and files buttons wear, because it is a mode you are

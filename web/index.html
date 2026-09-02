@@ -18,21 +18,30 @@
          home screen. A tab cannot be told to shrink its own toolbar, so the
          home screen is the only way the address bar comes off the screen.
 
-         What is DELIBERATELY absent is `apple-mobile-web-app-capable`. It is
-         the obvious tag to reach for and it is the wrong one here: on iOS it
-         forces `standalone` and outranks the manifest, which buys a chromeless
-         window at the price of every navigation control — no back, and above
-         all no reload, on an app whose whole job is a live view of a machine
-         at the end of a tunnel. The manifest asks for `minimal-ui` instead:
-         same missing address bar, native back/share/reload kept.
+         `standalone` is chromeless: no address bar, and no navigation controls
+         either. `minimal-ui` is the mode that keeps native back/reload, and it
+         was tried here — iOS did not give the controls, so the reload lives in
+         our own top bar instead (`InstalledReload`). Do not reach for
+         `minimal-ui` again without testing it on a real phone; and note that
+         iOS caches the manifest at INSTALL time, so testing it means deleting
+         the home-screen icon and adding it again, not reloading.
+
+         The status-bar-style is not part of that choice and must not be
+         removed with it: it is what puts the page UNDER the status bar. The
+         top bar is sized `48px + env(safe-area-inset-top)` (styles.css), so
+         dropping it moves the inset out from under the layout and the bar
+         comes out wrong.
 
          iOS reads none of the manifest for the ICON: it wants its own, and it
          composites transparency onto black, so this one is already flattened
-         onto the app's own background. The viewport stays `viewport-fit=cover`
-         and the layout keeps padding with `env(safe-area-inset-*)` either way.
-         -->
+         onto the app's own background. -->
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <!-- The same thing, un-prefixed. Chrome/Android warns on the Apple name
+         alone, and reads this one. -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="OctiqFlow" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="./manifest.webmanifest" />
 
     <title>OctiqFlow</title>

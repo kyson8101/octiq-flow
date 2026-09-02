@@ -111,6 +111,7 @@ import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
 import { FullscreenButton } from "./components/FullscreenButton";
+import { InstalledReload } from "./components/InstalledReload";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -3008,6 +3009,10 @@ export default function App() {
           {wide && hasDrawer && mode === "chat" && (
             <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
           )}
+
+          {/* Only drawn for a home-screen app, which has no browser chrome to
+              reload from. A tab already has the control and does not need two. */}
+          <InstalledReload />
 
           <button
             className="icon-btn"

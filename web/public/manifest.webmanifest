@@ -4,8 +4,7 @@
   "description": "Drive Claude Code and Codex from anywhere.",
   "start_url": "./",
   "scope": "./",
-  "display": "minimal-ui",
-  "display_override": ["minimal-ui", "standalone"],
+  "display": "standalone",
   "background_color": "#1c1c1e",
   "theme_color": "#1c1c1e",
   "icons": [

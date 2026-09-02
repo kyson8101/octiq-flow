@@ -49,23 +49,13 @@ export function supported(): boolean {
  *  a user who has not installed it is not doing anything wrong — they are one
  *  step short, and no amount of tapping the switch will do it for them.
  *
- *  `minimal-ui` counts, and asking only about `standalone` is the bug that
- *  hides here. The manifest asks for `minimal-ui` on purpose (see index.html)
- *  to keep the native back/reload controls, and in that mode the `standalone`
- *  query is FALSE — so a phone with the app on its home screen would be told
- *  to go and add the app to its home screen, with the push switch dead beside
- *  the advice. */
-export function installed(): boolean {
-  if (typeof window === "undefined") return false;
-  const asInstalled = ["minimal-ui", "standalone", "fullscreen"];
-  return (
-    asInstalled.some(
-      (mode) => window.matchMedia?.(`(display-mode: ${mode})`).matches === true,
-    ) ||
-    // iOS's own, older flag; still the only true answer on some versions.
-    (navigator as { standalone?: boolean }).standalone === true
-  );
-}
+ *  It lives in `lib/installed` now, because the top bar's reload asks the same
+ *  question and importing it from a component pulled the socket bridge in
+ *  behind it. Kept on this module's surface because every caller here reads it
+ *  as part of the push story. Imported rather than re-exported straight
+ *  through, since this module also calls it itself further down. */
+import { installed } from "./installed";
+export { installed };
 
 /** iOS, where the home-screen rule applies. Used only to word the hint. */
 export function isIOS(): boolean {
