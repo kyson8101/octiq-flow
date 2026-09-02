@@ -11,7 +11,7 @@ describe("what an ask_user call decided", () => {
     // Every card in the app runs through this. A reader that claims other
     // calls would put a question on a Bash row.
     expect(askAnswer("Bash", { question: "?" }, "ok")).toBeNull();
-    expect(askAnswer("mcp__octiq__todo_write", args, "ok")).toBeNull();
+    expect(askAnswer("mcp__octiq__pin_file", args, "ok")).toBeNull();
   });
 
   it("is nothing until the question itself has arrived", () => {

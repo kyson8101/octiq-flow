@@ -27,6 +27,7 @@ function checkProvider(provider: AgentProvider) {
 
   for (const model of provider.models) {
     expect(model.agent).toBe(provider.id);
+    expect(model.composerStyle).toMatch(/^[a-z][a-z0-9-]*$/);
     expect(modelFromId(model.id)).toEqual(model);
     const command = liveSettingCommand(provider.id, "model", model.flag);
     expect(Boolean(command)).toBe(provider.capabilities.liveSettings.model && Boolean(model.flag));
@@ -57,6 +58,13 @@ function checkProvider(provider: AgentProvider) {
 describe("AgentProvider UI contract", () => {
   it("keeps every registered provider and model conformant", () => {
     for (const provider of Object.values(providers)) checkProvider(provider);
+
+    const styles = Object.values(providers).flatMap((provider) =>
+      provider.models.map((model) => model.composerStyle),
+    );
+    // A newly added model must make an intentional visual choice instead of
+    // borrowing another model's identity by accident.
+    expect(new Set(styles).size).toBe(styles.length);
   });
 
   it("scopes a command cache to its provider and migrates the Claude-only legacy shape", () => {

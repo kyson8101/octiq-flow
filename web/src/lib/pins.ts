@@ -9,8 +9,8 @@
 // the agent.
 //
 // So the agent says. `pin_file` (scripts/mcp) takes a path, one line of why,
-// and optionally a label to tag it with and the line to land on. Like
-// `todo_write`, it calls nothing — the tool call itself travels down the chat
+// and optionally a label to tag it with and the line to land on. It calls
+// nothing — the tool call itself travels down the chat
 // stream, and this file reads the newest one back out of it. Nothing to fetch,
 // nothing to store, and it survives a reload for free because the transcript
 // does.

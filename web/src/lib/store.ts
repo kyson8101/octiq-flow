@@ -16,7 +16,6 @@
 // obvious next step, and the shape here (id, projectId, sessionId, messages)
 // is what it would hold.
 import type { Message } from "./chat";
-import { readConversationPins, type ConversationPin } from "./conversationPins";
 
 export type Conversation = {
   id: string;
@@ -35,8 +34,6 @@ export type Conversation = {
    *  cursor as you typed, so the chat you were reading moved. */
   createdAt: number;
   updatedAt: number;
-  /** Passages the reader chose to keep close while returning to this chat. */
-  conversationPins?: ConversationPin[];
   /** How far into the server's record of this chat these messages go.
    *
    *  It is what makes the two halves fit together. Reopening on THIS device
@@ -80,16 +77,7 @@ export function loadConversations(): Conversation[] {
       .filter((c) => c && typeof c.id === "string" && Array.isArray(c.messages))
       // Chats saved before `createdAt` existed take their last-used time as
       // their start time — a one-off guess that then holds still forever.
-      .map((c) => {
-        const conversation =
-          typeof c.createdAt === "number" ? c : { ...c, createdAt: c.updatedAt ?? 0 };
-        // A pin is user-authored browser data, so it gets the same defensive
-        // read as the transcript around it. Older conversations simply have no
-        // property and remain exactly as they were.
-        return Array.isArray(conversation.conversationPins)
-          ? { ...conversation, conversationPins: readConversationPins(conversation.conversationPins) }
-          : conversation;
-      });
+      .map((c) => (typeof c.createdAt === "number" ? c : { ...c, createdAt: c.updatedAt ?? 0 }));
   } catch {
     return [];
   }

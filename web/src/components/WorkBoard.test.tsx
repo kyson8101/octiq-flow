@@ -21,7 +21,6 @@ function input(over: Partial<BoardInput> = {}): BoardInput {
     busy: new Set(),
     asks: {},
     questions: {},
-    chats: {},
     ...over,
   };
 }
@@ -78,7 +77,7 @@ describe("WorkBoard", () => {
     expect(html).toContain("nothing waiting on you");
   });
 
-  it("falls back to the chat title when there is no plan to show", () => {
+  it("draws the chat title as the card face", () => {
     const html = draw({
       conversations: [chat("a", { title: "Fix the top bar" })],
       running: new Set(["a"]),

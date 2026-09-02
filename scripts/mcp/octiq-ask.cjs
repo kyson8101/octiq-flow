@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /*
- * OctiqFlow — an MCP server for the two things a chat client needs and print
- * mode does not have: asking you something, and showing you a plan.
+ * OctiqFlow — an MCP server for the things a chat client needs and print mode
+ * does not have: asking you something, and putting a file in front of you.
  *
  * `claude -p` is never offered `AskUserQuestion`: print mode has nobody to
  * answer, so the tool is not put in front of the model at all. That is the one
@@ -12,19 +12,15 @@
  * `ask_user` blocks, the question appears wherever you are — a phone will do —
  * and your answer comes back as the tool result.
  *
- * `todo_write` is the other half: the agent writes down what it is about to do
- * and keeps it up to date, so the person waiting can see their request was
- * understood and watch it being worked through. It does NOT call back into the
- * server — the call itself travels down the chat stream, and the client reads
- * the list straight off it. So this tool answers instantly and can never hold
- * a turn up.
- *
- * `pin_file` is the same trick a third time, and it replaced a scraper. The
- * files column used to be built by reading every path-shaped word out of the
+ * `pin_file` is the same trick again, and it replaced a scraper. The files
+ * column used to be built by reading every path-shaped word out of the
  * transcript, which answers "what did this chat touch" — a question nobody
  * asks. What people want is "which of these should I open", and only the agent
  * knows that. So it says, one line of reason per file, and the column is its
- * answer rather than a machine's guess at it.
+ * answer rather than a machine's guess at it. Unlike `ask_user` it does NOT
+ * call back into the server — the call itself travels down the chat stream and
+ * the client reads the list straight off it, so it answers instantly and can
+ * never hold a turn up.
  *
  * Speaks MCP over stdio: newline-delimited JSON-RPC, three methods. Written by
  * hand rather than with the SDK because it is ~100 lines and adding a
@@ -167,49 +163,6 @@ const TOOL = {
       },
     },
     required: ["question"],
-  },
-};
-
-const TODO_TOOL = {
-  name: "todo_write",
-  description:
-    "Write or update the visible TODO list for this chat. The list is pinned " +
-    "on the user's screen, so it is how they see that a task was understood " +
-    "and how far through it you are. Call it as soon as you take on work worth " +
-    "more than one step, and again each time an item starts or finishes — " +
-    "exactly one item should be in_progress at a time. Send the WHOLE list " +
-    "every time; it replaces the one on screen. Returns immediately: it asks " +
-    "nothing of the user and never blocks a turn.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      todos: {
-        type: "array",
-        description: "The whole list, in the order it will be worked through.",
-        items: {
-          type: "object",
-          properties: {
-            content: {
-              type: "string",
-              description: "The task, as an imperative: \"Fix the mobile top bar\".",
-            },
-            status: {
-              type: "string",
-              enum: ["pending", "in_progress", "completed"],
-              description: "Where this one is. Exactly one item may be in_progress.",
-            },
-            activeForm: {
-              type: "string",
-              description:
-                "The same task said as what you are doing right now: " +
-                "\"Fixing the mobile top bar\". Shown while it is in progress.",
-            },
-          },
-          required: ["content", "status"],
-        },
-      },
-    },
-    required: ["todos"],
   },
 };
 
@@ -414,7 +367,7 @@ async function handle(msg) {
       // becomes a room by taking a seat, so the tool that adds the first one
       // has to work in a chat that is not a room yet. See card 70.
       return reply(msg.id, {
-        tools: CHAT_KEY ? [TOOL, TODO_TOOL, PIN_TOOL, ADD_AGENT, ASK_AGENT] : [],
+        tools: CHAT_KEY ? [TOOL, PIN_TOOL, ADD_AGENT, ASK_AGENT] : [],
       });
 
     case "tools/call": {
@@ -481,20 +434,9 @@ async function handle(msg) {
         return reply(msg.id, { content: [{ type: "text", text }] });
       }
 
-      // Nothing to do but say yes. The list the client draws is the call
-      // itself, which is already on its way down the chat stream by the time
-      // this runs — so there is nobody to tell and nothing to wait for.
-      if (msg.params?.name === "todo_write") {
-        const todos = Array.isArray(msg.params.arguments?.todos)
-          ? msg.params.arguments.todos.length
-          : 0;
-        return reply(msg.id, {
-          content: [{ type: "text", text: `The list on screen now has ${todos} item(s).` }],
-        });
-      }
-
-      // Same deal as `todo_write`: the panel draws the CALL, which is already
-      // travelling down the chat stream. Counting is all there is left to do.
+      // Nothing to do but say yes: the panel draws the CALL, which is already
+      // travelling down the chat stream by the time this runs. Counting is all
+      // there is left to do.
       //
       // It answers with the count rather than a bare "done" so that a pin of
       // nothing reads as one. An agent that meant to add a file and sent an

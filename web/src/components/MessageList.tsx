@@ -39,7 +39,6 @@ import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
-import { newConversationPin, type ConversationPin } from "../lib/conversationPins";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -619,7 +618,6 @@ function TurnView({
   tints,
   fresh,
   mapTurnId,
-  pinTargetTurnId,
   hostName,
 }: {
   messages: Message[];
@@ -642,8 +640,6 @@ function TurnView({
   tints?: Map<string, number>;
   /** A person-sent turn is one return point on the conversation map. */
   mapTurnId?: string;
-  /** The pin list just brought the reader back to this turn. */
-  pinTargetTurnId?: string | null;
 }) {
   const role = messages[0].role;
   // One turn is one voice — `groupTurns` breaks on the seat, so every message
@@ -662,6 +658,7 @@ function TurnView({
   // something the person said, and it used to appear as a second line of their
   // own message.
   const ranSkill = messages[0].ranSkill;
+  const replyTo = messages.find((m) => m.replyTo)?.replyTo;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
   // The answer as it reads on screen. Thinking is left out — it is folded away
@@ -715,16 +712,14 @@ function TurnView({
   // identify, and marking it too would make a one-seat room read as two
   // strangers talking.
   const tint = speaker ? tints?.get(seatKey(speaker)) : undefined;
-  const pinTarget = messages[0].id === pinTargetTurnId;
 
   return (
     <article
       className={`msg msg-${role} ${speaker ? "msg-seat" : ""} ${queued ? "is-queued" : ""} ${
         fresh ? "is-new" : ""
-      } ${pinTarget ? "is-pin-target" : ""}`}
+      }`}
       data-tint={tint}
       data-map-turn={mapTurnId}
-      data-pin-turn={messages[0].id}
     >
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
@@ -753,6 +748,12 @@ function TurnView({
           ) : (
             hostName ?? "Claude"
           )}
+        </div>
+      )}
+      {role === "assistant" && replyTo && (
+        <div className="msg-reply" title={`Replying to: ${replyTo.preview}`}>
+          <span className="msg-reply-label">Replying to</span>
+          <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
       <div className="msg-body">
@@ -906,7 +907,7 @@ function TickIcon() {
 }
 
 /** Split the conversation into runs of one speaker. */
-function groupTurns(messages: Message[]): Message[][] {
+function groupTurns(messages: Message[], separateUserTurns = false): Message[][] {
   const turns: Message[][] = [];
   for (const m of messages) {
     const last = turns[turns.length - 1];
@@ -918,7 +919,20 @@ function groupTurns(messages: Message[]): Message[][] {
     // as one line instead of as its words (see lib/relay), and a line that had
     // swallowed the message you typed just before it would put your words
     // nowhere on screen.
-    const alone = !!m.relay || !!last?.[0].relay;
+    // Codex follow-ups are a real FIFO queue of separate one-shot processes.
+    // Keeping consecutive user messages in one bubble hid which one was active:
+    // as soon as the first was claimed, the whole combined bubble lost its
+    // queued clock while later messages were still waiting. Claude keeps the
+    // established grouping because its persistent stdin path already works.
+    const queuedCodexTurn =
+      separateUserTurns && m.role === "user" && last?.[0].role === "user";
+    // Those early user bubbles also mean two later Codex answers can be
+    // consecutive in the stored array. Different reply targets are different
+    // turns even though both are assistant messages; merging them would put the
+    // second answer under the first prompt's label.
+    const differentReplyTarget =
+      m.replyTo?.id !== last?.[0].replyTo?.id && (!!m.replyTo || !!last?.[0].replyTo);
+    const alone = !!m.relay || !!last?.[0].relay || queuedCodexTurn || differentReplyTarget;
     if (!alone && last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id)
       last.push(m);
     else turns.push([m]);
@@ -1033,48 +1047,6 @@ function reducedMotion() {
   return !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
-type SelectedPassage = {
-  text: string;
-  turnId: string;
-  x: number;
-  y: number;
-};
-
-/** Read only a selection that belongs to the transcript. The browser keeps one
- * selection for the whole page, so checking both ends keeps a highlighted
- * project name, editor selection, or toolbar label out of the conversation’s
- * pin list. */
-function selectedPassage(root: HTMLElement): SelectedPassage | null {
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
-  const range = selection.getRangeAt(0);
-  const start = elementFor(range.startContainer);
-  const end = elementFor(range.endContainer);
-  if (!start || !end || !root.contains(start) || !root.contains(end)) return null;
-  // Text in a Copy control is chrome, not a passage; it should not become a
-  // bookmark simply because a drag ended over the button below a message.
-  if (start.closest("button, input, textarea, select, [contenteditable='true']")) return null;
-  const turn = start.closest<HTMLElement>("[data-pin-turn]");
-  const turnId = turn?.dataset.pinTurn;
-  const text = selection.toString().trim();
-  if (!turnId || !text) return null;
-
-  // A range over a line break can report a zero-sized bounding box; one of its
-  // client rects is the real visual anchor in that case.
-  const rect = range.getBoundingClientRect();
-  const box = rect.width || rect.height ? rect : range.getClientRects()[0];
-  if (!box) return null;
-  const x = Math.max(50, Math.min(window.innerWidth - 50, box.left + box.width / 2));
-  // The button sits above the selection. Keep enough air at the top edge for
-  // its own height, otherwise a first-line highlight puts half the control
-  // behind the browser chrome.
-  return { text, turnId, x, y: Math.max(46, box.top) };
-}
-
-function elementFor(node: Node): Element | null {
-  return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
-}
-
 export function MessageList({
   messages,
   busy,
@@ -1085,8 +1057,7 @@ export function MessageList({
   agentByTool,
   onOpenAgent,
   hostName,
-  onPin,
-  jumpToPin,
+  hostAgent,
 }: {
   messages: Message[];
   busy: boolean;
@@ -1103,6 +1074,9 @@ export function MessageList({
    *  Defaults to "Claude" for a caller that does not know — which is only the
    *  tests; the app always passes it. */
   hostName?: string;
+  /** Provider id for behavior that is genuinely transport-specific. Codex
+   * queues each prompt as a separate process; Claude deliberately does not. */
+  hostAgent?: "claude" | "codex";
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1111,11 +1085,6 @@ export function MessageList({
    * started. Kept outside the transcript so the focus view stays live. */
   agentByTool?: ReadonlyMap<string, string>;
   onOpenAgent?: (id: string) => void;
-  /** Keep a selected passage in this conversation’s sidebar index. */
-  onPin?: (pin: ConversationPin) => void;
-  /** A sidebar label the reader picked. `nonce` makes picking the same label
-   * twice a real second jump rather than a no-op state update. */
-  jumpToPin?: { id: string; turnId: string; nonce: number };
   /** When a compaction started, or absent when none is running. It is drawn
    *  at the foot of the conversation, in the SAME line the finished boundary
    *  leaves behind — one thing that starts, runs, and settles in place, rather
@@ -1130,8 +1099,6 @@ export function MessageList({
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
-  const [selection, setSelection] = useState<SelectedPassage | null>(null);
-  const [pinTargetTurnId, setPinTargetTurnId] = useState<string | null>(null);
   // Only follow the stream while the reader is already at the bottom: yanking
   // the view down while someone is reading back is the worst thing a streaming
   // chat can do.
@@ -1219,69 +1186,6 @@ export function MessageList({
     glideToBottom();
   };
 
-  // Selection belongs to the document rather than one component. Watch it
-  // there, then keep only the parts that are actually inside this transcript.
-  // The rAF lets a pointer drag finish moving its endpoint before its menu is
-  // positioned; without it the Pin button trails one word behind the highlight.
-  useEffect(() => {
-    if (!onPin) {
-      setSelection(null);
-      return;
-    }
-    let frame = 0;
-    const sync = () => {
-      if (frame) cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        frame = 0;
-        const next = innerRef.current ? selectedPassage(innerRef.current) : null;
-        setSelection((before) =>
-          before?.text === next?.text &&
-          before?.turnId === next?.turnId &&
-          before?.x === next?.x &&
-          before?.y === next?.y
-            ? before
-            : next,
-        );
-      });
-    };
-    document.addEventListener("selectionchange", sync);
-    window.addEventListener("resize", sync);
-    return () => {
-      if (frame) cancelAnimationFrame(frame);
-      document.removeEventListener("selectionchange", sync);
-      window.removeEventListener("resize", sync);
-    };
-  }, [onPin, conversationId]);
-
-  // A pin click is an intentional trip back into the transcript. Keep the
-  // regular stream-following logic off, move only this scroller (never the page
-  // around it), and give the returned-to turn a brief, quiet ring.
-  useEffect(() => {
-    if (!jumpToPin) return;
-    const scroller = scrollerRef.current;
-    const inner = innerRef.current;
-    if (!scroller || !inner) return;
-    const target = [...inner.querySelectorAll<HTMLElement>("[data-pin-turn]")].find(
-      (element) => element.dataset.pinTurn === jumpToPin.turnId,
-    );
-    if (!target) return;
-
-    stopGlide();
-    stick.current = false;
-    setAway(true);
-    const to = Math.max(
-      0,
-      scroller.scrollTop + target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 20,
-    );
-    scroller.scrollTo({ top: to, behavior: reducedMotion() ? "auto" : "smooth" });
-    setPinTargetTurnId(jumpToPin.turnId);
-    const timer = window.setTimeout(() => setPinTargetTurnId(null), 1500);
-    return () => window.clearTimeout(timer);
-    // `stopGlide` and `stick` are refs owned by this component. Only a new
-    // request should start another journey.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jumpToPin?.nonce, conversationId]);
-
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
@@ -1346,8 +1250,6 @@ export function MessageList({
     // wrong chat sliding into place.
     stopGlide();
     setAway(false);
-    setSelection(null);
-    setPinTargetTurnId(null);
     el.scrollTop = el.scrollHeight;
   }, [conversationId]);
 
@@ -1401,8 +1303,8 @@ export function MessageList({
       if (own) own.push(m);
       else kids.set(m.parent, [m]);
     }
-    return { turns: groupTurns(top), kids };
-  }, [messages]);
+    return { turns: groupTurns(top, hostAgent === "codex"), kids };
+  }, [messages, hostAgent]);
 
   // Which colour each seat speaks in. Computed over the WHOLE conversation
   // rather than per turn, because the colours are handed out in order of first
@@ -1479,7 +1381,6 @@ export function MessageList({
               tints={tints}
               fresh={fresh.has(turn[0].id)}
               mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
-              pinTargetTurnId={pinTargetTurnId}
               hostName={hostName}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
@@ -1522,34 +1423,7 @@ export function MessageList({
         </button>
       </div>
       </ConfigWorldProvider>
-      {selection && onPin && (
-        <button
-          className="conversation-pin-btn"
-          type="button"
-          style={{ left: selection.x, top: selection.y }}
-          // Holding onto the range is the whole point: a normal pointer-down
-          // moves focus and collapses the browser selection before Click gets
-          // to read it.
-          onPointerDown={(event) => event.preventDefault()}
-          onClick={() => {
-            onPin(newConversationPin({ text: selection.text, turnId: selection.turnId }));
-            window.getSelection()?.removeAllRanges();
-            setSelection(null);
-          }}
-        >
-          <PinIcon /> Pin
-        </button>
-      )}
     </div>
-  );
-}
-
-function PinIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 17v5" />
-      <path d="m8 3 8 0 1 6 3 3v2H4v-2l3-3z" />
-    </svg>
   );
 }
 

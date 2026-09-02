@@ -9,8 +9,8 @@
 // on the RIGHT, where it can be scanned down the edge of the list without
 // breaking the line of text.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import type React from "react";
 import type { Conversation } from "../lib/store";
-import type { ConversationPin } from "../lib/conversationPins";
 import { RollingNumber } from "./RollingNumber";
 
 export type Project = { id: string; name: string; primary_path?: string };
@@ -27,10 +27,6 @@ const NONE_DELETING: ReadonlySet<string> = new Set();
  *  Kept separately from `deleting`: the latter means it can still be taken
  *  back, while this one is already gone for good. */
 const NONE_LEAVING: ReadonlySet<string> = new Set();
-
-/** No pinned passages is the ordinary state, and keeping this shared stops the
- * sidebar from seeing a new empty list on every transcript update. */
-const NO_CONVERSATION_PINS: readonly ConversationPin[] = [];
 
 export function Sidebar({
   projects,
@@ -55,11 +51,8 @@ export function Sidebar({
   onDelete,
   onSettings,
   onNewProject,
-  pins = NO_CONVERSATION_PINS,
-  activePinId,
-  onPickPin,
-  onRemovePin,
   onHide,
+  onResize,
   head,
   foot,
 }: {
@@ -105,18 +98,15 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
-  /** The selected passages in the chat currently on screen. They stay in the
-   * project column because this is a reading aid, not another view to open. */
-  pins?: readonly ConversationPin[];
-  /** Which label most recently took the reader back into the transcript. */
-  activePinId?: string | null;
-  onPickPin?: (pin: ConversationPin) => void;
-  onRemovePin?: (id: string) => void;
   /** Put the whole column away, on the screens where it IS a column. Absent
    *  below 860px, where the sidebar is a drawer that the scrim and the top
    *  bar's own title already close — a third control there would be a third
    *  way to do one thing. */
   onHide?: () => void;
+  /** Start a drag of the column's right edge. Present only where the sidebar
+   *  IS a column: as a drawer it is the width of the screen, and there is
+   *  nothing beside it to take the space from. */
+  onResize?: (e: React.PointerEvent<HTMLElement>) => void;
   /** Controls with nowhere else to be on a phone. The top bar holds four things
    *  at 390px, so the view switch (`head`) and the plan-usage meter (`foot`)
    *  come in here instead — passed in rather than rendered twice, because the
@@ -173,13 +163,6 @@ export function Sidebar({
         ))}
       </ul>
 
-      <ConversationPins
-        pins={pins}
-        activePinId={activePinId}
-        onPick={onPickPin}
-        onRemove={onRemovePin}
-      />
-
       {shelved.length > 0 && (
         <button className="shelf-open" type="button" onClick={onShowShelved}>
           Shelved · <RollingNumber value={shelved.length} />
@@ -200,65 +183,21 @@ export function Sidebar({
       </button>
 
       {foot && <div className="sidebar-slot is-foot">{foot}</div>}
+
+      {/* Last, so it draws over the rows it sits beside. It is the dividing
+          line itself, widened either side of it — a 1px target is not a
+          target — and it carries no width of its own, so the list is exactly
+          as wide with it as without. */}
+      {onResize && (
+        <span
+          className="nav-resizer"
+          onPointerDown={onResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the project column"
+        />
+      )}
     </nav>
-  );
-}
-
-/** A short, always-visible index into the current conversation. The label is
- * the button: it is what the reader scans, and it returns them to the full turn
- * rather than opening a competing detail pane. */
-function ConversationPins({
-  pins,
-  activePinId,
-  onPick,
-  onRemove,
-}: {
-  pins: readonly ConversationPin[];
-  activePinId?: string | null;
-  onPick?: (pin: ConversationPin) => void;
-  onRemove?: (id: string) => void;
-}) {
-  if (pins.length === 0) return null;
-
-  return (
-    <section className="conversation-pins" aria-label="Pinned conversation passages">
-      <div className="conversation-pins-head">
-        <span className="conversation-pins-title">
-          <PinIcon /> Pins
-        </span>
-        <RollingNumber value={pins.length} />
-      </div>
-      <ul className="conversation-pin-list">
-        {pins.map((pin) => {
-          const active = pin.id === activePinId;
-          return (
-            <li className={`conversation-pin-row ${active ? "is-active" : ""}`} key={pin.id}>
-              <button
-                className="conversation-pin-jump"
-                type="button"
-                title={`Jump to “${pin.label}”`}
-                aria-current={active ? "true" : undefined}
-                onClick={() => onPick?.(pin)}
-              >
-                <span className="conversation-pin-label">{pin.label}</span>
-                <span className="conversation-pin-excerpt">{pin.text}</span>
-              </button>
-              {onRemove && (
-                <button
-                  className="conversation-pin-remove"
-                  type="button"
-                  title={`Remove “${pin.label}”`}
-                  aria-label={`Remove pinned passage: ${pin.label}`}
-                  onClick={() => onRemove(pin.id)}
-                >
-                  <CloseIcon />
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
   );
 }
 
@@ -541,15 +480,6 @@ function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-function PinIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 17v5" />
-      <path d="m8 3 8 0 1 6 3 3v2H4v-2l3-3z" />
     </svg>
   );
 }

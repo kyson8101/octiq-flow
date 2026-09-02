@@ -2,7 +2,6 @@
 import { describe, expect, it } from "vitest";
 
 import { QUIET_MAX, buildBoard, type BoardInput } from "./board";
-import type { Todo } from "./todos";
 
 /** A conversation, as the sidebar's store holds one. Only the fields the board
  *  reads are set; the rest of `Conversation` is beside the point here. */
@@ -17,29 +16,6 @@ function chat(id: string, over: { title?: string; updatedAt?: number } = {}) {
   };
 }
 
-/** A loaded transcript whose newest `todo_write` call holds `todos`. */
-function loaded(todos: Todo[]) {
-  return {
-    messages: [
-      {
-        id: "m1",
-        role: "assistant" as const,
-        streaming: false,
-        blocks: [
-          {
-            kind: "tool" as const,
-            id: "t1",
-            name: "mcp__octiq__todo_write",
-            argsJson: "",
-            args: { todos },
-            state: "done" as const,
-          },
-        ],
-      },
-    ],
-  };
-}
-
 function input(over: Partial<BoardInput> = {}): BoardInput {
   return {
     conversations: [],
@@ -47,7 +23,6 @@ function input(over: Partial<BoardInput> = {}): BoardInput {
     busy: new Set(),
     asks: {},
     questions: {},
-    chats: {},
     ...over,
   };
 }
@@ -155,78 +130,13 @@ describe("buildBoard columns", () => {
 });
 
 describe("buildBoard card face", () => {
-  it("reads the plan out of a loaded transcript", () => {
-    const board = buildBoard(
-      input({
-        conversations: [chat("a")],
-        running: new Set(["a"]),
-        busy: new Set(["a"]),
-        chats: {
-          a: loaded([
-            { content: "One", status: "completed" },
-            { content: "Two", status: "in_progress", activeForm: "Doing two" },
-          ]),
-        },
-      }),
-    );
-    expect(cardOf(board, "a")?.plan).toMatchObject({
-      done: 1,
-      total: 2,
-      current: "Doing two",
-    });
-  });
-
-  it("has no plan for a chat whose transcript is not in memory", () => {
-    // Running but never opened this session. The column is still right; the
-    // face falls back to the title, and loading every transcript to fix that
-    // costs megabytes per chat on a phone (App.tsx).
+  it("falls back to the title for a chat whose transcript is not in memory", () => {
+    // Running but never opened this session. The column is still right, and
+    // the title is the whole face.
     const board = buildBoard(
       input({ conversations: [chat("a", { title: "Fix the top bar" })], running: new Set(["a"]) }),
     );
-    expect(cardOf(board, "a")?.plan).toBeUndefined();
     expect(cardOf(board, "a")?.title).toBe("Fix the top bar");
-  });
-
-  it("marks an idle chat that stopped part-way through its plan", () => {
-    const board = buildBoard(
-      input({
-        conversations: [chat("a")],
-        running: new Set(["a"]),
-        chats: {
-          a: loaded([
-            { content: "One", status: "completed" },
-            { content: "Two", status: "pending" },
-          ]),
-        },
-      }),
-    );
-    expect(cardOf(board, "a")?.stalled).toBe(true);
-  });
-
-  it("does not mark an idle chat that finished its plan", () => {
-    const board = buildBoard(
-      input({
-        conversations: [chat("a")],
-        running: new Set(["a"]),
-        chats: { a: loaded([{ content: "One", status: "completed" }]) },
-      }),
-    );
-    expect(cardOf(board, "a")?.stalled).toBeFalsy();
-    expect(cardOf(board, "a")?.plan?.finished).toBe(true);
-  });
-
-  it("does not mark a chat that is still working through its plan", () => {
-    // Unfinished items are the normal state of a turn in flight. Only a chat
-    // that has STOPPED with items left has stalled.
-    const board = buildBoard(
-      input({
-        conversations: [chat("a")],
-        running: new Set(["a"]),
-        busy: new Set(["a"]),
-        chats: { a: loaded([{ content: "One", status: "pending" }]) },
-      }),
-    );
-    expect(cardOf(board, "a")?.stalled).toBeFalsy();
   });
 });
 

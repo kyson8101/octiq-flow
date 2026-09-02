@@ -134,24 +134,6 @@ function Card({
         </span>
       )}
 
-      {/* The plan, when the transcript is in memory to read one from. A chat
-          that is running but was never opened this session has none, and the
-          title above is the whole face — see lib/board. */}
-      {card.plan && card.plan.total > 0 && (
-        <span className="board-plan">
-          <span className="board-plan-count">
-            <RollingText>{`${card.plan.done}/${card.plan.total}`}</RollingText>
-          </span>
-          {card.plan.finished ? (
-            <span className="board-plan-line">all done</span>
-          ) : (
-            <span className="board-plan-line">{card.plan.current}</span>
-          )}
-        </span>
-      )}
-
-      {card.stalled && <span className="board-stalled">stopped part-way</span>}
-
       {project && <span className="board-proj">{project}</span>}
     </button>
   );

@@ -9,6 +9,20 @@
 
 export type Provider = "claude" | "codex";
 
+/** A model's visual voice in the composer. The names are deliberately model
+ * specific: adding a model means choosing how it looks instead of silently
+ * inheriting whichever provider style happened to be there first. */
+export type ComposerStyle =
+  | "opus"
+  | "sonnet"
+  | "haiku"
+  | "fable"
+  | "claude"
+  | "sol"
+  | "terra"
+  | "luna"
+  | "codex";
+
 export type ModelChoice = {
   id: string;
   agent: Provider;
@@ -17,6 +31,8 @@ export type ModelChoice = {
   /** What the backend passes as --model / -m. Empty = the provider default. */
   flag: string;
   hint: string;
+  /** Selects the composer's scoped colour and surface treatment. */
+  composerStyle: ComposerStyle;
 };
 
 /** The shared wire vocabulary. Each provider deliberately offers a subset. */
@@ -97,11 +113,11 @@ export const providers = {
     id: "claude",
     name: "Claude",
     models: [
-      { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus", flag: "opus", hint: "for complex work" },
-      { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet", flag: "sonnet", hint: "the everyday balance" },
-      { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku", hint: "fastest, for quick answers" },
-      { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable", hint: "for the toughest problems" },
-      { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "", hint: "whatever the CLI picks" },
+      { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus", flag: "opus", hint: "for complex work", composerStyle: "opus" },
+      { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet", flag: "sonnet", hint: "the everyday balance", composerStyle: "sonnet" },
+      { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku", hint: "fastest, for quick answers", composerStyle: "haiku" },
+      { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable", hint: "for the toughest problems", composerStyle: "fable" },
+      { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "", hint: "whatever the CLI picks", composerStyle: "claude" },
     ],
     access: [
       { id: "read", label: "Plan", hint: "create a plan before making changes" },
@@ -134,10 +150,10 @@ export const providers = {
     id: "codex",
     name: "Codex",
     models: [
-      { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol", hint: "the frontier one" },
-      { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra", hint: "the everyday balance" },
-      { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna", hint: "fast and cheap" },
-      { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "", hint: "whatever the CLI picks" },
+      { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol", hint: "the frontier one", composerStyle: "sol" },
+      { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra", hint: "the everyday balance", composerStyle: "terra" },
+      { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna", hint: "fast and cheap", composerStyle: "luna" },
+      { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "", hint: "whatever the CLI picks", composerStyle: "codex" },
     ],
     access: [
       { id: "read", label: "Read-only", hint: "sandboxed, no writes" },

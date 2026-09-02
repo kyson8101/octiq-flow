@@ -256,6 +256,13 @@ export type Seat = {
  *  answer to it: a chat is a group when this list is not empty. */
 export type RoomView = { seats: Seat[] };
 
+/** The user message a non-adjacent Codex answer belongs to.
+ *
+ * Codex accepts queued prompts one process at a time. When another queued
+ * prompt sits between the one being handled and its eventual answer, this
+ * keeps the pair visibly connected without changing transcript order. */
+export type ReplyTarget = { id: string; preview: string };
+
 export type Message = {
   id: string;
   role: "user" | "assistant";
@@ -286,6 +293,9 @@ export type Message = {
    *  replay id because it is a state signal, not a second copy of the message.
    *  The queue mark only belongs on a turn neither kind of signal has claimed. */
   takenUp?: boolean;
+  /** The earlier queued prompt this assistant message is answering. Codex only;
+   * Claude's persistent stream already preserves its working conversation. */
+  replyTo?: ReplyTarget;
   /** The `tool_use` id of the Task call that owns this message, when a SUBAGENT
    *  wrote it. Undefined for the main agent — which is most messages, and the
    *  whole conversation when nothing has spawned one. */
@@ -355,6 +365,9 @@ export type ChatState = {
   commands?: string[];
   /** True between sending a turn and its `result`. */
   busy: boolean;
+  /** A Codex prompt whose answer will not be adjacent to it because another
+   * queued message arrived later. Copied onto the answer when it opens. */
+  activeReply?: ReplyTarget;
   /** What the agent is doing when it is doing something other than writing —
    *  compacting, so far. Shown in place of the generic "working…". */
   activity?: string;
@@ -622,6 +635,7 @@ function withCurrent(
       streaming: true,
       parent,
       speaker,
+      ...(!parent && !speaker && state.activeReply ? { replyTo: state.activeReply } : {}),
     };
     return { ...state, messages: [...state.messages, fn(seeded)] };
   }
@@ -692,6 +706,7 @@ const turnOver = {
   // summary it owes: whatever the next turn brings, it is not that.
   compactingSince: undefined,
   awaitingSummary: undefined,
+  activeReply: undefined,
 } as const;
 
 /** Two blocks say the same thing, so the second is a copy rather than news.
@@ -1037,7 +1052,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // one moment the optimistic bubble can learn that it has left the queue.
   // It also restores the busy flag when this browser caught up after Codex had
   // already started, rather than being the browser that pressed Send.
-  if (type === "turn.started") return codexTurnStarted(state, parent, speaker, now);
+  if (type === "turn.started") return codexTurnStarted(state, e, parent, speaker, now);
 
   // Codex reports a failed turn twice: once as a bare `error`, once wrapped in
   // `turn.failed`. Either is enough, and taking both means an older or newer
@@ -1700,23 +1715,51 @@ function foldCodex(
  * recent message or light the host's working state. */
 function codexTurnStarted(
   state: ChatState,
+  event: Json,
   parent: string | undefined,
   speaker: Speaker | undefined,
   now: number,
 ): ChatState {
   if (parent || speaker) return state;
 
-  // Codex gets one prompt per process, so the newest host-directed bubble it
-  // has not already taken is the prompt this turn began. A message sent to a
-  // room seat is deliberately excluded: that is a different process and its
-  // start event arrives stamped with that seat.
-  const at = state.messages
-    .map((m) => m.role === "user" && !m.echo && !m.takenUp && !m.to)
-    .lastIndexOf(true);
+  // New backends stamp the exact browser-generated id onto `turn.started`.
+  // Older transcripts have no stamp, so fall back to the provider's real queue
+  // contract: command-line turns are popped FIFO. The previous newest-first
+  // guess inverted two queued messages on screen — it marked the later one as
+  // active while Codex was actually answering the earlier one.
+  const turnId = asStr(event.octiq_user_turn_id);
+  const at = turnId
+    ? state.messages.findIndex(
+        (m) => m.role === "user" && !m.echo && !m.to && m.turnId === turnId,
+      )
+    : state.messages.findIndex(
+        (m) => m.role === "user" && !m.echo && !m.takenUp && !m.to,
+      );
+
+  const target = at >= 0 ? state.messages[at] : undefined;
+  // Ordinarily the prompt is immediately above its answer and needs no extra
+  // label. A later message is what makes the eventual answer ambiguous; only
+  // that case carries a compact reply anchor onto the assistant turn.
+  const laterMessage = at >= 0 && state.messages.slice(at + 1).some((m) => !m.parent);
+  const preview = target?.blocks
+    .filter((b) => b.kind === "text")
+    .map((b) => ("text" in b ? b.text : ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const activeReply =
+    target && laterMessage
+      ? {
+          id: target.id,
+          preview:
+            preview && preview.length > 96 ? `${preview.slice(0, 95).trimEnd()}…` : preview || "Attached message",
+        }
+      : undefined;
 
   return {
     ...state,
     busy: true,
+    activeReply,
     turnStartedAt: state.turnStartedAt ?? now,
     messages:
       at < 0

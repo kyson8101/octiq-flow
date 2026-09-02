@@ -17,7 +17,16 @@
 // Chats run in PARALLEL. Switching to another one does not stop the one you
 // leave — its answer arrives, folds into its own transcript, and is saved,
 // whether or not it is the chat on screen.
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
 import { CatchUp } from "./lib/catchUp";
 import { CARRY_ON, someoneWorking, wasCutOff } from "./lib/carryOn";
@@ -63,10 +72,10 @@ import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail, RailButton } from "./components/AgentRail";
 import { BackgroundProvider } from "./components/Background";
 import { backgroundCalls } from "./lib/background";
-import { latestTodos } from "./lib/todos";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
 import { DRAWER, useMedia, WIDE } from "./lib/media";
+import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { useDrawerSwipe } from "./lib/swipe";
 import { neighbour, useChatSwipe } from "./lib/chatSwipe";
 import { MessageList } from "./components/MessageList";
@@ -109,7 +118,6 @@ import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk"
 import { UserQuestion, type Question } from "./components/UserQuestion";
 import { CarryOn } from "./components/CarryOn";
 import { RollingNumber, RollingText } from "./components/RollingNumber";
-import { appendConversationPin, type ConversationPin } from "./lib/conversationPins";
 import { projectSlug } from "./lib/projectSlug";
 
 /** The editor and its text-editing engine are a third of the app's code and
@@ -250,6 +258,13 @@ const GIT_KEY = "octiq.v2.gitColumn";
  *  the sidebar is a column; below that it is a drawer and `drawer` is the flag
  *  that says whether it is out. */
 const NAV_KEY = "octiq.v2.navShut";
+/** How wide that column was dragged. */
+const NAV_W_KEY = "octiq.v2.navWidth";
+/** The column's range. The floor is where a project name and its chats still
+ *  read as an outline rather than as a stack of ellipses; the ceiling is the
+ *  point past which a list of names is only whitespace. `dockWidth` squeezes
+ *  both ends further when the window cannot afford them. */
+const NAV_SIZES: Sizes = { initial: 260, min: 200, max: 460 };
 const FILES_KEY = "octiq.v2.filesOpen";
 /** The agent column, put away. Stored the other way round from the two above:
  *  the rail shows itself the moment a chat starts an agent, so what is worth
@@ -306,14 +321,6 @@ export default function App() {
     loadConversations().filter((c) => !isDeleted(c.id)),
   );
   const [conversationId, setConversationId] = useState<string | null>(null);
-  /** A pin list click is an instruction for the transcript, not a durable chat
-   * setting. The nonce lets the same label take the reader back twice. */
-  const [pinJump, setPinJump] = useState<{
-    id: string;
-    turnId: string;
-    nonce: number;
-  } | null>(null);
-  const [activePinId, setActivePinId] = useState<string | null>(null);
   /** Which agent the rail has opened, by `task_id`, or null for the whole
    *  conversation. View state, not chat state: it is about what this person is
    *  reading, and it must not survive into another conversation. */
@@ -334,6 +341,23 @@ export default function App() {
    *  the top bar gains room at 700px, the drawer only becomes a column at 860.
    *  Between the two there is still something to swipe. */
   const hasDrawer = useMedia(DRAWER);
+  /** The width of that column, dragged by its right edge and remembered. Only
+   *  read above the drawer breakpoint, where the sidebar is a column; a drawer
+   *  is the width of the screen. */
+  const nav = useDockWidth(NAV_W_KEY, NAV_SIZES, "left");
+  /* Published on the root rather than on the shell, because the layout is not
+   * the only thing that needs it: a right-hand panel works out its own maximum
+   * from what the project column is taking, and `dockWidth` reads it from
+   * here. Set imperatively so it is one property on one element, wherever in
+   * the tree it is read from.
+   *
+   * BEFORE the paint, not after: a column that was left put away is held off
+   * screen by a margin of its own width, and a first frame drawn at the
+   * stylesheet's 260px would then TRANSITION to a remembered 400 — the chat
+   * sliding sideways on load, for a column nobody can see. */
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--nav-w", `${nav.width}px`);
+  }, [nav.width]);
   /** The app shell, which the drag gesture listens on because it holds both the
    *  drawer and everything the drawer slides over. */
   const shell = useRef<HTMLDivElement | null>(null);
@@ -354,8 +378,6 @@ export default function App() {
   // panel until something is clicked.
   useEffect(() => {
     setFocusedAgent(null);
-    setPinJump(null);
-    setActivePinId(null);
   }, [conversationId]);
   // Which project's settings are open: an id, "new" while creating one, or
   // null for closed.
@@ -814,11 +836,6 @@ export default function App() {
               // seen has none, and replays in full.
               messages: cached?.messages ?? [],
               seq: cached?.seq,
-              // Pins are a reader’s local index into the transcript. They are
-              // deliberately not server-index metadata, so keep them through a
-              // routine index refresh instead of letting an unrelated rename
-              // make them disappear.
-              conversationPins: cached?.conversationPins,
               // Listed by the server, so from now on its absence means
               // something: see `synced` in lib/store.ts.
               synced: true,
@@ -1293,14 +1310,6 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
-  /** The reader’s bookmarks live beside the stored transcript, not inside an
-   * agent session. That makes them survive a reload without changing what the
-   * agent itself remembers. */
-  const conversationPins =
-    (conversationId ? conversations.find((conversation) => conversation.id === conversationId) : undefined)
-      ?.conversationPins ?? [];
-  /** The newest plan this chat wrote down — see lib/todos. */
-  const todos = useMemo(() => latestTodos(chat.messages), [chat.messages]);
   /** The files this chat says are worth opening — see lib/pins. Read once up
    *  here rather than twice below: the button needs the count and the panel
    *  needs the list, and walking the transcript for each of them would do the
@@ -1352,15 +1361,11 @@ export default function App() {
   }, [running, chats]);
 
   /** Every chat under what it wants from you — see `lib/board`. Built only
-   *  while the page is open: it walks every loaded transcript for its newest
-   *  plan, and there is no reason to do that behind a page nobody is looking
-   *  at. */
+   *  while the page is open: there is no reason to sort every chat into a
+   *  column behind a page nobody is looking at. */
   const board = useMemo(
-    () =>
-      boardOpen
-        ? buildBoard({ conversations, running, busy: busySet, asks, questions, chats })
-        : null,
-    [boardOpen, conversations, running, busySet, asks, questions, chats],
+    () => (boardOpen ? buildBoard({ conversations, running, busy: busySet, asks, questions }) : null),
+    [boardOpen, conversations, running, busySet, asks, questions],
   );
 
   /** The calls whose background work is still running, for the cards. Memoised
@@ -2152,7 +2157,7 @@ export default function App() {
         setConversations((prev) => {
           const list = prev.map((c) =>
             c.id === id
-              ? { ...c, messages: [], seq: 0, conversationPins: [], updatedAt: Date.now() }
+              ? { ...c, messages: [], seq: 0, updatedAt: Date.now() }
               : c,
           );
           saveConversations(list);
@@ -2874,100 +2879,6 @@ export default function App() {
     [conversationId, restartForAccess],
   );
 
-  /** Save a selected passage against this chat. A response can be visible a
-   * beat before the normal transcript save creates its sidebar row, so this
-   * also knows how to create that first local record instead of making an early
-   * Pin click disappear. */
-  const pinConversation = useCallback(
-    (pin: ConversationPin) => {
-      const id = conversationId;
-      if (!id) return;
-      const duplicate = conversationPins.find(
-        (held) => held.turnId === pin.turnId && held.text === pin.text,
-      );
-      setActivePinId(duplicate?.id ?? pin.id);
-      setConversations((prev) => {
-        const existing = prev.find((conversation) => conversation.id === id);
-        if (existing) {
-          const before = existing.conversationPins ?? [];
-          const pins = appendConversationPin(before, pin);
-          if (pins.length === before.length) return prev;
-          const list = prev.map((conversation) =>
-            conversation.id === id
-              ? { ...conversation, conversationPins: pins, updatedAt: Date.now() }
-              : conversation,
-          );
-          saveConversations(list);
-          return list;
-        }
-
-        const info = meta.current[id];
-        const projectIdForPin = info?.projectId ?? project?.id;
-        if (!projectIdForPin) return prev;
-        const now = Date.now();
-        const created: Conversation = {
-          id,
-          projectId: projectIdForPin,
-          title: chatName(undefined, chat.messages),
-          sessionId: chat.sessionId,
-          // A new array is intentional: the ordinary transcript save still
-          // has to see a fresh record and publish its index entry after this
-          // early pin created the browser copy.
-          messages: [...chat.messages],
-          modelId: info?.modelId ?? choice.id,
-          permission: info?.access ?? access,
-          createdAt: now,
-          updatedAt: now,
-          conversationPins: [pin],
-        };
-        const list = [created, ...prev];
-        saveConversations(list);
-        return list;
-      });
-    },
-    [conversationId, project?.id, chat.messages, chat.sessionId, choice.id, access, conversationPins],
-  );
-
-  /** The sidebar labels are switches: take the reader to the full turn that
-   * gave the passage its context, without opening another panel over it. */
-  const pickConversationPin = useCallback((pin: ConversationPin) => {
-    setActivePinId(pin.id);
-    // In the phone drawer the returned-to turn is otherwise hidden directly
-    // behind the label just pressed. On a wide screen this is already false,
-    // so the same line is a no-op there.
-    setDrawer(false);
-    setPinJump((before) => ({
-      id: pin.id,
-      turnId: pin.turnId,
-      nonce: (before?.nonce ?? 0) + 1,
-    }));
-  }, []);
-
-  const removeConversationPin = useCallback(
-    (pinId: string) => {
-      const id = conversationId;
-      if (!id) return;
-      setActivePinId((active) => (active === pinId ? null : active));
-      setPinJump((jump) => (jump?.id === pinId ? null : jump));
-      setConversations((prev) => {
-        const existing = prev.find((conversation) => conversation.id === id);
-        if (!existing?.conversationPins?.some((pin) => pin.id === pinId)) return prev;
-        const list = prev.map((conversation) =>
-          conversation.id === id
-            ? {
-                ...conversation,
-                conversationPins: conversation.conversationPins?.filter((pin) => pin.id !== pinId),
-                updatedAt: Date.now(),
-              }
-            : conversation,
-        );
-        saveConversations(list);
-        return list;
-      });
-    },
-    [conversationId],
-  );
-
   if (conn === "unauthorized") return <Connect />;
 
   /* Chat or Files. Marked by a filled pill, not an edge stripe: on a 48px-tall
@@ -3187,11 +3098,8 @@ export default function App() {
           onDelete={deleteConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
-          pins={conversationPins}
-          activePinId={activePinId}
-          onPickPin={pickConversationPin}
-          onRemovePin={removeConversationPin}
           onHide={hasDrawer ? undefined : () => showNav(false)}
+          onResize={hasDrawer ? undefined : nav.startDrag}
           head={wide ? undefined : viewSwitch}
           foot={wide ? undefined : <Usage />}
         />
@@ -3275,6 +3183,7 @@ export default function App() {
                       // sets it from the session, and changing provider cannot
                       // happen in place — it opens a new chat.
                       hostName={providerFor(choice.agent).name}
+                      hostAgent={choice.agent}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and
@@ -3288,8 +3197,6 @@ export default function App() {
                       onSetting={send}
                       agentByTool={agentByTool}
                       onOpenAgent={setFocusedAgent}
-                      onPin={pinConversation}
-                      jumpToPin={pinJump ?? undefined}
                     />
                     {focused && (
                       <AgentFocus
@@ -3414,7 +3321,6 @@ export default function App() {
           <Composer
             session={conversationId ?? undefined}
             focusOn={focusBox}
-            todos={todos}
             choice={choice}
             onChoice={changeModel}
             started={chat.messages.length > 0}

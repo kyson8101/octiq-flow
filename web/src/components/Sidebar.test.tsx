@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import type { Conversation } from "../lib/store";
-import type { ConversationPin } from "../lib/conversationPins";
 import { Sidebar, type Project } from "./Sidebar";
 
 const projects: Project[] = [{ id: "p1", name: "octiq-flow" }];
@@ -23,6 +22,7 @@ const chat = (id: string): Conversation => ({
 const html = (
   over: {
     onHide?: () => void;
+    onResize?: () => void;
     conversations?: Map<string, Conversation[]>;
     running?: Set<string>;
     busy?: Set<string>;
@@ -30,8 +30,6 @@ const html = (
     leaving?: ReadonlySet<string>;
     deleteMs?: number;
     expanded?: Set<string>;
-    pins?: ConversationPin[];
-    activePinId?: string | null;
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -60,24 +58,6 @@ const html = (
   );
 
 describe("Sidebar", () => {
-  it("keeps pinned passages in the project column, keyed by their labels", () => {
-    const pins: ConversationPin[] = [
-      {
-        id: "pin-1",
-        label: "Release decision",
-        text: "Ship the small patch first, then schedule the redesign.",
-        turnId: "a1",
-        createdAt: 1,
-      },
-    ];
-    const out = html({ pins, activePinId: "pin-1" });
-
-    expect(out).toContain("Pinned conversation passages");
-    expect(out).toContain("Release decision");
-    expect(out).toContain("Ship the small patch first");
-    expect(out).toContain('aria-current="true"');
-  });
-
   it("offers to put the column away when there is a column", () => {
     expect(html({ onHide: () => {} })).toContain('aria-label="Hide projects"');
   });
@@ -87,6 +67,14 @@ describe("Sidebar", () => {
     // own title already close it. A third way to shut it is a third control
     // saying the same thing.
     expect(html()).not.toContain('aria-label="Hide projects"');
+  });
+
+  it("carries a drag handle where there is a column to widen", () => {
+    expect(html({ onResize: () => {} })).toContain('aria-label="Resize the project column"');
+  });
+
+  it("has no handle as a drawer, where the column is the width of the screen", () => {
+    expect(html()).not.toContain("nav-resizer");
   });
 
   it("counts the chats a closed project holds", () => {

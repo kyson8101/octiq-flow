@@ -22,9 +22,6 @@
 //   Working    the `busy` set: a turn in flight.
 //   Idle       the `running` set without `busy`: a live process between turns.
 //   Quiet      neither: reaped by the sweeper, or never started this session.
-import type { Message } from "./chat";
-import { latestTodos, todoLook, type TodoLook } from "./todos";
-
 export type BoardColumn = "needs-you" | "working" | "idle" | "quiet";
 
 /** How many Quiet cards are worth drawing.
@@ -49,20 +46,6 @@ export type BoardCard = {
   column: BoardColumn;
   /** Set on Needs you cards, and only those. */
   waiting?: Waiting;
-  /** How far through its plan, when the transcript is in memory to read it
-   *  from. Absent for a chat that is running but was never opened this
-   *  session — its column is still right, and the title is the face. */
-  plan?: TodoLook;
-  /** Idle with items left undone: it stopped part-way.
-   *
-   *  This is the one thing Idle cannot say on its own. Idle mixes three
-   *  different situations — finished, stopped and waiting on you, blocked on
-   *  something outside — and only the agent really knows which. So the plan is
-   *  read as the nearest available evidence, and the answer is MARKED rather
-   *  than promoted into Needs you: an agent may well have finished without
-   *  tidying its list, and a guess in the one column that must not cry wolf
-   *  would cost that column its meaning. */
-  stalled?: boolean;
   updatedAt: number;
 };
 
@@ -105,8 +88,6 @@ export type BoardInput = {
   asks: Record<string, PendingAsk[]>;
   /** Pending `ask_user` questions, by conversation id. */
   questions: Record<string, PendingQuestion[]>;
-  /** The chats whose transcripts are in memory. Only these have a plan. */
-  chats: Record<string, { messages: Message[] } | undefined>;
 };
 
 const ORDER: BoardColumn[] = ["needs-you", "working", "idle", "quiet"];
@@ -144,18 +125,12 @@ function card(chat: BoardChat, input: BoardInput): BoardCard {
         ? "idle"
         : "quiet";
 
-  const loaded = input.chats[chat.id];
-  const plan = loaded ? todoLook(latestTodos(loaded.messages)) : undefined;
-  const stalled = column === "idle" && !!plan && plan.total > 0 && !plan.finished;
-
   return {
     id: chat.id,
     projectId: chat.projectId,
     title: chat.title,
     column,
     ...(waiting ? { waiting } : {}),
-    ...(plan ? { plan } : {}),
-    ...(stalled ? { stalled } : {}),
     updatedAt: chat.updatedAt,
   };
 }

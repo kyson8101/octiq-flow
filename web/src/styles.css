@@ -34,6 +34,12 @@
      them, or four things that have always lined up quietly stop. */
   --tool-pad: 11px;
   --tool-indent: 34px;
+  /* The project column's width, above the breakpoint where it IS a column.
+     App.tsx overwrites this on the root as the handle is dragged, and this is
+     the width a first visit gets — kept here rather than only in the layout so
+     a right-hand panel working out what it can afford has an answer to read
+     before the first drag. */
+  --nav-w: 260px;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   /* Sarasa Mono SC first, and the reason is Chinese: its CJK glyphs are
@@ -422,11 +428,18 @@ body {
   overflow-x: clip;
 }
 
+/* On a phone this is a full-screen page, not a panel with the chat showing
+   down one side. Two reasons, and the second is the one that decided it: a
+   300px drawer gave a project name and its chats about 240px of line before
+   the ellipsis, which is not enough to tell two chats in the same project
+   apart; and a strip of unreadable chat behind it invites a tap that closes
+   the list you came to read. Full width, so picking up a chat is a page you
+   are ON, and the top bar above it is the way back. */
 .sidebar {
   position: absolute;
   z-index: 20;
   inset: 0 auto 0 0;
-  width: min(84vw, 300px);
+  width: 100%;
   display: flex;
   flex-direction: column;
   padding-bottom: env(safe-area-inset-bottom);
@@ -439,6 +452,33 @@ body {
 
 .drawer-open .sidebar {
   transform: translateX(0);
+}
+
+/* The column's right edge, made draggable. It sits ON the dividing line and
+   reaches a few pixels either side of it, the same way the git panel's does —
+   a 1px target is not a target. Only ever rendered where the sidebar is a
+   column; the rule below is the belt to that braces, for the frame in which a
+   window being resized has crossed the breakpoint and React has not heard. */
+.nav-resizer {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  right: -4px;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.nav-resizer:hover,
+.nav-resizer:active {
+  background: var(--accent-tint);
+}
+
+@media (max-width: 859.98px) {
+  .nav-resizer {
+    display: none;
+  }
 }
 
 .scrim {
@@ -1102,31 +1142,6 @@ body {
   min-width: 0;
 }
 
-/* A return point from the pin list. It is a brief cue on the whole turn, not a
- * permanent highlighter: the pin keeps the selected words in the sidebar, and
- * this only tells the reader where the surrounding context begins. */
-.msg.is-pin-target {
-  border-radius: var(--r-md);
-  animation: pin-return 1.5s ease-out;
-}
-
-@keyframes pin-return {
-  0%,
-  28% {
-    box-shadow: 0 0 0 2px var(--accent-tint), 0 0 0 4px color-mix(in srgb, var(--accent) 20%, transparent);
-  }
-  100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .msg.is-pin-target {
-    animation: none;
-    box-shadow: 0 0 0 2px var(--accent-tint);
-  }
-}
-
 /* The way back down, for a reader who has scrolled away from the end.
    Following the stream is switched OFF the moment they scroll up (see
    MessageList), and without this the only way back is to scroll the whole
@@ -1420,6 +1435,36 @@ body {
   font-weight: 600;
   letter-spacing: 0.03em;
   color: var(--fg-3);
+}
+
+/* Codex can have several one-shot turns waiting while an earlier answer is
+   still being written. When another prompt sits between the one it picked up
+   and this answer, name the actual target here so a long reply cannot look like
+   it belongs to the newest bubble merely because that bubble is nearest. */
+.msg-reply {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 0 8px;
+  padding-left: 7px;
+  border-left: 2px solid var(--border-strong);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-3);
+}
+
+.msg-reply-label {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.msg-reply-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
 }
 
 /* ---- A seat's reply ---------------------------------------------------- */
@@ -2530,8 +2575,101 @@ body {
 
 /* ---- Composer --------------------------------------------------------- */
 .composer {
+  /* The fallback is the app's ordinary blue, but every registered model
+     supplies one of the profiles below. These variables stay local to the
+     composer: changing model should change the place you address it, not
+     recolour the transcript and project chrome around it. */
+  --composer-accent: #0a84ff;
+  --composer-on-accent: #fff;
+  --composer-glow-x: 18%;
+  --composer-glow-y: -18%;
+  --composer-sheen-angle: 122deg;
+  /* Rebind the app's semantic accent tokens only inside this subtree. That
+     keeps every existing selected/focused state in step — including the model
+     grid and the phone sheet — without teaching each control about models. */
+  --accent: var(--composer-accent);
+  --accent-tint: color-mix(in srgb, var(--composer-accent) 16%, transparent);
+  --accent-fg: var(--composer-on-accent);
   flex: 0 0 auto;
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+}
+
+/* Claude's models: richer work leans violet, the everyday model keeps
+   Claude's warm coral, the quick model is crisp cyan, and Fable gets a softer
+   rose. The default stays close to Claude's own mark. */
+.composer[data-composer-style="opus"] {
+  --composer-accent: #b99cff;
+  --composer-on-accent: #1b112b;
+  --composer-glow-x: 16%;
+  --composer-glow-y: -22%;
+  --composer-sheen-angle: 128deg;
+}
+
+.composer[data-composer-style="sonnet"] {
+  --composer-accent: #e07a59;
+  --composer-on-accent: #21110b;
+  --composer-glow-x: 28%;
+  --composer-glow-y: -26%;
+  --composer-sheen-angle: 118deg;
+}
+
+.composer[data-composer-style="haiku"] {
+  --composer-accent: #59c9c5;
+  --composer-on-accent: #081b1a;
+  --composer-glow-x: 82%;
+  --composer-glow-y: -24%;
+  --composer-sheen-angle: 62deg;
+}
+
+.composer[data-composer-style="fable"] {
+  --composer-accent: #e48db7;
+  --composer-on-accent: #25101a;
+  --composer-glow-x: 72%;
+  --composer-glow-y: -18%;
+  --composer-sheen-angle: 54deg;
+}
+
+.composer[data-composer-style="claude"] {
+  --composer-accent: #d97757;
+  --composer-on-accent: #21110b;
+  --composer-glow-x: 24%;
+  --composer-glow-y: -22%;
+  --composer-sheen-angle: 120deg;
+}
+
+/* Codex's named models follow their own imagery: sunlight, earth and moon.
+   The CLI default is a quiet steel-blue so it remains distinct without
+   pretending to know which named model the CLI chose. */
+.composer[data-composer-style="sol"] {
+  --composer-accent: #f1b84b;
+  --composer-on-accent: #211807;
+  --composer-glow-x: 18%;
+  --composer-glow-y: -28%;
+  --composer-sheen-angle: 132deg;
+}
+
+.composer[data-composer-style="terra"] {
+  --composer-accent: #78c892;
+  --composer-on-accent: #0a1d10;
+  --composer-glow-x: 50%;
+  --composer-glow-y: -30%;
+  --composer-sheen-angle: 96deg;
+}
+
+.composer[data-composer-style="luna"] {
+  --composer-accent: #84a9ff;
+  --composer-on-accent: #0c1528;
+  --composer-glow-x: 84%;
+  --composer-glow-y: -28%;
+  --composer-sheen-angle: 58deg;
+}
+
+.composer[data-composer-style="codex"] {
+  --composer-accent: #8eb3c3;
+  --composer-on-accent: #0d191e;
+  --composer-glow-x: 76%;
+  --composer-glow-y: -22%;
+  --composer-sheen-angle: 66deg;
 }
 
 /* A turn the backend stopped mid-answer, and the one way back to it. Sits
@@ -2900,7 +3038,7 @@ body {
   }
 }
 
-/* ---- The right column: the plan, then the agents ----------------------- */
+/* ---- The right column: the panels beside the chat ---------------------- */
 /* One column, two panels. The rail brought its own border and fill when it was
    the only thing here; inside the column those belong to the column. */
 /* Cards that look like they are floating, in a column that holds its own
@@ -2955,285 +3093,6 @@ body {
   }
 }
 
-/* ---- The plan, held above the chat box --------------------------------- */
-.plan {
-  position: relative;
-  z-index: 142;
-  display: flex;
-  justify-content: center;
-  width: fit-content;
-  max-width: calc(100% - 24px);
-  margin: 0 auto 6px;
-}
-
-.plan-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-1);
-  color: var(--fg-1);
-  font: inherit;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  cursor: pointer;
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.16);
-  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-
-.plan-btn:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-2);
-  color: var(--fg-0);
-}
-
-.plan-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.plan-btn.is-on {
-  background: var(--bg-2);
-  color: var(--fg-0);
-}
-
-/* Finished: still there, still countable, no longer asking to be watched. */
-.plan-btn.is-done {
-  color: var(--fg-2);
-}
-
-.plan-btn.is-done .plan-count {
-  color: var(--fg-3);
-}
-
-/* A ring, and deliberately NOT an accent one. It was accent with an accent-tint
-   halo, which put a third blue circle on a screen that already had the tool
-   spinner turning and the context ring beside Send — and of the three only the
-   spinner meant "in flight". This one means "here is where you are in the
-   plan", which is a fact, not an event, so it is drawn in the same grey as the
-   words beside it. The accent still arrives when the plan actually MOVES: see
-   `.plan-count.is-moved`, which is the event this pill exists to report. */
-.plan-state {
-  flex: 0 0 auto;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--fg-3);
-  border-radius: 50%;
-}
-
-.plan-btn.is-done .plan-state {
-  border-color: var(--ok);
-  background: var(--ok);
-}
-
-.plan-count {
-  transition: color 0.5s ease;
-}
-
-/* One item further on. A fade, not a bang: worth noticing, not worth jumping
-   at. */
-.plan-count.is-moved {
-  color: var(--accent);
-  transition: none;
-}
-
-.plan-scrim {
-  position: fixed;
-  inset: 0;
-  z-index: 140;
-}
-
-/* The list grows out of the pill toward the conversation it describes. */
-@keyframes plan-pop {
-  0% {
-    opacity: 0;
-    transform: translateX(-50%) scale(0.94) translateY(8px);
-  }
-  60% {
-    opacity: 1;
-    transform: translateX(-50%) scale(1.01) translateY(-1px);
-  }
-  100% {
-    transform: translateX(-50%) scale(1) translateY(0);
-  }
-}
-
-.plan-pop {
-  position: absolute;
-  z-index: 143;
-  bottom: calc(100% + 6px);
-  left: 50%;
-  width: min(440px, calc(100vw - 40px));
-  max-height: min(42vh, 18rem);
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--bg-1);
-  box-shadow: var(--shadow);
-  transform: translateX(-50%);
-  transform-origin: bottom center;
-  animation: plan-pop 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .plan-pop {
-    animation: none;
-  }
-}
-
-.plan-pop-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding: 7px 12px 6px;
-  border-bottom: 1px solid var(--border);
-}
-
-.plan-pop-title {
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-
-.plan-pop-count {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-2);
-}
-
-/* Hidden until the phone, where the list covers the screen it used to float
-   over. On a wide screen the pointer can leave it and the scrim behind it can
-   be clicked, so there is nothing here for an × to do. */
-.plan-pop-close {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  margin-left: auto;
-  width: 26px;
-  height: 26px;
-  border: 0;
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--fg-2);
-  cursor: pointer;
-}
-
-.plan-pop-close:hover {
-  background: var(--bg-2);
-  color: var(--fg-0);
-}
-
-.todos-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  margin: 0;
-  padding: 5px 13px 8px;
-  list-style: none;
-}
-
-.todo {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 3px 0;
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: var(--fg-2);
-}
-
-/* The mark carries the state, so the row does not have to say it in words: an
-   empty ring not started, a filled accent ring the one in hand, a solid
-   tick-green dot done. */
-.todo-mark {
-  flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
-  margin-top: 2px;
-  border: 2px solid var(--fg-2);
-  border-radius: 999px;
-}
-
-.todo.is-in_progress .todo-mark {
-  border-color: var(--accent);
-  border-right-color: transparent;
-  box-shadow: 0 0 0 2px var(--accent-tint);
-  animation: todo-working 1.1s linear infinite;
-}
-
-.todo.is-completed .todo-mark {
-  border-color: var(--ok);
-  background: var(--ok);
-}
-
-@keyframes todo-working {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.todo.is-completed .todo-text {
-  color: var(--fg-3);
-  text-decoration: line-through;
-}
-
-.todo.is-in_progress .todo-text {
-  color: var(--fg-0);
-}
-
-@media (max-width: 700px) {
-  .plan-pop {
-    width: min(440px, calc(100vw - 24px));
-    max-height: min(44vh, 20rem);
-    border-radius: 12px;
-  }
-
-  /* Still a shade roomier than the desktop card: every row here is a tap
-     target, and the × has to be one. */
-  .plan-pop-head {
-    align-items: center;
-    padding: 6px 6px 6px 12px;
-  }
-
-  .plan-pop-count {
-    font-size: 12px;
-  }
-
-  .plan-pop-close {
-    display: inline-flex;
-  }
-
-  .todos-list {
-    padding: 6px 12px 10px;
-  }
-
-  .todo {
-    padding: 5px 0;
-    font-size: 13px;
-    line-height: 1.4;
-  }
-
-  .todo-mark {
-    width: 14px;
-    height: 14px;
-    margin-top: 2px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .todo.is-in_progress .todo-mark {
-    animation: none;
-  }
-}
-
 /* ---- The thought, while it is being had ------------------------------- */
 /* Two lines of it, pinned to the newest words: `column-reverse` puts the end
    of the text at the bottom of the box and lets the older lines run off the
@@ -3256,16 +3115,51 @@ body {
 }
 
 .composer-box {
+  position: relative;
   max-width: var(--chat-column);
   margin: 0 auto;
   padding: 9px 10px 7px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--composer-accent) 28%, var(--border));
   border-radius: var(--r-lg);
-  background: var(--bg-1);
+  background:
+    radial-gradient(
+      ellipse at var(--composer-glow-x) var(--composer-glow-y),
+      color-mix(in srgb, var(--composer-accent) 16%, transparent) 0,
+      transparent 58%
+    ),
+    linear-gradient(
+      var(--composer-sheen-angle),
+      color-mix(in srgb, var(--composer-accent) 5%, transparent),
+      transparent 44%
+    ),
+    var(--bg-1);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--composer-accent) 10%, transparent);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background-color 160ms ease;
+}
+
+/* A one-pixel signature is visible before the field is focused, without
+   turning the whole prompt into a coloured card. */
+.composer-box::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: 18px;
+  left: 18px;
+  height: 1px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--composer-accent), transparent);
+  opacity: 0.8;
+  pointer-events: none;
 }
 
 .composer-box:focus-within {
-  border-color: var(--accent);
+  border-color: var(--composer-accent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--composer-accent) 13%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--composer-accent) 16%, transparent);
 }
 
 .composer-input {
@@ -3675,6 +3569,35 @@ body {
   cursor: pointer;
 }
 
+/* Send belongs to the selected model; Stop remains a neutral control with its
+   existing red hover because it describes an action, not an identity. */
+.composer .send:not(.stop) {
+  background: var(--composer-accent);
+  color: var(--composer-on-accent);
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--composer-accent) 24%, transparent);
+  transition:
+    filter 120ms ease,
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.composer .send:not(.stop):hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--composer-accent) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-box,
+  .composer .send:not(.stop) {
+    transition: none;
+  }
+
+  .composer .send:not(.stop):hover:not(:disabled) {
+    transform: none;
+  }
+}
+
 .send:disabled {
   opacity: 0.35;
   cursor: default;
@@ -3713,6 +3636,18 @@ body {
 .picker-btn:focus-visible {
   outline: 1px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* The model is the one toolbar setting that carries the profile colour at
+   rest. Access keeps its safety ladder and effort keeps its neutral meter;
+   their focused and selected states still inherit the scoped accent above. */
+.composer .model-trigger {
+  color: color-mix(in srgb, var(--composer-accent) 84%, var(--fg-1));
+  font-weight: 600;
+}
+
+.composer .model-trigger:hover {
+  color: var(--composer-accent);
 }
 
 .picker-caret {
@@ -4517,10 +4452,12 @@ body.is-ultra .eff {
   }
 
   .sidebar {
-    position: static;
+    /* `relative`, not `static`: the resize handle is positioned against this
+       edge, and a static column is not something to position against. */
+    position: relative;
     transform: none;
     box-shadow: none;
-    width: 260px;
+    width: var(--nav-w);
     flex: 0 0 auto;
     /* It slides out of the row rather than narrowing to nothing. The width is
        never touched, so nothing inside it reflows on the way — a column of
@@ -4536,7 +4473,7 @@ body.is-ultra .eff {
      the top bar, which gets its caret — and its click — back the moment this
      is on. */
   .app.nav-shut .sidebar {
-    margin-left: -260px;
+    margin-left: calc(-1 * var(--nav-w));
     /* Out of the tab order once it has finished leaving, which is the one thing
        `display: none` used to do for free. The delay is the slide's length on
        the way out and gone on the way back, so the column is reachable from the
@@ -4590,7 +4527,7 @@ body.is-ultra .eff {
 /* Above it the project list is a real column, so reclaim its actual width. */
 @media (min-width: 860px) {
   .app.chat-wide .sidebar {
-    margin-left: -260px;
+    margin-left: calc(-1 * var(--nav-w));
     visibility: hidden;
     pointer-events: none;
     transition:
@@ -4948,159 +4885,6 @@ body.is-ultra .eff {
   padding: 0 8px 14px;
 }
 
-/* ---- Pinned conversation passages ------------------------------------
-   A pin is part of reading this chat, so it lives under its project list rather
-   than behind another view button. The projects above remain the flexible
-   region; this gets a bounded window of its own, which keeps several saved
-   passages within reach without turning the whole sidebar into pins. */
-.conversation-pins {
-  display: flex;
-  flex: 0 1 220px;
-  flex-direction: column;
-  min-height: 70px;
-  max-height: 34%;
-  margin: 0 8px 8px;
-  border-top: 1px solid var(--border);
-  padding-top: 7px;
-}
-
-.conversation-pins-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding: 0 6px 5px;
-  color: var(--fg-3);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
-.conversation-pins-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.conversation-pin-list {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  min-height: 0;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  list-style: none;
-}
-
-.conversation-pin-row {
-  position: relative;
-  flex: 0 0 auto;
-  border-radius: var(--r-sm);
-}
-
-.conversation-pin-row + .conversation-pin-row {
-  margin-top: 2px;
-}
-
-.conversation-pin-jump {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  padding: 6px 30px 7px 7px;
-  border: 0;
-  border-radius: inherit;
-  background: transparent;
-  color: var(--fg-2);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.conversation-pin-jump:hover,
-.conversation-pin-jump:focus-visible,
-.conversation-pin-row.is-active .conversation-pin-jump {
-  background: var(--bg-1);
-  color: var(--fg-0);
-}
-
-.conversation-pin-row.is-active .conversation-pin-jump {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.conversation-pin-label {
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.conversation-pin-excerpt {
-  display: -webkit-box;
-  margin-top: 2px;
-  overflow: hidden;
-  color: var(--fg-3);
-  font-size: 11px;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.conversation-pin-remove {
-  position: absolute;
-  top: 5px;
-  right: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-3);
-  cursor: pointer;
-  opacity: 0;
-  transform: scale(0.84);
-  pointer-events: none;
-  transition:
-    opacity 130ms ease,
-    transform 180ms cubic-bezier(0.34, 1.24, 0.64, 1),
-    background-color 120ms ease,
-    color 120ms ease;
-}
-
-.conversation-pin-row:hover .conversation-pin-remove,
-.conversation-pin-row:focus-within .conversation-pin-remove {
-  opacity: 1;
-  transform: none;
-  pointer-events: auto;
-}
-
-.conversation-pin-remove:hover {
-  background: var(--bg-2);
-  color: var(--danger);
-}
-
-@media (hover: none) {
-  .conversation-pin-remove {
-    opacity: 1;
-    transform: none;
-    pointer-events: auto;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .conversation-pin-remove {
-    transform: none;
-    transition: opacity 140ms ease, background-color 120ms ease, color 120ms ease;
-  }
-}
-
 /* ---- Project ----------------------------------------------------------- */
 .proj-node + .proj-node {
   margin-top: 6px;
@@ -5394,6 +5178,13 @@ body.is-ultra .eff {
 
 .chat:hover {
   background: var(--bg-1);
+}
+
+/* The conversation on screen needs to remain findable after the pointer has
+   left the sidebar. The accent wash is deliberately distinct from the neutral
+   hover fill, while still leaving the working and session dots readable. */
+.chat.is-on {
+  background: var(--accent-tint);
 }
 
 .chat-btn {
@@ -6459,36 +6250,6 @@ body.is-ultra .eff {
 
 /* ---- Quoting a highlight into the prompt box -------------------------- */
 
-/* The transcript gets its own selection action. It deliberately mirrors the
- * file quote control’s placement, while Pin means “keep this aside” rather
- * than “send this back into the prompt”. */
-.conversation-pin-btn {
-  position: fixed;
-  z-index: 200;
-  transform: translate(-50%, calc(-100% - 9px));
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 11px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-2);
-  color: var(--fg-0);
-  box-shadow: var(--shadow);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: nowrap;
-  cursor: pointer;
-  animation: quote-in 0.12s ease-out;
-}
-
-.conversation-pin-btn:hover {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--accent-fg);
-}
-
 /* Follows the selection, in viewport coordinates, sitting just above it and
    centred on it — `translate` rather than maths in the component, so the anchor
    the component gives is simply "where the text is". */
@@ -6553,8 +6314,7 @@ body.is-ultra .eff {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .quote-btn,
-  .conversation-pin-btn {
+  .quote-btn {
     animation: none;
   }
 }
@@ -10661,34 +10421,6 @@ body.is-ultra .eff {
   font-size: 0.75rem;
   font-weight: 600;
   color: var(--accent);
-}
-
-.board-plan {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  min-width: 0;
-  max-width: 100%;
-  font-size: 0.72rem;
-  color: var(--fg-2);
-}
-
-.board-plan-count {
-  flex: 0 0 auto;
-  font-family: var(--mono);
-  color: var(--fg-3);
-}
-
-.board-plan-line {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.board-stalled {
-  font-size: 0.72rem;
-  color: var(--warn);
 }
 
 .board-proj {

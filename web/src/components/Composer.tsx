@@ -29,8 +29,6 @@ import type { Seat } from "../lib/chat";
 import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
 import { useMedia, WIDE } from "../lib/media";
-import { Todos } from "./Todos";
-import type { Todo } from "../lib/todos";
 import { RollingText } from "./RollingNumber";
 import {
   AGENT_NAME,
@@ -62,6 +60,7 @@ export type {
   AccessOption,
   AgentCommand,
   AgentProvider,
+  ComposerStyle,
   Effort,
   EffortOption,
   ModelChoice,
@@ -198,7 +197,6 @@ function saveHistory(session: string | undefined, list: string[]): void {
 export function Composer({
   session,
   focusOn,
-  todos,
   choice,
   onChoice,
   access,
@@ -244,8 +242,6 @@ export function Composer({
    *  the box should take the focus. Only the CHANGE is read — the number is
    *  a way of saying "again", not a value. */
   focusOn?: number;
-  /** The main agent's current checklist, rendered beside the point of reply. */
-  todos?: Todo[];
   choice: ModelChoice;
   onChoice: (c: ModelChoice) => void;
   access: AccessLevel;
@@ -739,7 +735,7 @@ export function Composer({
   }
 
   return (
-    <div className="composer">
+    <div className="composer" data-composer-style={choice.composerStyle} data-model-id={choice.id}>
       {/* Everything ABOUT the turn sits above the box: the thought being had,
           and under it how long this has taken and how much has been written.
           Both are lines of text, and a line of text in a row of buttons gets
@@ -876,7 +872,6 @@ export function Composer({
           )}
         </div>
       </div>
-      <Todos todos={todos ?? []} />
       <div className="composer-box">
         {(attached.length > 0 || attachError || cleared) && (
           <div className="attach">
@@ -1115,7 +1110,7 @@ export function Composer({
           <div className="composer-settings">
           <div className="picker">
             <button
-              className="picker-btn"
+              className="picker-btn model-trigger"
               type="button"
               aria-haspopup="menu"
               aria-expanded={menu}
@@ -1239,7 +1234,7 @@ export function Composer({
               hold them side by side. It shows the model because that is the one
               worth seeing without opening anything. */}
           <button
-            className="picker-btn settings-toggle"
+            className="picker-btn settings-toggle model-trigger"
             type="button"
             aria-haspopup="dialog"
             aria-expanded={sheet}

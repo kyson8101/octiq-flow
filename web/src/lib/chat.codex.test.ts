@@ -132,6 +132,77 @@ describe("a Codex chat of its own", () => {
     expect(working.messages[0].takenUp).toBe(true);
   });
 
+  it("claims queued messages in Codex's FIFO order, never newest-first", () => {
+    let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
+    queued = addUserTurn(queued, "later queued message", [], 2, undefined, "user-2");
+
+    // Older transcripts have an untagged Codex `turn.started`. The backend's
+    // queue is FIFO, so its compatibility path must claim the oldest waiting
+    // prompt rather than whichever bubble happens to be nearest the bottom.
+    const working = reduceChat(queued, { type: "turn.started" }, 3);
+
+    expect(working.messages[0].takenUp).toBe(true);
+    expect(working.messages[1].takenUp).toBeUndefined();
+  });
+
+  it("uses the backend's exact queued-turn id and carries it onto the answer", () => {
+    let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
+    queued = addUserTurn(queued, "later queued message", [], 2, undefined, "user-2");
+
+    const working = reduceChat(
+      queued,
+      { type: "turn.started", octiq_user_turn_id: "user-1" },
+      3,
+    );
+    const answered = reduceChat(working, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "answer to the earlier message" },
+    });
+
+    expect(answered.messages[0].takenUp).toBe(true);
+    expect(answered.messages[1].takenUp).toBeUndefined();
+    expect(answered.messages[2].replyTo).toEqual({
+      id: answered.messages[0].id,
+      preview: "earlier queued message",
+    });
+  });
+
+  it("keeps successive queued answers tied to their own prompts", () => {
+    let state = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
+    state = addUserTurn(state, "later queued message", [], 2, undefined, "user-2");
+    state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "user-1" }, 3);
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "first answer" },
+    });
+    state = reduceChat(state, { type: "turn.completed" }, 4);
+    state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "user-2" }, 5);
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "second answer" },
+    });
+
+    expect(state.messages.filter((m) => m.role === "assistant").map((m) => m.replyTo?.id)).toEqual([
+      state.messages[0].id,
+      state.messages[1].id,
+    ]);
+  });
+
+  it("does not add a reply label when the Codex prompt is already adjacent", () => {
+    const sent = addUserTurn(emptyChat(), "ordinary message", [], 1, undefined, "user-1");
+    const working = reduceChat(
+      sent,
+      { type: "turn.started", octiq_user_turn_id: "user-1" },
+      2,
+    );
+    const answered = reduceChat(working, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "ordinary answer" },
+    });
+
+    expect(answered.messages[1].replyTo).toBeUndefined();
+  });
+
   it("ends its turn on its own full stop", () => {
     // No seat, no room: `turn.completed` is this conversation's full stop, the
     // same thing Claude's `result` is. Left unread, the chat went on saying it

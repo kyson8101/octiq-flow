@@ -128,6 +128,24 @@ fn fresh_turn_id(turn_id: Option<String>) -> String {
         .unwrap_or_else(|| format!("octiq-user-{}", uuid::Uuid::new_v4()))
 }
 
+/// Tie Codex's acknowledgement to the exact browser turn it is starting.
+///
+/// The native event has no prompt id. That is ambiguous once two follow-ups are
+/// queued, because the backend starts them FIFO while the browser can see both
+/// bubbles already. The id is OctiqFlow metadata on a Codex-only event; Claude's
+/// stream is deliberately left byte-for-byte unchanged.
+fn stamp_user_turn_id(event: &mut Value, agent: ChatAgent, turn_id: Option<&str>) {
+    if agent != ChatAgent::Codex
+        || event.get("type").and_then(Value::as_str) != Some("turn.started")
+    {
+        return;
+    }
+    let Some(turn_id) = turn_id.filter(|id| !id.trim().is_empty()) else {
+        return;
+    };
+    event["octiq_user_turn_id"] = Value::String(turn_id.to_string());
+}
+
 /// The agent said something on stderr, or the process ended.
 #[derive(Clone, Serialize)]
 struct ChatStatus {
@@ -289,6 +307,9 @@ pub(crate) struct StartContext {
 struct QueuedCommandTurn {
     text: String,
     images: Vec<String>,
+    /// The optimistic browser bubble this exact FIFO entry belongs to. Internal
+    /// agent-to-agent turns have none and remain invisible user-wise.
+    turn_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -633,6 +654,7 @@ fn chat_start_with_user_turn(
         images,
         lite,
         user_turn_id,
+        true,
     )
 }
 
@@ -702,7 +724,11 @@ fn start_queued_command_turn(
     {
         return Err(format!("'{session_key}' no longer uses command-line turns"));
     }
-    let QueuedCommandTurn { text, images } = turn;
+    let QueuedCommandTurn {
+        text,
+        images,
+        turn_id,
+    } = turn;
     let voice = match seat {
         Some(seat) => Voice::seat(stream_key, seat),
         None => Voice::host(stream_key.to_string()),
@@ -720,7 +746,8 @@ fn start_queued_command_turn(
         start.effort,
         Some(images),
         start.lite,
-        None,
+        turn_id,
+        false,
     )
 }
 
@@ -745,6 +772,10 @@ pub(crate) fn start_session(
     images: Option<Vec<String>>,
     lite: Option<bool>,
     user_turn_id: Option<String>,
+    // Whether this launch still owes the transcript its canonical user event.
+    // A queued Codex turn records at enqueue time and passes `false` when its
+    // later resume process starts, avoiding a duplicate prompt.
+    record_user_turn: bool,
 ) -> Result<(), String> {
     let Voice {
         session_key,
@@ -774,6 +805,7 @@ pub(crate) fn start_session(
         .collect();
 
     let provider = provider_for(agent);
+    let turn_id_for_event = user_turn_id.clone();
     let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
     let images = images.unwrap_or_default();
@@ -872,7 +904,7 @@ pub(crate) fn start_session(
     // A command-line provider has no user-message event in its stdout. Once
     // its process exists, the prompt is accepted; write our canonical copy
     // before the reader can forward the first Codex event.
-    if has_prompt && !provider.capabilities().input.accepts_stdin() {
+    if record_user_turn && has_prompt && !provider.capabilities().input.accepts_stdin() {
         if let Some(turn_id) = user_turn_id.as_deref() {
             record_durable_user_turn(&key, turn_id, &prompt, &images, seat.as_ref());
         }
@@ -1049,6 +1081,11 @@ pub(crate) fn start_session(
                         // untouched; that is what makes a chat with no seats
                         // byte-for-byte the chat that shipped before card 66.
                         let mut event = event;
+                        stamp_user_turn_id(
+                            &mut event,
+                            stream_provider.kind(),
+                            turn_id_for_event.as_deref(),
+                        );
                         crate::chat_room::stamp_speaker(&mut event, speaker.as_ref());
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
@@ -1332,7 +1369,14 @@ fn chat_send_with_user_turn(
                 let recorded = user_turn_id
                     .as_deref()
                     .map(|turn_id| (turn_id.to_string(), text.clone(), images.clone()));
-                manager.queue_command_turn(&session_key, QueuedCommandTurn { text, images })?;
+                manager.queue_command_turn(
+                    &session_key,
+                    QueuedCommandTurn {
+                        text,
+                        images,
+                        turn_id: user_turn_id.clone(),
+                    },
+                )?;
                 if let Some((turn_id, text, images)) = recorded {
                     record_durable_user_turn(&key, &turn_id, &text, &images, target_seat);
                 }
@@ -1484,6 +1528,7 @@ fn chat_seat_start_with_user_turn(
         // setup. It starts clean for the same reason `lite` exists.
         Some(true),
         user_turn_id,
+        true,
     )
 }
 
@@ -1974,6 +2019,29 @@ mod tests {
     }
 
     #[test]
+    fn only_codex_turn_starts_receive_the_exact_user_turn_id() {
+        let mut codex_started = json!({ "type": "turn.started" });
+        stamp_user_turn_id(&mut codex_started, ChatAgent::Codex, Some("user-earlier"));
+        assert_eq!(
+            codex_started["octiq_user_turn_id"],
+            Value::String("user-earlier".into())
+        );
+
+        let mut claude_user = json!({ "type": "user" });
+        let before = claude_user.clone();
+        stamp_user_turn_id(&mut claude_user, ChatAgent::Claude, Some("user-1"));
+        assert_eq!(
+            claude_user, before,
+            "Claude's known-good stream is untouched"
+        );
+
+        let mut codex_answer = json!({ "type": "item.completed" });
+        let before = codex_answer.clone();
+        stamp_user_turn_id(&mut codex_answer, ChatAgent::Codex, Some("user-1"));
+        assert_eq!(codex_answer, before, "only the acknowledgement is stamped");
+    }
+
+    #[test]
     fn full_access_is_named_in_the_environment_the_hook_reads() {
         assert_eq!(Access::Full.as_env(), "full");
         assert_eq!(Access::Auto.as_env(), "auto");
@@ -2050,9 +2118,8 @@ mod tests {
             c.contains("mcp__octiq__ask_agent"),
             "ask_agent is not allowed: {c}"
         );
-        // And the two that were always there still are.
+        // And the one that was always there still is.
         assert!(c.contains("mcp__octiq__ask_user"));
-        assert!(c.contains("mcp__octiq__todo_write"));
     }
 
     #[test]
@@ -2873,6 +2940,7 @@ mod tests {
             Some(QueuedCommandTurn {
                 text: "follow up".into(),
                 images: vec!["/tmp/shot.png".into()],
+                turn_id: None,
             })
         );
         assert_eq!(
@@ -2926,6 +2994,13 @@ mod tests {
         assert_eq!(
             events[0].event["octiq_attachments"][0]["path"],
             "/tmp/prompt.png"
+        );
+        assert_eq!(
+            manager
+                .take_queued_command_turn(&key)
+                .and_then(|turn| turn.turn_id),
+            Some("user-1".into()),
+            "the FIFO resume keeps the id of the bubble it will answer"
         );
 
         end_process(&manager, &key).expect("end the stand-in");

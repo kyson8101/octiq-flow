@@ -392,7 +392,7 @@ impl AgentProvider for ClaudeProvider {
                 " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(
-                    "mcp__octiq__ask_user mcp__octiq__todo_write \\
+                    "mcp__octiq__ask_user \\
                      mcp__octiq__add_agent mcp__octiq__ask_agent",
                 ),
                 sh_quote(ASK_PROMPT),
@@ -728,7 +728,7 @@ fn codex_approval(access: Access) -> &'static str {
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 
 /// Told to Claude so the tools it was given are used at the right moments.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nWhen you take on work that runs to more than a step or two, call the `todo_write` tool straight away with the whole plan, and call it again whenever an item starts or finishes. The list is pinned on their screen: it is how they see that you understood the request, and how far through it you are. Keep exactly one item in_progress, and send the whole list each time.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
 
 /// Write Claude's OctiqFlow MCP config and return its path. Best effort: a
 /// provider without it still starts, just without the extra tools.

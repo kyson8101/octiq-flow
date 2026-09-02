@@ -71,4 +71,122 @@ describe("the queued mark", () => {
     expect(onlyMark).not.toBe("");
     expect(queued.replace(onlyMark, "")).toBe(body(draw(false)));
   });
+
+  it("keeps each Codex follow-up separate so only the waiting one has a clock", () => {
+    const messages: Message[] = [
+      {
+        id: "u1",
+        role: "user",
+        blocks: [{ kind: "text", text: "earlier queued message" }],
+        streaming: false,
+        takenUp: true,
+      },
+      {
+        id: "u2",
+        role: "user",
+        blocks: [{ kind: "text", text: "later queued message" }],
+        streaming: false,
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <MessageList messages={messages} busy hostAgent="codex" />,
+    );
+
+    expect(html.match(/class="msg msg-user/g)).toHaveLength(2);
+    expect(html.match(/class="queued"/g)).toHaveLength(1);
+  });
+
+  it("does not change Claude's existing consecutive-message grouping", () => {
+    const messages: Message[] = [
+      {
+        id: "u1",
+        role: "user",
+        blocks: [{ kind: "text", text: "first" }],
+        streaming: false,
+        echo: "echo-1",
+      },
+      {
+        id: "u2",
+        role: "user",
+        blocks: [{ kind: "text", text: "second" }],
+        streaming: false,
+        echo: "echo-2",
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <MessageList messages={messages} busy={false} hostAgent="claude" />,
+    );
+
+    expect(html.match(/class="msg msg-user/g)).toHaveLength(1);
+  });
+
+  it("names the earlier queued message above a non-adjacent Codex answer", () => {
+    const messages: Message[] = [
+      {
+        id: "u1",
+        role: "user",
+        blocks: [{ kind: "text", text: "earlier queued message" }],
+        streaming: false,
+        takenUp: true,
+      },
+      {
+        id: "u2",
+        role: "user",
+        blocks: [{ kind: "text", text: "later queued message" }],
+        streaming: false,
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        blocks: [{ kind: "text", text: "a long answer" }],
+        streaming: false,
+        replyTo: { id: "u1", preview: "earlier queued message" },
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <MessageList messages={messages} busy hostAgent="codex" />,
+    );
+
+    expect(html).toContain("Replying to");
+    expect(html).toContain("earlier queued message");
+  });
+
+  it("does not merge two queued Codex answers into one apparent reply", () => {
+    const messages: Message[] = [
+      {
+        id: "u1",
+        role: "user",
+        blocks: [{ kind: "text", text: "earlier queued message" }],
+        streaming: false,
+        takenUp: true,
+      },
+      {
+        id: "u2",
+        role: "user",
+        blocks: [{ kind: "text", text: "later queued message" }],
+        streaming: false,
+        takenUp: true,
+      },
+      {
+        id: "a1",
+        role: "assistant",
+        blocks: [{ kind: "text", text: "first answer" }],
+        streaming: false,
+        replyTo: { id: "u1", preview: "earlier queued message" },
+      },
+      {
+        id: "a2",
+        role: "assistant",
+        blocks: [{ kind: "text", text: "second answer" }],
+        streaming: false,
+        replyTo: { id: "u2", preview: "later queued message" },
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <MessageList messages={messages} busy={false} hostAgent="codex" />,
+    );
+
+    expect(html.match(/class="msg msg-assistant/g)).toHaveLength(2);
+    expect(html.match(/class="msg-reply-label"/g)).toHaveLength(2);
+  });
 });
