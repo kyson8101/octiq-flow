@@ -44,6 +44,13 @@ describe("sameIndex", () => {
     expect(sameIndex([chat({ id: "c1" }), chat({ id: "c2" })], [chat({ id: "c1" })])).toBe(false);
   });
 
+  it("is false when a chat is pinned or unpinned", () => {
+    // A pin moves the row, and the server's answer is how a pin made on
+    // another device reaches this one.
+    expect(sameIndex([chat()], [chat({ pinned: true })])).toBe(false);
+    expect(sameIndex([chat({ pinned: true })], [chat({ pinned: true })])).toBe(true);
+  });
+
   it("is false when a chat is renamed elsewhere", () => {
     expect(sameIndex([chat()], [chat({ title: "renamed on the phone" })])).toBe(false);
   });

@@ -51,6 +51,7 @@ const html = (
       onPickConversation={() => {}}
       onNewChat={() => {}}
       onDelete={() => {}}
+      onPin={() => {}}
       onSettings={() => {}}
       onNewProject={() => {}}
       onReorder={() => {}}
@@ -113,6 +114,7 @@ describe("Sidebar", () => {
         onPickConversation={() => {}}
         onNewChat={() => {}}
         onDelete={() => {}}
+        onPin={() => {}}
         onSettings={() => {}}
         onNewProject={() => {}}
         onReorder={() => {}}
@@ -161,11 +163,38 @@ describe("Sidebar", () => {
     expect(out.indexOf('class="chat-title"')).toBeLessThan(out.indexOf('class="chat-mark"'));
   });
 
+  it("puts the chat's model robot before its title", () => {
+    const out = html({
+      conversations: new Map([["p1", [{ ...chat("a"), modelId: "codex:luna" }]]]),
+      expanded: new Set(["p1"]),
+    });
+    expect(out).toContain('data-robot="luna"');
+    expect(out.indexOf('data-robot="luna"')).toBeLessThan(out.indexOf('class="chat-title"'));
+  });
+
   it("shares the trailing slot between a chat's mark and delete control", () => {
     const out = html(open);
     expect(out).toMatch(
       /<span class="chat-tail"><span class="chat-mark"[^>]*><\/span><button class="chat-del\b/,
     );
+  });
+
+  it("offers to pin any chat, and to unpin a pinned one", () => {
+    const out = html({
+      conversations: new Map([["p1", [chat("a"), { ...chat("b"), pinned: true }]]]),
+      expanded: new Set(["p1"]),
+    });
+    expect(out).toContain('aria-label="Pin this chat to the top"');
+    expect(out).toContain('aria-label="Unpin this chat"');
+    expect(out).toContain("chat-pin is-pinned");
+    expect(out).toContain("chat is-pinned");
+  });
+
+  it("keeps the pin out of the trailing slot", () => {
+    // The mark and the × still share the tail; the pin has a box of its own,
+    // before it, so the title is measured the same with and without the pointer.
+    const out = html(open);
+    expect(out.indexOf('class="chat-pin')).toBeLessThan(out.indexOf('class="chat-tail"'));
   });
 
   // A chat deleted a moment ago. Its row is still in the list on purpose: it is
@@ -188,7 +217,7 @@ describe("Sidebar", () => {
     expect(out).toContain("chat is-leaving");
     // The row cannot offer Undo once the committed delete is collapsing it.
     expect(out).not.toContain('aria-label="Cancel delete"');
-    expect(out.match(/disabled=""/g)).toHaveLength(2);
+    expect(out.match(/disabled=""/g)).toHaveLength(3);
   });
 
   it("turns that row's × into the way back", () => {

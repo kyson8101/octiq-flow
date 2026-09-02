@@ -5576,6 +5576,8 @@ body.is-ultra .eff {
 }
 
 .chat-btn {
+  display: flex;
+  align-items: center;
   flex: 1 1 auto;
   min-width: 0;
   height: 30px;
@@ -5599,6 +5601,8 @@ body.is-ultra .eff {
 
 .chat-title {
   display: block;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -5763,6 +5767,62 @@ body.is-ultra .eff {
   color: var(--danger);
 }
 
+/* The pin, in a slot of its own before the trailing one. Fixed width, like the
+   tail, so the title measures the same with the pointer over the row as
+   without it. A pinned chat shows it all the time — it is the reason the row
+   sits above newer ones — and any other row offers it on hover, popping in the
+   way the × does. */
+.chat-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.82);
+  pointer-events: none;
+  transition:
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(0.34, 1.24, 0.64, 1),
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.chat:hover .chat-pin,
+.chat-pin:focus-visible,
+.chat-pin.is-pinned {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.chat-pin:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* Filled in once it holds. Quiet — the grey of an idle session's dot — because
+   it is a mark to be scanned down the edge of the list, not a control asking
+   to be noticed. */
+.chat-pin.is-pinned {
+  color: var(--fg-2);
+}
+
+.chat-pin.is-pinned svg {
+  fill: currentColor;
+}
+
+.chat-pin:disabled {
+  pointer-events: none;
+}
+
 .chat-drain-track {
   fill: none;
   stroke: var(--border);
@@ -5836,6 +5896,14 @@ body.is-ultra .eff {
     pointer-events: auto;
   }
 
+  /* No hover to offer the pin on, so it is offered on the chat you are in;
+     the pinned ones wear theirs regardless. */
+  .chat.is-on .chat-pin {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
   /* And with them permanently open, the row's count sits where the pointer
      version pushes it to — the box is theirs to hold, not to borrow. */
   .proj-add {
@@ -5854,7 +5922,8 @@ body.is-ultra .eff {
   }
 
   .proj-add,
-  .chat-del {
+  .chat-del,
+  .chat-pin {
     transform: none;
     transition:
       opacity 140ms ease,

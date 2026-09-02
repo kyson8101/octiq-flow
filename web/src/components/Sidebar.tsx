@@ -4,14 +4,15 @@
 // chats rather than just a switch that sets the agent's working directory.
 //
 // The shape is a plain outline: a folder icon and a name, then its chats
-// indented to start where that name starts. Chats carry no bullet of their own
-// — the indent already says what they are — and any state they have is a mark
-// on the RIGHT, where it can be scanned down the edge of the list without
-// breaking the line of text.
+// indented to start where that name starts. Each chat carries the robot for its
+// saved model, and any state it has is a mark on the RIGHT, where it can be
+// scanned down the edge of the list without breaking the line of text.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type React from "react";
+import { modelFromId } from "../lib/agentProviders";
 import type { Conversation } from "../lib/store";
 import { moveProjectAt, moveProjectBy } from "../lib/projectOrder";
+import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 
 export type Project = {
@@ -54,6 +55,7 @@ export function Sidebar({
   onPickConversation,
   onNewChat,
   onDelete,
+  onPin,
   onSettings,
   onNewProject,
   onReorder,
@@ -101,6 +103,9 @@ export function Sidebar({
   /** Delete this chat — and, pressed again on a row already counting down,
    *  take it back. One call for both, because it is one button. */
   onDelete: (id: string) => void;
+  /** Pin this chat to the top of its project — or, on one already pinned,
+   *  let it go back to its place by age. */
+  onPin: (id: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
   /** Persist a complete ordering of the visible project rows. */
@@ -216,6 +221,7 @@ export function Sidebar({
             onPickConversation={onPickConversation}
             onNewChat={onNewChat}
             onDelete={onDelete}
+            onPin={onPin}
             onSettings={onSettings}
             siblingNames={(p.sibling_ids ?? []).flatMap((id) =>
               names.has(id) ? [names.get(id)!] : [],
@@ -334,6 +340,7 @@ function ProjectNode({
   onPickConversation,
   onNewChat,
   onDelete,
+  onPin,
   onSettings,
   siblingNames,
   dragging,
@@ -359,6 +366,7 @@ function ProjectNode({
   onPickConversation: (c: Conversation) => void;
   onNewChat: (id: string) => void;
   onDelete: (id: string) => void;
+  onPin: (id: string) => void;
   onSettings: (id: string) => void;
   siblingNames: string[];
   dragging: boolean;
@@ -503,6 +511,7 @@ function ProjectNode({
                       busy.has(c.id) ? "is-busy" : "",
                       going ? "is-going" : "",
                       isLeaving ? "is-leaving" : "",
+                      c.pinned ? "is-pinned" : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
@@ -513,7 +522,31 @@ function ProjectNode({
                       disabled={isLeaving}
                       onClick={() => onPickConversation(c)}
                     >
+                      <Mascot
+                        robot={modelFromId(c.modelId ?? null)?.composerStyle}
+                        mood="still"
+                        size={16}
+                      />
                       <span className="chat-title">{c.title}</span>
+                    </button>
+                    {/* The pin, in a slot of its own before the trailing one. A
+                        pinned chat wears it all the time — it is the reason the
+                        row sits above newer ones — and any other row offers it
+                        on hover. Its own fixed box, so the title never
+                        re-measures when the pointer arrives. */}
+                    <button
+                      className={`chat-pin ${c.pinned ? "is-pinned" : ""}`}
+                      type="button"
+                      title={c.pinned ? "Unpin this chat" : "Pin this chat to the top"}
+                      aria-label={c.pinned ? "Unpin this chat" : "Pin this chat to the top"}
+                      aria-pressed={!!c.pinned}
+                      disabled={isLeaving}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onPin(c.id);
+                      }}
+                    >
+                      <PinIcon />
                     </button>
                     <span className="chat-tail">
                       {/* State follows the title: a dot for the chat you are
@@ -734,6 +767,16 @@ function CloseIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+/** A pin, drawn as an outline. The pinned state fills it in from CSS. */
+function PinIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 17v5" />
+      <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
     </svg>
   );
 }

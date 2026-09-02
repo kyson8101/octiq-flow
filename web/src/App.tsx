@@ -798,6 +798,7 @@ export default function App() {
           access?: string;
           createdAt: number;
           updatedAt: number;
+          pinned?: boolean;
         }[]
       >("chat_index_list")
       .then((answer) => {
@@ -1278,6 +1279,7 @@ export default function App() {
             access: c.permission ?? null,
             createdAt: c.createdAt,
             updatedAt: c.updatedAt,
+            pinned: c.pinned ?? false,
           });
         }
         return list;
@@ -2084,6 +2086,34 @@ export default function App() {
     [cancelDelete, commitDelete, conversations],
   );
 
+  /** Pin a chat to the top of its project, or take the pin off again.
+   *
+   *  Both copies of the row change: the browser's, so the list moves now, and
+   *  the server's, so every other device shows the same order. Saved straight
+   *  away rather than through the debounced save — that one only fires when
+   *  the messages change, and a pin changes none. */
+  const togglePin = useCallback((id: string) => {
+    const held = conversationsRef.current.find((c) => c.id === id);
+    if (!held) return;
+    const pinned = !held.pinned;
+    saveIndexEntry({
+      id: held.id,
+      projectId: held.projectId,
+      title: held.title,
+      sessionId: held.sessionId ?? null,
+      modelId: held.modelId ?? null,
+      access: held.permission ?? null,
+      createdAt: held.createdAt,
+      updatedAt: held.updatedAt,
+      pinned,
+    });
+    setConversations((prev) => {
+      const list = prev.map((c) => (c.id === id ? { ...c, pinned } : c));
+      saveConversations(list);
+      return list;
+    });
+  }, []);
+
   // Closing the tab inside those seconds must not quietly forget the delete.
   // Nothing has been sent yet at that point — the transcript, the index entry
   // and the room are all still there — so a delete left half done is a delete
@@ -2268,6 +2298,7 @@ export default function App() {
         access,
         createdAt: held?.createdAt ?? startedAt,
         updatedAt: startedAt,
+        pinned: held?.pinned ?? false,
       });
 
       const fail = (err: unknown) =>
@@ -3098,6 +3129,7 @@ export default function App() {
           onPickConversation={openConversation}
           onNewChat={newChat}
           onDelete={deleteConversation}
+          onPin={togglePin}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
           onReorder={reorderWorkspaces}

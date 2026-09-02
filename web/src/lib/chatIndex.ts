@@ -32,6 +32,8 @@ export type IndexEntry = {
   access: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Sits above every newer chat in its project. */
+  pinned: boolean;
 };
 
 /** How long to wait for an acknowledgement before assuming the call is lost.

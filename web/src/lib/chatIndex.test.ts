@@ -24,6 +24,7 @@ const entry = (id: string): IndexEntry => ({
   access: null,
   createdAt: 1,
   updatedAt: 2,
+  pinned: false,
 });
 
 /** A call the server never answers — a socket that closed with it in flight. */

@@ -49,6 +49,10 @@ export type Conversation = {
    *  when the server does not list it; one that WAS confirmed and has since
    *  disappeared is taken as deleted, and goes here too. */
   synced?: boolean;
+  /** Kept at the top of its project, above every newer chat. Absent means not
+   *  pinned. Held on the server's index as well, so a pin made on the laptop
+   *  is a pin on the phone. */
+  pinned?: boolean;
 };
 
 const KEY = "octiq.v2.conversations";
@@ -168,15 +172,20 @@ export function chatName(had: string | undefined, messages: Message[]): string {
   return kept && kept !== UNNAMED ? kept : titleFrom(messages);
 }
 
-/** Group conversations under their project, newest chat first.
+/** Group conversations under their project, pinned chats first and then newest
+ *  chat first.
  *
  *  Ordered by when each chat STARTED, not when it was last used: a list that
  *  re-sorts while you are talking moves the row you are reading, and every
  *  other row with it. A chat appears at the top of its project when you start
- *  it and stays exactly there. */
+ *  it and stays exactly there. A pin is the one move a row makes, and only
+ *  because it was asked for. */
 export function byProject(list: Conversation[]): Map<string, Conversation[]> {
   const out = new Map<string, Conversation[]>();
-  for (const c of [...list].sort((a, b) => b.createdAt - a.createdAt)) {
+  const sorted = [...list].sort(
+    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt - a.createdAt,
+  );
+  for (const c of sorted) {
     const bucket = out.get(c.projectId);
     if (bucket) bucket.push(c);
     else out.set(c.projectId, [c]);
@@ -224,7 +233,8 @@ export function rewriteConversation(
  *
  *  Compares METADATA ONLY, and ignores order. The messages are not part of the
  *  index — they arrive from each chat's transcript — and the order of the rows
- *  is not either, since the sidebar sorts by `createdAt` itself (`byProject`). */
+ *  is not either, since the sidebar sorts by pin and `createdAt` itself
+ *  (`byProject`). */
 export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
   if (a.length !== b.length) return false;
   const byId = new Map(a.map((c) => [c.id, c]));
@@ -240,6 +250,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       held.createdAt === c.createdAt &&
       held.updatedAt === c.updatedAt &&
       held.seq === c.seq &&
+      !!held.pinned === !!c.pinned &&
       !!held.synced === !!c.synced
     );
   });

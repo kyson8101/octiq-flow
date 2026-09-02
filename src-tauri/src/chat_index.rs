@@ -39,11 +39,16 @@ pub struct ChatMeta {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
-    /// When it started. The sidebar orders by this and it never changes.
+    /// When it started. The sidebar orders by this, pinned ones first, and it never changes.
     #[serde(default)]
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
+    /// Kept at the top of its project, above every newer chat. Left out of the
+    /// file when false, so an index written before pins existed reads back
+    /// exactly as it was written.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -136,10 +141,15 @@ fn write(index: &Index) -> Result<(), String> {
     fs::rename(&temp, &path).map_err(|e| e.to_string())
 }
 
-/// Every chat, newest first — the order the sidebar shows them in.
+/// Every chat, pinned ones first and then newest first — the order the sidebar
+/// shows them in.
 pub fn list() -> Vec<ChatMeta> {
     let mut chats = read().chats;
-    chats.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    chats.sort_by(|a, b| {
+        b.pinned
+            .cmp(&a.pinned)
+            .then(b.created_at.cmp(&a.created_at))
+    });
     chats
 }
 
@@ -292,6 +302,7 @@ mod tests {
             access: None,
             created_at: created,
             updated_at: created,
+            pinned: false,
         }
     }
 
@@ -344,6 +355,35 @@ mod tests {
             .collect();
         assert_eq!(ours, vec![new.to_string(), old.to_string()]);
         cleanup(&[old, new]);
+    }
+
+    #[test]
+    fn a_pinned_chat_comes_before_a_newer_one() {
+        let (old, new) = ("test-index-pinned-old", "test-index-pinned-new");
+        cleanup(&[old, new]);
+        let mut pinned = meta(old, 1_000);
+        pinned.pinned = true;
+        upsert(pinned).unwrap();
+        upsert(meta(new, 2_000)).unwrap();
+
+        let ours: Vec<String> = list()
+            .into_iter()
+            .filter(|c| c.id == old || c.id == new)
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ours, vec![old.to_string(), new.to_string()]);
+        cleanup(&[old, new]);
+    }
+
+    #[test]
+    fn an_entry_written_before_pins_existed_reads_back_unpinned() {
+        let meta: ChatMeta =
+            serde_json::from_str(r#"{"id":"a","projectId":"p","createdAt":1,"updatedAt":1}"#)
+                .unwrap();
+        assert!(!meta.pinned);
+        // And an unpinned one is written without the field, so the file stays
+        // exactly what it was before pins existed.
+        assert!(!serde_json::to_string(&meta).unwrap().contains("pinned"));
     }
 
     #[test]
