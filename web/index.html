@@ -15,13 +15,24 @@
     <link rel="icon" type="image/png" href="./icon-32.png" sizes="32x32" />
 
     <!-- Reached from a phone through a tunnel, so it is meant to be added to a
-         home screen. iOS reads none of the manifest for that: it wants its own
-         icon, and it composites transparency onto black, so this one is already
-         flattened onto the app's own background. -->
+         home screen. A tab cannot be told to shrink its own toolbar, so the
+         home screen is the only way the address bar comes off the screen.
+
+         What is DELIBERATELY absent is `apple-mobile-web-app-capable`. It is
+         the obvious tag to reach for and it is the wrong one here: on iOS it
+         forces `standalone` and outranks the manifest, which buys a chromeless
+         window at the price of every navigation control — no back, and above
+         all no reload, on an app whose whole job is a live view of a machine
+         at the end of a tunnel. The manifest asks for `minimal-ui` instead:
+         same missing address bar, native back/share/reload kept.
+
+         iOS reads none of the manifest for the ICON: it wants its own, and it
+         composites transparency onto black, so this one is already flattened
+         onto the app's own background. The viewport stays `viewport-fit=cover`
+         and the layout keeps padding with `env(safe-area-inset-*)` either way.
+         -->
     <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="OctiqFlow" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="./manifest.webmanifest" />
 
     <title>OctiqFlow</title>

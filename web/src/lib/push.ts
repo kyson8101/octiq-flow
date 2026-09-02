@@ -47,11 +47,21 @@ export function supported(): boolean {
  *  Only meaningful on iOS, and the single most useful thing to be able to say
  *  there: web push exists for an installed app and does not exist for a tab, so
  *  a user who has not installed it is not doing anything wrong — they are one
- *  step short, and no amount of tapping the switch will do it for them. */
+ *  step short, and no amount of tapping the switch will do it for them.
+ *
+ *  `minimal-ui` counts, and asking only about `standalone` is the bug that
+ *  hides here. The manifest asks for `minimal-ui` on purpose (see index.html)
+ *  to keep the native back/reload controls, and in that mode the `standalone`
+ *  query is FALSE — so a phone with the app on its home screen would be told
+ *  to go and add the app to its home screen, with the push switch dead beside
+ *  the advice. */
 export function installed(): boolean {
   if (typeof window === "undefined") return false;
+  const asInstalled = ["minimal-ui", "standalone", "fullscreen"];
   return (
-    window.matchMedia?.("(display-mode: standalone)").matches === true ||
+    asInstalled.some(
+      (mode) => window.matchMedia?.(`(display-mode: ${mode})`).matches === true,
+    ) ||
     // iOS's own, older flag; still the only true answer on some versions.
     (navigator as { standalone?: boolean }).standalone === true
   );
