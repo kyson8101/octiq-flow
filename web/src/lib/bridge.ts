@@ -206,13 +206,18 @@ class Bridge {
    *  putting either in the page's address — agent-authored JavaScript can read
    *  its own URL, so a token-bearing GET would quietly hand it the command
    *  socket key. `_blank` gets it out of OctiqFlow without navigating the live
-   *  chat away; the response is also put in a unique-origin CSP sandbox. */
+   *  chat away; the response is also put in a unique-origin CSP sandbox.
+   *
+   *  Do not add `noreferrer` to the form. Chrome deliberately serialises the
+   *  Origin of that POST as `null`, and the backend's same-origin gate then
+   *  has to reject our own navigation. The token has already been removed
+   *  from the app URL, so its ordinary same-origin Referer contains no secret. */
   openFileInBrowser(path: string): void {
     const form = document.createElement("form");
     form.method = "post";
     form.action = this.fileEndpoint();
     form.target = "_blank";
-    form.rel = "noreferrer noopener";
+    form.rel = "noopener";
     form.hidden = true;
 
     for (const [name, value] of [

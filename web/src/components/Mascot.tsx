@@ -213,6 +213,7 @@ export function Mascot({
   size = 18,
   alert = false,
   mood = "work",
+  asleep = false,
 }: {
   /** Which of the nine to draw — the chosen model's `composerStyle`. Defaults
    *  to Sonnet's, the shape this drawing started as, so a caller that has no
@@ -229,15 +230,21 @@ export function Mascot({
    *  reasoning is not the same activity as running a build and does not look
    *  like it — and `still` is a robot standing there. */
   mood?: MascotMood;
+  /** No live process behind this one — swept by the idle reaper, or never
+   *  started this session. Closes both eyes (the blink's own shut frame, held
+   *  instead of released) and pins a small z to the corner. A wrapper only
+   *  exists in this case, so every other caller keeps the bare `<svg>` it had
+   *  before. */
+  asleep?: boolean;
 }) {
   const Draw = ROBOTS[robot] ?? ROBOTS.sonnet;
-  return (
+  const svg = (
     // Decorative: the words immediately after it say "thinking with max effort"
     // and how long it has been at it. A reader who cannot see the robot loses a
     // joke, not a fact, and a second "Working" announced here would be read out
     // over the top of the line that says it properly.
     <svg
-      className={`mascot ${alert ? "is-alert" : ""}`}
+      className={`mascot ${alert ? "is-alert" : ""} ${asleep ? "is-asleep" : ""}`}
       data-robot={robot}
       data-mood={mood}
       width={size}
@@ -254,5 +261,14 @@ export function Mascot({
         <Draw />
       </g>
     </svg>
+  );
+  if (!asleep) return svg;
+  return (
+    <span className="mascot-wrap">
+      {svg}
+      <span className="mascot-z" aria-hidden="true">
+        z
+      </span>
+    </span>
   );
 }

@@ -39,6 +39,7 @@ import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
+import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -144,6 +145,9 @@ const MarkdownBlock = memo(function MarkdownBlock({
   text: string;
   animate: boolean;
 }) {
+  const visualization = parseVisualizationReference(text);
+  if (visualization) return <VisualizationLink reference={visualization} />;
+
   return (
     <Markdown
       remarkPlugins={[remarkGfm]}

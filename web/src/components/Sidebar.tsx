@@ -526,6 +526,7 @@ function ProjectNode({
                         robot={modelFromId(c.modelId ?? null)?.composerStyle}
                         mood="still"
                         size={16}
+                        asleep={!running.has(c.id) && !busy.has(c.id)}
                       />
                       <span className="chat-title">{c.title}</span>
                     </button>

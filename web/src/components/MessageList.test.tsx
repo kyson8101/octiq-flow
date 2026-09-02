@@ -266,6 +266,45 @@ describe("a file path in a reply", () => {
   });
 });
 
+describe("a visualization reference in a reply", () => {
+  const reply = (text: string) =>
+    renderToStaticMarkup(
+      <MessageList
+        messages={[
+          { id: "a1", role: "assistant", blocks: [{ kind: "text", text }], streaming: false },
+        ]}
+        busy={false}
+      />,
+    );
+
+  it("becomes one inline surface instead of showing protocol glyphs and a path button", () => {
+    const reference =
+      'visualize{"path":"/Users/kyson/lab/ch3-prose-review.html","title":"Review"}';
+    const html = reply(reference);
+
+    expect(html).toContain("visualization-link");
+    expect(html).toContain("Review");
+    expect(html).not.toContain("visualize");
+    expect(html).not.toContain("prose-path");
+  });
+
+  it("keeps the prose before a reference and renders the reference separately", () => {
+    const reference = 'visualize{"path":"/repo/review.html"}';
+    const html = reply(`The review is ready.\n\n${reference}`);
+
+    expect(html).toContain("The review is ready.");
+    expect(html).toContain("visualization-link");
+    expect(html).not.toContain("visualize");
+  });
+
+  it("leaves a malformed reference visible instead of guessing what it meant", () => {
+    const html = reply('visualize{"path":"relative.html"}');
+
+    expect(html).not.toContain("visualization-link");
+    expect(html).toContain("visualize");
+  });
+});
+
 describe("a table in a reply", () => {
   const replied = (text: string): Message => ({
     id: "a1",

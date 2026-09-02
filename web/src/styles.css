@@ -1822,6 +1822,39 @@ body {
   animation: pulse 1.2s ease-in-out infinite;
 }
 
+/* A Codex `visualize` content reference, reduced to the one useful thing in
+   chat: a clean link to the document, without its protocol delimiters or JSON. */
+.visualization-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.visualization-link:hover {
+  border-bottom-color: var(--accent);
+}
+
+.visualization-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.visualization-link span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .prose-shot-wait {
     animation: none;
@@ -2998,6 +3031,36 @@ body {
 
 .mascot.is-alert .mascot-eye {
   fill: var(--warn);
+}
+
+/* Asleep: eyes held at the blink's own shut frame rather than mid-blink, and
+   the lamp stops pulsing — nothing on a sleeping robot moves. */
+.mascot.is-asleep .mascot-eye {
+  animation: none;
+  transform: scaleY(0.14);
+}
+
+.mascot.is-asleep .mascot-lamp {
+  animation: none;
+}
+
+/* Only rendered when asleep, so every other caller keeps the bare `<svg>` and
+   this costs nothing there. */
+.mascot-wrap {
+  position: relative;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.mascot-z {
+  position: absolute;
+  top: -3px;
+  right: -1px;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--fg-3);
+  pointer-events: none;
 }
 
 /* ---- The dance ---------------------------------------------------------

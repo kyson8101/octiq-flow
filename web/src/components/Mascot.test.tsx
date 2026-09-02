@@ -78,4 +78,17 @@ describe("Mascot", () => {
     expect(still).toContain('data-mood="still"');
     expect(drawn).toContain('data-mood="work"');
   });
+
+  /** No live process behind it: the eyes hold the blink's own shut frame and a
+   *  small z lands in the corner. Only this state wraps the svg — every other
+   *  caller keeps the bare drawing it always had. */
+  it("closes its eyes and wears a z when asleep", () => {
+    const awake = renderToStaticMarkup(<Mascot />);
+    const asleep = renderToStaticMarkup(<Mascot asleep />);
+    expect(awake).not.toContain("mascot-wrap");
+    expect(asleep).toContain('class="mascot-wrap"');
+    expect(asleep).toContain("is-asleep");
+    expect(asleep).toContain('class="mascot-z"');
+    expect(asleep).toContain(">z<");
+  });
 });
