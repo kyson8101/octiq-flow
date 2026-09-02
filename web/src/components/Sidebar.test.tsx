@@ -48,7 +48,6 @@ const html = (
       busy={new Set()}
       expanded={new Set()}
       onToggle={() => {}}
-      onPickProject={() => {}}
       onPickConversation={() => {}}
       onNewChat={() => {}}
       onDelete={() => {}}
@@ -84,6 +83,13 @@ describe("Sidebar", () => {
     expect(html()).toContain('draggable="true"');
   });
 
+  it("uses the project row as its chat-folder toggle", () => {
+    expect(html()).toContain('class="proj-btn" type="button" aria-expanded="false"');
+    expect(html({ conversations: new Map([["p1", [chat("a")]]]), expanded: new Set(["p1"]) })).toContain(
+      'class="proj-btn" type="button" aria-expanded="true"',
+    );
+  });
+
   it("marks projects that have a sibling link", () => {
     const linked: Project[] = [
       { id: "p1", name: "octiq-flow", sibling_ids: ["p2"] },
@@ -104,7 +110,6 @@ describe("Sidebar", () => {
         busy={new Set()}
         expanded={new Set()}
         onToggle={() => {}}
-        onPickProject={() => {}}
         onPickConversation={() => {}}
         onNewChat={() => {}}
         onDelete={() => {}}

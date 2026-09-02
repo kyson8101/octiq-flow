@@ -1929,26 +1929,6 @@ export default function App() {
     });
   }, []);
 
-  /** Clicking a project row.
-   *
-   *  On a project you are not in: go there — open it, and show the most recent
-   *  conversation, the way coming back to a room shows what was left on the
-   *  table. On the one you are already in, there is nothing to go to, so the
-   *  click does the other thing a folder does and closes it. */
-  const pickProject = useCallback(
-    (id: string) => {
-      if (id === projectId) {
-        toggleFolder(id);
-        return;
-      }
-      setExpanded((s) => new Set(s).add(id));
-      const recent = (grouped.get(id) ?? [])[0];
-      if (recent) openConversation(recent);
-      else startBlank(id);
-    },
-    [grouped, startBlank, openConversation, projectId, toggleFolder],
-  );
-
   /** The chats deleted a moment ago, and the way back to each of them.
    *
    *  Deleting used to ask first, in a dialog in the middle of the screen. The
@@ -3110,7 +3090,6 @@ export default function App() {
           deleteMs={UNDO_MS}
           expanded={expanded}
           onToggle={toggleFolder}
-          onPickProject={pickProject}
           onPickConversation={openConversation}
           onNewChat={newChat}
           onDelete={deleteConversation}

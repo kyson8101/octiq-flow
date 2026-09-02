@@ -4929,12 +4929,17 @@ body.is-ultra .eff {
   display: flex;
   align-items: center;
   border-radius: var(--r-md);
+  transition: transform 150ms ease, background-color 150ms ease;
 }
 
 /* The dragged row stays in the list as an origin, while the hairline on a
    target says exactly which side it will land on. */
 .proj-node.is-dragging {
   opacity: 0.45;
+}
+
+.proj-node.is-dragging > .proj {
+  transform: scale(0.985);
 }
 
 .proj-node.is-drop-before > .proj::before,

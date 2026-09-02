@@ -8,7 +8,7 @@
 // — the indent already says what they are — and any state they have is a mark
 // on the RIGHT, where it can be scanned down the edge of the list without
 // breaking the line of text.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type React from "react";
 import type { Conversation } from "../lib/store";
 import { moveProjectAt, moveProjectBy } from "../lib/projectOrder";
@@ -51,7 +51,6 @@ export function Sidebar({
   deleteMs = 2000,
   expanded,
   onToggle,
-  onPickProject,
   onPickConversation,
   onNewChat,
   onDelete,
@@ -97,7 +96,6 @@ export function Sidebar({
   leaving?: ReadonlySet<string>;
   expanded: Set<string>;
   onToggle: (projectId: string) => void;
-  onPickProject: (projectId: string) => void;
   onPickConversation: (c: Conversation) => void;
   onNewChat: (projectId: string) => void;
   /** Delete this chat — and, pressed again on a row already counting down,
@@ -128,7 +126,39 @@ export function Sidebar({
   const [dropAt, setDropAt] = useState<{ id: string; edge: "before" | "after" } | null>(
     null,
   );
+  const projectRows = useRef(new Map<string, HTMLLIElement>());
+  const priorProjectPositions = useRef(new Map<string, DOMRect>());
+  const projectOrder = projects.map((project) => project.id).join("\u0000");
   const names = new Map([...projects, ...shelved].map((project) => [project.id, project.name]));
+
+  // Native drag-and-drop updates the order in one DOM commit. Preserve the
+  // previous rectangles, then play each moved row back to its new place so the
+  // result reads as a rearrangement instead of a jump.
+  useLayoutEffect(() => {
+    const current = new Map<string, DOMRect>();
+    for (const [id, row] of projectRows.current) current.set(id, row.getBoundingClientRect());
+
+    if (priorProjectPositions.current.size > 0 && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      for (const [id, row] of projectRows.current) {
+        const before = priorProjectPositions.current.get(id);
+        const after = current.get(id);
+        if (!before || !after) continue;
+
+        const deltaY = before.top - after.top;
+        if (Math.abs(deltaY) > 1) {
+          row.animate(
+            [
+              { transform: `translateY(${deltaY}px)` },
+              { transform: "translateY(0)" },
+            ],
+            { duration: 220, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
+          );
+        }
+      }
+    }
+
+    priorProjectPositions.current = current;
+  }, [projectOrder]);
 
   const reorder = (next: string[]) => {
     const current = projects.map((project) => project.id);
@@ -168,6 +198,10 @@ export function Sidebar({
         {projects.map((p) => (
           <ProjectNode
             key={p.id}
+            rowRef={(node) => {
+              if (node) projectRows.current.set(p.id, node);
+              else projectRows.current.delete(p.id);
+            }}
             project={p}
             chats={conversations.get(p.id) ?? []}
             open={expanded.has(p.id)}
@@ -179,7 +213,6 @@ export function Sidebar({
             leaving={leaving}
             deleteMs={deleteMs}
             onToggle={onToggle}
-            onPickProject={onPickProject}
             onPickConversation={onPickConversation}
             onNewChat={onNewChat}
             onDelete={onDelete}
@@ -286,6 +319,7 @@ export function Sidebar({
 }
 
 function ProjectNode({
+  rowRef,
   project,
   chats,
   open,
@@ -297,7 +331,6 @@ function ProjectNode({
   leaving,
   deleteMs,
   onToggle,
-  onPickProject,
   onPickConversation,
   onNewChat,
   onDelete,
@@ -311,6 +344,7 @@ function ProjectNode({
   onDragEnd,
   onMove,
 }: {
+  rowRef: (node: HTMLLIElement | null) => void;
   project: Project;
   chats: Conversation[];
   open: boolean;
@@ -322,7 +356,6 @@ function ProjectNode({
   leaving: ReadonlySet<string>;
   deleteMs: number;
   onToggle: (id: string) => void;
-  onPickProject: (id: string) => void;
   onPickConversation: (c: Conversation) => void;
   onNewChat: (id: string) => void;
   onDelete: (id: string) => void;
@@ -357,6 +390,7 @@ function ProjectNode({
 
   return (
     <li
+      ref={rowRef}
       className={[
         "proj-node",
         dragging ? "is-dragging" : "",
@@ -386,8 +420,8 @@ function ProjectNode({
         <button
           className="proj-btn"
           type="button"
-          onClick={() => onPickProject(project.id)}
-          onDoubleClick={() => onToggle(project.id)}
+          aria-expanded={showing}
+          onClick={() => onToggle(project.id)}
         >
           <span className={`proj-icon ${showing ? "is-open" : ""}`} aria-hidden="true">
             <FolderIcon />
