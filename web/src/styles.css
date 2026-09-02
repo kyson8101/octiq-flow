@@ -511,26 +511,60 @@ body {
   opacity: var(--swipe-p, 0);
 }
 
-/* The way into the shelf. Quiet — the point of shelving is not to look at
-   these — but always present, because it is the only route back. */
-.shelf-open {
+/* Whole-app routes belong together. A compact dock keeps the drawer's lower
+   edge quiet and leaves the project list the height it needs. */
+.sidebar-utilities {
+  display: flex;
   flex: 0 0 auto;
-  width: calc(100% - 16px);
-  margin: 0 8px calc(8px + env(safe-area-inset-bottom));
-  padding: 7px 8px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin: 0 8px 6px;
+  padding: 4px;
   border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+
+.sidebar-utility {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-3);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
   cursor: pointer;
 }
 
-.shelf-open:hover {
-  background: var(--bg-1);
-  color: var(--fg-1);
+.sidebar-utility:hover,
+.sidebar-utility:focus-visible {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.sidebar-utility:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sidebar-utility-count {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  color: var(--fg-2);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
 }
 
 .shelf-sub {

@@ -228,24 +228,43 @@ export function Sidebar({
         ))}
       </ul>
 
-      {shelved.length > 0 && (
-        <button className="shelf-open" type="button" onClick={onShowShelved}>
-          Shelved · <RollingNumber value={shelved.length} />
+      {/* Whole-app destinations are a compact utility dock rather than three
+          full-width rows. Their labels stay available on hover and to assistive
+          tech; the project list gets to keep the vertical room. */}
+      <div className="sidebar-utilities" aria-label="Project utilities">
+        {shelved.length > 0 && (
+          <button
+            className="sidebar-utility"
+            type="button"
+            title={`Shelved projects (${shelved.length})`}
+            aria-label={`Shelved projects (${shelved.length})`}
+            onClick={onShowShelved}
+          >
+            <ArchiveIcon />
+            <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
+          </button>
+        )}
+
+        <button
+          className="sidebar-utility"
+          type="button"
+          title="Board"
+          aria-label="Board"
+          onClick={onShowBoard}
+        >
+          <BoardIcon />
         </button>
-      )}
 
-      {/* The board reads across every project, so it does not belong to any
-          one row above — it sits with the other whole-app routes. */}
-      <button className="shelf-open" type="button" onClick={onShowBoard}>
-        Board
-      </button>
-
-      {/* Same quiet treatment as the shelf: not what you came to the sidebar
-          for, but the only route to the page — and it names the agent in use,
-          so the answer is on screen without opening anything. */}
-      <button className="shelf-open" type="button" onClick={onShowAgents}>
-        Agent · {agentName}
-      </button>
+        <button
+          className="sidebar-utility"
+          type="button"
+          title={`Agent · ${agentName}`}
+          aria-label={`Agent · ${agentName}`}
+          onClick={onShowAgents}
+        >
+          <AgentIcon />
+        </button>
+      </div>
 
       {foot && <div className="sidebar-slot is-foot">{foot}</div>}
 
@@ -616,6 +635,35 @@ function PlusIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function ArchiveIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h16" />
+      <path d="M6 7v12h12V7" />
+      <path d="M3 4h18v3H3z" />
+      <path d="M10 11h4" />
+    </svg>
+  );
+}
+
+function BoardIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M9 4v16M15 4v16" />
+    </svg>
+  );
+}
+
+function AgentIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="4" y="7" width="16" height="12" rx="3" />
+      <path d="M12 3v4M9 12h.01M15 12h.01M9 16h6" />
     </svg>
   );
 }
