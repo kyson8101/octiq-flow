@@ -31,9 +31,16 @@
      answer strip and the folder header above a run start at the card's own
      edge. `--tool-pad` is that padding, `--tool-indent` the icon plus the gap
      after it. Change the icon's size or the row's gap and change these with
-     them, or four things that have always lined up quietly stop. */
-  --tool-pad: 11px;
-  --tool-indent: 34px;
+     them, or four things that have always lined up quietly stop.
+
+     They are READ OFF `.tool-head`, which is the row everything else aligns to:
+     `padding: 5px 4px` is the pad, and a 20px `.tool-icon` plus the row's 8px
+     gap is the indent. They had drifted 7px and 6px past those, which put the
+     answer strip 13px right of the very label it hangs under and the folder
+     header 7px right of the icon below it — the drift the comment above was
+     written to prevent. */
+  --tool-pad: 4px;
+  --tool-indent: 28px;
   /* The project column's width, above the breakpoint where it IS a column.
      App.tsx overwrites this on the root as the handle is dragged, and this is
      the width a first visit gets — kept here rather than only in the layout so
@@ -5276,23 +5283,71 @@ body.is-ultra .eff {
   margin-top: 6px;
 }
 
-/* Sibling projects stay together, so a single quiet rail can connect the
-   centres of their folder icons. It lives behind the row and its chat fold,
-   which keeps a long expanded project from breaking the relationship line. */
+/* Sibling projects stay together, so one connector can hold them: a trunk down
+   a gutter of its own, and a branch into each member's row —
+
+       |–  starfall
+       |
+       |–  starfall-social
+
+   Three decisions are in that shape. It is drawn in `--border`, the
+   stylesheet's hairline, and NOT in `--accent`: expanded, the trunk is the
+   tallest line in the sidebar, and the accent is spoken for — it means a turn
+   is in flight, so a structural rail in it made the least important
+   relationship on the page the loudest mark on it. It runs OVER the rows, so a
+   hovered row's fill does not swallow the branch it is being held by. And the
+   group's own contents — its rows and their chats — are pushed right by
+   `--sib-in`, which is what gives the trunk an empty column to run down
+   instead of a line crossing the chat rows it passes. */
 .proj-node {
   position: relative;
+  /* The trunk's column, measured from the node's left edge: past the 18px drag
+     grip, and stopping short of the folder icon the branch reaches for. */
+  --sib-rail: 24px;
+  --sib-in: 12px;
 }
 
+/* Everything the group holds moves right together — the row's icon and name
+   (the grip stays put, so the column of handles is unbroken) and the chats
+   under it, which would otherwise sit on top of the trunk. */
+.proj-node.in-sibling-group > .proj > .proj-btn {
+  padding-left: calc(4px + var(--sib-in));
+}
+
+/* A margin, not more padding: the chat row's fill IS the row, so padding would
+   push the title clear of the trunk while leaving the selected row's accent
+   pill spread underneath it. The whole box moves instead, and the trunk keeps
+   an empty column. */
+.proj-node.in-sibling-group .chat {
+  margin-left: var(--sib-in);
+}
+
+/* The branch: a short arm from the trunk to the folder icon, at the row's own
+   centre line (half of the 34px row). Every member draws one, including the
+   last, which is the row the trunk stops at. */
+.proj-node.in-sibling-group::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  left: var(--sib-rail);
+  top: 17px;
+  width: calc(var(--sib-in) - 3px);
+  height: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
+/* The trunk, one segment per gap: from this row's centre to the next row's,
+   which is 17px past a node bottom plus the 6px between nodes. */
 .proj-node.has-sibling-below::after {
   content: "";
   position: absolute;
-  z-index: 0;
-  left: 29px;
+  z-index: 2;
+  left: var(--sib-rail);
   top: 17px;
   bottom: -23px;
   width: 1px;
-  background: var(--accent);
-  opacity: 0.55;
+  background: var(--border);
   pointer-events: none;
 }
 
@@ -10662,9 +10717,21 @@ body.is-ultra .eff {
 /* ---- Card 79: the decision an ask_user call made ----------------------
    Outside the fold, because it is not detail — it is a thing that was decided,
    and the card that asked for it is long gone by the time anyone reads back.
-   Indented under the row it answers, the way a reply is. */
+   Indented under the row it answers, the way a reply is.
+
+   And on a rail, because indentation alone does not say WHAT it is indented
+   under: a transcript is already a column of four left edges, and a fifth one
+   floating free reads as another thing that happened rather than as this row's
+   answer. The line drops from the middle of the row's icon — 10px is half the
+   20px `.tool-icon` — and the text still lands on the row's own label at
+   `--tool-pad + --tool-indent`, once the rail and the air after it are taken
+   off. The bottom is short on purpose: `.msg-body`'s 10px gap already
+   separates this card from the next, and padding the rail past its last line
+   leaves the line dangling under nothing. */
 .tool-answer {
-  padding: 4px 14px 10px calc(var(--tool-pad) + var(--tool-indent));
+  margin-left: calc(var(--tool-pad) + 10px);
+  padding: 4px 14px 4px calc(var(--tool-indent) - 11px);
+  border-left: 1px solid var(--border);
   font-size: 12.5px;
   line-height: 1.45;
 }

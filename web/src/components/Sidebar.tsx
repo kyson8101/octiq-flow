@@ -200,7 +200,11 @@ export function Sidebar({
       </div>
 
       <ul className="proj-list">
-        {projects.map((p, index) => (
+        {projects.map((p, index) => {
+          // The group this row belongs to, read once: its neighbours decide
+          // where the connector starts and where it stops.
+          const group = siblingGroupIds(projects, p.id);
+          return (
           <ProjectNode
             key={p.id}
             rowRef={(node) => {
@@ -226,9 +230,8 @@ export function Sidebar({
             siblingNames={(p.sibling_ids ?? []).flatMap((id) =>
               names.has(id) ? [names.get(id)!] : [],
             )}
-            siblingBelow={
-              index < projects.length - 1 && siblingGroupIds(projects, p.id).has(projects[index + 1].id)
-            }
+            siblingAbove={index > 0 && group.has(projects[index - 1].id)}
+            siblingBelow={index < projects.length - 1 && group.has(projects[index + 1].id)}
             dragging={dragging === p.id}
             dropEdge={dropAt?.id === p.id ? dropAt.edge : null}
             onDragStart={(e) => {
@@ -267,7 +270,8 @@ export function Sidebar({
               reorder(moveSiblingGroupBy(projects, p.id, direction))
             }
           />
-        ))}
+          );
+        })}
       </ul>
 
       {/* Whole-app destinations are a compact utility dock rather than three
@@ -346,6 +350,7 @@ function ProjectNode({
   onPin,
   onSettings,
   siblingNames,
+  siblingAbove,
   siblingBelow,
   dragging,
   dropEdge,
@@ -373,6 +378,8 @@ function ProjectNode({
   onPin: (id: string) => void;
   onSettings: (id: string) => void;
   siblingNames: string[];
+  /** The row above belongs to the same connected group. */
+  siblingAbove: boolean;
   /** Continue the visual link to the next row in this connected group. */
   siblingBelow: boolean;
   dragging: boolean;
@@ -407,6 +414,7 @@ function ProjectNode({
       ref={rowRef}
       className={[
         "proj-node",
+        siblingAbove || siblingBelow ? "in-sibling-group" : "",
         siblingBelow ? "has-sibling-below" : "",
         dragging ? "is-dragging" : "",
         dropEdge ? `is-drop-${dropEdge}` : "",
