@@ -27,7 +27,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { bridge } from "../lib/bridge";
-import { copyText } from "../lib/clipboard";
+import { CopyBit, CopyIcon, TextIcon, type Copyable } from "./CopyBit";
 import type { Preview } from "../lib/fileView";
 import {
   baseName,
@@ -420,12 +420,6 @@ export function SessionFilesPanel({
  *  enough to cover a hover followed by a click, and no longer. */
 const FILE_FRESH_MS = 2500;
 
-/** What a copy button found to copy: the text, or `null` for "there is nothing
- *  here to put on a clipboard". `partial` when only the head of the file came
- *  back — the backend caps a preview read, and a silently half-copied file is
- *  exactly the kind of quiet lie a copy button must not tell. */
-type Copyable = { text: string | null; partial?: boolean };
-
 /** One pinned file.
  *
  *  The row opens the file. The two buttons beside it offer what you may want
@@ -571,103 +565,6 @@ function useFileText(path: string) {
     },
     read: (): Copyable | Promise<Copyable> => fresh() ?? fetchText(),
   };
-}
-
-/** One of a row's copy buttons.
- *
- *  Says what actually happened rather than always claiming success: this app is
- *  reached over plain http from a phone, where the modern clipboard API does
- *  not exist and the fallback can be refused, and "copied" over an unchanged
- *  clipboard is worse than being told it did not work. */
-function CopyBit({
-  icon,
-  idle,
-  done,
-  empty,
-  partial,
-  arm,
-  read,
-}: {
-  icon: React.ReactNode;
-  /** What the button offers, before it has been pressed. */
-  idle: string;
-  /** What it says after it worked. */
-  done: string;
-  /** What it says when there was nothing worth copying. */
-  empty?: string;
-  /** What it says when only part of the file came back. */
-  partial?: string;
-  /** Called when a click looks likely, to get any reading out of the way. */
-  arm?: () => void;
-  read: () => Copyable | Promise<Copyable>;
-}) {
-  const [state, setState] = useState<"idle" | "done" | "warn" | "failed">("idle");
-  const [said, setSaid] = useState(idle);
-
-  const settle = (next: "done" | "warn" | "failed", words: string) => {
-    setState(next);
-    setSaid(words);
-    setTimeout(() => {
-      setState("idle");
-      setSaid(idle);
-    }, 1600);
-  };
-
-  return (
-    <button
-      className={`sfp-act is-${state}`}
-      type="button"
-      title={said}
-      aria-label={said}
-      onPointerEnter={arm}
-      onPointerDown={arm}
-      onFocus={arm}
-      onClick={async () => {
-        const found = read();
-        const { text, partial: cut } = found instanceof Promise ? await found : found;
-        if (text === null || text === "") {
-          settle("warn", empty ?? "Nothing to copy");
-          return;
-        }
-        if (!(await copyText(text))) {
-          settle("failed", "Could not copy");
-          return;
-        }
-        settle(cut ? "warn" : "done", cut ? (partial ?? done) : done);
-      }}
-    >
-      {state === "done" ? <TickIcon /> : icon}
-    </button>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="9" y="9" width="12" height="12" rx="2" />
-      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-    </svg>
-  );
-}
-
-/** A page with words on it — the file's contents, as against its address. */
-function TextIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" />
-      <path d="M14 2v6h6" />
-      <path d="M8 13h8" />
-      <path d="M8 17h5" />
-    </svg>
-  );
-}
-
-function TickIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="m20 6-11 11-5-5" />
-    </svg>
-  );
 }
 
 function FileIcon() {

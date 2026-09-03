@@ -523,47 +523,6 @@ body {
   opacity: var(--swipe-p, 0);
 }
 
-/* Whole-app routes belong together. A compact dock keeps the drawer's lower
-   edge quiet and leaves the project list the height it needs. */
-.sidebar-utilities {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  margin: 0 8px 6px;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-}
-
-.sidebar-utility {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-3);
-  cursor: pointer;
-}
-
-.sidebar-utility:hover,
-.sidebar-utility:focus-visible {
-  background: var(--bg-2);
-  color: var(--fg-0);
-}
-
-.sidebar-utility:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
 .sidebar-utility-count {
   position: absolute;
   top: 1px;
@@ -5248,6 +5207,7 @@ body.is-ultra .eff {
 }
 
 .sidebar-add {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6731,6 +6691,52 @@ body.is-ultra .eff {
   direction: rtl;
   text-align: left;
   text-overflow: ellipsis;
+}
+
+/* Copy the path, copy the file. Icons rather than words: the header already
+   carries two labelled buttons and a close, and a name long enough to need the
+   room. Grouped tight so the pair reads as one thing beside them. */
+.panel-acts {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.panel-act {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.panel-act:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+/* What it did, in the same three colours the files column uses — green for a
+   copy that landed, amber for one that had nothing or only half a file, red
+   for one the browser refused. The sentence is in the button's own title. */
+.panel-act.is-done {
+  color: var(--ok);
+}
+
+.panel-act.is-warn {
+  color: var(--warn);
+}
+
+.panel-act.is-failed {
+  color: var(--danger);
 }
 
 .panel-btn {
@@ -8468,9 +8474,134 @@ body.is-ultra .eff {
   margin-top: 12px;
 }
 
-.qa-question-item + .qa-question-item {
-  padding-top: 14px;
+/* A batch is read a page at a time, so the page that arrives comes in from the
+   side it was turned from. Short and flat — this moves layout, so nothing
+   overshoots. */
+.qa-question-item {
+  animation: qa-page-in 160ms ease-out;
+}
+
+.qa-question-item.is-back {
+  animation-name: qa-page-back;
+}
+
+@keyframes qa-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes qa-page-back {
+  from {
+    opacity: 0;
+    transform: translateX(-9px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qa-question-item {
+    animation: none;
+  }
+}
+
+/* Where you are in the batch. Arrows either side, a dot per question between
+   them: filled is answered, the big one is here. */
+.qa-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
   border-top: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+}
+
+.qa-page-arrow {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    border-color 140ms ease-out,
+    color 140ms ease-out,
+    opacity 140ms ease-out;
+}
+
+.qa-page-arrow:hover:not(:disabled) {
+  background: var(--bg-2, var(--bg-1));
+  color: var(--fg-0);
+}
+
+.qa-page-arrow:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.qa-page-dots {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.qa-page-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    transform 140ms ease-out,
+    background 140ms ease-out,
+    border-color 140ms ease-out;
+}
+
+.qa-page-dot.is-done {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.qa-page-dot.is-here {
+  transform: scale(1.45);
+  border-color: var(--accent);
+}
+
+.qa-page-dot.is-here.is-done {
+  background: var(--accent);
+}
+
+.qa-page-dot:hover:not(:disabled):not(.is-here) {
+  border-color: var(--accent);
+}
+
+.qa-page-dot:disabled {
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qa-page-dot {
+    transition: none;
+  }
 }
 
 .qa-question-number {

@@ -100,10 +100,8 @@ import { Connect } from "./components/Connect";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { Sidebar, type Project } from "./components/Sidebar";
-import { AgentsPage, loadAgents, type AgentInstall } from "./components/AgentsPage";
+import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
-import { WorkBoard } from "./components/WorkBoard";
-import { buildBoard } from "./lib/board";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
@@ -290,8 +288,6 @@ export default function App() {
   /** Which agent CLIs this machine has. Asked once on arrival: it decides what
    *  the model picker may offer, so it is not only the Agents page's business. */
   const [agents, setAgents] = useState<AgentInstall[]>([]);
-  const [agentsOpen, setAgentsOpen] = useState(false);
-  const [boardOpen, setBoardOpen] = useState(false);
   /** What the address bar asked for on arrival. Read once: after this the URL
    *  follows the app, not the other way round. */
   const opened = useRef(readLocation());
@@ -1385,14 +1381,6 @@ export default function App() {
     for (const id of running) if (chats[id]?.busy) out.add(id);
     return out;
   }, [running, chats]);
-
-  /** Every chat under what it wants from you — see `lib/board`. Built only
-   *  while the page is open: there is no reason to sort every chat into a
-   *  column behind a page nobody is looking at. */
-  const board = useMemo(
-    () => (boardOpen ? buildBoard({ conversations, running, busy: busySet, asks, questions }) : null),
-    [boardOpen, conversations, running, busySet, asks, questions],
-  );
 
   /** The calls whose background work is still running, for the cards. Memoised
    *  on the roster itself: it is a context value read by every card on screen,
@@ -2511,22 +2499,6 @@ export default function App() {
     [chat.messages.length, project, startBlank, effort, access, choice, conversationId, tellSession],
   );
 
-  /** Picking an agent on the Agents page.
-   *
-   *  Provider and model are one choice on the command line, so choosing an
-   *  agent means choosing one of its models: its first, which is the one the
-   *  picker would show. Everything else — carrying effort across, and the fact
-   *  that a started conversation cannot change provider in place — is already
-   *  `changeModel`'s job, so this only decides WHICH row and hands it over. */
-  const pickAgent = useCallback(
-    (agent: Provider) => {
-      if (agent === choice.agent) return;
-      const first = providerFor(agent).models[0];
-      if (first) changeModel(first);
-    },
-    [choice.agent, changeModel],
-  );
-
   /** Effort is fixed on the agent's command line, the same as permission mode.
    *  Ending the process rather than the conversation means the next message
    *  starts a fresh agent on the SAME session, under the new setting. */
@@ -3113,14 +3085,6 @@ export default function App() {
           projects={workspaces}
           shelved={shelved}
           onShowShelved={() => setShelfOpen(true)}
-          onShowBoard={() => setBoardOpen(true)}
-          onShowAgents={() => {
-            // Read through the cache on open, so the page paints at once; the
-            // page's own "Check again" is the one that asks the shell afresh.
-            loadAgentList();
-            setAgentsOpen(true);
-          }}
-          agentName={agents.find((a) => a.id === choice.agent)?.name ?? choice.name}
           conversations={grouped}
           currentProject={projectId}
           currentConversation={conversationId}
@@ -3474,32 +3438,6 @@ export default function App() {
           />
         )}
       </div>
-
-      {agentsOpen && (
-        <AgentsPage
-          agents={agents}
-          current={choice.agent}
-          onPick={(agent) => {
-            pickAgent(agent);
-            setAgentsOpen(false);
-          }}
-          onReload={() => loadAgentList(true)}
-          onClose={() => setAgentsOpen(false)}
-        />
-      )}
-
-      {boardOpen && board && (
-        <WorkBoard
-          board={board}
-          projectName={(id) => workspaces.find((w) => w.id === id)?.name}
-          onOpen={(id) => {
-            const found = conversations.find((c) => c.id === id);
-            if (found) openConversation(found);
-            setBoardOpen(false);
-          }}
-          onClose={() => setBoardOpen(false)}
-        />
-      )}
 
       {shelfOpen && (
         <ShelvedProjects

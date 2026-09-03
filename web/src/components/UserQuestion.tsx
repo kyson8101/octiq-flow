@@ -6,11 +6,15 @@
 // waits.
 //
 // An agent can ask more than one thing in a single turn — Claude batches
-// independent tool calls. A batch stays ONE card, but every question is open
-// in it at once, so related decisions can be compared without paging back and
-// forth. Nothing goes back to the agent until the single Submit at the end:
-// answering piecemeal must not let it act on the first answer while you are
-// still deciding the third.
+// independent tool calls. A batch stays ONE card, but it is read a PAGE AT A
+// TIME: one question on screen, arrows and a row of dots underneath. Five
+// questions drawn out at once is a wall taller than the window, and the
+// scrolling it takes to reach the last one is exactly what makes the first one
+// feel already decided. Nothing goes back to the agent until the single Submit
+// at the end — paging is only how it is read, and answers are kept per
+// question, so stepping back shows what was already picked. Answering piecemeal
+// must never let the agent act on the first answer while you are still deciding
+// the third.
 //
 // Options when there are options, a text box when there are not — "which of
 // these two" and "what should it be called" are different questions and a
@@ -95,8 +99,25 @@ export function UserQuestion({
    *  arriving mid-batch leaves an open card open rather than slamming it shut
    *  under someone mid-answer. */
   const [minimised, setMinimised] = useState(!startOpen);
+  /** Which question is on screen. Only ever the page: every answer is stored
+   *  against its question's id, so turning the page costs nothing and going
+   *  back shows the choice already made. */
+  const [page, setPage] = useState(0);
+  /** Which way the last turn went, so the page slides in from the side it came
+   *  from rather than appearing. Read by the stylesheet, nothing else. */
+  const [dir, setDir] = useState<"fwd" | "back">("fwd");
 
   const total = questions.length;
+  // Clamped rather than corrected in an effect: a question can be answered out
+  // from under the card by another tab, and a page past the end must not draw
+  // an empty card for a frame first.
+  const here = Math.min(page, total - 1);
+
+  const goto = (next: number) => {
+    if (next < 0 || next >= total || next === here) return;
+    setDir(next > here ? "fwd" : "back");
+    setPage(next);
+  };
 
   /** What this one question will say when the shared Submit button is pressed.
    *  A text answer still beats a one-of selection; a set still combines ticks
@@ -217,7 +238,10 @@ export function UserQuestion({
       </div>
 
       <div className="qa-questions">
-        {questions.map((question, index) => {
+        {/* One question, never the whole batch. `slice` rather than an index so
+            the question keeps its own `key` and the page animates in on the
+            remount. */}
+        {questions.slice(here, here + 1).map((question) => {
           const options = choicesOf(question.options);
           const detailed = options.some((option) => option.description);
           const many = !!question.multiple && options.length > 0;
@@ -226,8 +250,12 @@ export function UserQuestion({
           const typed = text[question.id] ?? "";
 
           return (
-            <section className="qa-question-item" key={question.id}>
-              {total > 1 && <div className="qa-question-number">Question {index + 1}</div>}
+            <section className={"qa-question-item is-" + dir} key={question.id}>
+              {total > 1 && (
+                <div className="qa-question-number">
+                  Question {here + 1} of {total}
+                </div>
+              )}
               <p className="qa-question">{question.question}</p>
 
               {/* Said before the first tap. Neither kind sends on the tap, and a
@@ -310,7 +338,7 @@ export function UserQuestion({
                 <input
                   className="qa-input"
                   value={typed}
-                  autoFocus={index === 0 && options.length === 0}
+                  autoFocus={options.length === 0}
                   aria-label={"Answer to: " + question.question}
                   placeholder={
                     options.length === 0
@@ -330,6 +358,58 @@ export function UserQuestion({
         })}
       </div>
 
+      {/* Where you are in the batch, and the way through it. The dots are the
+          whole of the progress read: filled is answered, so a glance says what
+          is still waiting without turning a single page. */}
+      {total > 1 && (
+        <div className="qa-pager">
+          <button
+            className="qa-page-arrow"
+            type="button"
+            disabled={sending || here === 0}
+            title="Previous question"
+            aria-label="Previous question"
+            onClick={() => goto(here - 1)}
+          >
+            ‹
+          </button>
+          <div className="qa-page-dots">
+            {questions.map((question, index) => (
+              <button
+                key={question.id}
+                className={
+                  "qa-page-dot " +
+                  (index === here ? "is-here " : "") +
+                  (answers[question.id] ? "is-done" : "")
+                }
+                type="button"
+                disabled={sending}
+                aria-current={index === here}
+                title={"Question " + (index + 1) + (answers[question.id] ? " — answered" : "")}
+                aria-label={
+                  "Question " + (index + 1) + (answers[question.id] ? ", answered" : ", unanswered")
+                }
+                onClick={() => goto(index)}
+              />
+            ))}
+          </div>
+          <button
+            className="qa-page-arrow"
+            type="button"
+            disabled={sending || here === total - 1}
+            title="Next question"
+            aria-label="Next question"
+            onClick={() => goto(here + 1)}
+          >
+            ›
+          </button>
+        </div>
+      )}
+
+      {/* Still the one Submit for the whole batch, from any page. It says how
+          many of how many, because paging makes it easy to send from page two
+          having forgotten pages three to five — and what is not answered goes
+          back as declined, not as nothing. */}
       <button
         className="ask-btn is-primary qa-submit"
         type="button"
@@ -340,7 +420,9 @@ export function UserQuestion({
           ? "Sending…"
           : answered === 0
             ? "Send answers"
-            : "Send " + answered + " answer" + (answered === 1 ? "" : "s")}
+            : total > 1
+              ? "Send " + answered + " of " + total + " answers"
+              : "Send " + answered + " answer" + (answered === 1 ? "" : "s")}
       </button>
     </div>
   );

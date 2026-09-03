@@ -38,9 +38,6 @@ const html = (
       projects={projects}
       shelved={[]}
       onShowShelved={() => {}}
-      onShowBoard={() => {}}
-      onShowAgents={() => {}}
-      agentName="Claude"
       conversations={new Map<string, Conversation[]>()}
       currentProject="p1"
       currentConversation={null}
@@ -101,9 +98,6 @@ describe("Sidebar", () => {
         projects={linked}
         shelved={[]}
         onShowShelved={() => {}}
-        onShowBoard={() => {}}
-        onShowAgents={() => {}}
-        agentName="Claude"
         conversations={new Map()}
         currentProject="p1"
         currentConversation={null}

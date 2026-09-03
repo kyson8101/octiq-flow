@@ -32,8 +32,8 @@ const arrive = (over: Partial<Question> = {}) =>
   renderToStaticMarkup(<UserQuestion questions={[ask(over)]} onDone={() => {}} />);
 
 describe("UserQuestion", () => {
-  it("shows every question in a batch together, with one final submit", () => {
-    const html = renderToStaticMarkup(
+  const batch = () =>
+    renderToStaticMarkup(
       <UserQuestion
         questions={[
           ask({ id: "q1", question: "Which database?", options: ["Postgres", "SQLite"] }),
@@ -44,12 +44,39 @@ describe("UserQuestion", () => {
       />,
     );
 
+  it("draws a batch one question at a time, not all down one screen", () => {
+    // Five questions opened out at once was taller than the window, and the
+    // scroll it took to reach the last one is what made the first feel decided.
+    const html = batch();
+
     expect(html).toContain("Which database?");
-    expect(html).toContain("Which region?");
+    expect(html).not.toContain("Which region?");
+    expect(html).toContain("Question 1 of 2");
     expect(html).toContain("2 questions");
+  });
+
+  it("gives the batch a dot per question and a way through them", () => {
+    const html = batch();
+
+    expect(html).toContain("qa-page-dots");
+    expect((html.match(/class="qa-page-dot /g) ?? []).length).toBe(2);
+    expect((html.match(/class="qa-page-arrow"/g) ?? []).length).toBe(2);
+  });
+
+  it("keeps ONE submit for the whole batch, from any page", () => {
+    // Answering piecemeal must not let the agent act on the first answer while
+    // the third is still being decided.
+    const html = batch();
+
     expect(html).toContain("Send answers");
-    expect(html).not.toContain(">Next<");
     expect((html.match(/class="ask-btn/g) ?? []).length).toBe(1);
+  });
+
+  it("draws no pager at all for a single question", () => {
+    const html = draw({ options: ["Postgres", "SQLite"] });
+
+    expect(html).not.toContain("qa-pager");
+    expect(html).not.toContain("Question 1 of");
   });
 
   it("puts a labelled choice on the button and its description under it", () => {

@@ -1,4 +1,5 @@
-// A file, docked down the right-hand side: read it, edit it, quote it, save it.
+// A file, docked down the right-hand side: read it, edit it, quote it, copy it,
+// save it.
 //
 // Clicking a file in a reply's list opens this. Markdown renders by default —
 // most of what an agent writes is prose — and so does an html file, as the page
@@ -32,6 +33,7 @@ import { drawAs, hasTwoViews } from "../lib/fileView";
 import { canQuote, lineRange, sendQuote, type Quote } from "../lib/quote";
 import { placeKey, placeOf, rememberPlace } from "../lib/scrollMemory";
 import { useConfirm } from "./Confirm";
+import { CopyBit, CopyIcon, TextIcon } from "./CopyBit";
 import { FileView } from "./FileView";
 import { RollingText } from "./RollingNumber";
 
@@ -367,6 +369,42 @@ export function FilePanel({
                   <bdi>{path}</bdi>
                 </div>
               </div>
+
+              {/* Where the file is, and what is in it — the two things wanted
+                  somewhere that is not this page: a terminal, another chat, a
+                  message to somebody. The same button the files column uses,
+                  and it reports rather than assumes: this app is read over
+                  plain http from a phone, where a copy can be refused outright.
+
+                  Nothing is fetched for either — the panel is already holding
+                  the file — so there is no `arm` and the copy happens inside
+                  the click, where the browser still allows it. What goes on the
+                  clipboard is the DRAFT, which is what is on screen: copying
+                  the saved text out from under someone's unsaved edits would be
+                  a different file from the one they are looking at. */}
+              <span className="panel-acts">
+                <CopyBit
+                  className="panel-act"
+                  icon={<CopyIcon />}
+                  idle="Copy the path"
+                  done="Path copied"
+                  read={() => ({ text: path })}
+                />
+                {/* Offered only for text. An image or a PDF never opens in this
+                    panel at all, but a binary the backend could not read as
+                    text does, and it has nothing to hand over. */}
+                {preview?.kind === "text" && (
+                  <CopyBit
+                    className="panel-act"
+                    icon={<TextIcon />}
+                    idle="Copy the whole file"
+                    done="File copied"
+                    empty="Nothing to copy — this file is empty"
+                    partial="Copied what is on screen — the rest of the file was never read"
+                    read={() => ({ text: draft, partial: preview.truncated })}
+                  />
+                )}
+              </span>
 
               {/* Only for a file with two views to flip between — markdown, and
                   now an html page. `hasTwoViews` is asked rather than the

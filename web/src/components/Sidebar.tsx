@@ -39,9 +39,6 @@ export function Sidebar({
   projects,
   shelved,
   onShowShelved,
-  onShowBoard,
-  onShowAgents,
-  agentName,
   conversations,
   currentProject,
   currentConversation,
@@ -71,13 +68,6 @@ export function Sidebar({
   shelved: Project[];
   /** Opens the modal that lists them, which is the only way back. */
   onShowShelved: () => void;
-  /** Opens the board: every chat under what it wants from you. */
-  onShowBoard: () => void;
-  /** Opens the page that says which agent CLIs this machine has. */
-  onShowAgents: () => void;
-  /** The agent new chats start with, named on the button so the current answer
-   *  is visible without opening the page. */
-  agentName: string;
   conversations: Map<string, Conversation[]>;
   currentProject: string | null;
   currentConversation: string | null;
@@ -184,6 +174,18 @@ export function Sidebar({
         <button className="sidebar-add" type="button" title="New project" onClick={onNewProject}>
           <PlusIcon />
         </button>
+        {shelved.length > 0 && (
+          <button
+            className="sidebar-add"
+            type="button"
+            title={`Shelved projects (${shelved.length})`}
+            aria-label={`Shelved projects (${shelved.length})`}
+            onClick={onShowShelved}
+          >
+            <ArchiveIcon />
+            <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
+          </button>
+        )}
         {/* Last, against the edge that goes away. The way back is the project
             name in the top bar, which gets its caret back once this is used. */}
         {onHide && (
@@ -273,44 +275,6 @@ export function Sidebar({
           );
         })}
       </ul>
-
-      {/* Whole-app destinations are a compact utility dock rather than three
-          full-width rows. Their labels stay available on hover and to assistive
-          tech; the project list gets to keep the vertical room. */}
-      <div className="sidebar-utilities" aria-label="Project utilities">
-        {shelved.length > 0 && (
-          <button
-            className="sidebar-utility"
-            type="button"
-            title={`Shelved projects (${shelved.length})`}
-            aria-label={`Shelved projects (${shelved.length})`}
-            onClick={onShowShelved}
-          >
-            <ArchiveIcon />
-            <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
-          </button>
-        )}
-
-        <button
-          className="sidebar-utility"
-          type="button"
-          title="Board"
-          aria-label="Board"
-          onClick={onShowBoard}
-        >
-          <BoardIcon />
-        </button>
-
-        <button
-          className="sidebar-utility"
-          type="button"
-          title={`Agent · ${agentName}`}
-          aria-label={`Agent · ${agentName}`}
-          onClick={onShowAgents}
-        >
-          <AgentIcon />
-        </button>
-      </div>
 
       {foot && <div className="sidebar-slot is-foot">{foot}</div>}
 
@@ -729,24 +693,6 @@ function ArchiveIcon() {
       <path d="M6 7v12h12V7" />
       <path d="M3 4h18v3H3z" />
       <path d="M10 11h4" />
-    </svg>
-  );
-}
-
-function BoardIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M9 4v16M15 4v16" />
-    </svg>
-  );
-}
-
-function AgentIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="4" y="7" width="16" height="12" rx="3" />
-      <path d="M12 3v4M9 12h.01M15 12h.01M9 16h6" />
     </svg>
   );
 }
