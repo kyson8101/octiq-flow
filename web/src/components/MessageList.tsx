@@ -40,6 +40,15 @@ import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
+import {
+  chatPlaceOf,
+  forgetChatPlace,
+  placeFrom,
+  placeTop,
+  rememberChatPlace,
+  type Anchor,
+  type ChatPlace,
+} from "../lib/chatPlace";
 
 /** A fenced code block, with the one control that matters: copy.
  *  react-markdown hands us the <code> child, whose className carries the fence
@@ -1051,6 +1060,42 @@ function reducedMotion() {
   return !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
+/** How close to the bottom still counts as being AT it. One number for both
+ *  questions it settles — whether to follow the stream, and whether there is a
+ *  place worth remembering — because they are the same question. */
+const NEAR_BOTTOM = 80;
+
+/** How long after the reader stops moving their place is written down. Long
+ *  enough that one flick is one write, short enough to be there after the
+ *  reload that follows every client build. */
+const PLACE_MS = 400;
+
+/** How long a restored place is held against a transcript that is still
+ *  settling into its final height.
+ *
+ *  Generous, because settling is not quick on the chats that most need this:
+ *  file lists arrive from the backend one turn at a time, cards measure
+ *  themselves, and a transcript of a few megabytes is still laying itself out
+ *  seconds after it appears. It costs nothing to be generous — the hold ends
+ *  at the first thing the reader does, and while it lasts it is putting them
+ *  back where they asked to be. */
+const SETTLE_MS = 6_000;
+
+/** Where each user turn sits in the content, for `lib/chatPlace` to anchor a
+ *  place to. Measured off the elements rather than the message data, for the
+ *  same reason ConversationMap measures its marks that way: it stays truthful
+ *  while an answer streams and cards open. `data-map-turn` is the map's
+ *  attribute, and one set of anchors is better than two that can disagree. */
+function anchorsIn(el: HTMLElement): Anchor[] {
+  const box = el.getBoundingClientRect();
+  const out: Anchor[] = [];
+  for (const node of el.querySelectorAll<HTMLElement>("[data-map-turn]")) {
+    const id = node.dataset.mapTurn;
+    if (id) out.push({ id, offset: el.scrollTop + node.getBoundingClientRect().top - box.top });
+  }
+  return out;
+}
+
 export function MessageList({
   messages,
   busy,
@@ -1132,11 +1177,66 @@ export function MessageList({
   // the bottom for itself.
   const glide = useRef(0);
 
+  // Which conversation the scroll listeners below are looking at. They are
+  // attached once and this list is REUSED across chats, so a closure over the
+  // id would name the first chat opened for the life of the page. Set by the
+  // swap effect, before anything can scroll the new transcript.
+  const conv = useRef(conversationId);
+
+  // The place this chat will be remembered at, and the timer that will write
+  // it. Held rather than written on every scroll event: one flick fires dozens
+  // of them, and where the reader ENDED UP is the only one worth keeping.
+  // `at: null` is "at the bottom" — the state that is remembered by having no
+  // record at all (see lib/chatPlace).
+  const pending = useRef<{ id: string; at: ChatPlace | null } | null>(null);
+  const writing = useRef(0);
+
+  // A place being restored, and how long it is held against a transcript that
+  // is still settling. Null once the reader takes over, or once the hold
+  // expires — past that a height change is the conversation growing.
+  const resuming = useRef<{ at: ChatPlace; until: number } | null>(null);
+
   // Only reads refs, so the copy an effect closes over on the first render
   // stays correct for the life of the component.
   const stopGlide = () => {
     if (glide.current) cancelAnimationFrame(glide.current);
     glide.current = 0;
+  };
+
+  /** Write the held place down now.
+   *
+   *  It never re-measures: by the time this runs the scroller may already be
+   *  showing another conversation, or be detached from the page entirely — and
+   *  an element that is not on the page reports a scroll of zero, which would
+   *  write "the top" over the place we are trying to keep. */
+  const flushPlace = () => {
+    window.clearTimeout(writing.current);
+    writing.current = 0;
+    const held = pending.current;
+    pending.current = null;
+    if (!held) return;
+    if (held.at) rememberChatPlace(held.id, held.at);
+    else forgetChatPlace(held.id);
+  };
+
+  /** Note where this chat is being left, to be written a moment later.
+   *
+   *  Called from every scroll event, believed or not: a map jump and the
+   *  keyboard move the reader without a wheel or a finger, and where they land
+   *  is as much their place as a flick's. What it will not do is take a
+   *  position from under the STREAM — a pin that has not yet caught up with a
+   *  growing transcript looks exactly like a reader part-way up, and writing
+   *  that down would send them back into the middle of a chat they were
+   *  reading live. */
+  const savePlace = () => {
+    const el = scrollerRef.current;
+    const id = conv.current;
+    if (!el || !id || glide.current || resuming.current) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM;
+    if (!atBottom && stick.current) return;
+    pending.current = { id, at: atBottom ? null : placeFrom(el.scrollTop, anchorsIn(el)) };
+    window.clearTimeout(writing.current);
+    writing.current = window.setTimeout(flushPlace, PLACE_MS);
   };
 
   /** Travel to the bottom over `GLIDE_MS` rather than arriving there. The frame
@@ -1187,6 +1287,12 @@ export function MessageList({
   const jumpToBottom = () => {
     stick.current = true;
     setAway(false);
+    // Said now rather than left to the scroll events the glide produces: this
+    // press is the decision, and it should hold even if the travel is cut
+    // short by the next thing the reader does.
+    resuming.current = null;
+    if (conv.current) pending.current = { id: conv.current, at: null };
+    flushPlace();
     glideToBottom();
   };
 
@@ -1198,15 +1304,23 @@ export function MessageList({
       gesture.current = true;
       // The reader has taken the scroller. An animation still running under
       // their finger fights them for it, and they win either way — so it ends
-      // here rather than being scrolled against.
+      // here rather than being scrolled against. A place being restored is the
+      // same fight, and goes the same way: where they are now is their place.
       stopGlide();
+      resuming.current = null;
       window.clearTimeout(until);
       // Long enough to cover the scroll events one flick produces, short
       // enough that it cannot be mistaken for the next thing that happens.
       until = window.setTimeout(() => (gesture.current = false), 400);
     };
     const onScroll = () => {
-      if (!gesture.current) return;
+      if (!gesture.current) {
+        // Not the reader's doing, so it says nothing about whether they have
+        // scrolled away — but it can still be a move they asked for (a map
+        // jump, the end of a glide), and where they land is worth keeping.
+        savePlace();
+        return;
+      }
       // A flick on a phone keeps scrolling long after the finger is gone —
       // momentum runs for seconds, while the window above is 400ms. Letting it
       // expire mid-glide was the mobile bug: the rest of the glide arrived
@@ -1214,11 +1328,18 @@ export function MessageList({
       // the reader back to the bottom they had just scrolled away from. The
       // glide is still the reader's gesture, so it keeps the window open.
       mark();
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM;
       stick.current = atBottom;
       setAway(!atBottom);
+      // After `stick`, not before: coming back to the bottom is what says
+      // there is no place left to keep.
+      savePlace();
     };
+    // A reload is the other half of what a place is for, and a place noted
+    // 200ms before one would otherwise be lost with the page.
+    const leaving = () => flushPlace();
     el.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", leaving);
     el.addEventListener("wheel", mark, { passive: true });
     el.addEventListener("touchstart", mark, { passive: true });
     el.addEventListener("touchmove", mark, { passive: true });
@@ -1227,6 +1348,10 @@ export function MessageList({
     return () => {
       window.clearTimeout(until);
       stopGlide();
+      // Whatever was noted and not yet written: the transcript is going away,
+      // and the place was worked out while it was still on screen.
+      flushPlace();
+      window.removeEventListener("pagehide", leaving);
       el.removeEventListener("scroll", onScroll);
       el.removeEventListener("wheel", mark);
       el.removeEventListener("touchstart", mark);
@@ -1236,16 +1361,22 @@ export function MessageList({
     };
   }, []);
 
-  // Opening a different chat starts at the bottom, which is where a
-  // conversation is read from. Two things have to be reset, and neither happens
-  // on its own: the scroller keeps the pixel offset of the chat you left, and
-  // `stick` keeps its answer to a question about that chat — scroll up in one
-  // conversation and every one you opened afterwards would stay pinned to the
-  // top. Before paint, so there is no flash of the first message.
+  // Opening a chat starts where it was left — at the bottom for one that was
+  // being read live, which is most of them and the only case there used to be.
+  //
+  // Nothing here happens on its own: the scroller keeps the pixel offset of
+  // the chat you left, and `stick` keeps its answer to a question about THAT
+  // chat — scroll up in one conversation and every one you opened afterwards
+  // would stay pinned to the top. Before paint, so there is no flash of the
+  // wrong end of the transcript.
   useLayoutEffect(() => {
     const el = scrollerRef.current;
+    // The chat being LEFT, first, and from the note rather than the DOM: this
+    // runs after React has already put the new conversation's turns in, so the
+    // scroller no longer holds an offset that means anything about the old one.
+    flushPlace();
+    conv.current = conversationId;
     if (!el) return;
-    stick.current = true;
     // Whatever gesture opened this chat was aimed at the sidebar, not at the
     // transcript; letting it carry over would judge the new chat by it.
     gesture.current = false;
@@ -1253,8 +1384,21 @@ export function MessageList({
     // would ease the NEW transcript from the old one's offset — see it as the
     // wrong chat sliding into place.
     stopGlide();
-    setAway(false);
-    el.scrollTop = el.scrollHeight;
+    const saved = conversationId ? chatPlaceOf(conversationId) : undefined;
+    if (!saved) {
+      stick.current = true;
+      setAway(false);
+      resuming.current = null;
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    // Left part-way up: put them back there, and do NOT follow the stream.
+    // Someone who parked half-way through a conversation to read it did not
+    // ask to be taken to the end of it because a turn happened to arrive.
+    stick.current = false;
+    setAway(true);
+    resuming.current = { at: saved, until: performance.now() + SETTLE_MS };
+    el.scrollTop = placeTop(saved, anchorsIn(el), el.scrollHeight - el.clientHeight);
   }, [conversationId]);
 
   // Scrolling to the bottom ONCE is not enough, because the bottom moves
@@ -1273,7 +1417,24 @@ export function MessageList({
       // Not while a glide is running: it is already following the bottom, one
       // eased step per frame, and a pin written in the same frame would erase
       // the step and land the reader at the end before the travel had begun.
-      if (stick.current && !glide.current) el.scrollTop = el.scrollHeight;
+      if (stick.current && !glide.current) {
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
+      // A restored place needs re-applying for the same reason the bottom
+      // needs re-pinning: the height it was measured against is not the final
+      // one. Everything the comment above describes — a file list arriving, a
+      // code block reflowing, a font landing — happens ABOVE the reader too,
+      // and one screenful of it is the difference between the paragraph they
+      // left and one they have to hunt for. The anchor is re-read each time,
+      // so this converges rather than repeating a stale number.
+      const back = resuming.current;
+      if (!back) return;
+      if (performance.now() > back.until) {
+        resuming.current = null;
+        return;
+      }
+      el.scrollTop = placeTop(back.at, anchorsIn(el), el.scrollHeight - el.clientHeight);
     });
     observer.observe(inner);
     return () => observer.disconnect();
@@ -1323,6 +1484,8 @@ export function MessageList({
   // follow logic about the intent before the first scroll event arrives.
   const mapJumped = () => {
     stopGlide();
+    // A jump is a place of its own, and it wins over one being restored.
+    resuming.current = null;
     stick.current = false;
     setAway(true);
   };

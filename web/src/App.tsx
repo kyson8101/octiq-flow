@@ -56,6 +56,7 @@ import {
 } from "./lib/store";
 import { removeIndexEntry, saveIndexEntry } from "./lib/chatIndex";
 import { recall, remember } from "./lib/remember";
+import { forgetChatPlace } from "./lib/chatPlace";
 import { deletedIds, isDeleted, listDeletions, markDeleted } from "./lib/deletions";
 import {
   focusNow,
@@ -557,6 +558,10 @@ export default function App() {
       return next;
     });
     delete meta.current[id];
+    // Where it was left goes with it. The cap in lib/chatPlace would drop it
+    // eventually anyway; this is so a deleted chat is not still taking up one
+    // of the places a live chat could have.
+    forgetChatPlace(id);
     setConversationId((open) => (open === id ? null : open));
     // The chat you were last in is remembered by id, and a deleted one left
     // there is a restore that waits for a row that is never coming.
