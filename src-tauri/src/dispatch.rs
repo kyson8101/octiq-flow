@@ -229,6 +229,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "images")?,
             arg(&args, "turnId")?,
         )),
+        // Take back a message the agent has not been given yet. Answers
+        // `false` when it was already handed over, which the page needs: the
+        // bubble stays, because an answer to it is on its way.
+        "chat_cancel_queued" => to_value(crate::agent_chat::chat_cancel_queued_impl(
+            &svc.chats,
+            arg(&args, "key")?,
+            arg(&args, "turnId")?,
+        )),
         "chat_interrupt" => unit(crate::agent_chat::chat_interrupt_impl(
             &svc.chats,
             arg(&args, "key")?,

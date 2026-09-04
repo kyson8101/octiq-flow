@@ -1343,9 +1343,66 @@ body {
   }
 }
 
+/* The same corner, and the one thing you can still do from it.
+
+   A queued message can be taken back — the backend holds it rather than handing
+   it straight to the agent (see `QueuedTurn`) — and this is where you say so.
+   It REPLACES the clock instead of sitting beside it: the gutter is a fixed
+   40px whether anything is drawn in it or not, so a second mark would have had
+   to come from somewhere else on the pill, and the one rule this corner has is
+   that nothing in it may move the words.
+
+   So one 13px box with two faces stacked in it, crossfading. The box is the
+   size of ONE face, not of both, which is what keeps the swap from nudging the
+   centre it is pinned to. */
+.msg-user .msg-body button.queued {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition: color 140ms ease-out;
+}
+
+.msg-user .msg-body .queued-face {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  transition: opacity 140ms ease-out;
+}
+
+.msg-user .msg-body .queued-take-back {
+  opacity: 0;
+}
+
+/* Hovering the MESSAGE, not the 13px target itself. A way out that only appears
+   once the pointer is already on top of it is one nobody finds. */
+.msg-user:hover .msg-body .queued-waiting,
+.msg-user .msg-body button.queued:focus-visible .queued-waiting {
+  opacity: 0;
+}
+
+.msg-user:hover .msg-body .queued-take-back,
+.msg-user .msg-body button.queued:focus-visible .queued-take-back {
+  opacity: 1;
+}
+
+/* The mark itself comes up to full strength, and nothing else does. The pill
+   stays at the 0.62 that says the message is still waiting: brightening it too
+   would be a second thing moving in answer to one question. */
+.msg-user:hover .msg-body button.queued {
+  color: var(--fg-1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .msg-user .msg-body .queued {
     animation: none;
+  }
+
+  .msg-user .msg-body .queued-face,
+  .msg-user .msg-body button.queued {
+    transition: none;
   }
 
   .msg-user .msg-body {
@@ -7335,10 +7392,10 @@ body.is-ultra .eff {
 }
 
 /* ---- Plan usage (top right) -------------------------------------------
-   Two small meters, one per agent, each showing how much of the WEEK is gone.
-   Hovering opens the full breakdown — every window that agent reports, with
-   when it resets — and a tap does the same where there is no pointer to
-   hover with. */
+   Two small meters, one per agent, each showing the reported window with the
+   highest usage. Hovering opens the full breakdown — every window that agent
+   reports, with when it resets — and a tap does the same where there is no
+   pointer to hover with. */
 .usage {
   position: relative;
   flex: 0 0 auto;
@@ -8513,8 +8570,10 @@ body.is-ultra .eff {
   }
 }
 
-/* Where you are in the batch. Arrows either side, a dot per question between
-   them: filled is answered, the big one is here. */
+/* Where you are in the batch, and everything that moves you through it, on one
+   row: back, a dot per question — filled is answered, the big one is here — and
+   the button that goes on, out at the far end. There is no forward arrow; that
+   button is the forward arrow. */
 .qa-pager {
   display: flex;
   align-items: center;
@@ -8553,11 +8612,13 @@ body.is-ultra .eff {
   cursor: default;
 }
 
+/* Beside the back arrow rather than centred in the row: the button at the far
+   end is wide and the arrow is not, so a centred strip of dots would be centred
+   in nothing. Where you are belongs next to the way back. */
 .qa-page-dots {
   display: flex;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   align-items: center;
-  justify-content: center;
   gap: 7px;
 }
 
@@ -8574,6 +8635,16 @@ body.is-ultra .eff {
     transform 140ms ease-out,
     background 140ms ease-out,
     border-color 140ms ease-out;
+}
+
+/* The review page's own dot. A square, and set a little apart: it is the end of
+   the batch rather than another question, and a fifth identical dot after four
+   questions would say there is a fifth question. */
+.qa-page-dot.is-review {
+  width: 8px;
+  height: 8px;
+  margin-left: 5px;
+  border-radius: 2px;
 }
 
 .qa-page-dot.is-done {
@@ -8618,6 +8689,96 @@ body.is-ultra .eff {
 
 .qa-submit {
   margin-top: 14px;
+}
+
+/* In the pager it is the row's own last item, so the row supplies the space
+   above it and it sits out at the end, away from the back arrow — the two acts
+   are not neighbours. */
+.qa-pager .qa-submit {
+  flex: 0 0 auto;
+  margin-top: 0;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* ---- The review page ---------------------------------------------------
+   The last page of a batch: every question with what it will say, and the send
+   under it. Each line is a button back to its own question — changing an
+   answer from here is a press, not a hunt through the dots. */
+.qa-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.qa-review-row {
+  display: flex;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    border-color 140ms ease-out;
+}
+
+.qa-review-row:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.qa-review-row:disabled {
+  cursor: default;
+}
+
+/* Which question this was, so the row and the dots agree. */
+.qa-review-n {
+  flex: 0 0 auto;
+  min-width: 15px;
+  color: var(--fg-3);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.qa-review-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The question is the caption here — what is being confirmed is the ANSWER, so
+   that is the line that carries the weight. */
+.qa-review-q {
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.qa-review-a {
+  color: var(--fg-0);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* Said plainly rather than in red: leaving one out is allowed, and the words
+   under the list say what happens to it. */
+.qa-review-row.is-blank .qa-review-a {
+  color: var(--fg-3);
+  font-style: italic;
 }
 
 .qa-count {

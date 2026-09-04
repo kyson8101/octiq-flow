@@ -1488,3 +1488,38 @@ describe("a turn that failed", () => {
     expect(f.title).toBe("The agent stopped with an error");
   });
 });
+
+describe("a message taken back before the agent was given it", () => {
+  // OctiqFlow's own event: the words never reached an agent, so there is
+  // nothing here either provider could report. It exists at all because the
+  // record is append-only — this line is how a replay next week arrives at the
+  // conversation the person was looking at when they cancelled.
+  const cancelling = (turnId: string) =>
+    ({ type: "octiq_user_turn_cancelled", uuid: turnId });
+
+  it("leaves the conversation as though it had never been sent", () => {
+    let state = addUserTurn(emptyChat(), "first", [], 1, undefined, "u-1");
+    state = addUserTurn(state, "never mind", [], 2, undefined, "u-2");
+    expect(state.messages).toHaveLength(2);
+
+    state = reduceChat(state, cancelling("u-2"));
+
+    expect(state.messages.map((m) => m.turnId)).toEqual(["u-1"]);
+  });
+
+  it("takes back only the one it names", () => {
+    let state = addUserTurn(emptyChat(), "keep this", [], 1, undefined, "u-1");
+    state = reduceChat(state, cancelling("u-2"));
+
+    expect(state.messages).toHaveLength(1);
+  });
+
+  // A Claude turn is never written down while it waits — the agent echoes the
+  // message back itself once it starts on it — so its cancellation finds
+  // nothing in the record and must not throw a conversation away over it.
+  it("is harmless when there was nothing recorded to take back", () => {
+    const state = reduceChat(emptyChat(), cancelling("u-1"));
+
+    expect(state.messages).toHaveLength(0);
+  });
+});

@@ -193,6 +193,38 @@ and nothing else — and what it said is in the last `item.completed` of type
 this a Codex seat in a round said its piece, was never heard, and was written
 down as "did not answer in time" twenty minutes later.
 
+### The queue behind a running turn is ours, for both agents
+
+A message sent while a turn is in flight waits in `ChatManager::queued_turns`
+(`QueuedTurn`) and is handed over only when the agent is ready for it. Both
+providers, one queue, two reasons:
+
+- **Codex** is one-shot, so a follow-up rides the next `resume` command — its
+  reaper takes the front of the queue as the old process exits.
+- **Claude** would take the bytes on stdin at any moment, and used to. The
+  message went into the AGENT's own internal queue, out of this backend's
+  reach, which is why a queued message could not be taken back. It is now
+  written on the full stop of the turn before it, **under the same session
+  lock** `turn_ended` is taken with — let go of it in between and an ordinary
+  send arriving in that gap finds the session idle and jumps the line.
+
+What that buys is `chat_cancel_queued` (the ✕ on the queued bubble): it can
+only ever remove a message still in OUR queue, and answers `false` when the
+agent already has it — a race nobody can win, and better told than shown a
+bubble vanishing from above the answer to it. `chat_interrupt` drops the whole
+queue for the same reason a stopped round is not followed up: the messages
+behind a turn were queued for the answer the person just stopped waiting for.
+
+- **A one-shot provider's queued turn is written to the transcript at enqueue**
+  (`QueuedTurn::recorded`) because Codex never echoes a prompt back. Claude's
+  is not — its own echo is the record — so cancelling one only has something to
+  take back OUT for Codex. `announce_cancelled` always emits, and appends only
+  when there was a record; the client reducer drops the message by turn id
+  either way.
+- Two things you typed are two bubbles now (`groupTurns`), whichever agent this
+  is. One bubble over several queued messages lost its clock the moment the
+  first was picked up, and gave the ✕ no single message to name.
+
 ### Idle chats are ended, and resumed on the next message
 
 A **chat** process (`agent_chat.rs`, not a PTY) is killed after **15 minutes**

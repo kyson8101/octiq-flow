@@ -16,6 +16,16 @@
 // must never let the agent act on the first answer while you are still deciding
 // the third.
 //
+// So a batch of four is FOUR pages AND A FIFTH: the button under a question
+// page reads Next and only turns the page, and the last page is the answers
+// laid out together with the one button that sends them. Two things follow from
+// that. The way forward is the same button every time — you are never hunting
+// for whether this page is the one that sends — and the send is only ever
+// pressed with the whole set in front of you, which is the read a batch needed
+// and paging had taken away. Press any line of the review to go back and change
+// it. A single question keeps its single page: a review of one answer is a
+// second press for nothing.
+//
 // Options when there are options, a text box when there are not — "which of
 // these two" and "what should it be called" are different questions and a
 // single control would serve one of them badly. A question the agent marks as
@@ -79,6 +89,7 @@ export function UserQuestion({
   questions,
   onDone,
   startOpen = false,
+  startPage = 0,
 }: {
   questions: Question[];
   onDone: (ids: string[]) => void;
@@ -86,6 +97,10 @@ export function UserQuestion({
    *  question always arrives put aside — and on in the tests, which render
    *  static markup in node and so cannot press the strip themselves. */
   startOpen?: boolean;
+  /** Which page to open on. Zero everywhere in the app — a batch is read from
+   *  the first question — and set in the tests, for the same reason as
+   *  `startOpen`: static markup cannot press Next to reach the review. */
+  startPage?: number;
 }) {
   const [selected, setSelected] = useState<Record<string, string>>({});
   /** Ticks so far, per question. Kept apart from the final answer because a
@@ -102,19 +117,25 @@ export function UserQuestion({
   /** Which question is on screen. Only ever the page: every answer is stored
    *  against its question's id, so turning the page costs nothing and going
    *  back shows the choice already made. */
-  const [page, setPage] = useState(0);
+  const [page, setPage] = useState(startPage);
   /** Which way the last turn went, so the page slides in from the side it came
    *  from rather than appearing. Read by the stylesheet, nothing else. */
   const [dir, setDir] = useState<"fwd" | "back">("fwd");
 
   const total = questions.length;
+  /** A batch gets one page per question and a last one holding the answers
+   *  together; a lone question is its own whole card. */
+  const paged = total > 1;
+  const pages = paged ? total + 1 : 1;
   // Clamped rather than corrected in an effect: a question can be answered out
   // from under the card by another tab, and a page past the end must not draw
   // an empty card for a frame first.
-  const here = Math.min(page, total - 1);
+  const here = Math.min(page, pages - 1);
+  /** On the last page: the answers laid out, and the only button that sends. */
+  const reviewing = paged && here === total;
 
   const goto = (next: number) => {
-    if (next < 0 || next >= total || next === here) return;
+    if (next < 0 || next >= pages || next === here) return;
     setDir(next > here ? "fwd" : "back");
     setPage(next);
   };
@@ -199,6 +220,46 @@ export function UserQuestion({
     );
   }
 
+  /** One button in one place, all the way through: it turns the page until
+   *  there are no pages left, and on the review it sends. A batch can only be
+   *  sent from the page that shows the whole batch, so it is not possible to
+   *  send from page two having forgotten pages three to five. It still says how
+   *  many of how many — what is not answered goes back as declined, not as
+   *  nothing.
+   *
+   *  It rides in the pager row rather than under it, so the way forward and the
+   *  way back are one row of controls and the answer above them is the only
+   *  other thing on the card. */
+  const cta =
+    reviewing || !paged ? (
+      <button
+        className="ask-btn is-primary qa-submit"
+        type="button"
+        disabled={sending || answered === 0}
+        onClick={() => void submit(answers)}
+      >
+        {sending
+          ? "Sending…"
+          : answered === 0
+            ? "Send answers"
+            : paged
+              ? "Send " + answered + " of " + total + " answers"
+              : "Send " + answered + " answer" + (answered === 1 ? "" : "s")}
+      </button>
+    ) : (
+      // Never disabled on an unanswered question: skipping one and coming back
+      // to it is a way of reading the batch, and a dead button here would read
+      // as the card refusing to go on.
+      <button
+        className="ask-btn is-primary qa-submit qa-next"
+        type="button"
+        disabled={sending}
+        onClick={() => goto(here + 1)}
+      >
+        {here === total - 1 ? "Review answers" : "Next question"}
+      </button>
+    );
+
   return (
     <div
       className="qa-card"
@@ -238,10 +299,47 @@ export function UserQuestion({
       </div>
 
       <div className="qa-questions">
+        {/* The last page of a batch: everything you decided, in one read, with
+            the send under it. Each line goes back to its own question, so
+            changing an answer here is a press rather than a hunt. */}
+        {reviewing && (
+          <section className={"qa-question-item qa-review is-" + dir}>
+            <div className="qa-question-number">Review</div>
+            <p className="qa-question">Your answers</p>
+            <p className="qa-hint">
+              Press a line to change it. Anything still blank goes back as declined.
+            </p>
+            <ul className="qa-review-list">
+              {questions.map((question, index) => {
+                const answer = answers[question.id];
+                return (
+                  <li key={question.id}>
+                    <button
+                      className={"qa-review-row " + (answer ? "" : "is-blank")}
+                      type="button"
+                      disabled={sending}
+                      title={"Back to question " + (index + 1)}
+                      onClick={() => goto(index)}
+                    >
+                      <span className="qa-review-n" aria-hidden="true">
+                        {index + 1}
+                      </span>
+                      <span className="qa-review-copy">
+                        <span className="qa-review-q">{question.question}</span>
+                        <span className="qa-review-a">{answer ?? "Not answered"}</span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+
         {/* One question, never the whole batch. `slice` rather than an index so
             the question keeps its own `key` and the page animates in on the
             remount. */}
-        {questions.slice(here, here + 1).map((question) => {
+        {(reviewing ? [] : questions.slice(here, here + 1)).map((question) => {
           const options = choicesOf(question.options);
           const detailed = options.some((option) => option.description);
           const many = !!question.multiple && options.length > 0;
@@ -358,10 +456,19 @@ export function UserQuestion({
         })}
       </div>
 
-      {/* Where you are in the batch, and the way through it. The dots are the
-          whole of the progress read: filled is answered, so a glance says what
-          is still waiting without turning a single page. */}
-      {total > 1 && (
+      {/* Where you are in the batch, and the way through it — one row: back,
+          the dots, and the button that goes on. The dots are the whole of the
+          progress read: filled is answered, so a glance says what is still
+          waiting without turning a single page. The square at the end is the
+          review — drawn apart from the questions because it is not one of them,
+          and reachable early because a glance at the set so far is a fair thing
+          to want on page two.
+
+          There is no forward ARROW: the button beside it already turns the
+          page, and two ways forward an inch apart is a decision to make about
+          nothing. Back stays an arrow — it is the smaller act, and it is the
+          one with no button. */}
+      {paged && (
         <div className="qa-pager">
           <button
             className="qa-page-arrow"
@@ -392,38 +499,23 @@ export function UserQuestion({
                 onClick={() => goto(index)}
               />
             ))}
+            <button
+              className={"qa-page-dot is-review " + (reviewing ? "is-here" : "")}
+              type="button"
+              disabled={sending}
+              aria-current={reviewing}
+              title="Review your answers"
+              aria-label="Review your answers"
+              onClick={() => goto(total)}
+            />
           </div>
-          <button
-            className="qa-page-arrow"
-            type="button"
-            disabled={sending || here === total - 1}
-            title="Next question"
-            aria-label="Next question"
-            onClick={() => goto(here + 1)}
-          >
-            ›
-          </button>
+          {cta}
         </div>
       )}
 
-      {/* Still the one Submit for the whole batch, from any page. It says how
-          many of how many, because paging makes it easy to send from page two
-          having forgotten pages three to five — and what is not answered goes
-          back as declined, not as nothing. */}
-      <button
-        className="ask-btn is-primary qa-submit"
-        type="button"
-        disabled={sending || answered === 0}
-        onClick={() => void submit(answers)}
-      >
-        {sending
-          ? "Sending…"
-          : answered === 0
-            ? "Send answers"
-            : total > 1
-              ? "Send " + answered + " of " + total + " answers"
-              : "Send " + answered + " answer" + (answered === 1 ? "" : "s")}
-      </button>
+      {/* A lone question has no pager to sit in, so its send goes under the
+          answer on its own. */}
+      {!paged && cta}
     </div>
   );
 }

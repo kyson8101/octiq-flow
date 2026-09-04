@@ -632,11 +632,14 @@ function TurnView({
   fresh,
   mapTurnId,
   hostName,
+  onCancelQueued,
 }: {
   messages: Message[];
   kids: Kids;
   agentByTool?: ReadonlyMap<string, string>;
   onOpenAgent?: (id: string) => void;
+  /** Take back a message still waiting. See the same prop on `MessageList`. */
+  onCancelQueued?: (turnId: string) => void;
   /** What to call the host — the provider this conversation is running, in its
    *  own name. See the same prop on `MessageList`. */
   hostName?: string;
@@ -694,6 +697,14 @@ function TurnView({
   // answered locally and is never echoed back at all, so "no echo" on its own
   // would leave it marked queued forever — which is how this was first wrong.
   const queued = !!busy && role === "user" && messages.every((m) => !m.echo && !m.takenUp);
+
+  // And whether this one can be taken back. A user turn is its own bubble now
+  // (`groupTurns`), so the one id this needs is unambiguous — but only a turn
+  // this page gave an id to at send has anything the backend can be asked to
+  // find. Everything else keeps the plain clock.
+  const waitingId = queued ? messages[0].turnId : undefined;
+  const cancel =
+    onCancelQueued && waitingId ? () => onCancelQueued(waitingId) : undefined;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -805,16 +816,44 @@ function TurnView({
             needs a line, a clock needs a corner. What it MEANT survives on the
             title and the label, so nothing is lost to a reader who cannot see
             a picture of a clock. */}
-        {queued && (
-          <span
-            className="queued"
-            role="img"
-            title="Sent — the agent has not started on this yet"
-            aria-label="Sent — the agent has not started on this yet"
-          >
-            <ClockIcon />
-          </span>
-        )}
+        {/* And the one thing you can still do about it: take it back.
+
+            The ✕ lives in the clock's own corner and REPLACES it rather than
+            appearing beside it. The gutter it sits in is a fixed 40px whether
+            anything is drawn there or not (see `.msg-user .msg-body`), so a
+            second mark would have had to come from somewhere else on the pill
+            — and the one rule this corner has is that nothing here may move
+            the words. One slot, two faces: waiting, and the way out of it.
+
+            Only a message this page can still name. A turn sent before the id
+            existed, or one an agent sent on its own behalf, has nothing to
+            address a cancel to, so it keeps the plain clock it always had. */}
+        {queued &&
+          (cancel ? (
+            <button
+              type="button"
+              className="queued queued-cancel"
+              onClick={cancel}
+              title="Sent — the agent has not started on this yet. Click to take it back."
+              aria-label="Cancel this queued message"
+            >
+              <span className="queued-face queued-waiting" aria-hidden="true">
+                <ClockIcon />
+              </span>
+              <span className="queued-face queued-take-back" aria-hidden="true">
+                <CancelIcon />
+              </span>
+            </button>
+          ) : (
+            <span
+              className="queued"
+              role="img"
+              title="Sent — the agent has not started on this yet"
+              aria-label="Sent — the agent has not started on this yet"
+            >
+              <ClockIcon />
+            </span>
+          ))}
         {/* Copy, once the turn is over and there is prose worth taking.
             (The files the turn touched used to sit on this row too. They are a
             whole-session question now — see components/SessionFiles.)
@@ -902,6 +941,26 @@ function ClockIcon() {
   );
 }
 
+/** Take it back. Drawn at the clock's own size and in its own place, because
+ *  it REPLACES the clock rather than joining it — see `.queued-cancel`. */
+function CancelIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+    </svg>
+  );
+}
+
 function CopyIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -920,7 +979,7 @@ function TickIcon() {
 }
 
 /** Split the conversation into runs of one speaker. */
-function groupTurns(messages: Message[], separateUserTurns = false): Message[][] {
+function groupTurns(messages: Message[]): Message[][] {
   const turns: Message[][] = [];
   for (const m of messages) {
     const last = turns[turns.length - 1];
@@ -932,20 +991,23 @@ function groupTurns(messages: Message[], separateUserTurns = false): Message[][]
     // as one line instead of as its words (see lib/relay), and a line that had
     // swallowed the message you typed just before it would put your words
     // nowhere on screen.
-    // Codex follow-ups are a real FIFO queue of separate one-shot processes.
-    // Keeping consecutive user messages in one bubble hid which one was active:
-    // as soon as the first was claimed, the whole combined bubble lost its
-    // queued clock while later messages were still waiting. Claude keeps the
-    // established grouping because its persistent stdin path already works.
-    const queuedCodexTurn =
-      separateUserTurns && m.role === "user" && last?.[0].role === "user";
+    // Two things you typed are two things, always. Follow-ups are a real FIFO
+    // queue now for BOTH providers — the backend holds each one until the agent
+    // is ready for it — and one bubble over several of them hid which was
+    // which: the moment the first was picked up the combined bubble lost its
+    // queued clock while the rest were still waiting, and the ✕ that takes one
+    // back had no single message to name.
+    //
+    // This was Codex-only while Claude's messages went straight down its stdin
+    // and were nobody's to hold. They are ours now — see `QueuedTurn`.
+    const ownTurn = m.role === "user" && last?.[0].role === "user";
     // Those early user bubbles also mean two later Codex answers can be
     // consecutive in the stored array. Different reply targets are different
     // turns even though both are assistant messages; merging them would put the
     // second answer under the first prompt's label.
     const differentReplyTarget =
       m.replyTo?.id !== last?.[0].replyTo?.id && (!!m.replyTo || !!last?.[0].replyTo);
-    const alone = !!m.relay || !!last?.[0].relay || queuedCodexTurn || differentReplyTarget;
+    const alone = !!m.relay || !!last?.[0].relay || ownTurn || differentReplyTarget;
     if (!alone && last && last[0].role === m.role && last[0].speaker?.id === m.speaker?.id)
       last.push(m);
     else turns.push([m]);
@@ -1106,7 +1168,7 @@ export function MessageList({
   agentByTool,
   onOpenAgent,
   hostName,
-  hostAgent,
+  onCancelQueued,
 }: {
   messages: Message[];
   busy: boolean;
@@ -1123,9 +1185,11 @@ export function MessageList({
    *  Defaults to "Claude" for a caller that does not know — which is only the
    *  tests; the app always passes it. */
   hostName?: string;
-  /** Provider id for behavior that is genuinely transport-specific. Codex
-   * queues each prompt as a separate process; Claude deliberately does not. */
-  hostAgent?: "claude" | "codex";
+  /** Take back a message the agent has not been given yet, by the id it was
+   *  sent under. Absent where nothing can be sent in the first place (the agent
+   *  rail's read-only transcript), and a queued message there is then only a
+   *  clock, as it always was. */
+  onCancelQueued?: (turnId: string) => void;
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1468,8 +1532,8 @@ export function MessageList({
       if (own) own.push(m);
       else kids.set(m.parent, [m]);
     }
-    return { turns: groupTurns(top, hostAgent === "codex"), kids };
-  }, [messages, hostAgent]);
+    return { turns: groupTurns(top), kids };
+  }, [messages]);
 
   // Which colour each seat speaks in. Computed over the WHOLE conversation
   // rather than per turn, because the colours are handed out in order of first
@@ -1549,6 +1613,7 @@ export function MessageList({
               fresh={fresh.has(turn[0].id)}
               mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
               hostName={hostName}
+              onCancelQueued={onCancelQueued}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once

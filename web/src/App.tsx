@@ -2427,6 +2427,41 @@ export default function App() {
     bridge.invoke("chat_interrupt", { key: keyFor(conversationId) }).catch(() => {});
   }, [conversationId, patch]);
 
+  /** Take back a message the agent has not been given yet.
+   *
+   *  Not an interrupt and nothing like one: the running turn is untouched, and
+   *  what goes is a message that has never left this backend's own queue. Both
+   *  providers queue there now — Claude's used to go straight down its stdin,
+   *  where nothing here could reach it again.
+   *
+   *  `false` is the honest answer that it was already handed over, and the
+   *  bubble stays: an answer to it is on its way, and a message vanishing from
+   *  above the reply to it is worse than a click that did nothing. */
+  const cancelQueued = useCallback(
+    (turnId: string) => {
+      if (!conversationId) return;
+      const id = conversationId;
+      bridge
+        .invoke("chat_cancel_queued", { key: keyFor(id), turnId })
+        .then((cancelled) => {
+          if (cancelled === false) return;
+          // A recorded turn (Codex) is also removed by the backend's own
+          // cancellation event, which is what tells every OTHER tab. This is
+          // for the one that clicked, and for Claude's turns, which were never
+          // written down to have an event about. Doing both is a filter that
+          // finds nothing the second time.
+          patch(id, (s) => ({
+            ...s,
+            messages: s.messages.filter((m) => m.turnId !== turnId),
+          }));
+        })
+        .catch((err) =>
+          patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
+        );
+    },
+    [conversationId, patch],
+  );
+
   /** Picking a different model.
    *
    *  A running agent cannot change model or provider: both are fixed on its
@@ -3192,7 +3227,7 @@ export default function App() {
                       // sets it from the session, and changing provider cannot
                       // happen in place — it opens a new chat.
                       hostName={providerFor(choice.agent).name}
-                      hostAgent={choice.agent}
+                      onCancelQueued={cancelQueued}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and

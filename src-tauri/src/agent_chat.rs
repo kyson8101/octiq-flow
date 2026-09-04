@@ -297,19 +297,32 @@ pub(crate) struct StartContext {
     session_id: Option<String>,
 }
 
-/// A follow-up for a command-line provider, held while its one-shot process
-/// finishes exiting.
+/// A message the person has sent that its agent has not been given yet.
 ///
-/// Persistent providers accept the next message on stdin. A command-line
-/// provider instead starts a fresh resume command, so its attachment stays
-/// with the next command rather than disappearing with the old process.
+/// Both kinds of provider queue, for different reasons, and the queue is OURS
+/// for both — which is the whole point of it.
+///
+/// A command-line provider is deliberately one-shot, so a follow-up waits here
+/// while its previous process finishes exiting and then rides the next resume
+/// command rather than disappearing with the old process. A persistent provider
+/// would take the bytes on stdin at any moment, and used to: the message went
+/// straight through into the agent's OWN internal queue, where nothing on this
+/// side could reach it again. Holding it here until the running turn reaches
+/// its full stop is what makes a queued message something the person can still
+/// take back — see `chat_cancel_queued_impl`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct QueuedCommandTurn {
+struct QueuedTurn {
     text: String,
     images: Vec<String>,
     /// The optimistic browser bubble this exact FIFO entry belongs to. Internal
     /// agent-to-agent turns have none and remain invisible user-wise.
     turn_id: Option<String>,
+    /// Whether a canonical user event went into the transcript at enqueue.
+    /// Only a one-shot provider's turns do: a persistent provider echoes the
+    /// message back itself the moment it starts on it, and a copy of our own
+    /// would draw it twice. So cancelling a recorded turn has to take it back
+    /// OUT of the record, and cancelling an unrecorded one has nothing to undo.
+    recorded: bool,
 }
 
 #[derive(Default)]
@@ -323,10 +336,10 @@ pub struct ChatManager {
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key: a host and each resident seat resume independently.
     starts: Mutex<HashMap<String, StartContext>>,
-    /// A command-line provider is deliberately one-shot. A follow-up sent
-    /// while its previous process is still reaping waits here for its resumed
-    /// process instead of being written to its intentionally absent stdin.
-    queued_command_turns: Mutex<HashMap<String, VecDeque<QueuedCommandTurn>>>,
+    /// What each agent has been sent but not yet given — see `QueuedTurn`.
+    /// Keyed by process key, so a room's host and each of its seats queue
+    /// separately, exactly as they run separately.
+    queued_turns: Mutex<HashMap<String, VecDeque<QueuedTurn>>>,
 }
 
 impl ChatManager {
@@ -351,8 +364,8 @@ impl ChatManager {
         self.starts.lock().ok()?.get(session_key).cloned()
     }
 
-    fn queue_command_turn(&self, key: &str, turn: QueuedCommandTurn) -> Result<(), String> {
-        self.queued_command_turns
+    fn queue_turn(&self, key: &str, turn: QueuedTurn) -> Result<(), String> {
+        self.queued_turns
             .lock()
             .map_err(|e| e.to_string())?
             .entry(key.to_string())
@@ -361,8 +374,8 @@ impl ChatManager {
         Ok(())
     }
 
-    fn take_queued_command_turn(&self, key: &str) -> Option<QueuedCommandTurn> {
-        let mut turns = self.queued_command_turns.lock().ok()?;
+    fn take_queued_turn(&self, key: &str) -> Option<QueuedTurn> {
+        let mut turns = self.queued_turns.lock().ok()?;
         let next = turns.get_mut(key)?.pop_front();
         if turns.get(key).is_some_and(VecDeque::is_empty) {
             turns.remove(key);
@@ -370,13 +383,95 @@ impl ChatManager {
         next
     }
 
-    /// Ending a process deliberately is also the end of any turn waiting only
-    /// for that process to exit. Otherwise a later, unrelated resume could
-    /// unexpectedly receive words the person meant to cancel.
-    fn forget_queued_command_turns(&self, key: &str) {
-        if let Ok(mut turns) = self.queued_command_turns.lock() {
+    /// Take one named message back out of the queue.
+    ///
+    /// Addressed by the CHAT and the browser's own turn id rather than by
+    /// process key, because that is all the page sending it knows: a message
+    /// put to a seat is queued under the seat's key, and the bubble on screen
+    /// carries only the id it was given at send. So every queue this chat owns
+    /// — its host's and each seat's — is searched for that one entry.
+    ///
+    /// `None` means it was not there to cancel: the queue is FIFO and the
+    /// agent had already been handed it, which is a race nobody can win and
+    /// the caller has to be told about rather than shown a message vanishing
+    /// from under an answer to it.
+    fn cancel_queued_turn(&self, chat_key: &str, turn_id: &str) -> Option<QueuedTurn> {
+        let seats = format!("{chat_key}-seat-");
+        let mut turns = self.queued_turns.lock().ok()?;
+        let mut emptied = None;
+        let mut cancelled = None;
+        for (key, queue) in turns.iter_mut() {
+            if key != chat_key && !key.starts_with(&seats) {
+                continue;
+            }
+            let Some(at) = queue
+                .iter()
+                .position(|t| t.turn_id.as_deref() == Some(turn_id))
+            else {
+                continue;
+            };
+            cancelled = queue.remove(at);
+            if queue.is_empty() {
+                emptied = Some(key.clone());
+            }
+            break;
+        }
+        if let Some(key) = emptied {
+            turns.remove(&key);
+        }
+        cancelled
+    }
+
+    /// Ending a process deliberately is also the end of every turn waiting only
+    /// for that process. Otherwise a later, unrelated resume could unexpectedly
+    /// receive words the person meant to cancel.
+    fn forget_queued_turns(&self, key: &str) {
+        if let Ok(mut turns) = self.queued_turns.lock() {
             turns.remove(key);
         }
+    }
+
+    /// The same, for a caller that has something to say about each one — see
+    /// `drop_queued_turns`.
+    fn take_all_queued_turns(&self, key: &str) -> Vec<QueuedTurn> {
+        self.queued_turns
+            .lock()
+            .ok()
+            .and_then(|mut turns| turns.remove(key))
+            .map(Vec::from)
+            .unwrap_or_default()
+    }
+}
+
+/// Say that a queued message is not going to be sent after all.
+///
+/// Written down only when the turn itself was written down (see
+/// `QueuedTurn::recorded`), but ALWAYS announced: the page that drew the
+/// optimistic bubble is holding it whether the record ever heard of it or not,
+/// and the bubble is what has to go.
+fn announce_cancelled(key: &str, turn: &QueuedTurn) {
+    let Some(turn_id) = turn.turn_id.as_deref() else {
+        return;
+    };
+    let event = json!({ "type": "octiq_user_turn_cancelled", "uuid": turn_id });
+    let seq = turn
+        .recorded
+        .then(|| crate::transcript::append(key, &event))
+        .flatten();
+    crate::bus::emit(
+        "chat-event",
+        ChatEvent {
+            key: key.to_string(),
+            seq,
+            event,
+        },
+    );
+}
+
+/// Let go of everything stacked behind a turn, and say so for each one.
+fn drop_queued_turns(manager: &ChatManager, key: &str) {
+    for turn in manager.take_all_queued_turns(key) {
+        announce_cancelled(key, &turn);
     }
 }
 
@@ -712,7 +807,7 @@ fn start_queued_command_turn(
     session_key: &str,
     stream_key: &str,
     seat: Option<crate::chat_room::Seat>,
-    turn: QueuedCommandTurn,
+    turn: QueuedTurn,
 ) -> Result<(), String> {
     let start = manager
         .start_context(session_key)
@@ -724,10 +819,13 @@ fn start_queued_command_turn(
     {
         return Err(format!("'{session_key}' no longer uses command-line turns"));
     }
-    let QueuedCommandTurn {
+    let QueuedTurn {
         text,
         images,
         turn_id,
+        // Already in the transcript — that is what `recorded` means, and it is
+        // why `start_session` below is told not to write it a second time.
+        recorded: _,
     } = turn;
     let voice = match seat {
         Some(seat) => Voice::seat(stream_key, seat),
@@ -1055,8 +1153,44 @@ pub(crate) fn start_session(
                             carried.push_str(text);
                         }
                         if observed.turn_finished {
+                            // The full stop is also when the next message the
+                            // person already sent is finally handed over. Taken
+                            // and written under the SAME lock the turn ends
+                            // under: let go in between and an ordinary send
+                            // arriving in that gap would find the session idle
+                            // and write straight past everything waiting.
+                            //
+                            // A one-shot provider's queue is not touched here —
+                            // its process is about to exit and its reaper
+                            // carries the next turn into a fresh command.
+                            let mut refused = None;
                             if let Ok(mut s) = asking.lock() {
                                 s.turn_ended();
+                                if stream_provider.capabilities().input.accepts_stdin() {
+                                    if let Some(turn) = reading.take_queued_turn(&session_key) {
+                                        refused = write_user_message_locked(
+                                            &mut s,
+                                            &turn.text,
+                                            &turn.images,
+                                        )
+                                        .err();
+                                    }
+                                }
+                            }
+                            if let Some(why) = refused {
+                                // Nothing behind it can go either, and words
+                                // held for an agent that cannot take them must
+                                // not surface in some later conversation.
+                                reading.forget_queued_turns(&session_key);
+                                emit_status(
+                                    stream_provider.kind(),
+                                    ChatStatus {
+                                        key: key.clone(),
+                                        kind: "error".into(),
+                                        text: format!("could not send queued message: {why}"),
+                                        code: None,
+                                    },
+                                );
                             }
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
@@ -1167,12 +1301,19 @@ pub(crate) fn start_session(
                         // `chat_send_impl` takes these same locks in this
                         // order. Once this map entry is gone, no newly queued
                         // turn can be stranded on the old process.
-                        let queued_turn = (!provider_for(agent)
-                            .capabilities()
-                            .input
-                            .accepts_stdin())
-                        .then(|| manager_for_exit.take_queued_command_turn(&session_key_for_exit))
-                        .flatten();
+                        //
+                        // A one-shot provider's next turn rides the resume
+                        // command below. A persistent one has no next process
+                        // to ride: its stdin died with it, so anything still
+                        // waiting is dropped here rather than left to surface
+                        // in whatever is started under this key later.
+                        let queued_turn =
+                            if provider_for(agent).capabilities().input.accepts_stdin() {
+                                manager_for_exit.forget_queued_turns(&session_key_for_exit);
+                                None
+                            } else {
+                                manager_for_exit.take_queued_turn(&session_key_for_exit)
+                            };
                         (true, false, queued_turn)
                     } else {
                         (false, sessions.contains_key(&session_key_for_exit), None)
@@ -1202,7 +1343,7 @@ pub(crate) fn start_session(
                         Err(why) => {
                             // Do not let a later, unrelated resume receive
                             // stale words after a failed restart.
-                            manager_for_exit.forget_queued_command_turns(&session_key_for_exit);
+                            manager_for_exit.forget_queued_turns(&session_key_for_exit);
                             emit_status(
                                 agent,
                                 ChatStatus {
@@ -1241,17 +1382,21 @@ pub(crate) fn start_session(
 }
 
 /// Write one user turn through the running provider's persistent input channel.
-fn write_user_message(
-    session: &Arc<Mutex<ChatSession>>,
+///
+/// Takes the session already locked, because the caller that matters holds it
+/// for a reason: the turn is being released from the queue the instant the last
+/// one ended, and letting go of the lock in between is exactly the gap another
+/// thread's direct write could take to jump the line. See the flush beside
+/// `turn_ended` in the stdout reader.
+fn write_user_message_locked(
+    session: &mut ChatSession,
     text: &str,
     images: &[String],
 ) -> Result<(), String> {
-    let agent = session.lock().map_err(|e| e.to_string())?.agent;
-    let payload = provider_for(agent)
+    let payload = provider_for(session.agent)
         .user_message_payload(text, images)
         .ok_or("this chat does not take more input")?;
-    let mut guard = session.lock().map_err(|e| e.to_string())?;
-    let stdin = guard
+    let stdin = session
         .stdin
         .as_mut()
         .ok_or("this chat does not take more input")?;
@@ -1259,8 +1404,17 @@ fn write_user_message(
     stdin.flush().map_err(|e| e.to_string())?;
     // Every turn this session is ever asked to do comes through here, so this
     // one line is the whole of "somebody is still using this chat".
-    guard.turn_started();
+    session.turn_started();
     Ok(())
+}
+
+fn write_user_message(
+    session: &Arc<Mutex<ChatSession>>,
+    text: &str,
+    images: &[String],
+) -> Result<(), String> {
+    let mut guard = session.lock().map_err(|e| e.to_string())?;
+    write_user_message_locked(&mut guard, text, images)
 }
 
 /// Send the next user turn to a running chat, with any images attached to it.
@@ -1351,30 +1505,43 @@ fn chat_send_with_user_turn(
             });
         };
 
-        // A command-line provider's stdin is deliberately `null`: an open pipe
-        // can make a one-shot command wait for more prompt text forever. Every
-        // command-line process, including a resident Codex seat, has launch
-        // context saved under its process key, so queue its next turn instead.
+        // Nothing goes to an agent that is not ready for it. Two different
+        // reasons, one queue:
+        //
+        // A command-line provider's stdin is deliberately `null` — an open pipe
+        // can make a one-shot command wait for more prompt text forever — so it
+        // is never ready, and every command-line process, including a resident
+        // Codex seat, has launch context saved under its process key to resume
+        // from. A persistent provider IS ready, but only between turns: write
+        // to it mid-answer and the message lands in the agent's own internal
+        // queue, out of this backend's reach and past taking back.
         {
             let mut guard = session.lock().map_err(|e| e.to_string())?;
-            if !provider_for(guard.agent)
+            let one_shot = !provider_for(guard.agent)
                 .capabilities()
                 .input
-                .accepts_stdin()
-            {
-                // A Codex process is one-shot, so this prompt has been
-                // accepted once it entered the queue. Keep a canonical copy
-                // NOW, at the moment the person sent it, not when the next
-                // process eventually begins it.
-                let recorded = user_turn_id
-                    .as_deref()
-                    .map(|turn_id| (turn_id.to_string(), text.clone(), images.clone()));
-                manager.queue_command_turn(
+                .accepts_stdin();
+            if one_shot || guard.busy {
+                // A one-shot prompt has been accepted once it entered the
+                // queue, so keep a canonical copy NOW, at the moment the person
+                // sent it, not when the next process eventually begins it. A
+                // persistent provider writes its own copy by echoing the
+                // message back when it starts on it, and a second one here
+                // would put the same words on screen twice.
+                let recorded = one_shot
+                    .then(|| {
+                        user_turn_id
+                            .as_deref()
+                            .map(|turn_id| (turn_id.to_string(), text.clone(), images.clone()))
+                    })
+                    .flatten();
+                manager.queue_turn(
                     &session_key,
-                    QueuedCommandTurn {
+                    QueuedTurn {
                         text,
                         images,
                         turn_id: user_turn_id.clone(),
+                        recorded: recorded.is_some(),
                     },
                 )?;
                 if let Some((turn_id, text, images)) = recorded {
@@ -1390,6 +1557,30 @@ fn chat_send_with_user_turn(
         session
     };
     write_user_message(&session, &text, &images)
+}
+
+/// Take back a message the agent has not been given yet.
+///
+/// Only ever a message still in this backend's own queue. Once it has been
+/// written to the agent it belongs to the agent, and the honest answer is that
+/// it is too late — so this reports whether there was anything to cancel rather
+/// than pretending either way.
+///
+/// A one-shot provider's queued turn was written into the transcript at the
+/// moment it was sent (see `QueuedTurn::recorded`), so cancelling it has to
+/// take it back out. The record is append-only, so "out" is one more line
+/// saying so, which every reader — live, another tab, or a replay next week —
+/// folds the same way.
+pub fn chat_cancel_queued_impl(
+    manager: &ChatManager,
+    key: String,
+    turn_id: String,
+) -> Result<bool, String> {
+    let Some(cancelled) = manager.cancel_queued_turn(&key, &turn_id) else {
+        return Ok(false);
+    };
+    announce_cancelled(&key, &cancelled);
+    Ok(true)
 }
 
 /// Start ONE seat's process, with its first message.
@@ -1549,6 +1740,16 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
         let guard = session.lock().map_err(|e| e.to_string())?;
         guard.agent
     };
+    // Stopping a turn also lets go of everything stacked behind it. Those
+    // messages were queued for the answer the person has just decided they no
+    // longer want, and a Stop that quietly fired the next one into the same
+    // session would be the opposite of what the button says. Said out loud
+    // rather than dropped, so the bubbles waiting on screen go with them.
+    //
+    // This is what a one-shot provider has always done — its `end_process`
+    // below discards the queue with the process — said once, in one place, for
+    // both of them.
+    drop_queued_turns(manager, &key);
     // Command-line providers cannot receive a control message after startup.
     // Remove and kill their current one-shot process, but deliberately leave
     // `StartContext` intact so the next user turn can resume it.
@@ -1776,7 +1977,7 @@ fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
     };
     // Removal from the session map happens before clearing the queue, so a
     // concurrent send cannot add a new deferred turn after this cleanup.
-    manager.forget_queued_command_turns(key);
+    manager.forget_queued_turns(key);
     let Some(session) = session else {
         return Ok(false);
     };
@@ -2934,13 +3135,14 @@ mod tests {
         )
         .expect("a Codex seat queues instead of writing to absent stdin");
 
-        assert!(manager.take_queued_command_turn("chat-a").is_none());
+        assert!(manager.take_queued_turn("chat-a").is_none());
         assert_eq!(
-            manager.take_queued_command_turn(&session_key),
-            Some(QueuedCommandTurn {
+            manager.take_queued_turn(&session_key),
+            Some(QueuedTurn {
                 text: "follow up".into(),
                 images: vec!["/tmp/shot.png".into()],
                 turn_id: None,
+                recorded: false,
             })
         );
         assert_eq!(
@@ -2996,15 +3198,269 @@ mod tests {
             "/tmp/prompt.png"
         );
         assert_eq!(
-            manager
-                .take_queued_command_turn(&key)
-                .and_then(|turn| turn.turn_id),
+            manager.take_queued_turn(&key).and_then(|turn| turn.turn_id),
             Some("user-1".into()),
             "the FIFO resume keeps the id of the bubble it will answer"
         );
 
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
+    }
+
+    /// A persistent-provider session with a REAL pipe on its stdin, so a write
+    /// that should not have happened has somewhere to go rather than failing
+    /// for the wrong reason and passing the test anyway.
+    fn claude_session(busy: bool) -> Arc<Mutex<ChatSession>> {
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a cat to stand in for Claude");
+        let stdin = child.stdin.take();
+        Arc::new(Mutex::new(ChatSession {
+            child,
+            stdin,
+            agent: ChatAgent::Claude,
+            busy,
+            last_active: Instant::now(),
+        }))
+    }
+
+    fn hold(manager: &ChatManager, key: &str, session: Arc<Mutex<ChatSession>>) {
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), session);
+    }
+
+    #[test]
+    fn a_message_sent_to_a_working_claude_waits_in_our_own_queue() {
+        // Written to its stdin it would land in the AGENT's queue instead,
+        // where nothing on this side can reach it again — which is the whole
+        // reason a queued message used to be impossible to take back.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-queue-{}", uuid::Uuid::new_v4().simple());
+        hold(&manager, &key, claude_session(true));
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "and one more thing".into(),
+            None,
+            None,
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a follow-up to a working Claude");
+
+        assert_eq!(
+            manager.take_queued_turn(&key),
+            Some(QueuedTurn {
+                text: "and one more thing".into(),
+                images: vec![],
+                turn_id: Some("user-1".into()),
+                recorded: false,
+            })
+        );
+        assert!(
+            crate::transcript::since(&key, 0).is_empty(),
+            "Claude writes its own copy by echoing the message back; ours would double it"
+        );
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn an_idle_claude_is_written_to_rather_than_queued() {
+        // The other half of the pair. Holding a message back is a rule about a
+        // turn IN FLIGHT, not a new layer between the person and the agent.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-idle-{}", uuid::Uuid::new_v4().simple());
+        hold(&manager, &key, claude_session(false));
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "go".into(),
+            None,
+            None,
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a message to an idle Claude");
+
+        assert!(manager.take_queued_turn(&key).is_none());
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn stopping_the_turn_lets_go_of_what_was_stacked_behind_it() {
+        // Those messages were queued for the answer that has just been stopped.
+        // Firing the next one into the same session is the opposite of what the
+        // button says, and it is what a one-shot provider has always done —
+        // its process, and its queue with it, end together.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-stop-{}", uuid::Uuid::new_v4().simple());
+        hold(&manager, &key, claude_session(true));
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "and then this".into(),
+            None,
+            None,
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a follow-up to a working Claude");
+
+        chat_interrupt_impl(&manager, key.clone()).expect("stop the turn");
+
+        assert!(manager.take_queued_turn(&key).is_none());
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn a_cancelled_claude_turn_is_gone_and_cancelling_again_says_so() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-cancel-{}", uuid::Uuid::new_v4().simple());
+        hold(&manager, &key, claude_session(true));
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "forget it".into(),
+            None,
+            None,
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a follow-up to a working Claude");
+
+        assert_eq!(
+            chat_cancel_queued_impl(&manager, key.clone(), "user-1".into()),
+            Ok(true)
+        );
+        assert!(manager.take_queued_turn(&key).is_none());
+        assert!(
+            crate::transcript::since(&key, 0).is_empty(),
+            "there was nothing written down to take back out"
+        );
+        // The queue is FIFO and the agent may already have been handed it. That
+        // is a race nobody can win, and the page has to be told rather than
+        // shown a bubble vanishing from under an answer to it.
+        assert_eq!(
+            chat_cancel_queued_impl(&manager, key.clone(), "user-1".into()),
+            Ok(false)
+        );
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn cancelling_a_codex_turn_takes_it_back_out_of_the_transcript() {
+        // Codex's queued prompt IS written down at send — it is accepted the
+        // moment it enters the queue. So this is the one that has something to
+        // undo, and the record is append-only: "out" is one more line saying so.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("codex-cancel-{}", uuid::Uuid::new_v4().simple());
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a Codex stand-in");
+        hold(
+            &manager,
+            &key,
+            Arc::new(Mutex::new(ChatSession {
+                child,
+                stdin: None,
+                agent: ChatAgent::Codex,
+                busy: true,
+                last_active: Instant::now(),
+            })),
+        );
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "never mind".into(),
+            None,
+            None,
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a queued Codex user turn");
+        assert_eq!(crate::transcript::since(&key, 0).len(), 1);
+
+        assert_eq!(
+            chat_cancel_queued_impl(&manager, key.clone(), "user-1".into()),
+            Ok(true)
+        );
+        assert!(manager.take_queued_turn(&key).is_none());
+        let events = crate::transcript::since(&key, 0);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event["type"], "octiq_user_turn_cancelled");
+        assert_eq!(events[1].event["uuid"], "user-1");
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn a_seat_message_is_cancelled_by_the_chat_that_holds_the_seat() {
+        // The page sending the cancel knows the chat and the id on the bubble.
+        // It does not know the seat's process key, which is where the message
+        // is actually queued — so every queue the chat owns is searched.
+        let manager = Arc::new(ChatManager::default());
+        let seat = crate::chat_room::add_seat_impl(
+            &manager,
+            "chat-cancel-seat",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .expect("a resident Codex seat");
+        let session_key = crate::chat_room::seat_session_key("chat-cancel-seat", &seat.id);
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a Codex stand-in");
+        hold(
+            &manager,
+            &session_key,
+            Arc::new(Mutex::new(ChatSession {
+                child,
+                stdin: None,
+                agent: ChatAgent::Codex,
+                busy: true,
+                last_active: Instant::now(),
+            })),
+        );
+
+        chat_send_user_impl(
+            manager.clone(),
+            "chat-cancel-seat".into(),
+            "to the seat".into(),
+            None,
+            Some(seat.id),
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a queued message for a seat");
+
+        assert_eq!(
+            chat_cancel_queued_impl(&manager, "chat-cancel-seat".into(), "user-1".into()),
+            Ok(true)
+        );
+        assert!(manager.take_queued_turn(&session_key).is_none());
+
+        end_process(&manager, &session_key).expect("end the stand-in");
+        crate::transcript::forget("chat-cancel-seat");
     }
 
     #[test]

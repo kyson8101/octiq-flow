@@ -936,6 +936,21 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   if ((parent || speaker) && (type === "system" || type === "result" || type === "thread.started"))
     return state;
 
+  // A message taken back before its agent was ever given it. OctiqFlow's own
+  // event, not either provider's: the words never reached one, so there is
+  // nothing here that any agent could report.
+  //
+  // It removes rather than marks, and the record is append-only, so this line
+  // is how a replay next week arrives at the same conversation the person was
+  // looking at when they cancelled. Written down only when the queued turn had
+  // been — see `QueuedTurn::recorded`; a Claude turn was never in the record to
+  // begin with, and this simply finds nothing to drop.
+  if (type === "octiq_user_turn_cancelled") {
+    const cancelled = asStr(e.uuid);
+    if (!cancelled) return state;
+    return { ...state, messages: state.messages.filter((m) => m.turnId !== cancelled) };
+  }
+
   // Codex speaks its own protocol — see `codexEvents`. Read BEFORE the branches
   // below, none of which know any of its event names, and all of which
   // therefore dropped every word it ever said.

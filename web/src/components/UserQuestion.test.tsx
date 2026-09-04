@@ -32,7 +32,7 @@ const arrive = (over: Partial<Question> = {}) =>
   renderToStaticMarkup(<UserQuestion questions={[ask(over)]} onDone={() => {}} />);
 
 describe("UserQuestion", () => {
-  const batch = () =>
+  const batch = (startPage = 0) =>
     renderToStaticMarkup(
       <UserQuestion
         questions={[
@@ -41,6 +41,7 @@ describe("UserQuestion", () => {
         ]}
         onDone={() => {}}
         startOpen
+        startPage={startPage}
       />,
     );
 
@@ -55,21 +56,78 @@ describe("UserQuestion", () => {
     expect(html).toContain("2 questions");
   });
 
-  it("gives the batch a dot per question and a way through them", () => {
+  it("gives the batch a dot per question, one for the review, and a way through them", () => {
     const html = batch();
 
     expect(html).toContain("qa-page-dots");
-    expect((html.match(/class="qa-page-dot /g) ?? []).length).toBe(2);
-    expect((html.match(/class="qa-page-arrow"/g) ?? []).length).toBe(2);
+    // Two questions and the review they end at.
+    expect((html.match(/class="qa-page-dot /g) ?? []).length).toBe(3);
+    expect(html).toContain("qa-page-dot is-review");
   });
 
-  it("keeps ONE submit for the whole batch, from any page", () => {
-    // Answering piecemeal must not let the agent act on the first answer while
-    // the third is still being decided.
+  it("keeps the way forward and the way back on one row, with no second forward", () => {
+    // The button turns the page, so a forward arrow an inch from it is a
+    // decision to make about nothing.
+    const html = batch();
+    const pager = html.slice(html.indexOf("qa-pager"));
+
+    expect((html.match(/class="qa-page-arrow"/g) ?? []).length).toBe(1);
+    expect(html).toContain("Previous question");
+    expect(pager).toContain("qa-submit");
+  });
+
+  it("turns the page rather than sending, until the last page", () => {
+    // Four questions are four pages and a fifth: the button under a question
+    // only moves you on, and the send lives on the page that shows the set.
+    const html = batch(1);
+
+    expect(html).toContain("Review answers");
+    expect(html).not.toContain("Send answers");
+    expect((html.match(/class="ask-btn/g) ?? []).length).toBe(1);
+  });
+
+  it("says Next while there are still questions after this one", () => {
+    const html = renderToStaticMarkup(
+      <UserQuestion
+        questions={[ask({ id: "q1" }), ask({ id: "q2" }), ask({ id: "q3" })]}
+        onDone={() => {}}
+        startOpen
+      />,
+    );
+
+    expect(html).toContain("Next question");
+  });
+
+  it("keeps the page turn alive on a question nothing has been said to", () => {
+    // Skipping one and coming back to it is a way of reading the batch; a dead
+    // button reads as the card refusing to go on.
     const html = batch();
 
+    expect(html).toMatch(/<button class="ask-btn is-primary qa-submit qa-next" type="button">/);
+  });
+
+  it("ends the batch on a review of every answer, with the only send under it", () => {
+    // Answering piecemeal must not let the agent act on the first answer while
+    // the third is still being decided — and the set is read once, whole,
+    // before any of it goes.
+    const html = batch(2);
+
+    expect(html).toContain("Your answers");
+    expect(html).toContain("Which database?");
+    expect(html).toContain("Which region?");
+    // Nothing was picked, so both lines say so and the send is dead.
+    expect((html.match(/Not answered/g) ?? []).length).toBe(2);
     expect(html).toContain("Send answers");
+    expect(html).toMatch(/<button[^>]*class="ask-btn is-primary qa-submit"[^>]*disabled/);
     expect((html.match(/class="ask-btn/g) ?? []).length).toBe(1);
+  });
+
+  it("makes every review line the way back to its own question", () => {
+    const html = batch(2);
+
+    expect((html.match(/class="qa-review-row /g) ?? []).length).toBe(2);
+    expect(html).toContain("Back to question 1");
+    expect(html).toContain("Back to question 2");
   });
 
   it("draws no pager at all for a single question", () => {
@@ -77,6 +135,15 @@ describe("UserQuestion", () => {
 
     expect(html).not.toContain("qa-pager");
     expect(html).not.toContain("Question 1 of");
+  });
+
+  it("sends a lone question straight from its own page", () => {
+    // A review of one answer is a second press for nothing.
+    const html = draw({ options: ["Postgres", "SQLite"] });
+
+    expect(html).not.toContain("qa-review");
+    expect(html).not.toContain("Next question");
+    expect(html).toContain("Send answers");
   });
 
   it("puts a labelled choice on the button and its description under it", () => {

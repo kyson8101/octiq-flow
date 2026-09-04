@@ -181,7 +181,7 @@ export function Usage() {
       <button
         className="usage-btn"
         type="button"
-        title="Plan usage this week — hover or tap for every window"
+        title="Highest plan usage — hover or tap for every window"
         onClick={() => {
           cancelClose();
           setOpen((v) => (v === "pin" ? null : "pin"));
@@ -207,27 +207,24 @@ export function Usage() {
   );
 }
 
-/** One agent in the top bar: its tag, then how much of the WEEK is gone.
+/** One agent in the top bar: its tag, then the fullest reported usage window.
  *
- *  The week and nothing else. The bar used to carry every window an agent
- *  reported — five hours, the week, one per model — which is three or four
- *  numbers per agent to read at a glance, and a glance does not read four
- *  numbers. The week is the one that decides what you can still do today; a
- *  five-hour window refills while you make coffee. The rest have not gone
- *  anywhere: they are in the popup, one hover away.
+ *  A provider can report five-hour, weekly, and model-specific windows. Only
+ *  one number fits at a glance, so show whichever percentage is highest and
+ *  label its window. This is especially important for Claude, whose five-hour
+ *  limit can be closer to exhausted than its weekly limit.
  *
  *  A number, not a bar. A bar has to be wide enough to read, and the colour
  *  carries "how bad is it" on its own. */
-function barWindow(p: Provider | null): { label: string; window: Window } | null {
-  if (p?.weekly) return { label: "", window: p.weekly };
-  // No weekly window reported. Rather than show nothing, show whichever window
-  // it does report that is closest to running out — LABELLED, since a lone
-  // number standing for a window you cannot name says less than no number.
-  const rest: { label: string; window: Window }[] = [];
-  if (p?.fiveHour) rest.push({ label: "5h", window: p.fiveHour });
-  for (const m of p?.models ?? []) rest.push({ label: m.name, window: m });
-  if (rest.length === 0) return null;
-  return rest.reduce((worst, w) => (w.window.percent > worst.window.percent ? w : worst));
+export function barWindow(p: Provider | null): { label: string; window: Window } | null {
+  const windows: { label: string; window: Window }[] = [];
+  if (p?.fiveHour) windows.push({ label: "5h", window: p.fiveHour });
+  if (p?.weekly) windows.push({ label: "7d", window: p.weekly });
+  for (const m of p?.models ?? []) windows.push({ label: m.name, window: m });
+  if (windows.length === 0) return null;
+  return windows.reduce((highest, candidate) =>
+    candidate.window.percent > highest.window.percent ? candidate : highest,
+  );
 }
 
 function Pill({

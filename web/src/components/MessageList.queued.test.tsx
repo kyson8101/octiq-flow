@@ -72,6 +72,58 @@ describe("the queued mark", () => {
     expect(queued.replace(onlyMark, "")).toBe(body(draw(false)));
   });
 
+  it("offers the way out in the clock's own corner, not beside it", () => {
+    // The gutter is a fixed 40px whether anything is drawn in it or not, so a
+    // second mark would have had to come from somewhere else on the pill. One
+    // slot, two faces — and the button IS `.queued`, which is what keeps it
+    // absolutely positioned and out of the words' way.
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[{ ...sent[0], turnId: "u-1" }]}
+        busy
+        onCancelQueued={() => {}}
+      />,
+    );
+
+    expect(html).toContain('class="queued queued-cancel"');
+    expect(html).toContain('aria-label="Cancel this queued message"');
+    // Both faces live inside the one button, which lives inside the pill.
+    expect(html).toMatch(
+      /class="msg-body">[\s\S]*<button[^>]*class="queued queued-cancel"[\s\S]*queued-waiting[\s\S]*queued-take-back[\s\S]*<\/button>/,
+    );
+  });
+
+  it("keeps the plain clock on a turn nothing can name", () => {
+    // A turn sent before the id existed, or one an agent sent on its own
+    // behalf, has nothing to address a cancel to. Better the mark it has always
+    // had than a button that would answer a click with an error.
+    const withHandler = renderToStaticMarkup(
+      <MessageList messages={sent} busy onCancelQueued={() => {}} />,
+    );
+    const withId = renderToStaticMarkup(
+      <MessageList messages={[{ ...sent[0], turnId: "u-1" }]} busy />,
+    );
+
+    expect(withHandler).not.toContain("queued-cancel");
+    expect(withHandler).toContain('class="queued"');
+    expect(withId).not.toContain("queued-cancel");
+    expect(withId).toContain('class="queued"');
+  });
+
+  it("takes the way out away the moment the agent picks the message up", () => {
+    // The ✕ is only ever offered while the message is still OURS to hold. Once
+    // the agent has it there is nothing to cancel, and a button that stayed
+    // would promise something no backend could do.
+    const working = reduceChat(addUserTurn(emptyChat(), "do the thing", [], 1, undefined, "u-1"), {
+      type: "turn.started",
+    });
+    const html = renderToStaticMarkup(
+      <MessageList messages={working.messages} busy={working.busy} onCancelQueued={() => {}} />,
+    );
+
+    expect(html).not.toContain("queued-cancel");
+  });
+
   it("keeps each Codex follow-up separate so only the waiting one has a clock", () => {
     const messages: Message[] = [
       {
@@ -89,14 +141,20 @@ describe("the queued mark", () => {
       },
     ];
     const html = renderToStaticMarkup(
-      <MessageList messages={messages} busy hostAgent="codex" />,
+      <MessageList messages={messages} busy />,
     );
 
     expect(html.match(/class="msg msg-user/g)).toHaveLength(2);
     expect(html.match(/class="queued"/g)).toHaveLength(1);
   });
 
-  it("does not change Claude's existing consecutive-message grouping", () => {
+  it("keeps two things you typed as two things, whichever agent this is", () => {
+    // This used to assert the opposite for Claude, and the reason it changed is
+    // the reason this whole file exists: Claude's follow-ups went straight down
+    // its stdin and were nobody's to hold, so consecutive user messages could
+    // share a bubble. They are held in OUR queue now, one at a time — so each
+    // one has its own clock to lose, and its own ✕ to be taken back by, and
+    // neither has anywhere to live in a bubble shared with the other.
     const messages: Message[] = [
       {
         id: "u1",
@@ -113,11 +171,9 @@ describe("the queued mark", () => {
         echo: "echo-2",
       },
     ];
-    const html = renderToStaticMarkup(
-      <MessageList messages={messages} busy={false} hostAgent="claude" />,
-    );
+    const html = renderToStaticMarkup(<MessageList messages={messages} busy={false} />);
 
-    expect(html.match(/class="msg msg-user/g)).toHaveLength(1);
+    expect(html.match(/class="msg msg-user/g)).toHaveLength(2);
   });
 
   it("names the earlier queued message above a non-adjacent Codex answer", () => {
@@ -144,7 +200,7 @@ describe("the queued mark", () => {
       },
     ];
     const html = renderToStaticMarkup(
-      <MessageList messages={messages} busy hostAgent="codex" />,
+      <MessageList messages={messages} busy />,
     );
 
     expect(html).toContain("Replying to");
@@ -183,7 +239,7 @@ describe("the queued mark", () => {
       },
     ];
     const html = renderToStaticMarkup(
-      <MessageList messages={messages} busy={false} hostAgent="codex" />,
+      <MessageList messages={messages} busy={false} />,
     );
 
     expect(html.match(/class="msg msg-assistant/g)).toHaveLength(2);
