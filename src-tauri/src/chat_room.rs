@@ -210,6 +210,17 @@ pub(crate) fn seat_session_key(room: &str, seat_id: &str) -> String {
     format!("{room}-seat-{seat_id}")
 }
 
+/// Whether a session key names a SEAT rather than the conversation itself.
+///
+/// The separator above is the only thing that tells them apart, so the reading
+/// of it lives next to the writing of it. A caller that holds only a key and
+/// must not mistake a seat for a host asks here — see `chat_interrupt_impl`,
+/// which resumes a stopped one-shot agent and would otherwise resume a seat
+/// into the room's own transcript.
+pub(crate) fn is_seat_session_key(key: &str) -> bool {
+    key.contains("-seat-")
+}
+
 /// Where a seat runs, and what else it may reach.
 ///
 /// A `Project` seat works where the chat works — the same folder, the same

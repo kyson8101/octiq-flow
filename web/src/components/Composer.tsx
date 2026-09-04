@@ -195,6 +195,20 @@ function saveHistory(session: string | undefined, list: string[]): void {
   }
 }
 
+/** What the box says once messages taken back out of the queue are put in it.
+ *
+ *  They go at the END, after whatever is already there. Two reasons, and they
+ *  point the same way: a half-typed line in the box is NEWER than a message
+ *  that was queued before it, and words arriving in two batches stay in the
+ *  order they were sent rather than turning inside out.
+ *
+ *  A blank line between them, because each one was its own message and is
+ *  about to be one again — run together, two paragraphs become a single prompt
+ *  nobody wrote. */
+export function withPutBack(current: string, words: readonly string[]): string {
+  return [current.trim(), ...words.map((w) => w.trim())].filter(Boolean).join("\n\n");
+}
+
 export function Composer({
   session,
   focusOn,
@@ -204,6 +218,8 @@ export function Composer({
   onAccess,
   onSend,
   onStop,
+  putBack,
+  onPutBack,
   busy,
   disabled,
   started,
@@ -252,6 +268,15 @@ export function Composer({
   onAccess: (a: AccessLevel) => void;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
+  /** Words taken back out of the queue before any agent was given them — the ✕
+   *  on a queued bubble. That bubble is gone, and the box is the only place
+   *  left for them.
+   *
+   *  APPENDED, never assigned: whatever is half-typed here now was typed after
+   *  they were, and a message put back must not take a newer one away. Emptied
+   *  through `onPutBack` once it is in, so the same words cannot land twice. */
+  putBack?: readonly string[];
+  onPutBack?: () => void;
   busy: boolean;
   disabled?: boolean;
   /** True once this conversation has turns in it. The model and the provider
@@ -705,6 +730,25 @@ export function Composer({
     // Only the chat. Everything this reads about the box is read through a ref
     // precisely so that typing does not re-run it.
   }, [session, forget]);
+
+  /** Words that were queued and never sent, put back where they were typed.
+   *
+   *  Below the effect above on purpose: arriving in a chat fills the box from
+   *  its draft, and these go on the END of that, not instead of it.
+   *
+   *  The guard is the ARRAY, not a boolean — a re-render with the same words
+   *  must be a no-op, or the box would keep re-filling for as long as the
+   *  parent held them. */
+  const putBackDone = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    if (!putBack?.length || putBackDone.current === putBack) return;
+    putBackDone.current = putBack;
+    setText((prev) => withPutBack(prev, putBack));
+    // Up walks history from wherever the box is, and the box has just moved.
+    setRecall(-1);
+    draft.current = "";
+    onPutBack?.();
+  }, [putBack, onPutBack]);
 
   /** A new chat, asked for by pressing "+": the box takes the focus, so the
    *  thing you do next is type rather than aim.

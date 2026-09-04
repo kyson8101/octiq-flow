@@ -1460,9 +1460,15 @@ export function MessageList({
     // Someone who parked half-way through a conversation to read it did not
     // ask to be taken to the end of it because a turn happened to arrive.
     stick.current = false;
-    setAway(true);
     resuming.current = { at: saved, until: performance.now() + SETTLE_MS };
     el.scrollTop = placeTop(saved, anchorsIn(el), el.scrollHeight - el.clientHeight);
+    // Asked of where the place actually LANDED, not assumed from there being
+    // one. A place is kept for a chat whose transcript was long; reopened
+    // after a compaction, or on a phone whose pane is taller than the whole
+    // conversation, it restores to a transcript with no bottom to come back
+    // from — and the button drew itself over the last message offering to take
+    // the reader somewhere they already were.
+    setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
   }, [conversationId]);
 
   // Scrolling to the bottom ONCE is not enough, because the bottom moves
@@ -1493,12 +1499,21 @@ export function MessageList({
       // left and one they have to hunt for. The anchor is re-read each time,
       // so this converges rather than repeating a stale number.
       const back = resuming.current;
-      if (!back) return;
-      if (performance.now() > back.until) {
-        resuming.current = null;
-        return;
+      if (back) {
+        if (performance.now() > back.until) resuming.current = null;
+        else el.scrollTop = placeTop(back.at, anchorsIn(el), el.scrollHeight - el.clientHeight);
       }
-      el.scrollTop = placeTop(back.at, anchorsIn(el), el.scrollHeight - el.clientHeight);
+      // Whether there is a way back down is a question about the height, and
+      // the height is what just changed. Without this a transcript that fitted
+      // the pane when it was opened never grew a jump button as the turn under
+      // it arrived — nothing else here asks again until the reader scrolls,
+      // and the reader is exactly who cannot.
+      //
+      // Not during a glide: it starts far from the bottom and ends at it, and
+      // the press that started it has already said where the reader is going.
+      if (!glide.current) {
+        setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
+      }
     });
     observer.observe(inner);
     return () => observer.disconnect();

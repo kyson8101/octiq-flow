@@ -374,6 +374,22 @@ impl ChatManager {
         Ok(())
     }
 
+    /// Whether anything is already stacked up for this agent.
+    ///
+    /// A queue is only a queue while nothing can go round it, and `busy` alone
+    /// does not answer that. `chat_interrupt_impl` ends the turn the moment it
+    /// asks the agent to stop — the still-clock has to start somewhere, and a
+    /// cut-off turn's `result` is not something to wait for — so between a Stop
+    /// and the reader picking the queue up, the session reads idle with
+    /// messages still waiting behind it. Send in that window and, without this,
+    /// the newer message went first.
+    fn has_queued_turns(&self, key: &str) -> bool {
+        self.queued_turns
+            .lock()
+            .ok()
+            .is_some_and(|turns| turns.get(key).is_some_and(|queue| !queue.is_empty()))
+    }
+
     fn take_queued_turn(&self, key: &str) -> Option<QueuedTurn> {
         let mut turns = self.queued_turns.lock().ok()?;
         let next = turns.get_mut(key)?.pop_front();
@@ -431,8 +447,26 @@ impl ChatManager {
         }
     }
 
-    /// The same, for a caller that has something to say about each one — see
-    /// `drop_queued_turns`.
+    /// Put turns back at the FRONT of a queue, in the order given.
+    ///
+    /// Only ever the tail of a queue the same call has just taken out, which is
+    /// why the front is the right end: they were sent before anything that
+    /// could have arrived in the gap, and a queue is only worth having if it
+    /// keeps that order. See `chat_interrupt_impl`, which has to lift a
+    /// one-shot provider's queue clear of the process being killed under it.
+    fn requeue_front(&self, key: &str, turns: Vec<QueuedTurn>) {
+        if turns.is_empty() {
+            return;
+        }
+        if let Ok(mut queues) = self.queued_turns.lock() {
+            let queue = queues.entry(key.to_string()).or_default();
+            for turn in turns.into_iter().rev() {
+                queue.push_front(turn);
+            }
+        }
+    }
+
+    /// Everything waiting, taken out in one go.
     fn take_all_queued_turns(&self, key: &str) -> Vec<QueuedTurn> {
         self.queued_turns
             .lock()
@@ -466,13 +500,6 @@ fn announce_cancelled(key: &str, turn: &QueuedTurn) {
             event,
         },
     );
-}
-
-/// Let go of everything stacked behind a turn, and say so for each one.
-fn drop_queued_turns(manager: &ChatManager, key: &str) {
-    for turn in manager.take_all_queued_turns(key) {
-        announce_cancelled(key, &turn);
-    }
 }
 
 /// The level each running chat is on RIGHT NOW, by chat key.
@@ -1505,8 +1532,8 @@ fn chat_send_with_user_turn(
             });
         };
 
-        // Nothing goes to an agent that is not ready for it. Two different
-        // reasons, one queue:
+        // Nothing goes to an agent that is not ready for it, and nothing goes
+        // round anything already waiting. Three reasons, one queue:
         //
         // A command-line provider's stdin is deliberately `null` — an open pipe
         // can make a one-shot command wait for more prompt text forever — so it
@@ -1514,14 +1541,16 @@ fn chat_send_with_user_turn(
         // Codex seat, has launch context saved under its process key to resume
         // from. A persistent provider IS ready, but only between turns: write
         // to it mid-answer and the message lands in the agent's own internal
-        // queue, out of this backend's reach and past taking back.
+        // queue, out of this backend's reach and past taking back. And a queue
+        // with anything in it is reason enough on its own — see
+        // `has_queued_turns`, which is what a Stop leaves behind.
         {
             let mut guard = session.lock().map_err(|e| e.to_string())?;
             let one_shot = !provider_for(guard.agent)
                 .capabilities()
                 .input
                 .accepts_stdin();
-            if one_shot || guard.busy {
+            if one_shot || guard.busy || manager.has_queued_turns(&session_key) {
                 // A one-shot prompt has been accepted once it entered the
                 // queue, so keep a canonical copy NOW, at the moment the person
                 // sent it, not when the next process eventually begins it. A
@@ -1731,7 +1760,22 @@ fn chat_seat_start_with_user_turn(
 /// with stdin intentionally closed, so its equivalent is ending only that
 /// process. `end_process` retains the transcript and remembered thread id, and
 /// the next message resumes the same Codex conversation.
-pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+///
+/// **The queue behind the stopped turn SURVIVES, and its first message starts
+/// straight away.** Stop is how a person says "not that — do the thing I have
+/// already typed instead", and it was that for as long as this app has had a
+/// Stop button: a queued message used to go down Claude's stdin into Claude's
+/// OWN queue, which an interrupt made it pick up immediately. Card 84 moved
+/// that queue to this side so a message could still be taken back, and dropped
+/// it here — quietly ending a way of working that had always worked. What
+/// takes a message back is the ✕ on its own bubble, which says which one.
+///
+/// Nothing here writes the next message: a persistent provider's is handed
+/// over by the reader thread when the cut-off turn's own `result` lands (see
+/// `turn_finished`), under the lock that ends the turn, so it cannot jump
+/// ahead of anything. A one-shot provider has no reader to do it — its process
+/// is being killed — so this carries the queue across the kill by hand.
+pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
@@ -1740,21 +1784,39 @@ pub fn chat_interrupt_impl(manager: &ChatManager, key: String) -> Result<(), Str
         let guard = session.lock().map_err(|e| e.to_string())?;
         guard.agent
     };
-    // Stopping a turn also lets go of everything stacked behind it. Those
-    // messages were queued for the answer the person has just decided they no
-    // longer want, and a Stop that quietly fired the next one into the same
-    // session would be the opposite of what the button says. Said out loud
-    // rather than dropped, so the bubbles waiting on screen go with them.
-    //
-    // This is what a one-shot provider has always done — its `end_process`
-    // below discards the queue with the process — said once, in one place, for
-    // both of them.
-    drop_queued_turns(manager, &key);
     // Command-line providers cannot receive a control message after startup.
     // Remove and kill their current one-shot process, but deliberately leave
     // `StartContext` intact so the next user turn can resume it.
     if !provider_for(agent).capabilities().input.accepts_stdin() {
+        // Lifted clear BEFORE the kill, because `end_process` discards
+        // whatever was waiting on the process it ends — right for a chat
+        // somebody stopped, wrong for a turn, where the messages behind it are
+        // the ones being asked for. The exit reaper cannot pick them up
+        // either: `end_process` takes the session out of the map, so the exit
+        // it is about to see is no longer the current one.
+        //
+        // Only for the conversation's own agent. A seat runs under its own
+        // key but SPEAKS into the room's transcript, and the two are told
+        // apart by the key alone — resume one as a host here and its answer is
+        // written down as the room's.
+        let mut waiting = if crate::chat_room::is_seat_session_key(&key) {
+            Vec::new()
+        } else {
+            manager.take_all_queued_turns(&key)
+        };
         end_process(manager, &key)?;
+        if waiting.is_empty() {
+            return Ok(());
+        }
+        let next = waiting.remove(0);
+        manager.requeue_front(&key, waiting);
+        if let Err(why) = start_queued_command_turn(manager.clone(), &key, &key, None, next) {
+            // Words held for a process that never started must not surface in
+            // some later conversation — the same rule the reaper follows when
+            // its own resume fails.
+            manager.forget_queued_turns(&key);
+            return Err(format!("could not resume queued message: {why}"));
+        }
         return Ok(());
     }
 
@@ -3297,11 +3359,14 @@ mod tests {
     }
 
     #[test]
-    fn stopping_the_turn_lets_go_of_what_was_stacked_behind_it() {
-        // Those messages were queued for the answer that has just been stopped.
-        // Firing the next one into the same session is the opposite of what the
-        // button says, and it is what a one-shot provider has always done —
-        // its process, and its queue with it, end together.
+    fn stopping_the_turn_keeps_what_was_stacked_behind_it() {
+        // Stop is "not that — do the thing I have already typed instead", and
+        // has been for as long as there has been a Stop button: the message
+        // used to go into Claude's OWN queue, which an interrupt made it pick
+        // up at once. The queue is ours now, so keeping it here is what keeps
+        // that. Nothing in the interrupt writes it — the reader hands it over
+        // on the cut-off turn's `result` — so what this checks is that it is
+        // still there to be handed over.
         let manager = Arc::new(ChatManager::default());
         let key = format!("claude-stop-{}", uuid::Uuid::new_v4().simple());
         hold(&manager, &key, claude_session(true));
@@ -3319,9 +3384,116 @@ mod tests {
 
         chat_interrupt_impl(&manager, key.clone()).expect("stop the turn");
 
-        assert!(manager.take_queued_turn(&key).is_none());
+        assert_eq!(
+            manager.take_queued_turn(&key).map(|turn| turn.text),
+            Some("and then this".into()),
+            "the message behind a stopped turn is still waiting to be sent",
+        );
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn a_send_in_the_gap_after_a_stop_does_not_jump_the_queue() {
+        // The interrupt ends the turn immediately, so until the agent's own
+        // `result` lands the session reads idle with a message still stacked
+        // behind it. An ordinary send arriving in that window must go BEHIND
+        // it, not straight down the stdin it is waiting for.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-gap-{}", uuid::Uuid::new_v4().simple());
+        let session = claude_session(true);
+        hold(&manager, &key, session.clone());
+
+        for (text, turn) in [("first", "user-1"), ("second", "user-2")] {
+            chat_send_user_impl(
+                manager.clone(),
+                key.clone(),
+                text.into(),
+                None,
+                None,
+                Some(turn.into()),
+                None,
+            )
+            .expect("a follow-up to a working Claude");
+        }
+        chat_interrupt_impl(&manager, key.clone()).expect("stop the turn");
+        assert!(
+            !session.lock().unwrap().busy,
+            "the stop ended the turn, which is the gap this is about",
+        );
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "third".into(),
+            None,
+            None,
+            Some("user-3".into()),
+            None,
+        )
+        .expect("a message sent into the gap");
+
+        let order: Vec<String> = std::iter::from_fn(|| manager.take_queued_turn(&key))
+            .map(|turn| turn.text)
+            .collect();
+        assert_eq!(
+            order,
+            ["first", "second", "third"],
+            "queued in the order sent"
+        );
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn stopping_codex_carries_its_queue_across_the_kill() {
+        // A one-shot provider's turn is stopped by killing its process, and
+        // `end_process` discards whatever was waiting on the process it ends —
+        // right for a chat somebody stopped, wrong for a turn. So the queue is
+        // lifted clear first and carried into the resume by hand.
+        //
+        // Nothing here can start a real `codex exec`, so the resume is made to
+        // fail by leaving no `StartContext`. Reaching that failure at all is
+        // the proof that the queued turn was taken out before the kill: had it
+        // gone with the process, there would have been nothing to resume and
+        // this would have returned `Ok`.
+        let manager = Arc::new(ChatManager::default());
+        let key = "codex-stop-queue";
+        let session = Arc::new(Mutex::new(ChatSession {
+            child: Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("a Codex stand-in"),
+            stdin: None,
+            agent: ChatAgent::Codex,
+            busy: true,
+            last_active: Instant::now(),
+        }));
+        manager
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(key.into(), session.clone());
+        manager
+            .queue_turn(
+                key,
+                QueuedTurn {
+                    text: "instead, do this".into(),
+                    images: Vec::new(),
+                    turn_id: Some("user-1".into()),
+                    recorded: true,
+                },
+            )
+            .expect("a message behind the running turn");
+
+        let why = chat_interrupt_impl(&manager, key.into()).expect_err("nothing to resume from");
+        assert!(why.contains("could not resume queued message"), "{why}");
+        assert!(
+            manager.take_queued_turn(key).is_none(),
+            "words held for a process that never started must not surface later",
+        );
+        let _ = session.lock().unwrap().child.wait();
     }
 
     #[test]
@@ -3468,7 +3640,7 @@ mod tests {
         // Codex has no stdin control channel: stopping its current turn means
         // killing this one process. Its remembered thread is the context the
         // next `codex exec resume` needs, so an interrupt must not erase it.
-        let manager = ChatManager::default();
+        let manager = Arc::new(ChatManager::default());
         let key = "codex-interrupt";
         let thread = "01a0142d-552d-7a93-9152-47530c33e501";
         manager.remember_start(

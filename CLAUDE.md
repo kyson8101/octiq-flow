@@ -211,9 +211,28 @@ providers, one queue, two reasons:
 What that buys is `chat_cancel_queued` (the ✕ on the queued bubble): it can
 only ever remove a message still in OUR queue, and answers `false` when the
 agent already has it — a race nobody can win, and better told than shown a
-bubble vanishing from above the answer to it. `chat_interrupt` drops the whole
-queue for the same reason a stopped round is not followed up: the messages
-behind a turn were queued for the answer the person just stopped waiting for.
+bubble vanishing from above the answer to it. Taking one back is the ✕ and only
+the ✕ — the one control that says WHICH message.
+
+**Stop keeps the queue, and its first message starts straight away.** Stop is
+"not that — do the thing I have already typed instead", and it was that for as
+long as this app has had a Stop button: the message used to go down Claude's
+stdin into Claude's own queue, which an interrupt made it pick up immediately.
+Moving the queue to this side briefly took that away; it is back, and it is
+what `chat_interrupt` is for. Two things hold it up:
+
+- **Nothing in the interrupt writes the next message.** Claude's is handed over
+  by the reader thread on the cut-off turn's own `result` (any `result` sets
+  `turn_finished`, the interrupt's `error_during_execution` included), under the
+  lock that ends the turn. Codex has no reader to do it — its process is being
+  killed — so `chat_interrupt_impl` lifts the queue clear BEFORE `end_process`,
+  which would otherwise discard it, and starts the first message itself. Only
+  for a host: a seat runs under its own key but speaks into the room's
+  transcript (`is_seat_session_key`).
+- **A send may not go round a queue that has anything in it**
+  (`has_queued_turns`). The interrupt ends the turn immediately — the
+  still-clock has to start somewhere — so between a Stop and the reader picking
+  the queue up, the session reads idle with messages still stacked behind it.
 
 - **A one-shot provider's queued turn is written to the transcript at enqueue**
   (`QueuedTurn::recorded`) because Codex never echoes a prompt back. Claude's

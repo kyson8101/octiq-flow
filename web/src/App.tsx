@@ -152,6 +152,22 @@ function userTurnId(): string {
   return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** What one queued message says, for putting back in the box after it has been
+ *  taken back.
+ *
+ *  Read off the bubble that is about to be removed, because that bubble is the
+ *  only copy: a queued Claude turn was never written down (`QueuedTurn::
+ *  recorded`), so there is no record to go back to afterwards. Text blocks
+ *  only — a user turn has nothing else in it, and anything that did appear
+ *  there is the agent's, not something anyone typed. */
+function typedWords(chat: ChatState | undefined, turnId: string): string {
+  const msg = chat?.messages.find((m) => m.role === "user" && m.turnId === turnId);
+  return (msg?.blocks ?? [])
+    .flatMap((b) => (b.kind === "text" ? [b.text] : []))
+    .join("\n")
+    .trim();
+}
+
 /** How long a deleted chat can be brought back. Long enough to see the ring on
  *  its row start to empty and press it again; short enough that the agent a
  *  delete is meant to stop is not still running a minute later. */
@@ -1063,6 +1079,49 @@ export default function App() {
     setChats((prev) => ({ ...prev, [id]: fn(prev[id] ?? EMPTY) }));
   }, []);
 
+  /** Words taken back out of the queue, waiting to go back in the box.
+   *
+   *  The ✕ on a queued bubble is the only thing that puts anything here — Stop
+   *  keeps the queue and runs the front of it. Those words were TYPED, and the
+   *  bubble going used to take them with it: a paragraph gone to one click,
+   *  with nowhere left to read it back from.
+   *
+   *  Filled from the backend's own `octiq_user_turn_cancelled`, one per message
+   *  it actually let go of — never from what this page thinks is queued, which
+   *  would hand back a message the agent had already been given.
+   *
+   *  Kept per CHAT rather than for the screen: an event can arrive for a
+   *  conversation that is not the one on screen, and those words belong in ITS
+   *  box, not in whatever is open now. */
+  const [reclaimed, setReclaimed] = useState<Record<string, string[]>>({});
+
+  /** The turns already handed back, so no message can go in the box twice.
+   *
+   *  The ✕ hears of its own cancellation from two directions — the answer to
+   *  the call it made, and the backend's announcement of the same thing to
+   *  every tab — and which arrives first is not this page's to decide. The turn
+   *  id is what makes them one event. Bounded because it only ever grows on a
+   *  cancellation, and a tab left open for a week should not remember every
+   *  one. */
+  const reclaimedIds = useRef<string[]>([]);
+
+  /** Hold one cancelled message's words for the box. */
+  const reclaim = useCallback((id: string, turnId: string, words: string) => {
+    if (!words || reclaimedIds.current.includes(turnId)) return;
+    reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
+    setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
+  }, []);
+
+  /** The box has taken them; this chat has nothing waiting to go back in. */
+  const tookBack = useCallback((id: string) => {
+    setReclaimed((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
   /** Read whatever this page is missing of a chat's record, and fold it in.
    *
    *  `storedSeq` is how far the copy in this browser's storage runs — absent on
@@ -1131,10 +1190,18 @@ export default function App() {
         // chat is in the air — that catch-up is about to rebuild it, and would
         // wipe anything folded on top in the meantime.
         for (const frame of catchUp.current.live(payload.key, payload.seq, payload.event)) {
+          // Read BEFORE the fold, which is the thing that removes the bubble
+          // the words are in. Here rather than in the reducer on purpose: the
+          // reducer also walks a REPLAY, and the cancellations in a transcript
+          // from last week are history, not something to hand anyone back.
+          const e = frame.event as { type?: unknown; uuid?: unknown } | null;
+          if (e && e.type === "octiq_user_turn_cancelled" && typeof e.uuid === "string") {
+            reclaim(id, e.uuid, typedWords(chatsRef.current[id], e.uuid));
+          }
           patch(id, (s) => reduceChat(s, frame.event));
         }
       }),
-    [patch],
+    [patch, reclaim],
   );
 
   useEffect(
@@ -2445,6 +2512,11 @@ export default function App() {
         .invoke("chat_cancel_queued", { key: keyFor(id), turnId })
         .then((cancelled) => {
           if (cancelled === false) return;
+          // The words go in the box, and they are read HERE, before the line
+          // below takes the bubble holding them off the screen. `reclaim` is
+          // keyed by turn id, so whichever of this and the announcement gets
+          // there first, the message is put back exactly once.
+          reclaim(id, turnId, typedWords(chatsRef.current[id], turnId));
           // A recorded turn (Codex) is also removed by the backend's own
           // cancellation event, which is what tells every OTHER tab. This is
           // for the one that clicked, and for Claude's turns, which were never
@@ -2459,7 +2531,7 @@ export default function App() {
           patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
         );
     },
-    [conversationId, patch],
+    [conversationId, patch, reclaim],
   );
 
   /** Picking a different model.
@@ -3372,6 +3444,11 @@ export default function App() {
             onAccess={changeAccess}
             onSend={send}
             onStop={stop}
+            /* What the ✕ took back off a queued bubble, on its way into the
+               box. Only this conversation's — another chat's waits until you
+               are looking at it. */
+            putBack={(conversationId && reclaimed[conversationId]) || undefined}
+            onPutBack={() => conversationId && tookBack(conversationId)}
             busy={chat.busy && !cutOff}
             disabled={!project}
             installed={installed}

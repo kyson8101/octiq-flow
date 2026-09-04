@@ -1145,6 +1145,16 @@ body {
      long line inside a message would widen this whole column rather than
      scroll within its own block. */
   min-width: 0;
+  /* And a floor on the height, which is not about this box at all: it is what
+     puts the jump button at the bottom of the PANE.
+     `.jump-slot` below is sticky, and a sticky box can only be held inside the
+     space its own flow position gives it — with a short transcript that space
+     ends where the last message does, so the button parked half way up the
+     pane, on top of the conversation. A short transcript now fills the
+     scroller, so the slot always starts at its foot and sticks there.
+     `box-sizing` is border-box globally, so the padding above is INSIDE this
+     100% and a transcript that fits does not become scrollable by 22px. */
+  min-height: 100%;
 }
 
 /* The way back down, for a reader who has scrolled away from the end.
@@ -1170,10 +1180,16 @@ body {
   pointer-events: none;
 }
 
+/* On the RIGHT, and it was on the left. Two reasons, both about a thumb:
+   the left edge of the transcript is where the drawer's edge-swipe lives, so
+   the button sat in a gesture's lap; and the left is where a tool row draws
+   its icon and its words, which is what it was on top of in the report that
+   moved it. The right of a message is a copy control's column, and that one
+   only exists on the row under the pointer. */
 .jump {
   pointer-events: auto;
   position: absolute;
-  left: 16px;
+  right: 16px;
   bottom: 14px;
   width: 30px;
   height: 30px;
@@ -1232,6 +1248,15 @@ body {
 
   .jump:active {
     transform: none;
+  }
+}
+
+/* The one control on this pane that floats over empty space, so it can simply
+   be the size a thumb wants without taking the room from anything. */
+@media (pointer: coarse) {
+  .jump {
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -5322,6 +5347,12 @@ body.is-ultra .eff {
      grip, and stopping short of the folder icon the branch reaches for. */
   --sib-rail: 24px;
   --sib-in: 12px;
+  /* The row's own centre line, which is where the branch leaves the trunk and
+     where each trunk segment starts and stops. Half of the 34px row — a
+     number, because the row is not a grid and there is nothing to ask. Both
+     the rail and this move under a thumb, where the grip is gone and the row
+     is 48px; see the coarse block at the end of this section. */
+  --sib-mid: 17px;
 }
 
 /* Everything the group holds moves right together — the row's icon and name
@@ -5340,14 +5371,14 @@ body.is-ultra .eff {
 }
 
 /* The branch: a short arm from the trunk to the folder icon, at the row's own
-   centre line (half of the 34px row). Every member draws one, including the
-   last, which is the row the trunk stops at. */
+   centre line. Every member draws one, including the last, which is the row
+   the trunk stops at. */
 .proj-node.in-sibling-group::before {
   content: "";
   position: absolute;
   z-index: 2;
   left: var(--sib-rail);
-  top: 17px;
+  top: var(--sib-mid);
   width: calc(var(--sib-in) - 3px);
   height: 1px;
   background: var(--border);
@@ -5355,14 +5386,14 @@ body.is-ultra .eff {
 }
 
 /* The trunk, one segment per gap: from this row's centre to the next row's,
-   which is 17px past a node bottom plus the 6px between nodes. */
+   which is one centre line past a node bottom plus the 6px between nodes. */
 .proj-node.has-sibling-below::after {
   content: "";
   position: absolute;
   z-index: 2;
   left: var(--sib-rail);
-  top: 17px;
-  bottom: -23px;
+  top: var(--sib-mid);
+  bottom: calc(-1 * (var(--sib-mid) + 6px));
   width: 1px;
   background: var(--border);
   pointer-events: none;
@@ -6103,6 +6134,163 @@ body.is-ultra .eff {
   .sidebar,
   .app.nav-shut .sidebar {
     transition: none;
+  }
+}
+
+/* ---- Under a thumb ----------------------------------------------------- */
+/* Everything above is sized for a pointer that lands where it is aimed. A
+   thumb is not one: it covers about 9mm, it hides the row it is on while it
+   presses it, and it arrives with no hover beforehand to say what it is about
+   to hit. A 26px control between two others is a coin toss.
+
+   So on a coarse pointer the sidebar keeps its shape exactly and grows its
+   targets to 44px, the size below which taps start landing on the neighbour.
+   Asked as "what is pressing this", not "how wide is the screen": a tablet in
+   the column layout has the same thumb a phone does, and a phone turned
+   sideways still has it. */
+@media (pointer: coarse) {
+  /* The view switch and the usage meter only live in here at all on a small
+     screen — they come down from the top bar, and they came down at their
+     top-bar size. */
+  .sidebar-slot .mode-btn,
+  .sidebar-slot .usage-btn {
+    min-height: 44px;
+  }
+
+  .sidebar-slot .mode-btn {
+    padding: 0 14px;
+  }
+
+  /* New project, shelved, put away: three 26px squares in a row is three ways
+     to press the wrong one. The row's own padding gives back what they take. */
+  .sidebar-head {
+    gap: 0;
+    padding: 4px 2px 2px 14px;
+  }
+
+  .sidebar-add {
+    width: 44px;
+    height: 44px;
+  }
+
+  .proj-btn {
+    height: 48px;
+  }
+
+  /* The sibling trunk leaves and rejoins each row at its centre line, and the
+     row just grew. Left at 17 it would meet the folder icons 7px high. */
+  .proj-node {
+    --sib-mid: 24px;
+  }
+
+  /* Last word on this width on purpose. Both the `hover: none` block and the
+     reduced-motion one hand these their 26px box back, for their own good
+     reasons, and both sit above this. */
+  .proj-add {
+    width: 44px;
+    height: 44px;
+    margin-right: 0;
+  }
+
+  .chat-btn,
+  .chat-more {
+    height: 48px;
+  }
+
+  /* The pin holds no width until the row has one to show. Its fixed box exists
+     to stop the title re-measuring as the pointer crosses the row — and there
+     is no pointer crossing anything here, so what the box actually costs is
+     44px of nothing on every row that is neither pinned nor the one you are
+     in. That is a title's worth of a phone.
+
+     Opening on a clock, the way the project row's buttons do: the row that
+     grows one is the row just tapped, and 44px appearing under a finger that
+     has not lifted yet is the title jumping out from under it. */
+  .chat-pin {
+    width: 0;
+    height: 44px;
+    overflow: hidden;
+    transition:
+      width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 130ms ease,
+      transform 220ms cubic-bezier(0.34, 1.24, 0.64, 1),
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .chat.is-on .chat-pin,
+  .chat-pin.is-pinned {
+    width: 44px;
+  }
+
+  /* Two things, two boxes. The dot and the × share one 22px square and trade
+     places on hover — with no hover they were simply drawn on top of each
+     other, so a chat that was working said so underneath the button that
+     deletes it. The mark takes a narrow column of its own; the × takes the
+     44px and stops covering the answer to "is this one still going?". */
+  .chat-tail {
+    width: 62px;
+    height: 44px;
+    margin-left: 4px;
+    margin-right: 0;
+  }
+
+  .chat-mark {
+    left: 9px;
+  }
+
+  .chat-del {
+    inset: 0 0 0 auto;
+    width: 44px;
+  }
+
+  /* And with them side by side there is nothing left to trade: the mark stays
+     put. `.is-going` still takes it, which is the countdown ring wanting the
+     row's attention to itself. */
+  .chat:hover .chat-mark,
+  .chat-tail:focus-within .chat-mark {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* The grip is a decoy on a touch screen: a `draggable` element is not dragged
+   by a finger in either mobile browser, and the arrow keys it also answers to
+   want a keyboard. So it goes — but only where there is no pointer at all,
+   since a laptop with a touch screen reads as coarse and still has a mouse
+   that can drag.
+   Gone, it takes 18px off the front of every project row, so the chat rows
+   give back the same 18 and the two stay in the line they were drawn in: a
+   chat's title starting under its project's name. */
+@media (pointer: coarse) and (hover: none) {
+  .proj-drag {
+    display: none;
+  }
+
+  .chat {
+    padding-left: 6px;
+  }
+
+  .chat-more {
+    padding-left: 10px;
+  }
+
+  /* The trunk's column was measured past that grip. */
+  .proj-node {
+    --sib-rail: 6px;
+  }
+}
+
+/* Same answer the project row's buttons give: with the movement gone the pin
+   keeps its box rather than snapping into one, because a width that jumps from
+   0 to 44 is the title jumping with it. */
+@media (pointer: coarse) and (prefers-reduced-motion: reduce) {
+  .chat-pin {
+    width: 44px;
+    transition:
+      opacity 140ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
   }
 }
 
