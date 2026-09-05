@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
 import type { ComposerStyle } from "../lib/agentProviders";
 
-/** The little robots — one per model, nine of them.
+/** The little robots — one per model, ten of them.
  *
  *  They are drawn rather than shipped as pictures, for the same reasons
  *  `AgentLogo` is: the office cast in `assets/agents/` are megabyte PNGs of
@@ -15,18 +15,18 @@ import type { ComposerStyle } from "../lib/agentProviders";
  *  rather than as something alive. The eye is a character; the eye is not a
  *  spinner.
  *
- *  ## Why nine
+ *  ## Why ten
  *
  *  A model is already a visual voice here — `ComposerStyle` gives each one its
  *  accent and the composer wears it. The robot is that same fact said as a
  *  face, which is the one form of it you can recognise without reading: you
  *  learn what Haiku looks like once and then you know, mid-turn, from the
  *  corner of your eye, which model is doing the work. So the SILHOUETTES
- *  differ, not just the paint — a recolour of one body would be nine robots
+ *  differ, not just the paint — a recolour of one body would be ten robots
  *  that are all the same robot, and the colour is already carrying that.
  *
  *  Every variant keeps the same part names (`mascot-head`, `mascot-eye`,
- *  `mascot-lamp`, …) so one stylesheet dresses and animates all nine, and
+ *  `mascot-lamp`, …) so one stylesheet dresses and animates all ten, and
  *  every one of them keeps two separately-addressable eyes so they blink out
  *  of step. The differences are geometry.
  *
@@ -48,7 +48,7 @@ import type { ComposerStyle } from "../lib/agentProviders";
  *  moving, which is the change actually worth noticing. */
 export type MascotMood = "still" | "think" | "work";
 
-/** The nine drawings. Keyed by `ComposerStyle` so adding a model means drawing
+/** The ten drawings. Keyed by `ComposerStyle` so adding a model means drawing
  *  its robot in the same breath as choosing its colour — a model that skipped
  *  one would not compile. */
 const ROBOTS: Record<ComposerStyle, () => ReactElement> = {
@@ -142,8 +142,29 @@ const ROBOTS: Record<ComposerStyle, () => ReactElement> = {
 
   /* ---- Codex -------------------------------------------------------- */
 
+  /** Astra: the star the other three orbit. An eight-sided head and eyes cut
+   *  as diamonds — it is the only robot drawn on the diagonal, so at eighteen
+   *  pixels it reads as somebody new rather than as Sol in another colour. Its
+   *  lamp is the star itself: the "this turn is alive" pulse is the twinkle. */
+  astra: () => (
+    <>
+      <path className="mascot-stalk" d="M12 8.4V6.6" />
+      <path
+        className="mascot-lamp"
+        d="M12 1.8 12.9 3.3 14.4 4.2 12.9 5.1 12 6.6 11.1 5.1 9.6 4.2 11.1 3.3Z"
+      />
+      <path className="mascot-head" d="M7.4 8.6H16.6L20.6 12.4V16.6L16.6 20.4H7.4L3.4 16.6V12.4Z" />
+      <path className="mascot-eye" d="M9.3 11.4 11.1 13.6 9.3 15.8 7.5 13.6Z" />
+      <path className="mascot-eye is-right" d="M14.7 11.4 16.5 13.6 14.7 15.8 12.9 13.6Z" />
+      {/* Clear of the chin by a stroke's width. The head's bottom edge is a
+          straight run at this width, so a smile set as low as the round heads'
+          merges into it and the face loses its mouth. */}
+      <path className="mascot-smile" d="M10.2 17.5q1.8 1.1 3.6 0" />
+    </>
+  ),
+
   /** Sol: a round head wearing a crown of rays, and the widest grin of the
-   *  nine. The rays are the antenna — the top one carries the lamp, so the
+   *  ten. The rays are the antenna — the top one carries the lamp, so the
    *  same "this turn is alive" pulse reads here as the sun coming up. */
   sol: () => (
     <>
@@ -215,7 +236,7 @@ export function Mascot({
   mood = "work",
   asleep = false,
 }: {
-  /** Which of the nine to draw — the chosen model's `composerStyle`. Defaults
+  /** Which of the ten to draw — the chosen model's `composerStyle`. Defaults
    *  to Sonnet's, the shape this drawing started as, so a caller that has no
    *  model in hand still gets a robot rather than nothing. */
   robot?: ComposerStyle;

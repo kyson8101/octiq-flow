@@ -2350,7 +2350,7 @@ function Working({
   activity?: string;
   thinking?: boolean;
   effort: string;
-  /** Which of the nine robots is doing this turn — the chosen model's
+  /** Which of the ten robots is doing this turn — the chosen model's
    *  `composerStyle`. It is the one fact on this line you can read without
    *  reading: a face you already know, moving the way that model moves. */
   robot: ComposerStyle;

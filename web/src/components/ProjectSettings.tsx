@@ -24,7 +24,42 @@ export type ProjectDetail = {
   description?: string;
   shelved?: boolean;
   sibling_ids?: string[];
+  /** Set on every terminal and chat started in this project. Absent on an old
+   *  backend, same as an empty object. */
+  env?: Record<string, string>;
 };
+
+/** `project.env` as the textarea shows it: one `KEY=value` per line, sorted by
+ *  key so the same environment always renders the same text. */
+function envToText(env: Record<string, string> | undefined): string {
+  return Object.entries(env ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+}
+
+/** The reverse: what the textarea holds, back into `{KEY: value}`. Blank lines
+ *  and comments (`#…`) are ignored; a line with no `=` is a key with an empty
+ *  value. */
+function textToEnv(text: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const at = line.indexOf("=");
+    const key = (at === -1 ? line : line.slice(0, at)).trim();
+    const value = at === -1 ? "" : line.slice(at + 1).trim();
+    if (key) env[key] = value;
+  }
+  return env;
+}
+
+function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => a[k] === b[k]);
+}
 
 /** How long to wait after the last keystroke before saving text. */
 const TYPING_SETTLE_MS = 600;
@@ -48,6 +83,7 @@ export function ProjectSettings({
   const creating = !project;
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");
+  const [envText, setEnvText] = useState(envToText(project?.env));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Which folder the picker is choosing: the main one, or another to add.
@@ -104,12 +140,16 @@ export function ProjectSettings({
       if (description !== (project.description ?? "")) {
         void run(() => bridge.invoke("set_description", { id: project.id, description }));
       }
+      const nextEnv = textToEnv(envText);
+      if (!sameEnv(nextEnv, project.env ?? {})) {
+        void run(() => bridge.invoke("set_workspace_env", { id: project.id, env: nextEnv }));
+      }
     }, TYPING_SETTLE_MS);
     return () => clearTimeout(timer);
     // `project` is intentionally out: it changes identity on every reload from
     // the backend, which would restart this timer forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, description]);
+  }, [name, description, envText]);
 
   async function create(path: string) {
     const trimmed = name.trim();
@@ -200,6 +240,25 @@ export function ProjectSettings({
                 placeholder="what this project is"
                 onChange={(e) => setDescription(e.target.value)}
               />
+            </label>
+          )}
+
+          {!creating && (
+            <label className="set-field">
+              <span className="set-label">Environment</span>
+              <textarea
+                className="set-input set-env"
+                value={envText}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                placeholder="CLAUDE_CONFIG_DIR=~/.claude-novel"
+                onChange={(e) => setEnvText(e.target.value)}
+              />
+              <p className="set-hint">
+                Set on every terminal and chat started in this project. One per line, e.g.
+                CLAUDE_CONFIG_DIR=~/.claude-novel
+              </p>
             </label>
           )}
 

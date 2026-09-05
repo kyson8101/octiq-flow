@@ -193,6 +193,11 @@ struct Session {
     out: Arc<Mutex<OutBuf>>,
     /// The tab's stable persist key, if it carries one.
     persist_key: Option<String>,
+    /// The shell's own pid, read once at spawn. `memory.rs` sums RSS over this
+    /// pid's subtree to say what a terminal tab is holding — a tab running an
+    /// agent by hand is where several hundred MB can hide. `None` when the PTY
+    /// backend would not tell us, which costs that tab its row and nothing else.
+    shell_pid: Option<i32>,
 }
 
 /// Holds every live PTY session, keyed by the id the frontend gave at spawn.
@@ -224,6 +229,21 @@ impl PtyManager {
         let _ = session.child.kill();
         let _ = session.child.wait();
         true
+    }
+
+    /// Each live session's shell pid -> its session id, for `memory.rs`. A
+    /// session is dropped from the map the moment its shell is reaped, so a
+    /// pid in here is one the OS has not been free to reuse. A poisoned lock
+    /// yields an empty map: the terminals then fold into the "server" remainder
+    /// rather than taking the whole readout down with them.
+    pub fn shell_pids(&self) -> HashMap<i32, String> {
+        let Ok(sessions) = self.sessions.lock() else {
+            return HashMap::new();
+        };
+        sessions
+            .iter()
+            .filter_map(|(id, s)| Some((s.shell_pid?, id.clone())))
+            .collect()
     }
 }
 
@@ -598,6 +618,9 @@ fn resolve_home(home: Option<String>, userprofile: Option<String>, is_windows: b
 ///   project's `~/.octiqflow/canvas/<key>` folder) so an agent here can write
 ///   HTML/MD documents the canvas pane renders. Only project terminals pass it;
 ///   chat terminals get no canvas. See canvas.rs.
+/// - `env`: the project's own environment variables (`workspaces::Workspace::env`),
+///   applied before every `OCTIQ_*` var below so a project can never shadow one
+///   of ours by naming a variable the same thing. See `workspaces::resolved_env`.
 /// Start a shell for a browser.
 #[allow(clippy::too_many_arguments)]
 pub fn pty_spawn_impl(
@@ -608,6 +631,7 @@ pub fn pty_spawn_impl(
     persist_key: Option<String>,
     shell: Option<String>,
     canvas_key: Option<String>,
+    env: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<(), String> {
     let manager_for_reap = manager.clone();
     {
@@ -636,6 +660,11 @@ pub fn pty_spawn_impl(
     let mut cmd = CommandBuilder::new(&spec.program);
     for arg in &spec.args {
         cmd.arg(arg);
+    }
+    // The project's own environment goes first, so every `OCTIQ_*` variable set
+    // below always wins if a project's own map happened to name the same key.
+    for (key, value) in crate::workspaces::resolved_env(&env.unwrap_or_default()) {
+        cmd.env(key, value);
     }
     cmd.env("TERM", "xterm-256color");
     // Point any agent-capture hook running under this shell at the active
@@ -681,6 +710,9 @@ pub fn pty_spawn_impl(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    // Read once, here: the handle is moved into the session below, and a pid
+    // asked for later would be a pid of whatever is left.
+    let shell_pid = child.process_id().map(|p| p as i32);
 
     // Optional kickoff command, sent as if typed at the prompt.
     if let Some(cmd_line) = start_cmd {
@@ -897,6 +929,7 @@ pub fn pty_spawn_impl(
             child,
             out: out_state,
             persist_key: persist_key.filter(|k| !k.is_empty()),
+            shell_pid,
         },
     );
 
@@ -1712,6 +1745,7 @@ mod tests {
                 child,
                 out: Arc::new(Mutex::new(OutBuf::new())),
                 persist_key: None,
+                shell_pid: None,
             },
         );
 

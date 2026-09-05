@@ -148,6 +148,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "id")?,
             arg(&args, "description")?,
         )),
+        "set_workspace_env" => unit(crate::workspaces::set_workspace_env_impl(
+            &svc.workspaces,
+            arg(&args, "id")?,
+            arg(&args, "env")?,
+        )),
         "set_workspace_shelved" => unit(crate::workspaces::set_workspace_shelved_impl(
             &svc.workspaces,
             arg(&args, "id")?,
@@ -200,6 +205,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "prompt")?,
             arg(&args, "resume")?,
             arg(&args, "extraDirs")?,
+            arg(&args, "env")?,
             arg(&args, "effort")?,
             arg(&args, "images")?,
             arg(&args, "lite")?,
@@ -225,6 +231,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "prompt")?,
             arg(&args, "access")?,
             arg(&args, "extraDirs")?,
+            arg(&args, "env")?,
             arg(&args, "effort")?,
             arg(&args, "images")?,
             arg(&args, "turnId")?,
@@ -403,6 +410,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "persistKey")?,
             arg(&args, "shell")?,
             arg(&args, "canvasKey")?,
+            arg(&args, "env")?,
         )),
         "pty_write" => unit(crate::pty::pty_write_impl(
             &svc.ptys,
@@ -505,6 +513,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
 
         // ---- usage --------------------------------------------------------
         "usage_summary" => Ok(json!(crate::usage_limits::usage_summary())),
+
+        // What this app is holding in RAM, and which chat or terminal is
+        // holding it. Read-only, and cached for a few seconds so several open
+        // browser tabs polling it share one `ps` sweep between them.
+        "memory_usage" => Ok(json!(crate::memory::memory_usage(&svc.ptys, &svc.chats))),
 
         // ---- agents -------------------------------------------------------
         // Which agent CLIs this machine actually has. The browser needs it for

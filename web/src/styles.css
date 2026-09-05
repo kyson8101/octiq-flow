@@ -2757,9 +2757,19 @@ body {
   --composer-sheen-angle: 120deg;
 }
 
-/* Codex's named models follow their own imagery: sunlight, earth and moon.
-   The CLI default is a quiet steel-blue so it remains distinct without
-   pretending to know which named model the CLI chose. */
+/* Codex's named models follow their own imagery: a star, then sunlight, earth
+   and moon. Astra is the one hue nothing else in the set holds — the three
+   below it had already taken gold, green and blue. The CLI default is a quiet
+   steel-blue so it remains distinct without pretending to know which named
+   model the CLI chose. */
+.composer[data-composer-style="astra"] {
+  --composer-accent: #d76bf0;
+  --composer-on-accent: #1d0a24;
+  --composer-glow-x: 34%;
+  --composer-glow-y: -30%;
+  --composer-sheen-angle: 108deg;
+}
+
 .composer[data-composer-style="sol"] {
   --composer-accent: #f1b84b;
   --composer-on-accent: #211807;
@@ -2902,7 +2912,7 @@ body {
 }
 
 /* ---- The mascots -------------------------------------------------------
-   Nine small robots, one per model. One sits at the head of the status line
+   Ten small robots, one per model. One sits at the head of the status line
    while a turn is in flight; the same one stands still on the idle prompt box,
    and every tile in the model menu draws its own. A step brighter than the
    words after it (`--fg-2` against the row's `--fg-3`), because it is the face
@@ -2910,7 +2920,7 @@ body {
 
    Two customs hold this section together. Every robot's lit parts take
    `--robot-accent`, set once per `data-robot` below so the drawing carries its
-   model's colour ANYWHERE — the menu draws nine of them side by side, each
+   model's colour ANYWHERE — the menu draws ten of them side by side, each
    needing its own, which inheriting the composer's one could never do. And
    every dance is `var(--dance)` at `var(--dance-beat)`, so the mood only has to
    scale two numbers rather than restate nine animations. */
@@ -2953,10 +2963,10 @@ body {
   animation: none;
 }
 
-/* ---- The nine, and their colours ---------------------------------------
+/* ---- The ten, and their colours ---------------------------------------
    The same palette the composer wears (`--composer-accent`), restated here
    rather than inherited: a tile in the model menu draws a robot that is NOT
-   the chosen model, and inheriting would paint all nine in the current one. */
+   the chosen model, and inheriting would paint all ten in the current one. */
 .mascot[data-robot="opus"] {
   --robot-accent: #b99cff;
   --dance: mascot-ponder;
@@ -2987,6 +2997,12 @@ body {
   --dance-beat: 2.7s;
 }
 
+.mascot[data-robot="astra"] {
+  --robot-accent: #d76bf0;
+  --dance: mascot-shimmer;
+  --dance-beat: 2.6s;
+}
+
 .mascot[data-robot="sol"] {
   --robot-accent: #f1b84b;
   --dance: mascot-flare;
@@ -3011,7 +3027,8 @@ body {
   --dance-beat: 2.2s;
 }
 
-/* One rule for nine heads — a rect, a circle and a shield among them. The
+/* One rule for ten heads — a rect, a circle, an octagon and a shield among
+   them. The
    drawing decides the shape; the stylesheet only ever decides the weight. */
 .mascot-head {
   fill: none;
@@ -3183,6 +3200,18 @@ body {
 }
 
 /* Sol: a breath rather than a step. It is a sun, so it swells. */
+/* Astra: a shimmer. It lifts and swells a little rather than stepping or
+   rocking — the only one in the set that never touches the ground. */
+@keyframes mascot-shimmer {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(calc(-1.1px * var(--dance-amp))) scale(calc(1 + 0.035 * var(--dance-amp)));
+  }
+}
+
 @keyframes mascot-flare {
   0%,
   100% {
@@ -3204,7 +3233,7 @@ body {
   }
 }
 
-/* Luna: the slowest of the nine and the furthest travelled — a drift, with the
+/* Luna: the slowest of the ten and the furthest travelled — a drift, with the
    tilt of something that is not standing on anything. */
 @keyframes mascot-drift {
   0%,
@@ -7288,6 +7317,14 @@ body.is-ultra .eff {
   border-color: var(--accent);
 }
 
+.set-env {
+  min-height: 4.5em;
+  resize: vertical;
+  white-space: pre;
+  font-family: var(--mono, Menlo, monospace);
+  font-size: 13px;
+}
+
 .set-row {
   display: flex;
   align-items: center;
@@ -7806,6 +7843,63 @@ body.is-ultra .eff {
 .usage-empty {
   font-size: 12px;
   color: var(--fg-3);
+}
+
+/* ---- Memory held (beside the plan usage) --------------------------------
+   One absolute number — a chip icon and "3.8 GB" — with the breakdown in the
+   popover: which chat, which terminal, and what is left over as the server
+   itself. It reuses the `.usage-*` shell above (button, scrim, popup, and the
+   phone rule that opens the popup upwards out of the drawer footer), so only
+   the contents are its own.
+
+   No bar and no colour ladder here, deliberately. There is no honest ceiling to
+   draw a fill against, and a threshold invented to make one would be a nag
+   rather than a reading. */
+.mem-icon {
+  color: var(--fg-3);
+}
+
+/* Name on the left taking whatever width is spare, number hard right, so the
+   figures line up in a column you can read down. */
+.mem-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+}
+
+/* Name and project travel together on the left, against the number on the
+   right — a project name that drifted over to sit beside the figures would
+   read as part of them. */
+.mem-label {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mem-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg-1);
+}
+
+/* Which project it belongs to — only ever needed to tell two rows with the
+   same name apart, so it trails the name rather than taking a column, and it
+   never shrinks: the NAME is the part that gives when the row is too narrow.
+   A project clipped to "octiq-fl…" has lost the only job it had. */
+.mem-where {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.mem-row .usage-val {
+  flex: 0 0 auto;
 }
 
 /* ---- Copy a whole reply -------------------------------------------------

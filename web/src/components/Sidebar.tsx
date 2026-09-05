@@ -20,6 +20,9 @@ export type Project = {
   name: string;
   primary_path?: string;
   sibling_ids?: string[];
+  /** Set on every terminal and chat started in this project. Absent on an old
+   *  backend, same as an empty object. */
+  env?: Record<string, string>;
 };
 
 /** Chats shown before the list folds. Long enough to recognise the work in

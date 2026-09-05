@@ -112,6 +112,13 @@ pub struct Workspace {
     /// settings for this project's terminals only.
     #[serde(default)]
     pub font_override: serde_json::Value,
+    /// Environment variables set on every process started inside this project —
+    /// each chat agent and each terminal shell. Stored verbatim; a value's leading
+    /// `~/` is expanded to `$HOME` at spawn time (`resolved_env`), because the
+    /// variables are handed straight to the process and never pass through a
+    /// shell that would expand it. Empty means none. Old stores load with none.
+    #[serde(default)]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// The full on-disk shape. Wrapped in a struct so the file format can grow
@@ -301,6 +308,7 @@ pub fn add_workspace_impl(
         shelved: false,
         sibling_ids: Vec::new(),
         font_override: serde_json::Value::Null,
+        env: std::collections::BTreeMap::new(),
     };
     data.workspaces.push(workspace.clone());
     state.save(&data)?;
@@ -634,6 +642,95 @@ pub fn set_description_impl(
     state.save(&data)
 }
 
+/// Whether a string is a valid POSIX-style environment variable name:
+/// `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Set the full map of environment variables a project's processes (each chat
+/// agent, each terminal shell) are started with. Replaces whatever was there —
+/// the frontend owns the editable list and sends its whole current state, the
+/// same shape `font_override` already uses.
+///
+/// Keys and values are trimmed; an entry whose key is empty after trimming is
+/// dropped rather than rejected, since that is what an editor row left blank
+/// produces. A key that survives trimming but is not a valid environment
+/// variable name is refused outright — a bad name would silently fail to reach
+/// the process it was meant for, or worse, be misread as shell syntax by
+/// something downstream.
+pub fn set_workspace_env_impl(
+    state: &WorkspaceState,
+    id: String,
+    env: std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let mut cleaned = std::collections::BTreeMap::new();
+    for (key, value) in env {
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+        if key.is_empty() {
+            continue;
+        }
+        if !is_valid_env_key(&key) {
+            return Err(format!("'{key}' is not a valid environment variable name"));
+        }
+        cleaned.insert(key, value);
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.env = cleaned;
+    state.save(&data)
+}
+
+/// Resolve a project's stored environment into the pairs a process should
+/// actually be spawned with.
+///
+/// The variables are handed straight to `Command::env` — never through a shell
+/// that would expand `~` — so a value stored as `~/.claude-novel` would reach
+/// the process as the literal four characters `~`, `/`, `.`, `c`… unless this
+/// does the expansion itself. Only a LEADING `~` is treated specially (exactly
+/// `~` or a `~/...` prefix), matching what a shell would have expanded; `~`
+/// elsewhere in a value (e.g. `x~y`) is left alone. Falls back to `USERPROFILE`
+/// on Windows, and leaves the value untouched if neither is set — better an
+/// unexpanded `~` than a spawn that silently drops the variable.
+pub fn resolved_env(env: &std::collections::BTreeMap<String, String>) -> Vec<(String, String)> {
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok());
+    resolve_env_with_home(env, home.as_deref())
+}
+
+/// The pure half of `resolved_env`, with the home directory passed in rather
+/// than read from the process environment — the same seam `pty::resolve_home`
+/// uses, so this can be unit tested without mutating a global that every test
+/// in the binary shares.
+fn resolve_env_with_home(
+    env: &std::collections::BTreeMap<String, String>,
+    home: Option<&str>,
+) -> Vec<(String, String)> {
+    env.iter()
+        .map(|(key, value)| {
+            let resolved = match home {
+                Some(home) if value == "~" => home.to_string(),
+                Some(home) if value.starts_with("~/") => {
+                    format!("{home}{}", &value[1..])
+                }
+                _ => value.clone(),
+            };
+            (key.clone(), resolved)
+        })
+        .collect()
+}
+
 /// Set or clear a workspace's "shelved" (off-work) flag. A shelved workspace is
 /// moved to the Shelved section of the sidebar and hidden from the active project
 /// list until the user brings it back. The workspace and all of its data are kept
@@ -656,8 +753,9 @@ pub fn set_workspace_shelved_impl(
 mod tests {
     use super::{
         add_workspace_impl, add_workspace_path_impl, delete_workspace_impl, list_workspaces_impl,
-        name_slug, rename_workspace_impl, reorder_workspaces_impl, set_primary_path_impl,
-        set_workspace_shelved_impl, set_workspace_sibling_impl, WorkspaceData, WorkspaceState,
+        name_slug, rename_workspace_impl, reorder_workspaces_impl, resolve_env_with_home,
+        set_primary_path_impl, set_workspace_env_impl, set_workspace_shelved_impl,
+        set_workspace_sibling_impl, WorkspaceData, WorkspaceState,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -943,5 +1041,64 @@ mod tests {
         let error = set_workspace_sibling_impl(&state, project.id.clone(), project.id, true)
             .expect_err("self-links must be refused");
         assert!(error.contains("own sibling"));
+    }
+
+    #[test]
+    fn set_workspace_env_trims_and_stores_the_pairs() {
+        let (state, _missing) = scratch("env-set");
+        let ws = add_workspace_impl(&state, "starfall".into(), String::new()).unwrap();
+
+        let mut env = std::collections::BTreeMap::new();
+        env.insert(
+            "  CLAUDE_CONFIG_DIR  ".to_string(),
+            "  ~/.claude-novel  ".to_string(),
+        );
+        set_workspace_env_impl(&state, ws.id.clone(), env).expect("store the trimmed pair");
+
+        let stored = list_workspaces_impl(&state).unwrap();
+        assert_eq!(
+            stored[0].env.get("CLAUDE_CONFIG_DIR"),
+            Some(&"~/.claude-novel".to_string())
+        );
+    }
+
+    #[test]
+    fn set_workspace_env_refuses_a_bad_key() {
+        let (state, _missing) = scratch("env-bad-key");
+        let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
+
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("9x".to_string(), "value".to_string());
+        let err = set_workspace_env_impl(&state, ws.id.clone(), env)
+            .expect_err("a name starting with a digit must be refused");
+        assert!(err.contains("9x"), "unexpected error: {err}");
+
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("A-B".to_string(), "value".to_string());
+        let err = set_workspace_env_impl(&state, ws.id, env)
+            .expect_err("a hyphen is not a valid environment variable character");
+        assert!(err.contains("A-B"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn resolved_env_expands_a_leading_tilde_and_leaves_other_values_alone() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert(
+            "CLAUDE_CONFIG_DIR".to_string(),
+            "~/.claude-novel".to_string(),
+        );
+        env.insert("ABS".to_string(), "/abs".to_string());
+        env.insert("MID_TILDE".to_string(), "x~y".to_string());
+
+        let resolved: std::collections::HashMap<_, _> =
+            resolve_env_with_home(&env, Some("/Users/tester"))
+                .into_iter()
+                .collect();
+        assert_eq!(
+            resolved.get("CLAUDE_CONFIG_DIR"),
+            Some(&"/Users/tester/.claude-novel".to_string())
+        );
+        assert_eq!(resolved.get("ABS"), Some(&"/abs".to_string()));
+        assert_eq!(resolved.get("MID_TILDE"), Some(&"x~y".to_string()));
     }
 }

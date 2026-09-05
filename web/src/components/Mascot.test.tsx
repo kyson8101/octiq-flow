@@ -46,7 +46,7 @@ describe("Mascot", () => {
 
   /** The whole of the per-model idea: the drawing that reaches the page has to
    *  differ, not merely its colour. A recolour of one body would pass every
-   *  other test in this file and be nine robots that are all the same robot. */
+   *  other test in this file and be ten robots that are all the same robot. */
   it("draws a different robot for every model", () => {
     const bodies = MODELS.map((m) => {
       const svg = renderToStaticMarkup(<Mascot robot={m.composerStyle} />);
@@ -57,9 +57,9 @@ describe("Mascot", () => {
     expect(new Set(bodies).size).toBe(MODELS.length);
   });
 
-  /** Nine drawings, and every one of them still a face: two blinking eyes, a
+  /** Ten drawings, and every one of them still a face: two blinking eyes, a
    *  head to put them in, and the lamp that means the turn is alive. It is easy
-   *  to add a tenth robot that is a lovely shape and animates nothing. */
+   *  to add an eleventh robot that is a lovely shape and animates nothing. */
   it("gives every robot the parts the stylesheet animates", () => {
     for (const m of MODELS) {
       const svg = renderToStaticMarkup(<Mascot robot={m.composerStyle} />);

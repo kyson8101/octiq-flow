@@ -6,6 +6,12 @@
 // That whole overview was reachable only from the desktop app's Agents screen,
 // which no longer exists, so it went. Recover it from git history if the browser
 // client ever wants it back.
+//
+// The RAM half of it IS back, in `memory.rs`, and deliberately not here: it
+// answers "what is this APP holding", walking down from the server's own pid,
+// where this one answered "which agents are running on this machine", finding
+// agent roots anywhere by command line. Do not restore the old sweep alongside
+// it — restore the AGE and the kill on top of `memory.rs` if they are wanted.
 use crate::agent_provider::{provider_for, AgentKind, AgentProvider};
 use crate::proc::no_console;
 use serde::Serialize;

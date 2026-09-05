@@ -25,6 +25,7 @@ mod fsbrowse;
 mod git;
 mod git_ops;
 mod git_watch;
+mod memory;
 mod notify_hook;
 mod paths;
 mod permission;

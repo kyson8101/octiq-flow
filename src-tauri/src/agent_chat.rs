@@ -289,6 +289,9 @@ pub(crate) struct StartContext {
     model: Option<String>,
     access: Option<Access>,
     extra_dirs: Option<Vec<String>>,
+    /// The project's environment, so a host this backend restarts itself runs
+    /// under the same one it was first started with.
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     lite: Option<bool>,
     /// The agent's own id for this conversation, learned from its opening
@@ -362,6 +365,30 @@ impl ChatManager {
 
     fn start_context(&self, session_key: &str) -> Option<StartContext> {
         self.starts.lock().ok()?.get(session_key).cloned()
+    }
+
+    /// Each running chat's process pid -> its session key, for `memory.rs`.
+    ///
+    /// The pid is the `$SHELL -lc` wrapper, not the agent itself; `memory.rs`
+    /// sums the whole subtree under it, which is the only number worth having —
+    /// the agent's own MCP servers are where most of a chat's ~480 MB lives.
+    ///
+    /// `try_lock` per session, deliberately: a session's own mutex is held
+    /// across a write to the agent's stdin, which BLOCKS on a full pipe. A
+    /// readout that waits for that would hang every browser polling it. A
+    /// session that will not lock is simply left out of this snapshot and folds
+    /// into the remainder — one row missing for a few seconds, never a stall.
+    pub fn chat_pids(&self) -> HashMap<i32, String> {
+        let Ok(sessions) = self.sessions.lock() else {
+            return HashMap::new();
+        };
+        sessions
+            .iter()
+            .filter_map(|(key, session)| {
+                let pid = session.try_lock().ok()?.child.id() as i32;
+                Some((pid, key.clone()))
+            })
+            .collect()
     }
 
     fn queue_turn(&self, key: &str, turn: QueuedTurn) -> Result<(), String> {
@@ -681,13 +708,14 @@ pub fn chat_start_impl(
     prompt: Option<String>,
     resume: Option<String>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
     lite: Option<bool>,
 ) -> Result<(), String> {
     chat_start_with_user_turn(
-        manager, key, cwd, agent, model, access, prompt, resume, extra_dirs, effort, images, lite,
-        None,
+        manager, key, cwd, agent, model, access, prompt, resume, extra_dirs, env, effort, images,
+        lite, None,
     )
 }
 
@@ -707,6 +735,7 @@ pub fn chat_start_user_impl(
     prompt: Option<String>,
     resume: Option<String>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
     lite: Option<bool>,
@@ -722,6 +751,7 @@ pub fn chat_start_user_impl(
         prompt,
         resume,
         extra_dirs,
+        env,
         effort,
         images,
         lite,
@@ -740,6 +770,7 @@ fn chat_start_with_user_turn(
     prompt: Option<String>,
     resume: Option<String>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
     lite: Option<bool>,
@@ -757,6 +788,7 @@ fn chat_start_with_user_turn(
             model: model.clone(),
             access,
             extra_dirs: extra_dirs.clone(),
+            env: env.clone(),
             effort: effort.clone(),
             lite,
             session_id: resume.clone(),
@@ -772,6 +804,7 @@ fn chat_start_with_user_turn(
         prompt,
         resume,
         extra_dirs,
+        env,
         effort,
         images,
         lite,
@@ -816,6 +849,7 @@ pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> 
                 Some(text.to_string()),
                 start.session_id,
                 start.extra_dirs,
+                start.env,
                 start.effort,
                 None,
                 start.lite,
@@ -868,6 +902,7 @@ fn start_queued_command_turn(
         Some(text),
         start.session_id,
         start.extra_dirs,
+        start.env,
         start.effort,
         Some(images),
         start.lite,
@@ -893,6 +928,7 @@ pub(crate) fn start_session(
     prompt: Option<String>,
     resume: Option<String>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
     lite: Option<bool>,
@@ -955,6 +991,11 @@ pub(crate) fn start_session(
         } else {
             cwd.clone()
         })
+        // The project's own environment, so a chat agent picks up the same
+        // variables a terminal in this project would (e.g. `starfall`'s
+        // `CLAUDE_CONFIG_DIR`). Applied first so every var this backend sets
+        // below always wins if a project happened to name the same key.
+        .envs(crate::workspaces::resolved_env(&env.unwrap_or_default()))
         // The selected provider declares whether it owns a persistent stdin
         // protocol. A command-line provider must receive EOF immediately so a
         // one-shot CLI does not wait for a second prompt.
@@ -1632,11 +1673,12 @@ pub fn chat_seat_start_impl(
     prompt: Option<String>,
     access: Option<Access>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
 ) -> Result<(), String> {
     chat_seat_start_with_user_turn(
-        manager, key, seat_id, cwd, prompt, access, extra_dirs, effort, images, None,
+        manager, key, seat_id, cwd, prompt, access, extra_dirs, env, effort, images, None,
     )
 }
 
@@ -1650,6 +1692,7 @@ pub fn chat_seat_start_user_impl(
     prompt: Option<String>,
     access: Option<Access>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
     turn_id: Option<String>,
@@ -1662,6 +1705,7 @@ pub fn chat_seat_start_user_impl(
         prompt,
         access,
         extra_dirs,
+        env,
         effort,
         images,
         Some(fresh_turn_id(turn_id)),
@@ -1677,6 +1721,7 @@ fn chat_seat_start_with_user_turn(
     prompt: Option<String>,
     access: Option<Access>,
     extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     images: Option<Vec<String>>,
     user_turn_id: Option<String>,
@@ -1702,6 +1747,16 @@ fn chat_seat_start_with_user_turn(
     // question gets hard. Deciding it here means no call site can forget.
     let (cwd, extra_dirs) =
         crate::chat_room::seat_workspace(&seat, &key, &cwd, &extra_dirs.unwrap_or_default());
+    // A RoomOnly seat is deliberately put where the project is not — handing it
+    // the project's own environment would leak project context through a side
+    // channel a mere instruction to ignore the repo cannot close. A Project
+    // seat shares the project's folders already, so it gets the same
+    // environment the host would.
+    let env = if seat.context == crate::chat_room::ContextMode::Project {
+        env
+    } else {
+        None
+    };
     // A folder it has never used will not exist yet, and `current_dir` on a
     // missing path fails the spawn outright.
     let _ = std::fs::create_dir_all(&cwd);
@@ -1727,6 +1782,7 @@ fn chat_seat_start_with_user_turn(
             model: model.clone(),
             access,
             extra_dirs: extra_dirs.clone(),
+            env: env.clone(),
             effort: effort.clone(),
             lite: Some(true),
             session_id: resume.clone(),
@@ -1742,6 +1798,7 @@ fn chat_seat_start_with_user_turn(
         prompt,
         resume,
         extra_dirs,
+        env,
         effort,
         images,
         // A seat is a second opinion, not a second copy of this machine's
@@ -3167,6 +3224,7 @@ mod tests {
                 model: None,
                 access: Some(Access::Read),
                 extra_dirs: None,
+                env: None,
                 effort: None,
                 lite: Some(true),
                 session_id: Some("01a0142d-552d-7a93-9152-47530c33e501".into()),
@@ -3215,6 +3273,39 @@ mod tests {
             "the reaper has the exact session it needs for codex exec resume"
         );
         end_process(&manager, &session_key).expect("end the stand-in");
+    }
+
+    #[test]
+    fn a_running_chat_reports_the_pid_its_memory_hangs_off() {
+        // `memory.rs` charges every process under this pid to this chat, which
+        // is the only way an agent's own MCP servers land on the chat that
+        // started them rather than on the server.
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("mem-{}", uuid::Uuid::new_v4().simple());
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("a stand-in agent");
+        let pid = child.id() as i32;
+        manager.sessions.lock().unwrap().insert(
+            key.clone(),
+            Arc::new(Mutex::new(ChatSession {
+                child,
+                stdin: None,
+                agent: ChatAgent::Claude,
+                busy: false,
+                last_active: Instant::now(),
+            })),
+        );
+
+        assert_eq!(manager.chat_pids().get(&pid), Some(&key));
+        end_process(&manager, &key).expect("end the stand-in");
+        assert!(
+            !manager.chat_pids().contains_key(&pid),
+            "a chat that has been ended must stop claiming its pid — the OS is \
+             free to hand that number to something else"
+        );
     }
 
     #[test]
@@ -3651,6 +3742,7 @@ mod tests {
                 model: None,
                 access: Some(Access::Read),
                 extra_dirs: None,
+                env: None,
                 effort: None,
                 lite: Some(false),
                 session_id: Some(thread.into()),

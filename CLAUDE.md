@@ -133,6 +133,14 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   everything that MUTATES a repo, so "can this touch my repo?" is answered by
   the module name alone.
 - `fsbrowse.rs` — file browser listing and reads.
+- `memory.rs` — what this app holds in RAM, and which chat or terminal holds it.
+  One `ps` sweep, then a walk DOWN from the server's own pid, carrying the
+  nearest claimed ancestor: a chat claims its pid (`ChatManager::chat_pids`), a
+  terminal claims its shell's (`PtyManager::shell_pids`), so an agent's MCP
+  servers land on the chat that started them however deep they sit. Nothing
+  outside this process tree is counted — a `claude` running in the person's own
+  Terminal is not ours to report. Cached for a few seconds so several open
+  browser tabs share one sweep. Read-only; it can only ever run `ps`.
 - `bin/octiq-notify.rs` — a **separate binary target** (auto-discovered from
   `src/bin/`). It prints an OSC 777 sequence to its own stdout; run inside an
   OctiqFlow terminal, the PTY scanner sees it and raises an attention alert.

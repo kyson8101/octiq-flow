@@ -18,6 +18,7 @@ export type ComposerStyle =
   | "haiku"
   | "fable"
   | "claude"
+  | "astra"
   | "sol"
   | "terra"
   | "luna"
@@ -150,7 +151,8 @@ export const providers = {
     id: "codex",
     name: "Codex",
     models: [
-      { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol", hint: "the frontier one", composerStyle: "sol" },
+      { id: "codex:astra", agent: "codex", name: "Codex", model: "Astra", flag: "gpt-6-astra", hint: "the frontier one", composerStyle: "astra" },
+      { id: "codex:sol", agent: "codex", name: "Codex", model: "Sol", flag: "gpt-5.6-sol", hint: "the reliable workhorse", composerStyle: "sol" },
       { id: "codex:terra", agent: "codex", name: "Codex", model: "Terra", flag: "gpt-5.6-terra", hint: "the everyday balance", composerStyle: "terra" },
       { id: "codex:luna", agent: "codex", name: "Codex", model: "Luna", flag: "gpt-5.6-luna", hint: "fast and cheap", composerStyle: "luna" },
       { id: "codex:default", agent: "codex", name: "Codex", model: "Default", flag: "", hint: "whatever the CLI picks", composerStyle: "codex" },

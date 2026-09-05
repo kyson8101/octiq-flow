@@ -1119,6 +1119,7 @@ mod room_tests {
             None,
             None,
             None,
+            None,
         )
         .expect_err("there is no process to start");
         assert!(err.contains("no process"), "unhelpful refusal: {err}");

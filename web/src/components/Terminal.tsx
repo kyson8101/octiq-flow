@@ -21,6 +21,7 @@ export function TerminalPane({
   id,
   cwd,
   cmd,
+  env,
 }: {
   id: string;
   cwd: string;
@@ -29,10 +30,19 @@ export function TerminalPane({
    *  idempotent by id, so a shell that is already running is left alone and
    *  only a genuinely new one (the server restarted) starts it again. */
   cmd?: string;
+  /** The project's environment, set on the shell — passed on every mount for
+   *  the same reason `cmd` is. */
+  env?: Record<string, string>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Xterm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  // Read from a ref, not the effect's own deps: a project reload gives `env` a
+  // new object identity every time even when its contents are unchanged, and
+  // this pane must not be torn down and rebuilt — with it, the shell — over
+  // that.
+  const envRef = useRef(env);
+  envRef.current = env;
 
   /** Tell the PTY the new size, so programs that care about width reflow. */
   const sendSize = useCallback(() => {
@@ -131,7 +141,7 @@ export function TerminalPane({
     // idempotent by id, so on a re-attach this finds the running shell rather
     // than starting a second one.
     bridge
-      .invoke("pty_spawn", { id, cwd, startCmd: cmd })
+      .invoke("pty_spawn", { id, cwd, startCmd: cmd, env: envRef.current })
       .then(() => {
         sendSize();
         // A backend older than this client does not have `pty_attach` and

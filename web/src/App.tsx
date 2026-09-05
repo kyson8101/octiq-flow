@@ -112,6 +112,7 @@ import { ProjectSettings } from "./components/ProjectSettings";
 import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
+import { Memory } from "./components/Memory";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
 import { FullscreenButton } from "./components/FullscreenButton";
@@ -2513,6 +2514,7 @@ export default function App() {
               seatId: seat.id,
               cwd: project.primary_path ?? "",
               extraDirs: project.paths ?? [],
+              env: project.env ?? {},
               access,
               effort,
               images,
@@ -2566,6 +2568,7 @@ export default function App() {
           // one of them. The rest are named here so the agent can reach the
           // whole project, the same way a terminal in it can.
           extraDirs: project.paths ?? [],
+          env: project.env ?? {},
           agent: choice.agent,
           model: choice.flag || null,
           access,
@@ -3154,6 +3157,20 @@ export default function App() {
     </div>
   );
 
+  /* The two "where do I stand" numbers: how much of the plan is gone, and how
+     much memory this app is holding. Built once and placed once — on a wide
+     screen in the top bar, otherwise in the drawer footer — because each of
+     them polls, and a second copy would be a second poll saying the same
+     thing. The memory readout is given the names it cannot know: the backend
+     reports a chat by its session key and a terminal by its PTY id, and what
+     those are CALLED lives here. */
+  const readouts = (
+    <>
+      <Usage />
+      <Memory conversations={conversations} projects={workspaces} />
+    </>
+  );
+
   return (
     <div
       className={`app ${drawer ? "drawer-open" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""}`}
@@ -3304,8 +3321,11 @@ export default function App() {
           )}
 
           {/* Rendered once: the meter polls a rate-limited endpoint, so on a
-              smaller screen this same instance moves into the drawer. */}
-          {wide && <Usage />}
+              smaller screen this same instance moves into the drawer. The
+              memory readout travels with it — they are the two "where do I
+              stand" numbers, and splitting them would put one of them
+              somewhere nobody thinks to look. */}
+          {wide && readouts}
         </div>
       </header>
 
@@ -3340,7 +3360,7 @@ export default function App() {
           onHide={hasDrawer ? undefined : () => showNav(false)}
           onResize={hasDrawer ? undefined : nav.startDrag}
           head={wide ? undefined : viewSwitch}
-          foot={wide ? undefined : <Usage />}
+          foot={wide ? undefined : readouts}
         />
 
         <main className="main" hidden={mode !== "chat"} ref={pane}>

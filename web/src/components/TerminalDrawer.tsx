@@ -283,7 +283,13 @@ export function TerminalDrawer({
 
       {/* Keyed by terminal id, so switching tab really is a different pane
           rather than the same xterm re-pointed at another PTY. */}
-      <TerminalPane key={tabs.active} id={tabs.active} cwd={cwd} cmd={active?.cmd} />
+      <TerminalPane
+        key={tabs.active}
+        id={tabs.active}
+        cwd={cwd}
+        cmd={active?.cmd}
+        env={project.env ?? {}}
+      />
     </div>
   );
 }
