@@ -72,6 +72,19 @@ describe("saving the chat cache", () => {
     expect(storedBytes()).toBeLessThanOrEqual(3 * 1024 * 1024);
   });
 
+  it("skips one oversized chat rather than dropping the ones behind it", () => {
+    // The live chat is the most recently updated, so it sorts to the FRONT —
+    // and when it alone is over budget, walking down from the full list meant
+    // every candidate still contained it, and the store was written empty with
+    // a dozen perfectly small chats in hand.
+    saveConversations([chat("huge", 99, 4096), ...Array.from({ length: 4 }, (_, i) => chat(`c${i}`, i, 64))]);
+
+    const kept = loadConversations().map((c) => c.id);
+    expect(kept).not.toContain("huge");
+    expect(kept).toEqual(expect.arrayContaining(["c0", "c1", "c2", "c3"]));
+    expect(storedBytes()).toBeLessThanOrEqual(3 * 1024 * 1024);
+  });
+
   it("still shrinks when the browser refuses before the budget does", () => {
     // The budget is this app's guess; the browser is the one that knows. A
     // store with a much smaller quota than we assumed must still end up with

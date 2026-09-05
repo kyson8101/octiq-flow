@@ -1158,7 +1158,20 @@ function anchorsIn(el: HTMLElement): Anchor[] {
   return out;
 }
 
-export function MessageList({
+/** The whole transcript.
+ *
+ *  MEMOISED, and it has to be. Every loaded chat lives in one state object in
+ *  App, so a `content_block_delta` for a conversation NOT on screen — one of
+ *  eight agents working in the background — re-rendered App, and this rebuilt
+ *  the entire element tree of the chat you were actually reading. On a long
+ *  transcript that is thousands of nodes for a message you cannot see; it
+ *  measured at ~55 ms per foreign delta on an idle machine.
+ *
+ *  Everything it is handed must therefore hold still between renders: the
+ *  callbacks are `useCallback`ed in App and read the loaded chats through
+ *  `chatsRef` rather than taking `chats` as a dependency, which is what used to
+ *  give this a new `onSetting` on every delta and make the memo do nothing. */
+const MessageListBody = function MessageList({
   messages,
   busy,
   stoppedAt,
@@ -1672,7 +1685,9 @@ export function MessageList({
       </ConfigWorldProvider>
     </div>
   );
-}
+};
+
+export const MessageList = memo(MessageListBody);
 
 function ChevronDownIcon() {
   return (

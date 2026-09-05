@@ -93,18 +93,40 @@ export function saveConversations(list: Conversation[]): void {
   // store rather than one entry. This is eviction order only — what the sidebar
   // shows is ordered by byProject, which never moves a row.
   const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
+
+  // Each conversation is serialised ONCE, and what fits is joined back into an
+  // array. This used to stringify the whole LIST again for every candidate
+  // length, walking down one row at a time until something came in under
+  // budget — so a live 20 MB chat sitting at the top of the list meant eighty
+  // passes over twenty megabytes before writing `[]`. That ran on the main
+  // thread 700 ms after every lull in a streaming answer, and it is what a
+  // keystroke that hangs and then arrives all at once actually was.
+  //
+  // Over BUDGET is refused before the browser is even asked. The quota is
+  // shared, and a write that succeeds by taking the last of it is the thing
+  // being prevented, not a success.
+  const kept: string[] = [];
+  let used = 2; // the brackets
+  for (const c of ordered) {
+    const json = JSON.stringify(c);
+    const cost = json.length + (kept.length ? 1 : 0); // and the comma
+    // One chat too big for the whole budget is SKIPPED rather than taken as a
+    // reason to stop. It is on the server too, and reopening it replays from
+    // there — whereas giving up here threw away every smaller chat behind it
+    // as well, which is how the store ended up empty with 27 chats in it.
+    if (used + cost > BUDGET) continue;
+    kept.push(json);
+    used += cost;
+  }
+
   // Down to nothing, not down to one. A store that will not fit is worse than
   // an empty one: the chats are on the server too, and reopening one replays it
   // from there — whereas a browser wedged at its quota breaks every OTHER thing
   // that wants to write, which is a much quieter and much longer-lived fault.
-  for (let attempt = ordered.length; attempt >= 0; attempt--) {
-    const json = JSON.stringify(ordered.slice(0, attempt));
-    // Over BUDGET is refused before the browser is even asked. The quota is
-    // shared, and a write that succeeds by taking the last of it is the thing
-    // being prevented, not a success.
-    if (attempt > 0 && json.length > BUDGET) continue;
+  for (let n = kept.length; n >= 0; n--) {
     try {
-      localStorage.setItem(KEY, json);
+      // Re-JOINING what is already serialised, never re-serialising it.
+      localStorage.setItem(KEY, `[${kept.slice(0, n).join(",")}]`);
       return;
     } catch {
       // Over quota anyway — the budget is this app's guess at the browser's,

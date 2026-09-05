@@ -247,12 +247,16 @@ what `chat_interrupt` is for. Two things hold it up:
 ### Idle chats are ended, and resumed on the next message
 
 A **chat** process (`agent_chat.rs`, not a PTY) is killed after **15 minutes**
-with no turn in flight, by a sweeper thread started from both entry points
-(`start_idle_reaper`). Nothing is lost and nothing is announced: the transcript
-is already on disk, the client's send path already starts a chat it has no
-process for with `resume`, and the `exit` event it triggers is what turns the
-live dot off. `OCTIQ_CHAT_IDLE_MINS=0` turns it off; any other number sets the
-minutes.
+with no turn in flight, by **one** sweeper thread for the whole backend, not one
+per chat: `start_idle_reaper` is spawned once from `Services::load`
+(`dispatch.rs`), which `lib.rs` calls at startup and nothing else calls outside
+the tests. It wakes every 60 seconds and walks the whole session table under one
+lock, reading a flag and an `Instant` per chat. What a chat carries is a CLOCK —
+`busy` and `last_active`, moved by `turn_started` / `turn_ended` — never a timer
+of its own. Nothing is lost and nothing is announced: the transcript is already
+on disk, the client's send path already starts a chat it has no process for with
+`resume`, and the `exit` event it triggers is what turns the live dot off.
+`OCTIQ_CHAT_IDLE_MINS=0` turns it off; any other number sets the minutes.
 
 - **"Idle" is `!busy`, never "no output lately".** A turn is in flight from the
   moment something is written to the agent's stdin until its own full stop

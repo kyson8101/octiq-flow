@@ -57,6 +57,11 @@ import {
 import { removeIndexEntry, saveIndexEntry } from "./lib/chatIndex";
 import { recall, remember } from "./lib/remember";
 import { forgetChatPlace } from "./lib/chatPlace";
+import {
+  dismissFailure,
+  failureDismissed,
+  forgetDismissedFailure,
+} from "./lib/failureDismiss";
 import { deletedIds, isDeleted, listDeletions, markDeleted } from "./lib/deletions";
 import {
   focusNow,
@@ -281,6 +286,13 @@ const NAV_W_KEY = "octiq.v2.navWidth";
  *  point past which a list of names is only whitespace. `dockWidth` squeezes
  *  both ends further when the window cannot afford them. */
 const NAV_SIZES: Sizes = { initial: 260, min: 200, max: 460 };
+/** How long a chat NOBODY IS LOOKING AT may sit unrendered.
+ *
+ *  Long enough that eight agents streaming at once cost a handful of renders a
+ *  second between them rather than hundreds; short enough that a live dot, a
+ *  notification or an unread mark is never something you catch being late.
+ *  The chat on screen does not go through this — see `writeChats`. */
+const QUIETLY_MS = 250;
 const FILES_KEY = "octiq.v2.filesOpen";
 /** The agent column, put away. Stored the other way round from the two above:
  *  the rail shows itself the moment a chat starts an agent, so what is worth
@@ -523,8 +535,84 @@ export default function App() {
   // one being opened already has words in it — and it must NOT be rebuilt every
   // time any chat says anything, because the sidebar and the notification
   // handler both hold on to it.
-  const chatsRef = useRef(chats);
-  chatsRef.current = chats;
+  //
+  // This ref is the AUTHORITATIVE copy, and `chats` above is a render of it.
+  // Every write goes here first, synchronously, and only then asks for a
+  // render — which is what lets a delta for a chat NOBODY IS LOOKING AT stop
+  // costing a render of the whole app. Eight agents answering at once is
+  // hundreds of deltas a second, each of which used to run App's render and,
+  // through it, rebuild the entire element tree of the transcript on screen.
+  // See `writeChats`.
+  const chatsRef = useRef<Record<string, ChatState>>(chats);
+  // Which conversation is on screen, readable from a callback. Deltas for it
+  // are the ones that must not wait.
+  const visibleRef = useRef(conversationId);
+  visibleRef.current = conversationId;
+  const soon = useRef<number | null>(null);
+  const later = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Show what the ref now holds. */
+  const flushChats = useCallback(() => {
+    if (soon.current !== null) {
+      cancelAnimationFrame(soon.current);
+      soon.current = null;
+    }
+    if (later.current !== null) {
+      clearTimeout(later.current);
+      later.current = null;
+    }
+    setChats(chatsRef.current);
+  }, []);
+
+  /** Take the new set of loaded chats, and decide how soon it has to be seen.
+   *
+   *  `urgent` is the chat on screen: its words go up on the next frame, so
+   *  nothing about reading a live answer changes. Everything else — the seven
+   *  other agents working behind this one — is coalesced into one render every
+   *  QUIETLY_MS. Nothing reads a background chat faster than that: the live
+   *  dots, the desktop notifications and the debounced save are all things a
+   *  quarter of a second late is indistinguishable from on time. */
+  const writeChats = useCallback(
+    (next: Record<string, ChatState>, urgent: boolean) => {
+      if (next === chatsRef.current) return;
+      chatsRef.current = next;
+      // The timer is armed either way, as the backstop. A hidden tab is served
+      // no animation frames at all, so an urgent write on its own would leave
+      // the chat on screen frozen in the ref — and with it the debounced save,
+      // which is what makes a laptop closed mid-answer come back with the
+      // answer. Whichever fires first clears the other.
+      if (later.current === null) {
+        later.current = setTimeout(() => {
+          later.current = null;
+          flushChats();
+        }, QUIETLY_MS);
+      }
+      if (urgent && soon.current === null) {
+        soon.current = requestAnimationFrame(() => {
+          soon.current = null;
+          flushChats();
+        });
+      }
+    },
+    [flushChats],
+  );
+
+  // Opening a chat shows what it holds NOW. A conversation that was in the
+  // background a moment ago can have a quarter of a second of answer still
+  // sitting in the ref, and a transcript that fills in a beat after the page it
+  // is on reads as a stutter rather than as a chat.
+  useEffect(() => {
+    flushChats();
+  }, [conversationId, flushChats]);
+
+  // Nothing left holding a frame or a timer when the page goes.
+  useEffect(
+    () => () => {
+      if (soon.current !== null) cancelAnimationFrame(soon.current);
+      if (later.current !== null) clearTimeout(later.current);
+    },
+    [],
+  );
   // And for the list itself, so the server's answer can be compared against
   // what this page holds without rebuilding the effect that asks for it.
   const conversationsRef = useRef(conversations);
@@ -558,15 +646,17 @@ export default function App() {
    *  when another device did — this is only the copy in front of you: its
    *  transcript in memory, what it was started with, how far it had been read,
    *  its seats, and the screen if it is the one you are looking at. */
-  const forgetLocally = useCallback((id: string) => {
+  const forgetLocally = useCallback(
+    (id: string) => {
     gone.current.add(id);
     catchUp.current.forget(keyFor(id));
-    setChats((prev) => {
-      if (!(id in prev)) return prev;
-      const next = { ...prev };
+    // Urgent whichever chat this is: a row being deleted has to leave the
+    // screen when it is deleted, not a quarter of a second afterwards.
+    if (id in chatsRef.current) {
+      const next = { ...chatsRef.current };
       delete next[id];
-      return next;
-    });
+      writeChats(next, true);
+    }
     setSeats((prev) => {
       if (!(id in prev)) return prev;
       const next = { ...prev };
@@ -578,6 +668,8 @@ export default function App() {
     // eventually anyway; this is so a deleted chat is not still taking up one
     // of the places a live chat could have.
     forgetChatPlace(id);
+    // And the banner it was told to stop showing, for the same reason.
+    forgetDismissedFailure(id);
     setConversationId((open) => (open === id ? null : open));
     // The chat you were last in is remembered by id, and a deleted one left
     // there is a restore that waits for a row that is never coming.
@@ -586,7 +678,9 @@ export default function App() {
     } catch {
       /* storage blocked: nothing was remembered to forget */
     }
-  }, []);
+    },
+    [writeChats],
+  );
 
   // The level each chat was last asked to change to. An agent that will not
   // take the change says so on its own event, well after the tap, so this is
@@ -1075,9 +1169,22 @@ export default function App() {
   /** Apply a change to ONE conversation's chat, whether or not it is the one on
    *  screen. Every update goes through here, which is what makes a background
    *  chat keep working while you read another. */
-  const patch = useCallback((id: string, fn: (s: ChatState) => ChatState) => {
-    setChats((prev) => ({ ...prev, [id]: fn(prev[id] ?? EMPTY) }));
-  }, []);
+  const patch = useCallback(
+    (id: string, fn: (s: ChatState) => ChatState) => {
+      const held = chatsRef.current;
+      const before = held[id] ?? EMPTY;
+      const after = fn(before);
+      // A reducer that decided nothing had changed is not a render. Several of
+      // these hand `s` straight back — a replay landing on a chat already
+      // spoken in, a status for a chat this page has let go of.
+      if (after === before) return;
+      // Urgent only for the chat being read. The rest is the whole point of
+      // `writeChats`: a background answer still folds in immediately, it is
+      // only the RENDER of it that waits for the others to catch up.
+      writeChats({ ...held, [id]: after }, id === visibleRef.current);
+    },
+    [writeChats],
+  );
 
   /** Words taken back out of the queue, waiting to go back in the box.
    *
@@ -1404,6 +1511,14 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  /** The failure worth showing. A chat's state is replayed from its transcript
+   *  on every reload, so clearing `failure` is only ever true until the next
+   *  one — the ✕ has to be REMEMBERED. See `lib/failureDismiss`; a failure
+   *  that reads differently is a different failure and still gets its banner. */
+  const failure =
+    chat.failure && conversationId && !failureDismissed(conversationId, chat.failure)
+      ? chat.failure
+      : undefined;
   /** The files this chat says are worth opening — see lib/pins. Read once up
    *  here rather than twice below: the button needs the count and the panel
    *  needs the list, and walking the transcript for each of them would do the
@@ -1563,7 +1678,8 @@ export default function App() {
       // The blank chat already on screen is the one to use — it is what the
       // person was looking at when they searched. A conversation that has been
       // spoken in gets a new row instead, so nothing is written over.
-      const blank = conversationId && (chats[conversationId]?.messages.length ?? 0) === 0;
+      const blank =
+        conversationId && (chatsRef.current[conversationId]?.messages.length ?? 0) === 0;
       const id = blank ? conversationId! : crypto.randomUUID();
 
       const sessionAccess = accessFor(session.agent, access);
@@ -1616,7 +1732,8 @@ export default function App() {
       setConversationId(id);
       setDrawer(false);
     },
-    [workspaces, projectId, conversationId, chats, access, effort, patch],
+    // `chats` is read through its ref, for one length, at the moment this runs.
+    [workspaces, projectId, conversationId, access, effort, patch],
   );
 
   const openConversation = useCallback((c: Conversation) => {
@@ -1645,18 +1762,22 @@ export default function App() {
     // catch-up re-asks from the stored mark and fetches those same events back.
     // Its session id is the exception — that came from the live process, and is
     // fresher than the one written down.
-    setChats((prev) =>
-      catchUp.current.holds(keyFor(c.id))
-        ? prev
-        : {
-            ...prev,
-            [c.id]: {
-              ...emptyChat(),
-              messages: c.messages,
-              sessionId: prev[c.id]?.sessionId ?? c.sessionId,
-            },
+    if (!catchUp.current.holds(keyFor(c.id))) {
+      const held = chatsRef.current;
+      // Urgent: this is the chat being opened, so it is about to be the one on
+      // screen — `visibleRef` just has not caught up with the click yet.
+      writeChats(
+        {
+          ...held,
+          [c.id]: {
+            ...emptyChat(),
+            messages: c.messages,
+            sessionId: held[c.id]?.sessionId ?? c.sessionId,
           },
-    );
+        },
+        true,
+      );
+    }
 
     // Fill in anything this device has not seen. On the device that held the
     // conversation that is the tail of an interrupted answer; on a device that
@@ -1689,7 +1810,7 @@ export default function App() {
     if (c.modelId) setChoice(model);
     setAccess(conversationAccess);
     setDrawer(false);
-  }, [catchUpChat]);
+  }, [catchUpChat, writeChats]);
 
   /** This project's chats, in the order the sidebar lists them, which is the
    *  order a swipe walks. Ids only: the gesture is about which row comes next,
@@ -2350,7 +2471,7 @@ export default function App() {
       // restart destroys the conversation. Writing the entry first closes it:
       // an entry with no transcript is the harmless direction, and reconcile
       // keeps it on purpose.
-      const held = conversations.find((c) => c.id === id);
+      const held = conversationsRef.current.find((c) => c.id === id);
       const startedAt = Date.now();
       saveIndexEntry({
         id,
@@ -2358,7 +2479,7 @@ export default function App() {
         // A chat is named after the FIRST thing asked in it, so an existing one
         // keeps the name it already has.
         title: held?.title ?? shortTitle(text),
-        sessionId: chats[id]?.sessionId ?? held?.sessionId ?? null,
+        sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
         modelId: choice.id,
         access,
         createdAt: held?.createdAt ?? startedAt,
@@ -2419,7 +2540,9 @@ export default function App() {
       // id comes from the chat's own state if it has run this visit, and from
       // the stored conversation otherwise.
       const resume =
-        chats[id]?.sessionId ?? conversations.find((c) => c.id === id)?.sessionId ?? null;
+        chatsRef.current[id]?.sessionId ??
+        conversationsRef.current.find((c) => c.id === id)?.sessionId ??
+        null;
 
       // Speaking into a chat whose record this page does not hold. A brand-new
       // one has no record to hold, so it is simply ours from here. Anything
@@ -2427,7 +2550,10 @@ export default function App() {
       // history — is read first, or this turn's events would fold onto a
       // conversation with a hole where its past belongs.
       if (!catchUp.current.holds(keyFor(id))) {
-        if (resume) await catchUpChat(id, conversations.find((c) => c.id === id)?.seq).catch(() => {});
+        if (resume)
+          await catchUpChat(id, conversationsRef.current.find((c) => c.id === id)?.seq).catch(
+            () => {},
+          );
         else catchUp.current.own(keyFor(id));
       }
 
@@ -2473,18 +2599,11 @@ export default function App() {
         });
       }
     },
-    [
-      project,
-      choice,
-      access,
-      effort,
-      lite,
-      conversationId,
-      chats,
-      conversations,
-      patch,
-      catchUpChat,
-    ],
+    // NOT `chats` and NOT `conversations` — both are read through their refs
+    // above, for one value each, at the moment this runs. Listing them meant a
+    // new `send` on every delta of every chat, which `MessageList` takes as
+    // `onSetting` and which alone was enough to make memoising it do nothing.
+    [project, choice, access, effort, lite, conversationId, patch, catchUpChat],
   );
 
   /** Stop the running turn. The session survives, ready for the next one. */
@@ -2867,7 +2986,9 @@ export default function App() {
     // What the room is asked: the last thing YOU said. A round is "put that to
     // everyone", so inventing a different question would put words in your
     // mouth — and there is nothing else in the conversation that is yours.
-    const mine = [...(chats[id]?.messages ?? [])].reverse().find((m) => m.role === "user");
+    const mine = [...(chatsRef.current[id]?.messages ?? [])]
+      .reverse()
+      .find((m) => m.role === "user");
     const text = mine?.blocks
       .map((b) => ("text" in b ? b.text : ""))
       .join(" ")
@@ -2893,7 +3014,9 @@ export default function App() {
       patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
     }
     void refreshRound(id);
-  }, [conversationId, project, mySeats, access, effort, patch, refreshRound, chats]);
+    // `chats` is read through its ref, for the last thing you said, when the
+    // round is actually started.
+  }, [conversationId, project, mySeats, access, effort, patch, refreshRound]);
 
   // Card 69 — whether a topic line has been drawn in this chat.
   //
@@ -3327,31 +3450,35 @@ export default function App() {
             </div>
           )}
 
-          {chat.failure && conversationId && (
-            <div className={`failure ${chat.failure.outOfCredit ? "is-quota" : ""}`} role="alert">
+          {failure && conversationId && (
+            <div className={`failure ${failure.outOfCredit ? "is-quota" : ""}`} role="alert">
               {/* Read, and now done with. Speaking again clears it too, but the
                   failure people actually sit with is a quota one — where the
                   answer is to WAIT, and asking again just puts the same banner
                   back. Without this the only way past it was to leave the
-                  chat. */}
+                  chat. Written down as well as cleared, because a reload
+                  replays the transcript that produced it. */}
               <button
                 className="failure-close"
                 type="button"
                 aria-label="Dismiss"
-                onClick={() => patch(conversationId, (s) => ({ ...s, failure: undefined }))}
+                onClick={() => {
+                  dismissFailure(conversationId, failure);
+                  patch(conversationId, (s) => ({ ...s, failure: undefined }));
+                }}
               >
                 ×
               </button>
-              <div className="failure-title">{chat.failure.title}</div>
-              {chat.failure.detail && <div className="failure-detail">{chat.failure.detail}</div>}
-              {chat.failure.link && (
+              <div className="failure-title">{failure.title}</div>
+              {failure.detail && <div className="failure-detail">{failure.detail}</div>}
+              {failure.link && (
                 <a
                   className="failure-link"
-                  href={chat.failure.link}
+                  href={failure.link}
                   target="_blank"
                   rel="noreferrer noopener"
                 >
-                  {chat.failure.link}
+                  {failure.link}
                 </a>
               )}
             </div>
