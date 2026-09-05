@@ -74,7 +74,7 @@ export type AgentCommand = {
 export type LiveSetting = "model" | "effort";
 
 export type AgentCapabilities = {
-  commands: "reported" | "none";
+  commands: "reported" | "loaded" | "none";
   liveSettings: Readonly<Record<LiveSetting, boolean>>;
   cleanStart: boolean;
 };
@@ -87,7 +87,7 @@ export interface AgentProvider {
   readonly efforts: readonly EffortOption[];
   readonly capabilities: AgentCapabilities;
   /** Turns provider-reported commands into the composer’s common shape. */
-  commands(reported: readonly string[]): readonly AgentCommand[];
+  commands(source: readonly string[]): readonly AgentCommand[];
   /** The provider-native command for a live setting, when it supports one. */
   liveSettingCommand(setting: LiveSetting, value: string): string | undefined;
 }
@@ -106,8 +106,6 @@ function slashCommands(reported: readonly string[]): readonly AgentCommand[] {
   }
   return out;
 }
-
-const noCommands = (): readonly AgentCommand[] => [];
 
 export const providers = {
   claude: {
@@ -170,11 +168,11 @@ export const providers = {
       { id: "max", label: "Max", short: "Max", hint: "everything it has" },
     ],
     capabilities: {
-      commands: "none",
+      commands: "loaded",
       liveSettings: { model: false, effort: false },
       cleanStart: false,
     },
-    commands: noCommands,
+    commands: slashCommands,
     liveSettingCommand() {
       return undefined;
     },
@@ -226,8 +224,8 @@ export function effortFor(provider: Provider, wanted: Effort): Effort {
   return efforts.some((effort) => effort.id === wanted) ? wanted : efforts[0].id;
 }
 
-export function providerCommands(provider: Provider, reported: readonly string[]): readonly AgentCommand[] {
-  return providerFor(provider).commands(reported);
+export function providerCommands(provider: Provider, source: readonly string[]): readonly AgentCommand[] {
+  return providerFor(provider).commands(source);
 }
 
 export function liveSettingCommand(

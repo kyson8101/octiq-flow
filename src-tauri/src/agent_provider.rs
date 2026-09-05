@@ -392,7 +392,7 @@ impl AgentProvider for ClaudeProvider {
                 " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(
-                    "mcp__octiq__ask_user \\
+                    "mcp__octiq__ask_user mcp__octiq__read_conversation \\
                      mcp__octiq__add_agent mcp__octiq__ask_agent",
                 ),
                 sh_quote(ASK_PROMPT),
@@ -521,7 +521,7 @@ impl AgentProvider for CodexProvider {
             input: InputTransport::CommandLine,
             supports_live_access_change: false,
             supports_lite_mode: false,
-            uses_octiq_mcp: false,
+            uses_octiq_mcp: true,
         }
     }
 
@@ -566,6 +566,23 @@ impl AgentProvider for CodexProvider {
         }
         if let Some(effort) = request.effort.and_then(|e| self.effort(e)) {
             cmd.push_str(&format!(" -c model_reasoning_effort={}", sh_quote(effort)));
+        }
+        if let Some(mcp) = request.mcp_config {
+            // Codex accepts per-process MCP configuration through ordinary
+            // `-c` overrides. The shared writer gives us Claude's JSON config
+            // path; the stdio script lives beside it and is the part both
+            // providers actually need.
+            let script = mcp.with_file_name("octiq-ask.cjs");
+            let command = format!("mcp_servers.octiq.command={}", toml_string("node"));
+            let args = format!(
+                "mcp_servers.octiq.args=[{}]",
+                toml_string(&script.to_string_lossy())
+            );
+            cmd.push_str(&format!(
+                " -c {} -c {}",
+                sh_quote(&command),
+                sh_quote(&args)
+            ));
         }
         for dir in request.extra_dirs {
             if resuming.is_some() {
@@ -728,7 +745,7 @@ fn codex_approval(access: Access) -> &'static str {
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 
 /// Told to Claude so the tools it was given are used at the right moments.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last.\n\n`read_conversation` reads another OctiqFlow conversation from its URL. Use it only when the person gives you that URL or explicitly asks you to consult that conversation; transcripts may contain sensitive context, so never browse them speculatively. The first call returns the latest bounded page, and its `before` cursor walks backward when older context is needed.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
 
 /// Write Claude's OctiqFlow MCP config and return its path. Best effort: a
 /// provider without it still starts, just without the extra tools.
@@ -825,9 +842,11 @@ mod tests {
         assert!(claude.contains("--mcp-config"));
         assert!(!claude.contains("--sandbox"));
 
-        let codex = command(AgentKind::Codex, None);
+        let codex = command(AgentKind::Codex, Some(Path::new("octiq-ask.json")));
         assert!(codex.contains("--sandbox workspace-write"));
         assert!(codex.contains("approval_policy='on-request'"));
+        assert!(codex.contains("mcp_servers.octiq.command=\"node\""));
+        assert!(codex.contains("mcp_servers.octiq.args=[\"octiq-ask.cjs\"]"));
         assert!(!codex.contains("--permission-mode"));
     }
 

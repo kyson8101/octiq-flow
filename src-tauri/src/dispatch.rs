@@ -524,6 +524,9 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // the same reason the desktop menu does: offering an agent that is not
         // installed only produces a chat that dies on its first line.
         "agent_installs" => Ok(json!(crate::agents::agent_installs(arg(&args, "refresh")?))),
+        // Codex's own cwd-aware catalog, loaded lazily when its composer opens
+        // the slash menu. `codex exec --json` has no startup catalog event.
+        "codex_skills" => to_value(crate::agents::codex_skills(arg(&args, "cwd")?)),
 
         // ---- web push -----------------------------------------------------
         //
@@ -611,6 +614,16 @@ mod tests {
         assert_eq!(rows[1]["id"], "codex");
         assert_eq!(rows[1]["installed"], true);
         assert_eq!(rows[1]["path"], "/opt/bin/codex");
+    }
+
+    #[test]
+    fn a_browser_can_ask_for_codex_skills_by_workspace() {
+        let svc = Services::load();
+        let err = dispatch(&svc, "codex_skills", json!({ "cwd": "relative" })).unwrap_err();
+        assert!(
+            err.contains("absolute directory"),
+            "route reached loader: {err}"
+        );
     }
 
     /// Same failure mode as the row above, and the one the search on the empty

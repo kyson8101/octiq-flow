@@ -12,12 +12,16 @@ import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
 import type { Conversation } from "../lib/store";
 import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/projectOrder";
+import { projectColor } from "../lib/projectColor";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 
 export type Project = {
   id: string;
   name: string;
+  /** Saved project accent. Empty or absent means a stable color is derived
+   *  from the project name. */
+  color?: string;
   primary_path?: string;
   sibling_ids?: string[];
   /** Set on every terminal and chat started in this project. Absent on an old
@@ -413,7 +417,11 @@ function ProjectNode({
           aria-expanded={showing}
           onClick={() => onToggle(project.id)}
         >
-          <span className={`proj-icon ${showing ? "is-open" : ""}`} aria-hidden="true">
+          <span
+            className={`proj-icon ${showing ? "is-open" : ""}`}
+            style={{ color: projectColor(project) }}
+            aria-hidden="true"
+          >
             <FolderIcon />
           </span>
           <span className="proj-name">{project.name}</span>

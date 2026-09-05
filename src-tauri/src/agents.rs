@@ -15,7 +15,11 @@
 use crate::agent_provider::{provider_for, AgentKind, AgentProvider};
 use crate::proc::no_console;
 use serde::Serialize;
-use std::process::Command;
+use serde_json::{json, Value};
+use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -81,6 +85,151 @@ pub fn agent_installs(refresh: Option<bool>) -> Vec<AgentInstall> {
         forget_probe();
     }
     install_rows(&probe_cached())
+}
+
+// ---- Codex skills ---------------------------------------------------------
+
+/// Long enough for a cold Codex app-server to read config and discover plugin
+/// skills, but bounded so opening the slash menu cannot strand a web request.
+const CODEX_SKILLS_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Ask Codex itself which skills are active for `cwd`.
+///
+/// Codex does not emit a skill catalog in `codex exec --json`, unlike Claude's
+/// startup event. Its app-server owns the same discovery code the CLI uses,
+/// including repo, user, system and plugin roots, so using `skills/list` here
+/// avoids maintaining a second, inevitably incomplete directory scanner.
+pub fn codex_skills(cwd: String) -> Result<Vec<String>, String> {
+    let cwd = std::path::PathBuf::from(cwd);
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err("the Codex skills folder must be an existing absolute directory".into());
+    }
+
+    let executable = probe_cached()
+        .into_iter()
+        .find(|(name, _)| name == AgentKind::Codex.id())
+        .ok_or_else(|| "Codex is not installed on this machine".to_string())?
+        .1;
+    let mut command = Command::new(if executable.is_empty() {
+        provider_for(AgentKind::Codex).bin()
+    } else {
+        &executable
+    });
+    command
+        .args(["app-server", "--stdio"])
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // Login-shell banners are not involved because the probe gave us the
+        // resolved executable. App-server diagnostics are not menu entries.
+        .stderr(Stdio::null());
+    no_console(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not start Codex to load skills: {e}"))?;
+
+    let request = [
+        json!({
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": { "name": "octiqflow", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": { "experimentalApi": true }
+            }
+        }),
+        json!({ "method": "initialized" }),
+        json!({
+            "id": 2,
+            "method": "skills/list",
+            "params": { "cwds": [cwd.to_string_lossy()], "forceReload": false }
+        }),
+    ];
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Codex stdin was unavailable".to_string())
+        .and_then(|mut stdin| {
+            for message in request {
+                writeln!(stdin, "{message}")
+                    .map_err(|e| format!("could not ask Codex for skills: {e}"))?;
+            }
+            Ok(())
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+
+    // Drain stdout on its own thread. A real skill catalog can exceed a pipe's
+    // buffer, so waiting for the child before reading it can deadlock.
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Codex stdout was unavailable".into());
+    };
+    let (send, receive) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(answer) = parse_skills_response(&line) {
+                let _ = send.send(answer);
+                return;
+            }
+        }
+        let _ = send.send(Err("Codex ended without returning a skill list".into()));
+    });
+
+    let answer = receive
+        .recv_timeout(CODEX_SKILLS_TIMEOUT)
+        .unwrap_or_else(|_| Err("Codex took too long to load its skill list".into()));
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+    answer
+}
+
+/// A `skills/list` response among app-server notifications, or no response on
+/// this line. Kept pure so protocol parsing does not need a real Codex process
+/// in the test suite.
+fn parse_skills_response(line: &str) -> Option<Result<Vec<String>, String>> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("id").and_then(Value::as_u64) != Some(2) {
+        return None;
+    }
+    if let Some(error) = value.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Codex could not load its skill list");
+        return Some(Err(message.to_string()));
+    }
+    let Some(entries) = value
+        .get("result")
+        .and_then(|v| v.get("data"))
+        .and_then(Value::as_array)
+    else {
+        return Some(Err("Codex returned an invalid skill list".into()));
+    };
+
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for skill in entries
+        .iter()
+        .filter_map(|entry| entry.get("skills").and_then(Value::as_array))
+        .flatten()
+    {
+        if skill.get("enabled").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        let Some(name) = skill.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let key = name.to_lowercase();
+        if !name.is_empty() && !name.chars().any(char::is_whitespace) && seen.insert(key) {
+            names.push(name.to_string());
+        }
+    }
+    Some(Ok(names))
 }
 
 /// Drop the cached probe so the next read asks the shell again.
@@ -314,6 +463,41 @@ mod tests {
         let rows = install_rows(&[]);
         assert_eq!(rows[0].name, "Claude Code");
         assert_eq!(rows[0].bin, "claude");
+    }
+
+    #[test]
+    fn codex_skill_response_keeps_enabled_unique_names() {
+        let line = serde_json::json!({
+            "id": 2,
+            "result": {
+                "data": [{
+                    "cwd": "/project",
+                    "skills": [
+                        { "name": "release", "enabled": true },
+                        { "name": "release", "enabled": false },
+                        { "name": "PDF:pdf", "enabled": true },
+                        { "name": "pdf:pdf", "enabled": true },
+                        { "name": "bad name", "enabled": true }
+                    ],
+                    "errors": []
+                }]
+            }
+        })
+        .to_string();
+
+        assert_eq!(
+            parse_skills_response(&line).unwrap().unwrap(),
+            vec!["release".to_string(), "PDF:pdf".to_string()]
+        );
+    }
+
+    #[test]
+    fn codex_skill_parser_ignores_other_app_server_messages() {
+        assert!(parse_skills_response(r#"{"id":1,"result":{}}"#).is_none());
+        assert!(
+            parse_skills_response(r#"{"method":"remoteControl/status/changed","params":{}}"#)
+                .is_none()
+        );
     }
 
     /// The probe shell must be INTERACTIVE as well as a login shell. pty.rs

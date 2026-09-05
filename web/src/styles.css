@@ -5523,7 +5523,6 @@ body.is-ultra .eff {
   flex: 0 0 auto;
   width: 15px;
   height: 15px;
-  color: var(--fg-3);
 }
 
 .proj-icon svg {
@@ -5547,10 +5546,6 @@ body.is-ultra .eff {
 
 .proj.is-on .proj-btn {
   color: var(--fg-0);
-}
-
-.proj.is-on .proj-icon {
-  color: var(--fg-2);
 }
 
 .proj-name {

@@ -70,16 +70,19 @@ describe("AgentProvider UI contract", () => {
   it("scopes a command cache to its provider and migrates the Claude-only legacy shape", () => {
     const cache = parseCommandCache({
       project: ["compact", "context"],
-      current: { claude: ["context"], codex: ["unsupported"] },
+      current: { claude: ["context"], codex: ["release", "release", "bad command"] },
     });
 
     expect(cache).toEqual({
       project: { claude: ["compact", "context"] },
-      current: { claude: ["context"], codex: ["unsupported"] },
+      current: { claude: ["context"], codex: ["release", "release", "bad command"] },
     });
     expect(providerCommands("claude", cache.project.claude ?? [])).toHaveLength(2);
-    // This is the regression: a cache from Claude is not a command menu for
-    // Codex merely because both chats belong to the same project.
+    // Each provider still reads only its own cache entry. Codex's loaded skill
+    // names use the same slash-completion shape as Claude's reported commands.
     expect(providerCommands("codex", cache.project.codex ?? [])).toEqual([]);
+    expect(providerCommands("codex", cache.current.codex ?? [])).toEqual([
+      { id: "release", label: "/release", insert: "/release " },
+    ]);
   });
 });

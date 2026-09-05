@@ -1002,6 +1002,10 @@ pub(crate) fn start_session(
         // The hook answers only for agents we started, and needs to know
         // which chat is asking so the UI can attach the question to it.
         .env("OCTIQ_CHAT_KEY", &key)
+        // The conversation reader in that MCP must use this exact profile.
+        // A standalone install can follow config.json; an in-app agent should
+        // not have to rediscover a value the server already knows.
+        .env("OCTIQ_ROOT", crate::profile::profile_dir())
         // What the person chose. The hook cannot read --permission-mode, and on
         // bypassPermissions it must step aside rather than ask about every command.
         // Unset means the most cautious of the three, not the most permissive:
@@ -2440,6 +2444,7 @@ mod tests {
         );
         // And the one that was always there still is.
         assert!(c.contains("mcp__octiq__ask_user"));
+        assert!(c.contains("mcp__octiq__read_conversation"));
     }
 
     #[test]

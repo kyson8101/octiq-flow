@@ -4,6 +4,9 @@ An agent workflow orchestrator. octiq-flow is a headless Rust server plus a
 browser client that runs **real terminals in a web page** and lets you **drive
 interactive CLI agents (Claude Code, Codex) from UI buttons**.
 
+Agents can also read another OctiqFlow conversation from a supplied browser URL
+through the bundled [`read_conversation` MCP tool](docs/conversation-mcp.md).
+
 Because the server is headless, it can run on a machine that stays on — a Mac
 mini, a home server — while you drive it from a laptop, a phone or anything else
 with a browser. The agents run where the server runs.

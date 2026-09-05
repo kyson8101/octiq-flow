@@ -30,6 +30,7 @@ import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
 import { useMedia, WIDE } from "../lib/media";
 import { RollingText } from "./RollingNumber";
+import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
 import {
   AGENT_NAME,
   effortSteps,
@@ -224,6 +225,7 @@ export function Composer({
   disabled,
   started,
   commands,
+  onCommandOpen,
   contextTokens,
   contextWindow,
   activity,
@@ -292,9 +294,10 @@ export function Composer({
    *  existed. An EMPTY array is the opposite: we asked, and this machine has
    *  none of them. */
   installed?: Provider[];
-  /** The provider-owned commands this session advertised. Empty until a chat
-   * has run at least once in this project. */
+  /** The provider-owned commands available in this project. */
   commands?: readonly AgentCommand[];
+  /** Lazy providers use the first command-prefix gesture to fetch their list. */
+  onCommandOpen?: () => void;
   /** How much of the model's context this session is holding, and its ceiling.
    *  Both absent until the first turn ends — the agent only reports them with
    *  its `result`. */
@@ -365,6 +368,7 @@ export function Composer({
   lastCostUsd?: number;
 }) {
   const [text, setText] = useState("");
+  const [caret, setCaret] = useState(0);
   const [menu, setMenu] = useState(false);
   /** The phone's stand-in for the three pickers: one sheet holding all of them. */
   const [sheet, setSheet] = useState(false);
@@ -379,6 +383,7 @@ export function Composer({
   const wide = useMedia(WIDE);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
+  const [dismissedCommand, setDismissedCommand] = useState<string | null>(null);
   // Every option list depends on which provider is chosen: the two agents do
   // not offer the same access wording or the same effort levels.
   const provider = providerFor(choice.agent);
@@ -420,25 +425,33 @@ export function Composer({
   const draft = useRef("");
   const [filePicker, setFilePicker] = useState(false);
 
-  // The slash menu is open while the WHOLE input is one `/word` — a slash
-  // deeper in a sentence is a path or a date, not a command.
-  const slashQuery = /^\/(\S*)$/.exec(text)?.[1];
+  // Codex skills may appear at the caret inside a sentence. Claude's native
+  // slash commands remain whole-input; lib/commandMenu owns that distinction.
+  const commandInput = commandToken(text, choice.agent, caret);
+  const commandQuery = commandInput?.query;
+  const commandIntent = commandInput !== undefined;
+  const commandKey = commandInput
+    ? `${commandInput.start}:${commandInput.end}:${text}`
+    : null;
+  useEffect(() => {
+    if (commandIntent) onCommandOpen?.();
+  }, [commandIntent, onCommandOpen]);
   const matches =
-    slashQuery === undefined
+    commandQuery === undefined
       ? []
       : (commands ?? [])
-          .filter((command) => command.id.toLowerCase().startsWith(slashQuery.toLowerCase()))
+          .filter((item) => item.id.toLowerCase().startsWith(commandQuery.toLowerCase()))
           // A command you have typed in full sorts to the top, so it is the one
           // highlighted. `/context` still matches `context`, so without this the
           // menu stays up on a finished command and Enter "completes" it to
           // itself — swallowing the send and making you press Enter twice.
           .sort(
             (a, b) =>
-              Number(b.id.toLowerCase() === slashQuery.toLowerCase()) -
-              Number(a.id.toLowerCase() === slashQuery.toLowerCase()),
+              Number(b.id.toLowerCase() === commandQuery.toLowerCase()) -
+              Number(a.id.toLowerCase() === commandQuery.toLowerCase()),
           )
           .slice(0, 40);
-  const slashOpen = matches.length > 0;
+  const slashOpen = matches.length > 0 && commandKey !== dismissedCommand;
 
   // Card 85 — the @ menu, on exactly the same terms as the slash menu above:
   // open while the WHOLE box is one `@word`, gone the moment a space is typed.
@@ -463,8 +476,8 @@ export function Composer({
    *  complete, so Enter should send it. Arrowing to a different one puts
    *  completion back. */
   const nothingToComplete =
-    slashQuery !== undefined &&
-    matches[pick]?.id.toLowerCase() === slashQuery.toLowerCase();
+    commandQuery !== undefined &&
+    matches[pick]?.id.toLowerCase() === commandQuery.toLowerCase();
 
   // Keep the highlight inside the list as it narrows.
   useEffect(() => {
@@ -478,8 +491,19 @@ export function Composer({
   }, [whoList.length]);
 
   function complete(command: AgentCommand) {
-    setText(command.insert);
-    areaRef.current?.focus();
+    const token = commandInput ?? commandToken(text, choice.agent, areaRef.current?.selectionStart);
+    if (!token) return;
+    const next = replaceCommandToken(
+      text,
+      token,
+      withCommandTrigger(command.insert, token.trigger),
+    );
+    setText(next.text);
+    setCaret(next.caret);
+    requestAnimationFrame(() => {
+      areaRef.current?.focus();
+      areaRef.current?.setSelectionRange(next.caret, next.caret);
+    });
   }
 
   function completeWho(label: string) {
@@ -932,7 +956,7 @@ export function Composer({
                   onMouseEnter={() => setPick(i)}
                   onClick={() => complete(command)}
                 >
-                  {command.label}
+                  {withCommandTrigger(command.label, commandInput?.trigger ?? "/")}
                 </button>
               </li>
             ))}
@@ -1014,7 +1038,11 @@ export function Composer({
           value={text}
           placeholder={disabled ? "Pick a project first" : `Ask ${choice.name} to…`}
           disabled={disabled}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setCaret(e.target.selectionStart);
+          }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onPaste={(e) => {
             // Only intercept when the clipboard actually carries a file.
             // Pasting text must stay ordinary pasting.
@@ -1046,7 +1074,7 @@ export function Composer({
               }
               if (e.key === "Escape") {
                 e.preventDefault();
-                setText("");
+                setDismissedCommand(commandKey);
                 return;
               }
             }

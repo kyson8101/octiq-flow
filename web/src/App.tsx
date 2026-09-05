@@ -1358,14 +1358,16 @@ export default function App() {
       return {};
     }
   });
+  /** Codex has no command catalog in its exec stream. Remember which projects
+   * this page has already asked its app-server about, while still refreshing
+   * once after a browser reload even when localStorage can draw an old list. */
+  const codexSkillsLoaded = useRef(new Set<string>());
 
-  // The command list comes from the session's own startup announcement, and is
-  // cached per provider from then on. It cannot be fetched ahead of time: the
-  // agent says nothing at all until it has a prompt, so the first chat in a
-  // project is what fills this.
-  // Read from every loaded chat, not only the visible one — a chat working in
-  // the background is just as good a source, and its project should have its
-  // menu filled by the time you switch to it.
+  // Claude's command list comes from the session's startup announcement and is
+  // cached per provider from then on. Codex has no corresponding exec event;
+  // `loadCodexSkills` below fills its side lazily from the app-server instead.
+  // Read startup lists from every loaded chat, not only the visible one — a
+  // chat working in the background is just as good a source.
   useEffect(() => {
     setCommands((prev) => {
       let next = prev;
@@ -1508,6 +1510,33 @@ export default function App() {
     () => workspaces.find((w) => w.id === projectId) ?? null,
     [workspaces, projectId],
   );
+  const loadCodexSkills = useCallback(() => {
+    if (choice.agent !== "codex" || !projectId || !project?.primary_path) return;
+    const key = `${projectId}:codex`;
+    if (codexSkillsLoaded.current.has(key)) return;
+    codexSkillsLoaded.current.add(key);
+
+    bridge
+      .invoke<unknown>("codex_skills", { cwd: project.primary_path })
+      .then((value) => {
+        const skills = Array.isArray(value)
+          ? value.filter((skill): skill is string => typeof skill === "string")
+          : [];
+        setCommands((previous) => {
+          const next = {
+            ...previous,
+            [projectId]: { ...previous[projectId], codex: skills },
+          };
+          remember(CMDS_KEY, JSON.stringify(next));
+          return next;
+        });
+      })
+      .catch(() => {
+        // A reconnect or a newly installed Codex should get another chance the
+        // next time the slash menu is opened.
+        codexSkillsLoaded.current.delete(key);
+      });
+  }, [choice.agent, project, projectId]);
   const grouped = useMemo(() => byProject(conversations), [conversations]);
 
   /** The chat on screen. Everything else is still running behind it. */
@@ -3600,6 +3629,7 @@ export default function App() {
             disabled={!project}
             installed={installed}
             commands={providerCommands(choice.agent, (projectId && commands[projectId]?.[choice.agent]) || [])}
+            onCommandOpen={loadCodexSkills}
             contextTokens={chat.contextTokens}
             contextWindow={chat.contextWindow}
             activity={chat.activity}
