@@ -1671,7 +1671,7 @@ function foldCodex(
   }
 
   if (read.kind === "say") {
-    return withCurrent(state, parent, speaker, (m) => ({
+    return withCodexCurrent(state, parent, speaker, (m) => ({
       ...m,
       blocks: [...m.blocks, { kind: "text", text: read.text }],
     }));
@@ -1704,7 +1704,7 @@ function foldCodex(
     };
   }
 
-  return withCurrent(state, parent, speaker, (m) => ({
+  return withCodexCurrent(state, parent, speaker, (m) => ({
     ...m,
     blocks: [
       ...m.blocks,
@@ -1719,6 +1719,68 @@ function foldCodex(
       },
     ],
   }));
+}
+
+/** The part of a Codex turn that belongs at the current point in the transcript.
+ *
+ * Codex sends a succession of whole items but only one `turn.completed`, so the
+ * first implementation kept one message streaming for the whole turn. When a
+ * person sent a follow-up while that turn was running, every later Codex item
+ * was consequently written back into the earlier message ABOVE the follow-up.
+ * The stored event order was right; the reducer moved the visible words.
+ *
+ * Keep adjacent items in one message, as before. Once anything has arrived
+ * after that message, close it and continue in a fresh message at the end. The
+ * UI still groups adjacent assistant messages into one visual turn, while a
+ * mid-turn user message now remains exactly where it arrived.
+ *
+ * The fresh fragment also names the prompt the interrupted turn is answering.
+ * Without that anchor, prose below the newly queued question would look like
+ * its answer even though Codex has not started that question yet. */
+function withCodexCurrent(
+  state: ChatState,
+  parent: string | undefined,
+  speaker: Speaker | undefined,
+  fn: (m: Message) => Message,
+): ChatState {
+  const idx = state.messages
+    .map((m) => m.streaming && m.parent === parent && m.speaker?.id === speaker?.id)
+    .lastIndexOf(true);
+  if (idx < 0 || idx === state.messages.length - 1) {
+    return withCurrent(state, parent, speaker, fn);
+  }
+
+  const current = state.messages[idx];
+  const target =
+    current.replyTo ??
+    [...state.messages.slice(0, idx)]
+      .reverse()
+      .find((m) => m.role === "user" && !m.parent && m.speaker?.id === undefined);
+  const preview = target?.blocks
+    .filter((b) => b.kind === "text")
+    .map((b) => ("text" in b ? b.text : ""))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const replyTo = target
+    ? current.replyTo ?? {
+        id: target.id,
+        preview:
+          preview && preview.length > 96
+            ? `${preview.slice(0, 95).trimEnd()}…`
+            : preview || "Attached message",
+      }
+    : undefined;
+  const messages = state.messages.map((m, i) =>
+    i === idx ? { ...m, streaming: false } : m,
+  );
+
+  return withCurrent(
+    { ...state, messages, ...(replyTo ? { activeReply: replyTo } : {}) },
+    parent,
+    speaker,
+    fn,
+  );
 }
 
 /** Codex's one-shot turn has accepted its prompt.

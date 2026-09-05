@@ -203,6 +203,62 @@ describe("a Codex chat of its own", () => {
     expect(answered.messages[1].replyTo).toBeUndefined();
   });
 
+  it("keeps a follow-up sent mid-turn between the Codex items around it", () => {
+    let state = addUserTurn(emptyChat(), "update the instructions", [], 1, undefined, "user-1");
+    state = reduceChat(
+      state,
+      { type: "turn.started", octiq_user_turn_id: "user-1" },
+      2,
+    );
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "I am checking the file." },
+    });
+
+    // Sent while Codex is still working. Its position is part of the
+    // conversation: later tool calls and the final answer must not be folded
+    // back into the assistant message above it.
+    state = addUserTurn(state, "updated?", [], 3, undefined, "user-2");
+    state = reduceChat(state, {
+      type: "item.started",
+      item: {
+        id: "item_1",
+        type: "command_execution",
+        command: "npm run lint",
+        status: "in_progress",
+      },
+    });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: {
+        id: "item_1",
+        type: "command_execution",
+        command: "npm run lint",
+        aggregated_output: "passed",
+        status: "completed",
+      },
+    });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_2", type: "agent_message", text: "Updated and verified." },
+    });
+
+    expect(state.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    expect(said(state.messages[1])).toBe("I am checking the file.");
+    expect(said(state.messages[2])).toBe("updated?");
+    expect(said(state.messages[3])).toBe("Updated and verified.");
+    expect(state.messages[3].blocks.some((b) => b.kind === "tool")).toBe(true);
+    expect(state.messages[3].replyTo).toEqual({
+      id: state.messages[0].id,
+      preview: "update the instructions",
+    });
+  });
+
   it("ends its turn on its own full stop", () => {
     // No seat, no room: `turn.completed` is this conversation's full stop, the
     // same thing Claude's `result` is. Left unread, the chat went on saying it
