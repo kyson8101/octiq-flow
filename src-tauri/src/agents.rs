@@ -137,29 +137,29 @@ pub fn codex_skills(cwd: String) -> Result<Vec<String>, String> {
                 "capabilities": { "experimentalApi": true }
             }
         }),
-        json!({ "method": "initialized" }),
+        json!({ "method": "initialized", "params": {} }),
         json!({
             "id": 2,
             "method": "skills/list",
             "params": { "cwds": [cwd.to_string_lossy()], "forceReload": false }
         }),
     ];
-    let write_result = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Codex stdin was unavailable".to_string())
-        .and_then(|mut stdin| {
-            for message in request {
-                writeln!(stdin, "{message}")
-                    .map_err(|e| format!("could not ask Codex for skills: {e}"))?;
-            }
-            Ok(())
-        });
-    if let Err(error) = write_result {
+    let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(error);
+        return Err("Codex stdin was unavailable".into());
+    };
+    for message in request {
+        if let Err(error) = writeln!(stdin, "{message}") {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("could not ask Codex for skills: {error}"));
+        }
     }
+
+    // Keep the pipe open while app-server answers. Closing stdin immediately
+    // after the writes is an EOF signal, and lets the short-lived server exit
+    // before its skills/list response reaches the reader below.
 
     // Drain stdout on its own thread. A real skill catalog can exceed a pipe's
     // buffer, so waiting for the child before reading it can deadlock.
@@ -182,6 +182,7 @@ pub fn codex_skills(cwd: String) -> Result<Vec<String>, String> {
     let answer = receive
         .recv_timeout(CODEX_SKILLS_TIMEOUT)
         .unwrap_or_else(|_| Err("Codex took too long to load its skill list".into()));
+    drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
     let _ = reader.join();

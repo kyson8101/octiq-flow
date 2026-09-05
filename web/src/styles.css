@@ -208,7 +208,7 @@ body {
 .topbar-title {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 7px;
   flex: 0 1 auto;
   min-width: 0;
   padding: 5px 6px;
@@ -230,11 +230,36 @@ body {
   background: var(--bg-1);
 }
 
+.topbar-logo {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+}
+
+.topbar-identity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.05;
+}
+
 .topbar-name {
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.topbar-version {
+  margin-top: 2px;
+  color: var(--fg-3);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .topbar-caret {

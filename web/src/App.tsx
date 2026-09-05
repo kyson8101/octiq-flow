@@ -3229,7 +3229,16 @@ export default function App() {
             }}
             disabled={chatExpanded || (!hasDrawer && !navShut)}
           >
-            <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
+            <img
+              className="topbar-logo"
+              src={`${import.meta.env.BASE_URL}icon-192.png`}
+              alt=""
+              aria-hidden="true"
+            />
+            <span className="topbar-identity">
+              <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
+              <span className="topbar-version">v{__APP_VERSION__}</span>
+            </span>
             <span className="topbar-caret" aria-hidden="true">
               <svg
                 width="12"
