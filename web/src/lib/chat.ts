@@ -1751,26 +1751,26 @@ function withCodexCurrent(
   }
 
   const current = state.messages[idx];
-  const target =
-    current.replyTo ??
-    [...state.messages.slice(0, idx)]
-      .reverse()
-      .find((m) => m.role === "user" && !m.parent && m.speaker?.id === undefined);
+  const target = [...state.messages.slice(0, idx)]
+    .reverse()
+    .find((m) => m.role === "user" && !m.parent && m.speaker?.id === undefined);
   const preview = target?.blocks
     .filter((b) => b.kind === "text")
     .map((b) => ("text" in b ? b.text : ""))
     .join(" ")
     .replace(/\s+/g, " ")
     .trim();
-  const replyTo = target
-    ? current.replyTo ?? {
-        id: target.id,
-        preview:
-          preview && preview.length > 96
-            ? `${preview.slice(0, 95).trimEnd()}…`
-            : preview || "Attached message",
-      }
-    : undefined;
+  const replyTo =
+    current.replyTo ??
+    (target
+      ? {
+          id: target.id,
+          preview:
+            preview && preview.length > 96
+              ? `${preview.slice(0, 95).trimEnd()}…`
+              : preview || "Attached message",
+        }
+      : undefined);
   const messages = state.messages.map((m, i) =>
     i === idx ? { ...m, streaming: false } : m,
   );
