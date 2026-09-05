@@ -117,6 +117,7 @@ import { GitButton, GitPanel } from "./components/GitPanel";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
 import { FullscreenButton } from "./components/FullscreenButton";
 import { InstalledReload } from "./components/InstalledReload";
+import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -3297,6 +3298,15 @@ export default function App() {
               to spare. A desktop puts each of them away by its own control. */}
           {wide && hasDrawer && mode === "chat" && (
             <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
+          )}
+
+          {conversationId && mode === "chat" && (
+            <ChatDeleteButton
+              deleting={deleting.has(conversationId)}
+              disabled={leaving.has(conversationId)}
+              deleteMs={UNDO_MS}
+              onDelete={() => deleteConversation(conversationId)}
+            />
           )}
 
           {/* Only drawn for a home-screen app, which has no browser chrome to

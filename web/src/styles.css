@@ -269,6 +269,19 @@ body {
   color: var(--fg-0);
 }
 
+/* Destructive while remaining the same quiet top-bar action as its peers.
+   Once the undo clock starts it stays red so the way back is visible even
+   without hover. */
+.topbar-delete:hover,
+.topbar-delete.is-going {
+  color: var(--danger);
+}
+
+.topbar-delete:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* ---- Reload, for an installed window ---------------------------------- */
 /* Drawn only when there is no browser chrome to reload from. It spins from the
    press until the document goes away, which on a phone over a tunnel is long

@@ -13,6 +13,7 @@ import { modelFromId } from "../lib/agentProviders";
 import type { Conversation } from "../lib/store";
 import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/projectOrder";
 import { projectColor } from "../lib/projectColor";
+import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 
@@ -568,7 +569,7 @@ function ProjectNode({
                           onDelete(c.id);
                         }}
                       >
-                        {going ? <DrainIcon ms={deleteMs} /> : <CloseIcon />}
+                        {going ? <DeleteCountdownIcon ms={deleteMs} /> : <CloseIcon />}
                       </button>
                     </span>
                   </div>
@@ -704,34 +705,6 @@ function ArchiveIcon() {
       <path d="M6 7v12h12V7" />
       <path d="M3 4h18v3H3z" />
       <path d="M10 11h4" />
-    </svg>
-  );
-}
-
-/** How long is left before a deleted chat actually goes, drawn as a ring that
- *  empties around the × that started it.
- *
- *  It is a loader that is also a clock: it says the delete is under way, and
- *  how much of it is left to take back. Mounted only while the row is counting,
- *  so a row deleted, taken back, and deleted again starts a fresh ring rather
- *  than inheriting the first one's remaining seconds.
- *
- *  The ring is CSS, not a ticking timer. The clock that actually commits the
- *  delete lives with the chat list; two clocks counting the same two seconds
- *  would sooner or later disagree on screen. This one is not load-bearing — it
- *  runs out a moment either side of the real one and nothing depends on which. */
-function DrainIcon({ ms }: { ms: number }) {
-  return (
-    <svg className="chat-drain" width="17" height="17" viewBox="0 0 16 16" aria-hidden="true">
-      <circle className="chat-drain-track" cx="8" cy="8" r="6.6" />
-      <circle
-        className="chat-drain-arc"
-        cx="8"
-        cy="8"
-        r="6.6"
-        style={{ animationDuration: `${ms}ms` }}
-      />
-      <path className="chat-drain-x" d="M9.9 6.1 6.1 9.9M6.1 6.1l3.8 3.8" />
     </svg>
   );
 }
