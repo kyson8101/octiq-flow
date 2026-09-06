@@ -17,7 +17,30 @@ use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecursiveMode, Watcher};
+
+#[cfg(not(test))]
+type GitWatcher = notify::RecommendedWatcher;
+#[cfg(test)]
+type GitWatcher = notify::PollWatcher;
+
+#[cfg(not(test))]
+fn new_watcher<F: notify::EventHandler>(handler: F) -> notify::Result<GitWatcher> {
+    notify::recommended_watcher(handler)
+}
+
+// macOS FSEvents is unavailable inside the filesystem sandbox used by unit
+// tests. PollWatcher exercises the same filtering, debounce and bus path with
+// deterministic delivery; production continues to use the native backend.
+#[cfg(test)]
+fn new_watcher<F: notify::EventHandler>(handler: F) -> notify::Result<GitWatcher> {
+    GitWatcher::new(
+        handler,
+        notify::Config::default()
+            .with_poll_interval(Duration::from_millis(50))
+            .with_compare_contents(true),
+    )
+}
 
 /// Trailing quiet period: emit once no event has arrived for this long.
 const QUIET: Duration = Duration::from_millis(400);
@@ -29,7 +52,7 @@ const MAX_COALESCE: Duration = Duration::from_millis(2000);
 /// set changes). Dropping the old watcher disconnects its event channel, which
 /// ends its debounce thread.
 #[derive(Default)]
-pub struct GitWatchState(Mutex<Option<RecommendedWatcher>>);
+pub struct GitWatchState(Mutex<Option<GitWatcher>>);
 
 /// (Re)point the watcher at `paths` — the union of every project's folders.
 /// Replaces any previous watcher. An empty list stops watching. Paths that are
@@ -60,7 +83,7 @@ pub fn git_watch_paths_impl(state: &GitWatchState, paths: Vec<String>) -> Result
     // every path of every project.
     let (tx, rx) = mpsc::channel::<String>();
     let event_roots = roots.clone();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    let mut watcher = new_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(event) = res else { return };
         if event.paths.is_empty() {
             // A dropped/overflowed event batch: we no longer know what changed,
@@ -211,6 +234,7 @@ fn is_relevant(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A branch switch reaches an attached browser.
     ///
@@ -222,7 +246,12 @@ mod tests {
     /// agent had just left.
     #[test]
     fn a_head_rewrite_reaches_the_bus() {
-        let root = std::env::temp_dir().join(format!("octiq-gitwatch-{}", std::process::id()));
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "octiq-gitwatch-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         let git = root.join(".git");
         std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -231,17 +260,38 @@ mod tests {
         let state = GitWatchState::default();
         git_watch_paths_impl(&state, vec![root.to_string_lossy().into_owned()]).unwrap();
 
-        std::fs::write(git.join("HEAD"), "ref: refs/heads/v2\n").unwrap();
-
-        // QUIET + MAX_COALESCE, plus room for the platform's own fs latency.
+        // Filesystem watcher registration is asynchronous on some platforms.
+        // Keep making distinct HEAD rewrites until one is observed instead of
+        // betting the integration test on a single write immediately after
+        // `watch`. MAX_COALESCE guarantees continuous writes still emit.
         let deadline = Instant::now() + Duration::from_secs(10);
+        let mut next_write = Instant::now() + Duration::from_millis(100);
+        let mut revision = 0_u32;
         let mut got = None;
         while Instant::now() < deadline && got.is_none() {
+            if Instant::now() >= next_write {
+                revision += 1;
+                std::fs::write(
+                    git.join("HEAD"),
+                    format!("ref: refs/heads/watcher-test-{revision}\n"),
+                )
+                .unwrap();
+                next_write = Instant::now() + Duration::from_millis(250);
+            }
             match rx.try_recv() {
                 Ok(text) => {
                     let frame: serde_json::Value = serde_json::from_str(&text).unwrap();
                     if frame["event"] == "git-status-changed" {
-                        got = Some(frame);
+                        let roots = frame["payload"]
+                            .as_array()
+                            .expect("payload is a list of roots");
+                        if roots.is_empty()
+                            || roots
+                                .iter()
+                                .any(|r| r.as_str() == Some(&root.to_string_lossy()))
+                        {
+                            got = Some(frame);
+                        }
                     }
                 }
                 // The bus is process-global: other tests emit onto it too, and a
@@ -254,6 +304,7 @@ mod tests {
                 Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
             }
         }
+        drop(state);
         let _ = std::fs::remove_dir_all(&root);
 
         let frame = got.expect("no git-status-changed frame arrived for a HEAD rewrite");

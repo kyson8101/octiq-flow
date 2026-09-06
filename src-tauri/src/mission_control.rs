@@ -2223,16 +2223,17 @@ mod tests {
         assert!(clean_connector_reference("\n".into()).is_err());
     }
 
-    /// A local opt-in smoke test for the real schema. CI and ordinary unit
-    /// runs have no database, so they deliberately skip it; the migration
-    /// workflow supplies DATABASE_URL and proves this module can read the
-    /// namespaced operational store end-to-end.
+    /// A local opt-in smoke test for the real schema. It must never inherit the
+    /// service's DATABASE_URL: ordinary unit runs can be launched by that
+    /// service, and the configured database may be unavailable or contain live
+    /// data. Run this test explicitly with an isolated, migrated test database.
     #[test]
+    #[ignore = "requires isolated OCTIQOS_TEST_DATABASE_URL; never uses service DATABASE_URL"]
     fn configured_store_reads_the_migrated_schema() {
-        if std::env::var("DATABASE_URL").is_err() {
-            return;
-        }
-        let payload = dashboard_impl().expect("migrated OctiqOS store should be readable");
+        let url = std::env::var("OCTIQOS_TEST_DATABASE_URL").expect("isolated test URL");
+        let mut client = Client::connect(&url, NoTls).expect("test PostgreSQL should be reachable");
+        let payload =
+            dashboard_value(&mut client).expect("migrated OctiqOS store should be readable");
         assert!(payload.get("summary").is_some());
         assert!(payload.get("tasks").is_some());
     }
