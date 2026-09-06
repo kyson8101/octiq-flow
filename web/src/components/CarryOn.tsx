@@ -1,28 +1,43 @@
-// An answer that stops because the backend did.
-//
-// Drawn at the END of the conversation and nowhere else, because that is the
-// only place a cut turn can be: the restart ended every agent at once, and what
-// it interrupted is whatever each chat was last saying.
-//
-// It is a strip above the prompt box rather than a message in the list. The
-// list is the record — what was actually said — and nothing said this. This is
-// the app admitting to something it did.
-//
-// One button, because there is only one thing to do. Everything else is already
-// true: the words are on disk, the agent's own memory of the turn is on disk,
-// and typing anything at all would resume the chat anyway. What the button adds
-// is that the agent is told what happened and asked to finish, instead of the
-// person having to guess the wording — see lib/carryOn.
-export function CarryOn({ onCarryOn }: { onCarryOn: () => void }) {
+import { deriveRecovery, type RecoveryEvidence } from "../lib/recovery";
+import "./CarryOn.css";
+
+export function CarryOn({
+  onCarryOn,
+  evidence,
+}: {
+  onCarryOn: () => void;
+  evidence?: RecoveryEvidence;
+}) {
+  const recovery = evidence
+    ? deriveRecovery(evidence)
+    : { kind: "checking", canContinue: false };
+  if (recovery.kind === "hidden") return null;
+  const message = recovery.kind === "offline"
+    ? "Connection lost. The agent may still be working; reconnect to check its status."
+    : recovery.kind === "checking"
+      ? "Checking whether the agent is still working."
+      : recovery.kind === "exited"
+        ? `The agent exited${evidence?.exited?.code != null ? ` with code ${evidence.exited.code}` : " without a recorded exit code"}. No active worker was found.`
+        : "This conversation is unfinished, but the connected server reports no active worker. The interruption cause is unknown.";
+  const seq = evidence?.checkpointSeq;
+  const queued = evidence?.queuedCount;
   return (
     <div className="carry-on" role="status">
-      <span className="carry-on-said">
-        The backend stopped while this answer was being written. Nothing was lost — the agent still
-        remembers the turn.
-      </span>
-      <button className="carry-on-btn" type="button" onClick={onCarryOn}>
-        Carry on
-      </button>
+      <div className="carry-on-said">
+        <span>{message}</span>
+        {seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 && (
+          <span className="carry-on-detail">Last recorded transcript event: #{seq}. This does not confirm file saves.</span>
+        )}
+        {queued !== undefined && Number.isSafeInteger(queued) && queued >= 0 && (
+          <span className="carry-on-detail">{queued} queued {queued === 1 ? "message" : "messages"} recorded.</span>
+        )}
+        {recovery.canContinue && (
+          <span className="carry-on-detail">Carry on sends a request to check completed actions before resuming.</span>
+        )}
+      </div>
+      {recovery.canContinue && (
+        <button className="carry-on-btn" type="button" onClick={onCarryOn}>Carry on</button>
+      )}
     </div>
   );
 }

@@ -31,6 +31,23 @@ describe("ProseLink", () => {
     expect(html).toContain('title="the docs"');
   });
 
+  it("opens an absolute local file inside OctiqFlow", () => {
+    const html = render(
+      "[prose-01.md](/Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md)",
+    );
+    expect(html).toContain('<button class="prose-path"');
+    expect(html).toContain(
+      'title="/Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md"',
+    );
+    expect(html).not.toContain("<a");
+    expect(html).not.toContain('target="_blank"');
+  });
+
+  it("decodes a local path and removes its line reference", () => {
+    const html = render("[notes](</Users/kyson/My Notes.md:12:3>)");
+    expect(html).toContain('title="/Users/kyson/My Notes.md"');
+  });
+
   // react-markdown empties the href of a scheme it will not vouch for. A new
   // tab onto ourselves is worse than plain text, so it stops being a link.
   it("draws a link with no href as plain text", () => {

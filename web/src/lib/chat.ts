@@ -365,9 +365,6 @@ export type ChatState = {
   commands?: string[];
   /** True between sending a turn and its `result`. */
   busy: boolean;
-  /** A Codex prompt whose answer will not be adjacent to it because another
-   * queued message arrived later. Copied onto the answer when it opens. */
-  activeReply?: ReplyTarget;
   /** What the agent is doing when it is doing something other than writing —
    *  compacting, so far. Shown in place of the generic "working…". */
   activity?: string;
@@ -618,7 +615,7 @@ function readSpeaker(raw: unknown): Speaker | undefined {
  *  same time with the main agent's own half-written message above both, and in
  *  a room two SEATS do the same. Matching on only one axis folds two voices
  *  into one bubble. */
-function withCurrent(
+function withClaudeCurrent(
   state: ChatState,
   parent: string | undefined,
   speaker: Speaker | undefined,
@@ -635,7 +632,6 @@ function withCurrent(
       streaming: true,
       parent,
       speaker,
-      ...(!parent && !speaker && state.activeReply ? { replyTo: state.activeReply } : {}),
     };
     return { ...state, messages: [...state.messages, fn(seeded)] };
   }
@@ -706,7 +702,6 @@ const turnOver = {
   // summary it owes: whatever the next turn brings, it is not that.
   compactingSince: undefined,
   awaitingSummary: undefined,
-  activeReply: undefined,
 } as const;
 
 /** Two blocks say the same thing, so the second is a copy rather than news.
@@ -1099,7 +1094,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     return next;
   }
 
-  if (type === "stream_event") return reduceStream(state, asObj(e.event), parent, speaker, now);
+  if (type === "stream_event")
+    return reduceClaudeStream(state, asObj(e.event), parent, speaker, now);
 
   if (type === "assistant") {
     const msg = asObj(e.message);
@@ -1697,6 +1693,7 @@ function foldCodex(
                 args: read.args,
                 argsJson: JSON.stringify(read.args),
                 ...(read.result !== undefined ? { result: read.result } : {}),
+                ...(read.details !== undefined ? { details: read.details } : {}),
               }
             : b,
         ),
@@ -1716,27 +1713,35 @@ function foldCodex(
         argsJson: JSON.stringify(read.args),
         state: read.state,
         ...(read.result !== undefined ? { result: read.result } : {}),
+        ...(read.details !== undefined ? { details: read.details } : {}),
       },
     ],
   }));
 }
 
-/** The part of a Codex turn that belongs at the current point in the transcript.
+/** A host turn Codex has not accepted yet.
  *
- * Codex sends a succession of whole items but only one `turn.completed`, so the
- * first implementation kept one message streaming for the whole turn. When a
- * person sent a follow-up while that turn was running, every later Codex item
- * was consequently written back into the earlier message ABOVE the follow-up.
- * The stored event order was right; the reducer moved the visible words.
+ * These messages deliberately remain in `messages`: every existing caller can
+ * still render, cancel and persist them. Their position carries the state — all
+ * waiting turns live at the tail of the transcript until their matching
+ * `turn.started` moves one into the conversation. Claude does not use this
+ * rule; its own user echo is its acceptance signal. */
+function waitingForCodex(message: Message): boolean {
+  return (
+    message.role === "user" &&
+    !message.echo &&
+    !message.takenUp &&
+    !message.to
+  );
+}
+
+/** Add to the Codex turn that is currently speaking.
  *
- * Keep adjacent items in one message, as before. Once anything has arrived
- * after that message, close it and continue in a fresh message at the end. The
- * UI still groups adjacent assistant messages into one visual turn, while a
- * mid-turn user message now remains exactly where it arrived.
- *
- * The fresh fragment also names the prompt the interrupted turn is answering.
- * Without that anchor, prose below the newly queued question would look like
- * its answer even though Codex has not started that question yet. */
+ * Unlike Claude, Codex sends whole items inside a turn. A queued user message
+ * may arrive between those items, but it has not joined the conversation yet:
+ * keep updating the active assistant message above it so every waiting turn
+ * remains at the bottom. When no Codex message is open, seed one immediately
+ * before that waiting tail. */
 function withCodexCurrent(
   state: ChatState,
   parent: string | undefined,
@@ -1746,41 +1751,36 @@ function withCodexCurrent(
   const idx = state.messages
     .map((m) => m.streaming && m.parent === parent && m.speaker?.id === speaker?.id)
     .lastIndexOf(true);
-  if (idx < 0 || idx === state.messages.length - 1) {
-    return withCurrent(state, parent, speaker, fn);
+  const waitingTail =
+    !parent &&
+    !speaker &&
+    idx >= 0 &&
+    state.messages.slice(idx + 1).every(waitingForCodex);
+
+  if (idx >= 0 && (idx === state.messages.length - 1 || waitingTail)) {
+    const messages = [...state.messages];
+    messages[idx] = fn(messages[idx]);
+    return { ...state, messages };
   }
 
-  const current = state.messages[idx];
-  const target = [...state.messages.slice(0, idx)]
-    .reverse()
-    .find((m) => m.role === "user" && !m.parent && m.speaker?.id === undefined);
-  const preview = target?.blocks
-    .filter((b) => b.kind === "text")
-    .map((b) => ("text" in b ? b.text : ""))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const replyTo =
-    current.replyTo ??
-    (target
-      ? {
-          id: target.id,
-          preview:
-            preview && preview.length > 96
-              ? `${preview.slice(0, 95).trimEnd()}…`
-              : preview || "Attached message",
-        }
-      : undefined);
   const messages = state.messages.map((m, i) =>
     i === idx ? { ...m, streaming: false } : m,
   );
-
-  return withCurrent(
-    { ...state, messages, ...(replyTo ? { activeReply: replyTo } : {}) },
+  const seeded = fn({
+    id: `m${state.messages.length}`,
+    role: "assistant",
+    blocks: [],
+    streaming: true,
     parent,
     speaker,
-    fn,
-  );
+  });
+  const waitingAt =
+    !parent && !speaker ? messages.findIndex(waitingForCodex) : -1;
+  if (waitingAt < 0) return { ...state, messages: [...messages, seeded] };
+
+  const next = [...messages];
+  next.splice(waitingAt, 0, seeded);
+  return { ...state, messages: next };
 }
 
 /** Codex's one-shot turn has accepted its prompt.
@@ -1807,41 +1807,41 @@ function codexTurnStarted(
   const turnId = asStr(event.octiq_user_turn_id);
   const at = turnId
     ? state.messages.findIndex(
-        (m) => m.role === "user" && !m.echo && !m.to && m.turnId === turnId,
+        (m) =>
+          m.role === "user" &&
+          !m.echo &&
+          !m.takenUp &&
+          !m.to &&
+          m.turnId === turnId,
       )
     : state.messages.findIndex(
         (m) => m.role === "user" && !m.echo && !m.takenUp && !m.to,
       );
 
-  const target = at >= 0 ? state.messages[at] : undefined;
-  // Ordinarily the prompt is immediately above its answer and needs no extra
-  // label. A later message is what makes the eventual answer ambiguous; only
-  // that case carries a compact reply anchor onto the assistant turn.
-  const laterMessage = at >= 0 && state.messages.slice(at + 1).some((m) => !m.parent);
-  const preview = target?.blocks
-    .filter((b) => b.kind === "text")
-    .map((b) => ("text" in b ? b.text : ""))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const activeReply =
-    target && laterMessage
-      ? {
-          id: target.id,
-          preview:
-            preview && preview.length > 96 ? `${preview.slice(0, 95).trimEnd()}…` : preview || "Attached message",
-        }
-      : undefined;
+  // Starting a new turn seals whatever the previous Codex process left open.
+  // Remove the accepted prompt from the waiting tail, then place it after all
+  // settled conversation entries and before every message still queued. The
+  // next Codex item is inserted at that same boundary by `withCodexCurrent`.
+  const closed = state.messages.map((m) =>
+    m.streaming && !m.parent && !m.speaker
+      ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) }
+      : m,
+  );
+  let messages = closed;
+  if (at >= 0) {
+    const accepted = { ...closed[at], takenUp: true };
+    const remaining = closed.filter((_, i) => i !== at);
+    const settled = remaining.filter((m) => !waitingForCodex(m));
+    const waiting = remaining.filter(waitingForCodex);
+    messages = [...settled, accepted, ...waiting];
+  }
 
   return {
     ...state,
     busy: true,
-    activeReply,
+    exited: undefined,
     turnStartedAt: state.turnStartedAt ?? now,
-    messages:
-      at < 0
-        ? state.messages
-        : state.messages.map((m, i) => (i === at ? { ...m, takenUp: true } : m)),
+    messages,
   };
 }
 
@@ -1977,7 +1977,7 @@ function foldSkillBrief(state: ChatState, brief: string, sourceId: string, uuid:
   };
 }
 
-function reduceStream(
+function reduceClaudeStream(
   state: ChatState,
   ev: Json,
   parent: string | undefined,
@@ -1997,6 +1997,7 @@ function reduceStream(
       return {
         ...state,
         busy: mine ? true : state.busy,
+        exited: mine && !parent ? undefined : state.exited,
         // Only if the turn is not already timed. `addUserTurn` starts the clock
         // when you press send, which is the honest start — this is for the turn
         // nobody here started: a resumed session, or a catch-up on a chat that
@@ -2012,7 +2013,7 @@ function reduceStream(
     case "content_block_start": {
       const block = asObj(ev.content_block);
       const kind = asStr(block.type);
-      return withCurrent(state, parent, speaker, (m) => {
+      return withClaudeCurrent(state, parent, speaker, (m) => {
         if (kind === "tool_use") {
           return {
             ...m,
@@ -2040,19 +2041,19 @@ function reduceStream(
       if (kind === "text_delta") {
         const text = asStr(delta.text);
         state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(text) };
-        return withCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "text", text) }));
+        return withClaudeCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "text", text) }));
       }
       if (kind === "thinking_delta") {
         // Not counted here: the agent counts its own thinking on the
         // `thinking_tokens` channel, and counting the characters too would say
         // every reasoned token twice.
-        return withCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
+        return withClaudeCurrent(state, parent, speaker, (m) => ({ ...m, blocks: appendText(m.blocks, "thinking", asStr(delta.thinking)) }));
       }
       if (kind === "input_json_delta") {
         // A tool's arguments stream in as JSON text. Kept raw until the block
         // closes: half a JSON document does not parse.
         state = { ...state, turnDraft: (state.turnDraft ?? 0) + asTokens(asStr(delta.partial_json)) };
-        return withCurrent(state, parent, speaker, (m) => {
+        return withClaudeCurrent(state, parent, speaker, (m) => {
           const at = m.blocks.map((b) => b.kind).lastIndexOf("tool");
           if (at < 0) return m;
           const blocks = [...m.blocks];
@@ -2066,7 +2067,7 @@ function reduceStream(
     }
 
     case "content_block_stop": {
-      return withCurrent(state, parent, speaker, (m) => ({
+      return withClaudeCurrent(state, parent, speaker, (m) => ({
         ...m,
         blocks: m.blocks.map((b) => {
           if (b.kind !== "tool" || b.args !== undefined || !b.argsJson) return b;
@@ -2151,6 +2152,7 @@ export function addUserTurn(
     turnDraft: mine && !state.busy ? 0 : state.turnDraft,
     // The last failure belonged to the last turn; asking again clears it.
     failure: undefined,
+    exited: mine ? undefined : state.exited,
     messages: [
       ...state.messages,
       {

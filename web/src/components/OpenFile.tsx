@@ -10,36 +10,22 @@
 // same reason: it is one thing the whole app shares. `useOpenFile()` hands back
 // a function, and the caller does not have to know which of the two windows a
 // given file wants.
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { isHtml, isImage, isPdf } from "../lib/files";
 import { FilePanel } from "./FilePanel";
+import {
+  CloseFileContext,
+  OpenFileContext,
+  type OpenFile,
+} from "./OpenFileContext";
 import { Viewer } from "./Viewer";
 
-type Open = (path: string) => void;
-
-const OpenFileContext = createContext<Open>(() => {});
-const CloseFileContext = createContext<() => void>(() => {});
+export { useCloseFile, useOpenFile } from "./OpenFileContext";
 
 /** How long the panel takes to slide off a phone screen. Matches the transform
  *  transition in styles.css — unmount sooner and it disappears mid-slide. */
 const SLIDE_MS = 220;
-
-/** Open a file: an HTML page in the native browser, a picture or PDF full
- *  screen, anything else in the column beside the chat. */
-export function useOpenFile(): Open {
-  return useContext(OpenFileContext);
-}
-
-/** Put away whatever file is on screen, in either window.
- *
- *  The panel closes itself when its own X is clicked; this is for the caller
- *  that has nothing to do with the file — switching PROJECT. A file belongs to
- *  the project it was opened from, and left on screen beside the next
- *  project's chat it reads as one of that project's files. */
-export function useCloseFile(): () => void {
-  return useContext(CloseFileContext);
-}
 
 export function OpenFileProvider({ children }: { children: React.ReactNode }) {
   const [viewing, setViewing] = useState<string | null>(null);
@@ -54,7 +40,7 @@ export function OpenFileProvider({ children }: { children: React.ReactNode }) {
     setOpened(null);
   }, []);
 
-  const open = useCallback<Open>((path) => {
+  const open = useCallback<OpenFile>((path) => {
     // Whichever window this file wants, the other one closes. Two files on
     // screen at once is never what the click meant.
     if (isHtml(path)) {

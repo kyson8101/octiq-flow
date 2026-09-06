@@ -42,7 +42,7 @@ describe("readCarryOn", () => {
   it("says what happened rather than what was sent", () => {
     // The reader gets a line about the restart, not the instruction the agent
     // was given.
-    expect(readCarryOn(CARRY_ON)).toBe("asked it to carry on after the backend stopped");
+    expect(readCarryOn(CARRY_ON)).toBe("asked it to carry on after an interruption");
   });
 });
 

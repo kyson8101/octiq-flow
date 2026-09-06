@@ -121,9 +121,15 @@ import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
-import { PermissionAsk, askSummary, type Ask } from "./components/PermissionAsk";
-import { UserQuestion, type Question } from "./components/UserQuestion";
+import { ChatRequests } from "./components/ChatRequests";
+import { useChatRequests } from "./lib/useChatRequests";
 import { CarryOn } from "./components/CarryOn";
+import { queuedMessageCount } from "./lib/recovery";
+import { AttentionInbox } from "./components/AttentionInbox";
+import { useAttentionInbox } from "./lib/useAttentionInbox";
+import { useInterruptedChats } from "./lib/useInterruptedChats";
+import { isWorkspaceBusy } from "./lib/workspaceContext";
+import { ConversationOverview } from "./components/ConversationOverview";
 import { RollingNumber } from "./components/RollingNumber";
 import { projectSlug } from "./lib/projectSlug";
 
@@ -231,10 +237,6 @@ const ACCESS_KEY = "octiq.v2.access";
 const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
-/** How long a ROOM is given to hand a seat's answer to its host before the
- *  chat is called cut off. Long enough to start an agent — the gap is a fresh
- *  process reading its own history, not a stopped backend. */
-const HANDOVER_MS = 20_000;
 /** Whether new chats start clean. Kept here rather than per project: it is a
  *  way of working, not a property of the code you are working on. */
 const LITE_KEY = "octiq.v2.lite";
@@ -454,9 +456,8 @@ export default function App() {
   const [railShut, setRailShut] = useState(() => localStorage.getItem(RAIL_KEY) === "1");
   // Tool calls an agent is blocked on, by conversation. Not in ChatState: a
   // question belongs to the moment, not to the transcript.
-  const [asks, setAsks] = useState<Record<string, Ask[]>>({});
-  // Questions the agent is blocked on, by conversation.
-  const [questions, setQuestions] = useState<Record<string, Question[]>>({});
+  const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions } =
+    useChatRequests(conn, (...args) => announceOnce(...args));
   // Which folders are open, kept between visits — a tree that forgets is a
   // tree you re-open every time.
   const [expanded, setExpanded] = useState<Set<string>>(() => {
@@ -1061,112 +1062,20 @@ export default function App() {
   // A `chat_start` racing the reply loses its dot until the next connect,
   // which is the same trade the waiting-cards effect below makes.
   useEffect(() => {
+    setLiveKnown(false);
     if (conn !== "open") return;
+    let current = true;
     bridge
       .invoke<string[]>("chat_list")
       .then((keys) => {
+        if (!current) return;
         const ids = (keys ?? []).map(convOf).filter((id): id is string => !!id);
         setRunning(new Set(ids));
         setLiveKnown(true);
       })
       .catch(() => {});
+    return () => { current = false; };
   }, [conn]);
-
-  // What is waiting on YOU right now, asked for rather than waited for.
-  //
-  // A permission card and an `ask_user` question are announced ONCE, on a
-  // broadcast with no replay, and they live only in this page's memory. So a
-  // reload used to lose them outright — while the server went on holding the
-  // agent's turn open, three minutes for a permission and ten for a question,
-  // for an answer that could no longer be given. The chat just sat there, and
-  // the way out was to send something and start a fresh turn.
-  //
-  // The server is the one that knows what is still waiting, so it is asked, on
-  // every connect. Its answer REPLACES what is here: a card this page is still
-  // drawing that the server no longer lists was decided somewhere else, or
-  // timed out while we were away, and a card that cannot be answered is worse
-  // than no card at all.
-  useEffect(() => {
-    if (conn !== "open") return;
-    const byConversation = <T extends { chatKey?: string }>(list: T[] | null) => {
-      const out: Record<string, T[]> = {};
-      for (const item of list ?? []) {
-        const id = item.chatKey ? convOf(item.chatKey) : null;
-        if (!id) continue;
-        (out[id] ??= []).push(item);
-      }
-      return out;
-    };
-    bridge
-      .invoke<Ask[]>("permission_pending")
-      .then((list) => setAsks(byConversation(list)))
-      .catch(() => {
-        /* an older server has no such command: the live events still work */
-      });
-    bridge
-      .invoke<Question[]>("question_pending")
-      .then((list) => setQuestions(byConversation(list)))
-      .catch(() => {});
-  }, [conn]);
-
-  useEffect(() => {
-    const offAsk = bridge.on<Ask>("permission-ask", (ask) => {
-      const id = ask?.chatKey ? convOf(ask.chatKey) : null;
-      if (!id || !ask.id) return;
-      announceOnce(ask.id, "permission", id, askSummary(ask));
-      // Guarded against arriving twice: an ask raised in the moment between the
-      // refill above being answered and this listener seeing it comes down both
-      // routes, and two cards for one question can only be answered once.
-      setAsks((prev) =>
-        prev[id]?.some((a) => a.id === ask.id)
-          ? prev
-          : { ...prev, [id]: [...(prev[id] ?? []), ask] },
-      );
-    });
-    // Nobody answered in time, so the server said no on our behalf. The card
-    // must go: leaving it would offer a choice that no longer exists.
-    const offGone = bridge.on<{ id: string }>("permission-expired", (gone) => {
-      if (!gone?.id) return;
-      setAsks((prev) => {
-        const next: Record<string, Ask[]> = {};
-        for (const [key, list] of Object.entries(prev)) {
-          next[key] = list.filter((a) => a.id !== gone.id);
-        }
-        return next;
-      });
-    });
-    const offQuestion = bridge.on<Question>("user-question", (q) => {
-      const id = q?.chatKey ? convOf(q.chatKey) : null;
-      if (!id || !q.id) return;
-      // Five questions in one call are one interruption, not five: every
-      // question of a batch shares `batch`, so they share one announcement
-      // (keyed on it instead of the per-question id) and it names the count.
-      const detail =
-        q.batchSize && q.batchSize > 1 ? `${q.batchSize} questions · ${q.question}` : q.question ?? "";
-      announceOnce(q.batch ?? q.id, "question", id, detail);
-      setQuestions((prev) =>
-        prev[id]?.some((x) => x.id === q.id)
-          ? prev
-          : { ...prev, [id]: [...(prev[id] ?? []), q] },
-      );
-    });
-    const offQuestionGone = bridge.on<{ id: string }>("question-expired", (gone) => {
-      if (!gone?.id) return;
-      setQuestions((prev) => {
-        const next: Record<string, Question[]> = {};
-        for (const [key, list] of Object.entries(prev)) {
-          next[key] = list.filter((q) => q.id !== gone.id);
-        }
-        return next;
-      });
-    });
-    return () => {
-      offAsk();
-      offGone();
-      offQuestion();
-      offQuestionGone();
-    };
-  }, [announceOnce]);
 
   /** Apply a change to ONE conversation's chat, whether or not it is the one on
    *  screen. Every update goes through here, which is what makes a background
@@ -2686,6 +2595,24 @@ export default function App() {
     [conversationId, patch, reclaim],
   );
 
+  /** Stop the answer in flight and make one named queued message the next turn.
+   *
+   *  The backend owns the queue and resolves the turn id to the host or room
+   *  seat that actually holds it. Nothing is changed optimistically here: the
+   *  clock comes off when that agent really acknowledges the promoted turn. */
+  const startQueued = useCallback(
+    (turnId: string) => {
+      if (!conversationId) return;
+      const id = conversationId;
+      bridge
+        .invoke("chat_start_queued", { key: keyFor(id), turnId })
+        .catch((err) =>
+          patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
+        );
+    },
+    [conversationId, patch],
+  );
+
   /** Picking a different model.
    *
    *  A running agent cannot change model or provider: both are fixed on its
@@ -2965,13 +2892,20 @@ export default function App() {
   // this is only ever a picture of what it is doing.
   const [rounds, setRounds] = useState<Record<string, RoundState | null>>({});
   const myRound = (conversationId && rounds[conversationId]) || null;
+  const activeRounds = useMemo(() => new Set(
+    Object.entries(rounds).filter(([, round]) => round?.running).map(([id]) => id),
+  ), [rounds]);
+  const roomIds = useMemo(() => new Set(Object.keys(chats).filter((id) =>
+    !!seats[id]?.length || chats[id].messages.some((m) => !!m.speaker),
+  )), [chats, seats]);
+  const interruptedIds = useInterruptedChats({
+    chats, running, activeRounds, rooms: roomIds, known: liveKnown && conn === "open",
+  });
 
   /** The chat on screen says it is working, and nobody is working on it.
    *
-   *  Which means the backend stopped mid-answer: a restart kills every agent it
-   *  owns where it stands, so no full stop was ever written and the turn is
-   *  still open in the record. Everything said survives, and so does the
-   *  agent's own memory of it — see lib/carryOn.
+   *  The roster confirms the process is absent; it cannot tell us why.
+   *  A browser disconnect alone is not evidence of an interrupted process.
    *
    *  "Nobody" is the word that has to be read carefully: a room's work is done
    *  by processes that are not the room's own — see `someoneWorking`. */
@@ -2980,27 +2914,10 @@ export default function App() {
     live:
       !!conversationId &&
       someoneWorking({ id: conversationId, running, round: !!myRound?.running }),
-    known: liveKnown,
+    known: liveKnown && conn === "open",
   });
 
-  // ...and it has stayed that way for a moment. A HANDOVER is not a stop: when
-  // a seat finishes, the backend starts the host to tell it what was said
-  // (`round::ask_host`), and starting an agent takes seconds — seconds in which
-  // nothing at all is running on this chat. Drawn the instant that gap opened,
-  // the notice accused the backend of stopping every time an agent finished.
-  //
-  // Only a room waits. A chat with no seats has no handover to sit through, and
-  // a turn the backend really did cut off is on screen the moment it is known.
-  const [settledFor, setSettled] = useState<string | null>(null);
-  useEffect(() => {
-    if (!stalled || !conversationId) {
-      setSettled(null);
-      return;
-    }
-    const wait = setTimeout(() => setSettled(conversationId), room ? HANDOVER_MS : 0);
-    return () => clearTimeout(wait);
-  }, [stalled, conversationId, room]);
-  const cutOff = stalled && settledFor === conversationId;
+  const cutOff = !!conversationId && interruptedIds.has(conversationId);
 
   const refreshRound = useCallback(async (id: string) => {
     try {
@@ -3153,6 +3070,27 @@ export default function App() {
     },
     [conversationId, restartForAccess],
   );
+
+  const allProjects = useMemo(() => [...workspaces, ...shelved], [workspaces, shelved]);
+  const visibleConversations = useMemo(() => conversations.filter((c) =>
+    !deleting.has(c.id) && !leaving.has(c.id) && !isDeleted(c.id),
+  ), [conversations, deleting, leaving]);
+  const attention = useAttentionInbox({
+    conversations: visibleConversations, projects: allProjects, chats, running,
+    liveKnown, connected: conn === "open", currentConversationId: mode === "chat" ? conversationId : null,
+    asks, questions, safetyBlocks, activeRounds, interruptedIds,
+  });
+  const workspacePeers = useMemo(() => visibleConversations.map((c) => ({
+    id: c.id, title: c.title, cwd: chats[c.id]?.cwd,
+    busy: isWorkspaceBusy(c.id, chats[c.id], running, activeRounds.has(c.id)),
+    live: someoneWorking({ id: c.id, running, round: activeRounds.has(c.id) }),
+  })), [visibleConversations, chats, activeRounds, running]);
+  const currentBlocker = conversationId && conn === "open" && liveKnown
+    ? asks[conversationId]?.length ? "Permission requested"
+      : questions[conversationId]?.[0]?.question
+        || safetyBlocks[conversationId]?.[0]?.title
+        || undefined
+    : undefined;
 
   if (conn === "unauthorized") return <Connect />;
 
@@ -3318,6 +3256,31 @@ export default function App() {
             />
           )}
 
+          <AttentionInbox
+            entries={attention.entries}
+            connected={conn === "open"}
+            onOpen={(conversation) => {
+              const kind = attention.entries.find((entry) => entry.conversation.id === conversation.id)?.kind;
+              showConversation(conversation);
+              requestAnimationFrame(() => {
+                const selector = kind === "permission" ? ".ask-card:not(.safety-card)"
+                  : kind === "question" ? ".qa-card"
+                    : kind === "safety" ? ".safety-card"
+                      : kind === "failure" ? ".failure, .carry-on"
+                        : kind === "interrupted" ? ".carry-on" : ".conversation-overview";
+                const target = pane.current?.querySelector<HTMLElement>(selector)
+                  ?? pane.current?.querySelector<HTMLElement>("textarea");
+                if (!target) return;
+                if (target instanceof HTMLDetailsElement) target.open = true;
+                target.scrollIntoView({ block: "nearest" });
+                const control = target.querySelector<HTMLElement>("summary, button, textarea, input") ?? target;
+                if (control === target && !control.hasAttribute("tabindex")) control.tabIndex = -1;
+                control.focus({ preventScroll: true });
+              });
+            }}
+            onDismissCompletion={attention.dismissCompletion}
+          />
+
           {/* Only drawn for a home-screen app, which has no browser chrome to
               reload from. A tab already has the control and does not need two. */}
           <InstalledReload />
@@ -3412,6 +3375,20 @@ export default function App() {
         />
 
         <main className="main" hidden={mode !== "chat"} ref={pane}>
+          {conversationId && chat.messages.length > 0 && (
+            <ConversationOverview
+              key={conversationId}
+              chatId={conversationId}
+              chat={chat}
+              fallbackPath={project?.primary_path}
+              connected={conn === "open"}
+              liveKnown={liveKnown}
+              interrupted={cutOff}
+              blocker={currentBlocker}
+              peers={workspacePeers}
+              onOpenGit={() => showGit(true)}
+            />
+          )}
           {chat.messages.length === 0 && conversationId && reading[conversationId] ? (
             // Reading the transcript back. Until it lands this conversation
             // has no messages, and the page for a conversation with no
@@ -3491,6 +3468,7 @@ export default function App() {
                       // happen in place — it opens a new chat.
                       hostName={providerFor(choice.agent).name}
                       onCancelQueued={cancelQueued}
+                      onStartQueued={startQueued}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and
@@ -3569,46 +3547,23 @@ export default function App() {
             </div>
           )}
 
-          {(conversationId ? asks[conversationId] ?? [] : []).map((ask) => (
-            <PermissionAsk
-              key={ask.id}
-              ask={ask}
-              onAnswered={(id) =>
-                setAsks((prev) => ({
-                  ...prev,
-                  [conversationId!]: (prev[conversationId!] ?? []).filter((a) => a.id !== id),
-                }))
-              }
+          {conversationId && (
+            <ChatRequests
+              asks={asks[conversationId] ?? []}
+              safetyBlocks={safetyBlocks[conversationId] ?? []}
+              questions={questions[conversationId] ?? []}
+              onPermissionAnswered={(id) => setAsks((prev) => ({
+                ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => item.id !== id),
+              }))}
+              onSafetyAnswered={(id) => setSafetyBlocks((prev) => ({
+                ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => item.id !== id),
+              }))}
+              onQuestionsAnswered={(ids) => setQuestions((prev) => ({
+                ...prev, [conversationId]: (prev[conversationId] ?? []).filter((item) => !ids.includes(item.id)),
+              }))}
+              onContinue={send}
             />
-          ))}
-
-          {/* A whole batch as ONE card. Every question is open at once, so the
-              person can compare related decisions before using the one Submit
-              that sends the complete set together. */}
-          {(() => {
-            const pending = conversationId ? questions[conversationId] ?? [] : [];
-            if (pending.length === 0) return null;
-            return (
-              <UserQuestion
-                // Keyed on the FIRST question, not the whole list. Keying on
-                // the list meant a question arriving mid-batch changed the key,
-                // remounting the card and throwing away the answers already
-                // given. The first id is stable until
-                // the batch is submitted, which is exactly when a fresh card is
-                // wanted.
-                key={pending[0].id}
-                questions={pending}
-                onDone={(ids) =>
-                  setQuestions((prev) => ({
-                    ...prev,
-                    [conversationId!]: (prev[conversationId!] ?? []).filter(
-                      (x) => !ids.includes(x.id),
-                    ),
-                  }))
-                }
-              />
-            );
-          })()}
+          )}
 
           {/* Keyed by project: switching project gets that project's own
               terminals, and coming back reattaches to them rather than
@@ -3625,9 +3580,20 @@ export default function App() {
             />
           )}
 
-          {/* Only ever after a restart or a crash: the chat is holding a turn
-              open that nothing is answering. */}
-          {cutOff && <CarryOn onCarryOn={() => void send(CARRY_ON)} />}
+          {conversationId && !chat.stopping && !chat.stoppedAt && (
+            <CarryOn
+              onCarryOn={() => void send(CARRY_ON)}
+              evidence={{
+                connected: conn === "open",
+                rosterKnown: liveKnown,
+                busy: chat.busy && (!stalled || cutOff),
+                live: someoneWorking({ id: conversationId, running, round: !!myRound?.running }),
+                exited: stalled && !cutOff ? undefined : chat.exited,
+                checkpointSeq: catchUp.current.mark(keyFor(conversationId)) || undefined,
+                queuedCount: queuedMessageCount(chat),
+              }}
+            />
+          )}
 
           <Composer
             session={conversationId ?? undefined}

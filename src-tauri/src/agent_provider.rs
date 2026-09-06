@@ -689,7 +689,7 @@ impl AgentProvider for CodexProvider {
 fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
     line.contains("codex_core::tools::router:")
         && (line.contains("apply_patch verification failed")
-            || line.contains("error=exec_command failed for"))
+            || line.contains("error=exec_command failed"))
 }
 
 /// Codex's tracing output begins each independent record with an ISO-like

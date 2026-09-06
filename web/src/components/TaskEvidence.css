@@ -1,0 +1,17 @@
+.task-evidence { border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); padding: .65rem .8rem; font-size: .75rem; color: var(--fg-1); min-width: 0; }
+.task-evidence-heading { display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+.task-evidence p { margin: .35rem 0 0; overflow-wrap: anywhere; }
+.task-evidence-objective { color: var(--fg-0); font-weight: 500; }
+.task-evidence-label { color: var(--fg-2); font-weight: 400; }
+.task-evidence-state { font-size: .6875rem; color: var(--fg-2); white-space: nowrap; }
+.task-evidence-state.is-passed { color: var(--accent); }
+.task-evidence-state.is-failed, .task-evidence-state.is-blocked, .task-evidence-blocker { color: var(--danger, var(--fg-0)); }
+.task-evidence button { cursor: pointer; color: var(--accent); background: transparent; border: 0; font: inherit; text-align: left; padding: .15rem 0; }
+.task-evidence button:focus-visible, .task-evidence summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.task-delivery summary { cursor: pointer; color: var(--fg-0); }
+.task-delivery summary .task-evidence-label { margin-left: .5rem; }
+.task-delivery-body { margin-top: .7rem; max-height: 18rem; overflow: auto; }
+.task-delivery ul { padding-left: 1rem; margin: .35rem 0 .75rem; }
+.task-delivery li { padding: .15rem 0; overflow-wrap: anywhere; }
+.task-evidence-check { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem; }
+.task-evidence-check code { font-size: .7rem; white-space: pre-wrap; overflow-wrap: anywhere; }

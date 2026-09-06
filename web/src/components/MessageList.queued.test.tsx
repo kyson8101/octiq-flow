@@ -93,6 +93,25 @@ describe("the queued mark", () => {
     );
   });
 
+  it("offers send now and take back from the clock's fixed gutter", () => {
+    const html = renderToStaticMarkup(
+      <MessageList
+        messages={[{ ...sent[0], turnId: "u-1" }]}
+        busy
+        onStartQueued={() => {}}
+        onCancelQueued={() => {}}
+      />,
+    );
+
+    expect(html).toContain('class="queued queued-actions"');
+    expect(html).toContain('aria-label="Queued message actions"');
+    expect(html).toContain('aria-label="Send this queued message now"');
+    expect(html).toContain('aria-label="Cancel this queued message"');
+    expect(html).toMatch(
+      /class="msg-body">[\s\S]*class="queued queued-actions"[\s\S]*queued-waiting[\s\S]*queued-controls[\s\S]*queued-run[\s\S]*queued-remove/,
+    );
+  });
+
   it("keeps the plain clock on a turn nothing can name", () => {
     // A turn sent before the id existed, or one an agent sent on its own
     // behalf, has nothing to address a cancel to. Better the mark it has always

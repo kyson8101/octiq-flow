@@ -19,7 +19,7 @@ import { CARRY_ON, CARRY_ON_HEAD } from "../lib/carryOn";
 import { CarryOn } from "./CarryOn";
 import { MessageList } from "./MessageList";
 
-const LINE = "asked it to carry on after the backend stopped";
+const LINE = "asked it to carry on after an interruption";
 
 const message = (text: string, relay?: string): Message => ({
   id: "m0",
@@ -66,10 +66,11 @@ describe("the carry-on prompt", () => {
 });
 
 describe("the strip above the prompt box", () => {
-  it("says nothing was lost, and offers the one thing to do", () => {
+  it("does not offer continuation without process evidence", () => {
     const html = renderToStaticMarkup(<CarryOn onCarryOn={() => {}} />);
 
-    expect(html).toContain("Nothing was lost");
-    expect(html).toContain("Carry on");
+    expect(html).not.toContain("Nothing was lost");
+    expect(html).toContain("Checking whether");
+    expect(html).not.toContain("<button");
   });
 });

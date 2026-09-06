@@ -196,6 +196,37 @@ function saveHistory(session: string | undefined, list: string[]): void {
   }
 }
 
+export type HistoryDirection = "older" | "newer";
+
+/** Move through sent-message history without losing the words that were in
+ *  progress when browsing began. Shared by keyboard arrows and the phone's
+ *  touch controls so they cannot drift into two subtly different histories. */
+export function moveInHistory(
+  history: readonly string[],
+  index: number,
+  text: string,
+  draft: string,
+  direction: HistoryDirection,
+): { index: number; text: string; draft: string } {
+  if (direction === "older") {
+    if (!history.length) return { index, text, draft };
+    const next = Math.min(index + 1, history.length - 1);
+    return {
+      index: next,
+      text: history[next],
+      draft: index === -1 ? text : draft,
+    };
+  }
+
+  if (index < 0) return { index, text, draft };
+  const next = index - 1;
+  return {
+    index: next,
+    text: next < 0 ? draft : history[next],
+    draft,
+  };
+}
+
 /** What the box says once messages taken back out of the queue are put in it.
  *
  *  They go at the END, after whatever is already there. Two reasons, and they
@@ -424,6 +455,28 @@ export function Composer({
   // rather than leaving you with the last thing you sent.
   const draft = useRef("");
   const [filePicker, setFilePicker] = useState(false);
+
+  /** Up/Down on a keyboard and the two glass controls both come through here.
+   *  A touch also keeps the field focused and puts the caret after the recalled
+   *  message, ready for an immediate edit. */
+  const moveRecall = useCallback(
+    (direction: HistoryDirection, refocus = false) => {
+      const moved = moveInHistory(history, recall, text, draft.current, direction);
+      draft.current = moved.draft;
+      setRecall(moved.index);
+      setText(moved.text);
+
+      if (!refocus) return;
+      setCaret(moved.text.length);
+      const area = areaRef.current;
+      area?.focus({ preventScroll: true });
+      requestAnimationFrame(() => {
+        if (!area) return;
+        area.setSelectionRange(area.value.length, area.value.length);
+      });
+    },
+    [history, recall, text],
+  );
 
   // Codex skills may appear at the caret inside a sentence. Claude's native
   // slash commands remain whole-input; lib/commandMenu owns that distinction.
@@ -825,9 +878,9 @@ export function Composer({
         </div>
       )}
 
-      {/* The eyebrow: the hint on the left, the mode on the right. No new row —
-          this one was already here, saying "Enter to send", and it was empty on
-          the right the whole time. */}
+      {/* The eyebrow: the hint on the left, compact glanceable controls and the
+          last-turn receipt on the right. No new row — this one was already
+          here, saying "Enter to send". */}
       <div className="composer-hint">
         <span className="composer-hint-said">
         {/* Work the turn left running behind it rides on this same line: a dot
@@ -899,6 +952,38 @@ export function Composer({
             )}
           </span>
         )}
+
+        {/* Software keyboards have no Up/Down history keys. On touch screens
+            their equivalent sits at the right of this eyebrow: close to the
+            field it changes, without covering the words being edited. */}
+        <div className="composer-history" role="group" aria-label="Sent message history">
+          <button
+            className="history-step"
+            type="button"
+            aria-label="Show previous sent message"
+            title="Previous sent message"
+            disabled={!history.length || recall >= history.length - 1}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => moveRecall("older", true)}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 14 6-6 6 6" />
+            </svg>
+          </button>
+          <button
+            className="history-step"
+            type="button"
+            aria-label="Show next sent message"
+            title="Next sent message"
+            disabled={recall < 0}
+            onPointerDown={(e) => e.preventDefault()}
+            onClick={() => moveRecall("newer", true)}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 10 6 6 6-6" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* Card 85 — who this message is for. Same shape and same keys as the
@@ -1031,131 +1116,132 @@ export function Composer({
             )}
           </div>
         )}
-        <textarea
-          ref={areaRef}
-          className="composer-input"
-          rows={2}
-          value={text}
-          placeholder={disabled ? "Pick a project first" : `Ask ${choice.name} to…`}
-          disabled={disabled}
-          onChange={(e) => {
-            setText(e.target.value);
-            setCaret(e.target.selectionStart);
-          }}
-          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-          onPaste={(e) => {
-            // Only intercept when the clipboard actually carries a file.
-            // Pasting text must stay ordinary pasting.
-            const files = [...(e.clipboardData?.files ?? [])];
-            if (!files.length) return;
-            e.preventDefault();
-            void attachFiles(files);
-          }}
-          onKeyDown={(e) => {
-            // Card 85 — the @ menu takes the same keys the command list does,
-            // and gives them back the moment it closes.
-            if (atOpen) {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setPick((i) => (i + 1) % whoList.length);
-                return;
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setPick((i) => (i - 1 + whoList.length) % whoList.length);
-                return;
-              }
-              // Enter and Tab both pick — see `mentionPicks` for why Enter
-              // has to, and what it cost to learn.
-              if (mentionPicks(e)) {
-                e.preventDefault();
-                completeWho(whoList[pick].label);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setDismissedCommand(commandKey);
-                return;
-              }
-            }
-            // While the command list is up it owns the arrows, Tab and Enter —
-            // the same keys a shell completion takes.
-            if (slashOpen) {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setPick((i) => (i + 1) % matches.length);
-                return;
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setPick((i) => (i - 1 + matches.length) % matches.length);
-                return;
-              }
-              // Tab always completes; Enter only when it would add something
-              // and is not being held as a new-line key.
-              const plainEnter =
-                e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
-              if (e.key === "Tab" || (plainEnter && !nothingToComplete)) {
-                e.preventDefault();
-                complete(matches[pick]);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                setText("");
-                return;
-              }
-            }
-            // Up walks back through what you have sent, the way a shell does.
-            // Only from the FIRST line, so it still moves the cursor inside a
-            // message you are part-way through writing.
-            const area = e.currentTarget;
-            const atStart = area.selectionStart === 0 && area.selectionEnd === 0;
-            const onFirstLine = !text.slice(0, area.selectionStart).includes("\n");
-            const onLastLine = !text.slice(area.selectionEnd).includes("\n");
-
-            if (e.key === "ArrowUp" && history.length && (recall >= 0 || (atStart && onFirstLine))) {
-              const next = Math.min(recall + 1, history.length - 1);
-              if (recall === -1) draft.current = text;
+        <div className="composer-input-wrap">
+          <textarea
+            ref={areaRef}
+            className="composer-input"
+            rows={2}
+            value={text}
+            placeholder={disabled ? "Pick a project first" : `Ask ${choice.name} to…`}
+            disabled={disabled}
+            onChange={(e) => {
+              // Input events are the reliable signal on a software keyboard;
+              // it may never issue the printable keydown that desktop uses.
+              if (recall >= 0) setRecall(-1);
+              setText(e.target.value);
+              setCaret(e.target.selectionStart);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+            onPaste={(e) => {
+              // Only intercept when the clipboard actually carries a file.
+              // Pasting text must stay ordinary pasting.
+              const files = [...(e.clipboardData?.files ?? [])];
+              if (!files.length) return;
               e.preventDefault();
-              setRecall(next);
-              setText(history[next]);
-              return;
-            }
-            if (e.key === "ArrowDown" && recall >= 0 && onLastLine) {
-              e.preventDefault();
-              const next = recall - 1;
-              setRecall(next);
-              setText(next < 0 ? draft.current : history[next]);
-              return;
-            }
-            // Typing anything else means you are writing, not browsing.
-            if (recall >= 0 && e.key.length === 1) setRecall(-1);
+              void attachFiles(files);
+            }}
+            onKeyDown={(e) => {
+              // Card 85 — the @ menu takes the same keys the command list does,
+              // and gives them back the moment it closes.
+              if (atOpen) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setPick((i) => (i + 1) % whoList.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPick((i) => (i - 1 + whoList.length) % whoList.length);
+                  return;
+                }
+                // Enter and Tab both pick — see `mentionPicks` for why Enter
+                // has to, and what it cost to learn.
+                if (mentionPicks(e)) {
+                  e.preventDefault();
+                  completeWho(whoList[pick].label);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDismissedCommand(commandKey);
+                  return;
+                }
+              }
+              // While the command list is up it owns the arrows, Tab and Enter —
+              // the same keys a shell completion takes.
+              if (slashOpen) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setPick((i) => (i + 1) % matches.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setPick((i) => (i - 1 + matches.length) % matches.length);
+                  return;
+                }
+                // Tab always completes; Enter only when it would add something
+                // and is not being held as a new-line key.
+                const plainEnter =
+                  e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey;
+                if (e.key === "Tab" || (plainEnter && !nothingToComplete)) {
+                  e.preventDefault();
+                  complete(matches[pick]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setText("");
+                  return;
+                }
+              }
+              // Up walks back through what you have sent, the way a shell does.
+              // Only from the FIRST line, so it still moves the cursor inside a
+              // message you are part-way through writing.
+              const area = e.currentTarget;
+              const atStart = area.selectionStart === 0 && area.selectionEnd === 0;
+              const onFirstLine = !text.slice(0, area.selectionStart).includes("\n");
+              const onLastLine = !text.slice(area.selectionEnd).includes("\n");
 
-            if (e.key === "Enter") {
-              // Cmd/Ctrl+Enter and Option/Alt+Enter are new lines too, but
-              // unlike Shift+Enter the textarea does nothing with them on its
-              // own, so the break goes in by hand at the caret. `setRangeText`
-              // moves the DOM value ahead of React; mirroring it straight back
-              // into state keeps the two in step and the caret where `"end"`
-              // put it.
-              if (e.metaKey || e.ctrlKey || e.altKey) {
+              if (e.key === "ArrowUp" && history.length && (recall >= 0 || (atStart && onFirstLine))) {
                 e.preventDefault();
-                area.setRangeText("\n", area.selectionStart, area.selectionEnd, "end");
-                setText(area.value);
+                moveRecall("older");
                 return;
               }
-              // Shift+Enter is left alone so the textarea breaks the line. On
-              // glass Enter is left alone too: there is no Shift to hold, so
-              // claiming it would mean a multi-line prompt could not be typed
-              // at all — the send button sends there.
-              if (!e.shiftKey && !TYPES_ON_GLASS) {
+              if (e.key === "ArrowDown" && recall >= 0 && onLastLine) {
                 e.preventDefault();
-                send();
+                moveRecall("newer");
+                return;
               }
-            }
-          }}
-        />
+              // Typing anything else means you are writing, not browsing.
+              if (recall >= 0 && e.key.length === 1) setRecall(-1);
+
+              if (e.key === "Enter") {
+                // Cmd/Ctrl+Enter and Option/Alt+Enter are new lines too, but
+                // unlike Shift+Enter the textarea does nothing with them on its
+                // own, so the break goes in by hand at the caret. `setRangeText`
+                // moves the DOM value ahead of React; mirroring it straight back
+                // into state keeps the two in step and the caret where `"end"`
+                // put it.
+                if (e.metaKey || e.ctrlKey || e.altKey) {
+                  e.preventDefault();
+                  area.setRangeText("\n", area.selectionStart, area.selectionEnd, "end");
+                  setText(area.value);
+                  return;
+                }
+                // Shift+Enter is left alone so the textarea breaks the line. On
+                // glass Enter is left alone too: there is no Shift to hold, so
+                // claiming it would mean a multi-line prompt could not be typed
+                // at all — the send button sends there.
+                if (!e.shiftKey && !TYPES_ON_GLASS) {
+                  e.preventDefault();
+                  send();
+                }
+              }
+            }}
+          />
+
+        </div>
         <div className="composer-row">
 
           {/* One "+", two ways in. They were a clip and a picture standing

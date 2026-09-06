@@ -25,7 +25,7 @@ export type CodexRead =
   /** Codex wrote something. It arrives whole — there are no deltas. */
   | { kind: "say"; text: string }
   /** Codex ran something. `id` is stable across the started/completed pair. */
-  | { kind: "tool"; id: string; name: string; args: unknown; state: ToolState; result?: string }
+  | { kind: "tool"; id: string; name: string; args: unknown; state: ToolState; result?: string; details?: { exit_code: number } }
   /** The turn is over, so nothing may be left looking like it is still writing. */
   | { kind: "done" };
 
@@ -86,6 +86,8 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
         args: { command: str(item.command) },
         state: runState(status, completed),
         ...(completed ? { result: str(item.aggregated_output) } : {}),
+        ...(completed && typeof item.exit_code === "number" && Number.isInteger(item.exit_code)
+          ? { details: { exit_code: item.exit_code } } : {}),
       };
 
     // A write. `changes` is a list; the card shows the first path, which is

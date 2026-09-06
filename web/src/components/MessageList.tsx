@@ -633,6 +633,7 @@ function TurnView({
   mapTurnId,
   hostName,
   onCancelQueued,
+  onStartQueued,
 }: {
   messages: Message[];
   kids: Kids;
@@ -640,6 +641,8 @@ function TurnView({
   onOpenAgent?: (id: string) => void;
   /** Take back a message still waiting. See the same prop on `MessageList`. */
   onCancelQueued?: (turnId: string) => void;
+  /** Make a waiting message the next turn now. */
+  onStartQueued?: (turnId: string) => void;
   /** What to call the host — the provider this conversation is running, in its
    *  own name. See the same prop on `MessageList`. */
   hostName?: string;
@@ -705,6 +708,8 @@ function TurnView({
   const waitingId = queued ? messages[0].turnId : undefined;
   const cancel =
     onCancelQueued && waitingId ? () => onCancelQueued(waitingId) : undefined;
+  const start =
+    onStartQueued && waitingId ? () => onStartQueued(waitingId) : undefined;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -829,7 +834,39 @@ function TurnView({
             existed, or one an agent sent on its own behalf, has nothing to
             address a cancel to, so it keeps the plain clock it always had. */}
         {queued &&
-          (cancel ? (
+          (start ? (
+            <span
+              className="queued queued-actions"
+              role="group"
+              aria-label="Queued message actions"
+            >
+              <span className="queued-face queued-waiting" aria-hidden="true">
+                <ClockIcon />
+              </span>
+              <span className="queued-controls">
+                <button
+                  type="button"
+                  className="queued-run"
+                  onClick={start}
+                  title="Stop the current turn and send this queued message now"
+                  aria-label="Send this queued message now"
+                >
+                  <SendNowIcon />
+                </button>
+                {cancel && (
+                  <button
+                    type="button"
+                    className="queued-remove"
+                    onClick={cancel}
+                    title="Take this queued message back"
+                    aria-label="Cancel this queued message"
+                  >
+                    <CancelIcon />
+                  </button>
+                )}
+              </span>
+            </span>
+          ) : cancel ? (
             <button
               type="button"
               className="queued queued-cancel"
@@ -957,6 +994,26 @@ function CancelIcon() {
       aria-hidden="true"
     >
       <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
+    </svg>
+  );
+}
+
+/** Start this waiting turn now, ahead of the answer currently in flight. */
+function SendNowIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 12h13" />
+      <path d="m13 7 5 5-5 5" />
     </svg>
   );
 }
@@ -1182,6 +1239,7 @@ const MessageListBody = function MessageList({
   onOpenAgent,
   hostName,
   onCancelQueued,
+  onStartQueued,
 }: {
   messages: Message[];
   busy: boolean;
@@ -1203,6 +1261,8 @@ const MessageListBody = function MessageList({
    *  rail's read-only transcript), and a queued message there is then only a
    *  clock, as it always was. */
   onCancelQueued?: (turnId: string) => void;
+  /** Stop the current turn and start this named queued message next. */
+  onStartQueued?: (turnId: string) => void;
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1642,6 +1702,7 @@ const MessageListBody = function MessageList({
               mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
               hostName={hostName}
               onCancelQueued={onCancelQueued}
+              onStartQueued={onStartQueued}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once

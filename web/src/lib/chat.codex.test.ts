@@ -145,7 +145,7 @@ describe("a Codex chat of its own", () => {
     expect(working.messages[1].takenUp).toBeUndefined();
   });
 
-  it("uses the backend's exact queued-turn id and carries it onto the answer", () => {
+  it("uses the exact queued-turn id and leaves later prompts at the bottom", () => {
     let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
     queued = addUserTurn(queued, "later queued message", [], 2, undefined, "user-2");
 
@@ -159,12 +159,12 @@ describe("a Codex chat of its own", () => {
       item: { id: "item_0", type: "agent_message", text: "answer to the earlier message" },
     });
 
+    expect(answered.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     expect(answered.messages[0].takenUp).toBe(true);
-    expect(answered.messages[1].takenUp).toBeUndefined();
-    expect(answered.messages[2].replyTo).toEqual({
-      id: answered.messages[0].id,
-      preview: "earlier queued message",
-    });
+    expect(said(answered.messages[1])).toBe("answer to the earlier message");
+    expect(answered.messages[1].replyTo).toBeUndefined();
+    expect(said(answered.messages[2])).toBe("later queued message");
+    expect(answered.messages[2].takenUp).toBeUndefined();
   });
 
   it("keeps successive queued answers tied to their own prompts", () => {
@@ -182,10 +182,19 @@ describe("a Codex chat of its own", () => {
       item: { id: "item_0", type: "agent_message", text: "second answer" },
     });
 
-    expect(state.messages.filter((m) => m.role === "assistant").map((m) => m.replyTo?.id)).toEqual([
-      state.messages[0].id,
-      state.messages[1].id,
+    expect(state.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
     ]);
+    expect(state.messages.map(said)).toEqual([
+      "earlier queued message",
+      "first answer",
+      "later queued message",
+      "second answer",
+    ]);
+    expect(state.messages.filter((m) => m.role === "assistant").every((m) => !m.replyTo)).toBe(true);
   });
 
   it("does not add a reply label when the Codex prompt is already adjacent", () => {
@@ -203,7 +212,7 @@ describe("a Codex chat of its own", () => {
     expect(answered.messages[1].replyTo).toBeUndefined();
   });
 
-  it("keeps a follow-up sent mid-turn between the Codex items around it", () => {
+  it("keeps a follow-up at the bottom until Codex takes it", () => {
     let state = addUserTurn(emptyChat(), "update the instructions", [], 1, undefined, "user-1");
     state = reduceChat(
       state,
@@ -215,9 +224,9 @@ describe("a Codex chat of its own", () => {
       item: { id: "item_0", type: "agent_message", text: "I am checking the file." },
     });
 
-    // Sent while Codex is still working. Its position is part of the
-    // conversation: later tool calls and the final answer must not be folded
-    // back into the assistant message above it.
+    // Sent while Codex is still working. Until its own `turn.started`, this is
+    // a waiting message rather than part of the conversation. Later items from
+    // the active turn stay above it.
     state = addUserTurn(state, "updated?", [], 3, undefined, "user-2");
     state = reduceChat(state, {
       type: "item.started",
@@ -243,20 +252,51 @@ describe("a Codex chat of its own", () => {
       item: { id: "item_2", type: "agent_message", text: "Updated and verified." },
     });
 
+    expect(state.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(said(state.messages[1])).toBe("I am checking the file.\nUpdated and verified.");
+    expect(state.messages[1].blocks.some((b) => b.kind === "tool")).toBe(true);
+    expect(said(state.messages[2])).toBe("updated?");
+    expect(state.messages[2].takenUp).toBeUndefined();
+  });
+
+  it("starts a queued Codex reply below its prompt when the prior turn omitted its full stop", () => {
+    let state = addUserTurn(emptyChat(), "update the instructions", [], 1, undefined, "user-1");
+    state = reduceChat(
+      state,
+      { type: "turn.started", octiq_user_turn_id: "user-1" },
+      2,
+    );
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "I am checking the file." },
+    });
+    state = addUserTurn(state, "updated?", [], 3, undefined, "user-2");
+
+    // This is the exact boundary in the captured conversation: the resumed
+    // process starts the queued turn before the preceding process contributes
+    // a `turn.completed` event. `turn.started` must still seal that old reply.
+    state = reduceChat(state, { type: "thread.started", thread_id: "thread-1" });
+    state = reduceChat(
+      state,
+      { type: "turn.started", octiq_user_turn_id: "user-2" },
+      4,
+    );
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "Not yet; I am finishing it now." },
+    });
+
     expect(state.messages.map((m) => m.role)).toEqual([
       "user",
       "assistant",
       "user",
       "assistant",
     ]);
-    expect(said(state.messages[1])).toBe("I am checking the file.");
     expect(said(state.messages[2])).toBe("updated?");
-    expect(said(state.messages[3])).toBe("Updated and verified.");
-    expect(state.messages[3].blocks.some((b) => b.kind === "tool")).toBe(true);
-    expect(state.messages[3].replyTo).toEqual({
-      id: state.messages[0].id,
-      preview: "update the instructions",
-    });
+    expect(said(state.messages[3])).toBe("Not yet; I am finishing it now.");
+    expect(state.messages[1].streaming).toBe(false);
+    expect(state.messages[2].takenUp).toBe(true);
+    expect(state.messages[3].replyTo).toBeUndefined();
   });
 
   it("ends its turn on its own full stop", () => {

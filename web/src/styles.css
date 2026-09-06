@@ -1458,13 +1458,82 @@ body {
   color: var(--fg-1);
 }
 
+/* A queued message has two explicit outcomes now: start it next, or take it
+   back. The pair lives in the same fixed gutter as the clock, so revealing the
+   controls cannot reflow the words. Until the message is hovered (or one of its
+   controls receives keyboard focus), the clock remains the only visible face. */
+.msg-user .msg-body .queued-actions {
+  right: 7px;
+  width: 31px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+}
+
+.msg-user .msg-body .queued-actions > .queued-waiting {
+  align-items: center;
+  justify-content: center;
+}
+
+.msg-user .msg-body .queued-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+
+.msg-user .msg-body .queued-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: color 140ms ease-out, transform 140ms ease-out;
+}
+
+.msg-user .msg-body .queued-controls button:hover,
+.msg-user .msg-body .queued-controls button:focus-visible {
+  color: var(--fg-0);
+  transform: scale(1.08);
+}
+
+.msg-user:hover .msg-body .queued-actions > .queued-waiting,
+.msg-user .msg-body .queued-actions:focus-within > .queued-waiting {
+  opacity: 0;
+}
+
+.msg-user:hover .msg-body .queued-controls,
+.msg-user .msg-body .queued-actions:focus-within .queued-controls {
+  opacity: 1;
+}
+
+/* Touch has no hover state to reveal a control tray. Both choices stay visible
+   there; their labels still carry the queued status for screen readers. */
+@media (hover: none) {
+  .msg-user .msg-body .queued-actions > .queued-waiting {
+    opacity: 0;
+  }
+
+  .msg-user .msg-body .queued-controls {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .msg-user .msg-body .queued {
     animation: none;
   }
 
   .msg-user .msg-body .queued-face,
-  .msg-user .msg-body button.queued {
+  .msg-user .msg-body button.queued,
+  .msg-user .msg-body .queued-controls,
+  .msg-user .msg-body .queued-controls button {
     transition: none;
   }
 
@@ -2135,7 +2204,10 @@ body {
    12px row saying one thing is one loop too many; the fade was the one to go,
    because a dimming icon also reads as "disabled" at the edge of vision. */
 
-.tool-error .tool-icon {
+/* Scope the failure tint to this card's own header. A failed ToolGroup also
+   carries `.tool-error`; a descendant selector there would paint every
+   successful card inside the expanded group red. */
+.tool-error > .tool-head-row .tool-icon {
   --tint: var(--danger);
 }
 
@@ -3601,6 +3673,10 @@ body {
     inset 0 1px 0 color-mix(in srgb, var(--composer-accent) 16%, transparent);
 }
 
+.composer-input-wrap {
+  position: relative;
+}
+
 .composer-input {
   display: block;
   width: 100%;
@@ -3622,6 +3698,50 @@ body {
 
 .composer-input::placeholder {
   color: var(--fg-3);
+}
+
+/* A software keyboard has no Up/Down keys for sent-message history. Its touch
+   equivalent joins the eyebrow's right edge rather than covering the input. */
+.composer-history {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .composer-history {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+  }
+
+  .history-step {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--fg-3);
+    cursor: pointer;
+  }
+
+  .history-step:active:not(:disabled) {
+    background: color-mix(in srgb, var(--composer-accent) 10%, var(--bg-2));
+    color: var(--fg-0);
+  }
+
+  .history-step:focus-visible {
+    outline: 1px solid var(--composer-accent);
+    outline-offset: 1px;
+  }
+
+  .history-step:disabled {
+    opacity: 0.28;
+    cursor: default;
+  }
 }
 
 .composer-row {
@@ -8808,6 +8928,59 @@ body.is-ultra .eff {
   margin: 8px 0 0;
   font-size: 11.5px;
   color: var(--fg-3);
+}
+
+/* A tool call that the Codex safety reviewer already stopped. It shares the
+   permission card's shape, but its steady dot tells the truth: nothing is
+   paused inside the agent waiting for this answer. */
+.safety-card .ask-card-dot {
+  animation: none;
+}
+
+.safety-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
+  border-radius: 50%;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.safety-card-summary {
+  margin: 9px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-1);
+}
+
+.safety-card-status {
+  margin: 5px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+
+.safety-card-detail .ask-card-body {
+  max-height: 180px;
+}
+
+.safety-card-buttons {
+  flex-wrap: wrap;
+}
+
+.safety-allow {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+  color: var(--fg-0);
+}
+
+.safety-allow:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  border-color: var(--warn);
 }
 
 /* ---- A question from the agent -----------------------------------------

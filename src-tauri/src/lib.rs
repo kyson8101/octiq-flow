@@ -39,6 +39,7 @@ mod pty;
 mod push;
 mod question;
 mod round;
+mod safety_block;
 mod transcript;
 mod usage_limits;
 mod web;

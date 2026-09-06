@@ -307,6 +307,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
             arg(&args, "turnId")?,
         )),
+        // Make one selected queued message the next turn, without discarding
+        // anything else the person already sent.
+        "chat_start_queued" => to_value(crate::agent_chat::chat_start_queued_impl(
+            &svc.chats,
+            arg(&args, "key")?,
+            arg(&args, "turnId")?,
+        )),
         "chat_interrupt" => unit(crate::agent_chat::chat_interrupt_impl(
             &svc.chats,
             arg(&args, "key")?,
@@ -518,6 +525,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .unwrap_or(false);
             Ok(json!(crate::permission::decide(&id, decision, remember)))
         }
+
+        // Codex has no resumable permission channel. A safety-policy rejection
+        // is therefore a post-hoc choice about the next user turn, kept long
+        // enough to survive a browser reload.
+        "safety_block_pending" => Ok(json!(crate::safety_block::pending())),
+        "safety_block_dismiss" => Ok(json!(crate::safety_block::dismiss(&arg::<String>(
+            &args, "id"
+        )?,))),
 
         // ---- questions ----------------------------------------------------
         // The same, for `ask_user`. Its wait is ten minutes, so a question

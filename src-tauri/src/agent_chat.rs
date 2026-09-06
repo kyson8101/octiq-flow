@@ -179,6 +179,7 @@ fn emit_unstructured_output(
         OutputDisposition::Ignore => {}
         OutputDisposition::DiagnosticsOnly => {
             crate::diagnostics::record(agent, key, "stderr", &text);
+            crate::safety_block::observe(agent, key, &text);
         }
         OutputDisposition::Visible => emit_status(
             agent,
@@ -465,6 +466,34 @@ impl ChatManager {
         cancelled
     }
 
+    /// Move one named message to the front of the queue it already belongs to.
+    ///
+    /// The page names the conversation and the optimistic turn id, not the
+    /// process behind it. A room seat has its own process key, so this searches
+    /// the same family of queues as `cancel_queued_turn` and returns the exact
+    /// process that now needs to be interrupted.
+    fn promote_queued_turn(&self, chat_key: &str, turn_id: &str) -> Option<String> {
+        let seats = format!("{chat_key}-seat-");
+        let mut turns = self.queued_turns.lock().ok()?;
+        for (key, queue) in turns.iter_mut() {
+            if key != chat_key && !key.starts_with(&seats) {
+                continue;
+            }
+            let Some(at) = queue
+                .iter()
+                .position(|turn| turn.turn_id.as_deref() == Some(turn_id))
+            else {
+                continue;
+            };
+            if at > 0 {
+                let turn = queue.remove(at)?;
+                queue.push_front(turn);
+            }
+            return Some(key.clone());
+        }
+        None
+    }
+
     /// Ending a process deliberately is also the end of every turn waiting only
     /// for that process. Otherwise a later, unrelated resume could unexpectedly
     /// receive words the person meant to cancel.
@@ -741,6 +770,7 @@ pub fn chat_start_user_impl(
     lite: Option<bool>,
     turn_id: Option<String>,
 ) -> Result<(), String> {
+    crate::safety_block::forget_chat(&key);
     chat_start_with_user_turn(
         manager,
         key,
@@ -1521,6 +1551,10 @@ pub fn chat_send_user_impl(
     turn_id: Option<String>,
     record_user: Option<bool>,
 ) -> Result<(), String> {
+    // A safety block is a choice about the NEXT user turn, not a tool call
+    // OctiqFlow can resume. Any words the person sends supersede that card —
+    // including the two explicit continuations the card itself offers.
+    crate::safety_block::forget_chat(&key);
     let user_turn_id = (record_user != Some(false)).then(|| fresh_turn_id(turn_id));
     chat_send_with_user_turn(manager, key, text, images, to, user_turn_id)
 }
@@ -1660,6 +1694,41 @@ pub fn chat_cancel_queued_impl(
         return Ok(false);
     };
     announce_cancelled(&key, &cancelled);
+    Ok(true)
+}
+
+/// Stop the current turn and make one selected queued message the next turn.
+///
+/// This is deliberately addressed by user-turn id rather than by queue
+/// position. Several messages may be waiting, and a room may have several
+/// independent process queues; the bubble the person clicked is the only
+/// unambiguous target. Messages that were ahead of it remain queued behind it.
+///
+/// `false` means the agent already took the message before the click arrived.
+/// In that race there is nothing left to promote or interrupt, and the page can
+/// simply wait for the answer already in flight.
+pub fn chat_start_queued_impl(
+    manager: &Arc<ChatManager>,
+    key: String,
+    turn_id: String,
+) -> Result<bool, String> {
+    let Some(session_key) = manager.promote_queued_turn(&key, &turn_id) else {
+        return Ok(false);
+    };
+
+    let seat = if session_key == key {
+        None
+    } else {
+        crate::chat_room::room_impl(manager, &key)?
+            .seats
+            .into_iter()
+            .find(|seat| crate::chat_room::seat_session_key(&key, &seat.id) == session_key)
+            .ok_or_else(|| {
+                "the queued message belongs to a seat that is no longer here".to_string()
+            })?
+            .into()
+    };
+    interrupt_session(manager, &session_key, &key, seat)?;
     Ok(true)
 }
 
@@ -1842,10 +1911,15 @@ fn chat_seat_start_with_user_turn(
 /// `turn_finished`), under the lock that ends the turn, so it cannot jump
 /// ahead of anything. A one-shot provider has no reader to do it — its process
 /// is being killed — so this carries the queue across the kill by hand.
-pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
+fn interrupt_session(
+    manager: &Arc<ChatManager>,
+    session_key: &str,
+    stream_key: &str,
+    seat: Option<crate::chat_room::Seat>,
+) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        sessions.get(&key).cloned().ok_or("no such chat")?
+        sessions.get(session_key).cloned().ok_or("no such chat")?
     };
     let agent = {
         let guard = session.lock().map_err(|e| e.to_string())?;
@@ -1866,22 +1940,20 @@ pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<()
         // key but SPEAKS into the room's transcript, and the two are told
         // apart by the key alone — resume one as a host here and its answer is
         // written down as the room's.
-        let mut waiting = if crate::chat_room::is_seat_session_key(&key) {
-            Vec::new()
-        } else {
-            manager.take_all_queued_turns(&key)
-        };
-        end_process(manager, &key)?;
+        let mut waiting = manager.take_all_queued_turns(session_key);
+        end_process(manager, session_key)?;
         if waiting.is_empty() {
             return Ok(());
         }
         let next = waiting.remove(0);
-        manager.requeue_front(&key, waiting);
-        if let Err(why) = start_queued_command_turn(manager.clone(), &key, &key, None, next) {
+        manager.requeue_front(session_key, waiting);
+        if let Err(why) =
+            start_queued_command_turn(manager.clone(), session_key, stream_key, seat, next)
+        {
             // Words held for a process that never started must not surface in
             // some later conversation — the same rule the reaper follows when
             // its own resume fails.
-            manager.forget_queued_turns(&key);
+            manager.forget_queued_turns(session_key);
             return Err(format!("could not resume queued message: {why}"));
         }
         return Ok(());
@@ -1903,6 +1975,10 @@ pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<()
     // spoken to again is exactly what the sweeper is for.
     guard.turn_ended();
     Ok(())
+}
+
+pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
+    interrupt_session(manager, &key, &key, None)
 }
 
 /// Put the question to the person, then write the answer back to the agent.
@@ -2050,6 +2126,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     // Anything the person allowed "always" was allowed for THIS piece of work.
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
+    crate::safety_block::forget_chat(&key);
     with_access(|a| a.remove(&key));
     end_process(manager, &key).map(|_| ())
 }
@@ -3148,6 +3225,22 @@ mod tests {
     }
 
     #[test]
+    fn codex_exec_rejection_without_a_printed_command_is_diagnostics_only() {
+        // Newer Codex builds omit `for <command>` when the process is rejected
+        // before spawn. This is the exact shape safety-review refusals use.
+        let codex = provider_for(ChatAgent::Codex);
+
+        assert_eq!(
+            codex.output_disposition(
+                "2026-09-05T12:44:54Z ERROR codex_core::tools::router: \
+                 error=exec_command failed: CreateProcess { message: \
+                 Rejected(\"This action was rejected due to unacceptable risk.\") }"
+            ),
+            OutputDisposition::DiagnosticsOnly,
+        );
+    }
+
+    #[test]
     fn codex_takes_images_as_files_and_claude_does_not() {
         let shots = vec!["/tmp/a shot.png".to_string(), "/tmp/b.webp".to_string()];
         let x = build_command(
@@ -3491,6 +3584,63 @@ mod tests {
             Some("and then this".into()),
             "the message behind a stopped turn is still waiting to be sent",
         );
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn starting_a_queued_message_promotes_that_exact_turn_and_interrupts_claude() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-start-queued-{}", uuid::Uuid::new_v4().simple());
+        let session = claude_session(true);
+        hold(&manager, &key, session.clone());
+
+        for (text, turn_id) in [("first", "user-1"), ("send this now", "user-2")] {
+            chat_send_user_impl(
+                manager.clone(),
+                key.clone(),
+                text.into(),
+                None,
+                None,
+                Some(turn_id.into()),
+                None,
+            )
+            .expect("a queued follow-up");
+        }
+
+        assert_eq!(
+            chat_start_queued_impl(&manager, key.clone(), "user-2".into()),
+            Ok(true)
+        );
+        assert!(
+            !session.lock().unwrap().busy,
+            "the current turn was interrupted so the promoted one can start"
+        );
+        let order: Vec<String> = std::iter::from_fn(|| manager.take_queued_turn(&key))
+            .map(|turn| turn.text)
+            .collect();
+        assert_eq!(order, ["send this now", "first"]);
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn starting_a_message_the_agent_already_took_is_an_honest_noop() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-start-gone-{}", uuid::Uuid::new_v4().simple());
+        let session = claude_session(true);
+        hold(&manager, &key, session.clone());
+
+        assert_eq!(
+            chat_start_queued_impl(&manager, key.clone(), "already-gone".into()),
+            Ok(false)
+        );
+        assert!(
+            session.lock().unwrap().busy,
+            "a stale click must not interrupt the turn now in flight"
+        );
+
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
     }

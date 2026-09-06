@@ -1,0 +1,21 @@
+.attention-inbox { position: relative; flex: 0 0 auto; }
+.attention-trigger { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-1); font: inherit; font-size: 12px; cursor: pointer; }
+.attention-trigger:hover, .attention-trigger[aria-expanded="true"] { background: var(--bg-2); }
+.attention-count { min-width: 18px; padding: 0 4px; border-radius: 10px; background: var(--accent); color: var(--accent-fg); font-size: 11px; text-align: center; }
+.attention-panel { position: absolute; z-index: 100; top: calc(100% + 8px); right: 0; width: min(360px, calc(100vw - 24px)); max-height: min(480px, 70dvh); overflow-y: auto; padding: 12px; background: var(--bg-1); color: var(--fg-1); border: 1px solid var(--border); border-radius: var(--r-md); box-shadow: var(--shadow); text-align: left; white-space: normal; }
+.attention-panel h2 { margin: 0 0 10px; font-size: 14px; color: var(--fg-0); }
+.attention-note { margin: 8px 0; color: var(--fg-2); font-size: 12px; }
+.attention-list { display: grid; gap: 5px; list-style: none; margin: 0; padding: 0; }
+.attention-row { display: flex; align-items: center; min-width: 0; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+.attention-open { display: grid; gap: 2px; flex: 1; min-width: 0; padding: 9px; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.attention-open:hover, .attention-dismiss:hover { background: var(--bg-2); }
+.attention-project { color: var(--fg-2); font-size: 11px; }
+.attention-title { color: var(--fg-0); font-size: 13px; font-weight: 600; }
+.attention-project, .attention-title, .attention-reason { overflow-wrap: anywhere; }
+.attention-reason { font-size: 12px; color: var(--warn); }
+.attention-completed .attention-reason { color: var(--ok); }
+.attention-failure .attention-reason { color: var(--danger); }
+.attention-dismiss { flex: 0 0 36px; align-self: stretch; min-height: 36px; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--fg-2); font-size: 18px; cursor: pointer; }
+.attention-inbox button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 600px) { .attention-panel { position: fixed; top: 58px; left: 12px; right: 12px; width: auto; max-height: calc(100dvh - 90px); } }
+@media (max-width: 600px) { .attention-trigger > span:not(.attention-count) { display: none; } }

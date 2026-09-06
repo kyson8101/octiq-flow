@@ -34,4 +34,15 @@ describe("the model-driven composer style", () => {
     expect(html).toContain(`data-model-id="${model.id}"`);
     expect(html).toContain("model-trigger");
   });
+
+  it("offers touch controls for walking sent-message history", () => {
+    const html = renderComposer(MODELS[0]);
+
+    expect(html).toContain('aria-label="Sent message history"');
+    expect(html).toContain('aria-label="Show previous sent message"');
+    expect(html).toContain('aria-label="Show next sent message"');
+    expect(html.indexOf('aria-label="Sent message history"')).toBeLessThan(
+      html.indexOf('class="composer-box"'),
+    );
+  });
 });
