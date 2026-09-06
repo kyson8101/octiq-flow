@@ -230,6 +230,12 @@ agent already has it — a race nobody can win, and better told than shown a
 bubble vanishing from above the answer to it. Taking one back is the ✕ and only
 the ✕ — the one control that says WHICH message.
 
+The same bubble can also say **send this one now**. `chat_start_queued` finds
+that exact turn id across the host and seat queues, moves it to the front of the
+queue it already belongs to, and interrupts that process. The remaining turns
+stay queued behind it. A stale click answers `false` without interrupting
+anything when the agent already took the selected message.
+
 **Stop keeps the queue, and its first message starts straight away.** Stop is
 "not that — do the thing I have already typed instead", and it was that for as
 long as this app has had a Stop button: the message used to go down Claude's

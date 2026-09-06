@@ -1716,9 +1716,7 @@ pub fn chat_start_queued_impl(
         return Ok(false);
     };
 
-    let seat = if session_key == key {
-        None
-    } else {
+    let seat = if session_key != key {
         crate::chat_room::room_impl(manager, &key)?
             .seats
             .into_iter()
@@ -1727,6 +1725,8 @@ pub fn chat_start_queued_impl(
                 "the queued message belongs to a seat that is no longer here".to_string()
             })?
             .into()
+    } else {
+        None
     };
     interrupt_session(manager, &session_key, &key, seat)?;
     Ok(true)
