@@ -3888,6 +3888,48 @@ mod tests {
     }
 
     #[test]
+    fn a_room_can_start_the_exact_message_waiting_for_one_of_its_seats() {
+        let manager = Arc::new(ChatManager::default());
+        let key = "chat-start-seat";
+        let seat = crate::chat_room::add_seat_impl(
+            &manager,
+            key,
+            crate::chat_room::NewSeat::for_test("Claude", ChatAgent::Claude),
+        )
+        .expect("a resident Claude seat");
+        let session_key = crate::chat_room::seat_session_key(key, &seat.id);
+        let session = claude_session(true);
+        hold(&manager, &session_key, session.clone());
+
+        chat_send_user_impl(
+            manager.clone(),
+            key.into(),
+            "take this now".into(),
+            None,
+            Some(seat.id),
+            Some("user-1".into()),
+            None,
+        )
+        .expect("a queued message for a seat");
+
+        assert_eq!(
+            chat_start_queued_impl(&manager, key.into(), "user-1".into()),
+            Ok(true)
+        );
+        assert!(
+            !session.lock().unwrap().busy,
+            "the seat's turn, not the absent host's, was interrupted"
+        );
+        assert_eq!(
+            manager.take_queued_turn(&session_key).map(|turn| turn.text),
+            Some("take this now".into())
+        );
+
+        end_process(&manager, &session_key).expect("end the stand-in");
+        crate::transcript::forget(key);
+    }
+
+    #[test]
     fn interrupting_codex_ends_its_one_shot_process_but_keeps_its_thread() {
         // Codex has no stdin control channel: stopping its current turn means
         // killing this one process. Its remembered thread is the context the
