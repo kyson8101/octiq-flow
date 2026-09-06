@@ -134,6 +134,37 @@ export type RecruitmentDraft = {
   error: string | null;
   createdAt: number;
 };
+export type SecretaryBlueprint = {
+  summary: string;
+  projects: { name: string; context: string }[];
+  professions: { name: string; kind: string; guidance: string }[];
+  agents: {
+    name: string;
+    profession: string;
+    provider?: string;
+    model?: string;
+    memberType?: "worker" | "consultant";
+    allProjects?: boolean;
+    projects?: string[];
+    appearance?: string;
+    rolePrompt?: string;
+    roleDescription?: string;
+  }[];
+  workflows: { name: string; professions: string[] }[];
+  questions: string[];
+  warnings: string[];
+};
+export type SecretaryDraft = {
+  id: string;
+  orgId: string;
+  secretaryId: string;
+  message: string;
+  status: "queued" | "generating" | "ready" | "applied" | "cancelled" | "failed";
+  blueprint: SecretaryBlueprint | null;
+  error: string | null;
+  baseSignature: number;
+  createdAt: number;
+};
 export type World = {
   revision: number;
   orgs: Org[];
@@ -144,6 +175,7 @@ export type World = {
   tasks: Task[];
   meetings: Meeting[];
   recruitmentDrafts?: RecruitmentDraft[];
+  secretaryDrafts?: SecretaryDraft[];
   roleRequests?: RoleRequest[];
   memories: Memory[];
   runs: Run[];
@@ -169,6 +201,7 @@ export type Stats = {
   discussing?: number;
   recruiting?: number;
   roleSetup?: number;
+  secretaryConfig?: number;
   stopping: number;
   queued: number;
   inputTokens: number;

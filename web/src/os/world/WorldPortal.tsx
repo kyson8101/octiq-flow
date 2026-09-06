@@ -24,6 +24,7 @@ import {
   MeetingInspector,
   TaskInspector,
 } from "./Inspectors";
+import { SecretaryDesk } from "./Secretary";
 import { acceptSnapshot, stages, type Mutate, type Snapshot } from "./types";
 import "./world.css";
 
@@ -33,6 +34,7 @@ type Dialog = {
     | "project"
     | "profession"
     | "workflow"
+    | "secretary"
     | "agent"
     | "task"
     | "meeting";
@@ -110,7 +112,25 @@ export function WorldPortal() {
   };
   const world = snapshot?.world;
   const org = world?.orgs.find((o) => o.id === orgId);
-  const agents = world?.agents.filter((a) => a.orgId === orgId) ?? [];
+  const secretary = world?.agents.find(
+    (agent) =>
+      agent.orgId === orgId &&
+      world.professions.some(
+        (profession) =>
+          profession.id === agent.professionId &&
+          ["secretary", "recruiter"].includes(profession.kind),
+      ),
+  );
+  const agents =
+    world?.agents.filter(
+      (agent) =>
+        agent.orgId === orgId &&
+        !world.professions.some(
+          (profession) =>
+            profession.id === agent.professionId &&
+            ["secretary", "recruiter"].includes(profession.kind),
+        ),
+    ) ?? [];
   const projects = world?.projects.filter((p) => p.orgId === orgId) ?? [];
   const tasks =
     world?.tasks.filter(
@@ -410,7 +430,7 @@ export function WorldPortal() {
                   )}
                 </nav>
                 <span>
-                  {agents.length} members · {projects.length} projects ·{" "}
+                  {agents.length} team members · 1 secretary · {projects.length} projects ·{" "}
                   {
                     tasks.filter((t) =>
                       ["working", "planning"].includes(t.status),
@@ -430,7 +450,28 @@ export function WorldPortal() {
                     </div>
                   </div>
                   <div className="ow-office-floor">
-                    <div className="ow-desks">
+                    <div className="ow-office-team">
+                      {secretary && (
+                        <button
+                          className="ow-reception"
+                          onClick={() => setDialog({ kind: "secretary" })}
+                        >
+                          <span className="ow-reception-sign">RECEPTION</span>
+                          <Avatar agent={secretary} />
+                          <span>
+                            <strong>{secretary.name}</strong>
+                            <small>
+                              {snapshot.stats.find((s) => s.agentId === secretary.id)?.secretaryConfig
+                                ? "Preparing your blueprint…"
+                                : snapshot.stats.find((s) => s.agentId === secretary.id)?.recruiting
+                                  ? "Recruiting a team member…"
+                                  : "Tell me what you want to build"}
+                            </small>
+                          </span>
+                          <b>Talk →</b>
+                        </button>
+                      )}
+                      <div className="ow-desks">
                       {agents.map((a) => {
                         const stats = snapshot.stats.find(
                           (s) => s.agentId === a.id,
@@ -487,6 +528,7 @@ export function WorldPortal() {
                         <strong>Welcome a new member</strong>
                         <small>Join first. Shape the role together.</small>
                       </button>
+                      </div>
                     </div>
                     <div className="ow-office-zones">
                       <button
@@ -830,7 +872,9 @@ export function WorldPortal() {
       {dialog && world && (
         <Modal
           title={
-            dialog.kind === "agent"
+            dialog.kind === "secretary"
+              ? `${org?.name ?? "Organization"} Secretary`
+              : dialog.kind === "agent"
               ? "Welcome a new agent"
               : dialog.kind === "task"
                 ? "Give your team a task"
@@ -839,6 +883,7 @@ export function WorldPortal() {
                   : `Create ${dialog.kind}`
           }
           close={closeDialog}
+          className={dialog.kind === "secretary" ? "ow-secretary-modal" : ""}
         >
           {error && (
             <p className="ow-error" role="alert">
@@ -882,6 +927,15 @@ export function WorldPortal() {
               projectId={projectFilter}
               mutate={mutate}
               done={inspectCreated("agent")}
+              busy={busy}
+            />
+          )}
+          {dialog.kind === "secretary" && orgId && secretary && (
+            <SecretaryDesk
+              world={world}
+              orgId={orgId}
+              secretary={secretary}
+              mutate={mutate}
               busy={busy}
             />
           )}

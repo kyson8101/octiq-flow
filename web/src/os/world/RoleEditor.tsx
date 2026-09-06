@@ -29,10 +29,19 @@ export function RoleEditor({
   const pending = drafts.find((d) =>
     ["queued", "generating"].includes(d.status),
   );
+  const secretary = (world.agents ?? []).find(
+    (agent) =>
+      agent.orgId === orgId &&
+      (world.professions ?? []).some(
+        (profession) =>
+          profession.id === agent.professionId &&
+          ["secretary", "recruiter"].includes(profession.kind),
+      ),
+  );
   const [draftId, setDraftId] = useState(pending?.id ?? "");
   const [brief, setBrief] = useState(pending?.brief ?? "");
-  const [provider, setProvider] = useState("codex");
-  const [model, setModel] = useState("default");
+  const [provider, setProvider] = useState(secretary?.provider ?? "codex");
+  const [model, setModel] = useState(secretary?.model ?? "default");
   const [starting, setStarting] = useState(false);
   const applied = useRef("");
   const draft = drafts.find((d) => d.id === draftId);
@@ -46,17 +55,17 @@ export function RoleEditor({
   }, [draft?.id, draft?.status, draft?.prompt, onChange]);
   return (
     <section className="ow-role-editor">
-      <h4>Recruiter</h4>
+      <h4>Secretary recruitment</h4>
       <p className="ow-note">
-        Describe the role in your own words. Your recruiter turns it into
+        Describe the role in your own words. Your org Secretary turns it into
         focused instructions for this agent. Only this brief and profession
         guidance are shared.
       </p>
       {!!drafts.length && (
         <label className="ow-field">
-          <span>Saved recruiter drafts</span>
+          <span>Saved Secretary drafts</span>
           <select
-            aria-label="Saved recruiter drafts"
+            aria-label="Saved Secretary drafts"
             value={draftId}
             onChange={(e) => {
               const selected = drafts.find((d) => d.id === e.target.value);
@@ -88,9 +97,9 @@ export function RoleEditor({
       </label>
       <div className="ow-two">
         <label className="ow-field">
-          <span>Recruiter provider</span>
+          <span>Secretary provider</span>
           <select
-            aria-label="Recruiter provider"
+            aria-label="Secretary provider"
             value={provider}
             disabled={running}
             onChange={(e) => {
@@ -111,9 +120,9 @@ export function RoleEditor({
           </select>
         </label>
         <label className="ow-field">
-          <span>Recruiter model</span>
+          <span>Secretary model</span>
           <input
-            aria-label="Recruiter model"
+            aria-label="Secretary model"
             value={model}
             onChange={(e) => setModel(e.target.value)}
             maxLength={100}
@@ -143,7 +152,7 @@ export function RoleEditor({
               .finally(() => setStarting(false));
           }}
         >
-          {running ? "Recruiter is polishing…" : "Polish with Recruiter"}
+          {running ? "Secretary is polishing…" : "Polish with Secretary"}
         </button>
         {running && draft && (
           <button
@@ -161,7 +170,7 @@ export function RoleEditor({
       </div>
       {running && (
         <p role="status">
-          You can close this window; the draft is saved while the recruiter
+          You can close this window; the draft is saved while the Secretary
           works.
         </p>
       )}
@@ -181,7 +190,7 @@ export function RoleEditor({
           maxLength={16000}
           rows={10}
           disabled={running}
-          placeholder="Write instructions yourself, or let the recruiter polish your role description above."
+          placeholder="Write instructions yourself, or let the Secretary polish your role description above."
         />
       </label>
       <p className="ow-muted">

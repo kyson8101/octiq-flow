@@ -30,10 +30,10 @@ const render = (drafts: RecruitmentDraft[], targetAgentId?: string) =>
       busy={false}
     />,
   );
-describe("recruiter role editor", () => {
+describe("Secretary recruitment role editor", () => {
   it("restores in-flight work and offers cancellation without losing the prompt", () => {
     const html = render([draft]);
-    expect(html).toContain("Recruiter is polishing…");
+    expect(html).toContain("Secretary is polishing…");
     expect(html).toContain("Cancel polishing");
     expect(html).toContain("Existing prompt");
     expect(html).toContain("Test mobile negative paths");
@@ -47,13 +47,13 @@ describe("recruiter role editor", () => {
       "this-agent",
     );
     expect(html).not.toContain("Test mobile negative paths");
-    expect(html).not.toContain("Recruiter is polishing…");
+    expect(html).not.toContain("Secretary is polishing…");
   });
   it("keeps completed drafts available for deliberate reuse", () => {
     const html = render([
       { ...draft, status: "ready", prompt: "Polished role" },
     ]);
-    expect(html).toContain("Saved recruiter drafts");
+    expect(html).toContain("Saved Secretary drafts");
     expect(html).toContain("ready · Test mobile negative paths");
     expect(html).not.toContain("Cancel polishing");
   });

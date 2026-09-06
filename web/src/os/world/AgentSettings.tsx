@@ -36,6 +36,11 @@ export function AgentSettings({
         (d.targetAgentId === agent.id || d.recruiterId === agent.id) &&
         ["queued", "generating"].includes(d.status),
     ) ||
+    (world.secretaryDrafts ?? []).some(
+      (d) =>
+        d.secretaryId === agent.id &&
+        ["queued", "generating"].includes(d.status),
+    ) ||
     agent.avatarGeneration?.status === "generating";
   return (
     <details className="ow-agent-settings">
@@ -97,13 +102,20 @@ export function AgentSettings({
             onChange={(id) => {
               setProfession(id);
               if (
-                world.professions.find((p) => p.id === id)?.kind === "recruiter"
+                ["secretary", "recruiter"].includes(
+                  world.professions.find((p) => p.id === id)?.kind ?? "",
+                )
               )
                 setKind("consultant");
             }}
           >
             {world.professions
-              .filter((p) => p.orgId === agent.orgId)
+              .filter(
+                (p) =>
+                  p.orgId === agent.orgId &&
+                  (!["secretary", "recruiter"].includes(p.kind) ||
+                    p.id === agent.professionId),
+              )
               .map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -111,8 +123,9 @@ export function AgentSettings({
               ))}
           </Select>
           <Select label="Member type" value={kind} onChange={setKind}>
-            {world.professions.find((p) => p.id === professionId)?.kind !==
-              "recruiter" && <option value="worker">Worker</option>}
+            {!["secretary", "recruiter"].includes(
+              world.professions.find((p) => p.id === professionId)?.kind ?? "",
+            ) && <option value="worker">Worker</option>}
             <option value="consultant">Consultant</option>
           </Select>
         </div>

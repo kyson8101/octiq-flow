@@ -387,6 +387,10 @@ fn fixture() -> (World, String, String, String) {
         .id
         .clone();
     let agent=w.apply("create_agent",&json!({"orgId":org,"name":"Alex","professionId":profession,"provider":"claude","model":"test-model","kind":"worker","projectIds":[project]})).unwrap()["id"].as_str().unwrap().to_owned();
+    // Most historical tests use agents[0] as the execution member. Keep that
+    // fixture convention while production orgs still create Secretary first.
+    let member_index = w.agents.iter().position(|a| a.id == agent).unwrap();
+    w.agents.swap(0, member_index);
     (w, org, project, agent)
 }
 fn task(w: &mut World, project: &str, agent: &str) -> String {
@@ -425,6 +429,214 @@ fn run(w: &mut World, task: &str, project: &str, agent: &str, kind: &str) -> Run
 fn world_migration_default_is_decodable() {
     let w: World = serde_json::from_str("{}").unwrap();
     assert!(w.orgs.is_empty());
+}
+
+#[test]
+fn every_org_starts_with_one_scoped_secretary() {
+    let mut w = World::default();
+    let first = w.apply("create_org", &json!({"name":"First"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = w.apply("create_org", &json!({"name":"Second"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for org_id in [first, second] {
+        let secretaries: Vec<_> = w
+            .agents
+            .iter()
+            .filter(|agent| agent.org_id == org_id && super::secretary::is_secretary(&w, agent))
+            .collect();
+        assert_eq!(secretaries.len(), 1);
+        assert_eq!(secretaries[0].name, "Secretary");
+        assert_eq!(secretaries[0].kind, "consultant");
+        assert!(!secretaries[0].all_projects);
+        assert!(secretaries[0].project_ids.is_empty());
+        let secretary_id = secretaries[0].id.clone();
+        assert!(w
+            .apply(
+                "update_scope",
+                &json!({"agentId":secretary_id,"allProjects":true})
+            )
+            .is_err());
+    }
+}
+
+#[test]
+fn legacy_recruiter_is_upgraded_in_place_to_secretary() {
+    let (mut w, org, _, _) = fixture();
+    let secretary = w
+        .agents
+        .iter()
+        .find(|agent| super::secretary::is_secretary(&w, agent))
+        .unwrap()
+        .id
+        .clone();
+    let profession = w.agent(&secretary).unwrap().profession_id.clone();
+    w.agents
+        .iter_mut()
+        .find(|a| a.id == secretary)
+        .unwrap()
+        .name = "Recruiter".into();
+    let role = w
+        .professions
+        .iter_mut()
+        .find(|p| p.id == profession)
+        .unwrap();
+    role.name = "Recruiter".into();
+    role.kind = "recruiter".into();
+    let restored = super::secretary::ensure_org(&mut w, &org).unwrap();
+    assert_eq!(restored, secretary);
+    assert_eq!(w.agent(&secretary).unwrap().name, "Secretary");
+    assert_eq!(
+        w.professions
+            .iter()
+            .find(|p| p.id == profession)
+            .unwrap()
+            .kind,
+        "secretary"
+    );
+    assert_eq!(
+        w.agents
+            .iter()
+            .filter(|a| a.org_id == org && super::secretary::is_secretary(&w, a))
+            .count(),
+        1
+    );
+}
+
+fn ready_secretary_blueprint(w: &mut World, org: &str, output: &str) -> String {
+    let draft_id = w
+        .apply(
+            "create_secretary_request",
+            &json!({"orgId":org,"message":"Create a product project and QA team"}),
+        )
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let secretary_id = w
+        .secretary_drafts
+        .iter()
+        .find(|d| d.id == draft_id)
+        .unwrap()
+        .secretary_id
+        .clone();
+    let signature = super::secretary::signature(w, org);
+    let draft = w
+        .secretary_drafts
+        .iter_mut()
+        .find(|d| d.id == draft_id)
+        .unwrap();
+    draft.status = "generating".into();
+    draft.base_signature = signature;
+    let run = Run {
+        id: id(),
+        agent_id: secretary_id,
+        project_id: String::new(),
+        target_id: draft_id.clone(),
+        kind: "secretary".into(),
+        generation: 0,
+        status: "running".into(),
+        result: String::new(),
+        started_at: now(),
+        finished_at: None,
+    };
+    w.runs.push(run.clone());
+    super::secretary::complete(w, &run, output).unwrap();
+    draft_id
+}
+
+#[test]
+fn secretary_blueprint_is_inert_until_confirmed_then_updates_canonical_records() {
+    let mut w = World::default();
+    let org = w.apply("create_org", &json!({"name":"Studio"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let draft = ready_secretary_blueprint(
+        &mut w,
+        &org,
+        r#"{
+          "summary":"Create Portal with a QA specialist and review workflow.",
+          "projects":[{"name":"Portal","context":"Customer-facing web product"}],
+          "professions":[{"name":"Product QA","kind":"tester","guidance":"Test risk, edge cases and regressions."}],
+          "agents":[{"name":"Quinn","profession":"Product QA","provider":"codex","model":"default","memberType":"worker","allProjects":false,"projects":["Portal"],"appearance":"An observant fox","rolePrompt":"Verify honestly.","roleDescription":"Product QA specialist"}],
+          "workflows":[{"name":"QA review","professions":["Product QA"]}],
+          "questions":[],"warnings":[]
+        }"#,
+    );
+    assert!(w.projects.is_empty());
+    assert_eq!(w.agents.len(), 1);
+    assert_eq!(w.secretary_drafts[0].status, "ready");
+    w.apply("apply_secretary_blueprint", &json!({"draftId":draft}))
+        .unwrap();
+    let project = w.projects.iter().find(|p| p.name == "Portal").unwrap();
+    let qa = w.agents.iter().find(|a| a.name == "Quinn").unwrap();
+    assert!(w.authorize(&qa.id, &project.id).is_ok());
+    assert_eq!(qa.role_description, "Product QA specialist");
+    assert_eq!(
+        w.workflows[0].profession_ids,
+        vec![qa.profession_id.clone()]
+    );
+    assert_eq!(w.secretary_drafts[0].status, "applied");
+    assert!(w
+        .apply("apply_secretary_blueprint", &json!({"draftId":draft}))
+        .is_err());
+}
+
+#[test]
+fn secretary_questions_and_stale_blueprints_cannot_mutate_configuration() {
+    let mut w = World::default();
+    let org = w.apply("create_org", &json!({"name":"Studio"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let question = ready_secretary_blueprint(
+        &mut w,
+        &org,
+        r#"{"summary":"I need one decision.","questions":["Which project should QA access?"]}"#,
+    );
+    assert!(w
+        .apply("apply_secretary_blueprint", &json!({"draftId":question}))
+        .is_err());
+    let ready = ready_secretary_blueprint(
+        &mut w,
+        &org,
+        r#"{"summary":"Add Project A.","projects":[{"name":"A","context":""}]}"#,
+    );
+    w.apply("create_project", &json!({"orgId":org,"name":"Concurrent"}))
+        .unwrap();
+    assert!(w
+        .apply("apply_secretary_blueprint", &json!({"draftId":ready}))
+        .is_err());
+    assert!(w.projects.iter().all(|project| project.name != "A"));
+}
+
+#[test]
+fn secretary_partial_agent_updates_preserve_unmentioned_settings() {
+    let (mut w, org, _, agent_id) = fixture();
+    {
+        let agent = w.agents.iter_mut().find(|a| a.id == agent_id).unwrap();
+        agent.role_prompt = "Keep this specialist prompt".into();
+        agent.role_description = "Existing developer".into();
+        agent.appearance = "Blue fox".into();
+    }
+    let draft = ready_secretary_blueprint(
+        &mut w,
+        &org,
+        r#"{"summary":"Allow Alex to work across this org.","agents":[{"name":"Alex","profession":"Developer","allProjects":true}]}"#,
+    );
+    w.apply("apply_secretary_blueprint", &json!({"draftId":draft}))
+        .unwrap();
+    let agent = w.agent(&agent_id).unwrap();
+    assert!(agent.all_projects);
+    assert_eq!(agent.provider, "claude");
+    assert_eq!(agent.model, "test-model");
+    assert_eq!(agent.role_prompt, "Keep this specialist prompt");
+    assert_eq!(agent.role_description, "Existing developer");
+    assert_eq!(agent.appearance, "Blue fox");
 }
 #[test]
 fn projects_and_professions_are_owned_by_org() {
@@ -1276,7 +1488,7 @@ fn recruiter_reuses_org_member_and_rejects_cross_org_and_execution_roles() {
     let recruiter_profession = w
         .professions
         .iter()
-        .find(|p| p.org_id == org && p.kind == "recruiter")
+        .find(|p| p.org_id == org && p.kind == "secretary")
         .unwrap()
         .id
         .clone();
@@ -1348,14 +1560,15 @@ fn recruiter_failures_are_visible_and_usage_is_not_task_workload_or_xp() {
         cached: None,
     })
     .unwrap();
-    w.apply(
-        "update_scope",
-        &json!({"agentId":run.agent_id,"allProjects":true}),
-    )
-    .unwrap();
+    assert!(w
+        .apply(
+            "update_scope",
+            &json!({"agentId":run.agent_id,"allProjects":true}),
+        )
+        .is_err());
     assert!(
         w.active(&run),
-        "Project scope changes do not affect a brief-only recruiter job"
+        "Rejected project scope changes do not affect Secretary recruitment"
     );
     runtime::fail(&mut w, &run, "Provider is unavailable");
     assert_eq!(w.recruitment_drafts[0].status, "failed");

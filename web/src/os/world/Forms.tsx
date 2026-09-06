@@ -21,7 +21,9 @@ export function WorkflowForm({
   done: () => void;
 }) {
   const professions = world.professions.filter(
-    (p) => p.orgId === orgId && !["pm", "recruiter"].includes(p.kind),
+    (p) =>
+      p.orgId === orgId &&
+      !["pm", "secretary", "recruiter"].includes(p.kind),
   );
   const [steps, setSteps] = useState<string[]>(
     professions.slice(0, 2).map((p) => p.id),

@@ -19,8 +19,17 @@ fn validate(w: &World, a: &Agent) -> Result<()> {
         .iter()
         .find(|p| p.id == a.profession_id && p.org_id == a.org_id)
         .ok_or("Profession belongs to another organization.")?;
-    if profession.kind == "recruiter" && a.kind != "consultant" {
-        return Err("Recruiters are consultants, not project execution workers.".into());
+    if matches!(profession.kind.as_str(), "secretary" | "recruiter") && a.kind != "consultant" {
+        return Err("Secretaries are consultants, not project execution workers.".into());
+    }
+    if profession.kind == "secretary"
+        && w.agents.iter().any(|existing| {
+            existing.org_id == a.org_id
+                && existing.id != a.id
+                && super::secretary::is_secretary(w, existing)
+        })
+    {
+        return Err("Each organization has exactly one Secretary.".into());
     }
     Ok(())
 }
@@ -162,6 +171,9 @@ pub fn update(w: &mut World, args: &Value) -> Result<Value> {
             (d.target_agent_id.as_deref() == Some(&agent_id) || d.recruiter_id == agent_id)
                 && matches!(d.status.as_str(), "queued" | "generating")
         })
+        || w.secretary_drafts.iter().any(|d| {
+            d.secretary_id == agent_id && matches!(d.status.as_str(), "queued" | "generating")
+        })
         || previous
             .avatar_generation
             .as_ref()
@@ -171,6 +183,11 @@ pub fn update(w: &mut World, args: &Value) -> Result<Value> {
             "Wait for the agent's current response or avatar to finish before changing settings."
                 .into(),
         );
+    }
+    if (next.kind != previous.kind || next.profession_id != previous.profession_id)
+        && super::secretary::is_secretary(w, &previous)
+    {
+        return Err("The organization Secretary cannot change member type or profession.".into());
     }
     if (next.kind != previous.kind || next.profession_id != previous.profession_id)
         && w.tasks.iter().any(|t| {

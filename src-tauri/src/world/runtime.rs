@@ -157,6 +157,9 @@ pub fn claim(w: &mut World) -> Result<Option<Run>> {
     if w.runs.iter().filter(|r| r.in_flight()).count() >= 3 {
         return Ok(None);
     }
+    if let Some(run) = super::secretary::claim(w)? {
+        return Ok(Some(run));
+    }
     if let Some(run) = super::recruitment::claim(w)? {
         return Ok(Some(run));
     }
@@ -291,7 +294,16 @@ pub fn fail(w: &mut World, run: &Run, error: &str) {
         r.result = error.into();
         r.finished_at = Some(now());
     }
-    if run.kind == "role_setup" {
+    if run.kind == "secretary" {
+        if let Some(draft) = w
+            .secretary_drafts
+            .iter_mut()
+            .find(|d| d.id == run.target_id)
+        {
+            draft.status = "failed".into();
+            draft.error = Some(error.into());
+        }
+    } else if run.kind == "role_setup" {
         if let Some(request) = w.role_requests.iter_mut().find(|r| r.id == run.target_id) {
             request.status = "failed".into();
             request.error = Some(error.into());
@@ -317,6 +329,9 @@ pub fn fail(w: &mut World, run: &Run, error: &str) {
 }
 
 fn execute(run: &Run) -> Result<()> {
+    if run.kind == "secretary" {
+        return super::secretary::execute(run);
+    }
     if run.kind == "role_setup" {
         return super::role_chat::execute(run);
     }
@@ -348,7 +363,10 @@ fn execute(run: &Run) -> Result<()> {
             let professions: Vec<_> = w
                 .professions
                 .iter()
-                .filter(|p| p.org_id == t.org_id && !matches!(p.kind.as_str(), "pm" | "recruiter"))
+                .filter(|p| {
+                    p.org_id == t.org_id
+                        && !matches!(p.kind.as_str(), "pm" | "secretary" | "recruiter")
+                })
                 .map(|p| json!({"id":p.id,"name":p.name}))
                 .collect();
             let workflow = t
@@ -446,7 +464,9 @@ pub fn apply_response(w: &mut World, run: &Run, value: &Value) -> Result<Option<
         return Ok(None);
     }
     if !matches!(run.kind.as_str(), "task" | "plan") {
-        return Err("Discussion and recruiter responses cannot execute actions.".into());
+        return Err(
+            "Discussion, Secretary, and recruitment responses cannot execute actions.".into(),
+        );
     }
     let action = value["action"].as_str().ok_or("Missing agent action.")?;
     let index = w
@@ -482,7 +502,7 @@ pub fn apply_response(w: &mut World, run: &Run, value: &Value) -> Result<Option<
             if !w.professions.iter().any(|p| {
                 p.id == profession
                     && p.org_id == w.tasks[index].org_id
-                    && !matches!(p.kind.as_str(), "pm" | "recruiter")
+                    && !matches!(p.kind.as_str(), "pm" | "secretary" | "recruiter")
             }) {
                 return Err("PM selected an ineligible profession.".into());
             }

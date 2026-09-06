@@ -30,6 +30,7 @@ pub struct World {
     pub tasks: Vec<Task>,
     pub meetings: Vec<Meeting>,
     pub recruitment_drafts: Vec<RecruitmentDraft>,
+    pub secretary_drafts: Vec<super::secretary::SecretaryDraft>,
     pub role_requests: Vec<super::role_chat::RoleRequest>,
     pub memories: Vec<Memory>,
     pub runs: Vec<Run>,
@@ -329,7 +330,9 @@ impl World {
         )
     }
     pub fn active(&self, run: &Run) -> bool {
-        (if run.kind == "role_setup" {
+        (if run.kind == "secretary" {
+            super::secretary::active(self, run)
+        } else if run.kind == "role_setup" {
             super::role_chat::active(self, run)
         } else if run.kind == "recruitment" {
             super::recruitment::active(self, run)
@@ -339,7 +342,10 @@ impl World {
             .runs
             .iter()
             .any(|r| r.id == run.id && r.status == "running")
-            && if matches!(run.kind.as_str(), "recruitment" | "role_setup") {
+            && if matches!(
+                run.kind.as_str(),
+                "secretary" | "recruitment" | "role_setup"
+            ) {
                 true
             } else if run.kind == "meeting" {
                 self.meetings.iter().any(|m| {
@@ -390,6 +396,7 @@ impl World {
                     ("Tester", "tester", "Design risk-based tests, edge cases, negative paths and regression coverage. Independently inspect evidence. Never call unexecuted tests passing."),
                     ("Infrastructure", "infra", "Assess operational reliability, configuration, deployment dependencies, observability and recovery. Surface material operational decisions.")
                 ] { self.professions.push(Profession { id: id(), org_id: org_id.clone(), name: name.into(), guidance: guidance.into(), kind: kind.into() }); }
+                super::secretary::ensure_org(self, &org_id)?;
                 Ok(json!({"id": org_id}))
             }
             "create_project" => {
@@ -430,8 +437,7 @@ impl World {
                 let org_id = text(args, "orgId", 80)?;
                 self.org(&org_id)?;
                 let kind = text(args, "kind", 20)?;
-                if !["pm", "dev", "tester", "infra", "custom", "recruiter"].contains(&kind.as_str())
-                {
+                if !["pm", "dev", "tester", "infra", "custom"].contains(&kind.as_str()) {
                     return Err("Invalid profession kind.".into());
                 }
                 let p = Profession {
@@ -448,6 +454,9 @@ impl World {
             "create_agent" => super::agent_settings::create(self, args),
             "update_agent_settings" => super::agent_settings::update(self, args),
             "create_recruitment" => super::recruitment::create(self, args),
+            "create_secretary_request" => super::secretary::create(self, args),
+            "cancel_secretary_request" => super::secretary::cancel(self, args),
+            "apply_secretary_blueprint" => super::secretary::apply(self, args),
             "role_message" => super::role_chat::create(self, args),
             "cancel_role_message" => super::role_chat::cancel(self, args),
             "cancel_recruitment" => {
@@ -491,6 +500,12 @@ impl World {
             "update_scope" => {
                 let agent_id = text(args, "agentId", 80)?;
                 let a = self.agent(&agent_id)?.clone();
+                if super::secretary::is_secretary(self, &a) {
+                    return Err(
+                        "The Secretary stays scoped to organization configuration, not projects."
+                            .into(),
+                    );
+                }
                 let projects = list(args, "projectIds")?;
                 for p in &projects {
                     if self.project(p)?.org_id != a.org_id {
@@ -506,7 +521,10 @@ impl World {
                     .filter(|r| {
                         r.agent_id == agent_id
                             && r.status == "running"
-                            && !matches!(r.kind.as_str(), "recruitment" | "role_setup")
+                            && !matches!(
+                                r.kind.as_str(),
+                                "secretary" | "recruitment" | "role_setup"
+                            )
                             && self.authorize(&agent_id, &r.project_id).is_err()
                     })
                     .map(|r| r.target_id.clone())
@@ -529,7 +547,7 @@ impl World {
                     if !self.professions.iter().any(|r| {
                         r.id == *p
                             && r.org_id == org_id
-                            && !matches!(r.kind.as_str(), "pm" | "recruiter")
+                            && !matches!(r.kind.as_str(), "pm" | "secretary" | "recruiter")
                     }) {
                         return Err(
                             "Workflow steps must use execution professions in this organization."

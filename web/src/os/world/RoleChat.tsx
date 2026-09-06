@@ -28,7 +28,8 @@ export function RoleChat({
       (a.id === agent.id ||
         world.professions.some(
           (p) =>
-            p.id === a.professionId && ["pm", "recruiter"].includes(p.kind),
+            p.id === a.professionId &&
+            ["pm", "secretary", "recruiter"].includes(p.kind),
         )),
   );
   const disabled = busy || sending || !!pending;

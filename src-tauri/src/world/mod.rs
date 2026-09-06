@@ -9,6 +9,7 @@ mod provider;
 mod recruitment;
 mod role_chat;
 mod runtime;
+mod secretary;
 #[cfg(test)]
 mod tests;
 
@@ -43,6 +44,10 @@ pub(super) fn update<T>(f: impl FnOnce(&mut World) -> Result<T>) -> Result<T> {
     let mut world: World =
         serde_json::from_str(&previous).map_err(|_| "Could not decode the saved world.")?;
     let before = serde_json::to_string(&world).map_err(|_| "Could not encode world.")?;
+    let org_ids: Vec<_> = world.orgs.iter().map(|org| org.id.clone()).collect();
+    for org_id in org_ids {
+        secretary::ensure_org(&mut world, &org_id)?;
+    }
     let result = f(&mut world)?;
     if serde_json::to_string(&world).map_err(|_| "Could not encode world.")? != before {
         world.revision += 1;
@@ -80,6 +85,7 @@ fn agent_stats(world: &World, agent: &Agent) -> Value {
     json!({"agentId":agent.id,"active":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && matches!(r.kind.as_str(), "task" | "plan")).count(),
             "recruiting":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="recruitment").count(),
             "roleSetup":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="role_setup").count(),
+            "secretaryConfig":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="secretary").count(),
             "discussing":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="meeting").count(),
             "stopping":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="interrupted" && r.in_flight()).count(),
             "queued":world.tasks.iter().filter(|t|t.agent_id.as_deref()==Some(&agent.id) && t.status=="queued" && t.route=="direct").count(),
@@ -89,6 +95,8 @@ fn agent_stats(world: &World, agent: &Agent) -> Value {
 }
 
 fn snapshot() -> Result<Value> {
+    // Persistently upgrade worlds created before every org owned a Secretary.
+    update(|_| Ok(()))?;
     let world = read()?;
     let stats: Vec<_> = world
         .agents

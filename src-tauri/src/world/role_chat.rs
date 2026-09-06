@@ -29,7 +29,8 @@ fn authorized(w: &World, target: &str, author: &str) -> bool {
     target.org_id == author.org_id
         && (target.id == author.id
             || w.professions.iter().any(|p| {
-                p.id == author.profession_id && matches!(p.kind.as_str(), "pm" | "recruiter")
+                p.id == author.profession_id
+                    && matches!(p.kind.as_str(), "pm" | "secretary" | "recruiter")
             }))
 }
 
@@ -42,7 +43,7 @@ pub fn create(w: &mut World, args: &Value) -> Result<Value> {
         author_id
     };
     if !authorized(w, &agent_id, &author_id) {
-        return Err("Choose this agent, or a PM or Recruiter in the same organization.".into());
+        return Err("Choose this agent, or a PM or Secretary in the same organization.".into());
     }
     let mode = text(args, "mode", 20)?;
     if !matches!(mode.as_str(), "discuss" | "update") {

@@ -234,7 +234,7 @@ export function AgentInspector({
         </button>
         <button onClick={meeting}>Invite to meeting</button>
         <button onClick={() => setTab("role")}>Talk about role</button>
-        {hire && ["pm", "recruiter"].includes(profession?.kind ?? "") && (
+        {hire && ["pm", "secretary", "recruiter"].includes(profession?.kind ?? "") && (
           <button onClick={hire}>Hire a teammate</button>
         )}
       </div>
@@ -316,7 +316,7 @@ export function AgentInspector({
         <>
           <RoleChat agent={agent} world={world} mutate={mutate} busy={busy} />
           <details className="ow-role-manual">
-            <summary>Edit prompt manually or use Recruiter drafts</summary>
+            <summary>Edit prompt manually or use Secretary drafts</summary>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
