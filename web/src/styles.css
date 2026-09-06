@@ -174,6 +174,10 @@ body {
   margin-left: auto;
 }
 
+.topbar-action-label {
+  display: none;
+}
+
 .topbar-leading .topbar-title {
   max-width: 100%;
 }
@@ -377,27 +381,13 @@ body {
   }
 }
 
-/* A phone's top bar has to carry six things: the drawer, the project, a new
-   chat, the view switch, git, and plan usage. At 390px they wanted about 450px
-   between them, so the project name was squeezed to "octi…" and the branch to
-   "2". Nothing is dropped here — everything gives a little instead:
-   tighter gaps, smaller round buttons, one usage meter rather than two (the
-   busier agent; the other is a tap away), and a git chip that keeps its branch
-   whole while the project name takes the shrinking. */
-/* The phone bar carries FOUR things and nothing else: where you are (which is
-   also the way to everywhere else), how far through the plan, git, and a new
-   chat. The view switch and the usage meter moved into the drawer — see
-   `head` and `foot` in Sidebar.tsx — because at 390px six controls left the
-   project name at "octi…" and the branch at "2", which is not a bar, it is a
-   list of things that did not fit. */
+/* The phone bar carries where you are and one door to the action list. View
+   navigation and usage already live in the drawer; putting every remaining
+   control in this dropdown leaves the project name readable at narrow widths. */
 @media (max-width: 700px) {
   .topbar {
     gap: 3px;
     padding: 0 max(4px, env(safe-area-inset-right)) 0 max(4px, env(safe-area-inset-left));
-  }
-
-  .topbar-actions {
-    gap: 3px;
   }
 
   .topbar .icon-btn {
@@ -409,22 +399,109 @@ body {
     font-size: 14px;
   }
 
-  .topbar .gitp-toggle {
-    gap: 4px;
-    padding: 0 5px;
-  }
+}
 
-  /* Files becomes a plain round button. The count is the first thing to go: on
-     a phone the panel is one tap away and tells you the number itself, and the
-     35px it costs come straight out of the project name beside it. */
-  .topbar .sfp-toggle {
-    width: 32px;
-    padding: 0;
-  }
+.mobile-actions {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+}
 
-  .topbar .sfp-count {
-    display: none;
-  }
+.mobile-actions-trigger[aria-expanded="true"] {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.mobile-actions-panel {
+  position: absolute;
+  z-index: 90;
+  top: calc(100% + 7px);
+  right: 0;
+  display: grid;
+  gap: 2px;
+  width: min(250px, calc(100vw - 16px));
+  max-height: min(520px, calc(100dvh - 64px - env(safe-area-inset-top)));
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+}
+
+.topbar .mobile-actions-panel > .icon-btn,
+.topbar .mobile-actions-panel > .gitp-toggle,
+.topbar .mobile-actions-panel > .topbar-room,
+.topbar .mobile-actions-panel > .attention-inbox .attention-trigger {
+  width: 100%;
+  min-height: 40px;
+  height: auto;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 13px;
+}
+
+.topbar .mobile-actions-panel > .icon-btn:hover,
+.topbar .mobile-actions-panel > .gitp-toggle:hover,
+.topbar .mobile-actions-panel > .attention-inbox .attention-trigger:hover,
+.topbar .mobile-actions-panel > .attention-inbox .attention-trigger[aria-expanded="true"] {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.mobile-actions-panel > .topbar-room {
+  cursor: default;
+}
+
+.mobile-actions-panel > .attention-inbox {
+  width: 100%;
+}
+
+/* The inbox is a disclosure of its own. It escapes the scrolling action list
+   instead of being clipped inside it, at every width that uses this menu. */
+.mobile-actions-panel .attention-panel {
+  position: fixed;
+  top: calc(58px + env(safe-area-inset-top));
+  right: 12px;
+  left: 12px;
+  width: auto;
+  max-height: calc(100dvh - 90px - env(safe-area-inset-top));
+}
+
+.mobile-actions-panel .topbar-action-label,
+.mobile-actions-panel .attention-trigger > span:not(.attention-count),
+.mobile-actions-panel .rail-count,
+.mobile-actions-panel .sfp-count {
+  display: inline;
+}
+
+.mobile-actions-panel .topbar-action-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+
+.copy-chat-id.is-done {
+  color: var(--ok);
+}
+
+.copy-chat-id.is-failed {
+  color: var(--danger);
+}
+
+.mobile-actions-panel > .rail-toggle.is-on,
+.mobile-actions-panel > .gitp-toggle.is-on {
+  background: var(--bg-2);
+}
+
+.mobile-actions-panel > .topbar-delete.is-going {
+  color: var(--danger);
 }
 
 /* Where the view switch and the usage meter go instead. The switch leads the
@@ -3147,12 +3224,37 @@ body {
   stroke-linejoin: round;
 }
 
-/* Codex's default wears a visor instead of a face. Lighter than the head it
-   sits in, or at 18px the two strokes merge into a filled band. */
-.mascot-visor {
+/* Both crews share enamel shells and dark glass, with each model drawn
+   as its own silhouette. The glass is a material colour, so its lit eyes
+   keep their contrast on light themes too. No filters or SVG IDs: dozens of
+   these can share the sidebar without extra paint work or ID collisions. */
+.mascot-shell {
+  fill: color-mix(in srgb, var(--robot-accent) 22%, var(--bg-1));
+  stroke: color-mix(in srgb, var(--robot-accent) 58%, var(--fg-2));
+  stroke-width: 1.6;
+}
+
+.mascot-faceplate {
+  fill: color-mix(in srgb, var(--robot-accent) 9%, #101820);
+}
+
+.mascot-trim {
+  fill: color-mix(in srgb, var(--robot-accent) 48%, var(--bg-2));
+  stroke: color-mix(in srgb, var(--robot-accent) 64%, var(--fg-2));
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+
+.mascot-detail {
   fill: none;
-  stroke: currentColor;
-  stroke-width: 1.35;
+  stroke: color-mix(in srgb, var(--robot-accent) 68%, var(--fg-2));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mascot-grin {
+  fill: var(--robot-accent);
 }
 
 .mascot-stalk {
@@ -3162,23 +3264,7 @@ body {
   stroke-linecap: round;
 }
 
-.mascot-ear {
-  fill: currentColor;
-}
-
-/* The heaviest stroke on the drawing relative to its length, and deliberately:
-   at 18px on a 1x screen a 1.25 smile rasterised to a grey smudge under the
-   eyes, which is worse than no mouth at all. */
-.mascot-smile {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-}
-
-/* The two accent pieces, and the only accent on this line. They are three
-   pixels across: enough to read as lit, not enough to argue with the tool
-   spinner about which of them is the thing you are waiting on. */
+/* The eyes and beacon stay bright against the tinted shell and dark glass. */
 .mascot-lamp,
 .mascot-eye {
   fill: var(--robot-accent);
@@ -3355,8 +3441,7 @@ body {
   }
 }
 
-/* Codex's default: a scan. It has a visor and no mouth, so it looks left and
-   right instead of nodding. */
+/* Codex's default: a terminal scanning gently from side to side. */
 @keyframes mascot-scan {
   0%,
   100% {
@@ -11780,3 +11865,31 @@ body.is-ultra .eff {
   font-size: 0.72rem;
   color: var(--fg-3);
 }
+
+/* Cached messages remain readable during transcript synchronization. */
+.chat-sync-note {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.history-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 16px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+.history-more button {
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-1);
+  background: var(--bg-1);
+  cursor: pointer;
+}
+.history-more button:disabled { opacity: 0.6; cursor: wait; }

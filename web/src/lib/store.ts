@@ -108,13 +108,18 @@ export function saveConversations(list: Conversation[]): void {
   const kept: string[] = [];
   let used = 2; // the brackets
   for (const c of ordered) {
-    const json = JSON.stringify(c);
-    const cost = json.length + (kept.length ? 1 : 0); // and the comma
-    // One chat too big for the whole budget is SKIPPED rather than taken as a
-    // reason to stop. It is on the server too, and reopening it replays from
-    // there — whereas giving up here threw away every smaller chat behind it
-    // as well, which is how the store ended up empty with 27 chats in it.
-    if (used + cost > BUDGET) continue;
+    let json = JSON.stringify(c);
+    let cost = json.length + (kept.length ? 1 : 0); // and the comma
+    // Large transcripts live in IndexedDB; smaller copies can still paint
+    // synchronously from localStorage. Keep metadata when messages do not fit.
+    if (used + cost > BUDGET) {
+      // Keep the sidebar row so reload can find the IndexedDB checkpoint
+      // without first waiting for the server's index. An empty local copy
+      // must never claim the full transcript's sequence number.
+      json = JSON.stringify({ ...c, messages: [], seq: undefined });
+      cost = json.length + (kept.length ? 1 : 0);
+      if (used + cost > BUDGET) continue;
+    }
     kept.push(json);
     used += cost;
   }

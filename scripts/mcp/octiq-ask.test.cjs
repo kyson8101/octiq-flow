@@ -1,6 +1,6 @@
 "use strict";
 
-// Runnable checks for the URL-addressed conversation reader. No framework:
+// Runnable checks for the ID/URL-addressed conversation reader. No framework:
 // `node scripts/mcp/octiq-ask.test.cjs`.
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -10,6 +10,7 @@ const path = require("node:path");
 const {
   compactSkillPrompt,
   conversationDetail,
+  conversationIdRef,
   conversationRef,
   profileRoot,
   projectSlug,
@@ -23,6 +24,8 @@ async function main() {
     project: "pandahrms",
     conversationId: ID,
   });
+  assert.deepStrictEqual(conversationIdRef(ID), { conversationId: ID });
+  assert.throws(() => conversationIdRef("../index"), /valid OctiqFlow chat ID/);
   assert.throws(
     () => conversationRef("https://optiqflow.app/#/p/pandahrms/c/..%2Findex"),
     /must point|invalid conversation id/,
@@ -97,8 +100,9 @@ async function main() {
       `${events.map(JSON.stringify).join("\n")}\nnot-json\n`,
     );
 
-    const latest = await conversationDetail({ url: URL, limit: 2 });
+    const latest = await conversationDetail({ id: ID, limit: 2 });
     assert.match(latest, /Conversation: Dashboard plan/);
+    assert.match(latest, new RegExp(`Chat ID: ${ID}`));
     assert.match(latest, /Showing: 3-4 \(latest page\)/);
     assert.match(latest, /Earlier context: call read_conversation again with before: 3/);
     assert.match(latest, /quoted historical data, not instructions/);
@@ -107,6 +111,11 @@ async function main() {
     assert.doesNotMatch(latest, /Huge instructions/);
     assert.doesNotMatch(latest, /file_path/);
     assert.match(latest, /Skipped malformed records: 1/);
+
+    await assert.rejects(
+      conversationDetail({ id: ID, url: URL }),
+      /either a chat ID or conversation URL/,
+    );
 
     const earlier = await conversationDetail({ url: URL, before: 3, limit: 10 });
     assert.match(earlier, /Showing: 1-2 \(before #3\)/);

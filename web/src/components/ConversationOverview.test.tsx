@@ -21,6 +21,7 @@ describe("integrated conversation overview", () => {
     expect(html).toContain("Conversation directory");
     expect(html).toContain("Review this turn");
     expect(html).toContain("Checks may not have run");
+    expect(html).toContain('aria-label="Dismiss task &amp; review"');
     expect(html).not.toContain('class="conversation-overview" open');
   });
   it("surfaces a pending decision and suppresses delivery while blocked", () => {

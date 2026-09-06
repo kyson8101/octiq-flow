@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { bridge, type ConnectionState } from "../../lib/bridge";
+import { useMedia } from "../../lib/media";
+import {
+  InspectorPanel,
+  MobileNavigation,
+  MobileWorkList,
+  needsFounder,
+  type WorldView,
+} from "./MobileViews";
 import {
   AgentForm,
   Field,
@@ -35,15 +43,22 @@ type Dialog = {
 type Inspector = { kind: "agent" | "task" | "meeting"; id: string } | null;
 
 export function WorldPortal() {
+  const mobile = useMedia("(max-width: 760px)");
   const [connection, setConnection] = useState<ConnectionState>(bridge.state);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [orgId, setOrgId] = useState<string | null>(null);
-  const [view, setView] = useState("office");
+  const [view, setView] = useState<WorldView>(() =>
+    mobile ? "attention" : "office",
+  );
   const [projectFilter, setProjectFilter] = useState("");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [inspector, setInspector] = useState<Inspector>(null);
+  const main = useRef<HTMLElement>(null);
+  useEffect(() => {
+    main.current?.scrollTo({ top: 0 });
+  }, [view, orgId]);
   const refresh = useCallback(async () => {
     try {
       const next = await bridge.invoke<Snapshot>("world_snapshot");
@@ -123,6 +138,17 @@ export function WorldPortal() {
     : undefined;
   const closeDialog = () => setDialog(null);
   const ready = connection === "open" && !!snapshot;
+  const listView =
+    (mobile || view === "attention") &&
+    ["attention", "board", "meetings"].includes(view);
+  const changeView = (next: WorldView) => {
+    setView(next);
+    setInspector(null);
+  };
+  const createMobile = (kind: "task" | "meeting" | "org") => {
+    if (!orgId && world?.orgs.length === 1) setOrgId(world.orgs[0].id);
+    setDialog({ kind });
+  };
 
   return (
     <div className="ow">
@@ -139,12 +165,45 @@ export function WorldPortal() {
           <a href="/">OctiqFlow ↗</a>
         </div>
       </header>
+      {mobile && world && (
+        <div className="ow-mobile-scope">
+          <label>
+            Organization
+            <select
+              aria-label="Organization"
+              value={orgId ?? ""}
+              onChange={(e) => {
+                setOrgId(e.target.value || null);
+                setProjectFilter("");
+                setInspector(null);
+                if (view === "setup" && !e.target.value) setView("office");
+              }}
+            >
+              <option value="">All organizations</option>
+              {world.orgs.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            onClick={() =>
+              org ? changeView("setup") : setDialog({ kind: "org" })
+            }
+          >
+            {org ? "Manage" : "New org"}
+          </button>
+          <a href="/">OctiqFlow ↗</a>
+        </div>
+      )}
       <div className="ow-shell">
         <aside className="ow-rail">
           <button
             className={!orgId ? "active" : ""}
             onClick={() => {
               setOrgId(null);
+              setView("office");
               setInspector(null);
             }}
           >
@@ -190,7 +249,7 @@ export function WorldPortal() {
             ))}
           </div>
         </aside>
-        <main className="ow-main">
+        <main className="ow-main" ref={main}>
           {error && (
             <div className="ow-error" role="alert">
               <span>{error}</span>
@@ -216,7 +275,17 @@ export function WorldPortal() {
               </button>
             </div>
           )}
-          {world && !org && (
+          {world && listView && (
+            <MobileWorkList
+              key={`${orgId ?? "all"}:${view}`}
+              world={world}
+              orgId={orgId}
+              view={view}
+              inspect={(kind, id) => setInspector({ kind, id })}
+              create={createMobile}
+            />
+          )}
+          {world && !org && !listView && (
             <>
               <div className="ow-page-heading">
                 <div>
@@ -303,7 +372,7 @@ export function WorldPortal() {
               </div>
             </>
           )}
-          {world && org && (
+          {world && org && !listView && (
             <>
               <div className="ow-page-heading">
                 <div>
@@ -324,15 +393,17 @@ export function WorldPortal() {
               </div>
               <div className="ow-orgbar">
                 <nav className="ow-tabs" aria-label="Organization views">
-                  {["office", "board", "meetings", "setup"].map((v) => (
-                    <button
-                      key={v}
-                      className={view === v ? "active" : ""}
-                      onClick={() => setView(v)}
-                    >
-                      {v}
-                    </button>
-                  ))}
+                  {(["office", "board", "meetings", "setup"] as const).map(
+                    (v) => (
+                      <button
+                        key={v}
+                        className={view === v ? "active" : ""}
+                        onClick={() => setView(v)}
+                      >
+                        {v}
+                      </button>
+                    ),
+                  )}
                 </nav>
                 <span>
                   {agents.length} members · {projects.length} projects ·{" "}
@@ -687,19 +758,11 @@ export function WorldPortal() {
           )}
         </main>
         {world && snapshot && inspector && (
-          <aside
-            className="ow-inspector"
-            aria-label={`${inspector.kind} details`}
+          <InspectorPanel
+            mobile={mobile}
+            kind={inspector.kind}
+            close={() => setInspector(null)}
           >
-            <header>
-              <span className="ow-eyebrow">{inspector.kind} DETAILS</span>
-              <button
-                onClick={() => setInspector(null)}
-                aria-label="Close details"
-              >
-                ×
-              </button>
-            </header>
             {inspector.kind === "agent" && selectedAgent && (
               <AgentInspector
                 key={selectedAgent.id}
@@ -707,13 +770,18 @@ export function WorldPortal() {
                 snapshot={snapshot}
                 mutate={mutate}
                 busy={busy}
-                hire={() => setDialog({ kind: "agent" })}
-                task={() =>
-                  setDialog({ kind: "task", agentId: selectedAgent.id })
-                }
-                meeting={() =>
-                  setDialog({ kind: "meeting", agentId: selectedAgent.id })
-                }
+                hire={() => {
+                  setOrgId(selectedAgent.orgId);
+                  setDialog({ kind: "agent" });
+                }}
+                task={() => {
+                  setOrgId(selectedAgent.orgId);
+                  setDialog({ kind: "task", agentId: selectedAgent.id });
+                }}
+                meeting={() => {
+                  setOrgId(selectedAgent.orgId);
+                  setDialog({ kind: "meeting", agentId: selectedAgent.id });
+                }}
               />
             )}
             {inspector.kind === "task" && selectedTask && (
@@ -732,14 +800,26 @@ export function WorldPortal() {
                 world={world}
                 mutate={mutate}
                 busy={busy}
-                convert={() =>
-                  setDialog({ kind: "task", meetingId: selectedMeeting.id })
-                }
+                convert={() => {
+                  setOrgId(selectedMeeting.orgId);
+                  setDialog({ kind: "task", meetingId: selectedMeeting.id });
+                }}
               />
             )}
-          </aside>
+          </InspectorPanel>
         )}
       </div>
+      {mobile && (
+        <MobileNavigation
+          view={view}
+          count={
+            world?.tasks.filter(
+              (t) => (!orgId || t.orgId === orgId) && needsFounder(t),
+            ).length ?? 0
+          }
+          change={changeView}
+        />
+      )}
       {dialog && world && (
         <Modal
           title={
@@ -757,6 +837,22 @@ export function WorldPortal() {
             <p className="ow-error" role="alert">
               {error}
             </p>
+          )}
+          {["task", "meeting"].includes(dialog.kind) && !orgId && (
+            <label className="ow-field">
+              <span>Choose an organization</span>
+              <select
+                value=""
+                onChange={(e) => setOrgId(e.target.value || null)}
+              >
+                <option value="">Choose an organization</option>
+                {world.orgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
           {dialog.kind === "task" && orgId && (
             <TaskForm

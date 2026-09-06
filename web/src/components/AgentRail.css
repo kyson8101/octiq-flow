@@ -257,17 +257,3 @@ button.rail-row:focus-visible {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-
-/* The phone bar has four things to carry and 390px to carry them in, so up
-   there the count goes and the button stays — the same trade the files button
-   makes at this width. */
-@media (max-width: 700px) {
-  .topbar .rail-toggle {
-    width: 32px;
-    padding: 0;
-  }
-
-  .topbar .rail-count {
-    display: none;
-  }
-}

@@ -238,6 +238,7 @@ export function FilesButton({
       onClick={onToggle}
     >
       <FileIcon />
+      <span className="topbar-action-label">Pinned files</span>
       <span className="sfp-count">
         <RollingNumber value={count} />
       </span>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatState } from "../lib/chat";
 import { deriveTaskEvidence, type TaskStatus } from "../lib/taskEvidence";
+import { dismissTaskOverview, dismissedTaskOverviewTurn } from "../lib/taskOverviewDismiss";
 import type { WorkspacePeer } from "../lib/workspaceContext";
 import { bridge } from "../lib/bridge";
 import { useOpenFile } from "./OpenFileContext";
@@ -35,6 +36,7 @@ export function ConversationOverview({
   }), [chat, blocker, interrupted, connected, liveKnown]);
   const openFile = useOpenFile();
   const [fileError, setFileError] = useState<string>();
+  const [dismissedTurn, setDismissedTurn] = useState(() => dismissedTaskOverviewTurn(chatId));
   const cwd = chat.cwd || fallbackPath || "";
   const fileRequest = useRef(0);
   useEffect(() => {
@@ -57,7 +59,7 @@ export function ConversationOverview({
     }
   };
 
-  if (!evidence.objective && !chat.cwd && !fallbackPath) return null;
+  if ((!evidence.objective && !chat.cwd && !fallbackPath) || (evidence.turnId && dismissedTurn === evidence.turnId)) return null;
   return (
     <details className="conversation-overview">
       <summary>
@@ -66,6 +68,20 @@ export function ConversationOverview({
           {evidence.step || evidence.objective || "Workspace details"}
         </span>
         <span className={`conversation-overview-status is-${evidence.status}`}>{statusLabel[evidence.status]}</span>
+        {evidence.turnId && (
+          <button
+            className="conversation-overview-dismiss"
+            type="button"
+            aria-label="Dismiss task & review"
+            title="Dismiss"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              dismissTaskOverview(chatId, evidence.turnId!);
+              setDismissedTurn(evidence.turnId);
+            }}
+          >×</button>
+        )}
       </summary>
       <div className="conversation-overview-body">
         <TaskStatusCard evidence={evidence} />

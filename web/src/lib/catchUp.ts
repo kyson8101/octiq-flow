@@ -57,7 +57,9 @@ export class CatchUp {
     return this.seenAt.get(key) ?? 0;
   }
 
-  /** Does this page hold the chat from its first event? */
+  /** Is the displayed window seeded through mark(), so live deltas are safe?
+   * ChatHistory separately tracks unloaded earlier pages; a seeded window
+   * must not be persisted as a complete checkpoint until those are loaded. */
   holds(key: string): boolean {
     return this.whole.has(key);
   }
@@ -100,7 +102,7 @@ export class CatchUp {
   end(key: string, run: Frame[]): Frame[] {
     if (this.torn.has(key)) {
       this.abandon(key);
-      return [];
+      throw new Error("Too many live events arrived during chat sync; reopen the chat to retry.");
     }
     let at = Math.max(this.mark(key), this.asked.get(key) ?? 0);
     const out: Frame[] = [];
@@ -128,6 +130,14 @@ export class CatchUp {
   /** A live event. Returns what to fold now — usually the event, nothing while
    *  this page does not hold the chat it belongs to. */
   live(key: string, seq: number | undefined, event: unknown): Frame[] {
+    // Buffer even when this page already holds an older checkpoint. Advancing
+    // its mark while a replay is pending would skip events from that replay.
+    const waiting = this.held.get(key);
+    if (waiting && typeof seq === "number") {
+      if (waiting.length >= HELD_MAX) this.torn.add(key);
+      else waiting.push({ seq, event });
+      return [];
+    }
     // No number on it: an older backend. It can only be placed in a chat that
     // is already whole, and even there it cannot move the mark.
     if (typeof seq !== "number") {
@@ -137,14 +147,6 @@ export class CatchUp {
       if (seq <= this.mark(key)) return [];
       this.seenAt.set(key, seq);
       return [{ seq, event }];
-    }
-    // Racing the catch-up that would have carried it: keep it for `end`, which
-    // is about to rebuild this chat from the record and would lose it.
-    const waiting = this.held.get(key);
-    if (waiting) {
-      if (waiting.length >= HELD_MAX) this.torn.add(key);
-      else waiting.push({ seq, event });
-      return [];
     }
     // No catch-up in the air: show it. It is a preview of a conversation whose
     // past is missing, and opening the chat replaces it wholesale.

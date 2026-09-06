@@ -65,7 +65,7 @@ function readToken(): string {
 class Bridge {
   private socket: WebSocket | null = null;
   private seq = 1;
-  private pending = new Map<number, { resolve: (v: never) => void; reject: (e: Error) => void }>();
+  private pending = new Map<number, { resolve: (v: never) => void; reject: (e: Error) => void; sent: boolean }>();
   private listeners = new Map<string, Set<(payload: never) => void>>();
   private queue: string[] = [];
   private retry = 0;
@@ -117,6 +117,7 @@ class Bridge {
       this.setState("open");
       const waiting = this.queue;
       this.queue = [];
+      for (const request of this.pending.values()) request.sent = true;
       for (const frame of waiting) socket.send(frame);
     });
 
@@ -149,6 +150,15 @@ class Bridge {
     });
 
     socket.addEventListener("close", async () => {
+      if (this.socket !== socket) return;
+      // Replies on this socket can never arrive now. In particular, a shared
+      // chat read must reject so reopening it can issue a fresh request. Keep
+      // commands that were queued offline; those have not been sent yet.
+      for (const [id, request] of this.pending) {
+        if (!request.sent) continue;
+        this.pending.delete(id);
+        request.reject(new Error("Connection closed before the command answered"));
+      }
       // Refused, or unreachable? Ask over plain HTTP before deciding, because
       // the close event cannot tell us and the right response differs: a bad
       // token needs the user, a dropped network needs patience.
@@ -269,6 +279,7 @@ class Bridge {
       this.pending.set(id, {
         resolve: resolve as (v: never) => void,
         reject,
+        sent: this.socket?.readyState === WebSocket.OPEN,
       });
       this.send({ t: "invoke", id, cmd, args });
     });

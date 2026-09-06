@@ -127,6 +127,19 @@ describe("the queued mark", () => {
     expect(withHandler).toContain('class="queued"');
     expect(withId).not.toContain("queued-cancel");
     expect(withId).toContain('class="queued"');
+    expect(withHandler).not.toContain("queue-actions-toggle");
+    expect(withId).not.toContain("queue-actions-toggle");
+  });
+
+  it("keeps mobile actions inaccessible until revealed and reserves the bubble's gesture", () => {
+    const html = renderToStaticMarkup(
+      <MessageList messages={[{ ...sent[0], turnId: "u-1" }]} busy
+        onStartQueued={() => {}} onCancelQueued={() => {}} />,
+    );
+    expect(html).toContain('data-noswipe=""');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toMatch(/class="queue-action-tray"[^>]*aria-hidden="true"[^>]*inert=""/);
+    expect(html).toContain("Take this queued message back to edit");
   });
 
   it("takes the way out away the moment the agent picks the message up", () => {

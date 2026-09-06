@@ -24,6 +24,7 @@ export function ChatDeleteButton({
       onClick={onDelete}
     >
       {deleting ? <DeleteCountdownIcon ms={deleteMs} /> : <TrashIcon />}
+      <span className="topbar-action-label">{label}</span>
     </button>
   );
 }

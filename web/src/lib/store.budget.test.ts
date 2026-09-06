@@ -51,7 +51,7 @@ describe("saving the chat cache", () => {
     expect(kept.length).toBeGreaterThan(0);
     // Dropped oldest-first, so the most recently used one is always there.
     expect(kept.map((c) => c.id)).toContain("c15");
-    expect(kept.map((c) => c.id)).not.toContain("c0");
+    expect(kept.find((c) => c.id === "c0")?.messages).toEqual([]);
   });
 
   it("leaves room for everything else in the store", () => {
@@ -64,11 +64,11 @@ describe("saving the chat cache", () => {
   });
 
   it("does not grow the store when one chat alone is over budget", () => {
-    saveConversations([chat("huge", 1, 4096)]);
+    saveConversations([{ ...chat("huge", 1, 4096), seq: 42000 }]);
 
-    // Nothing is kept rather than the quota being taken — the chat is on the
-    // server too, and reopening it replays from there.
-    expect(loadConversations()).toEqual([]);
+    // Metadata survives so IndexedDB can restore it before the server index.
+    expect(loadConversations()).toMatchObject([{ id: "huge", messages: [] }]);
+    expect(loadConversations()[0].seq).toBeUndefined();
     expect(storedBytes()).toBeLessThanOrEqual(3 * 1024 * 1024);
   });
 
@@ -80,7 +80,8 @@ describe("saving the chat cache", () => {
     saveConversations([chat("huge", 99, 4096), ...Array.from({ length: 4 }, (_, i) => chat(`c${i}`, i, 64))]);
 
     const kept = loadConversations().map((c) => c.id);
-    expect(kept).not.toContain("huge");
+    expect(kept).toContain("huge");
+    expect(loadConversations().find((c) => c.id === "huge")?.messages).toEqual([]);
     expect(kept).toEqual(expect.arrayContaining(["c0", "c1", "c2", "c3"]));
     expect(storedBytes()).toBeLessThanOrEqual(3 * 1024 * 1024);
   });

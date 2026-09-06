@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { bridge } from "../../lib/bridge";
 import { Field, ScopeFields, Select, Submit, formValues } from "./Forms";
 import { RoleEditor } from "./RoleEditor";
@@ -478,6 +478,8 @@ export function TaskInspector({
   busy: boolean;
 }) {
   const [direction, setDirection] = useState("");
+  const directionField = useRef<HTMLTextAreaElement>(null);
+  const verificationForm = useRef<HTMLFormElement>(null);
   const closed = ["done", "cancelled"].includes(task.status);
   const control = (type: string) =>
     void mutate("task_direction", {
@@ -502,6 +504,30 @@ export function TaskInspector({
           ` · ${world.agents.find((a) => a.id === task.agentId)?.name ?? "Agent"}`}
       </p>
       <p className="ow-prose">{task.detail}</p>
+      {!closed && (
+        <div className="ow-mobile-task-actions">
+          <button
+            className="ow-primary"
+            onClick={() => {
+              if (task.status === "verifying")
+                verificationForm.current?.scrollIntoView({ block: "start" });
+              else directionField.current?.focus();
+            }}
+          >
+            {task.status === "verifying"
+              ? "Review outcome"
+              : task.status === "needs_input"
+                ? "Answer question"
+                : "Give direction"}
+          </button>
+          <button
+            disabled={busy || task.status === "paused"}
+            onClick={() => control("pause")}
+          >
+            Pause now
+          </button>
+        </div>
+      )}
       {task.steps.length > 0 && (
         <ol className="ow-steps">
           {task.steps.map((s, i) => (
@@ -533,6 +559,7 @@ export function TaskInspector({
             <span>Your direction</span>
             <textarea
               value={direction}
+              ref={directionField}
               onChange={(e) => setDirection(e.target.value)}
               maxLength={8000}
               placeholder="Add context, answer a question, or change direction…"
@@ -575,6 +602,7 @@ export function TaskInspector({
       {task.status === "verifying" && (
         <form
           className="ow-verify"
+          ref={verificationForm}
           onSubmit={(e) => {
             const values = formValues(e);
             void mutate("verify_task", { taskId: task.id, ...values }).catch(

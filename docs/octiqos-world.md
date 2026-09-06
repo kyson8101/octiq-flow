@@ -304,3 +304,24 @@ The merged browser also passed the 15-flow org-world regression and actual
 v2 → OctiqOS → v2 navigation, with no page errors. The office module is not
 loaded on the workbench until the office is opened. These checks used an
 isolated profile/database, leaving the live Pandaworks store unchanged.
+
+## Mobile workspace
+
+At widths up to 760px, OctiqOS opens on an Inbox instead of the map. The bottom
+navigation provides Inbox, Tasks, Office, and Meetings. Organization and project
+filters scope the lists; the Inbox includes questions, verification, and paused
+work. Tasks default to active work, with completed and cancelled tasks reachable
+through the status filter. Office retains the building map and agent desks.
+
+Details and creation forms use full-screen native dialogs on phones, with focus
+containment and nested dialogs for assigning work from an agent. Task details
+provide quick access to answering questions, reviewing outcomes, and pausing.
+Creating work across organizations requires choosing its organization first;
+direct assignment and discussion-only meetings retain their existing commands.
+The desktop map, office, and eight-column task board remain available.
+
+Validation: mobile list scope and priority unit tests, production web build, and
+isolated browser flows at 320px, 390px, and 760px. Browser checks cover full-screen
+details, task direction, status filters, direct assignment, nested agent dialogs,
+meeting discussion, and desktop map/board navigation with no page errors. Browser
+commands use synthetic data, so validation does not dispatch live agent work.

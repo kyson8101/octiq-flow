@@ -1969,7 +1969,9 @@ function ModelPicker({
   useEffect(() => setTab(choice.agent), [choice.agent]);
 
   const agents = PROVIDERS.map((provider) => provider.id);
-  const list = providerFor(tab).models;
+  // Keep CLI defaults in the registry for restored sessions and history, but
+  // offer only explicit model choices in both the dropdown and phone sheet.
+  const list = providerFor(tab).models.filter((model) => model.flag);
   const gone = missing(tab);
 
   return (
@@ -1992,7 +1994,7 @@ function ModelPicker({
         ))}
       </div>
 
-      {/* Tiles in a dropdown, rows on a phone. A 300px menu can hold five
+      {/* Tiles in a dropdown, rows on a phone. A 300px menu can hold four
           names in a grid you read in one pass; a sheet has the width for the
           line that says what each model is FOR, and the height to spend on
           targets a thumb can hit. Same choice, same order, same tick. */}

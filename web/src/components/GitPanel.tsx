@@ -290,6 +290,7 @@ export function GitButton({
       onClick={onToggle}
     >
       <BranchIcon />
+      <span className="topbar-action-label">Git</span>
 
       {/* Two numbers and nothing else: how much is uncommitted, and how much is
           committed and waiting to be pushed. Both are totals across the

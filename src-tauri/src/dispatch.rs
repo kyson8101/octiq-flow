@@ -425,6 +425,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
             arg(&args, "after")?,
         ))),
+        "chat_page" => to_value(crate::transcript::page(
+            &arg::<String>(&args, "key")?,
+            arg(&args, "before")?,
+        )),
         "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
         // The agents' OWN past sessions, for the search that resumes one.
         "agent_history_list" => Ok(json!(crate::agent_history::agent_history_list(arg(

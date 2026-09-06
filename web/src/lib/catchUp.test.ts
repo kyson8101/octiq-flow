@@ -56,6 +56,25 @@ describe("live events", () => {
 });
 
 describe("a live event racing the catch-up that would have carried it", () => {
+  it("holds live events during incremental catch-up without skipping the missing middle", () => {
+    const c = new CatchUp();
+    c.end("chat:a", [ev(1)]);
+    expect(c.begin("chat:a")).toBe(1);
+    expect(c.live("chat:a", 4, { n: 4 })).toEqual([]);
+    expect(c.mark("chat:a")).toBe(1);
+    expect(c.end("chat:a", [ev(2), ev(3)])).toEqual([ev(2), ev(3), ev(4)]);
+    expect(c.mark("chat:a")).toBe(4);
+  });
+
+  it("rejects a replay whose live buffer overflowed without claiming a checkpoint", () => {
+    const c = new CatchUp();
+    c.begin("chat:a");
+    for (let seq = 1; seq <= 20001; seq++) c.live("chat:a", seq, {});
+    expect(() => c.end("chat:a", [ev(1)])).toThrow("Too many live events");
+    expect(c.holds("chat:a")).toBe(false);
+    expect(c.mark("chat:a")).toBe(0);
+  });
+
   it("is folded after the replayed run, once, in order", () => {
     const c = new CatchUp();
     c.begin("chat:a", undefined);

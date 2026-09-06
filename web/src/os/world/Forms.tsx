@@ -122,10 +122,12 @@ export function Modal({
   title,
   children,
   close,
+  className = "",
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
+  className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -134,7 +136,12 @@ export function Modal({
     return () => dialog?.close();
   }, []);
   return (
-    <dialog className="ow-dialog" ref={ref} onCancel={close} aria-label={title}>
+    <dialog
+      className={`ow-dialog ${className}`}
+      ref={ref}
+      onCancel={close}
+      aria-label={title}
+    >
       <header>
         <div>
           <span className="ow-eyebrow">OCTIQOS</span>

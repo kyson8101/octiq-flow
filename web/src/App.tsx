@@ -28,7 +28,10 @@ import {
   useState,
 } from "react";
 import { bridge, type ConnectionState } from "./lib/bridge";
-import { CatchUp } from "./lib/catchUp";
+import { CatchUp, type Frame } from "./lib/catchUp";
+import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
+import { loadChat, loadEarlierChat } from "./lib/loadChat";
+import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { CARRY_ON, someoneWorking, wasCutOff } from "./lib/carryOn";
 import type { RoundState } from "./components/RoundBar";
 import {
@@ -48,7 +51,6 @@ import {
   chatName,
   loadConversations,
   rewriteConversation,
-  opensBlank,
   sameIndex,
   saveConversations,
   shortTitle,
@@ -118,6 +120,8 @@ import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/Ses
 import { FullscreenButton } from "./components/FullscreenButton";
 import { InstalledReload } from "./components/InstalledReload";
 import { ChatDeleteButton } from "./components/ChatDeleteButton";
+import { CopyChatIdButton } from "./components/CopyChatIdButton";
+import { TopbarActionsMenu } from "./components/TopbarActionsMenu";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -652,6 +656,10 @@ export default function App() {
   const forgetLocally = useCallback(
     (id: string) => {
     gone.current.add(id);
+    chatReads.current.delete(id);
+    chatHistory.current.forget(id);
+    cachedStates.current.delete(id);
+    void forgetChatCheckpoint(id);
     catchUp.current.forget(keyFor(id));
     // Urgent whichever chat this is: a row being deleted has to leave the
     // screen when it is deleted, not a quarter of a second afterwards.
@@ -702,6 +710,10 @@ export default function App() {
   // the number past the whole transcript, so opening it asked for the tail,
   // got nothing, and drew an empty page. See lib/catchUp.
   const catchUp = useRef(new CatchUp());
+  const chatReads = useRef(new Map<string, { promise: Promise<void> }>());
+  const cachedStates = useRef(new Map<string, ChatState>());
+  const chatHistory = useRef(new ChatHistory());
+  const [earlierReads, setEarlierReads] = useState<Record<string, { loading: boolean; error?: string }>>({});
 
   // Desktop notifications, for the chats you are NOT looking at.
   //
@@ -1156,29 +1168,45 @@ export default function App() {
    *  thousands of events, and a state update each was the difference between
    *  opening and appearing to hang. */
   const catchUpChat = useCallback(
-    (id: string, storedSeq?: number) => {
+    (id: string, storedSeq?: number, earlier = false): Promise<void> => {
+      const existing = chatReads.current.get(id);
+      if (existing) return existing.promise;
       const key = keyFor(id);
-      const from = catchUp.current.begin(key, storedSeq);
-      return bridge
-        .invoke<{ seq: number; event: unknown }[]>("chat_since", { key, after: from })
-        .then((run) => {
-          const frames = catchUp.current.end(key, run ?? []);
-          if (!frames.length) return;
-          patch(id, (st) => {
-            let next = from === 0 ? { ...emptyChat(), sessionId: st.sessionId } : st;
-            for (const frame of frames) next = reduceChat(next, frame.event);
-            return next;
-          });
-        })
-        .catch((err: unknown) => {
-          // The chat stays unheld, so the next open replays it in full rather
-          // than trusting a mark that nothing filled in.
-          catchUp.current.abandon(key);
-          throw err;
-        });
+      const read = { promise: Promise.resolve() };
+      chatReads.current.set(id, read);
+      const cancelled = () => chatReads.current.get(id) !== read || gone.current.has(id);
+      read.promise = (earlier ? loadEarlierChat : loadChat)({
+        id, key, storedSeq, catchUp: catchUp.current, history: chatHistory.current,
+        requestPage: (before) => bridge.invoke<ChatPage>("chat_page", { key, before }),
+        getState: () => chatsRef.current[id] ?? EMPTY,
+        publish: (state) => patch(id, () => state),
+        request: (after) => bridge.invoke<Frame[]>("chat_since", { key, after }),
+        cancelled,
+      }).catch((err: unknown) => {
+        if (!cancelled()) catchUp.current.abandon(key);
+        throw err;
+      }).finally(() => {
+        if (chatReads.current.get(id) === read) chatReads.current.delete(id);
+      });
+      return read.promise;
     },
     [patch],
   );
+
+  const loadEarlier = useCallback(async () => {
+    const id = visibleRef.current;
+    if (!id || !chatHistory.current.hasEarlier(id)) return;
+    setEarlierReads((prev) => ({ ...prev, [id]: { loading: true } }));
+    try {
+      // A reconnect may already be filling the newest tail. Let it commit
+      // before beginning a backwards page against the same window.
+      await chatReads.current.get(id)?.promise;
+      if (!gone.current.has(id)) await catchUpChat(id, undefined, true);
+      setEarlierReads((prev) => ({ ...prev, [id]: { loading: false } }));
+    } catch (error) {
+      setEarlierReads((prev) => ({ ...prev, [id]: { loading: false, error: String(error) } }));
+    }
+  }, [catchUpChat]);
 
   // Reconnected: ask each live chat for everything that happened while we were
   // away. Without this, closing a laptop mid-answer loses the rest of it — the
@@ -1190,9 +1218,13 @@ export default function App() {
   // of it.
   useEffect(() => {
     if (conn !== "open") return;
-    for (const id of runningRef.current) {
-      if (!catchUp.current.holds(keyFor(id))) continue;
-      catchUpChat(id).catch(() => {});
+    const visible = visibleRef.current;
+    const ids = new Set(runningRef.current);
+    if (visible) ids.add(visible);
+    for (const id of ids) {
+      if (id !== visible && !catchUp.current.holds(keyFor(id))) continue;
+      const storedSeq = conversationsRef.current.find((c) => c.id === id)?.seq;
+      catchUpChat(id, storedSeq).catch(() => {});
     }
     // running is read through the ref so a chat starting mid-reconnect does not
     // restart this.
@@ -1207,7 +1239,9 @@ export default function App() {
         // What is safe to fold RIGHT NOW. Nothing, while a catch-up for this
         // chat is in the air — that catch-up is about to rebuild it, and would
         // wipe anything folded on top in the meantime.
-        for (const frame of catchUp.current.live(payload.key, payload.seq, payload.event)) {
+        const frames = catchUp.current.live(payload.key, payload.seq, payload.event);
+        chatHistory.current.append(id, frames);
+        for (const frame of frames) {
           // Read BEFORE the fold, which is the thing that removes the bubble
           // the words are in. Here rather than in the reducer on purpose: the
           // reducer also walks a REPLAY, and the cancellations in a transcript
@@ -1314,12 +1348,18 @@ export default function App() {
       // an index entry, and an entry written in the second before
       // `removeIndexEntry` is a race the delete can lose.
       const undoable = pendingDelete.current;
+      for (const [id, state] of Object.entries(chatsRef.current)) {
+        if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id)) continue;
+        if (!catchUp.current.holds(keyFor(id)) || chatHistory.current.hasEarlier(id) || cachedStates.current.get(id) === state) continue;
+        cachedStates.current.set(id, state);
+        void saveChatCheckpoint({ id, state, seq: catchUp.current.mark(keyFor(id)), updatedAt: Date.now() });
+      }
       setConversations((prev) => {
         let list = prev;
         let touched = false;
         const changedIds = new Set<string>();
         for (const [id, s] of Object.entries(chats)) {
-          if (undoable.has(id) || gone.current.has(id)) continue;
+          if (undoable.has(id) || gone.current.has(id) || chatReads.current.has(id) || chatHistory.current.hasEarlier(id)) continue;
           const info = meta.current[id];
           if (!info || s.messages.length === 0) continue;
           const before = list.find((c) => c.id === id);
@@ -1702,7 +1742,7 @@ export default function App() {
     // catch-up re-asks from the stored mark and fetches those same events back.
     // Its session id is the exception — that came from the live process, and is
     // fresher than the one written down.
-    if (!catchUp.current.holds(keyFor(c.id))) {
+    if (!catchUp.current.holds(keyFor(c.id)) && !chatReads.current.has(c.id)) {
       const held = chatsRef.current;
       // Urgent: this is the chat being opened, so it is about to be the one on
       // screen — `visibleRef` just has not caught up with the click yet.
@@ -1723,18 +1763,11 @@ export default function App() {
     // conversation that is the tail of an interrupted answer; on a device that
     // has never seen it, `seq` is absent and the whole thing is replayed.
     //
-    // ...and when that replay is the WHOLE conversation, say so while it runs.
-    // The chat list comes from the server and the messages do not, so a chat
-    // held on another device opens with nothing in it — and a conversation with
-    // no messages draws the page you START one from. Picking yesterday's work
-    // out of the sidebar on a phone therefore looked exactly like a chat that
-    // had been thrown away, for as long as the replay took.
-    const blank = opensBlank(c, chatsRef.current[c.id]);
-    if (blank) setReading((prev) => ({ ...prev, [c.id]: true }));
+    // Cached words stay readable while the latest events are fetched.
+    setReading((prev) => ({ ...prev, [c.id]: true }));
     catchUpChat(c.id, c.seq)
       .catch(() => {})
       .finally(() => {
-        if (!blank) return;
         // Whatever came back — the conversation, nothing at all, or a failure —
         // the waiting is over. An empty answer falls through to the ordinary
         // empty page, which is then the truth about this chat.
@@ -2303,6 +2336,10 @@ export default function App() {
         // Held again, from nothing: `transcript::forget` drops the server's
         // counter to zero, and a page still holding the old high number would
         // discard every event after this as one it had already seen.
+        chatReads.current.delete(id);
+        chatHistory.current.forget(id);
+        cachedStates.current.delete(id);
+        void forgetChatCheckpoint(id);
         catchUp.current.own(key);
         patch(id, (s) => ({ ...emptyChat(), sessionId: s.sessionId }));
         // The saved copy has to be emptied here rather than left to the sync
@@ -3094,7 +3131,7 @@ export default function App() {
 
   if (conn === "unauthorized") return <Connect />;
 
-  /* Chat or Files. Marked by a filled pill, not an edge stripe: on a 48px-tall
+  /* Workspace navigation. Marked by a filled pill, not an edge stripe: on a 48px-tall
      bar a thin marker is a thing you squint at. */
   const viewSwitch = (
     <div className="mode-switch" role="group" aria-label="View">
@@ -3122,6 +3159,12 @@ export default function App() {
         </svg>
         <span className="mode-label">Files</span>
       </button>
+      <a className="mode-btn mode-os-link" href="/os" title="Open OctiqOS">
+        <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M4 21V7l8-4 8 4v14M2 21h20M9 21v-5h6v5M8 9h1m6 0h1M8 12h1m6 0h1" />
+        </svg>
+        <span>OctiqOS</span>
+      </a>
     </div>
   );
 
@@ -3136,6 +3179,144 @@ export default function App() {
     <>
       <Usage />
       <Memory conversations={conversations} projects={workspaces} />
+    </>
+  );
+
+  const topbarActions = (
+    <>
+      {/* A read-only room count. Membership is still managed only from the
+          composer, beside the conversation it changes. */}
+      {seatCount && (
+        <span className="topbar-room" title={seatCount.label} aria-label={seatCount.label}>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="9" cy="8" r="3.2" />
+            <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
+            <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
+          </svg>
+          <span className="topbar-action-label">People</span>
+          <RollingNumber value={seatCount.total} />
+        </span>
+      )}
+
+      <RailButton
+        count={chat.agents.length}
+        open={!railShut}
+        onToggle={() => showRail(railShut)}
+      />
+
+      <FilesButton
+        count={sessionFiles.length}
+        open={filesOpen}
+        onToggle={() => showFiles(!filesOpen)}
+      />
+
+      {/* The way in and out of the changes column at every width. */}
+      <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
+
+      {/* Full-width chat is only useful where there are columns to put away. */}
+      {wide && hasDrawer && mode === "chat" && (
+        <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
+      )}
+
+      {conversationId && mode === "chat" && (
+        <>
+          <CopyChatIdButton chatId={conversationId} />
+          <ChatDeleteButton
+            deleting={deleting.has(conversationId)}
+            disabled={leaving.has(conversationId)}
+            deleteMs={UNDO_MS}
+            onDelete={() => deleteConversation(conversationId)}
+          />
+        </>
+      )}
+
+      <AttentionInbox
+        entries={attention.entries}
+        connected={conn === "open"}
+        onOpen={(conversation) => {
+          const kind = attention.entries.find((entry) => entry.conversation.id === conversation.id)?.kind;
+          showConversation(conversation);
+          requestAnimationFrame(() => {
+            const selector = kind === "permission" ? ".ask-card:not(.safety-card)"
+              : kind === "question" ? ".qa-card"
+                : kind === "safety" ? ".safety-card"
+                  : kind === "failure" ? ".failure, .carry-on"
+                    : kind === "interrupted" ? ".carry-on" : ".conversation-overview";
+            const target = pane.current?.querySelector<HTMLElement>(selector)
+              ?? pane.current?.querySelector<HTMLElement>("textarea");
+            if (!target) return;
+            if (target instanceof HTMLDetailsElement) target.open = true;
+            target.scrollIntoView({ block: "nearest" });
+            const control = target.querySelector<HTMLElement>("summary, button, textarea, input") ?? target;
+            if (control === target && !control.hasAttribute("tabindex")) control.tabIndex = -1;
+            control.focus({ preventScroll: true });
+          });
+        }}
+        onDismissCompletion={attention.dismissCompletion}
+      />
+
+      {/* Only drawn for a home-screen app, which has no browser chrome. */}
+      <InstalledReload />
+
+      <button
+        className="icon-btn"
+        type="button"
+        aria-label="Settings"
+        title="Settings"
+        onClick={() => setAppSettings(true)}
+      >
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+        <span className="topbar-action-label">Settings</span>
+      </button>
+
+      {project && (
+        <button
+          className="icon-btn new-chat"
+          type="button"
+          aria-label={`New chat in ${project.name}`}
+          title="New chat"
+          onClick={() => newChat(project.id)}
+        >
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span className="topbar-action-label">New chat</span>
+        </button>
+      )}
+
+      {wide && readouts}
     </>
   );
 
@@ -3199,144 +3380,7 @@ export default function App() {
         <div className="topbar-center">{wide && viewSwitch}</div>
 
         <div className="topbar-actions">
-          {/* A read-only room count. Membership is still managed only from the
-              composer, beside the conversation it changes. */}
-          {seatCount && (
-            <span className="topbar-room" title={seatCount.label} aria-label={seatCount.label}>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.9"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <circle cx="9" cy="8" r="3.2" />
-                <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
-                <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
-              </svg>
-              <RollingNumber value={seatCount.total} />
-            </span>
-          )}
-
-          <RailButton
-            count={chat.agents.length}
-            open={!railShut}
-            onToggle={() => showRail(railShut)}
-          />
-
-          <FilesButton
-            count={sessionFiles.length}
-            open={filesOpen}
-            onToggle={() => showFiles(!filesOpen)}
-          />
-
-          {/* The way in and out of the changes column at every width, and the
-              only way back once its ✕ has put it away. What it opens differs by
-              layout — the workspace's third column on a desktop, a sheet over
-              the chat on a phone — but which button does it never does. */}
-          <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
-
-          {/* Full-width chat remains available in the intermediate drawer
-              layout, where the columns it sweeps away are the ones with no room
-              to spare. A desktop puts each of them away by its own control. */}
-          {wide && hasDrawer && mode === "chat" && (
-            <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
-          )}
-
-          {conversationId && mode === "chat" && (
-            <ChatDeleteButton
-              deleting={deleting.has(conversationId)}
-              disabled={leaving.has(conversationId)}
-              deleteMs={UNDO_MS}
-              onDelete={() => deleteConversation(conversationId)}
-            />
-          )}
-
-          <AttentionInbox
-            entries={attention.entries}
-            connected={conn === "open"}
-            onOpen={(conversation) => {
-              const kind = attention.entries.find((entry) => entry.conversation.id === conversation.id)?.kind;
-              showConversation(conversation);
-              requestAnimationFrame(() => {
-                const selector = kind === "permission" ? ".ask-card:not(.safety-card)"
-                  : kind === "question" ? ".qa-card"
-                    : kind === "safety" ? ".safety-card"
-                      : kind === "failure" ? ".failure, .carry-on"
-                        : kind === "interrupted" ? ".carry-on" : ".conversation-overview";
-                const target = pane.current?.querySelector<HTMLElement>(selector)
-                  ?? pane.current?.querySelector<HTMLElement>("textarea");
-                if (!target) return;
-                if (target instanceof HTMLDetailsElement) target.open = true;
-                target.scrollIntoView({ block: "nearest" });
-                const control = target.querySelector<HTMLElement>("summary, button, textarea, input") ?? target;
-                if (control === target && !control.hasAttribute("tabindex")) control.tabIndex = -1;
-                control.focus({ preventScroll: true });
-              });
-            }}
-            onDismissCompletion={attention.dismissCompletion}
-          />
-
-          {/* Only drawn for a home-screen app, which has no browser chrome to
-              reload from. A tab already has the control and does not need two. */}
-          <InstalledReload />
-
-          <button
-            className="icon-btn"
-            type="button"
-            aria-label="Settings"
-            title="Settings"
-            onClick={() => setAppSettings(true)}
-          >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.9"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-          </button>
-
-          {project && (
-            <button
-              className="icon-btn new-chat"
-              type="button"
-              aria-label={`New chat in ${project.name}`}
-              title="New chat"
-              onClick={() => newChat(project.id)}
-            >
-              <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                aria-hidden="true"
-              >
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-            </button>
-          )}
-
-          {/* Rendered once: the meter polls a rate-limited endpoint, so on a
-              smaller screen this same instance moves into the drawer. The
-              memory readout travels with it — they are the two "where do I
-              stand" numbers, and splitting them would put one of them
-              somewhere nobody thinks to look. */}
-          {wide && readouts}
+          {wide ? topbarActions : <TopbarActionsMenu>{topbarActions}</TopbarActionsMenu>}
         </div>
       </header>
 
@@ -3388,6 +3432,9 @@ export default function App() {
               peers={workspacePeers}
               onOpenGit={() => showGit(true)}
             />
+          )}
+          {conversationId && reading[conversationId] && chat.messages.length > 0 && (
+            <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
           {chat.messages.length === 0 && conversationId && reading[conversationId] ? (
             // Reading the transcript back. Until it lands this conversation
@@ -3454,6 +3501,10 @@ export default function App() {
                   <div className="chat-main">
                     <MessageList
                       messages={chat.messages}
+                      hasEarlier={!!conversationId && chatHistory.current.hasEarlier(conversationId)}
+                      loadingEarlier={!!conversationId && !!earlierReads[conversationId]?.loading}
+                      earlierError={conversationId ? earlierReads[conversationId]?.error : undefined}
+                      onLoadEarlier={loadEarlier}
                       // Not `chat.busy`: a turn nothing is working on any more
                       // is over, whatever the record says. The strip above the
                       // prompt box is what says so.

@@ -19,7 +19,7 @@
 //! and a reader only ever wants "everything after N". A line-per-event file
 //! does that with no index, survives a crash mid-write (a torn last line is
 //! dropped on read), and can be read with `tail` when something looks wrong.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -156,6 +156,112 @@ pub fn since(key: &str, after: u64) -> Vec<Recorded> {
     out
 }
 
+/// A recent, contiguous window. The exclusive cursor is an event sequence,
+/// so appends do not move older pages underneath a reader.
+#[derive(Debug, Serialize)]
+pub struct Page {
+    pub events: Vec<Recorded>,
+    pub context: Vec<Recorded>,
+    pub before: Option<u64>,
+}
+
+/// Start pages at an idle host's next prompt, never halfway through a streamed
+/// message or at a queued prompt inside the reply it is waiting behind.
+fn page_prompt(event: &Value) -> bool {
+    if event["type"] != "user" {
+        return false;
+    }
+    let content = &event["message"]["content"];
+    content.is_string()
+        || content.as_array().is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|b| b["type"] == "text" || b["type"] == "image")
+                && !blocks.iter().any(|b| b["type"] == "tool_result")
+        })
+}
+
+/// Keep a few recent complete turns, targeting 256 KiB. One indivisible turn
+/// may exceed that budget. Older bytes stay on disk until explicitly requested.
+pub fn page(key: &str, before: Option<u64>) -> Result<Page, String> {
+    page_with_budget(key, before, 256 * 1024, 3)
+}
+
+fn page_with_budget(
+    key: &str,
+    before: Option<u64>,
+    budget: usize,
+    turns: usize,
+) -> Result<Page, String> {
+    let path = path_for(key).ok_or("invalid chat key")?;
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Page {
+                events: vec![],
+                context: vec![],
+                before: None,
+            });
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut chunks: VecDeque<(Vec<Recorded>, usize)> = VecDeque::from([(vec![], 0)]);
+    let mut bytes = 0;
+    let mut busy = false;
+    let mut context: HashMap<String, Recorded> = HashMap::new();
+    for (index, line) in BufReader::new(file).lines().enumerate() {
+        let seq = index as u64 + 1;
+        if before.is_some_and(|cursor| seq >= cursor) {
+            break;
+        }
+        let line = line.map_err(|e| e.to_string())?;
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        let host = event["parent_tool_use_id"].is_null() && event["octiq_speaker"].is_null();
+        if host && !busy && page_prompt(&event) && !chunks.back().unwrap().0.is_empty() {
+            chunks.push_back((vec![], 0));
+        }
+        if host {
+            match event["type"].as_str().unwrap_or_default() {
+                "assistant" | "turn.started" => busy = true,
+                "stream_event" if event["event"]["type"] == "message_start" => busy = true,
+                "result" | "turn.completed" | "turn.failed" => busy = false,
+                _ => {}
+            }
+        }
+        bytes += line.len();
+        let chunk = chunks.back_mut().unwrap();
+        chunk.1 += line.len();
+        chunk.0.push(Recorded { seq, event });
+        while chunks.len() > 1 && (bytes > budget || chunks.len() > turns) {
+            let (dropped, size) = chunks.pop_front().unwrap();
+            bytes -= size;
+            for record in dropped {
+                let event = &record.event;
+                if !event["parent_tool_use_id"].is_null() || !event["octiq_speaker"].is_null() {
+                    continue;
+                }
+                let kind = event["type"].as_str().unwrap_or_default();
+                if kind == "thread.started" || (kind == "system" && event["subtype"] == "init") {
+                    context.insert(kind.to_string(), record);
+                }
+            }
+        }
+    }
+    let events: Vec<Recorded> = chunks.into_iter().flat_map(|(events, _)| events).collect();
+    let mut context: Vec<Recorded> = context.into_values().collect();
+    context.sort_by_key(|record| record.seq);
+    let before = events
+        .first()
+        .and_then(|record| (record.seq > 1).then_some(record.seq));
+    Ok(Page {
+        events,
+        context,
+        before,
+    })
+}
+
 /// Forget a chat's record. Called when its conversation is deleted — the point
 /// of deleting a chat is that it is gone.
 pub fn forget(key: &str) {
@@ -179,6 +285,75 @@ mod tests {
     /// one real profile directory.
     fn unique_key(name: &str) -> String {
         format!("test-{name}-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    #[test]
+    fn pages_walk_backwards_without_gaps_or_duplicates() {
+        let key = unique_key("pages");
+        append(
+            &key,
+            &json!({"type":"system", "subtype":"init", "session_id":"session"}),
+        );
+        for n in 0..12 {
+            append(
+                &key,
+                &json!({"type":"user", "message":{"content":format!("prompt {n}")}}),
+            );
+            append(
+                &key,
+                &json!({"type":"assistant", "message":{"id":format!("m{n}"), "content":[]}}),
+            );
+            append(&key, &json!({"type":"result"}));
+        }
+        let latest = page_with_budget(&key, None, usize::MAX, 3).unwrap();
+        assert_eq!(latest.events.len(), 9);
+        assert_eq!(latest.context[0].event["session_id"], "session");
+        let mut sequences: Vec<u64> = latest.events.iter().map(|e| e.seq).collect();
+        let mut cursor = latest.before;
+        // A new event cannot shift an already-issued exclusive cursor.
+        append(
+            &key,
+            &json!({"type":"user", "message":{"content":"new prompt"}}),
+        );
+        while let Some(before) = cursor {
+            let older = page_with_budget(&key, Some(before), usize::MAX, 3).unwrap();
+            assert!(older.before.is_none_or(|next| next < before));
+            sequences.extend(older.events.iter().map(|e| e.seq));
+            cursor = older.before;
+        }
+        sequences.sort_unstable();
+        assert_eq!(sequences, (1..=37).collect::<Vec<_>>());
+        forget(&key);
+    }
+
+    #[test]
+    fn byte_budget_keeps_a_stream_and_its_queued_prompt_together() {
+        let key = unique_key("page-stream");
+        append(&key, &json!({"type":"user", "message":{"content":"old"}}));
+        append(&key, &json!({"type":"result"}));
+        append(
+            &key,
+            &json!({"type":"user", "message":{"content":"current"}}),
+        );
+        append(
+            &key,
+            &json!({"type":"stream_event", "event":{"type":"message_start"}}),
+        );
+        append(
+            &key,
+            &json!({"type":"user", "octiq_user_turn":true, "message":{"content":"queued"}}),
+        );
+        append(
+            &key,
+            &json!({"type":"stream_event", "event":{"type":"content_block_delta", "text":"x".repeat(1000)}}),
+        );
+        let page = page_with_budget(&key, None, 100, 3).unwrap();
+        assert_eq!(page.before, Some(3));
+        assert_eq!(
+            page.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+            vec![3, 4, 5, 6]
+        );
+        forget(&key);
     }
 
     #[test]

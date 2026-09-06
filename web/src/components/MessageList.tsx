@@ -39,6 +39,8 @@ import { PATH_TAG, rehypeFilePaths } from "../lib/filepaths";
 import { seatKey, seatTints } from "../lib/seatTint";
 import { ConversationMap, conversationMapTurns } from "./ConversationMap";
 import { RollingText } from "./RollingNumber";
+import { MessageBubble } from "./MessageBubble";
+import { initialTurn, turnWindowStart, TURN_BATCH } from "../lib/messageWindow";
 import { parseVisualizationReference, VisualizationLink } from "./Visualization";
 import {
   chatPlaceOf,
@@ -785,7 +787,7 @@ function TurnView({
           <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
-      <div className="msg-body">
+      <MessageBubble user={role === "user"} turnId={waitingId} onStart={start} onCancel={cancel}>
         {/* Above the words, the way they sit above the box while you attach
             them — and because a message whose words are "look at this" makes no
             sense until you have seen the picture it came with. */}
@@ -909,7 +911,7 @@ function TurnView({
             <CopyAnswer text={answer} what="reply" />
           </div>
         )}
-      </div>
+      </MessageBubble>
       {/* Your own words, on the same terms — but UNDER the bubble rather than
           in it. The bubble is `.msg-body`, and a row inside the tint reads as
           one more thing you said.
@@ -1240,8 +1242,16 @@ const MessageListBody = function MessageList({
   hostName,
   onCancelQueued,
   onStartQueued,
+  hasEarlier = false,
+  loadingEarlier = false,
+  earlierError,
+  onLoadEarlier,
 }: {
   messages: Message[];
+  hasEarlier?: boolean;
+  loadingEarlier?: boolean;
+  earlierError?: string;
+  onLoadEarlier?: () => Promise<void>;
   busy: boolean;
   stoppedAt?: string;
   /** What to call the host over its replies: the name of the PROVIDER this
@@ -1285,6 +1295,9 @@ const MessageListBody = function MessageList({
   const endRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
+  const loadMoreRef = useRef<() => void>(() => {});
+  const morePending = useRef(false);
+  const prependAnchor = useRef<{ id?: string; first?: string; at: ChatPlace } | null>(null);
   // Only follow the stream while the reader is already at the bottom: yanking
   // the view down while someone is reading back is the worst thing a streaming
   // chat can do.
@@ -1471,6 +1484,7 @@ const MessageListBody = function MessageList({
       // After `stick`, not before: coming back to the bottom is what says
       // there is no place left to keep.
       savePlace();
+      if (el.scrollTop < 160) loadMoreRef.current();
     };
     // A reload is the other half of what a place is for, and a place noted
     // 200ms before one would otherwise be lost with the page.
@@ -1623,13 +1637,59 @@ const MessageListBody = function MessageList({
     return { turns: groupTurns(top), kids };
   }, [messages]);
 
+  const initialWindow = () => ({
+    id: conversationId,
+    ready: turns.length > 0,
+    first: initialTurn(turns, conversationId ? chatPlaceOf(conversationId)?.turn : undefined),
+  });
+  let [visibleWindow, setWindow] = useState(initialWindow);
+  if (visibleWindow.id !== conversationId || (!visibleWindow.ready && turns.length > 0)) {
+    visibleWindow = initialWindow();
+    setWindow(visibleWindow);
+    prependAnchor.current = null;
+  }
+  const start = turnWindowStart(turns, visibleWindow.first);
+  const visibleTurns = useMemo(() => turns.slice(start), [turns, start]);
+  const hasMore = start > 0 || hasEarlier;
+  const loadMore = async () => {
+    if (!hasMore || loadingEarlier || morePending.current) return;
+    const el = scrollerRef.current;
+    if (!el) return;
+    const id = conversationId;
+    const anchors = anchorsIn(el);
+    let at = placeFrom(el.scrollTop, anchors);
+    if (!at.turn && anchors[0]) at = { top: el.scrollTop, turn: anchors[0].id, delta: el.scrollTop - anchors[0].offset };
+    prependAnchor.current = { id, first: visibleTurns[0]?.[0].id, at };
+    stopGlide();
+    stick.current = false;
+    if (start > 0) {
+      setWindow({ id, ready: true, first: turns[Math.max(0, start - TURN_BATCH)][0].id });
+      return;
+    }
+    morePending.current = true;
+    try {
+      await onLoadEarlier?.();
+      if (conv.current === id) setWindow({ id, ready: true, first: null });
+    } finally { morePending.current = false; }
+  };
+  loadMoreRef.current = () => { if (!earlierError) void loadMore(); };
+  useLayoutEffect(() => {
+    const saved = prependAnchor.current;
+    const el = scrollerRef.current;
+    if (!saved || saved.id !== conversationId || !el || saved.first === visibleTurns[0]?.[0].id) return;
+    prependAnchor.current = null;
+    el.scrollTop = placeTop(saved.at, anchorsIn(el), el.scrollHeight - el.clientHeight);
+    resuming.current = { at: saved.at, until: performance.now() + SETTLE_MS };
+    setAway(el.scrollHeight - el.scrollTop - el.clientHeight >= NEAR_BOTTOM);
+  }, [visibleTurns, conversationId]);
+
   // Which colour each seat speaks in. Computed over the WHOLE conversation
   // rather than per turn, because the colours are handed out in order of first
   // appearance and a turn cannot see who came before it.
   const tints = useMemo(() => seatTints(messages), [messages]);
 
   const { fresh, nth } = useJustArrived(turns);
-  const mapTurns = useMemo(() => conversationMapTurns(turns), [turns]);
+  const mapTurns = useMemo(() => conversationMapTurns(visibleTurns), [visibleTurns]);
 
   // A map point is another way of deliberately reading back. Its programmatic
   // scroll does not carry a wheel/touch gesture, so tell the transcript's own
@@ -1688,14 +1748,22 @@ const MessageListBody = function MessageList({
       <ConversationMap turns={mapTurns} scrollerRef={scrollerRef} innerRef={innerRef} onJump={mapJumped} />
       <ConfigWorldProvider say={world.say} said={world.said}>
       <div className="msgs-inner" ref={innerRef}>
-        {turns.map((turn, i) => (
+        {hasMore && (
+          <div className="history-more">
+            <button type="button" disabled={loadingEarlier} onClick={() => void loadMore()}>
+              {loadingEarlier ? "Loading earlier messages…" : "Load earlier messages"}
+            </button>
+            {earlierError && <span role="alert">Could not load earlier messages. Try again.</span>}
+          </div>
+        )}
+        {visibleTurns.map((turn, i) => (
           <Fragment key={turn[0].id}>
             <TurnView
               messages={turn}
               kids={kids}
               agentByTool={agentByTool}
               onOpenAgent={onOpenAgent}
-              last={i === turns.length - 1}
+              last={i === visibleTurns.length - 1}
               busy={busy}
               tints={tints}
               fresh={fresh.has(turn[0].id)}

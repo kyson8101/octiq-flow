@@ -236,6 +236,7 @@ export function RailButton({
         <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7z" />
         <path d="M18 14.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" />
       </svg>
+      <span className="topbar-action-label">Agents</span>
       <span className="rail-count">
         <RollingNumber value={count} />
       </span>
