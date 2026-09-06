@@ -1,0 +1,25 @@
+# Optional fresh local PostgreSQL for the shared OctiqFlow/OctiqOS platform.
+# It is intentionally not the source of truth for production configuration;
+# the server receives DATABASE_URL through its service environment instead.
+name: octiqos-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: octiqos
+      POSTGRES_USER: octiqos
+      POSTGRES_PASSWORD: ${OCTIQOS_POSTGRES_PASSWORD:?Set OCTIQOS_POSTGRES_PASSWORD before starting PostgreSQL}
+    ports:
+      - "127.0.0.1:${OCTIQOS_POSTGRES_PORT:-5438}:5432"
+    volumes:
+      - octiqos-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U octiqos -d octiqos"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  octiqos-postgres:

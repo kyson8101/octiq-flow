@@ -26,6 +26,9 @@ mod git;
 mod git_ops;
 mod git_watch;
 mod memory;
+mod mission_control;
+mod mission_migrations;
+mod world;
 mod notify_hook;
 mod paths;
 mod permission;
@@ -56,6 +59,38 @@ pub async fn run_headless() {
     // Once, before anything can be running: tidy away transcripts no chat
     // points at any more.
     chat_index::reconcile();
+
+    // `postgres::Client` is synchronous and internally starts work of its own.
+    // Calling it on Tokio's main worker panics before the HTTP listener can
+    // start, so boot migrations use the same blocking boundary as every web
+    // command that touches the operational store.
+    let migration_result =
+        match tokio::task::spawn_blocking(mission_migrations::migrate_from_env).await {
+            Ok(result) => result,
+            Err(_) => Err("OctiqOS migration worker stopped unexpectedly.".to_string()),
+        };
+    match migration_result {
+        Ok(mission_migrations::StartupMigration::Applied { count }) if count > 0 => {
+            println!("[server] OctiqOS applied {count} database migration(s)");
+        }
+        Ok(mission_migrations::StartupMigration::Applied { .. }) => {
+            println!("[server] OctiqOS database schema is current");
+        }
+        Ok(mission_migrations::StartupMigration::Skipped)
+            if mission_migrations::database_required() =>
+        {
+            eprintln!("[server] OctiqOS requires DATABASE_URL, but it is not configured");
+            std::process::exit(1);
+        }
+        Ok(mission_migrations::StartupMigration::Skipped) => {
+            eprintln!("[server] OctiqOS database is not configured; /os will remain unavailable");
+        }
+        Err(why) if mission_migrations::database_required() => {
+            eprintln!("[server] {why}");
+            std::process::exit(1);
+        }
+        Err(why) => eprintln!("[server] {why}; OctiqOS will remain unavailable"),
+    }
 
     let cfg = web::load_config();
     let services = dispatch::Services::load();

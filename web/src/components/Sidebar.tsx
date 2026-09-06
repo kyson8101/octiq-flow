@@ -16,6 +16,7 @@ import { projectColor } from "../lib/projectColor";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
+import "./PortalLink.css";
 
 export type Project = {
   id: string;
@@ -175,6 +176,9 @@ export function Sidebar({
 
   return (
     <nav className="sidebar">
+      <a className="sidebar-os-link" href="/os">
+        <span aria-hidden="true">◈</span> OctiqOS
+      </a>
       {head && <div className="sidebar-slot">{head}</div>}
 
       <div className="sidebar-head">

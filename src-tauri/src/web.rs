@@ -68,7 +68,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Form, Query, State as AxumState};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Form, Query, State as AxumState};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -121,6 +121,14 @@ fn default_port() -> u16 {
 
 fn default_bind() -> String {
     "127.0.0.1".to_string()
+}
+
+/// The browser token is sufficient for a founder's own loopback service, but
+/// it is not an internet-facing identity system. A non-loopback listener must
+/// therefore be paired with a configured identity-verifying proxy gate. The
+/// normal Cloudflare Tunnel shape still binds to loopback and is unaffected.
+fn bind_has_access_control(addr: SocketAddr, cfg: &WebConfig) -> bool {
+    addr.ip().is_loopback() || cfg.access.is_configured()
 }
 
 impl Default for WebConfig {
@@ -247,11 +255,15 @@ impl WebState {
 // Running a command
 // ---------------------------------------------------------------------------
 
-/// Run one command on behalf of a browser.
-///
-/// There is nothing in the way: the dispatch table calls the backend directly.
+/// Run one command on behalf of a browser without blocking Axum's async
+/// workers. Dispatch includes terminal and PostgreSQL work, both of which use
+/// synchronous APIs; calling either directly from a Tokio worker can starve
+/// the socket pump (and the PostgreSQL client would try to nest a runtime).
 async fn run_command(ctx: &Ctx, cmd: String, args: Value) -> Result<Value, String> {
-    crate::dispatch::dispatch(&ctx.services, &cmd, args)
+    let services = ctx.services.clone();
+    tokio::task::spawn_blocking(move || crate::dispatch::dispatch(&services, &cmd, args))
+        .await
+        .map_err(|error| format!("the backend command did not finish: {error}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +279,20 @@ struct Ctx {
 #[derive(Deserialize)]
 struct TokenQuery {
     token: Option<String>,
+}
+
+/// The normalized envelope sent by an installed connector. Providers must not
+/// post their raw webhook payloads here: this is the deliberately small data
+/// boundary that the mission-control store accepts.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectorIntake {
+    source: String,
+    external_id: String,
+    title: String,
+    #[serde(default)]
+    detail: Option<String>,
+    domain: String,
 }
 
 /// Serve the browser client and dispatch its commands.
@@ -290,10 +316,22 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             return None;
         }
     };
+    if !bind_has_access_control(addr, &cfg) {
+        eprintln!(
+            "[web] refusing network bind at {addr}: configure Cloudflare Access in web.json first"
+        );
+        return None;
+    }
 
     let token = cfg.token.clone();
     Some(async move {
         let router = Router::new()
+            .route("/healthz", get(health_handler))
+            .route("/readyz", get(readiness_handler))
+            .route(
+                "/intake",
+                post(connector_intake_handler).layer(DefaultBodyLimit::max(16 * 1024)),
+            )
             .route("/ws", get(ws_handler))
             .route("/auth", get(auth_handler))
             .route("/token", get(token_handler))
@@ -453,6 +491,77 @@ async fn asset_handler(AxumState(_ctx): AxumState<Ctx>, uri: Uri) -> Response {
         "the client is not built — run `pnpm --dir web build`",
     )
         .into_response()
+}
+
+/// A load-balancer-safe process check. It reveals no configuration, token, or
+/// operational data and stays available for a Flow-only install.
+async fn health_handler() -> Response {
+    Json(json!({ "status": "ok", "service": "octiq-flow" })).into_response()
+}
+
+/// A deployment gate for OctiqOS. PostgreSQL is synchronous in this app, so
+/// the short readiness query lives off Axum's event workers just like browser
+/// commands do. The outside caller receives only ready/not-ready, never a
+/// database error or secret configuration detail.
+async fn readiness_handler() -> Response {
+    match tokio::task::spawn_blocking(crate::mission_migrations::readiness).await {
+        Ok(Ok(status)) => Json(json!(status)).into_response(),
+        _ => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "not_ready" })),
+        )
+            .into_response(),
+    }
+}
+
+/// The receiving secret is intentionally separate from the browser token. A
+/// calendar/ticket connector only earns the right to create a guarded inbox
+/// task; it must never gain a session capable of opening terminals. With no
+/// configured secret the endpoint looks absent, so a new install has no
+/// accidental listener waiting for guesses.
+fn connector_intake_token() -> Option<String> {
+    std::env::var("OCTIQOS_INGEST_TOKEN")
+        .ok()
+        .filter(|token| token.chars().count() >= 32)
+}
+
+fn bearer_token(headers: &axum::http::HeaderMap) -> &str {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default()
+}
+
+async fn connector_intake_handler(
+    headers: axum::http::HeaderMap,
+    Json(intake): Json<ConnectorIntake>,
+) -> Response {
+    let Some(expected) = connector_intake_token() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !ct_eq(&expected, bearer_token(&headers)) {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    }
+    let outcome = tokio::task::spawn_blocking(move || {
+        crate::mission_control::connector_intake_impl(
+            intake.source,
+            intake.external_id,
+            intake.title,
+            intake.detail,
+            intake.domain,
+        )
+    })
+    .await;
+    match outcome {
+        Ok(Ok(value)) => (StatusCode::ACCEPTED, Json(value)).into_response(),
+        Ok(Err(error)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": error })),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// Whether this request reached us through a reverse proxy.
@@ -1216,6 +1325,19 @@ mod tests {
         assert!(!ct_eq("", ""), "an empty expected token matches nothing");
     }
 
+    #[test]
+    fn connector_intake_only_reads_a_bearer_authorization_header() {
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "Bearer intake-secret")])),
+            "intake-secret"
+        );
+        assert_eq!(
+            bearer_token(&headers(&[("authorization", "Basic intake-secret")])),
+            ""
+        );
+        assert_eq!(bearer_token(&headers(&[])), "");
+    }
+
     // ---- safe_relative_path: no climbing out of the served folder ----------
 
     #[test]
@@ -1280,6 +1402,24 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("user-agent", "curl".parse().unwrap());
         assert!(!came_through_a_proxy(&headers));
+    }
+
+    // ---- network binds: a token is not a public identity system ----------
+
+    #[test]
+    fn a_loopback_bind_needs_no_external_access_layer() {
+        let addr: SocketAddr = "127.0.0.1:1421".parse().unwrap();
+        assert!(bind_has_access_control(addr, &WebConfig::default()));
+    }
+
+    #[test]
+    fn a_network_bind_requires_a_complete_access_configuration() {
+        let addr: SocketAddr = "0.0.0.0:1421".parse().unwrap();
+        assert!(!bind_has_access_control(addr, &WebConfig::default()));
+        let mut cfg = WebConfig::default();
+        cfg.access.team_domain = "team.cloudflareaccess.com".into();
+        cfg.access.aud = "audience-tag".into();
+        assert!(bind_has_access_control(addr, &cfg));
     }
 
     // ---- legacy_root_redirect: the old /v2 address ------------------------

@@ -58,6 +58,25 @@ back out through `bus.rs` to every attached browser.
 - **Client:** React + Vite + TypeScript in `web/`, with `xterm.js` for the
   terminals.
 
+## Two portals, one platform
+
+OctiqFlow is one platform with two focused browser portals, served by the same
+authenticated Rust/WebSocket backend:
+
+- **OctiqFlow** at `/` — the agent workbench: projects, conversations, files,
+  terminals, and live agent sessions.
+- **OctiqOS** at `/os` — organization buildings and offices, agents and professions,
+  Auto PM/direct tasks, discussion-only meetings, project scope, individual
+  memory, generated avatars, token/level progress, and a recruiter that helps
+  turn role descriptions into agent prompts.
+
+Use the OctiqOS link in the v2 sidebar to open the office, and the OctiqFlow link
+in the office header to return. The portals share authentication and the Rust
+backend. OctiqOS keeps its operational state in PostgreSQL; the workbench keeps
+its existing workspace/chat profile. See [the org-world guide](docs/octiqos-world.md)
+for setup and execution boundaries. The earlier mission portal remains available
+at `/os?view=legacy`.
+
 There is **no desktop app and no Tauri**. Both were removed once the browser
 client became the product; the `src-tauri/` folder name is historical.
 
@@ -80,10 +99,16 @@ http://127.0.0.1:1421/?token=…
 ```
 
 `OCTIQ_WEB_PORT` and `OCTIQ_WEB_BIND` override the port and interface for one
-run. The default bind is loopback; exposing it to a network is a deliberate act.
+run. The default bind is loopback. A non-loopback bind is refused unless a
+complete Cloudflare Access configuration is present in `web.json`.
 
 On macOS, `./scripts/install-service.sh` installs the server as a launchd agent
 so it starts at login and survives a logout.
+
+For OctiqOS work on a separate branch, use
+`./scripts/install-octiqos-preview.sh`. It runs an isolated preview at
+`127.0.0.1:1422` with its own launchd label, state profile, binary, logs, and
+browser token; it explicitly refuses the production port `1421`.
 
 ## Security
 

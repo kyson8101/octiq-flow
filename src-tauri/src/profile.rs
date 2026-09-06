@@ -82,6 +82,20 @@ pub fn save_config(cfg: &ProfileConfig) -> Result<(), String> {
 /// fall back to the default base under `~/.octiqflow/profiles` so the app still
 /// starts (with that profile's data) instead of crashing.
 pub fn profile_dir() -> PathBuf {
+    // A second local service (such as OctiqOS preview) must never share the
+    // production workbench's workspace/chat files or owner lock. This opt-in
+    // path bypasses the shared bootstrap pointer completely, so it neither
+    // reads nor rewrites the active production profile.
+    if let Ok(value) = std::env::var("OCTIQ_PROFILE_DIR") {
+        let value = value.trim();
+        if !value.is_empty() {
+            let dir = PathBuf::from(value);
+            if fs::create_dir_all(&dir).is_err() {
+                eprintln!("[profile] isolated profile directory is unavailable: {value}");
+            }
+            return dir;
+        }
+    }
     let cfg = load_config();
     let dir = PathBuf::from(&cfg.base).join(&cfg.active);
     if fs::create_dir_all(&dir).is_ok() {

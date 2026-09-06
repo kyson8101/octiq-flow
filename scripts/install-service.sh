@@ -8,15 +8,17 @@
 # not of this service.
 #
 #   ./scripts/install-service.sh            # loopback only (for a tunnel)
-#   ./scripts/install-service.sh 0.0.0.0    # reachable on your network
+#   ./scripts/install-service.sh 0.0.0.0    # network bind; needs Cloudflare Access config
 #
 # Undo with:  ./scripts/install-service.sh --uninstall
 set -euo pipefail
 
-LABEL="com.kyson.octiqflow.server"
+LABEL="${OCTIQ_SERVICE_LABEL:-com.kyson.octiqflow.server}"
 HOME_DIR="${HOME}"
-INSTALL_DIR="${HOME_DIR}/.octiqflow/bin"
-LOG_DIR="${HOME_DIR}/.octiqflow/logs"
+SERVICE_HOME="${OCTIQ_SERVICE_HOME:-${HOME_DIR}/.octiqflow}"
+INSTALL_DIR="${SERVICE_HOME}/bin"
+LOG_DIR="${SERVICE_HOME}/logs"
+ENV_FILE="${OCTIQOS_ENV_FILE:-${SERVICE_HOME}/octiqos.env}"
 PLIST="${HOME_DIR}/Library/LaunchAgents/${LABEL}.plist"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -29,18 +31,106 @@ fi
 
 BIND="${1:-127.0.0.1}"
 PORT="${OCTIQ_WEB_PORT:-1421}"
+PROFILE_DIR="${OCTIQ_PROFILE_DIR:-}"
 
 BUILT="${REPO}/src-tauri/target/release/octiq-server"
-if [[ ! -x "${BUILT}" ]]; then
-  echo "Building the server first…"
-  (cd "${REPO}/src-tauri" && cargo build --release --bin octiq-server)
+# The installed binary is copied out of target/, so an existing release file
+# says nothing about whether it reflects this checkout. Always rebuild before
+# replacing a service; otherwise a frontend/source edit can look deployed while
+# launchd quietly keeps running yesterday's server.
+echo "Building the server…"
+(cd "${REPO}/src-tauri" && cargo build --release --bin octiq-server)
+
+# The browser bundle is served directly from web/dist. Building it as part of
+# installation keeps a frontend edit and backend restart from deploying a
+# mismatched protocol by accident.
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pnpm is required to build the browser client before installation." >&2
+  exit 1
 fi
+echo "Building the browser client…"
+(cd "${REPO}/web" && pnpm build)
 
 mkdir -p "${INSTALL_DIR}" "${LOG_DIR}" "$(dirname "${PLIST}")"
+
+# OctiqOS operational state has a database credential, while the existing
+# launchd plist is intentionally readable enough to diagnose. Keep that secret
+# in a 0600 file and have a tiny local wrapper export it just before exec.
+# Supplying OCTIQOS_DATABASE_URL or OCTIQOS_INGEST_TOKEN on install creates or
+# updates the file. An ordinary reinstall preserves it, so rebuilding the
+# server does not require a database or webhook secret to pass through the
+# shell again.
+INSTALL_DATABASE_URL="${OCTIQOS_DATABASE_URL:-}"
+INSTALL_PM_CWD="${OCTIQOS_PM_CWD:-}"
+INSTALL_INGEST_TOKEN="${OCTIQOS_INGEST_TOKEN:-}"
+INSTALL_CLAUDE_API_KEY="${OCTIQOS_CLAUDE_API_KEY:-}"
+INSTALL_DEEPSEEK_API_KEY="${OCTIQOS_DEEPSEEK_API_KEY:-}"
+INSTALL_IMAGE_API_KEY="${OCTIQOS_IMAGE_API_KEY:-}"
+INSTALL_IMAGE_MODEL="${OCTIQOS_IMAGE_MODEL:-}"
+INSTALL_AVATAR_PROVIDER="${OCTIQOS_AVATAR_PROVIDER:-}"
+INSTALL_HIGGSFIELD_MODEL="${OCTIQOS_HIGGSFIELD_MODEL:-}"
+INSTALL_HIGGSFIELD_BIN="${OCTIQOS_HIGGSFIELD_BIN:-}"
+if [[ -f "${ENV_FILE}" ]]; then
+  set +u
+  source "${ENV_FILE}"
+  set -u
+fi
+if [[ -n "${INSTALL_DATABASE_URL}" ]]; then
+  DATABASE_URL="${INSTALL_DATABASE_URL}"
+fi
+if [[ -n "${INSTALL_PM_CWD}" ]]; then
+  OCTIQOS_PM_CWD="${INSTALL_PM_CWD}"
+fi
+if [[ -n "${INSTALL_INGEST_TOKEN}" ]]; then
+  if [[ "${#INSTALL_INGEST_TOKEN}" -lt 32 ]]; then
+    echo "OCTIQOS_INGEST_TOKEN must be at least 32 characters." >&2
+    exit 1
+  fi
+  OCTIQOS_INGEST_TOKEN="${INSTALL_INGEST_TOKEN}"
+fi
+# Preserve existing provider settings on reinstall; explicitly supplied settings win.
+[[ -z "${INSTALL_CLAUDE_API_KEY}" ]] || OCTIQOS_CLAUDE_API_KEY="${INSTALL_CLAUDE_API_KEY}"
+[[ -z "${INSTALL_DEEPSEEK_API_KEY}" ]] || OCTIQOS_DEEPSEEK_API_KEY="${INSTALL_DEEPSEEK_API_KEY}"
+[[ -z "${INSTALL_IMAGE_API_KEY}" ]] || OCTIQOS_IMAGE_API_KEY="${INSTALL_IMAGE_API_KEY}"
+[[ -z "${INSTALL_IMAGE_MODEL}" ]] || OCTIQOS_IMAGE_MODEL="${INSTALL_IMAGE_MODEL}"
+[[ -z "${INSTALL_AVATAR_PROVIDER}" ]] || OCTIQOS_AVATAR_PROVIDER="${INSTALL_AVATAR_PROVIDER}"
+[[ -z "${INSTALL_HIGGSFIELD_MODEL}" ]] || OCTIQOS_HIGGSFIELD_MODEL="${INSTALL_HIGGSFIELD_MODEL}"
+[[ -z "${INSTALL_HIGGSFIELD_BIN}" ]] || OCTIQOS_HIGGSFIELD_BIN="${INSTALL_HIGGSFIELD_BIN}"
+if [[ -n "${DATABASE_URL:-}" || -n "${OCTIQOS_PM_CWD:-}" || -n "${OCTIQOS_INGEST_TOKEN:-}" || -n "${OCTIQOS_CLAUDE_API_KEY:-}" || -n "${OCTIQOS_DEEPSEEK_API_KEY:-}" || -n "${OCTIQOS_IMAGE_API_KEY:-}" || -n "${OCTIQOS_AVATAR_PROVIDER:-}" || -n "${OCTIQOS_HIGGSFIELD_MODEL:-}" || -n "${OCTIQOS_HIGGSFIELD_BIN:-}" ]]; then
+  mkdir -p "$(dirname "${ENV_FILE}")"
+  umask 077
+  {
+    [[ -z "${DATABASE_URL:-}" ]] || printf 'DATABASE_URL=%q\n' "${DATABASE_URL}"
+    printf 'OCTIQOS_PM_CWD=%q\n' "${OCTIQOS_PM_CWD:-${REPO}}"
+    [[ -z "${OCTIQOS_INGEST_TOKEN:-}" ]] || printf 'OCTIQOS_INGEST_TOKEN=%q\n' "${OCTIQOS_INGEST_TOKEN}"
+    [[ -z "${OCTIQOS_CLAUDE_API_KEY:-}" ]] || printf 'OCTIQOS_CLAUDE_API_KEY=%q\n' "${OCTIQOS_CLAUDE_API_KEY}"
+    [[ -z "${OCTIQOS_DEEPSEEK_API_KEY:-}" ]] || printf 'OCTIQOS_DEEPSEEK_API_KEY=%q\n' "${OCTIQOS_DEEPSEEK_API_KEY}"
+    [[ -z "${OCTIQOS_IMAGE_API_KEY:-}" ]] || printf 'OCTIQOS_IMAGE_API_KEY=%q\n' "${OCTIQOS_IMAGE_API_KEY}"
+    [[ -z "${OCTIQOS_IMAGE_MODEL:-}" ]] || printf 'OCTIQOS_IMAGE_MODEL=%q\n' "${OCTIQOS_IMAGE_MODEL}"
+    [[ -z "${OCTIQOS_AVATAR_PROVIDER:-}" ]] || printf 'OCTIQOS_AVATAR_PROVIDER=%q\n' "${OCTIQOS_AVATAR_PROVIDER}"
+    [[ -z "${OCTIQOS_HIGGSFIELD_MODEL:-}" ]] || printf 'OCTIQOS_HIGGSFIELD_MODEL=%q\n' "${OCTIQOS_HIGGSFIELD_MODEL}"
+    [[ -z "${OCTIQOS_HIGGSFIELD_BIN:-}" ]] || printf 'OCTIQOS_HIGGSFIELD_BIN=%q\n' "${OCTIQOS_HIGGSFIELD_BIN}"
+  } > "${ENV_FILE}"
+  chmod 600 "${ENV_FILE}"
+fi
 
 # Copied rather than pointed at, so a `cargo clean` or a rebuild mid-session
 # cannot pull the binary out from under a running service.
 cp "${BUILT}" "${INSTALL_DIR}/octiq-server"
+
+RUNNER="${INSTALL_DIR}/run-octiq-server"
+cat > "${RUNNER}" <<RUNNER_EOF
+#!/bin/zsh
+set -euo pipefail
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  source "${ENV_FILE}"
+  set +a
+  export OCTIQOS_REQUIRE_DATABASE=1
+fi
+exec "${INSTALL_DIR}/octiq-server"
+RUNNER_EOF
+chmod 700 "${RUNNER}"
 
 # Sign it, so macOS stops asking for the same folder after every build.
 #
@@ -85,7 +175,7 @@ cat > "${PLIST}" <<PLIST_EOF
 
   <key>ProgramArguments</key>
   <array>
-    <string>${INSTALL_DIR}/octiq-server</string>
+    <string>${RUNNER}</string>
   </array>
 
   <key>EnvironmentVariables</key>
@@ -96,6 +186,8 @@ cat > "${PLIST}" <<PLIST_EOF
     <string>${BIND}</string>
     <key>OCTIQ_WEB_PORT</key>
     <string>${PORT}</string>
+    <key>OCTIQ_PROFILE_DIR</key>
+    <string>${PROFILE_DIR}</string>
     <key>PATH</key>
     <string>${HOME_DIR}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>SHELL</key>
@@ -106,6 +198,10 @@ cat > "${PLIST}" <<PLIST_EOF
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
 
   <key>StandardOutPath</key>
   <string>${LOG_DIR}/server.log</string>
@@ -166,6 +262,11 @@ fi
 echo
 echo "Installed ${LABEL}, bound to ${BIND}:${PORT}."
 echo "  logs:    ${LOG_DIR}/server.log"
+if [[ -f "${ENV_FILE}" ]]; then
+  echo "  OctiqOS store: configured"
+else
+  echo "  OctiqOS store: not configured (pass OCTIQOS_DATABASE_URL when installing)"
+fi
 echo "  stop:    launchctl bootout gui/$(id -u)/${LABEL}"
 echo "  remove:  $0 --uninstall"
 echo

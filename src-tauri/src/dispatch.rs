@@ -62,6 +62,7 @@ impl Services {
         // service runs for days, and every chat left open holds an agent and
         // its whole MCP fleet.
         crate::agent_chat::start_idle_reaper(chats.clone());
+        crate::world::start();
         Self {
             workspaces: Arc::new(WorkspaceState::load()),
             chats,
@@ -111,9 +112,71 @@ fn to_value<T: serde::Serialize>(r: Result<T, String>) -> Result<Value, String> 
 /// Run one command. `Err` is the message the client shows, so it is written for
 /// a person rather than a log.
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
+    if let Some(action) = cmd.strip_prefix("world_") {
+        return crate::world::dispatch(action, args);
+    }
     match cmd {
         // ---- projects -----------------------------------------------------
         "list_workspaces" => to_value(crate::workspaces::list_workspaces_impl(&svc.workspaces)),
+        // ---- OctiqOS mission control -------------------------------------
+        // Both portals share this authenticated dispatcher. OctiqOS stores
+        // operations in PostgreSQL while execution stays on the chat runtime.
+        "mission_dashboard" => crate::mission_control::dashboard_impl(),
+        "mission_founder_review" => crate::mission_control::founder_review_impl(),
+        "mission_update_workflow_profile" => crate::mission_control::update_workflow_profile_impl(
+            &svc.workspaces,
+            arg(&args, "profileId")?,
+            args.get("profile")
+                .cloned()
+                .ok_or_else(|| "Workflow profile settings are required.".to_string())?,
+        ),
+        "mission_task_detail" => crate::mission_control::task_detail_impl(arg(&args, "taskId")?),
+        "mission_capture_task" => crate::mission_control::capture_task_impl(
+            arg(&args, "title")?,
+            args.get("detail")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            arg(&args, "domain")?,
+            args.get("workspacePath")
+                .or_else(|| args.get("workspace_path"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        ),
+        "mission_request_plan" => {
+            crate::mission_control::request_plan_impl(svc.chats.clone(), arg(&args, "taskId")?)
+        }
+        "mission_confirm_plan" => crate::mission_control::confirm_plan_impl(
+            svc.chats.clone(),
+            arg(&args, "taskId")?,
+            arg(&args, "planId")?,
+            arg(&args, "provider")?,
+        ),
+        "mission_send_founder_direction" => crate::mission_control::send_founder_direction_impl(
+            svc.chats.clone(),
+            arg(&args, "taskId")?,
+            arg(&args, "direction")?,
+        ),
+        "mission_decide_approval" => crate::mission_control::decide_approval_impl(
+            arg(&args, "approvalId")?,
+            arg(&args, "decision")?,
+        ),
+        "mission_begin_verification" => {
+            crate::mission_control::begin_verification_impl(arg(&args, "runId")?)
+        }
+        "mission_complete_verification" => crate::mission_control::complete_verification_impl(
+            arg(&args, "taskId")?,
+            arg(&args, "evidence")?,
+        ),
+        "mission_abandon_task" => crate::mission_control::abandon_task_impl(
+            svc.chats.clone(),
+            arg(&args, "taskId")?,
+            arg(&args, "reason")?,
+        ),
+        "mission_reopen_task" => crate::mission_control::reopen_task_impl(
+            svc.chats.clone(),
+            arg(&args, "taskId")?,
+            arg(&args, "instruction")?,
+        ),
         "add_workspace" => to_value(crate::workspaces::add_workspace_impl(
             &svc.workspaces,
             arg(&args, "name")?,
