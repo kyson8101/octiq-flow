@@ -55,6 +55,23 @@ back out through `bus.rs` to every attached browser.
 - **Client:** React + Vite + TypeScript in `web/`, with `xterm.js` for the
   terminals.
 
+## Two portals, one platform
+
+OctiqFlow is one platform with two focused browser portals, served by the same
+authenticated Rust/WebSocket backend:
+
+- **OctiqFlow** at `/` — the agent workbench: projects, conversations, files,
+  terminals, and live agent sessions.
+- **OctiqOS** at `/os` — the founder command centre: a lifecycle-aware Kanban
+  board, task inspection/history, read-only PM plans, explicit execution
+  handoffs, approvals, agent-run visibility, and operating signals. Schedules
+  and connectors come next.
+
+They intentionally share identity, workspace context, agent runtime, and the
+PostgreSQL control-plane store. They do not share a crowded screen. See
+[the OctiqOS control-plane guide](docs/octiqos.md) for its database boundary,
+local setup, and safety rules.
+
 There is **no desktop app and no Tauri**. Both were removed once the browser
 client became the product; the `src-tauri/` folder name is historical.
 
@@ -77,10 +94,16 @@ http://127.0.0.1:1421/?token=…
 ```
 
 `OCTIQ_WEB_PORT` and `OCTIQ_WEB_BIND` override the port and interface for one
-run. The default bind is loopback; exposing it to a network is a deliberate act.
+run. The default bind is loopback. A non-loopback bind is refused unless a
+complete Cloudflare Access configuration is present in `web.json`.
 
 On macOS, `./scripts/install-service.sh` installs the server as a launchd agent
 so it starts at login and survives a logout.
+
+For OctiqOS work on a separate branch, use
+`./scripts/install-octiqos-preview.sh`. It runs an isolated preview at
+`127.0.0.1:1422` with its own launchd label, state profile, binary, logs, and
+browser token; it explicitly refuses the production port `1421`.
 
 ## Security
 

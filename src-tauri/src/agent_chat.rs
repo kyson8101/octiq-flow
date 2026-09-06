@@ -846,6 +846,12 @@ pub(crate) fn start_session(
                             }
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
+                            // OctiqOS uses two private chat-key prefixes for
+                            // its PM and execution loop.  The control plane
+                            // only learns an agent is done at this same
+                            // provider-authenticated full stop; every normal
+                            // Flow chat is a no-op inside the recorder.
+                            crate::mission_control::record_agent_completion(&key, &said);
                             crate::push::notify_chat(Some(&key), "done", &said);
                             // A full stop is the only honest signal that an
                             // agent has finished its turn. A round may be
