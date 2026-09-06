@@ -71,8 +71,10 @@ export function ToolGroup({
           </span>
         )}
         {look.failed > 0 && (
-          <span className="tool-state is-error">
-            {look.failed === 1 ? "failed" : `${look.failed} failed`}
+          <span className="tool-state tool-result-counts">
+            <span className="tool-result-success">{look.success} success</span>
+            <span aria-hidden="true">;</span>
+            <span className="tool-result-failed">{look.failed} failed</span>
           </span>
         )}
       </button>

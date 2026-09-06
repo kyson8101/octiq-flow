@@ -93,7 +93,7 @@ describe("a run with edits folded into it", () => {
 });
 
 describe("a run containing failed calls", () => {
-  it("groups the failures but keeps their count visible", () => {
+  it("groups failures but keeps both outcome counts visible", () => {
     const markup = renderToStaticMarkup(
       <ToolGroup
         tools={[
@@ -106,17 +106,18 @@ describe("a run containing failed calls", () => {
     );
 
     expect(markup).toContain("ran 4 commands");
+    expect(markup).toContain("1 success");
     expect(markup).toContain("3 failed");
     expect(markup).toContain('title="Show all 4 calls"');
     expect(markup).toContain("tool-error");
   });
 
-  it("uses the natural single-failure label", () => {
+  it("shows the successful calls beside a single failure", () => {
     const markup = renderToStaticMarkup(
       <ToolGroup tools={[bash("1", "npm run lint")]} newest={failedBash("2", "npm test")} />,
     );
 
-    expect(markup).toContain(">failed</span>");
-    expect(markup).not.toContain("1 failed");
+    expect(markup).toContain("1 success");
+    expect(markup).toContain("1 failed");
   });
 });

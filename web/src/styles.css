@@ -11432,10 +11432,22 @@ body.is-ultra .eff {
   color: var(--accent);
 }
 
-/* A folded run may contain several failed calls. The count stays on the
-   collapsed row so grouping removes repetition without making the run look
-   successful. */
+/* A folded run may contain both successful and failed calls. Keep both counts
+   on the collapsed row so a single failure does not paint the whole run as a
+   failure, while the failed count remains unmistakable. */
 .tool-group.tool-error .tool-summary-icon {
+  color: var(--danger);
+}
+
+.tool-result-counts {
+  gap: 4px;
+}
+
+.tool-result-success {
+  color: var(--fg-3);
+}
+
+.tool-result-failed {
   color: var(--danger);
 }
 

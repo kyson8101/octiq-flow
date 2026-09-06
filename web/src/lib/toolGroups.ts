@@ -202,8 +202,11 @@ export type GroupLook = {
   /** Running while any call is still active; otherwise failed when at least
    *  one call failed, and done only when every call completed successfully. */
   state: Tool["state"];
-  /** How many calls failed, shown on the collapsed row so the fold cannot hide
-   *  the most important fact about the run. */
+  /** How many calls completed successfully. Kept separate from the total so a
+   *  still-running call is never presented as a success. */
+  success: number;
+  /** How many calls failed. Successful and failed counts are shown together
+   *  so one failure does not make the whole folded run look unsuccessful. */
   failed: number;
   /** The newest call in the run, kept on the row: during a turn this is the
    *  command running right now, and afterwards it is where the run got to. */
@@ -214,6 +217,7 @@ export function groupLook(tools: Tool[]): GroupLook {
   const looks = tools.map((t) => toolLook(t.name, t.args));
   const last = tools[tools.length - 1];
   const oneName = tools.every((t) => t.name === tools[0].name);
+  const success = tools.filter((t) => t.state === "done").length;
   const failed = tools.filter((t) => t.state === "error").length;
   return {
     // A mixed run takes the kind of the call whose detail is on the row, so the
@@ -226,6 +230,7 @@ export function groupLook(tools: Tool[]): GroupLook {
       : failed
         ? "error"
         : "done",
+    success,
     failed,
     detail: toolDetail(last.name, last.args),
   };
