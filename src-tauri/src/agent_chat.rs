@@ -494,6 +494,26 @@ impl ChatManager {
         None
     }
 
+    /// Which process queue holds one named user turn, without changing it.
+    ///
+    /// `chat_start_queued_impl` asks once before taking the session locks, then
+    /// promotes under those locks. If the answer changes between the two, the
+    /// agent won the race and the action becomes an honest no-op.
+    fn queued_turn_session_key(&self, chat_key: &str, turn_id: &str) -> Option<String> {
+        let seats = format!("{chat_key}-seat-");
+        self.queued_turns
+            .lock()
+            .ok()?
+            .iter()
+            .find_map(|(key, queue)| {
+                ((key == chat_key || key.starts_with(&seats))
+                    && queue
+                        .iter()
+                        .any(|turn| turn.turn_id.as_deref() == Some(turn_id)))
+                .then(|| key.clone())
+            })
+    }
+
     /// Ending a process deliberately is also the end of every turn waiting only
     /// for that process. Otherwise a later, unrelated resume could unexpectedly
     /// receive words the person meant to cancel.
@@ -1712,7 +1732,7 @@ pub fn chat_start_queued_impl(
     key: String,
     turn_id: String,
 ) -> Result<bool, String> {
-    let Some(session_key) = manager.promote_queued_turn(&key, &turn_id) else {
+    let Some(session_key) = manager.queued_turn_session_key(&key, &turn_id) else {
         return Ok(false);
     };
 
@@ -1728,7 +1748,47 @@ pub fn chat_start_queued_impl(
     } else {
         None
     };
-    interrupt_session(manager, &session_key, &key, seat)?;
+
+    // Hold the session map and this process together across the promotion and
+    // interrupt. A persistent reader takes the session lock before dequeuing;
+    // a one-shot reaper takes the sessions map before doing the same. Neither
+    // can pick the selected message up in the gap and then be interrupted AS
+    // that message, which would turn "send now" into "cancel what I clicked".
+    let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    let Some(session) = sessions.get(&session_key).cloned() else {
+        // The one-shot reaper is already carrying it into the next process.
+        return Ok(false);
+    };
+    let mut guard = session.lock().map_err(|e| e.to_string())?;
+    if manager.promote_queued_turn(&key, &turn_id).as_deref() != Some(session_key.as_str()) {
+        return Ok(false);
+    }
+
+    let agent = guard.agent;
+    if provider_for(agent).capabilities().input.accepts_stdin() {
+        interrupt_persistent_turn(&mut guard)?;
+        return Ok(true);
+    }
+
+    // A command-line provider cannot be interrupted over stdin. Remove this
+    // exact process while the sessions lock still fences its reaper, carry the
+    // promoted turn across the kill, then resume it outside the locks.
+    let mut waiting = manager.take_all_queued_turns(&session_key);
+    sessions.remove(&session_key);
+    guard.stdin.take();
+    let _ = guard.child.kill();
+    drop(guard);
+    drop(sessions);
+
+    if waiting.is_empty() {
+        return Ok(false);
+    }
+    let next = waiting.remove(0);
+    manager.requeue_front(&session_key, waiting);
+    if let Err(why) = start_queued_command_turn(manager.clone(), &session_key, &key, seat, next) {
+        manager.forget_queued_turns(&session_key);
+        return Err(format!("could not resume queued message: {why}"));
+    }
     Ok(true)
 }
 
@@ -1888,6 +1948,25 @@ fn chat_seat_start_with_user_turn(
     )
 }
 
+/// Send the interrupt understood by a provider with a persistent stdin.
+fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
+    let payload = provider_for(session.agent)
+        .interrupt_payload()
+        .ok_or("this chat does not take more input")?;
+    let stdin = session
+        .stdin
+        .as_mut()
+        .ok_or("this chat does not take more input")?;
+    writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())?;
+    // The turn is over as far as anyone waiting is concerned, and the still
+    // clock starts here rather than at whatever `result` the agent may or may
+    // not send after being cut off. A session that stopped and was never
+    // spoken to again is exactly what the sweeper is for.
+    session.turn_ended();
+    Ok(())
+}
+
 /// Ask the agent to stop what it is doing, WITHOUT ending the conversation.
 ///
 /// Claude's init event advertises `interrupt_receipt_v1`, so the running turn
@@ -1936,10 +2015,9 @@ fn interrupt_session(
         // either: `end_process` takes the session out of the map, so the exit
         // it is about to see is no longer the current one.
         //
-        // Only for the conversation's own agent. A seat runs under its own
-        // key but SPEAKS into the room's transcript, and the two are told
-        // apart by the key alone — resume one as a host here and its answer is
-        // written down as the room's.
+        // A seat runs under its own key but SPEAKS into the room's transcript.
+        // `stream_key` and `seat` preserve those two identities when this is a
+        // targeted start; the ordinary Stop path supplies the host pair.
         let mut waiting = manager.take_all_queued_turns(session_key);
         end_process(manager, session_key)?;
         if waiting.is_empty() {
@@ -1960,21 +2038,7 @@ fn interrupt_session(
     }
 
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    let payload = provider_for(agent)
-        .interrupt_payload()
-        .ok_or("this chat does not take more input")?;
-    let stdin = guard
-        .stdin
-        .as_mut()
-        .ok_or("this chat does not take more input")?;
-    writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())?;
-    // The turn is over as far as anyone waiting is concerned, and the still
-    // clock starts here rather than at whatever `result` the agent may or may
-    // not send after being cut off. A session that stopped and was never
-    // spoken to again is exactly what the sweeper is for.
-    guard.turn_ended();
-    Ok(())
+    interrupt_persistent_turn(&mut guard)
 }
 
 pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {

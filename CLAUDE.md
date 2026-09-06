@@ -248,9 +248,9 @@ what `chat_interrupt` is for. Two things hold it up:
   `turn_finished`, the interrupt's `error_during_execution` included), under the
   lock that ends the turn. Codex has no reader to do it — its process is being
   killed — so `chat_interrupt_impl` lifts the queue clear BEFORE `end_process`,
-  which would otherwise discard it, and starts the first message itself. Only
-  for a host: a seat runs under its own key but speaks into the room's
-  transcript (`is_seat_session_key`).
+  which would otherwise discard it, and starts the first message itself.
+  Ordinary Stop targets the host; `chat_start_queued` can target a seat and
+  preserves its separate process and transcript identities through `Voice::seat`.
 - **A send may not go round a queue that has anything in it**
   (`has_queued_turns`). The interrupt ends the turn immediately — the
   still-clock has to start somewhere — so between a Stop and the reader picking
