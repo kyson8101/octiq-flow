@@ -99,7 +99,7 @@ enum RawChoice {
         description: Option<String>,
     },
     /// Anything else at all — a number, a null, an object with no label.
-    Unusable(serde_json::Value),
+    Unusable(serde::de::IgnoredAny),
 }
 
 /// Read the offered choices, keeping the ones a person could actually read.
