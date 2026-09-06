@@ -20,6 +20,7 @@
 // are retried with a backoff, on a fresh connection, and — because a promise
 // that never settles cannot be caught — under a deadline of their own.
 import { bridge } from "./bridge";
+import type { Conversation } from "./store";
 
 /** A chat as the index holds it. Metadata only; the messages live in the
  *  chat's own transcript. */
@@ -27,6 +28,7 @@ export type IndexEntry = {
   id: string;
   projectId: string;
   title: string;
+  customTitle?: boolean;
   sessionId: string | null;
   modelId: string | null;
   access: string | null;
@@ -40,6 +42,44 @@ export type IndexEntry = {
 };
 
 export type DeletedIndexEntry = IndexEntry & { deletedAt: number };
+
+/** Metadata from a browser-held conversation, in the server index's shape. */
+function entryFromConversation(chat: Conversation): IndexEntry {
+  return {
+    id: chat.id,
+    projectId: chat.projectId,
+    title: chat.title,
+    customTitle: chat.customTitle,
+    sessionId: chat.sessionId ?? null,
+    modelId: chat.modelId ?? null,
+    access: chat.permission ?? null,
+    createdAt: chat.createdAt,
+    updatedAt: chat.updatedAt,
+    pinned: chat.pinned ?? false,
+    generation: chat.generation,
+  };
+}
+
+/** Browser-only chats that should be offered to an established server index.
+ *
+ * Chats created before the server index existed can still be present in the
+ * browser that made them. They have never been marked `synced`, and until they
+ * are written into the index no second device can discover them. A non-empty
+ * server list establishes that this browser is looking at the same profile;
+ * an empty one does not, because profile switching shares the browser origin.
+ * Deleted or currently-leaving ids are supplied in `excluded` and must never
+ * be resurrected by this migration. */
+export function indexBackfill(
+  local: readonly Conversation[],
+  server: readonly IndexEntry[],
+  excluded: ReadonlySet<string>,
+): IndexEntry[] {
+  if (server.length === 0) return [];
+  const known = new Set(server.map((chat) => chat.id));
+  return local
+    .filter((chat) => !chat.synced && !known.has(chat.id) && !excluded.has(chat.id))
+    .map(entryFromConversation);
+}
 
 /** How long to wait for an acknowledgement before assuming the call is lost.
  *  Generous: this is a local write behind a socket, so anything approaching
@@ -66,11 +106,25 @@ let watchingConnection = false;
 
 /** Record a chat in the server's index, and keep trying until it is there. */
 export function saveIndexEntry(entry: IndexEntry): void {
-  // A chat on its way out is not written back in. Nothing should ask — the page
-  // knows what it deleted — but this is the last gate before the wire, and a
-  // save that slips past it is a chat back in the sidebar.
-  if (unconfirmed.get(entry.id)?.kind === "remove") return;
-  unconfirmed.set(entry.id, { kind: "save", entry });
+  saveIndexEntries([entry]);
+}
+
+/** Record several chats with one queue flush.
+ *
+ * A legacy browser may have dozens to backfill. Calling the single-entry form
+ * in a loop re-flushes every earlier row before its promise can settle, turning
+ * N chats into N² requests and index-change broadcasts. */
+export function saveIndexEntries(entries: readonly IndexEntry[]): void {
+  let queued = false;
+  for (const entry of entries) {
+    // A chat on its way out is not written back in. Nothing should ask — the
+    // page knows what it deleted — but this is the last gate before the wire,
+    // and a save that slips past it is a chat back in the sidebar.
+    if (unconfirmed.get(entry.id)?.kind === "remove") continue;
+    unconfirmed.set(entry.id, { kind: "save", entry });
+    queued = true;
+  }
+  if (!queued) return;
   watchConnection();
   flush();
 }

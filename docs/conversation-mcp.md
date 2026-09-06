@@ -17,6 +17,11 @@ Claude and Codex chats launched by OctiqFlow receive the MCP automatically. MCP
 configuration is fixed when an agent process starts, so a chat process that was
 already running before this tool was installed must be restarted once.
 
+Starting a new chat with `continue <conversation-url>` is a reserved hand-off
+shape. OctiqFlow routes Codex to `read_conversation` before it can mistake the
+URL for a browser task, and gives Claude the same mandatory rule in its system
+prompt. The user-visible transcript keeps the original short message.
+
 ## Paging
 
 The first call returns the latest 40 conversational entries in chronological

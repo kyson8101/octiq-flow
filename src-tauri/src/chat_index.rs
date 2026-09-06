@@ -36,6 +36,10 @@ pub struct ChatMeta {
     pub project_id: String,
     #[serde(default)]
     pub title: String,
+    /// True when the user named the chat explicitly. This keeps a deliberately
+    /// chosen `New chat` distinct from the inferred placeholder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub custom_title: bool,
     /// The agent's own session id, for resuming the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -473,6 +477,7 @@ mod tests {
             id: id.into(),
             project_id: "p1".into(),
             title: format!("chat {id}"),
+            custom_title: false,
             session_id: None,
             model_id: None,
             access: None,
@@ -559,11 +564,26 @@ mod tests {
             serde_json::from_str(r#"{"id":"a","projectId":"p","createdAt":1,"updatedAt":1}"#)
                 .unwrap();
         assert!(!meta.pinned);
+        assert!(!meta.custom_title);
         // And an unpinned one is written without the field, so the file stays
-        // exactly what it was before pins existed.
-        assert!(!serde_json::to_string(&meta).unwrap().contains("pinned"));
+        // exactly what it was before pins or custom titles existed.
+        let written = serde_json::to_string(&meta).unwrap();
+        assert!(!written.contains("pinned"));
+        assert!(!written.contains("customTitle"));
         assert!(meta.deleted_at.is_none());
         assert_eq!(meta.generation, 0);
+    }
+
+    #[test]
+    fn a_custom_title_round_trips_through_the_index_shape() {
+        let mut chat = meta("custom-title", 1);
+        chat.title = "New chat".into();
+        chat.custom_title = true;
+        let written = serde_json::to_string(&chat).unwrap();
+        assert!(written.contains(r#""customTitle":true"#));
+        let read: ChatMeta = serde_json::from_str(&written).unwrap();
+        assert_eq!(read.title, "New chat");
+        assert!(read.custom_title);
     }
 
     #[test]

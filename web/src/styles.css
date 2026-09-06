@@ -6105,6 +6105,28 @@ body.is-ultra .eff {
   color: var(--fg-0);
 }
 
+.chat-rename {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px;
+}
+
+.chat-rename-input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--bg-0);
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+
 .chat-title {
   display: block;
   flex: 1 1 auto;
@@ -6329,6 +6351,54 @@ body.is-ultra .eff {
   pointer-events: none;
 }
 
+/* Rename sits beside Pin as another quiet, fixed-width row action. The fixed
+   slot keeps the title's ellipsis from changing as the pointer crosses it. */
+.chat-rename-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.82);
+  pointer-events: none;
+  transition:
+    opacity 130ms ease,
+    transform 220ms cubic-bezier(0.34, 1.24, 0.64, 1),
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.chat:hover .chat-rename-btn,
+.chat-rename-btn:focus-visible {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+
+.chat-rename-btn:hover {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.chat-rename-btn:disabled {
+  pointer-events: none;
+}
+
+/* While the field owns the row, give it all of the action slots too. */
+.chat.is-renaming .chat-rename-btn,
+.chat.is-renaming .chat-pin,
+.chat.is-renaming .chat-tail {
+  display: none;
+}
+
 .chat-drain-track {
   fill: none;
   stroke: var(--border);
@@ -6410,6 +6480,12 @@ body.is-ultra .eff {
     pointer-events: auto;
   }
 
+  .chat.is-on .chat-rename-btn {
+    opacity: 1;
+    transform: none;
+    pointer-events: auto;
+  }
+
   /* And with them permanently open, the row's count sits where the pointer
      version pushes it to — the box is theirs to hold, not to borrow. */
   .proj-add {
@@ -6429,7 +6505,8 @@ body.is-ultra .eff {
 
   .proj-add,
   .chat-del,
-  .chat-pin {
+  .chat-pin,
+  .chat-rename-btn {
     transform: none;
     transition:
       opacity 140ms ease,
@@ -6537,6 +6614,31 @@ body.is-ultra .eff {
       color 120ms ease;
   }
 
+
+  .chat-rename-btn {
+    width: 0;
+    height: 44px;
+    overflow: hidden;
+    transition:
+      width 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 130ms ease,
+      transform 220ms cubic-bezier(0.34, 1.24, 0.64, 1),
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .chat.is-on .chat-rename-btn {
+    width: 44px;
+  }
+
+  .chat-rename {
+    height: 48px;
+  }
+
+  .chat-rename-input {
+    font-size: 16px;
+  }
+
   .chat.is-on .chat-pin,
   .chat-pin.is-pinned {
     width: 44px;
@@ -6604,7 +6706,8 @@ body.is-ultra .eff {
    keeps its box rather than snapping into one, because a width that jumps from
    0 to 44 is the title jumping with it. */
 @media (pointer: coarse) and (prefers-reduced-motion: reduce) {
-  .chat-pin {
+  .chat-pin,
+  .chat-rename-btn {
     width: 44px;
     transition:
       opacity 140ms ease,

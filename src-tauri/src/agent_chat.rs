@@ -27,6 +27,7 @@
 //! all the same, for the reason pty.rs does it — a GUI app does not inherit the
 //! interactive shell's PATH, so `claude` would simply not be found.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -42,6 +43,74 @@ use crate::agent_provider::{
 };
 pub(crate) use crate::agent_provider::{safe_model, safe_session_id};
 pub use crate::agent_provider::{Access, AgentKind as ChatAgent};
+
+/// Turn the terse hand-off people naturally type into an unambiguous tool
+/// route for providers that have OctiqFlow's MCP. The original text is still
+/// what the transcript records; this private instruction exists only in the
+/// prompt handed to the agent.
+///
+/// A bare URL is deliberately not enough. Links appear in ordinary questions
+/// all the time, while `continue <conversation-url>` is an explicit request to
+/// inherit that conversation before doing anything else.
+fn routed_prompt(agent: ChatAgent, prompt: &str) -> Cow<'_, str> {
+    // Claude receives the same rule as a system prompt at process start. Do
+    // not alter its user payload: `--replay-user-messages` would echo these
+    // private routing words into the visible transcript. Codex does not echo
+    // its command-line prompt, so its canonical transcript entry stays exact.
+    if agent != ChatAgent::Codex {
+        return Cow::Borrowed(prompt);
+    }
+    let Some(url) = continuation_url(prompt) else {
+        return Cow::Borrowed(prompt);
+    };
+
+    Cow::Owned(format!(
+        "{prompt}\n\n[OctiqFlow continuation protocol]\n\
+         This is a cross-chat continuation request. Before any other action, you MUST call \
+         `mcp__octiq__read_conversation` with {{\"url\":\"{url}\"}}. Do not open this URL \
+         in Browser and do not infer the prior conversation from workspace files. Read the \
+         latest page first, follow the returned `before` cursor when older context is needed, \
+         then continue from the latest actionable next step."
+    ))
+}
+
+fn continuation_url(prompt: &str) -> Option<&str> {
+    let prompt = prompt.trim();
+    let word_end = prompt.find(char::is_whitespace)?;
+    if !prompt[..word_end].eq_ignore_ascii_case("continue") {
+        return None;
+    }
+
+    let url = prompt[word_end..].trim();
+    if url.is_empty()
+        || url.chars().any(char::is_whitespace)
+        || !(url.starts_with("https://") || url.starts_with("http://"))
+    {
+        return None;
+    }
+    let route = url.split_once('#')?.1.split('?').next()?;
+    let route = route.strip_suffix('/').unwrap_or(route);
+    let rest = route.strip_prefix("/p/")?;
+    let (project, conversation) = rest.split_once("/c/")?;
+    if project.is_empty()
+        || conversation.is_empty()
+        || project.contains('/')
+        || conversation.contains('/')
+        || !project.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+        || conversation.len() > 128
+        || !conversation
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    Some(url)
+}
 
 /// One line of an agent's stdout, on its way to the UI.
 #[derive(Clone, Serialize)]
@@ -692,10 +761,15 @@ fn build_command_with_mcp(
     lite: bool,
     mcp_config: Option<&std::path::Path>,
 ) -> String {
+    let prompt = if mcp_config.is_some() {
+        routed_prompt(agent, prompt)
+    } else {
+        Cow::Borrowed(prompt)
+    };
     provider_for(agent).build_command(&AgentCommand {
         model,
         access,
-        prompt,
+        prompt: &prompt,
         resume,
         extra_dirs,
         effort,
@@ -2521,6 +2595,55 @@ mod tests {
         test_toml_string as toml_string,
     };
 
+    const CONVERSATION_URL: &str =
+        "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    #[test]
+    fn continue_conversation_routes_mcp_agents_to_the_reader_first() {
+        let original = format!("continue {CONVERSATION_URL}");
+
+        let routed = routed_prompt(ChatAgent::Codex, &original);
+        assert!(routed.contains("MUST call `mcp__octiq__read_conversation`"));
+        assert!(routed.contains(CONVERSATION_URL));
+        assert!(routed.contains("Do not open this URL in Browser"));
+
+        let command = build_command_with_mcp(
+            ChatAgent::Codex,
+            None,
+            Some(Access::Auto),
+            &original,
+            None,
+            &[],
+            None,
+            &[],
+            false,
+            Some(std::path::Path::new("octiq-ask.json")),
+        );
+        assert!(command.contains("mcp__octiq__read_conversation"));
+        assert!(command.contains("Do not open this URL in Browser"));
+    }
+
+    #[test]
+    fn continuation_routing_is_narrow_and_leaves_other_prompts_untouched() {
+        let bare_link = format!("please review {CONVERSATION_URL}");
+        assert!(matches!(
+            routed_prompt(ChatAgent::Codex, &bare_link),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            routed_prompt(ChatAgent::Codex, "continue the implementation"),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            routed_prompt(ChatAgent::Claude, &format!("continue {CONVERSATION_URL}")),
+            Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            routed_prompt(ChatAgent::Pi, &format!("continue {CONVERSATION_URL}")),
+            Cow::Borrowed(_)
+        ));
+    }
+
     #[test]
     fn codex_prompt_event_keeps_text_attachments_and_target() {
         let seat = crate::chat_room::Seat {
@@ -2664,6 +2787,8 @@ mod tests {
         // And the one that was always there still is.
         assert!(c.contains("mcp__octiq__ask_user"));
         assert!(c.contains("mcp__octiq__read_conversation"));
+        assert!(c.contains("whole message is `continue <OctiqFlow conversation URL>`"));
+        assert!(c.contains("must not open it in Browser"));
     }
 
     #[test]

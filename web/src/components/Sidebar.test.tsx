@@ -51,6 +51,7 @@ const html = (
       onNewChat={() => {}}
       onDelete={() => {}}
       onPin={() => {}}
+      onRename={() => {}}
       onSettings={() => {}}
       onNewProject={() => {}}
       onReorder={() => {}}
@@ -111,6 +112,7 @@ describe("Sidebar", () => {
         onNewChat={() => {}}
         onDelete={() => {}}
         onPin={() => {}}
+        onRename={() => {}}
         onSettings={() => {}}
         onNewProject={() => {}}
         onReorder={() => {}}
@@ -200,6 +202,13 @@ describe("Sidebar", () => {
     expect(out).toContain("chat is-pinned");
   });
 
+  it("offers an accessible rename action for every chat", () => {
+    const out = html(open);
+    expect(out).toContain('aria-label="Rename a"');
+    expect(out).toContain('aria-label="Rename b"');
+    expect(out).toContain('title="Double-click to rename"');
+  });
+
   it("keeps the pin out of the trailing slot", () => {
     // The mark and the × still share the tail; the pin has a box of its own,
     // before it, so the title is measured the same with and without the pointer.
@@ -227,7 +236,8 @@ describe("Sidebar", () => {
     expect(out).toContain("chat is-leaving");
     // The row cannot offer Undo once the committed delete is collapsing it.
     expect(out).not.toContain('aria-label="Cancel delete"');
-    expect(out.match(/disabled=""/g)).toHaveLength(3);
+    // Pick, rename, pin, and delete are all inert while the row leaves.
+    expect(out.match(/disabled=""/g)).toHaveLength(4);
   });
 
   it("turns that row's × into the way back", () => {

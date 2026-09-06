@@ -22,6 +22,10 @@ export type Conversation = {
   projectId: string;
   /** Taken from the first thing the user said. */
   title: string;
+  /** A title the user chose explicitly. Unlike an inferred placeholder, it is
+   *  never replaced from the transcript — even when it is literally
+   *  `New chat`. */
+  customTitle?: boolean;
   /** The agent's session id, for --resume. Absent until the agent reports it. */
   sessionId?: string;
   messages: Message[];
@@ -197,8 +201,13 @@ export function titleFrom(messages: Message[]): string {
  *  So a name that exists wins, and the placeholder is never a name: a row that
  *  did end up holding it can still be named properly once the transcript
  *  arrives. */
-export function chatName(had: string | undefined, messages: Message[]): string {
+export function chatName(
+  had: string | undefined,
+  messages: Message[],
+  custom = false,
+): string {
   const kept = (had ?? "").trim();
+  if (custom && kept) return kept;
   return kept && kept !== UNNAMED ? kept : titleFrom(messages);
 }
 
@@ -274,6 +283,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       !!held &&
       held.projectId === c.projectId &&
       held.title === c.title &&
+      !!held.customTitle === !!c.customTitle &&
       held.sessionId === c.sessionId &&
       held.modelId === c.modelId &&
       held.permission === c.permission &&

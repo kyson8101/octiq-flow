@@ -64,6 +64,7 @@ export function Sidebar({
   onNewChat,
   onDelete,
   onPin,
+  onRename,
   onSettings,
   onNewProject,
   onReorder,
@@ -111,6 +112,8 @@ export function Sidebar({
   /** Pin this chat to the top of its project — or, on one already pinned,
    *  let it go back to its place by age. */
   onPin: (id: string) => void;
+  /** Replace the inferred chat title with one chosen by the user. */
+  onRename: (id: string, title: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
   /** Persist a complete ordering of the visible project rows. */
@@ -258,6 +261,7 @@ export function Sidebar({
             onNewChat={onNewChat}
             onDelete={onDelete}
             onPin={onPin}
+            onRename={onRename}
             onSettings={onSettings}
             siblingNames={(p.sibling_ids ?? []).flatMap((id) =>
               names.has(id) ? [names.get(id)!] : [],
@@ -342,6 +346,7 @@ function ProjectNode({
   onNewChat,
   onDelete,
   onPin,
+  onRename,
   onSettings,
   siblingNames,
   siblingAbove,
@@ -370,6 +375,7 @@ function ProjectNode({
   onNewChat: (id: string) => void;
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
+  onRename: (id: string, title: string) => void;
   onSettings: (id: string) => void;
   siblingNames: string[];
   /** The row above belongs to the same connected group. */
@@ -385,6 +391,7 @@ function ProjectNode({
   onMove: (direction: -1 | 1) => void;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
   // The chats present on this project's first paint are already here — making
   // all of history slide in every time the sidebar mounts would be noise. A
   // later id is a new row, and gets the short expand transition below.
@@ -525,23 +532,76 @@ function ProjectNode({
                       going ? "is-going" : "",
                       isLeaving ? "is-leaving" : "",
                       c.pinned ? "is-pinned" : "",
+                      renaming === c.id ? "is-renaming" : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
                   >
+                    {renaming === c.id ? (
+                      <form
+                        className="chat-rename"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const input = event.currentTarget.elements.namedItem("chat-title");
+                          if (input instanceof HTMLInputElement && input.value.trim()) {
+                            onRename(c.id, input.value);
+                          }
+                          setRenaming(null);
+                        }}
+                      >
+                        <input
+                          name="chat-title"
+                          className="chat-rename-input"
+                          defaultValue={c.title}
+                          aria-label="Chat title"
+                          maxLength={48}
+                          autoFocus
+                          onFocus={(event) => event.currentTarget.select()}
+                          onBlur={(event) => {
+                            if (event.currentTarget.value.trim()) {
+                              onRename(c.id, event.currentTarget.value);
+                            }
+                            setRenaming(null);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Escape") return;
+                            event.preventDefault();
+                            setRenaming(null);
+                          }}
+                        />
+                      </form>
+                    ) : (
+                      <button
+                        className="chat-btn"
+                        type="button"
+                        disabled={isLeaving}
+                        title="Double-click to rename"
+                        onClick={() => onPickConversation(c)}
+                        onDoubleClick={() => {
+                          if (!going) setRenaming(c.id);
+                        }}
+                      >
+                        <Mascot
+                          robot={modelFromId(c.modelId ?? null)?.composerStyle}
+                          mood="still"
+                          size={16}
+                          asleep={!running.has(c.id) && !busy.has(c.id)}
+                        />
+                        <span className="chat-title">{c.title}</span>
+                      </button>
+                    )}
                     <button
-                      className="chat-btn"
+                      className="chat-rename-btn"
                       type="button"
-                      disabled={isLeaving}
-                      onClick={() => onPickConversation(c)}
+                      title="Rename this chat"
+                      aria-label={`Rename ${c.title}`}
+                      disabled={isLeaving || going || renaming === c.id}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setRenaming(c.id);
+                      }}
                     >
-                      <Mascot
-                        robot={modelFromId(c.modelId ?? null)?.composerStyle}
-                        mood="still"
-                        size={16}
-                        asleep={!running.has(c.id) && !busy.has(c.id)}
-                      />
-                      <span className="chat-title">{c.title}</span>
+                      <PencilIcon />
                     </button>
                     {/* The pin, in a slot of its own before the trailing one. A
                         pinned chat wears it all the time — it is the reason the
@@ -756,6 +816,15 @@ function PinIcon() {
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 17v5" />
       <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
     </svg>
   );
 }

@@ -42,6 +42,10 @@ describe("chatName", () => {
     expect(chatName(UNNAMED, [said("user", "why is this laggy?")])).toBe("why is this laggy?");
   });
 
+  it("keeps an explicitly chosen title even when it matches the placeholder", () => {
+    expect(chatName(UNNAMED, [said("user", "why is this laggy?")], true)).toBe(UNNAMED);
+  });
+
   it("leaves the placeholder alone when there is still nothing to name it after", () => {
     expect(chatName(UNNAMED, [said("assistant", "working…")])).toBe(UNNAMED);
     expect(chatName(undefined, [])).toBe(UNNAMED);

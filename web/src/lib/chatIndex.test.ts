@@ -5,11 +5,14 @@ import { bridge } from "./bridge";
 import {
   type IndexEntry,
   cancelIndexRemoval,
+  indexBackfill,
   indexBacklog,
   removeIndexEntry,
   resetIndexQueue,
   saveIndexEntry,
+  saveIndexEntries,
 } from "./chatIndex";
+import type { Conversation } from "./store";
 
 // The real one opens a socket the moment it is imported.
 vi.mock("./bridge", () => ({ bridge: { invoke: vi.fn(), onState: vi.fn() } }));
@@ -20,12 +23,23 @@ const entry = (id: string): IndexEntry => ({
   id,
   projectId: "p1",
   title: "a chat",
+  customTitle: false,
   sessionId: null,
   modelId: null,
   access: null,
   createdAt: 1,
   updatedAt: 2,
   pinned: false,
+});
+
+const conversation = (id: string, over: Partial<Conversation> = {}): Conversation => ({
+  id,
+  projectId: "p1",
+  title: `chat ${id}`,
+  messages: [],
+  createdAt: 1,
+  updatedAt: 2,
+  ...over,
 });
 
 /** A call the server never answers — a socket that closed with it in flight. */
@@ -123,5 +137,50 @@ describe("removing a chat from the index", () => {
 
     expect(indexBacklog()).toBe(0);
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("backfilling browser-only chats", () => {
+  it("offers unsynced chats missing from an established server index", () => {
+    expect(
+      indexBackfill(
+        [conversation("remote", { synced: true }), conversation("browser-only")],
+        [entry("remote")],
+        new Set(),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: "browser-only",
+        projectId: "p1",
+        title: "chat browser-only",
+      }),
+    ]);
+  });
+
+  it("does not resurrect deleted chats", () => {
+    expect(
+      indexBackfill(
+        [conversation("remote", { synced: true }), conversation("deleted")],
+        [entry("remote")],
+        new Set(["deleted"]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not copy a cache into an empty or newly switched profile", () => {
+    expect(indexBackfill([conversation("browser-only")], [], new Set())).toEqual([]);
+  });
+
+  it("sends a backfill batch once per chat", async () => {
+    invoke.mockResolvedValue(undefined);
+    saveIndexEntries([entry("c1"), entry("c2"), entry("c3")]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invoke).toHaveBeenCalledTimes(3);
+    expect(invoke.mock.calls.map((call) => call[1])).toEqual([
+      { meta: entry("c1") },
+      { meta: entry("c2") },
+      { meta: entry("c3") },
+    ]);
   });
 });

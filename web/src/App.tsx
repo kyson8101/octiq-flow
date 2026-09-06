@@ -58,8 +58,10 @@ import {
 } from "./lib/store";
 import {
   cancelIndexRemoval,
+  indexBackfill,
   removeIndexEntry,
   saveIndexEntry,
+  saveIndexEntries,
   type DeletedIndexEntry,
   type IndexEntry,
 } from "./lib/chatIndex";
@@ -986,6 +988,18 @@ export default function App() {
         const gravestones = new Set(
           buried.filter((d) => !superseded.has(d.id)).map((d) => d.id),
         );
+        // Chats from before the server index existed can still live only in
+        // the browser that made them. Once this page has seen a non-empty list
+        // from the active profile, offer every such unsynced row to the server
+        // so a second device can discover it too. Never offer a deletion — a
+        // stale browser cache must not be able to resurrect one.
+        const excluded = new Set([
+          ...serverDeleted,
+          ...gravestones,
+          ...leavingRef.current,
+          ...gone.current,
+        ]);
+        saveIndexEntries(indexBackfill(conversationsRef.current, answer, excluded));
         const remote = answer.filter(
           (row) => !serverDeleted.has(row.id) && !gravestones.has(row.id),
         );
@@ -1428,7 +1442,8 @@ export default function App() {
             // The name it already has, and only otherwise one from the
             // messages — see `chatName`. Re-deriving it every save renamed a
             // chat after a partial view of itself.
-            title: chatName(before?.title, s.messages),
+            title: chatName(before?.title, s.messages, before?.customTitle),
+            customTitle: before?.customTitle,
             sessionId: s.sessionId ?? before?.sessionId,
             messages: s.messages,
             modelId: info.modelId,
@@ -1460,6 +1475,7 @@ export default function App() {
             id: c.id,
             projectId: c.projectId,
             title: c.title,
+            customTitle: c.customTitle,
             sessionId: c.sessionId ?? null,
             modelId: c.modelId ?? null,
             access: c.permission ?? null,
@@ -2231,6 +2247,7 @@ export default function App() {
             id: held.id,
             projectId: held.projectId,
             title: held.title,
+            customTitle: held.customTitle,
             sessionId: held.sessionId ?? null,
             modelId: held.modelId ?? null,
             access: held.permission ?? null,
@@ -2330,6 +2347,7 @@ export default function App() {
       id: held.id,
       projectId: held.projectId,
       title: held.title,
+      customTitle: held.customTitle,
       sessionId: held.sessionId ?? null,
       modelId: held.modelId ?? null,
       access: held.permission ?? null,
@@ -2340,6 +2358,36 @@ export default function App() {
     });
     setConversations((prev) => {
       const list = prev.map((c) => (c.id === id ? { ...c, pinned } : c));
+      saveConversations(list);
+      return list;
+    });
+  }, []);
+
+  /** Give a chat a title chosen by the user. Like pinning, this is metadata,
+   *  so save it immediately rather than waiting for another message to make
+   *  the transcript-save effect run. */
+  const renameConversation = useCallback((id: string, value: string) => {
+    const held = conversationsRef.current.find((c) => c.id === id);
+    if (!held || !value.trim()) return;
+    const title = shortTitle(value);
+    if (held.title === title && held.customTitle) return;
+    const renamed = { ...held, title, customTitle: true };
+    saveIndexEntry({
+      id: renamed.id,
+      projectId: renamed.projectId,
+      title: renamed.title,
+      customTitle: true,
+      sessionId: renamed.sessionId ?? null,
+      modelId: renamed.modelId ?? null,
+      access: renamed.permission ?? null,
+      createdAt: renamed.createdAt,
+      updatedAt: renamed.updatedAt,
+      pinned: renamed.pinned ?? false,
+      generation: renamed.generation,
+    });
+    setConversations((prev) => {
+      // Preserve any transcript fields that landed in the same render batch.
+      const list = prev.map((c) => (c.id === id ? { ...c, title, customTitle: true } : c));
       saveConversations(list);
       return list;
     });
@@ -2558,6 +2606,7 @@ export default function App() {
         // A chat is named after the FIRST thing asked in it, so an existing one
         // keeps the name it already has.
         title: held?.title ?? shortTitle(text),
+        customTitle: held?.customTitle,
         sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
         modelId: choice.id,
         access,
@@ -3502,6 +3551,7 @@ export default function App() {
           onNewChat={newChat}
           onDelete={deleteConversation}
           onPin={togglePin}
+          onRename={renameConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
           onReorder={reorderWorkspaces}
