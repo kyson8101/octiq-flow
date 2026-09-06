@@ -1,4 +1,6 @@
-/** The two agents' marks, for the places a name would otherwise be spelled out.
+import type { Provider } from "../lib/agentProviders";
+
+/** The agents' marks, for the places a name would otherwise be spelled out.
  *
  *  Hand-drawn, not the official files. Both are recognisable at 14px — which is
  *  the whole point of using a mark instead of the word — but they are OUR
@@ -24,11 +26,11 @@ export function AgentLogo({
   agent,
   size = 14,
 }: {
-  agent: "claude" | "codex";
+  agent: Provider;
   /** Drawn square. Callers size it; the mark never picks its own. */
   size?: number;
 }) {
-  const name = agent === "claude" ? "Claude" : "Codex";
+  const name = agent === "claude" ? "Claude" : agent === "codex" ? "Codex" : "pi.dev";
   return (
     <svg
       className={`agent-logo is-${agent}`}
@@ -40,12 +42,21 @@ export function AgentLogo({
     >
       {agent === "claude" ? (
         <path d={CLAUDE} fill="currentColor" />
-      ) : (
+      ) : agent === "codex" ? (
         <g fill="none" stroke="currentColor" strokeWidth="2">
           {[0, 60, 120].map((deg) => (
             <rect key={deg} {...CODEX_BAR} transform={`rotate(${deg} 12 12)`} />
           ))}
         </g>
+      ) : (
+        <path
+          d="M4 7.5h16M8 7.5v11m8-11v8.8c0 1.8.8 2.7 2.4 2.7"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
       )}
     </svg>
   );

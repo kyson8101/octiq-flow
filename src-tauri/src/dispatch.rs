@@ -430,6 +430,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "before")?,
         )),
         "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
+        "chat_index_deleted" => Ok(json!(crate::agent_chat::chat_index_deleted())),
         // The agents' OWN past sessions, for the search that resumes one.
         "agent_history_list" => Ok(json!(crate::agent_history::agent_history_list(arg(
             &args, "limit"
@@ -444,7 +445,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "chat_index_remove" => unit(crate::agent_chat::chat_index_remove(
             arg(&args, "id")?,
             arg(&args, "key")?,
+            arg(&args, "expectedGeneration")?,
+            arg(&args, "meta")?,
         )),
+        "chat_index_restore" => to_value(crate::agent_chat::chat_index_restore(arg(&args, "id")?)),
         "chat_forget" => {
             crate::agent_chat::chat_forget(arg(&args, "key")?);
             Ok(Value::Null)

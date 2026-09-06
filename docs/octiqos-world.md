@@ -325,3 +325,66 @@ isolated browser flows at 320px, 390px, and 760px. Browser checks cover full-scr
 details, task direction, status filters, direct assignment, nested agent dialogs,
 meeting discussion, and desktop map/board navigation with no page errors. Browser
 commands use synthetic data, so validation does not dispatch live agent work.
+
+## Founder-directed role conversations
+
+New members start with an empty role prompt and description under an Unassigned
+profession. Project access remains an explicit, separate setting. In an agent
+profile, **Talk about role** opens a saved conversation with the agent itself or
+an org-local PM/Recruiter.
+
+**Discuss only** requests a response without permission to change the role.
+**Update role from this message** grants one request permission to automatically
+save a complete role description and prompt. Permission is carried by the
+request mode, never inferred from model output or earlier conversation text.
+The updated role is used by future task and meeting turns. Profession membership,
+project access and runtime permissions are not changed by role conversations.
+
+Requests persist as queued/generating/discussed/applied/failed/cancelled entries.
+They can be cancelled, survive reload, attribute token usage to the responding
+agent, and grant no task XP. Completion checks the request is still active and
+that the saved role has not changed since the request; a stale response cannot
+overwrite a subsequent founder edit. Discussion output cannot execute project
+actions, and prior update permission cannot be reused by a later message.
+
+Context consists of the target role, professional guidance, the helper's own
+role when applicable, the latest six completed exchanges for this target, and
+the current founder message. Project files, project contexts, memories and other
+agents' conversations are excluded. Backend tests cover consent, org boundaries,
+cancellation, stale writes, blank onboarding, malformed responses and bounded
+history. Browser fixture checks exercise self/PM updates, reload and cancellation.
+
+## Simple agent onboarding
+
+**Welcome a new member** asks only for an optional name. Leaving it empty assigns
+the first unused `Agent N` name within that org. **Join and talk about role**
+opens the new member's role conversation immediately, without sending a message
+or granting role-update permission. Provider, model, profession, prompt and avatar
+preferences are absent from the creation form.
+
+The backend defaults to a worker with blank instructions, a desk, and the starter
+avatar. It copies only provider/model from the org's PM, or another member if no
+PM exists, and falls back to Codex CLI's `default` model for an empty org. Explicit
+provider/model values remain supported for existing callers. API providers need
+a concrete model ID. No role, profession or project access is copied from another
+member, and avatar generation remains an explicit action.
+
+Project access appears as a collapsed summary with a Change control. An existing
+project filter can select that org's current project; otherwise new agents have
+no project access. Selecting individual projects or all current/future projects
+requires changing that setting. Role conversation works without project access.
+
+The profile's collapsed **Advanced settings** can change name, provider/model,
+workflow profession, member type and avatar preference. Workflow profession is
+separate from the individual role defined through conversation. Settings cannot
+alter prompts or project permissions. The backend rejects settings changes while
+the agent's response, role draft or avatar is pending, and rejects profession or
+member-type changes while unfinished assigned tasks exist. Failed validation
+does not partially update the agent. Existing profiles, scopes and role records
+remain compatible without a migration.
+
+Validation: 46 world backend tests and 17 world frontend tests passed; the web
+production build passed. Isolated browser checks cover 320/390/760px and desktop
+creation, blank names, immediate role chat, explicit role updates, persistent
+advanced settings and project selection. Browser checks use synthetic responses,
+with no live model calls or changes to the production world.

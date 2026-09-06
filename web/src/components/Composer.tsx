@@ -415,7 +415,7 @@ export function Composer({
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
   const [dismissedCommand, setDismissedCommand] = useState<string | null>(null);
-  // Every option list depends on which provider is chosen: the two agents do
+  // Every option list depends on which provider is chosen: the agents do
   // not offer the same access wording or the same effort levels.
   const provider = providerFor(choice.agent);
   const accessList = provider.access;

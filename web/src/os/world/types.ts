@@ -33,6 +33,7 @@ export type Agent = {
     startedAt: number;
   } | null;
   rolePrompt?: string;
+  roleDescription?: string;
   appearance: string;
   desk: number;
 };
@@ -143,16 +144,31 @@ export type World = {
   tasks: Task[];
   meetings: Meeting[];
   recruitmentDrafts?: RecruitmentDraft[];
+  roleRequests?: RoleRequest[];
   memories: Memory[];
   runs: Run[];
   usage: Usage[];
   xp: Xp[];
+};
+export type RoleRequest = {
+  id: string;
+  agentId: string;
+  authorId: string;
+  body: string;
+  mode: "discuss" | "update";
+  reply: string;
+  prompt: string;
+  description: string;
+  status: string;
+  error: string | null;
+  createdAt: number;
 };
 export type Stats = {
   agentId: string;
   active: number;
   discussing?: number;
   recruiting?: number;
+  roleSetup?: number;
   stopping: number;
   queued: number;
   inputTokens: number;

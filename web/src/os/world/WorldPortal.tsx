@@ -40,7 +40,11 @@ type Dialog = {
   projectId?: string;
   meetingId?: string;
 } | null;
-type Inspector = { kind: "agent" | "task" | "meeting"; id: string } | null;
+type Inspector = {
+  kind: "agent" | "task" | "meeting";
+  id: string;
+  talkAboutRole?: boolean;
+} | null;
 
 export function WorldPortal() {
   const mobile = useMedia("(max-width: 760px)");
@@ -128,7 +132,7 @@ export function WorldPortal() {
   const inspectCreated =
     (kind: "agent" | "task" | "meeting") => (id: string) => {
       setDialog(null);
-      setInspector({ kind, id });
+      setInspector({ kind, id, talkAboutRole: kind === "agent" });
     };
   const fromAgent = dialog?.agentId
     ? world?.agents.find((a) => a.id === dialog.agentId)
@@ -434,7 +438,7 @@ export function WorldPortal() {
                         return (
                           <button
                             key={a.id}
-                            className={`ow-desk ${stats?.active || stats?.discussing || stats?.recruiting ? "working" : ""}`}
+                            className={`ow-desk ${stats?.active || stats?.discussing || stats?.recruiting || stats?.roleSetup ? "working" : ""}`}
                             onClick={() =>
                               setInspector({ kind: "agent", id: a.id })
                             }
@@ -442,15 +446,17 @@ export function WorldPortal() {
                             <span className="ow-agent-bubble">
                               {stats?.active
                                 ? `${stats.active} active task${stats.active === 1 ? "" : "s"}`
-                                : stats?.recruiting
-                                  ? "Recruiting"
-                                  : stats?.discussing
-                                    ? "In meeting"
-                                    : stats?.stopping
-                                      ? "Stopping…"
-                                      : stats?.queued
-                                        ? `${stats.queued} queued`
-                                        : "Available"}
+                                : stats?.roleSetup
+                                  ? "Defining a role"
+                                  : stats?.recruiting
+                                    ? "Recruiting"
+                                    : stats?.discussing
+                                      ? "In meeting"
+                                      : stats?.stopping
+                                        ? "Stopping…"
+                                        : stats?.queued
+                                          ? `${stats.queued} queued`
+                                          : "Available"}
                             </span>
                             <div className="ow-desk-surface">
                               <span className="ow-monitor">
@@ -479,7 +485,7 @@ export function WorldPortal() {
                       >
                         <span>＋</span>
                         <strong>Welcome a new member</strong>
-                        <small>A profession, a personality, a desk.</small>
+                        <small>Join first. Shape the role together.</small>
                       </button>
                     </div>
                     <div className="ow-office-zones">
@@ -767,6 +773,7 @@ export function WorldPortal() {
               <AgentInspector
                 key={selectedAgent.id}
                 agent={selectedAgent}
+                initialTab={inspector.talkAboutRole ? "role" : "profile"}
                 snapshot={snapshot}
                 mutate={mutate}
                 busy={busy}
@@ -869,8 +876,10 @@ export function WorldPortal() {
           )}
           {dialog.kind === "agent" && orgId && (
             <AgentForm
+              key={orgId}
               world={world}
               orgId={orgId}
+              projectId={projectFilter}
               mutate={mutate}
               done={inspectCreated("agent")}
               busy={busy}

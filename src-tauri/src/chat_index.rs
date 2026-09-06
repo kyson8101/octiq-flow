@@ -23,6 +23,11 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+/// A deleted chat remains restorable for one day. The transcript is the
+/// valuable half; keeping its small index row beside it makes restore a single
+/// metadata change instead of a file move that can be interrupted halfway.
+pub const DELETED_CHAT_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// One chat, as the sidebar needs it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +54,18 @@ pub struct ChatMeta {
     /// exactly as it was written.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Soft-deleted chats stay in the index, but not in the active list. The
+    /// reaper removes this row and its transcript after `DELETED_CHAT_TTL_MS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<i64>,
+    /// Incremented on restore. A browser includes the generation it deleted,
+    /// so a delayed retry from before a restore cannot bury the chat again.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -144,7 +161,11 @@ fn write(index: &Index) -> Result<(), String> {
 /// Every chat, pinned ones first and then newest first — the order the sidebar
 /// shows them in.
 pub fn list() -> Vec<ChatMeta> {
-    let mut chats = read().chats;
+    let mut chats: Vec<_> = read()
+        .chats
+        .into_iter()
+        .filter(|chat| chat.deleted_at.is_none())
+        .collect();
     chats.sort_by(|a, b| {
         b.pinned
             .cmp(&a.pinned)
@@ -154,7 +175,7 @@ pub fn list() -> Vec<ChatMeta> {
 }
 
 /// Add a chat or update the one with this id.
-pub fn upsert(meta: ChatMeta) -> Result<(), String> {
+pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut index = match read_checked() {
         Ok(index) => index,
@@ -169,16 +190,159 @@ pub fn upsert(meta: ChatMeta) -> Result<(), String> {
         // you are reading.
         Some(existing) => {
             let created = existing.created_at;
+            let deleted_at = existing.deleted_at;
+            let generation = existing.generation;
             *existing = meta;
             existing.created_at = created;
+            // Only the lifecycle commands below may change these. In
+            // particular, a save already in flight when Delete was pressed
+            // must not resurrect the chat.
+            existing.deleted_at = deleted_at;
+            existing.generation = generation;
         }
-        None => index.chats.push(meta),
+        None => {
+            // A normal save cannot manufacture a deleted entry or choose its
+            // lifecycle generation. Those are server-owned facts.
+            meta.deleted_at = None;
+            meta.generation = 0;
+            index.chats.push(meta);
+        }
     }
     write(&index)
 }
 
+/// Put a chat in the one-day trash. Repeating the same request is idempotent:
+/// it does not restart the retention clock.
+pub fn trash(
+    id: &str,
+    expected_generation: Option<u64>,
+    fallback: Option<ChatMeta>,
+) -> Result<bool, String> {
+    trash_at(id, expected_generation, fallback, now_ms())
+}
+
+fn trash_at(
+    id: &str,
+    expected_generation: Option<u64>,
+    fallback: Option<ChatMeta>,
+    deleted_at: i64,
+) -> Result<bool, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    let chat = match index.chats.iter_mut().find(|chat| chat.id == id) {
+        Some(chat) => chat,
+        None => {
+            // A brand-new chat can be deleted before its first asynchronous
+            // index save is acknowledged. Keep the metadata carried by the
+            // delete, or there would be a transcript with no Trash row and no
+            // way to restore it.
+            let Some(mut chat) = fallback.filter(|chat| chat.id == id) else {
+                return Ok(false);
+            };
+            chat.deleted_at = Some(deleted_at);
+            chat.generation = expected_generation.unwrap_or(0);
+            index.chats.push(chat);
+            write(&index)?;
+            return Ok(true);
+        }
+    };
+    if expected_generation.is_some_and(|generation| generation != chat.generation) {
+        return Ok(false);
+    }
+    if chat.deleted_at.is_some() {
+        return Ok(false);
+    }
+    chat.deleted_at = Some(deleted_at);
+    write(&index)?;
+    Ok(true)
+}
+
+/// Chats still inside their restore window, newest deletion first.
+pub fn deleted() -> Vec<ChatMeta> {
+    deleted_at(now_ms())
+}
+
+fn deleted_at(now: i64) -> Vec<ChatMeta> {
+    let mut chats: Vec<_> = read()
+        .chats
+        .into_iter()
+        .filter(|chat| {
+            chat.deleted_at
+                .is_some_and(|deleted_at| !has_expired(deleted_at, now))
+        })
+        .collect();
+    chats.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+    chats
+}
+
+/// Bring a chat back while it is still inside the restore window.
+pub fn restore(id: &str) -> Result<Option<ChatMeta>, String> {
+    restore_at(id, now_ms())
+}
+
+fn restore_at(id: &str, now: i64) -> Result<Option<ChatMeta>, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    let Some(chat) = index.chats.iter_mut().find(|chat| chat.id == id) else {
+        return Ok(None);
+    };
+    let Some(deleted_at) = chat.deleted_at else {
+        return Ok(Some(chat.clone()));
+    };
+    if has_expired(deleted_at, now) {
+        return Ok(None);
+    }
+    chat.deleted_at = None;
+    chat.generation = chat.generation.saturating_add(1);
+    let restored = chat.clone();
+    write(&index)?;
+    Ok(Some(restored))
+}
+
+/// Permanently remove every chat whose one-day restore window has elapsed.
+/// The transcript goes first because the empty-index safety guard deliberately
+/// preserves an orphan when it cannot prove whether the index was lost. Once
+/// the deadline has passed, an expired row left by a failed index write is
+/// hidden and retried safely; it is no longer restorable either way.
+pub fn purge_expired() -> Result<Vec<String>, String> {
+    purge_expired_at(now_ms())
+}
+
+fn purge_expired_at(now: i64) -> Result<Vec<String>, String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "the chat index could not be read".to_string())?;
+    let expired: Vec<String> = index
+        .chats
+        .iter()
+        .filter(|chat| chat.deleted_at.is_some_and(|at| has_expired(at, now)))
+        .map(|chat| chat.id.clone())
+        .collect();
+    if expired.is_empty() {
+        return Ok(expired);
+    }
+    let expired_set: std::collections::HashSet<_> = expired.iter().cloned().collect();
+    index.chats.retain(|chat| !expired_set.contains(&chat.id));
+    for id in &expired {
+        crate::transcript::forget(&format!("chat:{id}"));
+    }
+    write(&index)?;
+    Ok(expired)
+}
+
+fn has_expired(deleted_at: i64, now: i64) -> bool {
+    now.saturating_sub(deleted_at) >= DELETED_CHAT_TTL_MS
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 /// Forget a chat. Its transcript is removed separately — this is only the
 /// entry in the list.
+#[cfg(test)]
 pub fn remove(id: &str) -> Result<(), String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // An index we cannot read is not a list to delete one entry from. Refuse,
@@ -228,6 +392,16 @@ fn may_delete_orphans(known: usize, transcripts: usize) -> bool {
 
 /// Returns how many transcripts were removed.
 pub fn reconcile() -> usize {
+    match purge_expired() {
+        Ok(expired) if !expired.is_empty() => {
+            println!(
+                "[chats] permanently removed {} expired chat(s)",
+                expired.len()
+            );
+        }
+        Err(why) => eprintln!("[chats] could not purge expired chats: {why}"),
+        _ => {}
+    }
     let Ok(index) = read_checked() else {
         eprintln!("[chats] index unreadable; leaving every transcript alone");
         return 0;
@@ -292,6 +466,8 @@ pub fn reconcile() -> usize {
 mod tests {
     use super::*;
 
+    static LIFECYCLE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn meta(id: &str, created: i64) -> ChatMeta {
         ChatMeta {
             id: id.into(),
@@ -303,6 +479,8 @@ mod tests {
             created_at: created,
             updated_at: created,
             pinned: false,
+            deleted_at: None,
+            generation: 0,
         }
     }
 
@@ -384,6 +562,77 @@ mod tests {
         // And an unpinned one is written without the field, so the file stays
         // exactly what it was before pins existed.
         assert!(!serde_json::to_string(&meta).unwrap().contains("pinned"));
+        assert!(meta.deleted_at.is_none());
+        assert_eq!(meta.generation, 0);
+    }
+
+    #[test]
+    fn trash_keeps_a_chat_restorable_then_purges_it_after_one_day() {
+        let _serial = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id = "test-index-trash-lifecycle";
+        let key = format!("chat:{id}");
+        let base = now_ms();
+        cleanup(&[id]);
+        crate::transcript::forget(&key);
+        upsert(meta(id, 100)).unwrap();
+        crate::transcript::append(&key, &serde_json::json!({ "kept": true }));
+
+        assert!(trash_at(id, Some(0), None, base).unwrap());
+        assert!(!list().iter().any(|chat| chat.id == id));
+        assert!(deleted_at(base + 1).iter().any(|chat| chat.id == id));
+        assert!(!crate::transcript::since(&key, 0).is_empty());
+
+        // A stale save can update metadata, but cannot clear the server-owned
+        // deletion marker and put the row back in the active list.
+        let mut stale = meta(id, 999);
+        stale.title = "late save".into();
+        upsert(stale).unwrap();
+        assert!(!list().iter().any(|chat| chat.id == id));
+
+        // Strictly before the deadline, both halves are still recoverable.
+        assert!(purge_expired_at(base + DELETED_CHAT_TTL_MS - 1)
+            .unwrap()
+            .is_empty());
+        let restored = restore_at(id, base + DELETED_CHAT_TTL_MS - 1)
+            .unwrap()
+            .expect("the chat is still restorable");
+        assert_eq!(restored.generation, 1);
+        assert!(restored.deleted_at.is_none());
+        assert!(!crate::transcript::since(&key, 0).is_empty());
+
+        // A delayed retry of the delete from generation zero cannot bury the
+        // newly restored generation.
+        assert!(!trash_at(id, Some(0), None, base + DELETED_CHAT_TTL_MS).unwrap());
+        assert!(list().iter().any(|chat| chat.id == id));
+
+        // Delete the restored generation, then cross the one-day boundary.
+        let deleted_again = base + DELETED_CHAT_TTL_MS;
+        assert!(trash_at(id, Some(1), None, deleted_again).unwrap());
+        let expired = purge_expired_at(deleted_again + DELETED_CHAT_TTL_MS).unwrap();
+        assert_eq!(expired, vec![id.to_string()]);
+        assert!(!deleted_at(deleted_again + DELETED_CHAT_TTL_MS)
+            .iter()
+            .any(|chat| chat.id == id));
+        assert!(crate::transcript::since(&key, 0).is_empty());
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn deleting_before_the_first_save_still_creates_a_restorable_trash_row() {
+        let _serial = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id = "test-index-trash-before-save";
+        let base = now_ms();
+        cleanup(&[id]);
+
+        assert!(trash_at(id, Some(0), Some(meta(id, 100)), base).unwrap());
+        assert!(!list().iter().any(|chat| chat.id == id));
+        assert!(deleted_at(base + 1).iter().any(|chat| chat.id == id));
+
+        cleanup(&[id]);
     }
 
     #[test]

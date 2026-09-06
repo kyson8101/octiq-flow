@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { bridge } from "../../lib/bridge";
 import { Field, ScopeFields, Select, Submit, formValues } from "./Forms";
 import { RoleEditor } from "./RoleEditor";
+import { RoleChat } from "./RoleChat";
+import { AgentSettings } from "./AgentSettings";
 import {
   allowed,
   formatTokens,
@@ -134,6 +136,7 @@ export function AgentInspector({
   task,
   meeting,
   hire,
+  initialTab = "profile",
 }: {
   agent: Agent;
   snapshot: Snapshot;
@@ -142,6 +145,7 @@ export function AgentInspector({
   task: () => void;
   meeting: () => void;
   hire?: () => void;
+  initialTab?: "profile" | "role";
 }) {
   const { world } = snapshot;
   const stats = snapshot.stats.find((s) => s.agentId === agent.id);
@@ -149,10 +153,18 @@ export function AgentInspector({
     world.projects.find((p) => allowed(agent, p))?.id ?? "",
   );
   const [all, setAll] = useState(agent.allProjects);
-  const [tab, setTab] = useState("profile");
+  const [tab, setTab] = useState(initialTab as string);
   const [generating, setGenerating] = useState(false);
   const [rolePrompt, setRolePrompt] = useState(agent.rolePrompt ?? "");
   const [roleSaved, setRoleSaved] = useState(false);
+  const previousRole = useRef(agent.rolePrompt ?? "");
+  useEffect(() => {
+    const before = previousRole.current;
+    const next = agent.rolePrompt ?? "";
+    setRolePrompt((current) => (current === before ? next : current));
+    previousRole.current = next;
+    setRoleSaved(false);
+  }, [agent.rolePrompt]);
   const profession = world.professions.find((p) => p.id === agent.professionId);
   const memories = world.memories.filter(
     (m) =>
@@ -169,10 +181,7 @@ export function AgentInspector({
             LEVEL {stats?.level ?? 1} · {agent.kind}
           </span>
           <h3>{agent.name}</h3>
-          <p>
-            {profession?.name} · {agent.provider}
-          </p>
-          <small>{agent.model}</small>
+          <p>{profession?.name}</p>
         </div>
       </div>
       <div className="ow-xp">
@@ -203,6 +212,9 @@ export function AgentInspector({
       {!!stats?.recruiting && (
         <p className="ow-muted">Preparing an agent role.</p>
       )}
+      {!!stats?.roleSetup && (
+        <p className="ow-muted">Responding to a role conversation.</p>
+      )}
       {!!stats?.discussing && (
         <p className="ow-muted">In a discussion-only meeting.</p>
       )}
@@ -221,6 +233,7 @@ export function AgentInspector({
           Give task
         </button>
         <button onClick={meeting}>Invite to meeting</button>
+        <button onClick={() => setTab("role")}>Talk about role</button>
         {hire && ["pm", "recruiter"].includes(profession?.kind ?? "") && (
           <button onClick={hire}>Hire a teammate</button>
         )}
@@ -238,8 +251,17 @@ export function AgentInspector({
       </nav>
       {tab === "profile" && (
         <>
-          <h4>Professional guidance</h4>
-          <p className="ow-prose">{profession?.guidance}</p>
+          <h4>Role description</h4>
+          <p className="ow-prose">
+            {agent.roleDescription ||
+              "Not defined yet. Talk about this role to shape the agent's responsibilities."}
+          </p>
+          {profession?.guidance && (
+            <>
+              <h4>Professional guidance</h4>
+              <p className="ow-prose">{profession.guidance}</p>
+            </>
+          )}
           <p className="ow-note">
             {agent.allProjects
               ? "Works across all projects in this org."
@@ -249,7 +271,7 @@ export function AgentInspector({
           <h4>Avatar</h4>
           <p>
             {agent.appearance ||
-              "Add your favorite character description when registering an agent."}
+              "Your starter avatar is ready. You can describe a favorite character in Advanced settings."}
           </p>
           <button
             disabled={
@@ -282,48 +304,65 @@ export function AgentInspector({
           {!snapshot.providers.image && (
             <small className="ow-muted">Image provider is not connected.</small>
           )}
-        </>
-      )}
-      {tab === "role" && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void mutate("update_role_prompt", {
-              agentId: agent.id,
-              rolePrompt,
-            })
-              .then(() => setRoleSaved(true))
-              .catch(() => {});
-          }}
-        >
-          <RoleEditor
+          <AgentSettings
+            agent={agent}
             world={world}
-            orgId={agent.orgId}
-            professionId={agent.professionId}
-            targetAgentId={agent.id}
-            value={rolePrompt}
-            onChange={setRolePrompt}
             mutate={mutate}
             busy={busy}
           />
-          <Submit
-            busy={
-              busy ||
-              (world.recruitmentDrafts ?? []).some(
-                (d) =>
-                  d.targetAgentId === agent.id &&
-                  ["queued", "generating"].includes(d.status),
-              )
-            }
-          >
-            Save role prompt
-          </Submit>
-          {roleSaved && (
-            <p role="status">
-              Role prompt saved. New task and meeting turns will use it.
-            </p>
-          )}
-        </form>
+        </>
+      )}
+      {tab === "role" && (
+        <>
+          <RoleChat agent={agent} world={world} mutate={mutate} busy={busy} />
+          <details className="ow-role-manual">
+            <summary>Edit prompt manually or use Recruiter drafts</summary>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void mutate("update_role_prompt", {
+                  agentId: agent.id,
+                  rolePrompt,
+                })
+                  .then(() => setRoleSaved(true))
+                  .catch(() => {});
+              }}
+            >
+              <RoleEditor
+                world={world}
+                orgId={agent.orgId}
+                professionId={agent.professionId}
+                targetAgentId={agent.id}
+                value={rolePrompt}
+                onChange={setRolePrompt}
+                mutate={mutate}
+                busy={busy}
+              />
+              <Submit
+                busy={
+                  busy ||
+                  (world.roleRequests ?? []).some(
+                    (r) =>
+                      r.agentId === agent.id &&
+                      ["queued", "generating"].includes(r.status),
+                  ) ||
+                  (world.recruitmentDrafts ?? []).some(
+                    (d) =>
+                      d.targetAgentId === agent.id &&
+                      ["queued", "generating"].includes(d.status),
+                  )
+                }
+              >
+                Save role prompt
+              </Submit>
+              {roleSaved && (
+                <p role="status">
+                  Role prompt saved. New task and meeting turns will use it.
+                </p>
+              )}
+            </form>
+          </details>
+        </>
       )}
       {tab === "memory" && (
         <>

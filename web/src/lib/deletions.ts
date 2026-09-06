@@ -19,6 +19,8 @@
 // was told to forget. A delete made on the phone reaches the laptop the way it
 // always did, through the server's list.
 
+import type { IndexEntry } from "./chatIndex";
+
 const KEY = "octiq.v2.deletedChats";
 
 /** How long a tombstone is kept.
@@ -41,6 +43,12 @@ export type Deletion = {
   key: string;
   /** When it was deleted. */
   at: number;
+  /** The server lifecycle generation that was deleted. A later generation was
+   *  restored after this tombstone and therefore wins over it. */
+  generation?: number;
+  /** Metadata carried with a delete that may beat this chat's first index
+   *  save. It lets the backend create a restorable Trash row on retry. */
+  meta?: IndexEntry;
 };
 
 /** Read once, then kept here. Storage can be blocked outright — a private
@@ -55,7 +63,11 @@ function read(): Deletion[] {
     cache = Array.isArray(raw)
       ? raw.filter(
           (d) =>
-            d && typeof d.id === "string" && typeof d.key === "string" && typeof d.at === "number",
+            d &&
+            typeof d.id === "string" &&
+            typeof d.key === "string" &&
+            typeof d.at === "number" &&
+            (d.generation === undefined || typeof d.generation === "number"),
         )
       : [];
   } catch {
@@ -85,9 +97,21 @@ function pruned(list: Deletion[], now: number): Deletion[] {
 
 /** Write a chat off. Called when the delete is COMMITTED — not when the row
  *  disappears, which is still undoable for a few seconds. */
-export function markDeleted(id: string, key: string, now = Date.now()): void {
+export function markDeleted(
+  id: string,
+  key: string,
+  now = Date.now(),
+  generation = 0,
+  meta?: IndexEntry,
+): void {
   const list = pruned(read(), now).filter((d) => d.id !== id);
-  list.push({ id, key, at: now });
+  list.push({
+    id,
+    key,
+    at: now,
+    ...(generation ? { generation } : {}),
+    ...(meta ? { meta } : {}),
+  });
   write(pruned(list, now));
 }
 
@@ -111,9 +135,9 @@ export function deletedIds(now = Date.now()): Set<string> {
   return new Set(listDeletions(now).map((d) => d.id));
 }
 
-/** Let a tombstone go. Nothing in the app asks for a deleted chat back today;
- *  this exists so that the record of a delete is never the thing that makes one
- *  impossible to undo. */
+/** Let a tombstone go after an explicit restore, or after the server reports a
+ *  newer restored generation. The record of a delete must never be the thing
+ *  that makes recovery impossible. */
 export function forgetDeletion(id: string): void {
   const list = read();
   if (!list.some((d) => d.id === id)) return;

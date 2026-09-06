@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
 import type { ComposerStyle } from "../lib/agentProviders";
 
-/** The little robots — one per model, ten of them.
+/** The little robots — one per model presentation, built from ten base bodies.
  *
  *  They are drawn rather than shipped as pictures, for the same reasons
  *  `AgentLogo` is: the office cast in `assets/agents/` are megabyte PNGs of
@@ -15,15 +15,16 @@ import type { ComposerStyle } from "../lib/agentProviders";
  *  rather than as something alive. The eye is a character; the eye is not a
  *  spinner.
  *
- *  ## Why ten
+ *  ## Why ten base bodies
  *
  *  A model is already a visual voice here — `ComposerStyle` gives each one its
  *  accent and the composer wears it. The robot is that same fact said as a
  *  face, which is the one form of it you can recognise without reading: you
  *  learn what Haiku looks like once and then you know, mid-turn, from the
  *  corner of your eye, which model is doing the work. So the SILHOUETTES
- *  differ, not just the paint — a recolour of one body would be ten robots
- *  that are all the same robot, and the colour is already carrying that.
+ *  differ, not just the paint. Pi deliberately reuses the matching Codex body,
+ *  because it is the same underlying model, and adds a small `P` provider mark
+ *  at bottom-left so the harness remains visible.
  *
  *  Every variant keeps the same part names (`mascot-head`, `mascot-eye`,
  *  `mascot-lamp`, …) so one stylesheet dresses and animates all ten, and
@@ -48,9 +49,34 @@ import type { ComposerStyle } from "../lib/agentProviders";
  *  moving, which is the change actually worth noticing. */
 export type MascotMood = "still" | "think" | "work";
 
-/** The ten drawings. Keyed by `ComposerStyle` so adding a model means drawing
- *  its robot in the same breath as choosing its colour — a model that skipped
- *  one would not compile. */
+type CodexRobot = "astra" | "sol" | "terra" | "luna" | "codex";
+
+/** A provider mark over the base model drawing. It is geometry rather than an
+ * SVG font glyph so the `P` stays crisp and predictable at the 18px raster. */
+function PiBadge() {
+  return (
+    <g className="mascot-provider-badge" data-provider-mark="pi">
+      <rect x="0.7" y="16.7" width="7" height="6.6" rx="2" />
+      <path d="M2.8 21.8v-3.6h1.7c1.8 0 1.8 2.3 0 2.3H2.8" />
+    </g>
+  );
+}
+
+/** Draw a Codex model through Pi: identical body, provider badge added last so
+ * it sits visibly over the bottom-left corner. `ROBOTS` is initialized before
+ * any component invokes this function. */
+function PiRobot({ base }: { base: CodexRobot }) {
+  const Draw = ROBOTS[base];
+  return (
+    <>
+      <Draw />
+      <PiBadge />
+    </>
+  );
+}
+
+/** Ten base drawings plus five Pi-badged Codex variants. Keyed by
+ * `ComposerStyle` so a model that skips its visual cannot compile. */
 const ROBOTS: Record<ComposerStyle, () => ReactElement> = {
   /* ---- Claude ------------------------------------------------------- */
 
@@ -211,6 +237,14 @@ const ROBOTS: Record<ComposerStyle, () => ReactElement> = {
       <path className="mascot-grin" d="M10.5 17h3v1h-3Z" />
     </>
   ),
+
+  /* ---- pi.dev with OpenAI Codex ----------------------------------- */
+
+  "pi-astra": () => <PiRobot base="astra" />,
+  "pi-sol": () => <PiRobot base="sol" />,
+  "pi-terra": () => <PiRobot base="terra" />,
+  "pi-luna": () => <PiRobot base="luna" />,
+  pi: () => <PiRobot base="codex" />,
 };
 
 export function Mascot({
@@ -220,7 +254,7 @@ export function Mascot({
   mood = "work",
   asleep = false,
 }: {
-  /** Which of the ten to draw — the chosen model's `composerStyle`. Defaults
+  /** Which model presentation to draw — the chosen model's `composerStyle`. Defaults
    *  to Sonnet's, the shape this drawing started as, so a caller that has no
    *  model in hand still gets a robot rather than nothing. */
   robot?: ComposerStyle;

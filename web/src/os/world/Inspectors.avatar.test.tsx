@@ -20,7 +20,7 @@ const agent: Agent = {
   desk: 0,
 };
 const snapshot = {
-  world: { projects: [], professions: [], memories: [] },
+  world: { projects: [], professions: [], memories: [], runs: [] },
   stats: [],
   providers: { image: true, higgsfield: true },
 } as unknown as Snapshot;

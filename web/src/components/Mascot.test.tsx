@@ -44,9 +44,9 @@ describe("Mascot", () => {
     expect(drawn).not.toContain("is-alert");
   });
 
-  /** The whole of the per-model idea: the drawing that reaches the page has to
-   *  differ, not merely its colour. A recolour of one body would pass every
-   *  other test in this file and be ten robots that are all the same robot. */
+  /** The drawing that reaches the page has to identify the complete choice.
+   * Pi variants may share Codex geometry, but their provider badge keeps the
+   * resulting presentation distinct. */
   it("draws a different robot for every model", () => {
     const bodies = MODELS.map((m) => {
       const svg = renderToStaticMarkup(<Mascot robot={m.composerStyle} />);
@@ -57,9 +57,21 @@ describe("Mascot", () => {
     expect(new Set(bodies).size).toBe(MODELS.length);
   });
 
-  /** Ten drawings, and every one of them still a face: two blinking eyes, a
-   *  head to put them in, and the lamp that means the turn is alive. It is easy
-   *  to add an eleventh robot that is a lovely shape and animates nothing. */
+  it("uses the same Codex robot with a P at bottom-left for Pi", () => {
+    const codex = renderToStaticMarkup(<Mascot robot="terra" />);
+    const pi = renderToStaticMarkup(<Mascot robot="pi-terra" />);
+    const badgeAt = pi.indexOf('<g class="mascot-provider-badge"');
+
+    expect(badgeAt).toBeGreaterThan(0);
+    expect(pi).toContain('data-provider-mark="pi"');
+    expect(pi.slice(0, badgeAt).replace('data-robot="pi-terra"', 'data-robot="terra"')).toBe(
+      codex.slice(0, codex.indexOf("</g></svg>")),
+    );
+  });
+
+  /** Every presentation is still a face: two blinking eyes, a head to put them
+   *  in, and the lamp that means the turn is alive. It is easy to add another
+   *  lovely shape that animates nothing. */
   it("gives every robot the parts the stylesheet animates", () => {
     for (const m of MODELS) {
       const svg = renderToStaticMarkup(<Mascot robot={m.composerStyle} />);

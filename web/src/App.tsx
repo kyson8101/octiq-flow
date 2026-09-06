@@ -56,7 +56,13 @@ import {
   shortTitle,
   type Conversation,
 } from "./lib/store";
-import { removeIndexEntry, saveIndexEntry } from "./lib/chatIndex";
+import {
+  cancelIndexRemoval,
+  removeIndexEntry,
+  saveIndexEntry,
+  type DeletedIndexEntry,
+  type IndexEntry,
+} from "./lib/chatIndex";
 import { recall, remember } from "./lib/remember";
 import { forgetChatPlace } from "./lib/chatPlace";
 import {
@@ -64,7 +70,13 @@ import {
   failureDismissed,
   forgetDismissedFailure,
 } from "./lib/failureDismiss";
-import { deletedIds, isDeleted, listDeletions, markDeleted } from "./lib/deletions";
+import {
+  deletedIds,
+  forgetDeletion,
+  isDeleted,
+  listDeletions,
+  markDeleted,
+} from "./lib/deletions";
 import {
   focusNow,
   isOn as notifyIsOn,
@@ -110,6 +122,7 @@ import { isUnder, readSession, replaySession, type HistorySession } from "./lib/
 import { Sidebar, type Project } from "./components/Sidebar";
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
+import { DeletedChats } from "./components/DeletedChats";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
@@ -132,8 +145,6 @@ import { queuedMessageCount } from "./lib/recovery";
 import { AttentionInbox } from "./components/AttentionInbox";
 import { useAttentionInbox } from "./lib/useAttentionInbox";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
-import { isWorkspaceBusy } from "./lib/workspaceContext";
-import { ConversationOverview } from "./components/ConversationOverview";
 import { RollingNumber } from "./components/RollingNumber";
 import { projectSlug } from "./lib/projectSlug";
 
@@ -322,6 +333,8 @@ export default function App() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [shelved, setShelved] = useState<Workspace[]>([]);
   const [shelfOpen, setShelfOpen] = useState(false);
+  const [deletedChats, setDeletedChats] = useState<DeletedIndexEntry[]>([]);
+  const [trashOpen, setTrashOpen] = useState(false);
   /** Which agent CLIs this machine has. Asked once on arrival: it decides what
    *  the model picker may offer, so it is not only the Agents page's business. */
   const [agents, setAgents] = useState<AgentInstall[]>([]);
@@ -913,21 +926,35 @@ export default function App() {
   // The browser's own chats are now kept, and the next save re-offers them to
   // the index.
   const refreshIndex = useCallback(() => {
-    bridge
-      .invoke<
-        {
-          id: string;
-          projectId: string;
-          title: string;
-          sessionId?: string;
-          modelId?: string;
-          access?: string;
-          createdAt: number;
-          updatedAt: number;
-          pinned?: boolean;
-        }[]
-      >("chat_index_list")
-      .then((answer) => {
+    // Trash is a second view of the same server-side index. Read both views as
+    // one refresh so a row found in Trash can never be folded back in from an
+    // active-list reply that raced the delete.
+    Promise.all([
+      bridge.invoke<IndexEntry[]>("chat_index_list"),
+      bridge.invoke<DeletedIndexEntry[]>("chat_index_deleted"),
+    ])
+      .then(([answer, deleted]) => {
+        const buriedOnServer = deleted ?? [];
+        setDeletedChats(buriedOnServer);
+        const serverDeleted = new Set(buriedOnServer.map((chat) => chat.id));
+        // Unlike an empty active list, an explicit Trash row is authoritative.
+        // This matters when the last remaining chat was deleted on another
+        // device: the active answer is empty, but it is not "no news".
+        for (const c of conversationsRef.current) {
+          if (serverDeleted.has(c.id) && !leavingRef.current.has(c.id)) {
+            forgetLocally(c.id);
+          }
+        }
+        if (serverDeleted.size > 0) {
+          setConversations((local) => {
+            const list = local.filter(
+              (chat) => !serverDeleted.has(chat.id) || leavingRef.current.has(chat.id),
+            );
+            if (list.length === local.length) return local;
+            saveConversations(list);
+            return list;
+          });
+        }
         // An EMPTY answer is not news, it is the absence of news. `index.json`
         // missing, unreadable, or belonging to a profile that was switched all
         // read back as zero chats, and treating that as the truth would wipe
@@ -940,11 +967,28 @@ export default function App() {
         // restarted under it — so it is sent again here rather than shown as a
         // chat. This is the compare the whole deletion list exists for.
         const buried = listDeletions();
+        const superseded = new Set<string>();
         for (const d of buried) {
-          if (answer.some((r) => r.id === d.id)) removeIndexEntry(d.id, d.key);
+          const row = answer.find((candidate) => candidate.id === d.id);
+          if (!row) continue;
+          // A restore increments the server-owned generation. It outranks a
+          // tombstone left in another browser and cancels any retry that browser
+          // still had queued for the older delete.
+          if ((row.generation ?? 0) > (d.generation ?? 0)) {
+            superseded.add(d.id);
+            forgetDeletion(d.id);
+            cancelIndexRemoval(d.id);
+            gone.current.delete(d.id);
+          } else {
+            removeIndexEntry(d.id, d.key, d.generation ?? 0, d.meta);
+          }
         }
-        const gravestones = new Set(buried.map((d) => d.id));
-        const remote = gravestones.size ? answer.filter((r) => !gravestones.has(r.id)) : answer;
+        const gravestones = new Set(
+          buried.filter((d) => !superseded.has(d.id)).map((d) => d.id),
+        );
+        const remote = answer.filter(
+          (row) => !serverDeleted.has(row.id) && !gravestones.has(row.id),
+        );
         // Every chat the server still lists is one this browser has deleted:
         // nothing to fold in, and an empty list here means the same as an empty
         // answer above — no news.
@@ -962,11 +1006,20 @@ export default function App() {
         // pushed back into the server's index. The delete undid itself, and the
         // chat was back in the sidebar every time it was thrown away.
         const known = new Set(remote.map((r) => r.id));
+        // A row explicitly present in the active list is not gone anymore. A
+        // local tombstone was filtered above; this clears only server-side
+        // restores observed by a browser that did not initiate the delete.
+        for (const row of remote) gone.current.delete(row.id);
         for (const c of conversationsRef.current) {
           // A local delete has already committed, but its sidebar row gets a
           // brief collapse before React unmounts it. Do not let the index
           // answer cut that visual transition short.
-          if (c.synced && !known.has(c.id) && !leavingRef.current.has(c.id)) {
+          if (
+            c.synced &&
+            !known.has(c.id) &&
+            !serverDeleted.has(c.id) &&
+            !leavingRef.current.has(c.id)
+          ) {
             forgetLocally(c.id);
           }
         }
@@ -1413,6 +1466,7 @@ export default function App() {
             createdAt: c.createdAt,
             updatedAt: c.updatedAt,
             pinned: c.pinned ?? false,
+            generation: c.generation,
           });
         }
         return list;
@@ -2169,9 +2223,26 @@ export default function App() {
       // server does with the message — and that survives the reload, which is
       // what stops a cached row and a stale index entry from handing the chat
       // back tomorrow.
-      markDeleted(id, keyFor(id));
-      // The record on the server goes as well — the point of deleting a chat is
-      // that it is gone, not that it is hidden on this device. Through
+      const held = conversationsRef.current.find((chat) => chat.id === id);
+      const deletedAt = Date.now();
+      const generation = held?.generation ?? 0;
+      const trashEntry: IndexEntry | undefined = held
+        ? {
+            id: held.id,
+            projectId: held.projectId,
+            title: held.title,
+            sessionId: held.sessionId ?? null,
+            modelId: held.modelId ?? null,
+            access: held.permission ?? null,
+            createdAt: held.createdAt,
+            updatedAt: held.updatedAt,
+            pinned: held.pinned ?? false,
+            generation,
+          }
+        : undefined;
+      markDeleted(id, keyFor(id), deletedAt, generation, trashEntry);
+      // The record on the server is marked too — the point of deleting a chat
+      // is that it leaves every device, not only this browser. Through
       // `removeIndexEntry`, which supersedes any unsent save for this chat and
       // keeps trying: a removal sent once and forgotten is a delete that can
       // quietly not happen.
@@ -2181,11 +2252,11 @@ export default function App() {
       // row before its height has had a chance to animate to zero.
       leavingRef.current.add(id);
       setLeaving((prev) => new Set(prev).add(id));
-      // Drop the transcript and remember the tombstone now, not after the
-      // animation. The row is only lingering for layout; the chat is already
-      // gone as far as saves and a reload are concerned.
+      // Drop this browser's transcript copy and remember the tombstone now,
+      // not after the animation. The server transcript stays in Trash for its
+      // restore window; the row is only lingering here for layout.
       forgetLocally(id);
-      removeIndexEntry(id, keyFor(id));
+      removeIndexEntry(id, keyFor(id), generation, trashEntry);
       // The room goes with the chat. Everyone in it is ended and the record
       // dropped; leaving it would hold a room, and every process in it, for the
       // life of the server on behalf of a conversation that no longer exists.
@@ -2265,9 +2336,40 @@ export default function App() {
       createdAt: held.createdAt,
       updatedAt: held.updatedAt,
       pinned,
+      generation: held.generation,
     });
     setConversations((prev) => {
       const list = prev.map((c) => (c.id === id ? { ...c, pinned } : c));
+      saveConversations(list);
+      return list;
+    });
+  }, []);
+
+  /** Clear the server-side deletion marker and rebuild only the sidebar row.
+   *  The transcript stays on the server throughout and is replayed normally
+   *  when the restored chat is opened. */
+  const restoreDeletedChat = useCallback(async (deleted: DeletedIndexEntry) => {
+    cancelIndexRemoval(deleted.id);
+    const restored = await bridge.invoke<IndexEntry | null>("chat_index_restore", {
+      id: deleted.id,
+    });
+    if (!restored) throw new Error("This chat has passed its 24-hour restore window.");
+
+    forgetDeletion(deleted.id);
+    gone.current.delete(deleted.id);
+    setDeletedChats((prev) => prev.filter((chat) => chat.id !== deleted.id));
+    setConversations((prev) => {
+      const cached = prev.find((chat) => chat.id === restored.id);
+      const conversation: Conversation = {
+        ...restored,
+        sessionId: restored.sessionId ?? undefined,
+        modelId: restored.modelId ?? undefined,
+        permission: restored.access ?? cached?.permission,
+        messages: cached?.messages ?? [],
+        seq: cached?.seq,
+        synced: true,
+      };
+      const list = [conversation, ...prev.filter((chat) => chat.id !== restored.id)];
       saveConversations(list);
       return list;
     });
@@ -2462,6 +2564,7 @@ export default function App() {
         createdAt: held?.createdAt ?? startedAt,
         updatedAt: startedAt,
         pinned: held?.pinned ?? false,
+        generation: held?.generation,
       });
 
       const fail = (err: unknown) =>
@@ -3114,20 +3217,9 @@ export default function App() {
   ), [conversations, deleting, leaving]);
   const attention = useAttentionInbox({
     conversations: visibleConversations, projects: allProjects, chats, running,
-    liveKnown, connected: conn === "open", currentConversationId: mode === "chat" ? conversationId : null,
+    liveKnown, connected: conn === "open",
     asks, questions, safetyBlocks, activeRounds, interruptedIds,
   });
-  const workspacePeers = useMemo(() => visibleConversations.map((c) => ({
-    id: c.id, title: c.title, cwd: chats[c.id]?.cwd,
-    busy: isWorkspaceBusy(c.id, chats[c.id], running, activeRounds.has(c.id)),
-    live: someoneWorking({ id: c.id, running, round: activeRounds.has(c.id) }),
-  })), [visibleConversations, chats, activeRounds, running]);
-  const currentBlocker = conversationId && conn === "open" && liveKnown
-    ? asks[conversationId]?.length ? "Permission requested"
-      : questions[conversationId]?.[0]?.question
-        || safetyBlocks[conversationId]?.[0]?.title
-        || undefined
-    : undefined;
 
   if (conn === "unauthorized") return <Connect />;
 
@@ -3262,7 +3354,6 @@ export default function App() {
             control.focus({ preventScroll: true });
           });
         }}
-        onDismissCompletion={attention.dismissCompletion}
       />
 
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
@@ -3380,7 +3471,7 @@ export default function App() {
         <div className="topbar-center">{wide && viewSwitch}</div>
 
         <div className="topbar-actions">
-          {wide ? topbarActions : <TopbarActionsMenu>{topbarActions}</TopbarActionsMenu>}
+          {wide ? topbarActions : <TopbarActionsMenu attentionCount={attention.entries.length}>{topbarActions}</TopbarActionsMenu>}
         </div>
       </header>
 
@@ -3395,6 +3486,8 @@ export default function App() {
           projects={workspaces}
           shelved={shelved}
           onShowShelved={() => setShelfOpen(true)}
+          deletedCount={deletedChats.length}
+          onShowDeleted={() => setTrashOpen(true)}
           conversations={grouped}
           currentProject={projectId}
           currentConversation={conversationId}
@@ -3419,20 +3512,6 @@ export default function App() {
         />
 
         <main className="main" hidden={mode !== "chat"} ref={pane}>
-          {conversationId && chat.messages.length > 0 && (
-            <ConversationOverview
-              key={conversationId}
-              chatId={conversationId}
-              chat={chat}
-              fallbackPath={project?.primary_path}
-              connected={conn === "open"}
-              liveKnown={liveKnown}
-              interrupted={cutOff}
-              blocker={currentBlocker}
-              peers={workspacePeers}
-              onOpenGit={() => showGit(true)}
-            />
-          )}
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
@@ -3774,6 +3853,15 @@ export default function App() {
           projects={shelved}
           onRestored={loadWorkspaces}
           onClose={() => setShelfOpen(false)}
+        />
+      )}
+
+      {trashOpen && (
+        <DeletedChats
+          chats={deletedChats}
+          projects={[...workspaces, ...shelved]}
+          onRestore={restoreDeletedChat}
+          onClose={() => setTrashOpen(false)}
         />
       )}
 

@@ -5,9 +5,12 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
  * mounted only while the menu is open, so polling controls still exist once. */
 export function TopbarActionsMenu({
   children,
+  attentionCount = 0,
   initiallyOpen = false,
 }: {
   children: ReactNode;
+  /** Actionable events stay visible even while the phone menu is closed. */
+  attentionCount?: number;
   /** Static-render seam for the menu's structure test. */
   initiallyOpen?: boolean;
 }) {
@@ -40,7 +43,9 @@ export function TopbarActionsMenu({
         ref={trigger}
         className="icon-btn mobile-actions-trigger"
         type="button"
-        aria-label="Chat actions"
+        aria-label={attentionCount > 0
+          ? `Chat actions, ${attentionCount} ${attentionCount === 1 ? "item needs" : "items need"} attention`
+          : "Chat actions"}
         aria-expanded={open}
         aria-controls={panelId}
         title="Chat actions"
@@ -57,6 +62,7 @@ export function TopbarActionsMenu({
           <circle cx="12" cy="12" r="1.7" />
           <circle cx="19" cy="12" r="1.7" />
         </svg>
+        {attentionCount > 0 && <span className="mobile-actions-attention" aria-hidden="true">{attentionCount}</span>}
       </button>
 
       {open && (

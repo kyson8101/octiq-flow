@@ -1561,6 +1561,45 @@
     font-size: 10px;
   }
 }
+.ow-role-current {
+  padding: 14px;
+  margin: 16px 0;
+  border: 1px solid var(--ow-line);
+  border-radius: 8px;
+}
+.ow-role-chat .ow-transcript {
+  max-height: 40dvh;
+  overflow: auto;
+}
+.ow-role-chat .ow-transcript article {
+  margin-bottom: 10px;
+}
+.ow-role-manual,
+.ow-agent-settings,
+.ow-onboarding-scope {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ow-line);
+}
+.ow-role-manual > summary,
+.ow-agent-settings > summary,
+.ow-onboarding-scope > summary {
+  cursor: pointer;
+  min-height: 44px;
+}
+.ow-role-chat .ow-actions {
+  flex-wrap: wrap;
+}
+.ow-onboarding-scope > summary {
+  overflow-wrap: anywhere;
+}
+.ow-onboarding-scope > summary small {
+  margin-left: 12px;
+  color: var(--ow-muted);
+}
+.ow-role-chat .ow-actions button {
+  flex: 1;
+}
 .ow-mobile-work {
   max-width: 760px;
   margin: 0 auto;

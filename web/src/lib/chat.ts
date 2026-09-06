@@ -42,6 +42,7 @@ import {
   sameCommand,
 } from "./skillRun";
 import { readCodexEvent } from "./codexEvents";
+import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
 import { readCarryOn } from "./carryOn";
@@ -493,7 +494,7 @@ const IMAGE_NOTE = /\[Image:[^\]]*\]/g;
  *  report it as a wall of prose with links in it. It is not a bug and there is
  *  nothing to debug — the answer is "wait, or buy more" — so it gets said
  *  plainly instead of being dropped into the notices with everything else. */
-export function describeFailure(agent: "claude" | "codex", raw: string): Failure {
+export function describeFailure(agent: "claude" | "codex" | "pi", raw: string): Failure {
   const text = raw.trim();
   const outOfCredit =
     /usage limit|session limit|weekly limit|out of credits|quota|rate.?limit|purchase more credits|upgrade to pro/i.test(
@@ -509,7 +510,7 @@ export function describeFailure(agent: "claude" | "codex", raw: string): Failure
       /resets\s+([^.·]+)/i.exec(text)?.[1]?.trim();
     return {
       title:
-        agent === "codex"
+        agent === "codex" || agent === "pi"
           ? "Your Codex account is out of credits"
           : "You have hit your Claude usage limit",
       detail: when ? `It comes back at ${when}.` : text,
@@ -951,6 +952,11 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // therefore dropped every word it ever said.
   const fromCodex = readCodexEvent(e);
   if (fromCodex) return foldCodex(state, fromCodex, parent, speaker);
+
+  // pi.dev has a third JSON vocabulary. It is read separately even when its
+  // selected upstream model is Codex: Pi owns the session and tool protocol.
+  const fromPi = readPiEvent(e);
+  if (fromPi) return foldPi(state, fromPi, e, parent, speaker, now);
 
   if (type === "system") {
     const subtype = asStr(e.subtype);
@@ -1717,6 +1723,157 @@ function foldCodex(
       },
     ],
   }));
+}
+
+/** Pi's JSON stream folded into the same message and tool shapes as the other
+ * runtimes. Pi may be carrying a Codex model, but its event names, session id,
+ * usage block and tool lifecycle are its own. */
+function foldPi(
+  state: ChatState,
+  read: PiRead,
+  event: Json,
+  parent: string | undefined,
+  speaker: Speaker | undefined,
+  now: number,
+): ChatState {
+  if (read.kind === "session") {
+    if (parent || speaker) return state;
+    return { ...state, sessionId: read.id, cwd: read.cwd || state.cwd };
+  }
+
+  if (read.kind === "turn") return codexTurnStarted(state, event, parent, speaker, now);
+
+  if (read.kind === "delta") {
+    return withCodexCurrent(state, parent, speaker, (message) => ({
+      ...message,
+      blocks: appendText(message.blocks, read.block, read.text),
+    }));
+  }
+
+  if (read.kind === "tool") {
+    const key = `pi:${speaker?.id ?? "host"}:${read.id}`;
+    const open = state.messages.some((message) =>
+      message.blocks.some(
+        (block) => block.kind === "tool" && block.id === key && block.state === "running",
+      ),
+    );
+    if (open) {
+      return {
+        ...state,
+        messages: state.messages.map((message) => ({
+          ...message,
+          blocks: message.blocks.map((block) =>
+            block.kind === "tool" && block.id === key && block.state === "running"
+              ? {
+                  ...block,
+                  name: read.name || block.name,
+                  args: read.args ?? block.args,
+                  argsJson: JSON.stringify(read.args ?? block.args ?? {}),
+                  state: read.state,
+                  ...(read.result !== undefined ? { result: read.result } : {}),
+                  ...(read.details !== undefined ? { details: read.details } : {}),
+                }
+              : block,
+          ),
+        })),
+      };
+    }
+    return withCodexCurrent(state, parent, speaker, (message) => ({
+      ...message,
+      blocks: [
+        ...message.blocks,
+        {
+          kind: "tool",
+          id: key,
+          name: read.name,
+          args: read.args,
+          argsJson: JSON.stringify(read.args ?? {}),
+          state: read.state,
+          ...(read.result !== undefined ? { result: read.result } : {}),
+          ...(read.details !== undefined ? { details: read.details } : {}),
+        },
+      ],
+    }));
+  }
+
+  if (read.kind === "message") {
+    const blocks = read.content.map((content): Block => piBlock(content, speaker));
+    const idx = state.messages
+      .map((message) =>
+        message.streaming && message.parent === parent && message.speaker?.id === speaker?.id,
+      )
+      .lastIndexOf(true);
+    let messages = state.messages;
+    if (idx >= 0) {
+      const next = [...messages];
+      const current = next[idx];
+      const fresh = blocks.filter((block) => !current.blocks.some((had) => sameBlock(had, block)));
+      next[idx] = {
+        ...current,
+        blocks: fresh.length ? [...current.blocks, ...fresh] : current.blocks,
+        streaming: false,
+      };
+      messages = next;
+    } else if (blocks.length) {
+      messages = [
+        ...messages,
+        {
+          id: `m${messages.length}`,
+          role: "assistant",
+          blocks,
+          streaming: false,
+          parent,
+          speaker,
+        },
+      ];
+    }
+
+    const used = !parent && !speaker ? piContextFrom(read.usage) : undefined;
+    const next: ChatState = {
+      ...state,
+      messages,
+      ...(used ? { contextTokens: used } : {}),
+      ...(!parent && !speaker && read.model ? { model: read.model } : {}),
+      ...(read.error
+        ? { ...turnOver, busy: false, stopping: false, failure: describeFailure("pi", read.error) }
+        : {}),
+    };
+    if (!read.aborted) return next;
+    const stopped = messages[idx >= 0 ? idx : messages.length - 1];
+    return { ...next, ...turnOver, busy: false, stopping: false, stoppedAt: stopped?.id };
+  }
+
+  // `agent_end` is Pi's full stop. As with Codex, end only this writer when it
+  // belongs to a room seat; the host's full stop ends the visible turn.
+  const mine = !speaker && !parent;
+  return {
+    ...state,
+    ...(mine ? { ...turnOver, busy: false, stopping: false } : {}),
+    messages: state.messages.map((message) =>
+      message.streaming && message.parent === parent && message.speaker?.id === speaker?.id
+        ? { ...message, streaming: false, blocks: message.blocks.map(stopIfRunning) }
+        : message,
+    ),
+  };
+}
+
+function piBlock(content: PiContent, speaker: Speaker | undefined): Block {
+  if (content.kind === "text" || content.kind === "thinking") return content;
+  return {
+    kind: "tool",
+    id: `pi:${speaker?.id ?? "host"}:${content.id}`,
+    name: content.name,
+    args: content.args,
+    argsJson: JSON.stringify(content.args ?? {}),
+    state: "running",
+  };
+}
+
+function piContextFrom(raw: Record<string, unknown>): number | undefined {
+  const amount = (value: unknown) => (typeof value === "number" && value >= 0 ? value : 0);
+  const total =
+    amount(raw.input) + amount(raw.cacheRead) + amount(raw.cacheWrite) + amount(raw.output);
+  return total > 0 ? total : undefined;
 }
 
 /** A host turn Codex has not accepted yet.

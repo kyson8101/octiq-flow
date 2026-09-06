@@ -1,9 +1,9 @@
 //! The contract between OctiqFlow's chat runtime and the CLI agents it starts.
 //!
 //! A chat is deliberately provider-agnostic: it has a selected `AgentKind`, a
-//! model, a prompt, folders, and an access level. Claude Code and Codex turn
-//! that shared request into very different processes, however. Claude keeps a
-//! JSON conversation on stdin; Codex starts one `exec --json` process per turn.
+//! model, a prompt, folders, and an access level. Claude Code, Codex, and Pi
+//! turn that shared request into different processes, however. Claude keeps a
+//! JSON conversation on stdin; Codex and Pi start one JSON process per turn.
 //! Claude has a control channel; Codex puts its sandbox and approval policy on
 //! the command line. Keeping those distinctions in the chat manager spread
 //! provider checks through session startup, input, completion, and settings.
@@ -28,17 +28,19 @@ use serde_json::{json, Value};
 pub enum AgentKind {
     Claude,
     Codex,
+    Pi,
 }
 
 impl AgentKind {
     /// The order everywhere an agent picker or probe presents providers.
-    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Pi];
 
     /// Stable lower-case id used in JSON, session records, and command probes.
     pub const fn id(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Pi => "pi",
         }
     }
 
@@ -227,15 +229,18 @@ pub trait AgentProvider: Send + Sync {
 
 struct ClaudeProvider;
 struct CodexProvider;
+struct PiProvider;
 
 static CLAUDE: ClaudeProvider = ClaudeProvider;
 static CODEX: CodexProvider = CodexProvider;
+static PI: PiProvider = PiProvider;
 
 /// The sole factory for agent-specific behavior.
 pub fn provider_for(kind: AgentKind) -> &'static dyn AgentProvider {
     match kind {
         AgentKind::Claude => &CLAUDE,
         AgentKind::Codex => &CODEX,
+        AgentKind::Pi => &PI,
     }
 }
 
@@ -682,6 +687,118 @@ impl AgentProvider for CodexProvider {
     }
 }
 
+impl AgentProvider for PiProvider {
+    fn kind(&self) -> AgentKind {
+        AgentKind::Pi
+    }
+
+    fn display_name(&self) -> &'static str {
+        "pi.dev"
+    }
+
+    fn bin(&self) -> &'static str {
+        "pi"
+    }
+
+    fn capabilities(&self) -> AgentCapabilities {
+        AgentCapabilities {
+            // JSON mode is intentionally one process per turn. Pi persists the
+            // session itself, and `--session` continues it on the next launch.
+            input: InputTransport::CommandLine,
+            supports_live_access_change: false,
+            supports_lite_mode: false,
+            uses_octiq_mcp: false,
+        }
+    }
+
+    fn effort(&self, requested: &str) -> Option<&'static str> {
+        match requested {
+            "minimal" => Some("minimal"),
+            "low" => Some("low"),
+            "medium" => Some("medium"),
+            "high" => Some("high"),
+            "xhigh" => Some("xhigh"),
+            "max" => Some("max"),
+            _ => None,
+        }
+    }
+
+    fn build_command(&self, request: &AgentCommand<'_>) -> String {
+        let mut cmd = String::from("pi --mode json --provider openai-codex");
+        if let Some(id) = request.resume.and_then(safe_session_id) {
+            cmd.push_str(&format!(" --session {}", sh_quote(&id)));
+        }
+        if let Some(model) = request.model.and_then(safe_model) {
+            cmd.push_str(&format!(" --model {}", sh_quote(&model)));
+        }
+        if let Some(effort) = request.effort.and_then(|e| self.effort(e)) {
+            cmd.push_str(&format!(" --thinking {effort}"));
+        }
+
+        // Pi's non-interactive modes do not have a permission prompt. Keep the
+        // safe choice genuinely read-only by exposing only its read tools;
+        // every other access value explicitly opts into the complete built-in
+        // tool set. The UI offers only Read-only and Full access for Pi.
+        match request.access.unwrap_or(Access::Read) {
+            Access::Read => cmd.push_str(" --tools read,grep,find,ls"),
+            _ => cmd.push_str(" --tools read,bash,edit,write,grep,find,ls"),
+        }
+
+        cmd.push_str(" --");
+        for path in request.images {
+            cmd.push(' ');
+            cmd.push_str(&sh_quote(&format!("@{path}")));
+        }
+        let prompt = if request.prompt.trim().is_empty() && !request.images.is_empty() {
+            "Please inspect the attached image."
+        } else {
+            request.prompt
+        };
+        if !prompt.is_empty() {
+            cmd.push(' ');
+            cmd.push_str(&sh_quote(prompt));
+        }
+        cmd
+    }
+
+    fn observe_event<'a>(&self, event: &'a Value) -> AgentEvent<'a> {
+        let mut observed = AgentEvent::default();
+        match event.get("type").and_then(Value::as_str) {
+            Some("session") => {
+                observed.session_id = event.get("id").and_then(Value::as_str);
+            }
+            Some("message_end") => {
+                let message = event.get("message");
+                if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant")
+                {
+                    observed.spoken_text = message
+                        .and_then(|m| m.get("content"))
+                        .and_then(Value::as_array)
+                        .and_then(|content| {
+                            content.iter().rev().find_map(|block| {
+                                (block.get("type").and_then(Value::as_str) == Some("text"))
+                                    .then(|| block.get("text").and_then(Value::as_str))
+                                    .flatten()
+                            })
+                        });
+                }
+            }
+            Some("agent_settled") => {
+                observed.turn_finished = true;
+            }
+            Some("agent_end") if event.get("willRetry").is_none() => {
+                // Pi 0.85+ follows `agent_end` with `agent_settled`, after any
+                // awaited listeners and retry decision have completed. Older
+                // JSON streams had no `willRetry` field or settled event, so
+                // their bare `agent_end` remains the compatibility full stop.
+                observed.turn_finished = true;
+            }
+            _ => {}
+        }
+        observed
+    }
+}
+
 /// Tool failures are already returned to Codex as structured tool output. The
 /// router's stderr trace is therefore duplicate recovery detail, not a chat
 /// failure. A genuine process/turn failure is emitted separately and remains
@@ -798,6 +915,11 @@ mod tests {
         assert_eq!(codex.kind(), AgentKind::Codex);
         assert_eq!(codex.display_name(), "Codex");
         assert_eq!(codex.capabilities().input, InputTransport::CommandLine);
+
+        let pi = provider_for(AgentKind::Pi);
+        assert_eq!(pi.kind(), AgentKind::Pi);
+        assert_eq!(pi.display_name(), "pi.dev");
+        assert_eq!(pi.capabilities().input, InputTransport::CommandLine);
     }
 
     /// The common runtime conformance harness. A new provider is registered in
@@ -848,6 +970,36 @@ mod tests {
         assert!(codex.contains("mcp_servers.octiq.command=\"node\""));
         assert!(codex.contains("mcp_servers.octiq.args=[\"octiq-ask.cjs\"]"));
         assert!(!codex.contains("--permission-mode"));
+
+        let pi = command(AgentKind::Pi, Some(Path::new("octiq-ask.json")));
+        assert!(pi.starts_with("pi --mode json --provider openai-codex"));
+        assert!(pi.contains("--model 'model-x'"));
+        assert!(pi.contains("--thinking high"));
+        assert!(pi.contains("--tools read,bash,edit,write,grep,find,ls"));
+        assert!(!pi.contains("octiq-ask"));
+    }
+
+    #[test]
+    fn pi_uses_codex_upstream_and_keeps_read_only_strict() {
+        let pi = provider_for(AgentKind::Pi).build_command(&AgentCommand {
+            model: Some("gpt-5.6-terra"),
+            access: Some(Access::Read),
+            prompt: "inspect it",
+            resume: Some("pi-session-123"),
+            extra_dirs: &[],
+            effort: Some("minimal"),
+            images: &["/tmp/screen shot.png".into()],
+            lite: false,
+            mcp_config: None,
+        });
+
+        assert!(pi.starts_with("pi --mode json --provider openai-codex"));
+        assert!(pi.contains("--session 'pi-session-123'"));
+        assert!(pi.contains("--model 'gpt-5.6-terra'"));
+        assert!(pi.contains("--thinking minimal"));
+        assert!(pi.contains("--tools read,grep,find,ls"));
+        assert!(!pi.contains("bash,edit,write"));
+        assert!(pi.ends_with("'@/tmp/screen shot.png' 'inspect it'"));
     }
 
     #[test]
@@ -871,5 +1023,34 @@ mod tests {
         });
         let completed = provider_for(AgentKind::Codex).observe_event(&completed_event);
         assert!(completed.turn_finished);
+
+        let pi_session = json!({ "type": "session", "id": "pi-session" });
+        let opened = provider_for(AgentKind::Pi).observe_event(&pi_session);
+        assert_eq!(opened.session_id, Some("pi-session"));
+        let pi_message = json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "done through Pi" }]
+            }
+        });
+        let carried = provider_for(AgentKind::Pi).observe_event(&pi_message);
+        assert_eq!(carried.spoken_text, Some("done through Pi"));
+        let pi_end = json!({ "type": "agent_end", "willRetry": false });
+        assert!(
+            !provider_for(AgentKind::Pi)
+                .observe_event(&pi_end)
+                .turn_finished
+        );
+        let pi_settled = json!({ "type": "agent_settled" });
+        let pi_completed = provider_for(AgentKind::Pi).observe_event(&pi_settled);
+        assert!(pi_completed.turn_finished);
+
+        let legacy_end = json!({ "type": "agent_end" });
+        assert!(
+            provider_for(AgentKind::Pi)
+                .observe_event(&legacy_end)
+                .turn_finished
+        );
     }
 }

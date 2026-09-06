@@ -70,6 +70,12 @@ describe("the deletion list", () => {
     expect(listDeletions()).toHaveLength(1);
   });
 
+  it("remembers which restored generation was deleted", () => {
+    markDeleted("c1", "chat:c1", NOW, 4);
+
+    expect(listDeletions()[0].generation).toBe(4);
+  });
+
   it("forgets a tombstone once it is old enough that the delete has surely landed", () => {
     markDeleted("old", "chat:old", NOW - DELETION_TTL_MS - 1);
     markDeleted("new", "chat:new");

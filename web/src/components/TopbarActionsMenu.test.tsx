@@ -18,4 +18,13 @@ describe("the phone top-bar action menu", () => {
     expect(open).toContain('role="group"');
     expect(open).toContain("Settings");
   });
+
+  it("keeps actionable attention visible while the menu is closed", () => {
+    const html = renderToStaticMarkup(
+      <TopbarActionsMenu attentionCount={2}><button type="button">Settings</button></TopbarActionsMenu>,
+    );
+    expect(html).toContain('aria-label="Chat actions, 2 items need attention"');
+    expect(html).toContain('class="mobile-actions-attention"');
+    expect(html).toContain(">2</span>");
+  });
 });

@@ -412,6 +412,23 @@ body {
   color: var(--fg-0);
 }
 
+.mobile-actions-attention {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border: 2px solid var(--bg-0);
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--bg-0);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 11px;
+  text-align: center;
+}
+
 .mobile-actions-panel {
   position: absolute;
   z-index: 90;
@@ -745,6 +762,14 @@ body {
 
 .shelf-card.is-done .shelf-card-act {
   color: var(--fg-3);
+}
+
+.trash-card-meta {
+  font-size: 11px;
+  color: var(--fg-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ---- Agents page --------------------------------------------------------
@@ -2949,7 +2974,8 @@ body {
    below it had already taken gold, green and blue. The CLI default is a quiet
    steel-blue so it remains distinct without pretending to know which named
    model the CLI chose. */
-.composer[data-composer-style="astra"] {
+.composer[data-composer-style="astra"],
+.composer[data-composer-style="pi-astra"] {
   --composer-accent: #d76bf0;
   --composer-on-accent: #1d0a24;
   --composer-glow-x: 34%;
@@ -2957,7 +2983,8 @@ body {
   --composer-sheen-angle: 108deg;
 }
 
-.composer[data-composer-style="sol"] {
+.composer[data-composer-style="sol"],
+.composer[data-composer-style="pi-sol"] {
   --composer-accent: #f1b84b;
   --composer-on-accent: #211807;
   --composer-glow-x: 18%;
@@ -2965,7 +2992,8 @@ body {
   --composer-sheen-angle: 132deg;
 }
 
-.composer[data-composer-style="terra"] {
+.composer[data-composer-style="terra"],
+.composer[data-composer-style="pi-terra"] {
   --composer-accent: #78c892;
   --composer-on-accent: #0a1d10;
   --composer-glow-x: 50%;
@@ -2973,7 +3001,8 @@ body {
   --composer-sheen-angle: 96deg;
 }
 
-.composer[data-composer-style="luna"] {
+.composer[data-composer-style="luna"],
+.composer[data-composer-style="pi-luna"] {
   --composer-accent: #84a9ff;
   --composer-on-accent: #0c1528;
   --composer-glow-x: 84%;
@@ -2981,7 +3010,8 @@ body {
   --composer-sheen-angle: 58deg;
 }
 
-.composer[data-composer-style="codex"] {
+.composer[data-composer-style="codex"],
+.composer[data-composer-style="pi"] {
   --composer-accent: #8eb3c3;
   --composer-on-accent: #0d191e;
   --composer-glow-x: 76%;
@@ -3099,7 +3129,8 @@ body {
 }
 
 /* ---- The mascots -------------------------------------------------------
-   Ten small robots, one per model. One sits at the head of the status line
+   Ten base robots, one per model family. Pi reuses the Codex bodies with a
+   small provider badge. One sits at the head of the status line
    while a turn is in flight; the same one stands still on the idle prompt box,
    and every tile in the model menu draws its own. A step brighter than the
    words after it (`--fg-2` against the row's `--fg-3`), because it is the face
@@ -3107,7 +3138,7 @@ body {
 
    Two customs hold this section together. Every robot's lit parts take
    `--robot-accent`, set once per `data-robot` below so the drawing carries its
-   model's colour ANYWHERE — the menu draws ten of them side by side, each
+   model's colour ANYWHERE — the menu draws several side by side, each
    needing its own, which inheriting the composer's one could never do. And
    every dance is `var(--dance)` at `var(--dance-beat)`, so the mood only has to
    scale two numbers rather than restate nine animations. */
@@ -3150,7 +3181,7 @@ body {
   animation: none;
 }
 
-/* ---- The ten, and their colours ---------------------------------------
+/* ---- The base robots, Pi variants, and their colours ------------------
    The same palette the composer wears (`--composer-accent`), restated here
    rather than inherited: a tile in the model menu draws a robot that is NOT
    the chosen model, and inheriting would paint all ten in the current one. */
@@ -3184,34 +3215,55 @@ body {
   --dance-beat: 2.7s;
 }
 
-.mascot[data-robot="astra"] {
+.mascot[data-robot="astra"],
+.mascot[data-robot="pi-astra"] {
   --robot-accent: #d76bf0;
   --dance: mascot-shimmer;
   --dance-beat: 2.6s;
 }
 
-.mascot[data-robot="sol"] {
+.mascot[data-robot="sol"],
+.mascot[data-robot="pi-sol"] {
   --robot-accent: #f1b84b;
   --dance: mascot-flare;
   --dance-beat: 2s;
 }
 
-.mascot[data-robot="terra"] {
+.mascot[data-robot="terra"],
+.mascot[data-robot="pi-terra"] {
   --robot-accent: #78c892;
   --dance: mascot-waddle;
   --dance-beat: 1.9s;
 }
 
-.mascot[data-robot="luna"] {
+.mascot[data-robot="luna"],
+.mascot[data-robot="pi-luna"] {
   --robot-accent: #84a9ff;
   --dance: mascot-drift;
   --dance-beat: 4.4s;
 }
 
-.mascot[data-robot="codex"] {
+.mascot[data-robot="codex"],
+.mascot[data-robot="pi"] {
   --robot-accent: #8eb3c3;
   --dance: mascot-scan;
   --dance-beat: 2.2s;
+}
+
+/* Pi is a harness around the same Codex model, not a new character. Its badge
+   is deliberately small and anchored over the bottom-left of that same body. */
+.mascot-provider-badge rect {
+  fill: color-mix(in srgb, var(--bg-1) 88%, var(--robot-accent));
+  stroke: var(--robot-accent);
+  stroke-width: 1;
+}
+
+.mascot-provider-badge path {
+  fill: none;
+  stroke: var(--robot-accent);
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* One rule for ten heads — a rect, a circle, an octagon and a shield among
@@ -4986,8 +5038,8 @@ body.is-ultra .eff {
   gap: 8px;
 }
 
-/* A segmented control, not two more rows: there are exactly two agents, and
-   they are a choice BETWEEN, not a list of. */
+/* A segmented control, not more picker rows: the agents are a choice BETWEEN,
+   not a settings list. */
 .mp-tabs {
   display: flex;
   gap: 2px;

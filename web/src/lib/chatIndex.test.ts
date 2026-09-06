@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridge } from "./bridge";
 import {
   type IndexEntry,
+  cancelIndexRemoval,
   indexBacklog,
   removeIndexEntry,
   resetIndexQueue,
@@ -46,7 +47,12 @@ describe("removing a chat from the index", () => {
     removeIndexEntry("c1", "chat:c1");
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(invoke).toHaveBeenCalledWith("chat_index_remove", { id: "c1", key: "chat:c1" });
+    expect(invoke).toHaveBeenCalledWith("chat_index_remove", {
+      id: "c1",
+      key: "chat:c1",
+      expectedGeneration: 0,
+      meta: null,
+    });
     expect(indexBacklog()).toBe(0);
   });
 
@@ -105,5 +111,17 @@ describe("removing a chat from the index", () => {
 
     for (const call of invoke.mock.calls) expect(call[0]).toBe("chat_index_remove");
     expect(indexBacklog()).toBe(1);
+  });
+
+  it("stops retrying when a newer restored generation supersedes the delete", async () => {
+    invoke.mockReturnValue(unanswered());
+    removeIndexEntry("c1", "chat:c1", 3);
+    await vi.advanceTimersByTimeAsync(0);
+
+    cancelIndexRemoval("c1");
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(indexBacklog()).toBe(0);
+    expect(invoke).toHaveBeenCalledTimes(1);
   });
 });

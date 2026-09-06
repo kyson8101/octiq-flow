@@ -2,7 +2,7 @@
 
 An agent workflow orchestrator. octiq-flow is a headless Rust server plus a
 browser client that runs **real terminals in a web page** and lets you **drive
-interactive CLI agents (Claude Code, Codex) from UI buttons**.
+interactive CLI agents (Claude Code, Codex, pi.dev) from UI buttons**.
 
 Agents can also read another OctiqFlow conversation from a supplied browser URL
 through the bundled [`read_conversation` MCP tool](docs/conversation-mcp.md).
@@ -40,8 +40,9 @@ back out through `bus.rs` to every attached browser.
 ## What it does
 
 - **Projects.** A project groups several folders, each with its own terminals.
-- **Agents.** Launch Claude or Codex in one click. Agents run as a JSON stream
-  rather than a TUI, so the chat view can render tool calls as cards.
+- **Agents.** Launch Claude, Codex, or pi.dev in one click. pi.dev can use the
+  same OpenAI Codex models through a ChatGPT Plus/Pro login. Agents run as a
+  JSON stream rather than a TUI, so the chat view can render tool calls as cards.
 - **Chat transcripts.** Conversations are saved and can be reopened or resumed.
 - **Attention alerts.** A terminal that needs you raises an alert. Agents that
   emit no escape codes can call the bundled `octiq-notify` CLI (see

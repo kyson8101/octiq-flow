@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 OctiqFlow is an **agent workflow orchestrator**: a headless Rust server plus a
 browser client that runs **real terminals in a web page** and lets you **drive
-interactive CLI agents (Claude Code, Codex) from UI buttons**. The core trick: a
+interactive CLI agents (Claude Code, Codex, pi.dev) from UI buttons**. The core trick: a
 UI action sends `pty_write` over the socket, Rust writes those bytes to a PTY's
 stdin, and the shell/agent reads them as if typed. PTY output streams back as
 `pty-output` events and renders in xterm.js.

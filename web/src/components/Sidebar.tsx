@@ -48,6 +48,8 @@ export function Sidebar({
   projects,
   shelved,
   onShowShelved,
+  deletedCount = 0,
+  onShowDeleted,
   conversations,
   currentProject,
   currentConversation,
@@ -77,6 +79,10 @@ export function Sidebar({
   shelved: Project[];
   /** Opens the modal that lists them, which is the only way back. */
   onShowShelved: () => void;
+  /** Chats inside their one-day restore window. */
+  deletedCount?: number;
+  /** Opens the Trash panel. */
+  onShowDeleted?: () => void;
   conversations: Map<string, Conversation[]>;
   currentProject: string | null;
   currentConversation: string | null;
@@ -196,6 +202,18 @@ export function Sidebar({
           >
             <ArchiveIcon />
             <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
+          </button>
+        )}
+        {deletedCount > 0 && onShowDeleted && (
+          <button
+            className="sidebar-add"
+            type="button"
+            title={`Deleted chats (${deletedCount})`}
+            aria-label={`Deleted chats (${deletedCount})`}
+            onClick={onShowDeleted}
+          >
+            <TrashIcon />
+            <span className="sidebar-utility-count"><RollingNumber value={deletedCount} /></span>
           </button>
         )}
         {/* Last, against the edge that goes away. The way back is the project
@@ -709,6 +727,17 @@ function ArchiveIcon() {
       <path d="M6 7v12h12V7" />
       <path d="M3 4h18v3H3z" />
       <path d="M10 11h4" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="m6 6 1 14h10l1-14" />
+      <path d="M10 10v6M14 10v6" />
     </svg>
   );
 }

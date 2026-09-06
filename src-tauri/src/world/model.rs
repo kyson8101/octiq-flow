@@ -30,6 +30,7 @@ pub struct World {
     pub tasks: Vec<Task>,
     pub meetings: Vec<Meeting>,
     pub recruitment_drafts: Vec<RecruitmentDraft>,
+    pub role_requests: Vec<super::role_chat::RoleRequest>,
     pub memories: Vec<Memory>,
     pub runs: Vec<Run>,
     pub usage: Vec<Usage>,
@@ -85,6 +86,8 @@ pub struct Agent {
     pub avatar_generation: Option<AvatarGeneration>,
     #[serde(default)]
     pub role_prompt: String,
+    #[serde(default)]
+    pub role_description: String,
     pub appearance: String,
     pub desk: usize,
 }
@@ -244,7 +247,7 @@ pub(super) fn optional(args: &Value, key: &str, limit: usize) -> Result<String> 
     }
     Ok(value.into())
 }
-fn list(args: &Value, key: &str) -> Result<Vec<String>> {
+pub(super) fn list(args: &Value, key: &str) -> Result<Vec<String>> {
     let values: Vec<String> = serde_json::from_value(args.get(key).cloned().unwrap_or(json!([])))
         .map_err(|_| format!("Invalid {key}."))?;
     if values.len() > 32 || values.iter().collect::<HashSet<_>>().len() != values.len() {
@@ -322,11 +325,13 @@ impl World {
             .take(12)
             .collect();
         Ok(
-            json!({"identity": a.name, "profession": profession.name, "guidance": profession.guidance, "rolePrompt": a.role_prompt, "project": p.name, "projectContext": p.context, "memories": memories}),
+            json!({"identity": a.name, "profession": profession.name, "guidance": profession.guidance, "rolePrompt": a.role_prompt, "roleDescription":a.role_description, "project": p.name, "projectContext": p.context, "memories": memories}),
         )
     }
     pub fn active(&self, run: &Run) -> bool {
-        (if run.kind == "recruitment" {
+        (if run.kind == "role_setup" {
+            super::role_chat::active(self, run)
+        } else if run.kind == "recruitment" {
             super::recruitment::active(self, run)
         } else {
             self.authorize(&run.agent_id, &run.project_id).is_ok()
@@ -334,7 +339,7 @@ impl World {
             .runs
             .iter()
             .any(|r| r.id == run.id && r.status == "running")
-            && if run.kind == "recruitment" {
+            && if matches!(run.kind.as_str(), "recruitment" | "role_setup") {
                 true
             } else if run.kind == "meeting" {
                 self.meetings.iter().any(|m| {
@@ -440,60 +445,11 @@ impl World {
                 self.professions.push(p);
                 Ok(result)
             }
-            "create_agent" => {
-                let org_id = text(args, "orgId", 80)?;
-                self.org(&org_id)?;
-                let profession_id = text(args, "professionId", 80)?;
-                if !self
-                    .professions
-                    .iter()
-                    .any(|p| p.id == profession_id && p.org_id == org_id)
-                {
-                    return Err("Profession belongs to another organization.".into());
-                }
-                let provider = text(args, "provider", 40)?;
-                if !["claude", "codex", "claude_api", "deepseek"].contains(&provider.as_str()) {
-                    return Err("Choose Claude CLI, Codex CLI, Claude API, or DeepSeek.".into());
-                }
-                let kind = text(args, "kind", 20)?;
-                if !["worker", "consultant"].contains(&kind.as_str()) {
-                    return Err("Invalid agent kind.".into());
-                }
-                if kind != "consultant"
-                    && self
-                        .professions
-                        .iter()
-                        .any(|p| p.id == profession_id && p.kind == "recruiter")
-                {
-                    return Err("Recruiters are consultants, not project execution workers.".into());
-                }
-                let project_ids = list(args, "projectIds")?;
-                for project in &project_ids {
-                    if self.project(project)?.org_id != org_id {
-                        return Err("Project belongs to another organization.".into());
-                    }
-                }
-                let a = Agent {
-                    id: id(),
-                    org_id: org_id.clone(),
-                    name: text(args, "name", 80)?,
-                    profession_id,
-                    provider,
-                    model: text(args, "model", 100)?,
-                    kind,
-                    all_projects: args["allProjects"].as_bool().unwrap_or(false),
-                    project_ids,
-                    avatar: None,
-                    avatar_generation: None,
-                    role_prompt: optional(args, "rolePrompt", 16000)?,
-                    appearance: optional(args, "appearance", 1000)?,
-                    desk: self.agents.iter().filter(|a| a.org_id == org_id).count(),
-                };
-                let result = json!({"id":a.id});
-                self.agents.push(a);
-                Ok(result)
-            }
+            "create_agent" => super::agent_settings::create(self, args),
+            "update_agent_settings" => super::agent_settings::update(self, args),
             "create_recruitment" => super::recruitment::create(self, args),
+            "role_message" => super::role_chat::create(self, args),
+            "cancel_role_message" => super::role_chat::cancel(self, args),
             "cancel_recruitment" => {
                 let draft_id = text(args, "draftId", 80)?;
                 let draft = self
@@ -517,12 +473,19 @@ impl World {
             "update_role_prompt" => {
                 let agent_id = text(args, "agentId", 80)?;
                 let prompt = optional(args, "rolePrompt", 16000)?;
+                let description = args
+                    .get("roleDescription")
+                    .map(|_| optional(args, "roleDescription", 2000))
+                    .transpose()?;
                 let agent = self
                     .agents
                     .iter_mut()
                     .find(|a| a.id == agent_id)
                     .ok_or("Agent not found.")?;
                 agent.role_prompt = prompt;
+                if let Some(description) = description {
+                    agent.role_description = description;
+                }
                 Ok(json!({"id":agent_id}))
             }
             "update_scope" => {
@@ -543,7 +506,7 @@ impl World {
                     .filter(|r| {
                         r.agent_id == agent_id
                             && r.status == "running"
-                            && r.kind != "recruitment"
+                            && !matches!(r.kind.as_str(), "recruitment" | "role_setup")
                             && self.authorize(&agent_id, &r.project_id).is_err()
                     })
                     .map(|r| r.target_id.clone())

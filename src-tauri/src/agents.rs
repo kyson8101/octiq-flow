@@ -59,7 +59,7 @@ static AGENT_PROBE: Mutex<Option<(Instant, Vec<(String, String)>)>> = Mutex::new
 #[derive(Clone, Serialize)]
 pub struct AgentInstall {
     /// The id the chat backend takes (`ChatAgent`), which is also the binary
-    /// name: "claude" / "codex".
+    /// name: "claude" / "codex" / "pi".
     pub id: String,
     /// What the CLI is called on screen.
     pub name: String,
@@ -327,7 +327,7 @@ fn parse_probe_output(stdout: &str) -> Vec<(String, String)> {
 }
 
 /// Ask the user's LOGIN shell which agents resolve on its PATH, printing one
-/// name per hit. One shell for both agents: starting a login shell is the
+/// name per hit. One shell for all agents: starting a login shell is the
 /// expensive part, and the loop inside it is free.
 #[cfg(unix)]
 fn probe_command() -> Command {
@@ -398,8 +398,8 @@ mod tests {
         // A login shell prints the user's own banners around our echoes, and
         // may print them in any order. Only the known names survive, and they
         // come back in KNOWN_AGENTS order, not in the order the shell printed.
-        let out = "Welcome to zsh!\ncodex\t/opt/homebrew/bin/codex\nnpm notice: update available\nclaude\t/Users/x/.local/bin/claude\n";
-        assert_eq!(names(out), vec!["claude", "codex"]);
+        let out = "Welcome to zsh!\npi\t/opt/homebrew/bin/pi\ncodex\t/opt/homebrew/bin/codex\nnpm notice: update available\nclaude\t/Users/x/.local/bin/claude\n";
+        assert_eq!(names(out), vec!["claude", "codex", "pi"]);
         // One installed agent.
         assert_eq!(names("claude\t/usr/local/bin/claude\n"), vec!["claude"]);
         // Neither installed: banner noise alone yields nothing.

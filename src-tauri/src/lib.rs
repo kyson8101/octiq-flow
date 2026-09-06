@@ -28,7 +28,6 @@ mod git_watch;
 mod memory;
 mod mission_control;
 mod mission_migrations;
-mod world;
 mod notify_hook;
 mod paths;
 mod permission;
@@ -44,6 +43,7 @@ mod transcript;
 mod usage_limits;
 mod web;
 mod workspaces;
+mod world;
 
 /// Run the backend as a service: no window, no Dock icon.
 ///
@@ -60,6 +60,7 @@ pub async fn run_headless() {
     // Once, before anything can be running: tidy away transcripts no chat
     // points at any more.
     chat_index::reconcile();
+    agent_chat::start_deleted_chat_reaper();
 
     // `postgres::Client` is synchronous and internally starts work of its own.
     // Calling it on Tokio's main worker panics before the HTTP listener can

@@ -128,16 +128,20 @@ fn fresh_turn_id(turn_id: Option<String>) -> String {
         .unwrap_or_else(|| format!("octiq-user-{}", uuid::Uuid::new_v4()))
 }
 
-/// Tie Codex's acknowledgement to the exact browser turn it is starting.
+/// Tie a command-line provider's acknowledgement to the exact browser turn it
+/// is starting.
 ///
 /// The native event has no prompt id. That is ambiguous once two follow-ups are
 /// queued, because the backend starts them FIFO while the browser can see both
 /// bubbles already. The id is OctiqFlow metadata on a Codex-only event; Claude's
 /// stream is deliberately left byte-for-byte unchanged.
 fn stamp_user_turn_id(event: &mut Value, agent: ChatAgent, turn_id: Option<&str>) {
-    if agent != ChatAgent::Codex
-        || event.get("type").and_then(Value::as_str) != Some("turn.started")
-    {
+    let starts_turn = match agent {
+        ChatAgent::Codex => event.get("type").and_then(Value::as_str) == Some("turn.started"),
+        ChatAgent::Pi => event.get("type").and_then(Value::as_str) == Some("turn_start"),
+        ChatAgent::Claude => false,
+    };
+    if !starts_turn {
         return;
     }
     let Some(turn_id) = turn_id.filter(|id| !id.trim().is_empty()) else {
@@ -2346,6 +2350,18 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
     });
 }
 
+/// Permanently remove chats whose one-day trash window has elapsed. Startup
+/// reconciliation handles time spent with the server off; this minute sweep
+/// handles a server that stays up for days.
+pub fn start_deleted_chat_reaper() {
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_secs(60));
+        if let Err(why) = purge_deleted_chats() {
+            eprintln!("[chats] could not purge expired chats: {why}");
+        }
+    });
+}
+
 /// Where pasted images are kept. Under ~/.octiqflow rather than in the
 /// project, because a screenshot pasted into a chat is not part of a
 /// repository and must never turn up in git status.
@@ -2393,7 +2409,14 @@ pub fn save_attachment(data_base64: String, extension: String) -> Result<String,
 
 /// The chats that exist, newest first.
 pub fn chat_index_list() -> Vec<crate::chat_index::ChatMeta> {
+    let _ = purge_deleted_chats();
     crate::chat_index::list()
+}
+
+/// Chats in the one-day trash, newest deletion first.
+pub fn chat_index_deleted() -> Vec<crate::chat_index::ChatMeta> {
+    let _ = purge_deleted_chats();
+    crate::chat_index::deleted()
 }
 
 /// Say that the list of chats has changed, so every OTHER browser can pick the
@@ -2424,12 +2447,49 @@ pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> 
     Ok(())
 }
 
-/// Forget a chat entirely — its entry in the list and its transcript.
-pub fn chat_index_remove(id: String, key: String) -> Result<(), String> {
-    crate::transcript::forget(&key);
-    crate::chat_index::remove(&id)?;
-    announce_index_change(&id, true);
+/// Move a chat into the one-day trash. The old command name is kept so an
+/// already-open browser gets the safer behaviour as soon as the backend is
+/// updated. `expected_generation` makes a delayed retry from before a restore
+/// harmless.
+pub fn chat_index_remove(
+    id: String,
+    _key: String,
+    expected_generation: Option<u64>,
+    meta: Option<crate::chat_index::ChatMeta>,
+) -> Result<(), String> {
+    if crate::chat_index::trash(&id, expected_generation, meta)? {
+        announce_index_change(&id, true);
+    }
     Ok(())
+}
+
+/// Bring a soft-deleted chat back while its restore window is still open.
+pub fn chat_index_restore(id: String) -> Result<Option<crate::chat_index::ChatMeta>, String> {
+    let restored = crate::chat_index::restore(&id)?;
+    if restored.is_some() {
+        announce_index_change(&id, false);
+    } else {
+        // If the request arrived just past the deadline, finish the hard delete
+        // now rather than waiting for the next minute sweep.
+        let _ = purge_deleted_chats();
+    }
+    Ok(restored)
+}
+
+/// Remove expired index rows and transcripts, and tell open browsers so a
+/// Trash panel can discard them immediately.
+fn purge_deleted_chats() -> Result<usize, String> {
+    let expired = crate::chat_index::purge_expired()?;
+    for id in &expired {
+        announce_index_change(id, true);
+    }
+    if !expired.is_empty() {
+        println!(
+            "[chats] permanently removed {} expired chat(s)",
+            expired.len()
+        );
+    }
+    Ok(expired.len())
 }
 
 /// Everything a chat said after `after`.
@@ -2490,7 +2550,7 @@ mod tests {
     }
 
     #[test]
-    fn only_codex_turn_starts_receive_the_exact_user_turn_id() {
+    fn command_line_turn_starts_receive_the_exact_user_turn_id() {
         let mut codex_started = json!({ "type": "turn.started" });
         stamp_user_turn_id(&mut codex_started, ChatAgent::Codex, Some("user-earlier"));
         assert_eq!(
@@ -2510,6 +2570,18 @@ mod tests {
         let before = codex_answer.clone();
         stamp_user_turn_id(&mut codex_answer, ChatAgent::Codex, Some("user-1"));
         assert_eq!(codex_answer, before, "only the acknowledgement is stamped");
+
+        let mut pi_started = json!({ "type": "turn_start" });
+        stamp_user_turn_id(&mut pi_started, ChatAgent::Pi, Some("user-pi"));
+        assert_eq!(
+            pi_started["octiq_user_turn_id"],
+            Value::String("user-pi".into())
+        );
+
+        let mut pi_answer = json!({ "type": "message_end" });
+        let before = pi_answer.clone();
+        stamp_user_turn_id(&mut pi_answer, ChatAgent::Pi, Some("user-pi"));
+        assert_eq!(pi_answer, before, "only Pi's acknowledgement is stamped");
     }
 
     #[test]
@@ -4416,7 +4488,7 @@ mod idle_tests {
     }
 
     #[test]
-    fn both_agents_full_stops_end_a_turn_and_nothing_else_does() {
+    fn every_agents_full_stop_ends_a_turn_and_nothing_else_does() {
         assert!(
             provider_for(ChatAgent::Claude)
                 .observe_event(&json!({ "type": "result", "subtype": "success" }))
@@ -4435,6 +4507,16 @@ mod idle_tests {
                 .observe_event(&json!({ "type": "turn.failed" }))
                 .turn_finished
         );
+        assert!(
+            provider_for(ChatAgent::Pi)
+                .observe_event(&json!({ "type": "agent_settled" }))
+                .turn_finished
+        );
+        assert!(
+            !provider_for(ChatAgent::Pi)
+                .observe_event(&json!({ "type": "agent_end", "willRetry": false }))
+                .turn_finished
+        );
 
         assert!(
             !provider_for(ChatAgent::Claude)
@@ -4449,6 +4531,11 @@ mod idle_tests {
         assert!(
             !provider_for(ChatAgent::Codex)
                 .observe_event(&json!({ "type": "thread.started" }))
+                .turn_finished
+        );
+        assert!(
+            !provider_for(ChatAgent::Pi)
+                .observe_event(&json!({ "type": "turn_end" }))
                 .turn_finished
         );
     }
@@ -4518,7 +4605,7 @@ mod idle_tests {
     }
 
     #[test]
-    fn both_agents_name_the_conversation_they_opened() {
+    fn every_agent_names_the_conversation_it_opened() {
         // One field each, under two names, meaning the same thing: the id that
         // resumes this chat. Kept so the backend can restart a host it swept
         // and hand it the follow-up — see `StartContext`.
@@ -4535,6 +4622,12 @@ mod idle_tests {
                 .observe_event(&json!({ "type": "thread.started", "thread_id": "01a0-2f39" }))
                 .session_id,
             Some("01a0-2f39")
+        );
+        assert_eq!(
+            provider_for(ChatAgent::Pi)
+                .observe_event(&json!({ "type": "session", "id": "pi-123" }))
+                .session_id,
+            Some("pi-123")
         );
         // Said once, in the opening event, and never again. Anything else that
         // happens to carry the field is not the announcement.

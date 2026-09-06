@@ -1,4 +1,5 @@
 //! Org-based OctiqOS. The legacy mission portal remains available separately.
+mod agent_settings;
 mod avatar;
 mod cli;
 mod command;
@@ -6,6 +7,7 @@ mod model;
 mod process;
 mod provider;
 mod recruitment;
+mod role_chat;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -77,6 +79,7 @@ fn agent_stats(world: &World, agent: &Agent) -> Value {
     let (level, progress, next) = level(points);
     json!({"agentId":agent.id,"active":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && matches!(r.kind.as_str(), "task" | "plan")).count(),
             "recruiting":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="recruitment").count(),
+            "roleSetup":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="role_setup").count(),
             "discussing":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="running" && r.kind=="meeting").count(),
             "stopping":world.runs.iter().filter(|r|r.agent_id==agent.id && r.status=="interrupted" && r.in_flight()).count(),
             "queued":world.tasks.iter().filter(|t|t.agent_id.as_deref()==Some(&agent.id) && t.status=="queued" && t.route=="direct").count(),

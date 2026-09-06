@@ -34,7 +34,12 @@ export type IndexEntry = {
   updatedAt: number;
   /** Sits above every newer chat in its project. */
   pinned: boolean;
+  /** Server-owned lifecycle generation. It changes only when Trash restores a
+   *  chat, so an older delete retry cannot hide that restored row again. */
+  generation?: number;
 };
+
+export type DeletedIndexEntry = IndexEntry & { deletedAt: number };
 
 /** How long to wait for an acknowledgement before assuming the call is lost.
  *  Generous: this is a local write behind a socket, so anything approaching
@@ -52,7 +57,7 @@ const MAX_RETRY_MS = 30000;
  *  deleted chat used to reappear. */
 type Pending =
   | { kind: "save"; entry: IndexEntry }
-  | { kind: "remove"; id: string; key: string };
+  | { kind: "remove"; id: string; key: string; generation: number; entry?: IndexEntry };
 
 const unconfirmed = new Map<string, Pending>();
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -70,25 +75,42 @@ export function saveIndexEntry(entry: IndexEntry): void {
   flush();
 }
 
-/** Take a deleted chat out of the server's index, and keep trying until it is
- *  gone.
+/** Move a deleted chat into the server's one-day Trash, and keep trying until
+ *  the server acknowledges it.
  *
  *  This used to be a bare `invoke(...).catch(() => {})` at the delete site, and
  *  that is a delete which can quietly not happen: a socket closing with the
  *  call in flight never settles it, so there is no rejection to catch and
- *  nothing to retry. The entry survived, the next `chat_index_list` carried the
- *  chat, and the sidebar handed it back. */
-export function removeIndexEntry(id: string, key: string): void {
+ *  nothing to retry. The active entry survived, the next `chat_index_list`
+ *  carried the chat, and the sidebar handed it back. */
+export function removeIndexEntry(
+  id: string,
+  key: string,
+  generation = 0,
+  entry?: IndexEntry,
+): void {
   // Asked for again while the first one is still going — the index list is
   // re-read on every connect, and a chat still listed asks for its removal each
   // time. Queuing a second one would replace the object the call in flight is
   // holding, so its acknowledgement would clear nothing and the removal would
   // be sent forever. What is already queued is already being retried.
   const held = unconfirmed.get(id);
-  if (held?.kind === "remove" && held.key === key) return;
-  unconfirmed.set(id, { kind: "remove", id, key });
+  if (
+    held?.kind === "remove" &&
+    held.key === key &&
+    held.generation === generation &&
+    (held.entry !== undefined || entry === undefined)
+  ) return;
+  unconfirmed.set(id, { kind: "remove", id, key, generation, entry });
   watchConnection();
   flush();
+}
+
+/** Stop retrying a delete that a newer server generation has superseded. The
+ *  backend checks the generation too; this keeps the browser queue tidy and
+ *  avoids needless requests after a restore on another device. */
+export function cancelIndexRemoval(id: string): void {
+  if (unconfirmed.get(id)?.kind === "remove") unconfirmed.delete(id);
 }
 
 /** Forget what is queued for a chat. Used by tests; the app either saves or
@@ -137,7 +159,15 @@ function send(pending: Pending): void {
   const [command, payload] =
     pending.kind === "save"
       ? (["chat_index_save", { meta: pending.entry }] as const)
-      : (["chat_index_remove", { id: pending.id, key: pending.key }] as const);
+      : ([
+          "chat_index_remove",
+          {
+            id: pending.id,
+            key: pending.key,
+            expectedGeneration: pending.generation,
+            meta: pending.entry ?? null,
+          },
+        ] as const);
 
   // Raced against a deadline. `bridge.invoke` resolves or rejects only when a
   // reply arrives, and a socket that closes mid-call never brings one — so

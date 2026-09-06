@@ -2,7 +2,7 @@ import type { ChatState } from "./chat";
 import { someoneWorking } from "./carryOn";
 import type { Conversation } from "./store";
 
-export type AttentionKind = "permission" | "question" | "safety" | "failure" | "interrupted" | "completed";
+export type AttentionKind = "permission" | "question" | "safety" | "failure" | "interrupted";
 type Pending = Readonly<Record<string, readonly unknown[] | undefined>>;
 
 export type AttentionInput = {
@@ -14,7 +14,6 @@ export type AttentionInput = {
   running: Set<string>;
   liveKnown: boolean;
   connected: boolean;
-  currentConversationId: string | null;
   asks?: Pending;
   questions?: Pending;
   safetyBlocks?: Pending;
@@ -33,46 +32,11 @@ export type AttentionEntry = {
   stale: boolean;
 };
 
-export type AttentionObservation = {
-  busy: ReadonlySet<string>;
-  completed: ReadonlySet<string>;
-  reliable: boolean;
-};
-
-export function emptyAttentionObservation(): AttentionObservation {
-  return { busy: new Set(), completed: new Set(), reliable: false };
-}
-
-/** Observe transitions, never infer unseen work from an idle transcript or an
- * absent process. A connection gap discards the prior busy baseline. */
-export function observeAttention(previous: AttentionObservation, input: AttentionInput): AttentionObservation {
-  const reliable = input.connected && input.liveKnown;
-  const ids = new Set(input.conversations.map((conversation) => conversation.id));
-  const busy = new Set<string>();
-  const completed = new Set([...previous.completed].filter((id) => ids.has(id)));
-  for (const id of ids) {
-    const chat = input.chats[id];
-    if (chat?.busy) {
-      if (reliable && someoneWorking({ id, running: input.running, round: input.activeRounds?.has(id) ?? false })) busy.add(id);
-      completed.delete(id);
-    } else if (
-      chat && reliable && previous.reliable && previous.busy.has(id)
-      && !chat.failure && !chat.stopping && !chat.stoppedAt
-      && !(chat.exited && chat.exited.code !== 0)
-    ) {
-      completed.add(id);
-    }
-    if (chat?.failure || chat?.stopping || chat?.stoppedAt || (chat?.exited && chat.exited.code !== 0)) completed.delete(id);
-  }
-  if (input.currentConversationId) completed.delete(input.currentConversationId);
-  return { busy, completed, reliable };
-}
-
 const priority: Record<AttentionKind, number> = {
-  permission: 0, question: 1, safety: 2, failure: 3, interrupted: 4, completed: 5,
+  permission: 0, question: 1, safety: 2, failure: 3, interrupted: 4,
 };
 
-export function selectAttention(input: AttentionInput, completed: ReadonlySet<string>): AttentionEntry[] {
+export function selectAttention(input: AttentionInput): AttentionEntry[] {
   const projects = new Map(input.projects.map((project) => [project.id, project.name]));
   const fresh = input.connected && input.liveKnown;
   const entries: AttentionEntry[] = [];
@@ -105,10 +69,6 @@ export function selectAttention(input: AttentionInput, completed: ReadonlySet<st
     } else if (fresh && chat?.busy && !live && !chat.stopping && (input.interruptedIds === undefined || input.interruptedIds.has(id))) {
       kind = "interrupted";
       reason = "Turn interrupted · no agent is running";
-    } else if (completed.has(id) && id !== input.currentConversationId && !chat?.busy
-      && !chat?.stopping && !chat?.stoppedAt && !(chat?.exited && chat.exited.code !== 0)) {
-      kind = "completed";
-      reason = "New reply ready to review";
     } else {
       continue;
     }

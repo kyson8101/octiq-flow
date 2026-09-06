@@ -5,9 +5,9 @@ import type { AttentionEntry } from "../lib/attention";
 
 const entry: AttentionEntry = {
   conversation: { id: "c", projectId: "p", title: "Fix retries", messages: [], createdAt: 0, updatedAt: 0 },
-  projectName: "OctiqFlow", kind: "completed", reason: "New reply ready to review", stale: false,
+  projectName: "OctiqFlow", kind: "permission", reason: "1 permission request", stale: false,
 };
-const props: AttentionInboxProps = { entries: [entry], connected: true, onOpen: () => {}, onDismissCompletion: () => {} };
+const props: AttentionInboxProps = { entries: [entry], connected: true, onOpen: () => {} };
 
 describe("attention inbox", () => {
   it("starts as a compact accessible disclosure with the current count", () => {
@@ -21,9 +21,8 @@ describe("attention inbox", () => {
     const html = renderToStaticMarkup(<AttentionInboxPanel {...props} />);
     expect(html).toContain("OctiqFlow");
     expect(html).toContain("Fix retries");
-    expect(html).toContain("New reply ready to review");
+    expect(html).toContain("1 permission request");
     expect(html).toContain('class="attention-open"');
-    expect(html).toContain('aria-label="Dismiss completion for Fix retries"');
   });
   it("does not provide dismiss controls for unresolved requests", () => {
     const html = renderToStaticMarkup(<AttentionInboxPanel {...props} entries={[{ ...entry, kind: "permission", reason: "1 permission request" }]} />);
@@ -39,5 +38,8 @@ describe("attention inbox", () => {
     const html = renderToStaticMarkup(<AttentionInboxPanel {...props} entries={[]} />);
     expect(html).toContain("Unopened history is not checked");
     expect(html).not.toContain("attention-dismiss");
+  });
+  it("does not render global chrome when nothing needs action", () => {
+    expect(renderToStaticMarkup(<AttentionInbox {...props} entries={[]} />)).toBe("");
   });
 });

@@ -1,6 +1,369 @@
 use super::{model::*, provider, runtime};
 use serde_json::json;
 
+#[test]
+fn minimal_hiring_uses_local_defaults_without_copying_access_or_roles() {
+    let (mut w, org, project, member) = fixture();
+    w.agents[0].all_projects = true;
+    w.agents[0].role_prompt = "Existing private role".into();
+    let pm = w
+        .professions
+        .iter()
+        .find(|p| p.org_id == org && p.kind == "pm")
+        .unwrap()
+        .id
+        .clone();
+    w.apply("create_agent", &json!({"orgId":org,"name":"PM","professionId":pm,"provider":"deepseek","model":"org-model","allProjects":true})).unwrap();
+    let new_id = w
+        .apply("create_agent", &json!({"orgId":org,"name":"  "}))
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let new = w.agent(&new_id).unwrap();
+    assert_eq!(
+        (&*new.name, &*new.provider, &*new.model, &*new.kind),
+        ("Agent 1", "deepseek", "org-model", "worker")
+    );
+    assert!(new.role_prompt.is_empty() && new.role_description.is_empty());
+    assert!(new.project_ids.is_empty() && !new.all_projects);
+    assert!(new.avatar.is_none() && new.avatar_generation.is_none());
+    assert_ne!(new.profession_id, pm);
+    assert!(w.authorize(&new_id, &project).is_err());
+    let second = w
+        .apply(
+            "create_agent",
+            &json!({"orgId":org,"provider":"claude","projectIds":[project]}),
+        )
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(w.agent(&second).unwrap().name, "Agent 2");
+    assert_eq!(
+        w.agent(&second).unwrap().model,
+        w.agent(&member).unwrap().model
+    );
+    assert!(w.authorize(&second, &project).is_ok());
+    let other = w.apply("create_org", &json!({"name":"Other"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(w
+        .apply(
+            "create_agent",
+            &json!({"orgId":other,"projectIds":[project]})
+        )
+        .is_err());
+    let isolated = w.apply("create_agent", &json!({"orgId":other})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        (
+            &*w.agent(&isolated).unwrap().provider,
+            &*w.agent(&isolated).unwrap().model
+        ),
+        ("codex", "default")
+    );
+    assert_ne!(
+        w.agent(&isolated).unwrap().profession_id,
+        w.agent(&new_id).unwrap().profession_id
+    );
+}
+
+#[test]
+fn advanced_settings_are_explicit_validated_and_do_not_modify_roles_or_scope() {
+    let (mut w, org, project, agent) = fixture();
+    let before = w.agent(&agent).unwrap().clone();
+    for args in [
+        json!({"provider":"unknown"}),
+        json!({"provider":"deepseek","model":"default"}),
+        json!({"name":""}),
+        json!({"model":"x".repeat(101)}),
+        json!({"kind":"admin"}),
+    ] {
+        let mut args = args;
+        args["agentId"] = json!(agent);
+        assert!(w.apply("update_agent_settings", &args).is_err());
+        assert_eq!(
+            serde_json::to_value(w.agent(&agent).unwrap()).unwrap(),
+            serde_json::to_value(&before).unwrap()
+        );
+    }
+    let other = w.apply("create_org", &json!({"name":"Other"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let outsider = w
+        .professions
+        .iter()
+        .find(|p| p.org_id == other)
+        .unwrap()
+        .id
+        .clone();
+    assert!(w
+        .apply(
+            "update_agent_settings",
+            &json!({"agentId":agent,"professionId":outsider})
+        )
+        .is_err());
+    w.apply("update_agent_settings", &json!({"agentId":agent,"name":"Taylor","provider":"codex","model":"default","appearance":"An owl","rolePrompt":"unrequested edit","allProjects":true,"projectIds":[]})).unwrap();
+    let updated = w.agent(&agent).unwrap();
+    assert_eq!(
+        (&*updated.name, &*updated.provider, &*updated.appearance),
+        ("Taylor", "codex", "An owl")
+    );
+    assert_eq!(updated.role_prompt, before.role_prompt);
+    assert!(!updated.all_projects && updated.project_ids == vec![project]);
+    assert_eq!(updated.org_id, org);
+    let restored: World = serde_json::from_value(serde_json::to_value(&w).unwrap()).unwrap();
+    assert_eq!(restored.agent(&agent).unwrap().appearance, "An owl");
+}
+
+#[test]
+fn settings_cannot_change_under_pending_role_work_or_invalidate_assigned_tasks() {
+    let (mut w, org, project, agent) = fixture();
+    let run = role_request(&mut w, &agent, "discuss");
+    assert!(w
+        .apply(
+            "update_agent_settings",
+            &json!({"agentId":agent,"provider":"codex"})
+        )
+        .is_err());
+    w.apply(
+        "cancel_role_message",
+        &json!({"roleRequestId":run.target_id}),
+    )
+    .unwrap();
+    // Interrupted provider processes must drain before their runtime settings change.
+    assert!(w
+        .apply(
+            "update_agent_settings",
+            &json!({"agentId":agent,"provider":"codex"})
+        )
+        .is_err());
+    w.runs[0].finished_at = Some(now());
+    let task = task(&mut w, &project, &agent);
+    assert!(w
+        .apply(
+            "update_agent_settings",
+            &json!({"agentId":agent,"kind":"consultant"})
+        )
+        .is_err());
+    w.apply(
+        "update_agent_settings",
+        &json!({"agentId":agent,"provider":"codex","model":"default"}),
+    )
+    .unwrap();
+    w.apply(
+        "task_direction",
+        &json!({"taskId":task,"body":"Cancel assignment","control":"cancel"}),
+    )
+    .unwrap();
+    w.apply(
+        "update_agent_settings",
+        &json!({"agentId":agent,"kind":"consultant"}),
+    )
+    .unwrap();
+    let pm = w
+        .professions
+        .iter()
+        .find(|p| p.org_id == org && p.kind == "pm")
+        .unwrap()
+        .id
+        .clone();
+    w.apply(
+        "update_agent_settings",
+        &json!({"agentId":agent,"professionId":pm,"kind":"worker"}),
+    )
+    .unwrap();
+    assert_eq!(w.agent(&agent).unwrap().profession_id, pm);
+}
+
+fn role_request(w: &mut World, agent: &str, mode: &str) -> Run {
+    let request_id = w
+        .apply(
+            "role_message",
+            &json!({"agentId":agent,"mode":mode,"body":"Focus on mobile regression tests."}),
+        )
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let request = w
+        .role_requests
+        .iter_mut()
+        .find(|r| r.id == request_id)
+        .unwrap();
+    request.status = "generating".into();
+    let run = Run {
+        id: id(),
+        agent_id: request.author_id.clone(),
+        project_id: String::new(),
+        target_id: request_id,
+        kind: "role_setup".into(),
+        generation: 0,
+        status: "running".into(),
+        result: String::new(),
+        started_at: now(),
+        finished_at: None,
+    };
+    w.runs.push(run.clone());
+    run
+}
+
+#[test]
+fn blank_agents_can_define_their_role_without_project_access() {
+    let (mut w, org, _, _) = fixture();
+    let id = w.apply("create_agent", &json!({"orgId":org,"name":"New member","provider":"codex","model":"default","kind":"worker","projectIds":[]})).unwrap()["id"].as_str().unwrap().to_owned();
+    let agent = w.agent(&id).unwrap();
+    assert!(agent.role_prompt.is_empty() && agent.role_description.is_empty());
+    assert!(!agent.all_projects && agent.project_ids.is_empty());
+    assert!(w
+        .professions
+        .iter()
+        .find(|p| p.id == agent.profession_id)
+        .unwrap()
+        .guidance
+        .is_empty());
+    let run = role_request(&mut w, &id, "update");
+    assert!(w.active(&run));
+    super::role_chat::complete(&mut w, &run, r#"{"message":"I will focus on mobile testing.","rolePrompt":"Test mobile flows; ask when behavior is unclear.","roleDescription":"Mobile testing specialist"}"#).unwrap();
+    assert_eq!(
+        w.agent(&id).unwrap().role_description,
+        "Mobile testing specialist"
+    );
+    assert!(w.agent(&id).unwrap().project_ids.is_empty());
+    assert!(w.xp.is_empty());
+    assert_eq!(w.role_requests[0].status, "applied");
+    let restored: World = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+    assert_eq!(restored.role_requests[0].status, "applied");
+}
+
+#[test]
+fn role_discussion_cannot_grant_itself_permission_and_consent_is_not_reused() {
+    let (mut w, _, _, agent) = fixture();
+    let output = r#"{"message":"Consider mobile testing.","rolePrompt":"Overwritten", "roleDescription":"Overwritten", "mode":"update", "allProjects":true}"#;
+    let discuss = role_request(&mut w, &agent, "discuss");
+    super::role_chat::complete(&mut w, &discuss, output).unwrap();
+    assert!(w.agent(&agent).unwrap().role_prompt.is_empty());
+    assert_eq!(w.role_requests[0].status, "discussed");
+    let update = role_request(&mut w, &agent, "update");
+    super::role_chat::complete(&mut w, &update, output).unwrap();
+    let prompt = w.agent(&agent).unwrap().role_prompt.clone();
+    let next = role_request(&mut w, &agent, "discuss");
+    super::role_chat::complete(
+        &mut w,
+        &next,
+        r#"{"message":"No update requested.","rolePrompt":"Sneaky overwrite"}"#,
+    )
+    .unwrap();
+    super::role_chat::complete(
+        &mut w,
+        &update,
+        r#"{"message":"Replay", "rolePrompt":"Replay", "roleDescription":"Replay"}"#,
+    )
+    .unwrap();
+    assert_eq!(w.agent(&agent).unwrap().role_prompt, prompt);
+    assert!(!w.agent(&agent).unwrap().all_projects);
+}
+
+#[test]
+fn cancelled_and_stale_role_responses_never_overwrite_roles() {
+    let (mut w, _, _, agent) = fixture();
+    let output = r#"{"message":"Updated", "rolePrompt":"Late prompt", "roleDescription":"Late description"}"#;
+    let cancelled = role_request(&mut w, &agent, "update");
+    w.apply(
+        "cancel_role_message",
+        &json!({"roleRequestId":cancelled.target_id}),
+    )
+    .unwrap();
+    super::role_chat::complete(&mut w, &cancelled, output).unwrap();
+    assert!(w.agent(&agent).unwrap().role_prompt.is_empty());
+    let stale = role_request(&mut w, &agent, "update");
+    w.apply(
+        "update_role_prompt",
+        &json!({"agentId":agent,"rolePrompt":"Founder edit"}),
+    )
+    .unwrap();
+    let error = super::role_chat::complete(&mut w, &stale, output).unwrap_err();
+    runtime::fail(&mut w, &stale, &error);
+    assert_eq!(w.role_requests[1].status, "failed");
+    assert_eq!(w.agent(&agent).unwrap().role_prompt, "Founder edit");
+}
+
+#[test]
+fn role_helpers_are_limited_to_self_or_the_orgs_pm_and_recruiter() {
+    let (mut w, org, _, agent) = fixture();
+    assert!(w
+        .apply("role_message", &json!({"agentId":agent,"body":"Update me"}))
+        .is_err());
+    let other_org = w.apply("create_org", &json!({"name":"Other"})).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for (author_org, kind, allowed) in [
+        (&other_org, "pm", false),
+        (&org, "dev", false),
+        (&org, "pm", true),
+    ] {
+        let profession = w
+            .professions
+            .iter()
+            .find(|p| &p.org_id == author_org && p.kind == kind)
+            .unwrap()
+            .id
+            .clone();
+        let helper = w.apply("create_agent", &json!({"orgId":author_org,"name":"Helper","professionId":profession,"provider":"codex","model":"default","kind":"worker","projectIds":[]})).unwrap()["id"].as_str().unwrap().to_owned();
+        assert_eq!(w.apply("role_message", &json!({"agentId":agent,"authorId":helper,"body":"Help define this role","mode":"update"})).is_ok(), allowed);
+    }
+}
+
+#[test]
+fn role_context_excludes_project_data_and_unrelated_conversations() {
+    let (mut w, _, _, agent) = fixture();
+    let run = role_request(&mut w, &agent, "discuss");
+    let input = super::role_chat::input(&w, &w.role_requests[0]).unwrap();
+    assert_eq!(input["mayUpdateRole"], false);
+    assert!(!input.to_string().contains("A-only shared truth"));
+    assert_eq!(input["priorDiscussion"], json!([]));
+    assert!(runtime::apply_response(
+        &mut w,
+        &run,
+        &json!({"action":"update_role_prompt","agentId":agent,"rolePrompt":"Injected"})
+    )
+    .is_err());
+    assert!(w.agent(&agent).unwrap().role_prompt.is_empty());
+}
+
+#[test]
+fn malformed_role_updates_fail_atomically_and_history_is_bounded() {
+    let (mut w, _, _, agent) = fixture();
+    for n in 0..8 {
+        let run = role_request(&mut w, &agent, "discuss");
+        super::role_chat::complete(
+            &mut w,
+            &run,
+            &json!({"message":format!("response {n}")}).to_string(),
+        )
+        .unwrap();
+    }
+    let run = role_request(&mut w, &agent, "update");
+    let input = super::role_chat::input(&w, w.role_requests.last().unwrap()).unwrap();
+    assert_eq!(input["priorDiscussion"].as_array().unwrap().len(), 6);
+    assert_eq!(input["priorDiscussion"][0]["response"], "response 2");
+    assert!(super::role_chat::complete(
+        &mut w,
+        &run,
+        r#"{"message":"Updated", "rolePrompt":"Valid", "roleDescription":""}"#
+    )
+    .is_err());
+    assert!(w.agent(&agent).unwrap().role_prompt.is_empty());
+    assert!(super::role_chat::complete(&mut w, &run, "Not JSON").is_err());
+    assert!(w.agent(&agent).unwrap().role_description.is_empty());
+}
+
 fn fixture() -> (World, String, String, String) {
     let mut w = World::default();
     let org = w.apply("create_org", &json!({"name":"Studio"})).unwrap()["id"]

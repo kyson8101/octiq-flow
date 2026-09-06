@@ -160,6 +160,9 @@ pub fn claim(w: &mut World) -> Result<Option<Run>> {
     if let Some(run) = super::recruitment::claim(w)? {
         return Ok(Some(run));
     }
+    if let Some(run) = super::role_chat::claim(w)? {
+        return Ok(Some(run));
+    }
     for i in 0..w.meetings.len() {
         let m = w.meetings[i].clone();
         if m.status != "queued" || m.cursor >= m.participant_ids.len() {
@@ -288,7 +291,12 @@ pub fn fail(w: &mut World, run: &Run, error: &str) {
         r.result = error.into();
         r.finished_at = Some(now());
     }
-    if run.kind == "recruitment" {
+    if run.kind == "role_setup" {
+        if let Some(request) = w.role_requests.iter_mut().find(|r| r.id == run.target_id) {
+            request.status = "failed".into();
+            request.error = Some(error.into());
+        }
+    } else if run.kind == "recruitment" {
         if let Some(d) = w
             .recruitment_drafts
             .iter_mut()
@@ -309,6 +317,9 @@ pub fn fail(w: &mut World, run: &Run, error: &str) {
 }
 
 fn execute(run: &Run) -> Result<()> {
+    if run.kind == "role_setup" {
+        return super::role_chat::execute(run);
+    }
     if run.kind == "recruitment" {
         return super::recruitment::execute(run);
     }

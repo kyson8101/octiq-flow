@@ -6,7 +6,6 @@ import {
   useState,
 } from "react";
 import { allowed, type Agent, type Mutate, type World } from "./types";
-import { RoleEditor } from "./RoleEditor";
 
 export function WorkflowForm({
   world,
@@ -167,6 +166,7 @@ export function Field({
   value = "",
   multiline = false,
   placeholder = "",
+  maxLength,
 }: {
   name: string;
   label: string;
@@ -174,6 +174,7 @@ export function Field({
   value?: string;
   multiline?: boolean;
   placeholder?: string;
+  maxLength?: number;
 }) {
   return (
     <label className="ow-field">
@@ -184,7 +185,7 @@ export function Field({
           required={required}
           defaultValue={value}
           placeholder={placeholder}
-          maxLength={16000}
+          maxLength={maxLength ?? 16000}
           rows={4}
         />
       ) : (
@@ -193,7 +194,7 @@ export function Field({
           required={required}
           defaultValue={value}
           placeholder={placeholder}
-          maxLength={2000}
+          maxLength={maxLength ?? 2000}
         />
       )}
     </label>
@@ -396,119 +397,83 @@ export function TaskForm({
 export function AgentForm({
   world,
   orgId,
+  projectId,
   mutate,
   done,
   busy,
 }: {
   world: World;
   orgId: string;
+  projectId?: string;
   mutate: Mutate;
   done: (id: string) => void;
   busy: boolean;
 }) {
-  const [professionId, setProfession] = useState(
-    world.professions.find((p) => p.orgId === orgId)?.id ?? "",
-  );
-  const [provider, setProvider] = useState("codex");
-  const [kind, setKind] = useState("worker");
   const [all, setAll] = useState(false);
-  const [rolePrompt, setRolePrompt] = useState("");
+  const [selected, setSelected] = useState<string[]>(() =>
+    world.projects.some((p) => p.id === projectId && p.orgId === orgId)
+      ? [projectId!]
+      : [],
+  );
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const scope = all
+    ? "All current and future projects in this org"
+    : selected.length
+      ? world.projects
+          .filter((p) => selected.includes(p.id))
+          .map((p) => p.name)
+          .join(", ")
+      : "No projects yet";
   return (
     <form
       onSubmit={(e) => {
-        const values = formValues(e);
-        const projects = new FormData(e.currentTarget)
-          .getAll("projectId")
-          .map(String);
+        const { name } = formValues(e);
+        if (sending) return;
+        setSending(true);
+        setError("");
         void mutate("create_agent", {
-          ...values,
-          rolePrompt,
+          name,
           orgId,
-          professionId,
-          provider,
-          kind,
           allProjects: all,
-          projectIds: projects,
+          projectIds: all ? [] : selected,
         })
           .then((r) => done(r.id))
-          .catch(() => {});
+          .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+          .finally(() => setSending(false));
       }}
     >
-      <Field name="name" label="Agent name" placeholder="Alex" />
-      <div className="ow-two">
-        <Select
-          label="Profession"
-          value={professionId}
-          onChange={(id) => {
-            setProfession(id);
-            setRolePrompt("");
-          }}
-        >
-          {world.professions
-            .filter((p) => p.orgId === orgId && p.kind !== "recruiter")
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-        </Select>
-        <Select label="Member type" value={kind} onChange={setKind}>
-          <option value="worker">Worker</option>
-          <option value="consultant">Consultant</option>
-        </Select>
-      </div>
-      <div className="ow-two">
-        <Select label="Provider" value={provider} onChange={setProvider}>
-          <option value="claude">Claude · existing CLI login</option>
-          <option value="codex">Codex · existing CLI login</option>
-          <option value="claude_api">Claude API</option>
-          <option value="deepseek">DeepSeek</option>
-        </Select>
-        <Field
-          key={provider}
-          name="model"
-          label="Model ID"
-          value={["claude", "codex"].includes(provider) ? "default" : ""}
-          placeholder="default, or a model available to your account"
-        />
-      </div>
-      <RoleEditor
-        key={professionId}
-        world={world}
-        orgId={orgId}
-        professionId={professionId}
-        value={rolePrompt}
-        onChange={setRolePrompt}
-        mutate={mutate}
-        busy={busy}
-      />
-      <Field
-        name="appearance"
-        label="Describe their favorite avatar"
-        multiline
-        required={false}
-        placeholder="A cheerful fox developer with round glasses and a green hoodie"
-      />
-      <ScopeFields world={world} orgId={orgId} all={all} setAll={setAll} />
       <p className="ow-note">
-        A desk is assigned automatically. You can generate the avatar from the
-        agent profile.
+        Welcome someone new. Tell them what you need in Talk about role after
+        they join.
       </p>
+      <Field
+        name="name"
+        label="Agent name (optional)"
+        required={false}
+        maxLength={80}
+        placeholder="Leave blank for an automatic name"
+      />
+      <details className="ow-onboarding-scope">
+        <summary>
+          <span>Project access: {scope}</span>
+          <small>Change</small>
+        </summary>
+        <ScopeFields
+          world={world}
+          orgId={orgId}
+          all={all}
+          setAll={setAll}
+          selected={selected}
+          onSelectedChange={setSelected}
+        />
+      </details>
+      <p className="ow-note">
+        A desk and starter avatar are ready for them. Everything else can wait.
+      </p>
+      {error && <p role="alert">{error}</p>}
       <footer>
-        <Submit
-          busy={
-            busy ||
-            (world.recruitmentDrafts ?? []).some(
-              (d) =>
-                d.orgId === orgId &&
-                d.professionId === professionId &&
-                !d.targetAgentId &&
-                ["queued", "generating"].includes(d.status),
-            )
-          }
-        >
-          Welcome to the team
-        </Submit>
+        <Submit busy={busy || sending}>Join and talk about role</Submit>
       </footer>
     </form>
   );
@@ -519,12 +484,14 @@ export function ScopeFields({
   all,
   setAll,
   selected = [],
+  onSelectedChange,
 }: {
   world: World;
   orgId: string;
   all: boolean;
   setAll: (v: boolean) => void;
   selected?: string[];
+  onSelectedChange?: (ids: string[]) => void;
 }) {
   return (
     <fieldset className="ow-scope">
@@ -546,7 +513,20 @@ export function ScopeFields({
                 type="checkbox"
                 name="projectId"
                 value={p.id}
-                defaultChecked={selected.includes(p.id)}
+                defaultChecked={
+                  onSelectedChange ? undefined : selected.includes(p.id)
+                }
+                checked={onSelectedChange ? selected.includes(p.id) : undefined}
+                onChange={
+                  onSelectedChange
+                    ? (e) =>
+                        onSelectedChange(
+                          e.target.checked
+                            ? [...selected, p.id]
+                            : selected.filter((id) => id !== p.id),
+                        )
+                    : undefined
+                }
               />{" "}
               {p.name}
             </label>

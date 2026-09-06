@@ -7,7 +7,7 @@
 // means a new provider is an adapter here, not another set of `if (claude)`
 // checks across the composer and App.
 
-export type Provider = "claude" | "codex";
+export type Provider = "claude" | "codex" | "pi";
 
 /** A model's visual voice in the composer. The names are deliberately model
  * specific: adding a model means choosing how it looks instead of silently
@@ -22,7 +22,12 @@ export type ComposerStyle =
   | "sol"
   | "terra"
   | "luna"
-  | "codex";
+  | "codex"
+  | "pi-astra"
+  | "pi-sol"
+  | "pi-terra"
+  | "pi-luna"
+  | "pi";
 
 export type ModelChoice = {
   id: string;
@@ -173,6 +178,45 @@ export const providers = {
       cleanStart: false,
     },
     commands: slashCommands,
+    liveSettingCommand() {
+      return undefined;
+    },
+  },
+  pi: {
+    id: "pi",
+    name: "pi.dev",
+    // Pi is the harness here; OpenAI Codex is its selected upstream provider.
+    // Keep the same model names and visual voices as a direct Codex chat so
+    // choosing the harness does not make the underlying model look different.
+    models: [
+      { id: "pi:astra", agent: "pi", name: "pi.dev", model: "Astra", flag: "gpt-6-astra", hint: "Codex through pi.dev", composerStyle: "pi-astra" },
+      { id: "pi:sol", agent: "pi", name: "pi.dev", model: "Sol", flag: "gpt-5.6-sol", hint: "Codex through pi.dev", composerStyle: "pi-sol" },
+      { id: "pi:terra", agent: "pi", name: "pi.dev", model: "Terra", flag: "gpt-5.6-terra", hint: "Codex through pi.dev", composerStyle: "pi-terra" },
+      { id: "pi:luna", agent: "pi", name: "pi.dev", model: "Luna", flag: "gpt-5.6-luna", hint: "Codex through pi.dev", composerStyle: "pi-luna" },
+      { id: "pi:default", agent: "pi", name: "pi.dev", model: "Default", flag: "", hint: "whatever Pi picks", composerStyle: "pi" },
+    ],
+    // Pi JSON mode does not expose a tool approval handshake. Read-only is a
+    // strict tool allowlist; Full access is an explicit opt-in to all built-ins.
+    access: [
+      { id: "read", label: "Read-only", hint: "only read, search and list tools" },
+      { id: "full", label: "Full access", hint: "Pi can run commands and edit files", bypass: true },
+    ],
+    efforts: [
+      { id: "minimal", label: "Minimal", short: "Min", hint: "the least reasoning" },
+      { id: "low", label: "Low", short: "Low", hint: "quick answers" },
+      { id: "medium", label: "Medium", short: "Med", hint: "the usual balance" },
+      { id: "high", label: "High", short: "High", hint: "thinks longer, costs more" },
+      { id: "xhigh", label: "Very high", short: "V.high", hint: "for problems worth the wait" },
+      { id: "max", label: "Max", short: "Max", hint: "everything it has" },
+    ],
+    capabilities: {
+      commands: "none",
+      liveSettings: { model: false, effort: false },
+      cleanStart: false,
+    },
+    commands() {
+      return [];
+    },
     liveSettingCommand() {
       return undefined;
     },

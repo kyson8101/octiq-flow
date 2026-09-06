@@ -31,6 +31,8 @@ const html = (
     deleteMs?: number;
     expanded?: Set<string>;
     onReorder?: (orderedIds: string[]) => void;
+    deletedCount?: number;
+    onShowDeleted?: () => void;
   } = {},
 ) =>
   renderToStaticMarkup(
@@ -135,6 +137,16 @@ describe("Sidebar", () => {
     // The point of the mark: an empty project is the row with nothing after its
     // name, so it is told from a full one without reading a number at all.
     expect(html()).not.toContain("proj-count");
+  });
+
+  it("offers the Trash panel while a deleted chat is still restorable", () => {
+    expect(html({ deletedCount: 2, onShowDeleted: () => {} })).toContain(
+      'aria-label="Deleted chats (2)"',
+    );
+  });
+
+  it("keeps Trash out of the header when it is empty", () => {
+    expect(html({ deletedCount: 0, onShowDeleted: () => {} })).not.toContain("Deleted chats");
   });
 
   it("carries a working chat up to the closed folder", () => {

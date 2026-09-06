@@ -7,12 +7,11 @@ export type AttentionInboxProps = {
   entries: readonly AttentionEntry[];
   connected: boolean;
   onOpen: (conversation: Conversation) => void;
-  onDismissCompletion: (id: string) => void;
 };
 
 /** Separate from the disclosure so the readable panel can also be rendered
  * in a larger surface without duplicating its navigation or empty state. */
-export function AttentionInboxPanel({ entries, connected, onOpen, onDismissCompletion }: AttentionInboxProps) {
+export function AttentionInboxPanel({ entries, connected, onOpen }: AttentionInboxProps) {
   return <>
     <h2>Needs your attention</h2>
     {!connected && <p className="attention-note" role="status">Disconnected. Live requests will update after reconnecting.</p>}
@@ -25,18 +24,16 @@ export function AttentionInboxPanel({ entries, connected, onOpen, onDismissCompl
             <span className="attention-title">{entry.conversation.title || "Untitled chat"}</span>
             <span className="attention-reason">{entry.reason}{entry.stale ? " · last known" : ""}</span>
           </button>
-          {entry.kind === "completed" && <button
-            type="button"
-            className="attention-dismiss"
-            aria-label={`Dismiss completion for ${entry.conversation.title || "Untitled chat"}`}
-            onClick={() => onDismissCompletion(entry.conversation.id)}
-          >×</button>}
         </li>
       ))}</ul>}
   </>;
 }
 
 export function AttentionInbox(props: AttentionInboxProps) {
+  return props.entries.length > 0 ? <AttentionInboxDisclosure {...props} /> : null;
+}
+
+function AttentionInboxDisclosure(props: AttentionInboxProps) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
   const root = useRef<HTMLDivElement>(null);
