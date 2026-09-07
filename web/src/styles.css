@@ -1983,6 +1983,41 @@ body {
   cursor: pointer;
 }
 
+/* Every confirmed conversation file has explicit actions. The path remains
+   the primary action; the small controls mean copying a canonical server path
+   never relies on selecting a long, wrapped sentence. */
+.prose-file-actions {
+  display: inline;
+}
+
+.prose-file-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 5px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--fg-2);
+  font: inherit;
+  vertical-align: baseline;
+  cursor: pointer;
+}
+
+.prose-file-action:hover {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--fg-1);
+}
+
+.prose-file-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .prose-path:hover {
   border-bottom-color: var(--accent);
 }

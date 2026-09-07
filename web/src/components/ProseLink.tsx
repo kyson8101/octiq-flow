@@ -6,7 +6,7 @@
 // did the right thing, because that is the browser's own gesture — so this
 // makes every click do what Cmd+click already did.
 import type React from "react";
-import { useOpenFile } from "./OpenFileContext";
+import { ConversationFileActions } from "./ConversationFileActions";
 
 /** react-markdown hands every custom component the hast `node` it came from.
  *  It is a parser detail, not an attribute, and React would try to render it. */
@@ -30,14 +30,13 @@ function localFilePath(href: string | undefined): string | null {
 }
 
 export function ProseLink({ href, children, node: _node, ...rest }: Props) {
-  const openFile = useOpenFile();
   const path = localFilePath(href);
 
   if (path) {
     return (
-      <button className="prose-path" type="button" title={path} onClick={() => openFile(path)}>
+      <ConversationFileActions path={path}>
         {children}
-      </button>
+      </ConversationFileActions>
     );
   }
 

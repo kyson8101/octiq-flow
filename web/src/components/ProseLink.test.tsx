@@ -35,9 +35,15 @@ describe("ProseLink", () => {
     const html = render(
       "[prose-01.md](/Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md)",
     );
-    expect(html).toContain('<button class="prose-path"');
+    expect(html).toContain('<button class="prose-path ');
     expect(html).toContain(
       'title="/Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md"',
+    );
+    expect(html).toContain(
+      'aria-label="Copy path: /Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md"',
+    );
+    expect(html).toContain(
+      'aria-label="Open in OctiqFlow: /Users/kyson/03-projects/starfall/bible/seasons/01/prose-01.md"',
     );
     expect(html).not.toContain("<a");
     expect(html).not.toContain('target="_blank"');

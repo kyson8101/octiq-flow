@@ -15,8 +15,8 @@
 import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
 import { baseName, isImage } from "../lib/files";
 import { askPaths, knownPath, subscribePaths } from "../lib/pathStore";
-import { useOpenFile } from "./OpenFile";
 import { ProseShot } from "./ProseShot";
+import { ConversationFileActions } from "./ConversationFileActions";
 
 /** The folder a relative path in a reply is relative TO — the project's own,
  *  which only the app knows. Empty means "no project", and then only absolute
@@ -37,7 +37,6 @@ export function ProsePath({
   children?: React.ReactNode;
 }) {
   const cwd = useContext(CwdContext);
-  const open = useOpenFile();
 
   // The store is not React state, and several of these watch the same answer.
   // `useSyncExternalStore` is the one way to read it that cannot tear: every
@@ -55,22 +54,14 @@ export function ProsePath({
   const picture = isImage(target);
 
   const link = (
-    <button
-      className={`prose-path ${code ? "is-code" : ""}`}
-      type="button"
-      // The whole resolved path, which is usually longer than what the reply
-      // wrote — the answer to "which one of those is it" without opening it,
-      // and for a picture the only place the rest of the path is left.
-      title={target}
-      onClick={() => open(target)}
-    >
+    <ConversationFileActions path={target} code={!!code}>
       {/* A picture is named by its NAME. Everything a path says beyond that is
           answering "which file is this", and the picture underneath answers it
           better — while the folders it took to get there ran to four centred
           lines on a phone, for a file the reader can already see. Every other
           kind of file keeps the words exactly as the reply wrote them. */}
       {picture ? baseName(target) : children}
-    </button>
+    </ConversationFileActions>
   );
 
   // A picture also SHOWS itself. The name stays a link and keeps its place in

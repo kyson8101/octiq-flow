@@ -150,6 +150,7 @@ import { useAttentionInbox } from "./lib/useAttentionInbox";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
 import { projectSlug } from "./lib/projectSlug";
+import { shouldShowChatStatus } from "./lib/chatStatus";
 
 /** The editor and its text-editing engine are a third of the app's code and
  *  nobody who only ever chats should download them. Split off here, they arrive
@@ -1353,6 +1354,10 @@ export default function App() {
               return next;
             });
           }
+          // This is an internal harness recovery record. It remains in the
+          // server diagnostic journal, but a person cannot act on it, so it
+          // must not become an amber "Dismiss all" warning in their chat.
+          if (!shouldShowChatStatus(payload.kind, payload.text)) return;
           patch(id, (s) =>
             payload.kind === "exit"
               ? // Its background children die with it, so nothing is still
@@ -1568,6 +1573,13 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  // A page can hot-reload while an old internal record is already in state.
+  // Filter at render time as well as at arrival so it disappears immediately,
+  // while the rest of the notices keep their original order and dismiss action.
+  const visibleNotices = useMemo(
+    () => chat.notices.filter((notice) => shouldShowChatStatus("stderr", notice)),
+    [chat.notices],
+  );
   // A missing echo can outlive the in-memory backend queue. Reconcile only
   // after an idle chat is caught up and the current connection knows its roster.
   useEffect(() => {
@@ -3747,7 +3759,7 @@ export default function App() {
             </div>
           )}
 
-          {conversationId && chat.notices.length > 0 && (
+          {conversationId && visibleNotices.length > 0 && (
             <div className="notices">
               <button
                 className="notices-dismiss"
@@ -3756,7 +3768,7 @@ export default function App() {
               >
                 Dismiss all
               </button>
-              {chat.notices.map((n, i) => (
+              {visibleNotices.map((n, i) => (
                 <div key={i} className="notice">
                   {n}
                 </div>

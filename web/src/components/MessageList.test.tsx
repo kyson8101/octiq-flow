@@ -217,6 +217,8 @@ describe("a file path in a reply", () => {
 
     expect(html).toContain("prose-path");
     expect(html).toContain("/repo/src/main.rs");
+    expect(html).toContain('aria-label="Copy path: /repo/src/main.rs"');
+    expect(html).toContain('aria-label="Open in OctiqFlow: /repo/src/main.rs"');
     resolved.clear();
   });
 
