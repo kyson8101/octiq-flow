@@ -1,9 +1,9 @@
-// The small, explicit controls beside a file mentioned in a conversation.
+// The small, explicit controls for a file mentioned in a conversation.
 //
-// A path itself remains the familiar thing to click. The two named actions
-// remove the guesswork, though: "Copy path" puts the canonical server path on
-// the clipboard for sharing, and "Open" uses the same viewer that every other
-// part of OctiqFlow uses for that file.
+// A path itself remains the familiar thing to click. Hovering or focusing it
+// reveals the two named actions without leaving a pair of unexplained icons in
+// every paragraph: "Copy path" puts the canonical server path on the clipboard
+// for sharing, and "Open in OctiqFlow" uses the app's usual file viewer.
 import { useState, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
 import { useOpenFile } from "./OpenFileContext";
@@ -39,24 +39,34 @@ export function ConversationFileActions({
       >
         {children}
       </button>
-      <button
-        className="prose-file-action"
-        type="button"
-        title={copied ? "Path copied" : `Copy path: ${path}`}
-        aria-label={copied ? "Path copied" : `Copy path: ${path}`}
-        onClick={() => void copy()}
+      <span
+        className="prose-file-action-menu"
+        role="group"
+        aria-label={`File actions for ${path}`}
       >
-        {copied ? <TickIcon /> : <CopyIcon />}
-      </button>
-      <button
-        className="prose-file-action"
-        type="button"
-        title={`Open in OctiqFlow: ${path}`}
-        aria-label={`Open in OctiqFlow: ${path}`}
-        onClick={() => open(path)}
-      >
-        <OpenIcon />
-      </button>
+        <button
+          className={`prose-file-action ${copied ? "is-copied" : ""}`}
+          type="button"
+          title={copied ? "Path copied" : `Copy path: ${path}`}
+          aria-label={copied ? "Path copied" : `Copy path: ${path}`}
+          onClick={() => void copy()}
+        >
+          {copied ? <TickIcon /> : <CopyIcon />}
+          <span className="prose-file-action-label">
+            {copied ? "Path copied" : "Copy path"}
+          </span>
+        </button>
+        <button
+          className="prose-file-action"
+          type="button"
+          title={`Open in OctiqFlow: ${path}`}
+          aria-label={`Open in OctiqFlow: ${path}`}
+          onClick={() => open(path)}
+        >
+          <OpenIcon />
+          <span className="prose-file-action-label">Open in OctiqFlow</span>
+        </button>
+      </span>
     </span>
   );
 }

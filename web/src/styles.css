@@ -1984,38 +1984,112 @@ body {
 }
 
 /* Every confirmed conversation file has explicit actions. The path remains
-   the primary action; the small controls mean copying a canonical server path
-   never relies on selecting a long, wrapped sentence. */
+   the primary action; its two less-common actions appear as a labelled
+   popover on hover/focus instead of two unexplained icons after every path. */
 .prose-file-actions {
   display: inline;
+  position: relative;
+}
+
+.prose-file-action-menu {
+  position: absolute;
+  z-index: 12;
+  top: 100%;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: max-content;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 0s linear 120ms;
+}
+
+.prose-file-actions:hover .prose-file-action-menu,
+.prose-file-actions:focus-within .prose-file-action-menu {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition-delay: 0s;
 }
 
 .prose-file-action {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
-  margin-left: 5px;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
   color: var(--fg-2);
   font: inherit;
-  vertical-align: baseline;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .prose-file-action:hover {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--fg-1);
+}
+
+.prose-file-action.is-copied {
+  color: var(--ok);
 }
 
 .prose-file-action:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  outline-offset: -2px;
+}
+
+/* Touch has no hover. Keep the old compact, always-visible affordance there so
+   both actions remain reachable without inventing a tap that steals the file
+   path's existing "open" behaviour. */
+@media (hover: none) {
+  .prose-file-action-menu {
+    position: static;
+    display: inline-flex;
+    flex-direction: row;
+    gap: 5px;
+    margin-left: 5px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: none;
+    vertical-align: baseline;
+  }
+
+  .prose-file-action {
+    justify-content: center;
+    width: 22px;
+    min-height: 22px;
+    padding: 0;
+    border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 7%, transparent);
+  }
+
+  .prose-file-action-label {
+    display: none;
+  }
 }
 
 .prose-path:hover {
