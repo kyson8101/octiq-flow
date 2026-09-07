@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>OctiqFlow Team Server Plan</title>
+  <style>
+    :root {
+      --bg: #08110f;
+      --bg-soft: #0c1815;
+      --panel: #10201c;
+      --panel-2: #132822;
+      --line: #264139;
+      --text: #eef7f2;
+      --muted: #9fb7ad;
+      --accent: #8dd7b5;
+      --accent-2: #62b990;
+      --blue: #8bc6f0;
+      --gold: #e7c676;
+      --warn: #f0ad70;
+      --danger: #ef8f8f;
+      --ok: #83d9a8;
+      --shadow: 0 24px 70px rgba(0, 0, 0, .3);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% -5%, rgba(98, 185, 144, .16), transparent 34rem),
+        radial-gradient(circle at 90% 8%, rgba(139, 198, 240, .09), transparent 30rem),
+        var(--bg);
+      font: 15px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--accent); }
+    a:hover { color: #b7ecd2; }
+    code, .mono {
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      font-size: .92em;
+    }
+
+    .shell {
+      width: min(1180px, calc(100% - 36px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(141, 215, 181, .14);
+      background: rgba(8, 17, 15, .86);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar .shell {
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      font-weight: 760;
+      letter-spacing: -.02em;
+    }
+
+    .mark {
+      width: 31px;
+      height: 31px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(141, 215, 181, .42);
+      border-radius: 10px;
+      color: var(--accent);
+      background: rgba(141, 215, 181, .09);
+      box-shadow: inset 0 0 20px rgba(141, 215, 181, .06);
+    }
+
+    nav {
+      display: flex;
+      gap: 18px;
+      font-size: 13px;
+    }
+
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    nav a:hover { color: var(--text); }
+
+    header.hero {
+      padding: 86px 0 52px;
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      align-items: center;
+      gap: 54px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 { line-height: 1.15; }
+    h1 {
+      max-width: 780px;
+      margin: 14px 0 20px;
+      font-size: clamp(42px, 6.2vw, 76px);
+      letter-spacing: -.055em;
+    }
+
+    h1 span { color: var(--accent); }
+    h2 {
+      margin: 0 0 13px;
+      font-size: clamp(27px, 3vw, 38px);
+      letter-spacing: -.035em;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      letter-spacing: -.015em;
+    }
+
+    p { margin: 0 0 14px; }
+    .lede {
+      max-width: 720px;
+      color: #c4d6ce;
+      font-size: 18px;
+    }
+
+    .meta-row {
+      margin-top: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(16, 32, 28, .76);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .badge::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(141, 215, 181, .1);
+    }
+
+    .hero-card, .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(145deg, rgba(19, 40, 34, .94), rgba(12, 24, 21, .94));
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card { padding: 26px; }
+    .decision {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 13px;
+      padding: 15px 0;
+      border-bottom: 1px solid rgba(38, 65, 57, .76);
+    }
+
+    .decision:last-child { border-bottom: 0; }
+    .decision .num {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: var(--accent);
+      background: rgba(141, 215, 181, .09);
+      font-weight: 800;
+      font-size: 12px;
+    }
+
+    .decision strong { display: block; }
+    .decision small { color: var(--muted); }
+
+    main { padding-bottom: 84px; }
+    section {
+      padding: 60px 0;
+      border-top: 1px solid rgba(38, 65, 57, .5);
+    }
+
+    .section-intro {
+      max-width: 730px;
+      color: var(--muted);
+      margin-bottom: 28px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      grid-column: span 4;
+      padding: 23px;
+      box-shadow: none;
+    }
+
+    .card.wide { grid-column: span 6; }
+    .card.full { grid-column: 1 / -1; }
+    .card p, .card li { color: var(--muted); }
+
+    .icon {
+      width: 40px;
+      height: 40px;
+      margin-bottom: 17px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      color: var(--accent);
+      background: rgba(141, 215, 181, .08);
+      border: 1px solid rgba(141, 215, 181, .18);
+      font-size: 19px;
+    }
+
+    .architecture {
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(7, 14, 12, .62);
+      overflow-x: auto;
+    }
+
+    .flow {
+      min-width: 820px;
+      display: grid;
+      grid-template-columns: 1fr 58px 1.15fr 58px 1.7fr;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .flow-box {
+      min-height: 120px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 15px;
+      background: var(--panel);
+    }
+
+    .flow-box strong { color: var(--text); }
+    .flow-box span { color: var(--muted); font-size: 13px; }
+    .arrow { text-align: center; color: var(--accent); font-size: 26px; }
+    .runners { display: grid; gap: 10px; }
+    .runner {
+      padding: 12px 14px;
+      border: 1px solid rgba(139, 198, 240, .22);
+      border-radius: 11px;
+      background: rgba(139, 198, 240, .055);
+    }
+
+    .runner b { color: var(--blue); }
+    .runner span { display: block; }
+
+    ul, ol { margin: 10px 0 0; padding-left: 21px; }
+    li + li { margin-top: 7px; }
+
+    .callout {
+      margin-top: 22px;
+      padding: 18px 20px;
+      border: 1px solid rgba(240, 173, 112, .3);
+      border-left: 4px solid var(--warn);
+      border-radius: 12px;
+      color: #ead8c9;
+      background: rgba(240, 173, 112, .06);
+    }
+
+    .callout.ok {
+      border-color: rgba(131, 217, 168, .28);
+      border-left-color: var(--ok);
+      color: #d7eee1;
+      background: rgba(131, 217, 168, .055);
+    }
+
+    .path {
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      color: #cce7d9;
+      background: #091310;
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      background: rgba(16, 32, 28, .64);
+    }
+
+    th, td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #cde8dc;
+      background: rgba(19, 40, 34, .9);
+      font-size: 12px;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    td { color: var(--muted); }
+    tr:last-child td { border-bottom: 0; }
+    td strong { color: var(--text); }
+
+    .timeline {
+      position: relative;
+      margin-top: 26px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+
+    .phase {
+      position: relative;
+      min-height: 232px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+    }
+
+    .phase-no {
+      display: inline-block;
+      margin-bottom: 18px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 850;
+      letter-spacing: .12em;
+    }
+
+    .checklist {
+      list-style: none;
+      padding: 0;
+    }
+
+    .checklist li {
+      position: relative;
+      padding-left: 27px;
+    }
+
+    .checklist li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      top: 0;
+      color: var(--ok);
+      font-weight: 900;
+    }
+
+    .risk-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .risk {
+      padding: 19px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(16, 32, 28, .68);
+    }
+
+    .risk b { display: block; margin-bottom: 6px; }
+    .risk span { color: var(--muted); }
+
+    footer {
+      padding: 34px 0 54px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .footer-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 28px;
+    }
+
+    @media (max-width: 900px) {
+      nav { display: none; }
+      header.hero { grid-template-columns: 1fr; padding-top: 60px; }
+      .card, .card.wide { grid-column: 1 / -1; }
+      .timeline { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 580px) {
+      .shell { width: min(100% - 24px, 1180px); }
+      h1 { font-size: 42px; }
+      header.hero { gap: 30px; padding-top: 44px; }
+      section { padding: 46px 0; }
+      .timeline, .risk-grid { grid-template-columns: 1fr; }
+      .footer-row { display: block; }
+      th, td { padding: 11px; }
+    }
+
+    @media print {
+      :root {
+        --bg: #fff;
+        --panel: #f5f8f6;
+        --panel-2: #edf4f0;
+        --line: #cad8d1;
+        --text: #102019;
+        --muted: #4c6158;
+        --accent: #23704f;
+      }
+      body { background: #fff; }
+      .topbar { position: static; background: #fff; }
+      .hero-card, .card { box-shadow: none; }
+      .architecture, .path { background: #f5f8f6; color: #153d2d; }
+      section { break-inside: avoid; }
+      a { color: #185e42; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="shell">
+      <div class="brand"><span class="mark">O</span> OctiqFlow</div>
+      <nav aria-label="Plan sections">
+        <a href="#architecture">Architecture</a>
+        <a href="#environment">Environment</a>
+        <a href="#migration">Migration</a>
+        <a href="#validation">Validation</a>
+      </nav>
+    </div>
+  </div>
+
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <div class="eyebrow">Team infrastructure proposal · 7 September 2026</div>
+        <h1>Move the workload.<br><span>Keep every workspace private.</span></h1>
+        <p class="lede">
+          A Windows-based OctiqFlow server for a team that needs .NET Framework 4.8,
+          faster builds, browser access, private workspaces, individual GitHub identities,
+          and a shared Claude/Codex provider account.
+        </p>
+        <div class="meta-row">
+          <span class="badge">Exploration plan</span>
+          <span class="badge">Windows Server 2022</span>
+          <span class="badge">Browser-first access</span>
+        </div>
+      </div>
+
+      <aside class="hero-card" aria-label="Agreed decisions">
+        <div class="eyebrow">Agreed direction</div>
+        <div class="decision">
+          <div class="num">01</div>
+          <div><strong>Compute moves to the server</strong><small>Developer laptops become lightweight browser clients.</small></div>
+        </div>
+        <div class="decision">
+          <div class="num">02</div>
+          <div><strong>Each member remains isolated</strong><small>Separate profile, chat history, processes, repo clones, and GitHub credentials.</small></div>
+        </div>
+        <div class="decision">
+          <div class="num">03</div>
+          <div><strong>Provider identity is shared</strong><small>Claude and Codex credentials are an accepted shared-team boundary.</small></div>
+        </div>
+        <div class="decision">
+          <div class="num">04</div>
+          <div><strong>No full SaaS rebuild first</strong><small>Use one OctiqFlow instance per Windows user for the initial rollout.</small></div>
+        </div>
+      </aside>
+    </header>
+
+    <main>
+      <section id="architecture">
+        <div class="eyebrow">Target architecture</div>
+        <h2>One server, one private runtime per member</h2>
+        <p class="section-intro">
+          Cloudflare Access controls who can reach each endpoint. Each endpoint maps to an
+          OctiqFlow process running under a dedicated Windows local account and NTFS boundary.
+        </p>
+
+        <div class="architecture" role="img" aria-label="Browser to Cloudflare Access to per-user OctiqFlow runners">
+          <div class="flow">
+            <div class="flow-box">
+              <strong>Team browsers</strong>
+              <span>HTML/CSS/JS UI</span>
+              <span>WebSocket terminal stream</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="flow-box">
+              <strong>Cloudflare Access</strong>
+              <span>Identity policy per hostname</span>
+              <span>Tunnel to localhost only</span>
+            </div>
+            <div class="arrow">→</div>
+            <div class="flow-box runners">
+              <div class="runner"><b>Alice runner · :1421</b><span>Private profile + repos + GitHub login</span></div>
+              <div class="runner"><b>Bob runner · :1422</b><span>Private profile + repos + GitHub login</span></div>
+              <div class="runner"><b>Carol runner · :1423</b><span>Private profile + repos + GitHub login</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:18px">
+          <article class="card">
+            <div class="icon">▣</div>
+            <h3>Private OctiqFlow state</h3>
+            <p>Each member gets a separate profile, chat transcript store, terminal process set, settings, and workspace registry.</p>
+          </article>
+          <article class="card">
+            <div class="icon">⌘</div>
+            <h3>Private source work</h3>
+            <p>The same repository is cloned separately for each member. Uncommitted files, indexes, stashes, and build output never overlap.</p>
+          </article>
+          <article class="card">
+            <div class="icon">◎</div>
+            <h3>Shared AI provider</h3>
+            <p>Claude and Codex use the accepted shared account. OctiqFlow does not promise provider-credential isolation between trusted members.</p>
+          </article>
+        </div>
+
+        <div class="callout ok">
+          <strong>Why this fits the current product:</strong> OctiqFlow currently keeps its profile,
+          service state, and event bus at process scope. One process per member turns that existing
+          boundary into a clean user boundary without first refactoring the entire backend for multi-tenancy.
+        </div>
+      </section>
+
+      <section id="environment">
+        <div class="eyebrow">Windows environment</div>
+        <h2>Use Windows Server 2022 for the 4.8 baseline</h2>
+        <p class="section-intro">
+          Windows Server 2022 includes .NET Framework 4.8. The runtime alone is not enough for builds;
+          the server also needs the matching Developer Pack, Targeting Pack, and build toolchain.
+        </p>
+
+        <div class="grid">
+          <article class="card wide">
+            <h3>Base operating system</h3>
+            <ul>
+              <li>Windows Server 2022, fully patched</li>
+              <li>Fast SSD/NVMe workspace volume</li>
+              <li>One non-admin local account per team member</li>
+              <li>NTFS ACLs: member, Administrators, and SYSTEM only</li>
+              <li>Cloudflare Tunnel; no public OctiqFlow ports</li>
+            </ul>
+          </article>
+          <article class="card wide">
+            <h3>Development toolchain</h3>
+            <ul>
+              <li>Visual Studio Build Tools 2022 and MSBuild</li>
+              <li>.NET Framework 4.8 Developer/Targeting Pack</li>
+              <li>Required Windows SDK, NuGet, and ASP.NET build components</li>
+              <li>Git for Windows, PowerShell, Node.js, and pnpm</li>
+              <li>Claude Code CLI and Codex CLI</li>
+            </ul>
+          </article>
+        </div>
+
+        <h3 style="margin-top:28px">Per-user filesystem shape</h3>
+        <div class="path mono">D:\OctiqFlow\Users\&lt;user&gt;\
+├── profile\               # OctiqFlow chats, settings, agents, workspace registry
+├── home\                  # user-specific CLI configuration and credentials
+└── workspaces\
+    ├── project-a\         # independent Git clone
+    └── project-b\         # independent Git clone</div>
+
+        <div class="callout">
+          <strong>Do not share the full home directory.</strong> The team may use one upstream
+          Claude/Codex account, but every Windows user should retain separate local CLI session and
+          configuration files. This prevents local history mixing and concurrent credential-file writes.
+        </div>
+      </section>
+
+      <section id="access">
+        <div class="eyebrow">Access model</div>
+        <h2>Share URLs, not a loose HTML file or token</h2>
+        <p class="section-intro">
+          The OctiqFlow interface depends on its backend WebSocket, authentication endpoints, PTYs,
+          filesystem, and Git services. Team members should receive clean hosted URLs.
+        </p>
+
+        <table>
+          <thead>
+            <tr><th>Member</th><th>Shared URL</th><th>Private backend</th><th>Access policy</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Alice</strong></td><td class="mono">alice.flow.company.com</td><td class="mono">127.0.0.1:1421</td><td>Alice's company email only</td></tr>
+            <tr><td><strong>Bob</strong></td><td class="mono">bob.flow.company.com</td><td class="mono">127.0.0.1:1422</td><td>Bob's company email only</td></tr>
+            <tr><td><strong>Carol</strong></td><td class="mono">carol.flow.company.com</td><td class="mono">127.0.0.1:1423</td><td>Carol's company email only</td></tr>
+          </tbody>
+        </table>
+
+        <div class="grid" style="margin-top:18px">
+          <article class="card wide">
+            <h3>Initial rollout</h3>
+            <p>Use one hostname per member. It is simple, matches today's OctiqFlow authentication model, and requires no identity-aware routing layer.</p>
+          </article>
+          <article class="card wide">
+            <h3>Possible later upgrade</h3>
+            <p>A single <span class="mono">flow.company.com</span> URL would require a gateway that verifies identity and routes both HTTP and WebSocket traffic to the correct runner.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="github">
+        <div class="eyebrow">GitHub and repository boundaries</div>
+        <h2>Personal credentials, independent clones</h2>
+        <div class="grid">
+          <article class="card wide">
+            <h3>Local isolation</h3>
+            <ul>
+              <li>Each member signs in to GitHub under their own Windows user.</li>
+              <li>Each account has its own Git credential store and <span class="mono">.gitconfig</span>.</li>
+              <li>Commit name/email and push identity remain personal.</li>
+              <li>No shared Git working directory, index, stash, or build output.</li>
+            </ul>
+          </article>
+          <article class="card wide">
+            <h3>Remote safety</h3>
+            <ul>
+              <li>Use a personal/task branch for each piece of work.</li>
+              <li>Protect <span class="mono">main</span> and release branches.</li>
+              <li>Disable force-push on protected branches.</li>
+              <li>Merge through PR review and repository rulesets.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="sizing">
+        <div class="eyebrow">Capacity guidance</div>
+        <h2>Size for builds, not for the web page</h2>
+        <p class="section-intro">
+          The browser UI is light. Parallel MSBuild, Rust, Node, test, and agent processes determine
+          the server size. Dedicated CPU and fast storage matter more than a low-cost shared VM tier.
+        </p>
+
+        <table>
+          <thead><tr><th>Concurrent active members</th><th>Suggested starting point</th><th>Storage</th></tr></thead>
+          <tbody>
+            <tr><td><strong>2–4</strong></td><td>12–16 vCPU, 64 GB RAM</td><td>1 TB fast SSD/NVMe</td></tr>
+            <tr><td><strong>5–8</strong></td><td>24–32 vCPU, 128 GB RAM</td><td>2 TB fast SSD/NVMe</td></tr>
+            <tr><td><strong>8–15</strong></td><td>Dedicated server or multiple runner hosts</td><td>2+ TB with monitored quotas</td></tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          These are planning estimates, not fixed requirements. Measure CPU, RAM, disk latency, and
+          build duration during the pilot before committing to long-term capacity.
+        </div>
+      </section>
+
+      <section id="migration">
+        <div class="eyebrow">Migration approach</div>
+        <h2>Move safely in four controlled phases</h2>
+        <div class="timeline">
+          <article class="phase">
+            <div class="phase-no">PHASE 01</div>
+            <h3>Compatibility pilot</h3>
+            <p>Prove OctiqFlow, PTY streaming, Claude/Codex, Git, MSBuild, and service startup on one Windows Server test user.</p>
+          </article>
+          <article class="phase">
+            <div class="phase-no">PHASE 02</div>
+            <h3>Server foundation</h3>
+            <p>Create user boundaries, install toolchains, configure NTFS ACLs, tunnel routes, monitoring, quotas, and backup.</p>
+          </article>
+          <article class="phase">
+            <div class="phase-no">PHASE 03</div>
+            <h3>User migration</h3>
+            <p>Clean-clone pushed work, transfer uncommitted files separately, migrate selected OctiqFlow profile data, and authenticate GitHub.</p>
+          </article>
+          <article class="phase">
+            <div class="phase-no">PHASE 04</div>
+            <h3>Team rollout</h3>
+            <p>Issue member URLs, verify privacy boundaries, observe real load, adjust quotas, and keep laptops available during the transition.</p>
+          </article>
+        </div>
+
+        <div class="grid" style="margin-top:18px">
+          <article class="card wide">
+            <h3>Transfer</h3>
+            <ul>
+              <li>Committed work: push, then clean-clone on the server.</li>
+              <li>Uncommitted work: transfer patch plus untracked files.</li>
+              <li>Secrets and local databases: migrate through a separate secure path.</li>
+              <li>Selected chats/settings: copy the user's OctiqFlow profile.</li>
+            </ul>
+          </article>
+          <article class="card wide">
+            <h3>Rebuild</h3>
+            <ul>
+              <li>Do not copy <span class="mono">node_modules</span>, <span class="mono">target</span>, or build output.</li>
+              <li>Recreate dependencies and caches on the server.</li>
+              <li>Replace old local paths in the workspace registry.</li>
+              <li>Run repository build and test commands before handover.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="validation">
+        <div class="eyebrow">Release gate</div>
+        <h2>Validate Windows behavior before team adoption</h2>
+        <p class="section-intro">
+          The present repository is already a headless Rust server and browser client, but its service
+          installation workflow is macOS-oriented. Windows operation must be proven, not assumed.
+        </p>
+
+        <div class="grid">
+          <article class="card wide">
+            <h3>Functional checks</h3>
+            <ul class="checklist">
+              <li><span class="mono">octiq-server.exe</span> starts and serves the complete web client.</li>
+              <li>PowerShell PTYs accept input and stream output reliably.</li>
+              <li>Claude and Codex start, stream, resume, and survive browser reconnects.</li>
+              <li>Git status, diff, commit, pull, and push work.</li>
+              <li>A representative .NET Framework 4.8 solution builds and tests with MSBuild.</li>
+            </ul>
+          </article>
+          <article class="card wide">
+            <h3>Isolation and operations</h3>
+            <ul class="checklist">
+              <li>A member cannot list, read, or modify another member's directories.</li>
+              <li>Browser events and chat history never cross user instances.</li>
+              <li>Service startup loads the correct Windows user profile and environment.</li>
+              <li>CPU, memory, process, and disk limits are effective.</li>
+              <li>Snapshots restore uncommitted workspace and OctiqFlow profile data.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="risks">
+        <div class="eyebrow">Known boundaries</div>
+        <h2>Accepted trade-offs and remaining risks</h2>
+        <div class="risk-grid">
+          <div class="risk"><b>Shared provider identity</b><span>Claude/Codex usage and credentials are not isolated between trusted team members. This is an explicit accepted constraint.</span></div>
+          <div class="risk"><b>Remote Git conflicts</b><span>Separate clones prevent local interference, but GitHub branch protection is still required to prevent remote overwrite.</span></div>
+          <div class="risk"><b>Host administrator trust</b><span>Windows administrators can access user data. Stronger protection requires separate VMs or encryption with a different trust model.</span></div>
+          <div class="risk"><b>OctiqOS database scope</b><span>If the team uses <span class="mono">/os</span>, do not point all instances at one existing non-tenant-aware database. Use separate databases or add tenancy first.</span></div>
+          <div class="risk"><b>Single-host failure</b><span>Without snapshots and off-host backup, a server disk failure can destroy uncommitted work that is not present on GitHub.</span></div>
+          <div class="risk"><b>Windows proof required</b><span>The Windows PTY, service-account profile, file watcher, and CLI lifecycle must pass the pilot gate before rollout.</span></div>
+        </div>
+      </section>
+
+      <section id="recommendation">
+        <div class="eyebrow">Recommendation</div>
+        <h2>Start with a private Windows development host</h2>
+        <div class="callout ok" style="font-size:17px">
+          <strong>Windows Server 2022 + one Windows user and OctiqFlow instance per member +
+          private repo clones + individual GitHub login + accepted shared Claude/Codex account +
+          per-user Cloudflare Access URL.</strong>
+        </div>
+        <p class="section-intro" style="margin-top:22px">
+          This is the shortest path to removing laptop performance constraints while preserving the
+          privacy boundaries the team needs. A shared single-URL control plane, Windows containers,
+          or per-user Hyper-V VMs can be considered after the pilot provides real usage data.
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    <div class="shell footer-row">
+      <div>
+        <strong style="color:var(--text)">OctiqFlow Team Server Plan</strong><br>
+        Architecture exploration — no deployment actions are included.
+      </div>
+      <div>
+        References:
+        <a href="https://learn.microsoft.com/en-us/dotnet/framework/get-started/system-requirements">.NET Framework requirements</a>
+        · <a href="https://learn.microsoft.com/en-us/dotnet/framework/install/guide-for-developers">Developer Pack guidance</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
