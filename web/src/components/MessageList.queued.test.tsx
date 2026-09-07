@@ -22,6 +22,16 @@ const draw = (busy: boolean) =>
   renderToStaticMarkup(<MessageList messages={sent} busy={busy} />);
 
 describe("the queued mark", () => {
+  it.each([false, true])("shows a lost queue as unsent even when another turn is busy (%s)", (busy) => {
+    const html = renderToStaticMarkup(<MessageList
+      messages={[{ ...sent[0], turnId: "lost", queueLost: true }]}
+      busy={busy} onStartQueued={() => {}} onCancelQueued={() => {}} onRestoreUnsent={() => {}}
+    />);
+    expect(html).toContain("Not queued");
+    expect(html).toContain("Copy text to composer");
+    expect(html).not.toContain("Send this queued message now");
+    expect(html).not.toContain("is-queued");
+  });
   it("comes off when Codex says it has started the turn", () => {
     const working = reduceChat(
       addUserTurn(emptyChat(), "do the thing"),

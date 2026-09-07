@@ -144,7 +144,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { useChatRequests } from "./lib/useChatRequests";
 import { CarryOn } from "./components/CarryOn";
-import { queuedMessageCount } from "./lib/recovery";
+import { queuedMessageCount, reconcileUnsentMessages, type ChatQueueState } from "./lib/recovery";
 import { AttentionInbox } from "./components/AttentionInbox";
 import { useAttentionInbox } from "./lib/useAttentionInbox";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
@@ -1568,6 +1568,25 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  // A missing echo can outlive the in-memory backend queue. Reconcile only
+  // after an idle chat is caught up and the current connection knows its roster.
+  useEffect(() => {
+    if (!conversationId || conn !== "open" || !liveKnown || chat.busy
+      || running.has(conversationId)) return;
+    if (!chat.messages.some((m) => m.role === "user" && m.turnId
+      && !m.echo && !m.takenUp && !m.queueLost)) return;
+    const id = conversationId;
+    const before = chat;
+    let current = true;
+    bridge.invoke<ChatQueueState>("chat_queue_state", { key: keyFor(id) })
+      .then((queue) => {
+        if (!current) return;
+        // A new send, acknowledgement or replay invalidates this snapshot.
+        patch(id, (state) => state === before ? reconcileUnsentMessages(state, queue) : state);
+      })
+      .catch(() => {}); // Older backends cannot establish delivery; retain it as unknown.
+    return () => { current = false; };
+  }, [conversationId, conn, liveKnown, chat, running, patch]);
   /** The failure worth showing. A chat's state is replayed from its transcript
    *  on every reload, so clearing `failure` is only ever true until the next
    *  one — the ✕ has to be REMEMBERED. See `lib/failureDismiss`; a failure
@@ -2809,6 +2828,14 @@ export default function App() {
     [conversationId, patch],
   );
 
+  const restoreUnsent = useCallback((turnId: string) => {
+    if (!conversationId) return;
+    const state = chatsRef.current[conversationId];
+    if (!state?.messages.some((m) => m.turnId === turnId && m.queueLost && !m.echo && !m.takenUp)) return;
+    const text = typedWords(state, turnId);
+    if (text) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), text] }));
+  }, [conversationId]);
+
   /** Picking a different model.
    *
    *  A running agent cannot change model or provider: both are fixed on its
@@ -3658,6 +3685,7 @@ export default function App() {
                       hostName={providerFor(choice.agent).name}
                       onCancelQueued={cancelQueued}
                       onStartQueued={startQueued}
+                      onRestoreUnsent={restoreUnsent}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and

@@ -2587,6 +2587,31 @@ pub fn chat_list_impl(manager: &ChatManager) -> Result<Vec<String>, String> {
     Ok(sessions.keys().cloned().collect())
 }
 
+/// A transcript without an acknowledgement is not proof that a prompt is
+/// still queued: queues are held in memory and do not survive a server restart.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatQueueState {
+    live: bool,
+    queued_turn_ids: Vec<String>,
+}
+
+pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
+    let seats = format!("{key}-seat-");
+    let belongs = |candidate: &str| candidate == key || candidate.starts_with(&seats);
+    // Match the send/reaper lock order, so an enqueue cannot cross this read.
+    let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
+    Ok(ChatQueueState {
+        live: sessions.keys().any(|candidate| belongs(candidate)),
+        queued_turn_ids: queues
+            .iter()
+            .filter(|(candidate, _)| belongs(candidate))
+            .flat_map(|(_, turns)| turns.iter().filter_map(|turn| turn.turn_id.clone()))
+            .collect(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2597,6 +2622,45 @@ mod tests {
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    #[test]
+    fn queue_state_reports_host_and_seat_queues_without_other_chats() {
+        let manager = ChatManager::default();
+        for (key, id) in [
+            ("chat-check", "host"),
+            ("chat-check-seat-one", "seat"),
+            ("chat-other", "other"),
+        ] {
+            manager
+                .queue_turn(
+                    key,
+                    QueuedTurn {
+                        text: "waiting".into(),
+                        images: vec![],
+                        turn_id: Some(id.into()),
+                        recorded: true,
+                    },
+                )
+                .unwrap();
+        }
+        let mut snapshot = chat_queue_state_impl(&manager, "chat-check").unwrap();
+        snapshot.queued_turn_ids.sort();
+        assert!(!snapshot.live);
+        assert_eq!(snapshot.queued_turn_ids, ["host", "seat"]);
+        let empty = chat_queue_state_impl(&ChatManager::default(), "chat-check").unwrap();
+        assert!(!empty.live);
+        assert!(empty.queued_turn_ids.is_empty());
+    }
+
+    #[test]
+    fn queue_state_recognizes_a_live_seat_even_without_a_host() {
+        let manager = Arc::new(ChatManager::default());
+        hold(&manager, "chat-check-seat-one", claude_session(true));
+        assert!(chat_queue_state_impl(&manager, "chat-check").unwrap().live);
+        assert!(!chat_queue_state_impl(&manager, "chat-other").unwrap().live);
+        end_process(&manager, "chat-check-seat-one").unwrap();
+        assert!(!chat_queue_state_impl(&manager, "chat-check").unwrap().live);
+    }
 
     #[test]
     fn continue_conversation_routes_mcp_agents_to_the_reader_first() {

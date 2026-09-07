@@ -1,3 +1,5 @@
+import type { ChatState } from "./chat";
+
 export type RecoveryEvidence = {
   connected: boolean;
   /** A roster received on the current connection, not one from before disconnect. */
@@ -30,6 +32,7 @@ export function queuedMessageCount(chat: Pick<import("./chat").ChatState, "messa
   let count = 0;
   for (let index = chat.messages.length - 1; index >= 0; index--) {
     const message = chat.messages[index];
+    if (message.queueLost) continue;
     if (message.role !== "user" || message.echo || message.takenUp) break;
     // Seat messages have different acceptance semantics; don't infer a host queue.
     if (message.to || !message.turnId) return undefined;
@@ -39,4 +42,21 @@ export function queuedMessageCount(chat: Pick<import("./chat").ChatState, "messa
   return chat.messages.some((message) => message.role === "user" && (message.turnId || message.echo || message.takenUp))
     ? 0
     : undefined;
+}
+export type ChatQueueState = { live: boolean; queuedTurnIds: string[] };
+
+/** Only reconcile a settled chat against a connected backend snapshot. A
+ * completed turn alone says nothing about prompts still waiting behind it. */
+export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState): ChatState {
+  if (chat.busy || queue.live) return chat;
+  const queued = new Set(queue.queuedTurnIds);
+  let changed = false;
+  const messages = chat.messages.map((message) => {
+    if (message.role !== "user" || !message.turnId || message.echo || message.takenUp) return message;
+    const lost = !queued.has(message.turnId);
+    if (!!message.queueLost === lost) return message;
+    changed = true;
+    return { ...message, queueLost: lost || undefined };
+  });
+  return changed ? { ...chat, messages } : chat;
 }

@@ -294,6 +294,9 @@ export type Message = {
    *  replay id because it is a state signal, not a second copy of the message.
    *  The queue mark only belongs on a turn neither kind of signal has claimed. */
   takenUp?: boolean;
+  /** The connected backend confirmed this unacknowledged prompt is no longer
+   * queued. Keep the words, but do not present them as work still waiting. */
+  queueLost?: boolean;
   /** The earlier queued prompt this assistant message is answering. Codex only;
    * Claude's persistent stream already preserves its working conversation. */
   replyTo?: ReplyTarget;
@@ -1888,6 +1891,7 @@ function waitingForCodex(message: Message): boolean {
     message.role === "user" &&
     !message.echo &&
     !message.takenUp &&
+    !message.queueLost &&
     !message.to
   );
 }
@@ -1972,7 +1976,7 @@ function codexTurnStarted(
           m.turnId === turnId,
       )
     : state.messages.findIndex(
-        (m) => m.role === "user" && !m.echo && !m.takenUp && !m.to,
+        (m) => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost && !m.to,
       );
 
   // Starting a new turn seals whatever the previous Codex process left open.
@@ -1986,7 +1990,7 @@ function codexTurnStarted(
   );
   let messages = closed;
   if (at >= 0) {
-    const accepted = { ...closed[at], takenUp: true };
+    const accepted = { ...closed[at], takenUp: true, queueLost: undefined };
     const remaining = closed.filter((_, i) => i !== at);
     const settled = remaining.filter((m) => !waitingForCodex(m));
     const waiting = remaining.filter(waitingForCodex);

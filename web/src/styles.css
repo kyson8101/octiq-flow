@@ -1442,12 +1442,10 @@ body {
    an attachment came to show nothing at all. */
 .msg-user .msg-body {
   width: 100%;
-  /* The right-hand gutter is wider than the left, ALWAYS — queued or not. It is
-     where the clock sits (see `.queued`), and a padding that appeared with the
-     icon would reflow the text under it and put back exactly the jump the icon
-     was moved out of flow to avoid. On a full-width pill the cost is that a
-     wrapping line breaks a few pixels earlier, which nothing can see. */
-  padding: 11px 40px 11px 17px;
+  /* Reserve the action gutter before and after pickup so removing queued
+     controls never rewraps the message. Mobile uses its own reveal tray. */
+  min-height: 48px;
+  padding: 11px 96px 11px 17px;
   border-radius: 21px;
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-1));
   color: var(--fg-0);
@@ -1508,21 +1506,12 @@ body {
   }
 }
 
-/* The same corner, and the one thing you can still do from it.
-
-   A queued message can be taken back — the backend holds it rather than handing
-   it straight to the agent (see `QueuedTurn`) — and this is where you say so.
-   It REPLACES the clock instead of sitting beside it: the gutter is a fixed
-   40px whether anything is drawn in it or not, so a second mark would have had
-   to come from somewhere else on the pill, and the one rule this corner has is
-   that nothing in it may move the words.
-
-   So one 13px box with two faces stacked in it, crossfading. The box is the
-   size of ONE face, not of both, which is what keeps the swap from nudging the
-   centre it is pinned to. */
+/* Cancel-only callers retain the clock/take-back crossfade within a full
+   button target. Both decorative faces leave hit testing to the button. */
 .msg-user .msg-body button.queued {
-  width: 13px;
-  height: 13px;
+  right: 8px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
   background: none;
@@ -1534,6 +1523,10 @@ body {
   position: absolute;
   inset: 0;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Opacity does not remove this positioned layer from hit testing. */
+  pointer-events: none;
   transition: opacity 140ms ease-out;
 }
 
@@ -1541,7 +1534,7 @@ body {
   opacity: 0;
 }
 
-/* Hovering the MESSAGE, not the 13px target itself. A way out that only appears
+/* Hovering the MESSAGE, not the target itself. A way out that only appears
    once the pointer is already on top of it is one nobody finds. */
 .msg-user:hover .msg-body .queued-waiting,
 .msg-user .msg-body button.queued:focus-visible .queued-waiting {
@@ -1560,71 +1553,56 @@ body {
   color: var(--fg-1);
 }
 
-/* A queued message has two explicit outcomes now: start it next, or take it
-   back. The pair lives in the same fixed gutter as the clock, so revealing the
-   controls cannot reflow the words. Until the message is hovered (or one of its
-   controls receives keyboard focus), the clock remains the only visible face. */
+/* Keep both queued actions visible and give each a full mouse target. The
+   clock is only needed on messages without an actionable queue entry. */
 .msg-user .msg-body .queued-actions {
-  right: 7px;
-  width: 31px;
-  height: 16px;
+  right: 8px;
+  width: 76px;
+  height: 36px;
   align-items: center;
   justify-content: center;
 }
 
 .msg-user .msg-body .queued-actions > .queued-waiting {
-  align-items: center;
-  justify-content: center;
+  display: none;
 }
 
 .msg-user .msg-body .queued-controls {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  opacity: 0;
-  transition: opacity 140ms ease-out;
+  gap: 4px;
 }
 
 .msg-user .msg-body .queued-controls button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 13px;
-  height: 16px;
+  width: 36px;
+  height: 36px;
   padding: 0;
   border: 0;
-  background: none;
-  color: var(--fg-2);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg-0) 7%, transparent);
+  color: var(--fg-1);
   cursor: pointer;
-  transition: color 140ms ease-out, transform 140ms ease-out;
+  transition: color 140ms ease-out, background 140ms ease-out;
+}
+
+.msg-user .msg-body .queued-controls svg {
+  width: 16px;
+  height: 16px;
 }
 
 .msg-user .msg-body .queued-controls button:hover,
 .msg-user .msg-body .queued-controls button:focus-visible {
   color: var(--fg-0);
-  transform: scale(1.08);
+  background: color-mix(in srgb, var(--fg-0) 14%, transparent);
 }
 
-.msg-user:hover .msg-body .queued-actions > .queued-waiting,
-.msg-user .msg-body .queued-actions:focus-within > .queued-waiting {
-  opacity: 0;
-}
-
-.msg-user:hover .msg-body .queued-controls,
-.msg-user .msg-body .queued-actions:focus-within .queued-controls {
-  opacity: 1;
-}
-
-/* Touch has no hover state to reveal a control tray. Both choices stay visible
-   there; their labels still carry the queued status for screen readers. */
-@media (hover: none) {
-  .msg-user .msg-body .queued-actions > .queued-waiting {
-    opacity: 0;
-  }
-
-  .msg-user .msg-body .queued-controls {
-    opacity: 1;
-  }
+.msg-user .msg-body .queued-controls button:focus-visible,
+.msg-user .msg-body button.queued:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -8319,6 +8297,31 @@ body.is-ultra .eff {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+}
+
+.msg-unsent {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-1);
+  font-size: 12px;
+}
+
+.msg-unsent button {
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.msg-unsent button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .msg-copy {

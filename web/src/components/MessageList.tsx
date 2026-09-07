@@ -636,6 +636,7 @@ function TurnView({
   hostName,
   onCancelQueued,
   onStartQueued,
+  onRestoreUnsent,
 }: {
   messages: Message[];
   kids: Kids;
@@ -645,6 +646,7 @@ function TurnView({
   onCancelQueued?: (turnId: string) => void;
   /** Make a waiting message the next turn now. */
   onStartQueued?: (turnId: string) => void;
+  onRestoreUnsent?: (turnId: string) => void;
   /** What to call the host — the provider this conversation is running, in its
    *  own name. See the same prop on `MessageList`. */
   hostName?: string;
@@ -701,7 +703,8 @@ function TurnView({
   // Only while the chat is actually working. A slash command like /context is
   // answered locally and is never echoed back at all, so "no echo" on its own
   // would leave it marked queued forever — which is how this was first wrong.
-  const queued = !!busy && role === "user" && messages.every((m) => !m.echo && !m.takenUp);
+  const unsent = role === "user" && messages.some((m) => m.queueLost && !m.echo && !m.takenUp);
+  const queued = !!busy && !unsent && role === "user" && messages.every((m) => !m.echo && !m.takenUp);
 
   // And whether this one can be taken back. A user turn is its own bubble now
   // (`groupTurns`), so the one id this needs is unambiguous — but only a turn
@@ -925,6 +928,16 @@ function TurnView({
           shortcut, not the replacement. */}
       {role === "user" && answer && (
         <div className="msg-foot">
+          {unsent && (
+            <span className="msg-unsent">
+              <span role="status" title="No acknowledgement was recorded, and this message is no longer in the server queue">Not queued</span>
+              {onRestoreUnsent && messages[0].turnId && (
+                <button type="button" onClick={() => onRestoreUnsent(messages[0].turnId!)}>
+                  Copy text to composer
+                </button>
+              )}
+            </span>
+          )}
           <CopyAnswer text={answer} what="message" />
         </div>
       )}
@@ -1242,6 +1255,7 @@ const MessageListBody = function MessageList({
   hostName,
   onCancelQueued,
   onStartQueued,
+  onRestoreUnsent,
   hasEarlier = false,
   loadingEarlier = false,
   earlierError,
@@ -1273,6 +1287,8 @@ const MessageListBody = function MessageList({
   onCancelQueued?: (turnId: string) => void;
   /** Stop the current turn and start this named queued message next. */
   onStartQueued?: (turnId: string) => void;
+  /** Restore text from a prompt the backend no longer holds; never sends it. */
+  onRestoreUnsent?: (turnId: string) => void;
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1771,6 +1787,7 @@ const MessageListBody = function MessageList({
               hostName={hostName}
               onCancelQueued={onCancelQueued}
               onStartQueued={onStartQueued}
+              onRestoreUnsent={onRestoreUnsent}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once

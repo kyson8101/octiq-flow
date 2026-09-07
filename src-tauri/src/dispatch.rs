@@ -335,6 +335,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
         )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
+        "chat_queue_state" => to_value(crate::agent_chat::chat_queue_state_impl(
+            &svc.chats,
+            &arg::<String>(&args, "key")?,
+        )),
         // Card 68 — put one thing to every seat, in order, one at a time.
         "chat_round" => unit(crate::round::start_round_impl(
             svc.rounds.clone(),
