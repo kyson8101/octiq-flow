@@ -576,17 +576,29 @@ impl AgentProvider for CodexProvider {
             // Codex accepts per-process MCP configuration through ordinary
             // `-c` overrides. The shared writer gives us Claude's JSON config
             // path; the stdio script lives beside it and is the part both
-            // providers actually need.
+            // providers actually need. Codex deliberately gives MCP children
+            // a filtered environment, so explicitly forward the two values
+            // that make OctiqFlow's chat-bound tools belong to this chat and
+            // profile. Without `OCTIQ_CHAT_KEY`, the server correctly exposes
+            // only `read_conversation` and `ask_user` can never reach the model.
             let script = mcp.with_file_name("octiq-ask.cjs");
             let command = format!("mcp_servers.octiq.command={}", toml_string("node"));
             let args = format!(
                 "mcp_servers.octiq.args=[{}]",
                 toml_string(&script.to_string_lossy())
             );
+            let env_vars = "mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\"]";
+            // `ask_user` deliberately waits for a person for up to ten
+            // minutes. Give the MCP call one minute beyond the server's own
+            // deadline so Codex receives OctiqFlow's precise timeout result
+            // instead of cancelling the tool at the same instant.
+            let tool_timeout = "mcp_servers.octiq.tool_timeout_sec=660";
             cmd.push_str(&format!(
-                " -c {} -c {}",
+                " -c {} -c {} -c {} -c {}",
                 sh_quote(&command),
-                sh_quote(&args)
+                sh_quote(&args),
+                sh_quote(env_vars),
+                sh_quote(tool_timeout),
             ));
         }
         for dir in request.extra_dirs {
@@ -969,6 +981,8 @@ mod tests {
         assert!(codex.contains("approval_policy='on-request'"));
         assert!(codex.contains("mcp_servers.octiq.command=\"node\""));
         assert!(codex.contains("mcp_servers.octiq.args=[\"octiq-ask.cjs\"]"));
+        assert!(codex.contains("mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\"]"));
+        assert!(codex.contains("mcp_servers.octiq.tool_timeout_sec=660"));
         assert!(!codex.contains("--permission-mode"));
 
         let pi = command(AgentKind::Pi, Some(Path::new("octiq-ask.json")));
