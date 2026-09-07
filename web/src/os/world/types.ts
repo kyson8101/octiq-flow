@@ -136,7 +136,7 @@ export type RecruitmentDraft = {
 };
 export type SecretaryBlueprint = {
   summary: string;
-  projects: { name: string; context: string }[];
+  projects: { name: string; context: string; workspacePath?: string | null }[];
   professions: { name: string; kind: string; guidance: string }[];
   agents: {
     name: string;
@@ -159,11 +159,12 @@ export type SecretaryDraft = {
   orgId: string;
   secretaryId: string;
   message: string;
-  status: "queued" | "generating" | "ready" | "applied" | "cancelled" | "failed";
+  status: "queued" | "generating" | "ready" | "applied" | "cancelled" | "failed" | "stale";
   blueprint: SecretaryBlueprint | null;
   error: string | null;
   baseSignature: number;
   createdAt: number;
+  fileActivity?: { action: string; workspacePath: string; path: string; error: string | null }[];
 };
 export type World = {
   revision: number;
@@ -176,6 +177,7 @@ export type World = {
   meetings: Meeting[];
   recruitmentDrafts?: RecruitmentDraft[];
   secretaryDrafts?: SecretaryDraft[];
+  secretaryWorkspaces?: { id: string; orgId: string; path: string }[];
   roleRequests?: RoleRequest[];
   memories: Memory[];
   runs: Run[];

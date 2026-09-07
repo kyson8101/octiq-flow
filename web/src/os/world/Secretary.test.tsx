@@ -43,6 +43,28 @@ const world = (...items: SecretaryDraft[]): World => ({
 });
 
 describe("Secretary reception", () => {
+  it("shows explicit org-scoped folder access without silently authorizing paths", () => {
+    const data = world({ ...draft, message: "Read /Users/me/starfall/AGENTS.md" });
+    data.secretaryWorkspaces = [{ id: "folder", orgId: "org", path: "/Users/me/allowed" }, { id: "private", orgId: "other", path: "/PRIVATE-OTHER-ORG" }];
+    const mutate = vi.fn();
+    const html = renderToStaticMarkup(<SecretaryDesk world={data} orgId="org" secretary={secretary} mutate={mutate} busy={false} />);
+    expect(html).toContain("Allow read-only access");
+    expect(html).toContain("/Users/me/starfall");
+    expect(html).toContain("/Users/me/allowed");
+    expect(html).not.toContain("PRIVATE-OTHER-ORG");
+    expect(html).toContain("File contents are sent to its configured model");
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("shows inspected paths, failures and the proposed binding before confirmation", () => {
+    const inspected = { ...draft, blueprint: { ...draft.blueprint!, projects: [{ name: "Starfall", context: "Read from disk", workspacePath: "/Users/me/starfall" }] }, fileActivity: [{ action: "read_file", workspacePath: "/Users/me/starfall", path: "AGENTS.md", error: null }, { action: "read_file", workspacePath: "/Users/me/starfall", path: "missing.md", error: "File not found." }] };
+    const html = renderToStaticMarkup(<SecretaryDesk world={world(inspected)} orgId="org" secretary={secretary} mutate={vi.fn()} busy={false} />);
+    expect(html).toContain("Read: /Users/me/starfall/AGENTS.md");
+    expect(html).toContain("Blocked: /Users/me/starfall/missing.md");
+    expect(html).toContain("File not found.");
+    expect(html).toContain("Workspace: /Users/me/starfall");
+  });
+
   it("shows a readable inert blueprint and explicit confirmation", () => {
     const html = renderToStaticMarkup(<SecretaryDesk world={world(draft)} orgId="org" secretary={secretary} mutate={vi.fn()} busy={false} />);
     expect(html).toContain("PROPOSED BLUEPRINT");
@@ -76,7 +98,7 @@ describe("Secretary reception", () => {
     expect(blueprint).toContain("LIVE PREVIEW · v2");
   });
 
-  it.each(["queued", "generating", "failed", "cancelled"] as const)("keeps the last preview but prevents applying it after a %s follow-up", (status) => {
+  it.each(["queued", "generating", "failed", "cancelled", "stale"] as const)("keeps the last preview but prevents applying it after a %s follow-up", (status) => {
     const next = { ...draft, id: "next", message: "Change the team", status, blueprint: null };
     const html = renderToStaticMarkup(<SecretaryDesk world={world(draft, next)} orgId="org" secretary={secretary} mutate={vi.fn()} busy={false} />);
     expect(html).toContain("Quinn");

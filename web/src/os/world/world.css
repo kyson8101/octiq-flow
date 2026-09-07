@@ -1514,6 +1514,34 @@
   border-top: 1px solid #40575a;
   padding: 14px 18px;
 }
+.ow-secretary-folder-access {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.ow-secretary-composer-with-access {
+  max-height: 65%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ow-secretary-folder-access summary,
+.ow-secretary-file-activity summary {
+  cursor: pointer;
+  padding: 5px 0;
+}
+.ow-secretary-folder-access p { margin: 8px 0; }
+.ow-secretary-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ow-secretary-folder button { flex-shrink: 0; }
+.ow-workspace-path,
+.ow-secretary-file-activity { overflow-wrap: anywhere; min-width: 0; }
+.ow-secretary-file-activity { font-size: 12px; margin: 8px 0; }
+.ow-secretary-file-activity ul { padding-left: 18px; }
+.ow-secretary-file-activity small { display: block; }
 .ow-secretary-composer .ow-field {
   margin-bottom: 10px;
 }

@@ -45,6 +45,12 @@ export const bridge = {
     if (cmd === "world_snapshot") return snapshot();
     window.taskCalls.push({ cmd, args });
     if (window.failNext) { window.failNext = false; throw new Error("Connection interrupted. Try again."); }
+    if (cmd === "world_update_project") {
+      const project = world.projects.find(p => p.id === args.projectId);
+      Object.assign(project, { workspacePath: args.workspacePath, context: args.context, runnerImage: args.runnerImage });
+      world.revision++;
+      return { result: { id: project.id }, snapshot: snapshot() };
+    }
     const task = world.tasks.find(t => t.id === args.taskId);
     if (cmd === "world_task_direction") {
       task.messages.push({ id: crypto.randomUUID(), actor: "founder", body: args.body, createdAt: 2 });
@@ -181,6 +187,20 @@ try {
   await page.getByRole("button", { name: "Back to tasks", exact: false }).click();
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await page.locator(".ow-mobile-item").filter({ hasText: "Draft the arrival chapter" }).count(), 1, "Board entry returns to the task list");
+  // Existing context-only projects can be linked to a workspace without recreation.
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByRole("button", { name: "setup", exact: true }).click();
+  await page.getByRole("button", { name: "Edit project", exact: true }).click();
+  const workspace = page.getByRole("textbox", { name: "Workspace folder", exact: true });
+  assert.equal(await workspace.inputValue(), "/fixture/starfall");
+  await workspace.fill("/fixture/starfall-linked");
+  await page.evaluate(() => { window.failNext = true; });
+  await page.getByRole("button", { name: "Save project", exact: true }).click();
+  await page.getByRole("dialog").getByRole("alert").waitFor();
+  assert.equal(await workspace.inputValue(), "/fixture/starfall-linked");
+  await page.getByRole("button", { name: "Save project", exact: true }).click();
+  await page.locator(".ow-setup-row").getByText("/fixture/starfall-linked", { exact: true }).waitFor();
+  assert.equal((await page.evaluate(() => window.taskCalls.at(-1))).args.workspacePath, "/fixture/starfall-linked");
   assert.deepEqual(errors, []);
   console.log(`Agent/task browser checks passed. Screenshots: ${output}`);
 } finally {

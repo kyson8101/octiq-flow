@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { suggestedWorkspacePath } from "./workspaceAccess";
 import type {
   Agent,
   Mutate,
@@ -47,6 +48,7 @@ function BlueprintView({
             <header><Mode exists={exists(world.projects, project.name)} /><small>PROJECT</small></header>
             <strong>{project.name}</strong>
             <p>{project.context || "No shared context proposed."}</p>
+            {project.workspacePath && <p className="ow-workspace-path">Workspace: {project.workspacePath}<br /><small>Workers with project access can use this folder after confirmation.</small></p>}
           </article>
         ))}
         {blueprint.professions.map((profession) => (
@@ -104,6 +106,12 @@ export function SecretaryDesk({
   const [applying, setApplying] = useState(false);
   const [panel, setPanel] = useState<"conversation" | "blueprint">("conversation");
   const [errorPanel, setErrorPanel] = useState<"conversation" | "blueprint">("conversation");
+  const [folderPath, setFolderPath] = useState<string | null>(null);
+  const [folderError, setFolderError] = useState("");
+  const [accessPending, setAccessPending] = useState(false);
+  const folders = (world.secretaryWorkspaces ?? []).filter((folder) => folder.orgId === orgId);
+  const suggestedFolder = suggestedWorkspacePath(message || latest?.message || "");
+  const nextFolder = folderPath ?? (folders.some((f) => f.path === suggestedFolder) ? "" : suggestedFolder);
   const transcript = useRef<HTMLDivElement>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
   const follow = useRef(true);
@@ -113,7 +121,7 @@ export function SecretaryDesk({
   const running = starting || pendingVisible || !!active;
   const questions = latest?.blueprint?.questions ?? [];
   const canApply = !!preview && preview.id === latest?.id && latest.status === "ready"
-    && !questions.length && !running && !busy && !applying;
+    && !questions.length && !running && !busy && !applying && !accessPending;
 
   useEffect(() => {
     if (pendingSaved) setPending(null);
@@ -123,10 +131,10 @@ export function SecretaryDesk({
     if (follow.current && transcript.current) {
       transcript.current.scrollTop = transcript.current.scrollHeight;
     }
-  }, [drafts.length, latest?.status, latest?.blueprint, pendingVisible, panel]);
+  }, [drafts.length, latest?.status, latest?.blueprint, latest?.fileActivity?.length, pendingVisible, panel]);
 
   const send = () => {
-    if (sending.current || busy || running || applying || !message.trim()) return;
+    if (sending.current || busy || running || applying || accessPending || !message.trim()) return;
     const submitted = message.trim();
     sending.current = true;
     follow.current = true;
@@ -146,7 +154,19 @@ export function SecretaryDesk({
       });
   };
 
-  const status = running ? "Updating…" : latest?.status === "failed" ? "Reply failed"
+  const changeAccess = async (action: "authorize_secretary_workspace" | "revoke_secretary_workspace", args: Record<string, unknown>) => {
+    if (accessPending || busy || applying) return;
+    setAccessPending(true);
+    setFolderError("");
+    try {
+      await mutate(action, { orgId, ...args });
+      if (action === "authorize_secretary_workspace") setFolderPath("");
+    } catch (error) {
+      setFolderError(error instanceof Error ? error.message : String(error));
+    } finally { setAccessPending(false); }
+  };
+
+  const status = running ? "Updating…" : latest?.status === "stale" ? "Access changed" : latest?.status === "failed" ? "Reply failed"
     : latest?.status === "cancelled" ? "Stopped" : preview?.status === "applied" ? "Applied"
     : questions.length ? "Awaiting your reply" : preview ? "Ready to review" : "Draft";
 
@@ -176,6 +196,7 @@ export function SecretaryDesk({
             <span className="ow-eyebrow">{secretary.name}</span>
             <p>Tell me how this organization should work.</p>
             <p>I can help set up projects, roles, agents and workflows. Reply here whenever I ask a question; your blueprint updates alongside our conversation.</p>
+            <p>To understand local work, allow read-only folder access below. I can then inspect AGENTS.md and relevant workflow files without changing them.</p>
           </article>
           {drafts.map((draft) => (
             <div className="ow-secretary-turn" key={draft.id}>
@@ -183,6 +204,13 @@ export function SecretaryDesk({
                 <span className="ow-eyebrow">YOU</span>
                 <p>{draft.message}</p>
               </article>
+              {!!draft.fileActivity?.length && <details className="ow-secretary-file-activity">
+                <summary>File inspection · {draft.fileActivity.length}</summary>
+                <ul>{draft.fileActivity.map((file, index) => <li key={index}>
+                  <span>{file.error ? "Blocked" : file.action === "read_file" ? "Read" : "Listed"}: {file.workspacePath}/{file.path}</span>
+                  {file.error && <small>{file.error}</small>}
+                </li>)}</ul>
+              </details>}
               {(draft.blueprint || draft.error || ["cancelled", "failed"].includes(draft.status)) && (
                 <article className="ow-secretary-message">
                   <span className="ow-eyebrow">{secretary.name}</span>
@@ -201,7 +229,23 @@ export function SecretaryDesk({
           {pendingVisible && <article className="ow-secretary-message ow-secretary-message-user"><span className="ow-eyebrow">YOU</span><p>{pending!.message}</p></article>}
           {running && <article className="ow-secretary-message ow-secretary-thinking" role="status"><span className="ow-eyebrow">{secretary.name}</span><p>Thinking through your request…</p></article>}
         </div>
-        <form className="ow-secretary-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
+        <form className="ow-secretary-composer ow-secretary-composer-with-access" onSubmit={(event) => { event.preventDefault(); send(); }}>
+          <details className="ow-secretary-folder-access">
+            <summary>Folder access · {folders.length ? `${folders.length} read-only` : "not connected"}</summary>
+            <p>Allow this org's Secretary to read a specific folder on the server. File contents are sent to its configured model. This does not create a project or allow writes. Removing access stops the current inspection; previous conversation remains.</p>
+            {folders.map((folder) => <div className="ow-secretary-folder" key={folder.id}>
+              <span className="ow-workspace-path">{folder.path}</span>
+              <button type="button" aria-label={`Remove access to ${folder.path}`} disabled={busy || accessPending || applying} onClick={() => void changeAccess("revoke_secretary_workspace", { workspaceId: folder.id })}>Remove access</button>
+            </div>)}
+            <label className="ow-field"><span>Folder on the server</span>
+              <input value={nextFolder} onChange={(event) => setFolderPath(event.target.value)} placeholder="/Users/you/projects/my-project" list={`secretary-folders-${orgId}`} disabled={accessPending}
+                onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }} />
+              <datalist id={`secretary-folders-${orgId}`}>{world.projects.filter((p) => p.orgId === orgId && p.workspacePath).map((p) => <option key={p.id} value={p.workspacePath}>{p.name}</option>)}</datalist>
+            </label>
+            <button type="button" disabled={busy || accessPending || applying || running || !nextFolder.trim()} onClick={() => void changeAccess("authorize_secretary_workspace", { path: nextFolder.trim() })}>Allow read-only access</button>
+            {folderError && <p role="alert" className="ow-blueprint-error">{folderError}</p>}
+            {!!folders.length && <p className="ow-muted">Access saved. Send a message to inspect these folders and update your blueprint.</p>}
+          </details>
           {error && errorPanel === "conversation" && <p className="ow-blueprint-error" role="alert">{error}</p>}
           <label className="ow-field">
             <span>Message your Secretary</span>
@@ -228,7 +272,7 @@ export function SecretaryDesk({
                   setErrorPanel("conversation");
                   void mutate("cancel_secretary_request", { draftId: active.id }).catch(() => {});
                 }}>Stop</button>
-              : <button type="submit" className="ow-primary" disabled={busy || running || applying || !message.trim()}>Send</button>}
+              : <button type="submit" className="ow-primary" disabled={busy || running || applying || accessPending || !message.trim()}>Send</button>}
           </div>
         </form>
       </section>
@@ -249,7 +293,7 @@ export function SecretaryDesk({
         <div className="ow-secretary-confirm">
           {error && errorPanel === "blueprint" && <p className="ow-blueprint-error" role="alert">{error}</p>}
           <p>{running ? "Your Secretary is updating the plan."
-            : latest?.status === "failed" || latest?.status === "cancelled" ? "Send another message to continue working on the plan."
+            : latest?.status === "failed" || latest?.status === "cancelled" || latest?.status === "stale" ? "Send another message to continue working on the plan."
             : preview?.status === "applied" ? "Applied. Keep chatting to plan further changes."
             : questions.length ? "Your Secretary has a question. Reply in the conversation."
             : preview ? "Review the plan, then apply it to your organization." : "Chat with your Secretary to prepare a blueprint."}</p>

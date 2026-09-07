@@ -12,6 +12,9 @@ mod runtime;
 mod secretary;
 #[cfg(test)]
 mod tests;
+mod workspace_access;
+#[cfg(test)]
+mod workspace_access_tests;
 
 use model::*;
 use postgres::{Client, NoTls};
@@ -148,9 +151,6 @@ pub fn dispatch(action: &str, args: Value) -> Result<Value> {
     let result = update(|world| {
         if let Some(receipt) = world.receipts.iter().find(|r| r.id == request) {
             return Ok(receipt.result.clone());
-        }
-        if action == "create_project" {
-            runtime::validate_workspace(world, args["workspacePath"].as_str().unwrap_or(""))?;
         }
         let result = world.apply(action, &args)?;
         world.receipts.push(Receipt {

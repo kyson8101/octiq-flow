@@ -37,10 +37,11 @@ let update;
 window.calls = [];
 window.failNext = false;
 window.replaceDrafts = (drafts) => { world = { ...world, secretaryDrafts: drafts }; update(world); };
+window.inspected = () => window.replaceDrafts(world.secretaryDrafts.map((d, index) => index === world.secretaryDrafts.length - 1 ? { ...d, fileActivity: [{ action: "read_file", workspacePath: world.secretaryWorkspaces[0].path, path: "AGENTS.md", error: null }] } : d));
 window.finish = (status = "ready") => {
   const drafts = [...world.secretaryDrafts];
   const last = drafts.at(-1);
-  drafts[drafts.length - 1] = { ...last, status, blueprint: status === "ready" ? { ...initialBlueprint, summary: "The editor will review every chapter.", questions: [], projects: [{ name: "Starfall", context: "Every chapter receives an editorial review." }] } : null, error: status === "failed" ? "Provider unavailable. Please try again." : null };
+  drafts[drafts.length - 1] = { ...last, status, blueprint: status === "ready" ? { ...initialBlueprint, summary: "The editor will review every chapter.", questions: [], projects: [{ name: "Starfall", context: "Every chapter receives an editorial review.", workspacePath: world.secretaryWorkspaces?.[0]?.path }] } : null, error: status === "failed" ? "Provider unavailable. Please try again." : null };
   window.replaceDrafts(drafts);
 };
 function App() {
@@ -52,6 +53,13 @@ function App() {
     window.calls.push({ action, args });
     setError("");
     if (window.failNext) { window.failNext = false; setError("Connection interrupted. Try again."); throw new Error("offline"); }
+    if (action === "authorize_secretary_workspace" || action === "revoke_secretary_workspace") {
+      const id = args.workspaceId ?? crypto.randomUUID();
+      const folders = world.secretaryWorkspaces ?? [];
+      world = { ...world, secretaryWorkspaces: action === "authorize_secretary_workspace" ? [...folders, { id, orgId: args.orgId, path: args.path }] : folders.filter(f => f.id !== id), secretaryDrafts: world.secretaryDrafts.map(d => ({ ...d, status: d.status === "ready" ? "stale" : ["queued", "generating"].includes(d.status) ? "cancelled" : d.status })) };
+      update(world);
+      return { id };
+    }
     if (action === "create_secretary_request") {
       const next = { ...${JSON.stringify(draft)}, id: crypto.randomUUID(), message: args.message, status: "queued", blueprint: null };
       window.replaceDrafts([...world.secretaryDrafts, next]);
@@ -155,6 +163,44 @@ try {
   await chat.getByText("Provider unavailable. Please try again.").waitFor();
   assert.equal(await confirm.isDisabled(), true);
 
+  // A path is a suggestion, never implicit access. Permission and messages persist independently.
+  const access = page.locator(".ow-secretary-folder-access");
+  const folder = page.getByLabel("Folder on the server", { exact: true });
+  const allow = page.getByRole("button", { name: "Allow read-only access", exact: true });
+  const beforeAccess = await page.evaluate(() => window.calls.length);
+  await input.fill("Read /Users/kyson/03-projects/starfall/AGENTS.md and plan the team");
+  await access.locator("summary").click();
+  assert.equal(await folder.inputValue(), "/Users/kyson/03-projects/starfall");
+  await folder.press("Enter");
+  assert.equal(await page.evaluate(() => window.calls.length), beforeAccess);
+  await page.evaluate(() => { window.failNext = true; });
+  await allow.click();
+  await access.getByRole("alert").waitFor();
+  assert.equal(await folder.inputValue(), "/Users/kyson/03-projects/starfall");
+  await allow.click();
+  await page.getByRole("button", { name: "Remove access to /Users/kyson/03-projects/starfall", exact: true }).waitFor();
+  assert.equal(await confirm.isDisabled(), true, "Changing scope invalidates the old preview");
+  assert.match(await input.inputValue(), /Read .*AGENTS.md/);
+  await input.press("Enter");
+  assert.equal(await allow.isDisabled(), true, "Do not change scope while preparing a reply; removal remains available");
+  await page.evaluate(() => window.inspected());
+  await page.locator(".ow-secretary-file-activity summary").click();
+  await chat.getByText("Read: /Users/kyson/03-projects/starfall/AGENTS.md", { exact: true }).waitFor();
+  await page.evaluate(() => window.finish());
+  await page.waitForFunction(() => !document.querySelector(".ow-secretary-confirm .ow-primary").disabled);
+  await plan.getByText("Workspace: /Users/kyson/03-projects/starfall", { exact: false }).waitFor();
+  await page.screenshot({ animations: "disabled", path: path.join(output, "desktop-folder-access.png") });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Secretary", exact: true }).click();
+  await access.locator("summary").click();
+  assert.equal(await page.getByRole("button", { name: "Remove access to /Users/kyson/03-projects/starfall", exact: true }).count(), 1);
+  await input.fill("Read the workflow next");
+  await input.press("Enter");
+  await page.getByRole("button", { name: "Remove access to /Users/kyson/03-projects/starfall", exact: true }).click();
+  assert.equal(await page.getByRole("button", { name: "Stop", exact: true }).count(), 0, "Revocation stops the active inspection");
+  assert.equal(await confirm.isDisabled(), true);
+  await access.locator("summary").click();
+
   // Restore the unanswered turn to verify narrow layouts and reply navigation.
   await page.evaluate(draft => window.replaceDrafts([draft]), draft);
   await page.setViewportSize({ width: 390, height: 844 });
@@ -183,6 +229,20 @@ try {
     const log = document.querySelector('[role="log"]');
     return dialog.scrollWidth <= dialog.clientWidth && dialog.scrollHeight <= dialog.clientHeight && log.clientHeight > 0;
   }), "A small phone retains a scrollable conversation and composer");
+  await access.locator("summary").click();
+  await folder.fill("/Users/kyson/a-project-with-a-very-long-folder-name/starfall");
+  await allow.scrollIntoViewIfNeeded();
+  await page.screenshot({ animations: "disabled", path: path.join(output, "mobile-folder-access.png") });
+  assert.ok(await page.evaluate(() => {
+    const dialog = document.querySelector("dialog");
+    return dialog.scrollWidth <= dialog.clientWidth && dialog.scrollHeight <= dialog.clientHeight;
+  }), "Folder permissions fit a small phone");
+  await page.getByRole("button", { name: "Send", exact: true }).scrollIntoViewIfNeeded();
+  assert.ok(await page.getByRole("button", { name: "Send", exact: true }).evaluate(button => {
+    const pane = button.closest(".ow-secretary-conversation").getBoundingClientRect();
+    const bounds = button.getBoundingClientRect();
+    return bounds.bottom <= pane.bottom && document.querySelector('[role="log"]').clientHeight > 0;
+  }), "An expanded permission panel must not hide the composer or consume the conversation");
   assert.deepEqual(errors, []);
   console.log(`Secretary browser checks passed. Screenshots: ${output}`);
 } finally {

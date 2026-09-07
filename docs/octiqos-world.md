@@ -61,6 +61,31 @@ reply, and failed submissions preserve the unsent message. Only the latest ready
 blueprint with no unanswered questions can be confirmed in reception. Confirm
 and apply blueprint applies the proposed organization configuration explicitly.
 
+Folder access in the composer grants the Secretary read-only access to a specific
+server-side directory, even before an org has a Project or workers. Pasted paths
+only suggest the field value: the founder must click **Allow read-only access**.
+The disclosure explains that inspected file contents go to the configured model.
+Grants are org-scoped, persisted and removable. Removal stops any active Secretary
+inspection and invalidates ready blueprints; already recorded conversation is not
+erased, and separately confirmed Project/worker permissions are unchanged.
+
+The Secretary can now request `list_files` and `read_file` through OctiqOS and use
+the actual returned content to inspect `AGENTS.md`, workflow definitions and docs.
+Read attempts and errors appear in the conversation. Each reply is bounded to 24
+model turns and 180 KB of focused context; individual reads remain 48 KB UTF-8.
+Cross-org paths, traversal, symlinks, hardlinks and excluded secret paths are
+rejected. This is not a native CLI shell, and cannot write or run commands.
+
+A project card can propose a `workspacePath` copied from an authorized folder.
+Only explicit blueprint confirmation creates/binds the Project and applies worker
+scopes. Omitting that field preserves an existing binding. Setup also allows
+editing an existing Project's Workspace folder, with overlap checks and a guard
+against changing the directory while its work is in flight.
+
+An opt-in smoke test uses the real Codex adapter against synthetic local files,
+without modifying the running org database:
+`OCTIQOS_TEST_SECRETARY_READ=codex cargo test --manifest-path src-tauri/Cargo.toml --lib world::workspace_access_tests::live_secretary_reads_authorized_folder_before_proposing_binding -- --ignored --nocapture`.
+
 The isolated browser regression script `node scripts/test-secretary.mjs` uses
 an in-memory backend and saves desktop/mobile screenshots to a temporary folder.
 Set `OCTIQOS_PLAYWRIGHT_MODULE` to an installed Playwright module if needed, and
@@ -124,7 +149,7 @@ References: [Codex configuration](https://developers.openai.com/codex/config-ref
 Workers can list folders, read UTF-8 files, and write authorized project files.
 Writes require the exact prior content, preventing accidental overwrite of a
 concurrent edit. Developer, Infra and custom execution professions can write;
-PM planning and Tester direct file access are read-only. File actions are bounded
+PM planning does not execute file actions; Tester task access is read-only. File actions are bounded
 to 48 KB. Traversal, symlinks, hardlinks, `.git`, `.env*`, `.pem`, `.key`,
 `node_modules` and `target` are excluded.
 

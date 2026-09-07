@@ -724,7 +724,7 @@ export function WorldPortal() {
                             setDialog({ kind: "project", projectId: p.id })
                           }
                         >
-                          Edit project context
+                          Edit project
                         </button>
                       </article>
                     ))}
@@ -886,6 +886,8 @@ export function WorldPortal() {
               ? `${org?.name ?? "Organization"} Secretary`
               : dialog.kind === "agent"
               ? "Welcome a new agent"
+              : dialog.kind === "project" && dialog.projectId
+                ? "Edit project"
               : dialog.kind === "task"
                 ? "Give your team a task"
                 : dialog.kind === "meeting"
@@ -1002,14 +1004,14 @@ export function WorldPortal() {
               }}
             >
               {!dialog.projectId && <Field name="name" label="Project name" />}
-              {!dialog.projectId && (
-                <Field
-                  name="workspacePath"
-                  label="Workspace folder"
-                  required={false}
-                  placeholder="Absolute path to this project's folder"
-                />
-              )}
+              <Field
+                name="workspacePath"
+                label="Workspace folder"
+                required={false}
+                placeholder="Absolute path to this project's folder"
+                value={world.projects.find((p) => p.id === dialog.projectId)?.workspacePath || ""}
+              />
+              <p className="ow-muted">Folder on the server. Workers can access this folder within their project scope. Stop running work before changing it.</p>
               <Field
                 name="runnerImage"
                 label="Test runner image"

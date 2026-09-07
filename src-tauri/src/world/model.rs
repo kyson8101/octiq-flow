@@ -1,4 +1,4 @@
-//! Product state and invariants. No provider, filesystem, or database effects.
+//! Product state and invariants. Provider and database effects live elsewhere.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -31,6 +31,7 @@ pub struct World {
     pub meetings: Vec<Meeting>,
     pub recruitment_drafts: Vec<RecruitmentDraft>,
     pub secretary_drafts: Vec<super::secretary::SecretaryDraft>,
+    pub secretary_workspaces: Vec<super::workspace_access::WorkspaceAccess>,
     pub role_requests: Vec<super::role_chat::RoleRequest>,
     pub memories: Vec<Memory>,
     pub runs: Vec<Run>,
@@ -402,12 +403,18 @@ impl World {
             "create_project" => {
                 let org_id = text(args, "orgId", 80)?;
                 self.org(&org_id)?;
+                let workspace_path = super::workspace_access::binding(
+                    self,
+                    &org_id,
+                    &optional(args, "workspacePath", 2000)?,
+                    None,
+                )?;
                 let project = Project {
                     id: id(),
                     org_id,
                     name: text(args, "name", 100)?,
                     context: optional(args, "context", 16000)?,
-                    workspace_path: optional(args, "workspacePath", 2000)?,
+                    workspace_path,
                     runner_image: super::command::image_name(
                         args["runnerImage"]
                             .as_str()
@@ -422,12 +429,38 @@ impl World {
             "update_project" => {
                 let project_id = text(args, "projectId", 80)?;
                 let context = optional(args, "context", 16000)?;
+                let workspace_path = if args.get("workspacePath").is_some() {
+                    let current = self.project(&project_id)?;
+                    let path = super::workspace_access::binding(
+                        self,
+                        &current.org_id,
+                        &optional(args, "workspacePath", 2000)?,
+                        Some(&project_id),
+                    )?;
+                    if path != current.workspace_path
+                        && self
+                            .runs
+                            .iter()
+                            .any(|r| r.project_id == project_id && r.in_flight())
+                    {
+                        return Err(
+                            "Stop running project work before changing its workspace folder."
+                                .into(),
+                        );
+                    }
+                    Some(path)
+                } else {
+                    None
+                };
                 let p = self
                     .projects
                     .iter_mut()
                     .find(|p| p.id == project_id)
                     .ok_or("Project not found.")?;
                 p.context = context;
+                if let Some(path) = workspace_path {
+                    p.workspace_path = path;
+                }
                 if let Some(image) = args["runnerImage"].as_str() {
                     p.runner_image = super::command::image_name(image)?;
                 }
@@ -455,6 +488,8 @@ impl World {
             "update_agent_settings" => super::agent_settings::update(self, args),
             "create_recruitment" => super::recruitment::create(self, args),
             "create_secretary_request" => super::secretary::create(self, args),
+            "authorize_secretary_workspace" => super::workspace_access::authorize(self, args),
+            "revoke_secretary_workspace" => super::workspace_access::revoke(self, args),
             "cancel_secretary_request" => super::secretary::cancel(self, args),
             "apply_secretary_blueprint" => super::secretary::apply(self, args),
             "role_message" => super::role_chat::create(self, args),

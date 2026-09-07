@@ -34,26 +34,6 @@ pub fn start() {
     });
 }
 
-pub fn validate_workspace(w: &World, root: &str) -> Result<()> {
-    if root.is_empty() {
-        return Ok(());
-    }
-    let path = fs::canonicalize(root).map_err(|_| "Choose an existing project folder.")?;
-    if !path.is_dir() || path.parent().is_none() {
-        return Err("Choose a project folder, not a filesystem root.".into());
-    }
-    for other in &w.projects {
-        if other.workspace_path.is_empty() {
-            continue;
-        }
-        if let Ok(p) = fs::canonicalize(&other.workspace_path) {
-            if path.starts_with(&p) || p.starts_with(&path) {
-                return Err("Project folders cannot overlap. Select a separate folder to preserve project scope.".into());
-            }
-        }
-    }
-    Ok(())
-}
 pub fn project_path(root: &str, relative: &str, write: bool) -> Result<PathBuf> {
     let relative = Path::new(relative);
     if root.is_empty() {
@@ -66,7 +46,7 @@ pub fn project_path(root: &str, relative: &str, write: bool) -> Result<PathBuf> 
         match c {
             Component::Normal(part) => {
                 let p = part.to_string_lossy();
-                if p == ".git"
+                if matches!(p.as_ref(), ".git" | ".ssh" | ".aws" | ".gnupg")
                     || p == ".env"
                     || p.starts_with(".env.")
                     || p == "node_modules"
@@ -116,6 +96,44 @@ pub fn project_path(root: &str, relative: &str, write: bool) -> Result<PathBuf> 
         return Err("Path is outside the authorized project.".into());
     }
     Ok(canonical)
+}
+
+/// Shared scoped reads; the caller must authorize the root before invoking.
+pub fn read_file_action(root: &str, value: &Value) -> Result<Value> {
+    let relative = value["path"]
+        .as_str()
+        .ok_or("A relative path is required.")?;
+    let path = project_path(root, relative, false)?;
+    match value["action"].as_str() {
+        Some("list_files") => {
+            let entries = fs::read_dir(&path).map_err(|_| "Could not list that folder.")?;
+            let mut files = vec![];
+            for entry in entries.take(200).flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let child = Path::new(relative).join(&name);
+                if project_path(root, &child.to_string_lossy(), false).is_ok() {
+                    files.push(json!({"name":name,"directory":entry.file_type().map(|f|f.is_dir()).unwrap_or(false)}));
+                }
+            }
+            Ok(json!({"files":files,"limit":200}))
+        }
+        Some("read_file") => {
+            if !path.is_file() {
+                return Err("Choose a regular UTF-8 text file.".into());
+            }
+            let mut content = String::new();
+            fs::File::open(&path)
+                .map_err(|_| "Could not read file.")?
+                .take(48_001)
+                .read_to_string(&mut content)
+                .map_err(|_| "File must contain UTF-8 text.")?;
+            if content.len() > 48_000 {
+                return Err("File exceeds the 48 KB focused-read limit.".into());
+            }
+            Ok(json!({"path":relative,"content":content}))
+        }
+        _ => Err("Only list_files and read_file are available for inspection.".into()),
+    }
 }
 
 pub fn release_interrupted(w: &mut World, run_id: &str) {
@@ -591,68 +609,44 @@ pub fn apply_response(w: &mut World, run: &Run, value: &Value) -> Result<Option<
         return Err("That action is not available in a project task.".into());
     }
     let project = w.project(&run.project_id)?.clone();
+    if action != "write_file" {
+        return read_file_action(&project.workspace_path, value).map(Some);
+    }
     let relative = value["path"]
         .as_str()
         .ok_or("A relative path is required.")?;
     let path = project_path(&project.workspace_path, relative, action == "write_file")?;
-    let output = match action {
-        "list_files" => {
-            let entries = fs::read_dir(&path).map_err(|_| "Could not list that folder.")?;
-            let mut files = vec![];
-            for entry in entries.take(200).flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let child = Path::new(relative).join(&name);
-                if project_path(&project.workspace_path, &child.to_string_lossy(), false).is_ok() {
-                    files.push(json!({"name":name,"directory":entry.file_type().map(|f|f.is_dir()).unwrap_or(false)}));
-                }
-            }
-            json!({"files":files,"limit":200})
+    let output = {
+        let agent = w.agent(&run.agent_id)?;
+        let profession = w
+            .professions
+            .iter()
+            .find(|p| p.id == agent.profession_id)
+            .ok_or("Profession not found.")?;
+        if !["dev", "infra", "custom"].contains(&profession.kind.as_str()) {
+            return Err("This profession has read-only project access.".into());
         }
-        "read_file" => {
-            let mut content = String::new();
-            fs::File::open(&path)
-                .map_err(|_| "Could not read file.")?
-                .take(48_001)
-                .read_to_string(&mut content)
-                .map_err(|_| "File must contain UTF-8 text.")?;
-            if content.len() > 48_000 {
-                return Err("File exceeds the 48 KB focused-read limit.".into());
+        let content = value["content"]
+            .as_str()
+            .filter(|s| s.len() <= 48_000)
+            .ok_or("File content exceeds the write limit.")?;
+        if path.exists() {
+            let existing = fs::read_to_string(&path).map_err(|_| "Could not read current file.")?;
+            if value["previous"].as_str() != Some(existing.as_str()) {
+                return Err(
+                    "The file changed or was not fully read. Inspect it before writing.".into(),
+                );
             }
-            json!({"path":relative,"content":content})
+        } else if !value["previous"].is_null() {
+            return Err("New files must specify previous: null.".into());
         }
-        _ => {
-            let agent = w.agent(&run.agent_id)?;
-            let profession = w
-                .professions
-                .iter()
-                .find(|p| p.id == agent.profession_id)
-                .ok_or("Profession not found.")?;
-            if !["dev", "infra", "custom"].contains(&profession.kind.as_str()) {
-                return Err("This profession has read-only project access.".into());
-            }
-            let content = value["content"]
-                .as_str()
-                .filter(|s| s.len() <= 48_000)
-                .ok_or("File content exceeds the write limit.")?;
-            if path.exists() {
-                let existing =
-                    fs::read_to_string(&path).map_err(|_| "Could not read current file.")?;
-                if value["previous"].as_str() != Some(existing.as_str()) {
-                    return Err(
-                        "The file changed or was not fully read. Inspect it before writing.".into(),
-                    );
-                }
-            } else if !value["previous"].is_null() {
-                return Err("New files must specify previous: null.".into());
-            }
-            fs::write(&path, content).map_err(|_| "Could not write the project file.")?;
-            let name = w.agent(&run.agent_id)?.name.clone();
-            w.tasks[index].messages.push(Message::new(
-                "system",
-                &format!("{name} updated {relative}"),
-            ));
-            json!({"written":relative,"bytes":content.len()})
-        }
+        fs::write(&path, content).map_err(|_| "Could not write the project file.")?;
+        let name = w.agent(&run.agent_id)?.name.clone();
+        w.tasks[index].messages.push(Message::new(
+            "system",
+            &format!("{name} updated {relative}"),
+        ));
+        json!({"written":relative,"bytes":content.len()})
     };
     Ok(Some(output))
 }

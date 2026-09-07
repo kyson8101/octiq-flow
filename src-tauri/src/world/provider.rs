@@ -1,5 +1,6 @@
-//! Tool-free HTTP model calls. Project effects exist only in runtime's scoped
-//! action interpreter; meeting responses never reach that interpreter.
+//! Model calls with native tools disabled. Project work uses runtime's scoped
+//! action interpreter; Secretary inspection has a separate read-only path.
+//! Meeting responses never reach either interpreter.
 use super::model::*;
 use serde_json::{json, Value};
 use std::{io::Read, time::Duration};
