@@ -2916,13 +2916,14 @@ export default function App() {
       const liveCommand = liveSettingCommand(c.agent, "model", c.flag);
       if (liveCommand && tellSession(liveCommand)) return;
 
-      // Nothing running: the next message respawns the agent, and it will carry
-      // the new --model with --resume, so the conversation survives anyway.
-      if (!runningRef.current.has(conversationId ?? "")) return;
-
-      if (project) startBlank(project.id, { model: c, access: nextAccess });
+      // A model on this provider is supplied on the process command line. Stop
+      // a live process so the next message can resume this same conversation
+      // with the new model, rather than discarding its context in a new chat.
+      if (conversationId && runningRef.current.has(conversationId)) {
+        endSession(conversationId);
+      }
     },
-    [chat.messages.length, project, startBlank, effort, access, choice, conversationId, tellSession],
+    [chat.messages.length, effort, access, choice, conversationId, tellSession, endSession],
   );
 
   /** Effort is fixed on the agent's command line, the same as permission mode.
@@ -3346,7 +3347,7 @@ export default function App() {
         </svg>
         <span className="mode-label">Files</span>
       </button>
-      <a className="mode-btn mode-os-link" href="/os" title="Open OctiqOS">
+      <a className="mode-btn mode-os-link" href="/os" target="_blank" rel="noopener noreferrer" title="Open OctiqOS">
         <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M4 21V7l8-4 8 4v14M2 21h20M9 21v-5h6v5M8 9h1m6 0h1M8 12h1m6 0h1" />
         </svg>

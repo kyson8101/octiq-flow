@@ -188,7 +188,7 @@ export function Sidebar({
 
   return (
     <nav className="sidebar">
-      <a className="sidebar-os-link" href="/os">
+      <a className="sidebar-os-link" href="/os" target="_blank" rel="noopener noreferrer">
         <span aria-hidden="true">◈</span> OctiqOS
       </a>
       {head && <div className="sidebar-slot">{head}</div>}

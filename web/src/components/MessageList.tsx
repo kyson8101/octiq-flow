@@ -1273,7 +1273,7 @@ const MessageListBody = function MessageList({
    *
    *  A conversation is only ever one provider — changing it cannot be done in
    *  place at any price (a Claude session id means nothing to Codex), so
-   *  `changeModel` opens a fresh chat instead. That is what makes one name for
+   *  switching providers opens a fresh chat instead. That is what makes one name for
    *  the whole transcript right rather than a guess: there are no turns in here
    *  that some other agent wrote.
    *

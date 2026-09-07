@@ -7599,8 +7599,8 @@ body.is-ultra .eff {
   }
 }
 
-/* Said before the choice, not after it: the model and provider are fixed once
-   an agent is running, so picking another one opens a new chat. */
+/* Said before the choice, not after it: switching providers opens a new chat;
+   a model change within one provider resumes this conversation next turn. */
 .picker-note {
   padding: 6px 10px 8px;
   border-bottom: 1px solid var(--border);
