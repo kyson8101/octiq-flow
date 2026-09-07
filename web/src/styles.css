@@ -48,7 +48,8 @@
      before the first drag. */
   --nav-w: 260px;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font: "IBM Plex Sans Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+    sans-serif;
   /* Sarasa Mono SC first, and the reason is Chinese: its CJK glyphs are
      EXACTLY twice the Latin advance, so a line of 中文 mixed with `inline
      code`, and a markdown table drawn in ASCII pipes, both stay in column.
@@ -64,14 +65,11 @@
      on a font change and that is not a change to make by side effect. */
   --mono: "Sarasa Mono SC", "JetBrains Mono", Menlo, ui-monospace, SFMono-Regular, "SF Mono",
     monospace;
-  /* What RENDERED PROSE is set in — a reply in the chat, a markdown file in
-     the preview. Sarasa Gothic is the proportional-Latin cut of the same
-     family: prose is read, not aligned, so it does not want the monospace
-     Latin. Deliberately NOT `--font`, which stays the Apple system font: that
-     one dresses the chrome — buttons, tabs, the sidebar — and chrome is not
-     what anybody reads a paragraph of Chinese in. */
-  --prose-font: "Sarasa Gothic SC", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-    sans-serif;
+  /* Replies and markdown previews share Plex with the UI for Latin text.
+     Sarasa Gothic keeps the existing Chinese reading face; code continues
+     to use the separate monospace stack above for column alignment. */
+  --prose-font: "IBM Plex Sans Variable", "Sarasa Gothic SC", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
 
   color-scheme: dark;
 }
