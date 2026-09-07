@@ -4,16 +4,17 @@ import { Field, ScopeFields, Select, Submit, formValues } from "./Forms";
 import { RoleEditor } from "./RoleEditor";
 import { RoleChat } from "./RoleChat";
 import { AgentSettings } from "./AgentSettings";
+import { AgentTasks } from "./AgentTasks";
+import { Transcript } from "./Transcript";
+export { Transcript } from "./Transcript";
+export { TaskWorkspace as TaskInspector } from "./TaskWorkspace";
 import {
   allowed,
   formatTokens,
-  label,
   type Agent,
   type Meeting,
-  type Message,
   type Mutate,
   type Snapshot,
-  type Task,
   type World,
 } from "./types";
 
@@ -87,46 +88,6 @@ export function Avatar({
     </span>
   );
 }
-export function Transcript({
-  messages,
-  world,
-}: {
-  messages: Message[];
-  world: World;
-}) {
-  return (
-    <div className="ow-transcript">
-      {messages.length ? (
-        messages.map((m) => (
-          <article
-            key={m.id}
-            className={m.actor === "founder" ? "founder" : ""}
-          >
-            <header>
-              <strong>
-                {m.actor === "founder"
-                  ? "You"
-                  : m.actor === "system"
-                    ? "OctiqOS"
-                    : (world.agents.find((a) => a.id === m.actor)?.name ??
-                      "Agent")}
-              </strong>
-              <time>
-                {new Date(m.createdAt * 1000).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })}
-              </time>
-            </header>
-            <p>{m.body}</p>
-          </article>
-        ))
-      ) : (
-        <p className="ow-empty">No messages yet.</p>
-      )}
-    </div>
-  );
-}
 
 export function AgentInspector({
   agent,
@@ -136,7 +97,8 @@ export function AgentInspector({
   task,
   meeting,
   hire,
-  initialTab = "profile",
+  openTask,
+  initialTab = "tasks",
 }: {
   agent: Agent;
   snapshot: Snapshot;
@@ -145,7 +107,8 @@ export function AgentInspector({
   task: () => void;
   meeting: () => void;
   hire?: () => void;
-  initialTab?: "profile" | "role";
+  openTask: (taskId: string) => void;
+  initialTab?: "tasks" | "profile" | "role";
 }) {
   const { world } = snapshot;
   const stats = snapshot.stats.find((s) => s.agentId === agent.id);
@@ -184,7 +147,7 @@ export function AgentInspector({
           <p>{profession?.name}</p>
         </div>
       </div>
-      <div className="ow-xp">
+      {tab !== "tasks" && <><div className="ow-xp">
         <span>{stats?.xp ?? 0} XP</span>
         <progress max={stats?.next ?? 100} value={stats?.progress ?? 0} />
         <small>
@@ -224,6 +187,7 @@ export function AgentInspector({
           another task.
         </p>
       )}
+      </>}
       <div className="ow-actions">
         <button
           className="ow-primary"
@@ -239,7 +203,7 @@ export function AgentInspector({
         )}
       </div>
       <nav className="ow-tabs" aria-label="Agent details">
-        {["profile", "role", "memory", "scope", "progress"].map((t) => (
+        {["tasks", "profile", "role", "memory", "scope", "progress"].map((t) => (
           <button
             key={t}
             className={tab === t ? "active" : ""}
@@ -249,6 +213,7 @@ export function AgentInspector({
           </button>
         ))}
       </nav>
+      {tab === "tasks" && <AgentTasks agent={agent} world={world} openTask={openTask} />}
       {tab === "profile" && (
         <>
           <h4>Role description</h4>
@@ -505,162 +470,6 @@ export function AgentInspector({
   );
 }
 
-export function TaskInspector({
-  task,
-  world,
-  mutate,
-  busy,
-}: {
-  task: Task;
-  world: World;
-  mutate: Mutate;
-  busy: boolean;
-}) {
-  const [direction, setDirection] = useState("");
-  const directionField = useRef<HTMLTextAreaElement>(null);
-  const verificationForm = useRef<HTMLFormElement>(null);
-  const closed = ["done", "cancelled"].includes(task.status);
-  const control = (type: string) =>
-    void mutate("task_direction", {
-      taskId: task.id,
-      control: type,
-      body: direction.trim() || `Founder requested ${type}.`,
-    })
-      .then(() => setDirection(""))
-      .catch(() => {});
-  return (
-    <>
-      <div className="ow-actions">
-        <span className={`ow-status ${task.status}`}>{label(task.status)}</span>
-        <span className="ow-tag">
-          {task.route === "auto" ? "Auto PM" : "Direct assign"}
-        </span>
-      </div>
-      <h3>{task.title}</h3>
-      <p className="ow-muted">
-        {world.projects.find((p) => p.id === task.projectId)?.name}
-        {task.agentId &&
-          ` · ${world.agents.find((a) => a.id === task.agentId)?.name ?? "Agent"}`}
-      </p>
-      <p className="ow-prose">{task.detail}</p>
-      {!closed && (
-        <div className="ow-mobile-task-actions">
-          <button
-            className="ow-primary"
-            onClick={() => {
-              if (task.status === "verifying")
-                verificationForm.current?.scrollIntoView({ block: "start" });
-              else directionField.current?.focus();
-            }}
-          >
-            {task.status === "verifying"
-              ? "Review outcome"
-              : task.status === "needs_input"
-                ? "Answer question"
-                : "Give direction"}
-          </button>
-          <button
-            disabled={busy || task.status === "paused"}
-            onClick={() => control("pause")}
-          >
-            Pause now
-          </button>
-        </div>
-      )}
-      {task.steps.length > 0 && (
-        <ol className="ow-steps">
-          {task.steps.map((s, i) => (
-            <li key={i} className={i === task.step ? "current" : ""}>
-              <strong>
-                {world.professions.find((p) => p.id === s.professionId)?.name}
-              </strong>
-              <p>{s.instruction}</p>
-              {s.evidence && (
-                <details>
-                  <summary>Step evidence</summary>
-                  <p className="ow-prose">{s.evidence}</p>
-                </details>
-              )}
-            </li>
-          ))}
-        </ol>
-      )}
-      <Transcript messages={task.messages} world={world} />
-      {task.evidence && (
-        <div className="ow-note">
-          <strong>Verified outcome</strong>
-          <p className="ow-prose">{task.evidence}</p>
-        </div>
-      )}
-      {!closed && (
-        <div className="ow-compose">
-          <label className="ow-field">
-            <span>Your direction</span>
-            <textarea
-              value={direction}
-              ref={directionField}
-              onChange={(e) => setDirection(e.target.value)}
-              maxLength={8000}
-              placeholder="Add context, answer a question, or change direction…"
-              rows={3}
-            />
-          </label>
-          <div className="ow-actions">
-            <button
-              className="ow-primary"
-              disabled={busy || !direction.trim()}
-              onClick={() => control("redirect")}
-            >
-              Send direction
-            </button>
-            <button
-              disabled={busy || task.status === "paused"}
-              onClick={() => control("pause")}
-            >
-              Pause
-            </button>
-            {["paused", "needs_input"].includes(task.status) && (
-              <button disabled={busy} onClick={() => control("resume")}>
-                Resume
-              </button>
-            )}
-            <button
-              className="ow-danger"
-              disabled={busy}
-              onClick={() => control("cancel")}
-            >
-              Cancel task
-            </button>
-          </div>
-          <small>
-            Interruptions stop further steps; completed file changes remain
-            recorded.
-          </small>
-        </div>
-      )}
-      {task.status === "verifying" && (
-        <form
-          className="ow-verify"
-          ref={verificationForm}
-          onSubmit={(e) => {
-            const values = formValues(e);
-            void mutate("verify_task", { taskId: task.id, ...values }).catch(
-              () => {},
-            );
-          }}
-        >
-          <Field
-            name="evidence"
-            label="Verification evidence"
-            multiline
-            placeholder="Checks performed, their results, and why this is complete"
-          />
-          <Submit busy={busy}>Verify and complete</Submit>
-        </form>
-      )}
-    </>
-  );
-}
 
 export function MeetingInspector({
   meeting,

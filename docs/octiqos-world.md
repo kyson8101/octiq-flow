@@ -25,7 +25,48 @@ portal remains at `/os?view=legacy`; OctiqFlow's chat/workbench remains at `/`.
    with all previous results retained in the task history. Direct follow-up stays
    with its assigned worker and bypasses PM.
 
+Clicking an agent opens its task list first. Active tasks put questions and
+verification at the top; Closed and All retain past conversations. The list
+includes direct assignments, assigned workflow steps and recorded participation,
+including PM planning, rather than every task matching the agent's profession.
+
+Selecting a task opens its own conversation on the left and its objective,
+execution plan and evidence on the right. Opening a task does not start a new
+run. Send uses the existing founder-direction action and continues work using
+the message; Pause, Resume and Cancel remain under Task controls. Verification
+lives beside the plan, and closed tasks are readable without a composer. Back
+returns to the originating agent's task list, or the board for other entry paths.
+On phones, switch between Conversation and Plan. Agent profile, role, memory,
+scope and progress remain available from the agent details tabs.
+
+`node scripts/test-agent-tasks.mjs` exercises office-to-task navigation against
+an in-memory bridge using the real WorldPortal, including desktop/mobile layouts,
+task-message isolation, send/retry, pause/resume, verification and closed history.
+It accepts the same Playwright/browser environment overrides as the Secretary
+browser script below and saves screenshots in a temporary directory.
+
 ## Discussion and context
+
+### Secretary reception
+
+Each org's Secretary opens a continuous conversation on the left and a live
+blueprint on the right. Reply to questions in the same message box; Enter sends
+and Shift+Enter adds a line. Previous turns remain visible when reception is
+reopened. On small screens, switch between Conversation and Blueprint; the
+blueprint's Reply in conversation button returns focus to the message box.
+
+The last blueprint stays visible while a reply is being prepared. New or changed
+cards are highlighted against the previous version. Stop cancels the active
+reply, and failed submissions preserve the unsent message. Only the latest ready
+blueprint with no unanswered questions can be confirmed in reception. Confirm
+and apply blueprint applies the proposed organization configuration explicitly.
+
+The isolated browser regression script `node scripts/test-secretary.mjs` uses
+an in-memory backend and saves desktop/mobile screenshots to a temporary folder.
+Set `OCTIQOS_PLAYWRIGHT_MODULE` to an installed Playwright module if needed, and
+`OCTIQOS_CHROME_EXECUTABLE` to use an existing browser executable.
+
+### Meeting Room
 
 Meeting Room supports 1–8 workers/consultants. Creating a room does not start
 work: send a topic/message to begin discussion. Participants answer sequentially

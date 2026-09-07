@@ -121,6 +121,7 @@ import {
 import { Connect } from "./components/Connect";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
+import { readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
@@ -728,6 +729,12 @@ export default function App() {
   const chatReads = useRef(new Map<string, { promise: Promise<void> }>());
   const cachedStates = useRef(new Map<string, ChatState>());
   const chatHistory = useRef(new ChatHistory());
+  const loadPreview = useCallback((c: Conversation, cancelled: () => boolean) =>
+    readChatPreview(
+      () => bridge.invoke<ChatPage>("chat_page", { key: keyFor(c.id), before: null }),
+      c.messages,
+      cancelled,
+    ), []);
   const [earlierReads, setEarlierReads] = useState<Record<string, { loading: boolean; error?: string }>>({});
 
   // Desktop notifications, for the chats you are NOT looking at.
@@ -3538,6 +3545,8 @@ export default function App() {
           deletedCount={deletedChats.length}
           onShowDeleted={() => setTrashOpen(true)}
           conversations={grouped}
+          getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
+          loadPreview={loadPreview}
           currentProject={projectId}
           currentConversation={conversationId}
           running={running}

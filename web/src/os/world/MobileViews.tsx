@@ -265,12 +265,19 @@ export function InspectorPanel({
   kind,
   close,
   children,
+  title,
 }: {
   mobile: boolean;
   kind: string;
   close: () => void;
   children: ReactNode;
+  title?: string;
 }) {
+  if (kind === "task") return (
+    <Modal title={title ?? "Task conversation"} close={close} className="ow-secretary-modal ow-task-modal">
+      {children}
+    </Modal>
+  );
   if (mobile)
     return (
       <Modal

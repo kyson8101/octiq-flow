@@ -206,7 +206,7 @@ describe("Sidebar", () => {
     const out = html(open);
     expect(out).toContain('aria-label="Rename a"');
     expect(out).toContain('aria-label="Rename b"');
-    expect(out).toContain('title="Double-click to rename"');
+    expect(out).toContain('aria-description="Hover to preview. Double-click to rename."');
   });
 
   it("keeps the pin out of the trailing slot", () => {

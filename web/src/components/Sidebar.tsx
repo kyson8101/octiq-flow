@@ -14,6 +14,7 @@ import type { Conversation } from "../lib/store";
 import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/projectOrder";
 import { projectColor } from "../lib/projectColor";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
+import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 import "./PortalLink.css";
@@ -61,6 +62,8 @@ export function Sidebar({
   expanded,
   onToggle,
   onPickConversation,
+  getPreviewMessages,
+  loadPreview,
   onNewChat,
   onDelete,
   onPin,
@@ -134,7 +137,7 @@ export function Sidebar({
    *  wide screen, where the bar has room for them. */
   head?: ReactNode;
   foot?: ReactNode;
-}) {
+} & ChatPreviewSource) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ id: string; edge: "before" | "after" } | null>(
     null,
@@ -258,6 +261,8 @@ export function Sidebar({
             deleteMs={deleteMs}
             onToggle={onToggle}
             onPickConversation={onPickConversation}
+            getPreviewMessages={getPreviewMessages}
+            loadPreview={loadPreview}
             onNewChat={onNewChat}
             onDelete={onDelete}
             onPin={onPin}
@@ -343,6 +348,8 @@ function ProjectNode({
   deleteMs,
   onToggle,
   onPickConversation,
+  getPreviewMessages,
+  loadPreview,
   onNewChat,
   onDelete,
   onPin,
@@ -389,7 +396,7 @@ function ProjectNode({
   onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onMove: (direction: -1 | 1) => void;
-}) {
+} & ChatPreviewSource) {
   const [showAll, setShowAll] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   // The chats present on this project's first paint are already here — making
@@ -571,11 +578,16 @@ function ProjectNode({
                         />
                       </form>
                     ) : (
-                      <button
+                      <ChatPreviewButton
+                        chat={c}
+                        enabled={showing && !going && !isLeaving && !dragging}
+                        busy={busy.has(c.id)}
+                        getPreviewMessages={getPreviewMessages}
+                        loadPreview={loadPreview}
                         className="chat-btn"
                         type="button"
                         disabled={isLeaving}
-                        title="Double-click to rename"
+                        aria-description="Hover to preview. Double-click to rename."
                         onClick={() => onPickConversation(c)}
                         onDoubleClick={() => {
                           if (!going) setRenaming(c.id);
@@ -588,7 +600,7 @@ function ProjectNode({
                           asleep={!running.has(c.id) && !busy.has(c.id)}
                         />
                         <span className="chat-title">{c.title}</span>
-                      </button>
+                      </ChatPreviewButton>
                     )}
                     <button
                       className="chat-rename-btn"

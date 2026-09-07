@@ -46,6 +46,7 @@ type Inspector = {
   kind: "agent" | "task" | "meeting";
   id: string;
   talkAboutRole?: boolean;
+  fromAgentId?: string;
 } | null;
 
 export function WorldPortal() {
@@ -152,7 +153,7 @@ export function WorldPortal() {
   const inspectCreated =
     (kind: "agent" | "task" | "meeting") => (id: string) => {
       setDialog(null);
-      setInspector({ kind, id, talkAboutRole: kind === "agent" });
+      setInspector({ kind, id, talkAboutRole: kind === "agent", fromAgentId: kind === "task" ? dialog?.agentId : undefined });
     };
   const fromAgent = dialog?.agentId
     ? world?.agents.find((a) => a.id === dialog.agentId)
@@ -809,13 +810,15 @@ export function WorldPortal() {
           <InspectorPanel
             mobile={mobile}
             kind={inspector.kind}
+            title={inspector.kind === "task" ? selectedTask?.title : undefined}
             close={() => setInspector(null)}
           >
             {inspector.kind === "agent" && selectedAgent && (
               <AgentInspector
                 key={selectedAgent.id}
                 agent={selectedAgent}
-                initialTab={inspector.talkAboutRole ? "role" : "profile"}
+                initialTab={inspector.talkAboutRole ? "role" : "tasks"}
+                openTask={(id) => setInspector({ kind: "task", id, fromAgentId: selectedAgent.id })}
                 snapshot={snapshot}
                 mutate={mutate}
                 busy={busy}
@@ -840,6 +843,13 @@ export function WorldPortal() {
                 world={world}
                 mutate={mutate}
                 busy={busy}
+                back={inspector.fromAgentId ? () => setInspector({ kind: "agent", id: inspector.fromAgentId! }) : () => {
+                  setOrgId(selectedTask.orgId);
+                  setProjectFilter("");
+                  setView("board");
+                  setInspector(null);
+                }}
+                backLabel={inspector.fromAgentId ? `Back to ${world.agents.find((agent) => agent.id === inspector.fromAgentId)?.name ?? "agent"}’s tasks` : "Back to tasks"}
               />
             )}
             {inspector.kind === "meeting" && selectedMeeting && (
@@ -885,7 +895,7 @@ export function WorldPortal() {
           close={closeDialog}
           className={dialog.kind === "secretary" ? "ow-secretary-modal" : ""}
         >
-          {error && (
+          {error && dialog.kind !== "secretary" && (
             <p className="ow-error" role="alert">
               {error}
             </p>
@@ -932,11 +942,13 @@ export function WorldPortal() {
           )}
           {dialog.kind === "secretary" && orgId && secretary && (
             <SecretaryDesk
+              key={orgId}
               world={world}
               orgId={orgId}
               secretary={secretary}
               mutate={mutate}
               busy={busy}
+              error={error}
             />
           )}
           {dialog.kind === "meeting" && orgId && (

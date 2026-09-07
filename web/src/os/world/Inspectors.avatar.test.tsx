@@ -28,6 +28,8 @@ const render = (member: Agent) =>
   renderToStaticMarkup(
     <AgentInspector
       agent={member}
+      initialTab="profile"
+      openTask={vi.fn()}
       snapshot={snapshot}
       mutate={vi.fn()}
       busy={false}

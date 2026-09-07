@@ -151,7 +151,7 @@ try {
   });
   await page.locator(".ow-desk").filter({ hasText: "Alex" }).click();
   await page.getByRole("button", { name: "Give task", exact: true }).click();
-  modal = page.getByRole("dialog");
+  modal = page.getByRole("dialog", { name: "Give your team a task", exact: true });
   await modal
     .getByLabel("What needs to be done?")
     .fill("Fix the mobile login button");
@@ -172,12 +172,13 @@ try {
     .getByRole("heading", { name: "Fix the mobile login button", exact: true })
     .waitFor();
   await page
-    .getByLabel("Your direction")
+    .getByLabel("Message about this task")
     .fill("Keep the fix focused on the button.");
+  await page.getByText("Task controls", { exact: true }).click();
   await page.getByRole("button", { name: "Pause", exact: true }).click();
-  await page.locator(".ow-inspector .ow-status.paused").waitFor();
+  await page.locator(".ow-task-workspace .ow-status.paused").waitFor();
   await page
-    .getByRole("button", { name: "Close details", exact: true })
+    .getByRole("button", { name: "Close", exact: true })
     .click();
   await page.locator(".ow-desk").filter({ hasText: "Alex" }).click();
   await page.getByRole("button", { name: "memory", exact: true }).click();
