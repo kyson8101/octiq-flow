@@ -818,7 +818,18 @@ impl AgentProvider for PiProvider {
 fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
     line.contains("codex_core::tools::router:")
         && (line.contains("apply_patch verification failed")
-            || line.contains("error=exec_command failed"))
+            || line.contains("error=exec_command failed")
+            // Safety-review refusals from `apply_patch` use a different
+            // header, followed by `Reason:` and policy guidance on their own
+            // physical lines. Keep that record out of the raw notice stack;
+            // `safety_block` turns it into one structured card instead.
+            || line.contains("This action was rejected due to unacceptable risk")
+            // The unified exec process may finish between a yielded command
+            // and Codex's next poll/write. Codex receives `Unknown process id`
+            // as the tool result and continues normally; the router's stderr
+            // copy is no more actionable than the other tool failures above.
+            || (line.contains("error=write_stdin failed")
+                && line.contains("Unknown process id")))
 }
 
 /// Codex's tracing output begins each independent record with an ISO-like

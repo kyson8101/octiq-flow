@@ -1795,6 +1795,36 @@ pub fn chat_cancel_queued_impl(
     Ok(true)
 }
 
+/// Remove a user turn that a connected client has established is no longer in
+/// any backend queue.
+///
+/// Unlike cancelling a live queued turn, dismissing must not put the words
+/// back in the composer. It therefore has its own append-only event. Requiring
+/// the transcript write before announcing success keeps the message gone after
+/// a reload, while the queue check prevents a stale UI from discarding work
+/// the backend still holds.
+pub fn chat_dismiss_unsent_impl(
+    manager: &ChatManager,
+    key: String,
+    turn_id: String,
+) -> Result<bool, String> {
+    if manager.queued_turn_session_key(&key, &turn_id).is_some() {
+        return Ok(false);
+    }
+    let event = json!({ "type": "octiq_user_turn_dismissed", "uuid": turn_id });
+    let seq = crate::transcript::append(&key, &event)
+        .ok_or_else(|| "could not record the dismissed message".to_string())?;
+    crate::bus::emit(
+        "chat-event",
+        ChatEvent {
+            key,
+            seq: Some(seq),
+            event,
+        },
+    );
+    Ok(true)
+}
+
 /// Stop the current turn and make one selected queued message the next turn.
 ///
 /// This is deliberately addressed by user-turn id rather than by queue
@@ -3475,6 +3505,13 @@ mod tests {
             ),
             OutputDisposition::DiagnosticsOnly,
         );
+        assert_eq!(
+            codex.output_disposition(
+                "2026-09-07T08:29:34.050136Z ERROR codex_core::tools::router: \
+                 error=write_stdin failed: Unknown process id 29017"
+            ),
+            OutputDisposition::DiagnosticsOnly,
+        );
         // Real agent failures still reach the user.
         assert_eq!(
             codex.output_disposition("Error loading config.toml"),
@@ -3563,6 +3600,24 @@ mod tests {
             ),
             OutputDisposition::DiagnosticsOnly,
         );
+    }
+
+    #[test]
+    fn codex_split_safety_rejection_stays_out_of_raw_chat_notices() {
+        let codex = provider_for(ChatAgent::Codex);
+        let mut output_state = OutputState::default();
+
+        for line in [
+            "2026-09-07T12:15:53.336267Z ERROR codex_core::tools::router: \
+             error=This action was rejected due to unacceptable risk.",
+            "Reason: the patch would falsify a validation record.",
+            "The agent must not attempt to achieve the same outcome via workaround.",
+        ] {
+            assert_eq!(
+                codex.classify_output(line, &mut output_state),
+                OutputDisposition::DiagnosticsOnly,
+            );
+        }
     }
 
     #[test]
@@ -4158,6 +4213,44 @@ mod tests {
         assert_eq!(events[1].event["uuid"], "user-1");
 
         end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn dismissing_a_lost_turn_is_durable_but_never_removes_a_live_queue() {
+        let manager = ChatManager::default();
+        let key = format!("dismiss-unsent-{}", uuid::Uuid::new_v4().simple());
+
+        assert_eq!(
+            chat_dismiss_unsent_impl(&manager, key.clone(), "lost-1".into()),
+            Ok(true)
+        );
+        let events = crate::transcript::since(&key, 0);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event["type"], "octiq_user_turn_dismissed");
+        assert_eq!(events[0].event["uuid"], "lost-1");
+
+        manager
+            .queue_turn(
+                &key,
+                QueuedTurn {
+                    text: "still waiting".into(),
+                    images: Vec::new(),
+                    turn_id: Some("queued-1".into()),
+                    recorded: true,
+                },
+            )
+            .expect("a live queued turn");
+        assert_eq!(
+            chat_dismiss_unsent_impl(&manager, key.clone(), "queued-1".into()),
+            Ok(false)
+        );
+        assert_eq!(crate::transcript::since(&key, 0).len(), 1);
+        assert_eq!(
+            manager.take_queued_turn(&key).and_then(|turn| turn.turn_id),
+            Some("queued-1".into())
+        );
+
         crate::transcript::forget(&key);
     }
 

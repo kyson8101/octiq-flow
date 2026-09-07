@@ -184,6 +184,20 @@ describe("Sidebar", () => {
     expect(out.indexOf('data-robot="luna"')).toBeLessThan(out.indexOf('class="chat-title"'));
   });
 
+  it("works while busy, dances with a live idle session, and sleeps after reaping", () => {
+    const base = {
+      conversations: new Map([["p1", [chat("a")]]]),
+      expanded: new Set(["p1"]),
+    };
+    const busy = html({ ...base, busy: new Set(["a"]) });
+    expect(busy).toContain('data-mood="work"');
+    expect(busy).not.toContain("is-asleep");
+    const idle = html({ ...base, running: new Set(["a"]) });
+    expect(idle).toContain('data-mood="idle"');
+    expect(idle).not.toContain("is-asleep");
+    expect(html(base)).toContain("is-asleep");
+  });
+
   it("shares the trailing slot between a chat's mark and delete control", () => {
     const out = html(open);
     expect(out).toMatch(

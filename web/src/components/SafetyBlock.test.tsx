@@ -5,13 +5,20 @@ vi.mock("../lib/bridge", () => ({
   bridge: { invoke: async () => true },
 }));
 
-import { allowOnceReply, LOCAL_ONLY_REPLY, SafetyBlock, type SafetyBlockNotice } from "./SafetyBlock";
+import {
+  allowOnceReply,
+  LOCAL_ONLY_REPLY,
+  SAFER_APPROACH_REPLY,
+  saferReply,
+  SafetyBlock,
+  type SafetyBlockNotice,
+} from "./SafetyBlock";
 
 const block: SafetyBlockNotice = {
   id: "blocked-1",
   chatKey: "chat:c1",
   kind: "external-data",
-  title: "External data sharing blocked",
+  title: "Codex blocked external data sharing",
   summary: "This would send outline and constraints to DeepSeek/OpenCode.",
   detail: "The safety reviewer requires explicit approval before this external transfer.",
 };
@@ -25,10 +32,12 @@ describe("SafetyBlock", () => {
   it("states that the rejected command did not run and offers the two safe next turns", () => {
     const html = draw();
 
-    expect(html).toContain("External data sharing blocked");
-    expect(html).toContain("The command did not run. No data was sent.");
+    expect(html).toContain("Codex safety review");
+    expect(html).toContain("OctiqFlow is okay");
+    expect(html).toContain("Codex blocked external data sharing");
+    expect(html).toContain("OctiqFlow is still running. The command did not run, and no data was sent.");
     expect(html).toContain("Keep it local");
-    expect(html).toContain("View details");
+    expect(html).toContain("Technical details");
     expect(html).toContain("Allow once");
     expect(html).not.toContain(block.detail);
   });
@@ -36,7 +45,7 @@ describe("SafetyBlock", () => {
   it("shows the reviewer reason only when details are opened", () => {
     const html = draw(true);
 
-    expect(html).toContain("Hide details");
+    expect(html).toContain("Hide technical details");
     expect(html).toContain(block.detail);
   });
 
@@ -52,5 +61,18 @@ describe("SafetyBlock", () => {
   it("keeps the safer continuation fully local", () => {
     expect(LOCAL_ONLY_REPLY).toContain("without sending any local data");
     expect(LOCAL_ONLY_REPLY).toContain("only local tools and local reasoning");
+    expect(saferReply(block)).toBe(LOCAL_ONLY_REPLY);
+  });
+
+  it("explains a general safety refusal without making OctiqFlow look broken", () => {
+    const generic = { ...block, kind: "high-risk-action" as const, title: "Codex blocked a high-risk action" };
+    const html = renderToStaticMarkup(
+      <SafetyBlock block={generic} onContinue={() => {}} onAnswered={() => {}} />,
+    );
+
+    expect(html).toContain("Codex blocked a high-risk action");
+    expect(html).toContain("OctiqFlow is still running. The blocked action made no changes.");
+    expect(html).toContain("Use safer approach");
+    expect(saferReply(generic)).toBe(SAFER_APPROACH_REPLY);
   });
 });

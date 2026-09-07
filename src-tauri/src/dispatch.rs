@@ -307,6 +307,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "key")?,
             arg(&args, "turnId")?,
         )),
+        // Permanently hide a prompt that queue reconciliation established was
+        // lost. This is distinct from taking back a live queued message: its
+        // words stay out of the composer and the dismissal survives replay.
+        "chat_dismiss_unsent" => to_value(crate::agent_chat::chat_dismiss_unsent_impl(
+            &svc.chats,
+            arg(&args, "key")?,
+            arg(&args, "turnId")?,
+        )),
         // Make one selected queued message the next turn, without discarding
         // anything else the person already sent.
         "chat_start_queued" => to_value(crate::agent_chat::chat_start_queued_impl(

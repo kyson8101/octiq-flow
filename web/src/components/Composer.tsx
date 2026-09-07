@@ -901,12 +901,8 @@ export function Composer({
           />
         ) : (
           <>
-            {/* The same robot, standing still: who you are about to talk to,
-                in the slot it will dance in. Quieter than the working one
-                (`--fg-3`) because between turns this line is a hint, not
-                news — and nothing on it moves, which is the whole point of
-                putting a character on an idle screen. */}
-            <Mascot robot={choice.composerStyle} mood="still" size={16} />
+            {/* Idle companions dance in the same full-body slot used during work. */}
+            <Mascot robot={choice.composerStyle} mood="idle" />
             {activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")}
           </>
         )}
@@ -2010,12 +2006,8 @@ function ModelPicker({
               disabled={gone}
               onClick={() => onChoice(m)}
             >
-              {/* Its own robot, standing still. This grid is the only place
-                  the cast is ever seen together, and it is the place the
-                  choice is made — so the face you will be watching for the
-                  next hour is shown while you are picking it, rather than
-                  introduced later by a robot you have to guess at. */}
-              <Mascot robot={m.composerStyle} mood="still" size={rows ? 18 : 22} />
+              {/* Show the complete cast while choosing the next model. */}
+              <Mascot robot={m.composerStyle} mood="idle" size={rows ? 32 : 44} />
               <span className={rows ? "picker-name" : "mp-card-name"}>{m.model}</span>
               {rows && <span className="picker-model">{m.hint}</span>}
               {on && (
@@ -2490,10 +2482,7 @@ function Working({
   // and rarely is exactly when the motion earns its keep.
   return (
     <>
-      {/* The robot for the model doing the work, dancing its own step. It was
-          here before the turn started, standing still on the idle line — a turn
-          starting sets it moving rather than making a robot appear, so the
-          words after it never shift along. */}
+      {/* A turn switches the same companion from dancing to thinking or typing. */}
       <Mascot robot={robot} alert={background} mood={thinking ? "think" : "work"} />
       {since !== undefined && (
         <>

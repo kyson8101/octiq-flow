@@ -7,7 +7,7 @@ import { bridge } from "../lib/bridge";
 export type SafetyBlockNotice = {
   id: string;
   chatKey?: string;
-  kind: "external-data";
+  kind: "external-data" | "high-risk-action";
   title: string;
   summary: string;
   detail: string;
@@ -15,13 +15,22 @@ export type SafetyBlockNotice = {
 
 export const LOCAL_ONLY_REPLY =
   "Continue without sending any local data to an external service. Use only local tools and local reasoning for this task.";
+export const SAFER_APPROACH_REPLY =
+  "Continue with a materially safer alternative. Do not retry, work around, or bypass the blocked action.";
+
+export function saferReply(block: SafetyBlockNotice): string {
+  return block.kind === "external-data" ? LOCAL_ONLY_REPLY : SAFER_APPROACH_REPLY;
+}
 
 export function allowOnceReply(block: SafetyBlockNotice): string {
+  const boundary = block.kind === "external-data"
+    ? "with the same content and destination only"
+    : "with the same files, scope, and intended effect only";
   return (
-    "I explicitly authorize one retry of the exact external-data action that was just blocked. " +
+    "I explicitly authorize one retry of the exact action that was just blocked. " +
     `The blocked action was described as: ${block.summary} ` +
-    "This authorization applies to that single retry, with the same content and destination only. " +
-    "Do not broaden it, and ask again before any later external transfer."
+    `This authorization applies to that single retry, ${boundary}. ` +
+    "Do not broaden it, and ask again before any later high-risk action."
   );
 }
 
@@ -46,13 +55,18 @@ export function SafetyBlock({
     // travelling back into a suspended call.
     await bridge.invoke("safety_block_dismiss", { id: block.id }).catch(() => undefined);
     onAnswered(block.id);
-    await onContinue(choice === "local" ? LOCAL_ONLY_REPLY : allowOnceReply(block));
+    await onContinue(choice === "local" ? saferReply(block) : allowOnceReply(block));
   };
 
+  const external = block.kind === "external-data";
+
   return (
-    <div className="ask-card safety-card" role="alert" aria-label="External data sharing blocked">
+    <div className="ask-card safety-card" role="alert" aria-label={block.title}>
+      <div className="safety-card-context">
+        <span>Codex safety review</span>
+        <span className="safety-card-ok">OctiqFlow is okay</span>
+      </div>
       <div className="ask-card-head">
-        <span className="ask-card-dot" aria-hidden="true" />
         <span className="safety-card-icon" aria-hidden="true">
           !
         </span>
@@ -61,12 +75,17 @@ export function SafetyBlock({
         </span>
       </div>
 
+      <div className="safety-card-label">Why it was blocked</div>
       <p className="safety-card-summary">{block.summary}</p>
-      <p className="safety-card-status">The command did not run. No data was sent.</p>
+      <p className="safety-card-status">
+        {external
+          ? "OctiqFlow is still running. The command did not run, and no data was sent."
+          : "OctiqFlow is still running. The blocked action made no changes."}
+      </p>
 
       {open && (
         <div className="ask-card-detail safety-card-detail">
-          <div className="ask-card-label">Safety review details</div>
+          <div className="ask-card-label">Technical details</div>
           <pre className="ask-card-body">{block.detail}</pre>
         </div>
       )}
@@ -78,7 +97,7 @@ export function SafetyBlock({
           disabled={!!sending}
           onClick={() => void choose("local")}
         >
-          {sending === "local" ? "Continuing…" : "Keep it local"}
+          {sending === "local" ? "Continuing…" : external ? "Keep it local" : "Use safer approach"}
         </button>
         <button
           className="ask-btn"
@@ -87,7 +106,7 @@ export function SafetyBlock({
           aria-expanded={open}
           onClick={() => setOpen((shown) => !shown)}
         >
-          {open ? "Hide details" : "View details"}
+          {open ? "Hide technical details" : "Technical details"}
         </button>
         <button
           className="ask-btn safety-allow"
@@ -100,7 +119,7 @@ export function SafetyBlock({
       </div>
 
       <p className="ask-card-note">
-        Your choice is sent to Codex as a new message; the rejected command cannot be resumed.
+        Approve once applies only to this exact action. The rejected action cannot resume by itself.
       </p>
     </div>
   );

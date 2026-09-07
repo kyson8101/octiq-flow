@@ -637,6 +637,7 @@ function TurnView({
   onCancelQueued,
   onStartQueued,
   onRestoreUnsent,
+  onDismissUnsent,
 }: {
   messages: Message[];
   kids: Kids;
@@ -647,6 +648,7 @@ function TurnView({
   /** Make a waiting message the next turn now. */
   onStartQueued?: (turnId: string) => void;
   onRestoreUnsent?: (turnId: string) => void;
+  onDismissUnsent?: (turnId: string) => void;
   /** What to call the host — the provider this conversation is running, in its
    *  own name. See the same prop on `MessageList`. */
   hostName?: string;
@@ -934,6 +936,11 @@ function TurnView({
               {onRestoreUnsent && messages[0].turnId && (
                 <button type="button" onClick={() => onRestoreUnsent(messages[0].turnId!)}>
                   Copy text to composer
+                </button>
+              )}
+              {onDismissUnsent && messages[0].turnId && (
+                <button type="button" onClick={() => onDismissUnsent(messages[0].turnId!)}>
+                  Dismiss
                 </button>
               )}
             </span>
@@ -1256,6 +1263,7 @@ const MessageListBody = function MessageList({
   onCancelQueued,
   onStartQueued,
   onRestoreUnsent,
+  onDismissUnsent,
   hasEarlier = false,
   loadingEarlier = false,
   earlierError,
@@ -1289,6 +1297,8 @@ const MessageListBody = function MessageList({
   onStartQueued?: (turnId: string) => void;
   /** Restore text from a prompt the backend no longer holds; never sends it. */
   onRestoreUnsent?: (turnId: string) => void;
+  /** Remove a prompt the backend no longer holds from the durable transcript. */
+  onDismissUnsent?: (turnId: string) => void;
   /** Send a line to the agent as though it had been typed — how the `/config`
    *  panel changes a setting. Absent where there is no chat to send into (the
    *  agent rail's read-only transcript), and the panel then only reads. */
@@ -1788,6 +1798,7 @@ const MessageListBody = function MessageList({
               onCancelQueued={onCancelQueued}
               onStartQueued={onStartQueued}
               onRestoreUnsent={onRestoreUnsent}
+              onDismissUnsent={onDismissUnsent}
             />
             {/* Under the turn, not inside it: what it marks is where the answer
                 ENDS, and the reader's own next message reads differently once

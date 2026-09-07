@@ -595,8 +595,8 @@ function ProjectNode({
                       >
                         <Mascot
                           robot={modelFromId(c.modelId ?? null)?.composerStyle}
-                          mood="still"
-                          size={16}
+                          mood={busy.has(c.id) ? "work" : "idle"}
+                          size={28}
                           asleep={!running.has(c.id) && !busy.has(c.id)}
                         />
                         <span className="chat-title">{c.title}</span>

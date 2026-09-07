@@ -1,0 +1,58 @@
+.mascot {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-block;
+  vertical-align: middle;
+  margin: -1px 5px 0 0;
+  isolation: isolate;
+  pointer-events: none;
+}
+.mascot canvas { display: block; width: 100%; height: 100%; opacity: 0; }
+.mascot[data-rendered="true"] canvas { opacity: 1; }
+.mascot[data-rendered="true"] .mascot-fallback { display: none; }
+.mascot-provider-badge {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  display: grid;
+  place-items: center;
+  width: 30%;
+  height: 30%;
+  min-width: 8px;
+  min-height: 8px;
+  max-width: 24px;
+  max-height: 24px;
+  border: 1px solid var(--robot-accent);
+  border-radius: 35%;
+  background: var(--bg-1, #17201d);
+  color: var(--robot-accent);
+  font: 700 8px/1 ui-monospace, monospace;
+  font-size: clamp(7px, calc(var(--mascot-size) * .2), 13px);
+}
+.mascot-z {
+  position: absolute;
+  right: 1%;
+  top: 1%;
+  color: var(--fg-3, #99a59e);
+  font: 600 10px/1 ui-monospace, monospace;
+}
+/* A complete silhouette remains visible while the renderer loads or if WebGL
+   is unavailable. No network assets or animated CSS loops are required. */
+.mascot-fallback { position: absolute; inset: 8% 14%; }
+.mascot-fallback > span { position: absolute; background: var(--robot-accent); border-radius: 25%; }
+.mascot-fallback-head {
+  left: 15%; top: 0; width: 70%; height: 43%;
+  display: flex; align-items: center; justify-content: space-evenly;
+  border: 2px solid var(--robot-accent);
+  background: #15212a !important;
+}
+.mascot-fallback-head i { width: 16%; height: 30%; background: var(--robot-accent); border-radius: 40%; }
+.mascot.is-alert .mascot-fallback-head i { background: #ffbb62; }
+.mascot.is-asleep .mascot-fallback-head i { height: 7%; }
+.mascot-fallback-torso { top: 46%; left: 28%; width: 44%; height: 29%; }
+.mascot-fallback-arm { top: 48%; width: 16%; height: 30%; }
+.mascot-fallback-arm.is-left { left: 6%; transform: rotate(12deg); }
+.mascot-fallback-arm.is-right { right: 6%; transform: rotate(-12deg); }
+.mascot-fallback-leg { top: 78%; width: 20%; height: 22%; }
+.mascot-fallback-leg.is-left { left: 25%; }
+.mascot-fallback-leg.is-right { right: 25%; }

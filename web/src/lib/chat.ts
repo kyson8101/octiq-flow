@@ -944,7 +944,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // looking at when they cancelled. Written down only when the queued turn had
   // been — see `QueuedTurn::recorded`; a Claude turn was never in the record to
   // begin with, and this simply finds nothing to drop.
-  if (type === "octiq_user_turn_cancelled") {
+  if (type === "octiq_user_turn_cancelled" || type === "octiq_user_turn_dismissed") {
     const cancelled = asStr(e.uuid);
     if (!cancelled) return state;
     return { ...state, messages: state.messages.filter((m) => m.turnId !== cancelled) };

@@ -2848,6 +2848,28 @@ export default function App() {
     if (text) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), text] }));
   }, [conversationId]);
 
+  const dismissUnsent = useCallback((turnId: string) => {
+    if (!conversationId) return;
+    const id = conversationId;
+    const state = chatsRef.current[id];
+    if (!state?.messages.some((m) => m.turnId === turnId && m.queueLost && !m.echo && !m.takenUp)) return;
+    bridge
+      .invoke("chat_dismiss_unsent", { key: keyFor(id), turnId })
+      .then((dismissed) => {
+        if (dismissed === false) return;
+        // The backend announcement removes this in every open client. Apply
+        // the same fold locally after its durable write so the click does not
+        // depend on the broadcast winning a race with the command reply.
+        patch(id, (s) => ({
+          ...s,
+          messages: s.messages.filter((m) => m.turnId !== turnId),
+        }));
+      })
+      .catch((err) =>
+        patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
+      );
+  }, [conversationId, patch]);
+
   /** Picking a different model.
    *
    *  A running agent cannot change model or provider: both are fixed on its
@@ -3699,6 +3721,7 @@ export default function App() {
                       onCancelQueued={cancelQueued}
                       onStartQueued={startQueued}
                       onRestoreUnsent={restoreUnsent}
+                      onDismissUnsent={dismissUnsent}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and

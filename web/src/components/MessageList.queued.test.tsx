@@ -26,9 +26,11 @@ describe("the queued mark", () => {
     const html = renderToStaticMarkup(<MessageList
       messages={[{ ...sent[0], turnId: "lost", queueLost: true }]}
       busy={busy} onStartQueued={() => {}} onCancelQueued={() => {}} onRestoreUnsent={() => {}}
+      onDismissUnsent={() => {}}
     />);
     expect(html).toContain("Not queued");
     expect(html).toContain("Copy text to composer");
+    expect(html).toContain("Dismiss");
     expect(html).not.toContain("Send this queued message now");
     expect(html).not.toContain("is-queued");
   });

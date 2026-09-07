@@ -1523,3 +1523,17 @@ describe("a message taken back before the agent was given it", () => {
     expect(state.messages).toHaveLength(0);
   });
 });
+
+describe("a lost queued message dismissed by the user", () => {
+  const dismissing = (turnId: string) =>
+    ({ type: "octiq_user_turn_dismissed", uuid: turnId });
+
+  it("removes only the named message from replayed history", () => {
+    let state = addUserTurn(emptyChat(), "keep this", [], 1, undefined, "u-1");
+    state = addUserTurn(state, "lost after restart", [], 2, undefined, "u-2");
+
+    state = reduceChat(state, dismissing("u-2"));
+
+    expect(state.messages.map((m) => m.turnId)).toEqual(["u-1"]);
+  });
+});
