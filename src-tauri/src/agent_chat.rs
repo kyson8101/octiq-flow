@@ -3524,6 +3524,31 @@ mod tests {
     }
 
     #[test]
+    fn codex_duplicate_agent_path_is_diagnostic_but_other_errors_stay_visible() {
+        let codex = provider_for(ChatAgent::Codex);
+        let mut state = OutputState::default();
+        let duplicate = "2026-09-08T06:26:14.629158Z ERROR codex_core::tools::router: error=agent path `/root/onboarding_backend` already exists";
+        assert_eq!(
+            codex.classify_output(duplicate, &mut state),
+            OutputDisposition::DiagnosticsOnly,
+        );
+        for line in [
+            "2026-09-08T06:26:15Z ERROR codex_core::tools::router: error=agent path `/root/onboarding_backend` failed to start",
+            "2026-09-08T06:26:16Z ERROR codex_core::auth: token expired",
+            "2026-09-08T06:26:17Z ERROR codex_core::tools::router: error=file already exists",
+        ] {
+            assert_eq!(
+                codex.classify_output(line, &mut state),
+                OutputDisposition::Visible,
+            );
+        }
+        assert_eq!(
+            provider_for(ChatAgent::Claude).output_disposition(duplicate),
+            OutputDisposition::Visible,
+        );
+    }
+
+    #[test]
     fn codex_patch_error_context_stays_out_of_chat_notices() {
         let codex = provider_for(ChatAgent::Codex);
         let mut output_state = OutputState::default();

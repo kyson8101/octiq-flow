@@ -829,7 +829,15 @@ fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
             // as the tool result and continues normally; the router's stderr
             // copy is no more actionable than the other tool failures above.
             || (line.contains("error=write_stdin failed")
-                && line.contains("Unknown process id")))
+                && line.contains("Unknown process id"))
+            // A repeated sub-agent name is returned to Codex so it can reuse
+            // that agent or choose another name. Preserve the duplicate trace
+            // in diagnostics without presenting it as a failed chat turn.
+            || line
+                .split_once("error=agent path `")
+                .is_some_and(|(_, detail)| {
+                    detail.starts_with("/root/") && detail.ends_with("` already exists")
+                }))
 }
 
 /// Codex's tracing output begins each independent record with an ISO-like
