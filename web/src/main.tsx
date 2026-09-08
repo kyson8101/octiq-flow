@@ -2,8 +2,7 @@ import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { ConfirmProvider } from "./components/Confirm";
 import { OpenFileProvider } from "./components/OpenFile";
-import "@fontsource-variable/ibm-plex-sans/wght.css";
-import "@fontsource-variable/ibm-plex-sans/wght-italic.css";
+import "lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css";
 import "./styles.css";
 import { applyTheme, savedThemeId } from "./lib/themeStore";
 

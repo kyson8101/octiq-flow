@@ -1,6 +1,6 @@
-@import "@fontsource-variable/ibm-plex-sans";
+@import "lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css";
 * { box-sizing: border-box; }
-body { margin: 0; font-family: "IBM Plex Sans Variable", sans-serif; background: #111916; }
+body { margin: 0; font-family: "LXGW WenKai Screen", sans-serif; background: #111916; }
 button, input { font: inherit; }
 .studio { --bg-1: #1b2521; --fg-3: #a1afa7; min-height: 100vh; padding: 34px max(28px, calc((100vw - 1240px)/2)); color: #e8efe8; background: radial-gradient(ellipse at 80% 0%, #243b2e, transparent 48%), #111916; }
 .studio.light { --bg-1: #e3eae0; --fg-3: #596b5e; background: #eff3eb; color: #213a2b; }
