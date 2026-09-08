@@ -7,7 +7,7 @@ import "./Mascot.css";
 
 export type { MascotMood } from "../lib/mascotDesign";
 
-/** Full-body model companions. Animation stays inside a fixed layout slot. */
+/** Big-headed model companions. Animation stays inside a fixed layout slot. */
 export function Mascot({
   robot = "sonnet", size = 28, alert = false, mood = "idle", asleep = false,
 }: {

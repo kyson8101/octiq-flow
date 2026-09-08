@@ -8,18 +8,18 @@ import { ROBOT_DESIGNS } from "./mascotDesign";
 import type { MascotState, RobotBody } from "./mascotDesign";
 
 export function createMascotCamera() {
-  const camera = new OrthographicCamera(-2.22, 2.22, 2.22, -2.22, .1, 30);
-  camera.position.set(2.5, 1.8, 9);
-  camera.lookAt(0, .27, 0);
+  const camera = new OrthographicCamera(-1.86, 1.86, 1.86, -1.86, .1, 30);
+  camera.position.set(1.7, 1.2, 9);
+  camera.lookAt(0, .42, 0);
   camera.updateMatrixWorld();
   return camera;
 }
 
-/** One articulated, procedural toy per base model. Pi shares its model's rig. */
+/** Big faces and a tiny articulated body stay readable in a 28px chat slot. */
 export function createRobot(body: RobotBody) {
   const design = ROBOT_DESIGNS[body];
   const accent = new Color(design.color);
-  const shell = new MeshStandardMaterial({ color: accent.clone().lerp(new Color("#ffffff"), .63), roughness: .3, metalness: .16 });
+  const shell = new MeshStandardMaterial({ color: accent.clone().lerp(new Color("#ffffff"), .48), roughness: .3, metalness: .16 });
   const trim = new MeshStandardMaterial({ color: accent, roughness: .32, metalness: .35 });
   const joint = new MeshStandardMaterial({ color: "#283943", roughness: .5, metalness: .55 });
   const glass = new MeshStandardMaterial({ color: "#0c1c28", roughness: .21, metalness: .22 });
@@ -45,7 +45,9 @@ export function createRobot(body: RobotBody) {
     const g = new Group(); g.name = name; g.position.set(x, y, z); p.add(g); return g;
   };
   const root = new Group(); root.name = body;
-  const torso = group(root, "torso");
+  const chassis = group(root, "chassis", 0, -.38);
+  chassis.scale.setScalar(.58);
+  const torso = group(chassis, "torso");
   box(torso, shell, 0, -.06, 0, design.bodyWidth, .93, .68);
   box(torso, trim, 0, -.48, .015, design.bodyWidth * .78, .13, .59);
   box(torso, glass, 0, .02, .349, .44, .35, .06);
@@ -54,27 +56,29 @@ export function createRobot(body: RobotBody) {
   for (const x of [-.1, 0, .1]) box(torso, joint, x, -.27, .35, .05, .045, .025);
   ball(torso, joint, 0, .48, 0, .16);
 
-  const head = group(root, "head", 0, 1.03);
+  const head = group(root, "head", 0, .64);
+  head.scale.setScalar(1.38);
   mesh(head, new RoundedBoxGeometry(design.width, 1.05, .89, 3, design.roundness), shell, 0, 0, 0);
   box(head, trim, 0, -.03, .424, design.width * .88, .79, .13);
   box(head, glass, 0, -.025, .499, design.width * .79, .66, .075);
   // A small reflected strip makes the visor read as curved glass at icon size.
   box(head, joint, -.16, .23, .542, .56, .024, .014);
   const eyes = [-1, 1].map(side => {
-    const eye = group(head, side < 0 ? "left-eye" : "right-eye", side * .255, .01, .555);
+    const eye = group(head, side < 0 ? "left-eye" : "right-eye", side * .27, .035, .555);
     if (body === "codex") {
       for (const y of [-1, 1]) {
-        const bar = box(eye, eyeLight, 0, y * .07, 0, .065, .2, .035);
+        const bar = box(eye, eyeLight, 0, y * .08, 0, .08, .23, .035);
         bar.rotation.z = side * y * .75;
       }
     } else {
-      box(eye, eyeLight, 0, 0, 0, body === "terra" ? .19 : .15, .23, .035);
+      box(eye, eyeLight, 0, 0, 0, body === "terra" ? .23 : .19, .29, .035);
     }
     return eye;
   });
-  const smile = mesh(head, new TorusGeometry(.095, .019, 6, 16, Math.PI), light, 0, -.16, .56);
+  const smile = mesh(head, new TorusGeometry(.105, .026, 6, 16, Math.PI), light, 0, -.17, .56);
   smile.rotation.z = Math.PI;
   const antenna = group(head, "antenna");
+  antenna.scale.setScalar(.78);
   const earX = design.width / 2 + .06;
   for (const side of [-1, 1]) {
     if (body === "astra" || body === "haiku") {
@@ -139,7 +143,7 @@ export function createRobot(body: RobotBody) {
   }
 
   const arms = [-1, 1].map(side => {
-    const shoulder = group(root, side < 0 ? "left-arm" : "right-arm", side * (design.bodyWidth / 2 + .13), .27);
+    const shoulder = group(chassis, side < 0 ? "left-arm" : "right-arm", side * (design.bodyWidth / 2 + .13), .27);
     ball(shoulder, joint, 0, 0, 0, .145);
     box(shoulder, shell, 0, -.2, 0, .24, .34, .28);
     const elbow = group(shoulder, "elbow", 0, -.38);
@@ -150,7 +154,7 @@ export function createRobot(body: RobotBody) {
     return { shoulder, elbow };
   });
   const legs = [-1, 1].map(side => {
-    const hip = group(root, side < 0 ? "left-leg" : "right-leg", side * design.bodyWidth * .29, -.58);
+    const hip = group(chassis, side < 0 ? "left-leg" : "right-leg", side * design.bodyWidth * .29, -.58);
     ball(hip, joint, 0, 0, 0, .13);
     box(hip, shell, 0, -.18, 0, .26, .33, .3);
     const knee = group(hip, "knee", 0, -.36);
@@ -163,7 +167,7 @@ export function createRobot(body: RobotBody) {
 
   // The console appears only during work. Arms reach forward and alternate
   // keystrokes; the head follows the screen instead of performing the idle jig.
-  const terminal = group(root, "terminal", 0, -.31, .92);
+  const terminal = group(chassis, "terminal", 0, -.31, .92);
   box(terminal, joint, 0, 0, 0, 1.03, .1, .59);
   for (const x of [-.3, -.1, .1, .3]) {
     for (const z of [-.13, .03, .19]) box(terminal, trim, x, .058, z, .12, .025, .085);
@@ -194,6 +198,7 @@ export function poseRobot(rig: RobotRig, state: MascotState, seconds: number, re
   const beat = t * Math.PI * 2 / ROBOT_DESIGNS[rig.body].beat;
   const sway = Math.sin(beat);
   root.position.set(0, 0, 0); root.rotation.set(0, 0, 0);
+  root.scale.setScalar(1);
   head.rotation.set(0, 0, 0); antenna.rotation.set(0, 0, 0);
   core.scale.setScalar(1);
   arms.forEach(({ shoulder, elbow }, i) => {
@@ -202,43 +207,60 @@ export function poseRobot(rig: RobotRig, state: MascotState, seconds: number, re
   });
   legs.forEach(({ hip, knee }) => { hip.rotation.set(0, 0, 0); knee.rotation.set(0, 0, 0); });
   terminal.visible = state.mood === "work" && !state.asleep;
-  cursor.visible = !moving || Math.sin(t * 5) > -.4;
+  cursor.visible = !moving || Math.sin(t * 9) > -.4;
   terminal.position.y = -.31;
   if (state.asleep) {
     head.rotation.x = .16; head.rotation.z = -.09;
     root.position.y = -.055;
   } else if (state.mood === "idle") {
-    root.rotation.z = moving ? sway * .095 : 0;
-    root.rotation.y = moving ? Math.sin(beat * .5) * .19 : 0;
-    root.position.y = moving ? Math.abs(Math.sin(beat)) * .12 : 0;
-    head.rotation.z = moving ? -sway * .13 : 0;
-    head.rotation.y = moving ? Math.sin(beat) * .1 : 0;
+    const bounce = moving ? (1 - Math.cos(beat * 2)) / 2 : 0;
+    const squash = moving ? Math.cos(beat * 2) * .025 : 0;
+    root.rotation.z = moving ? sway * .12 : 0;
+    root.rotation.y = moving ? Math.sin(beat * .5) * .2 : 0;
+    root.position.y = bounce * .17;
+    root.scale.set(1 + squash, 1 - squash, 1);
+    head.rotation.z = moving ? -Math.sin(beat - .35) * .18 : 0;
+    head.rotation.y = moving ? sway * .16 : 0;
+    head.rotation.x = moving ? Math.sin(beat * 2 - .4) * .07 : 0;
+    antenna.rotation.z = moving ? Math.sin(beat - .7) * .12 : 0;
     arms.forEach(({ shoulder, elbow }, i) => {
       const side = i === 0 ? -1 : 1;
-      shoulder.rotation.z = side * (.5 + (moving ? Math.sin(beat + i * Math.PI) * .42 : 0));
-      shoulder.rotation.x = moving ? Math.cos(beat + i * Math.PI) * .45 : 0;
-      elbow.rotation.x = -.35 - (moving ? (1 + Math.sin(beat + i)) * .3 : 0);
+      shoulder.rotation.z = side * (.7 + (moving ? Math.sin(beat + i * Math.PI) * .55 : 0));
+      shoulder.rotation.x = moving ? Math.cos(beat + i * Math.PI) * .65 : 0;
+      elbow.rotation.x = -.35 - (moving ? (1 + Math.sin(beat + i)) * .4 : 0);
     });
     legs.forEach(({ hip, knee }, i) => {
-      hip.rotation.x = moving ? Math.sin(beat + i * Math.PI) * .3 : 0;
-      knee.rotation.x = moving ? Math.max(0, Math.sin(beat + i * Math.PI)) * .35 : 0;
+      hip.rotation.x = moving ? Math.sin(beat + i * Math.PI) * .5 : 0;
+      knee.rotation.x = moving ? Math.max(0, Math.sin(beat + i * Math.PI)) * .55 : 0;
     });
   } else if (state.mood === "think") {
-    head.rotation.z = -.13 + (moving ? sway * .05 : 0);
-    head.rotation.y = moving ? sway * .16 : .08;
+    head.rotation.z = -.18 + (moving ? sway * .09 : 0);
+    head.rotation.y = moving ? sway * .22 : .08;
+    head.rotation.x = -.07 + (moving ? Math.cos(beat) * .06 : 0);
+    antenna.rotation.z = moving ? Math.sin(beat - .4) * .1 : 0;
     arms[1].shoulder.rotation.set(-.7, 0, -.38);
     arms[1].elbow.rotation.x = -1.6;
     root.rotation.y = -.08;
+    root.position.y = moving ? (1 - Math.cos(beat * 2)) * .025 : 0;
   } else if (state.mood === "work") {
-    head.rotation.x = .13 + (moving ? Math.sin(t * 3.2) * .045 : 0);
-    head.rotation.y = moving ? Math.sin(t * 2) * .075 : 0;
+    head.rotation.x = .13 + (moving ? Math.sin(t * 9) * .08 : 0);
+    head.rotation.y = moving ? Math.sin(t * 5) * .12 : 0;
+    head.rotation.z = moving ? Math.sin(t * 9 + .4) * .045 : 0;
+    root.position.y = moving ? (1 - Math.cos(t * 18)) * .018 : 0;
+    antenna.rotation.z = moving ? Math.sin(t * 9 - .4) * .07 : 0;
     arms.forEach(({ shoulder, elbow }, i) => {
-      shoulder.rotation.set(-.85 + (moving ? Math.sin(t * 12 + i * Math.PI) * .12 : 0), 0, i === 0 ? .22 : -.22);
-      elbow.rotation.x = -.68 + (moving ? Math.sin(t * 12 + i * Math.PI) * .19 : 0);
+      shoulder.rotation.set(-.85 + (moving ? Math.sin(t * 20 + i * Math.PI) * .2 : 0), 0, i === 0 ? .22 : -.22);
+      elbow.rotation.x = -.68 + (moving ? Math.sin(t * 20 + i * Math.PI) * .28 : 0);
     });
   }
-  const blink = moving && t % 4.7 > 4.48 ? .12 : 1;
-  eyes.forEach((eye, i) => { eye.scale.y = state.asleep ? .12 : (i === 1 && moving && (t + .045) % 4.7 > 4.48 ? .12 : blink); });
+  // A quick double blink and a curious raised eye make the face expressive
+  // without relying on limb details that disappear at chat size.
+  const blinkTime = t % 3.1;
+  const blink = moving && (blinkTime > 2.72 && blinkTime < 2.83 || blinkTime > 2.96 && blinkTime < 3.06);
+  eyes.forEach((eye, i) => {
+    eye.scale.y = state.asleep || blink ? .12 : state.mood === "think" && i === 0 ? .72 : 1;
+    eye.position.y = state.mood === "think" && !state.asleep ? .075 : .035;
+  });
   eyeLight.color.set(state.alert ? "#ffbb62" : light.color);
   if (state.asleep) eyeLight.color.multiplyScalar(.55);
 }

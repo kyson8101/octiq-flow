@@ -14,7 +14,7 @@ function transforms(rig: RobotRig) {
   return out;
 }
 
-describe("full-body Three.js robots", () => {
+describe("big-headed Three.js robots", () => {
   it("covers every model, sharing Codex bodies with Pi", () => {
     for (const model of MODELS) expect(ROBOT_DESIGNS[robotBody(model.composerStyle)]).toBeDefined();
     expect(robotBody("pi-terra")).toBe("terra");
@@ -30,8 +30,8 @@ describe("full-body Three.js robots", () => {
         expect(rig.root.getObjectByName(`${side}-arm`)).toBeDefined();
         expect(rig.root.getObjectByName(`${side}-leg`)).toBeDefined();
       }
-      for (const mood of ["idle", "think", "work"] as const) {
-        for (let t = 0; t < 6; t += .25) {
+      for (const mood of ["idle", "think", "work", "still"] as const) {
+        for (let t = 0; t < 6; t += .04) {
           poseRobot(rig, { ...idle, mood }, t);
           const bounds = new Box3().setFromObject(rig.root);
           for (const x of [bounds.min.x, bounds.max.x]) {
@@ -68,7 +68,8 @@ describe("full-body Three.js robots", () => {
   it("holds sleeping and reduced-motion poses regardless of elapsed time", () => {
     const rig = createRobot("luna");
     try {
-      for (const state of [idle, { ...idle, mood: "work" as const }]) {
+      for (const mood of ["idle", "think", "work", "still"] as const) {
+        const state = { ...idle, mood };
         poseRobot(rig, state, 1, true);
         const first = transforms(rig);
         poseRobot(rig, state, 8, true);
