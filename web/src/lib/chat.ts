@@ -284,10 +284,9 @@ export type Message = {
   echo?: string;
   /** A browser-generated id for a prompt OctiqFlow itself persisted.
    *
-   * Codex has no native user-message event, so the backend emits a canonical
-   * one after accepting a prompt. Keeping this id apart from `echo` lets that
-   * event reconcile with the optimistic bubble without changing Codex's own
-   * `turn.started` queue marker. */
+   * Every provider gets a canonical envelope when the server accepts the
+   * prompt. Keeping this id apart from `echo` reconciles optimistic sends,
+   * durable replay, and provider acknowledgements without relying on text. */
   turnId?: string;
   /** Codex's equivalent of `echo`: it does not replay the prompt, but its
    *  `turn.started` says it has begun this exact turn. Kept separate from the
@@ -297,6 +296,11 @@ export type Message = {
   /** The connected backend confirmed this unacknowledged prompt is no longer
    * queued. Keep the words, but do not present them as work still waiting. */
   queueLost?: boolean;
+  /** Transport delivery is distinct from the provider starting its reply. */
+  delivery?: "sending" | "queued" | "starting" | "dispatched" | "failed" | "unknown";
+  /** Local action feedback, never evidence that a message was delivered. */
+  queueAction?: "start" | "cancel";
+  queueError?: string;
   /** The earlier queued prompt this assistant message is answering. Codex only;
    * Claude's persistent stream already preserves its working conversation. */
   replyTo?: ReplyTarget;
@@ -952,6 +956,18 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     return { ...state, messages: state.messages.filter((m) => m.turnId !== cancelled) };
   }
 
+  if (type === "octiq_user_turn_delivery") {
+    const turnId = asStr(e.uuid);
+    const delivery = asStr(e.state);
+    if (!["queued", "starting", "dispatched", "failed"].includes(delivery)) return state;
+    return {
+      ...state,
+      messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
+        ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
+        : m),
+    };
+  }
+
   // Codex speaks its own protocol — see `codexEvents`. Read BEFORE the branches
   // below, none of which know any of its event names, and all of which
   // therefore dropped every word it ever said.
@@ -1439,8 +1455,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       if (uuid && state.messages.some((m) => m.echo === uuid)) return state;
 
       // The optimistic bubble from pressing send, not yet claimed by an echo.
-      const mine = [...state.messages]
-        .reverse()
+      const echoedTurnId = asStr(e.octiq_user_turn_id);
+      const mine = state.messages
         .find(
           (m) =>
             m.role === "user" &&
@@ -1451,7 +1467,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
             // SECOND message you never said. `sameCommand` allows the namespace
             // to differ and nothing else, and falls back to an exact compare
             // for anything that is not a slash command.
-            m.blocks.some((b) => b.kind === "text" && sameCommand(b.text, said)),
+            (echoedTurnId ? m.turnId === echoedTurnId :
+              !m.queueLost && m.blocks.some((b) => b.kind === "text" && sameCommand(b.text, said))),
         );
       if (mine) {
         // What it resolved TO, when that differs from what was typed. The
@@ -1462,7 +1479,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         return {
           ...state,
           messages: state.messages.map((m) =>
-            m === mine ? { ...m, echo: uuid, ...(ran ? { ranSkill: ran } : {}) } : m,
+            m === mine ? { ...m, echo: uuid, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined, ...(ran ? { ranSkill: ran } : {}) } : m,
           ),
         };
       }
@@ -2019,7 +2036,7 @@ function codexTurnStarted(
   );
   let messages = closed;
   if (at >= 0) {
-    const accepted = { ...closed[at], takenUp: true, queueLost: undefined };
+    const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined };
     const remaining = closed.filter((_, i) => i !== at);
     const settled = remaining.filter((m) => !waitingForCodex(m));
     const waiting = remaining.filter(waitingForCodex);
@@ -2299,9 +2316,8 @@ function reduceClaudeStream(
 
 /** Add the user's own turn before the durable protocol event arrives.
  *
- * Claude echoes its prompt back; Codex gets an OctiqFlow-owned canonical event
- * after acceptance. Showing either optimistically is what makes the UI feel
- * like a chat. */
+ * Every provider gets an OctiqFlow-owned canonical event after acceptance.
+ * Showing the prompt optimistically keeps typing independent of transport. */
 export function addUserTurn(
   state: ChatState,
   text: string,
@@ -2346,13 +2362,13 @@ export function addUserTurn(
     messages: [
       ...state.messages,
       {
-        id: `u${state.messages.length}`,
+        id: turnId ? `u:${turnId}` : `u${state.messages.length}`,
         role: "user",
         blocks: [{ kind: "text", text }],
         streaming: false,
         ...(attachments.length ? { attachments } : {}),
         ...(to ? { to } : {}),
-        ...(turnId ? { turnId } : {}),
+        ...(turnId ? { turnId, delivery: "sending" as const } : {}),
         ...(asOneLine(text) ? { relay: asOneLine(text) } : {}),
       },
     ],

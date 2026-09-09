@@ -167,7 +167,7 @@ fn durable_user_event(
     event
 }
 
-/// Persist and fan out one prompt that Codex accepted.
+/// Persist and fan out one prompt accepted by OctiqFlow.
 ///
 /// This uses the same transcript-before-bus ordering as agent stdout. A page
 /// that reconnects therefore sees the prompt before the Codex events it caused,
@@ -197,18 +197,39 @@ fn fresh_turn_id(turn_id: Option<String>) -> String {
         .unwrap_or_else(|| format!("octiq-user-{}", uuid::Uuid::new_v4()))
 }
 
-/// Tie a command-line provider's acknowledgement to the exact browser turn it
-/// is starting.
-///
-/// The native event has no prompt id. That is ambiguous once two follow-ups are
-/// queued, because the backend starts them FIFO while the browser can see both
-/// bubbles already. The id is OctiqFlow metadata on a Codex-only event; Claude's
-/// stream is deliberately left byte-for-byte unchanged.
+/// Delivery is owned by the backend, independently of provider acknowledgement.
+/// In particular, a process connecting to its API already owns its prompt; that
+/// prompt cannot still be offered as an editable queue entry.
+fn record_delivery(key: &str, turn_id: Option<&str>, state: &str) {
+    let Some(turn_id) = turn_id else { return };
+    let event = json!({ "type": "octiq_user_turn_delivery", "uuid": turn_id, "state": state });
+    let seq = crate::transcript::append(key, &event);
+    crate::bus::emit(
+        "chat-event",
+        ChatEvent {
+            key: key.to_string(),
+            seq,
+            event,
+        },
+    );
+}
+
+/// Tie each provider acknowledgement to its exact dispatched prompt. Text is
+/// not an identity: identical follow-ups can be waiting at the same time.
 fn stamp_user_turn_id(event: &mut Value, agent: ChatAgent, turn_id: Option<&str>) {
     let starts_turn = match agent {
         ChatAgent::Codex => event.get("type").and_then(Value::as_str) == Some("turn.started"),
         ChatAgent::Pi => event.get("type").and_then(Value::as_str) == Some("turn_start"),
-        ChatAgent::Claude => false,
+        ChatAgent::Claude => {
+            event.get("type").and_then(Value::as_str) == Some("user")
+                && event.get("parent_tool_use_id").is_none_or(Value::is_null)
+                && event.pointer("/message/content").is_some_and(|content| {
+                    content.is_string()
+                        || content.as_array().is_some_and(|blocks| {
+                            !blocks.iter().any(|block| block["type"] == "tool_result")
+                        })
+                })
+        }
     };
     if !starts_turn {
         return;
@@ -279,6 +300,7 @@ fn emit_unstructured_output(
 }
 
 struct ChatSession {
+    user_turn_id: Option<String>,
     child: Child,
     stdin: Option<ChildStdin>,
     /// Which program this is. Only Claude has a control channel, so a setting
@@ -406,11 +428,8 @@ struct QueuedTurn {
     /// The optimistic browser bubble this exact FIFO entry belongs to. Internal
     /// agent-to-agent turns have none and remain invisible user-wise.
     turn_id: Option<String>,
-    /// Whether a canonical user event went into the transcript at enqueue.
-    /// Only a one-shot provider's turns do: a persistent provider echoes the
-    /// message back itself the moment it starts on it, and a copy of our own
-    /// would draw it twice. So cancelling a recorded turn has to take it back
-    /// OUT of the record, and cancelling an unrecorded one has nothing to undo.
+    /// Whether this prompt has a durable canonical envelope. Internal
+    /// agent-to-agent briefs are not person-visible messages.
     recorded: bool,
 }
 
@@ -429,6 +448,9 @@ pub struct ChatManager {
     /// Keyed by process key, so a room's host and each of its seats queue
     /// separately, exactly as they run separately.
     queued_turns: Mutex<HashMap<String, VecDeque<QueuedTurn>>>,
+    /// A one-shot process is being replaced. Sends still join its queue, and
+    /// another browser must not start a competing process in this gap.
+    handoffs: Mutex<std::collections::HashSet<String>>,
 }
 
 impl ChatManager {
@@ -603,27 +625,9 @@ impl ChatManager {
     /// for that process. Otherwise a later, unrelated resume could unexpectedly
     /// receive words the person meant to cancel.
     fn forget_queued_turns(&self, key: &str) {
-        if let Ok(mut turns) = self.queued_turns.lock() {
-            turns.remove(key);
-        }
-    }
-
-    /// Put turns back at the FRONT of a queue, in the order given.
-    ///
-    /// Only ever the tail of a queue the same call has just taken out, which is
-    /// why the front is the right end: they were sent before anything that
-    /// could have arrived in the gap, and a queue is only worth having if it
-    /// keeps that order. See `chat_interrupt_impl`, which has to lift a
-    /// one-shot provider's queue clear of the process being killed under it.
-    fn requeue_front(&self, key: &str, turns: Vec<QueuedTurn>) {
-        if turns.is_empty() {
-            return;
-        }
-        if let Ok(mut queues) = self.queued_turns.lock() {
-            let queue = queues.entry(key.to_string()).or_default();
-            for turn in turns.into_iter().rev() {
-                queue.push_front(turn);
-            }
+        let stream_key = key.split("-seat-").next().unwrap_or(key);
+        for turn in self.take_all_queued_turns(key) {
+            record_delivery(stream_key, turn.turn_id.as_deref(), "failed");
         }
     }
 
@@ -1010,6 +1014,34 @@ fn start_queued_command_turn(
     seat: Option<crate::chat_room::Seat>,
     turn: QueuedTurn,
 ) -> Result<(), String> {
+    let result = start_queued_command_turn_inner(
+        manager.clone(),
+        session_key,
+        stream_key,
+        seat,
+        turn.clone(),
+    );
+    // Failure cleanup belongs to this handoff, before a new send can start.
+    let _sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    if result.is_err() {
+        record_delivery(stream_key, turn.turn_id.as_deref(), "failed");
+        manager.forget_queued_turns(session_key);
+    }
+    manager
+        .handoffs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(session_key);
+    result
+}
+
+fn start_queued_command_turn_inner(
+    manager: Arc<ChatManager>,
+    session_key: &str,
+    stream_key: &str,
+    seat: Option<crate::chat_room::Seat>,
+    turn: QueuedTurn,
+) -> Result<(), String> {
     let start = manager
         .start_context(session_key)
         .ok_or_else(|| format!("nothing here knows how to resume '{session_key}'"))?;
@@ -1089,11 +1121,17 @@ pub(crate) fn start_session(
     let seat_for_reaper = seat.clone();
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
+    // Keep creation and insertion atomic with other starts and sends.
+    let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    if sessions.contains_key(&session_key)
+        || (record_user_turn
+            && manager
+                .handoffs
+                .lock()
+                .map_err(|e| e.to_string())?
+                .contains(&session_key))
     {
-        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
-        if sessions.contains_key(&session_key) {
-            return Err(format!("chat '{session_key}' is already running"));
-        }
+        return Err(format!("chat '{session_key}' is already running"));
     }
 
     // The folder we start in is already visible to the agent, so naming it
@@ -1106,7 +1144,6 @@ pub(crate) fn start_session(
         .collect();
 
     let provider = provider_for(agent);
-    let turn_id_for_event = user_turn_id.clone();
     let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
     let images = images.unwrap_or_default();
@@ -1191,6 +1228,7 @@ pub(crate) fn start_session(
     let stdin = child.stdin.take();
 
     let session = Arc::new(Mutex::new(ChatSession {
+        user_turn_id: user_turn_id.clone(),
         child,
         stdin,
         agent,
@@ -1202,23 +1240,24 @@ pub(crate) fn start_session(
         busy: !prompt.trim().is_empty(),
         last_active: Instant::now(),
     }));
-    manager
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .insert(session_key.clone(), session.clone());
+    sessions.insert(session_key.clone(), session.clone());
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
     record_access_for(&key, access, is_seat);
 
-    // A command-line provider has no user-message event in its stdout. Once
-    // its process exists, the prompt is accepted; write our canonical copy
-    // before the reader can forward the first Codex event.
-    if record_user_turn && has_prompt && !provider.capabilities().input.accepts_stdin() {
+    // All providers share a durable prompt identity. Write it before the
+    // reader can forward an acknowledgement or a following enqueue can land.
+    if record_user_turn && has_prompt {
         if let Some(turn_id) = user_turn_id.as_deref() {
             record_durable_user_turn(&key, turn_id, &prompt, &images, seat.as_ref());
         }
     }
+
+    if has_prompt && !provider.capabilities().input.accepts_stdin() {
+        record_delivery(&key, user_turn_id.as_deref(), "dispatched");
+    }
+
+    drop(sessions);
 
     // Providers that use a control channel initialize it before the first turn.
     // The handshake is not transcript content; its response is recognized by
@@ -1384,8 +1423,18 @@ pub(crate) fn start_session(
                                             &mut s,
                                             &turn.text,
                                             &turn.images,
+                                            turn.turn_id.as_deref(),
                                         )
                                         .err();
+                                        record_delivery(
+                                            &key,
+                                            turn.turn_id.as_deref(),
+                                            if refused.is_some() {
+                                                "failed"
+                                            } else {
+                                                "dispatched"
+                                            },
+                                        );
                                     }
                                 }
                             }
@@ -1436,7 +1485,11 @@ pub(crate) fn start_session(
                         stamp_user_turn_id(
                             &mut event,
                             stream_provider.kind(),
-                            turn_id_for_event.as_deref(),
+                            asking
+                                .lock()
+                                .ok()
+                                .and_then(|s| s.user_turn_id.clone())
+                                .as_deref(),
                         );
                         crate::chat_room::stamp_speaker(&mut event, speaker.as_ref());
                         // Recorded BEFORE it is sent, so a client that
@@ -1532,9 +1585,22 @@ pub(crate) fn start_session(
                             } else {
                                 manager_for_exit.take_queued_turn(&session_key_for_exit)
                             };
+                        if queued_turn.is_some() {
+                            manager_for_exit
+                                .handoffs
+                                .lock()
+                                .unwrap()
+                                .insert(session_key_for_exit.clone());
+                        }
                         (true, false, queued_turn)
                     } else {
-                        (false, sessions.contains_key(&session_key_for_exit), None)
+                        let replaced = sessions.contains_key(&session_key_for_exit)
+                            || manager_for_exit
+                                .handoffs
+                                .lock()
+                                .map(|h| h.contains(&session_key_for_exit))
+                                .unwrap_or(false);
+                        (false, replaced, None)
                     }
                 }
                 Err(_) => (false, false, None),
@@ -1561,7 +1627,6 @@ pub(crate) fn start_session(
                         Err(why) => {
                             // Do not let a later, unrelated resume receive
                             // stale words after a failed restart.
-                            manager_for_exit.forget_queued_turns(&session_key_for_exit);
                             emit_status(
                                 agent,
                                 ChatStatus {
@@ -1593,7 +1658,7 @@ pub(crate) fn start_session(
     // Persistent-stream providers receive the first user turn after startup;
     // command-line providers received it in `build_command` already.
     if provider.capabilities().input.accepts_stdin() && !prompt.trim().is_empty() {
-        write_user_message(&session, &prompt, &images)?;
+        write_user_message(&session, &prompt, &images, &key, user_turn_id.as_deref())?;
     }
 
     Ok(())
@@ -1610,6 +1675,7 @@ fn write_user_message_locked(
     session: &mut ChatSession,
     text: &str,
     images: &[String],
+    turn_id: Option<&str>,
 ) -> Result<(), String> {
     let payload = provider_for(session.agent)
         .user_message_payload(text, images)
@@ -1622,6 +1688,7 @@ fn write_user_message_locked(
     stdin.flush().map_err(|e| e.to_string())?;
     // Every turn this session is ever asked to do comes through here, so this
     // one line is the whole of "somebody is still using this chat".
+    session.user_turn_id = turn_id.map(str::to_string);
     session.turn_started();
     Ok(())
 }
@@ -1630,9 +1697,21 @@ fn write_user_message(
     session: &Arc<Mutex<ChatSession>>,
     text: &str,
     images: &[String],
+    key: &str,
+    turn_id: Option<&str>,
 ) -> Result<(), String> {
     let mut guard = session.lock().map_err(|e| e.to_string())?;
-    write_user_message_locked(&mut guard, text, images)
+    let result = write_user_message_locked(&mut guard, text, images, turn_id);
+    record_delivery(
+        key,
+        turn_id,
+        if result.is_ok() {
+            "dispatched"
+        } else {
+            "failed"
+        },
+    );
+    result
 }
 
 /// Send the next user turn to a running chat, with any images attached to it.
@@ -1702,11 +1781,12 @@ fn chat_send_with_user_turn(
             if let Some(turn_id) = user_turn_id.as_deref() {
                 record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
             }
+            record_delivery(&key, user_turn_id.as_deref(), "dispatched");
             crate::agent_api::ask(seat, &key, &text)?;
             return Ok(());
         }
     }
-    let session = {
+    {
         // A command-line follow-up and its reaper share this lock order.
         // Holding the sessions entry until the turn reaches the queue means the
         // reaper either sees that queued turn or this call sees no session and
@@ -1714,6 +1794,27 @@ fn chat_send_with_user_turn(
         // vanishes in between.
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         let Some(session) = sessions.get(&session_key).cloned() else {
+            if manager
+                .handoffs
+                .lock()
+                .map_err(|e| e.to_string())?
+                .contains(&session_key)
+            {
+                manager.queue_turn(
+                    &session_key,
+                    QueuedTurn {
+                        text: text.clone(),
+                        images: images.clone(),
+                        turn_id: user_turn_id.clone(),
+                        recorded: user_turn_id.is_some(),
+                    },
+                )?;
+                if let Some(turn_id) = user_turn_id.as_deref() {
+                    record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+                    record_delivery(&key, Some(turn_id), "queued");
+                }
+                return Ok(());
+            }
             // Two different failures, said differently on purpose. A seat is a
             // RECORD until someone talks to it, so "it has not started yet" is
             // an ordinary state the client answers by starting it — the same
@@ -1746,30 +1847,20 @@ fn chat_send_with_user_turn(
                 .input
                 .accepts_stdin();
             if one_shot || guard.busy || manager.has_queued_turns(&session_key) {
-                // A one-shot prompt has been accepted once it entered the
-                // queue, so keep a canonical copy NOW, at the moment the person
-                // sent it, not when the next process eventually begins it. A
-                // persistent provider writes its own copy by echoing the
-                // message back when it starts on it, and a second one here
-                // would put the same words on screen twice.
-                let recorded = one_shot
-                    .then(|| {
-                        user_turn_id
-                            .as_deref()
-                            .map(|turn_id| (turn_id.to_string(), text.clone(), images.clone()))
-                    })
-                    .flatten();
+                // Every provider gets the same durable queue envelope. Native
+                // echoes reconcile by the exact turn id when it is dispatched.
                 manager.queue_turn(
                     &session_key,
                     QueuedTurn {
-                        text,
-                        images,
+                        text: text.clone(),
+                        images: images.clone(),
                         turn_id: user_turn_id.clone(),
-                        recorded: recorded.is_some(),
+                        recorded: user_turn_id.is_some(),
                     },
                 )?;
-                if let Some((turn_id, text, images)) = recorded {
-                    record_durable_user_turn(&key, &turn_id, &text, &images, target_seat);
+                if let Some(turn_id) = user_turn_id.as_deref() {
+                    record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+                    record_delivery(&key, Some(turn_id), "queued");
                 }
                 // A queued turn is still work the person is waiting for. This also
                 // prevents the idle sweeper from ending the process in the handoff
@@ -1777,10 +1868,23 @@ fn chat_send_with_user_turn(
                 guard.turn_started();
                 return Ok(());
             }
+            if let Some(turn_id) = user_turn_id.as_deref() {
+                record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+            }
+            let result =
+                write_user_message_locked(&mut guard, &text, &images, user_turn_id.as_deref());
+            record_delivery(
+                &key,
+                user_turn_id.as_deref(),
+                if result.is_ok() {
+                    "dispatched"
+                } else {
+                    "failed"
+                },
+            );
+            result
         }
-        session
-    };
-    write_user_message(&session, &text, &images)
+    }
 }
 
 /// Take back a message the agent has not been given yet.
@@ -1800,6 +1904,8 @@ pub fn chat_cancel_queued_impl(
     key: String,
     turn_id: String,
 ) -> Result<bool, String> {
+    // Serialize with enqueue + its durable event, and with process handoffs.
+    let _sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     let Some(cancelled) = manager.cancel_queued_turn(&key, &turn_id) else {
         return Ok(false);
     };
@@ -1887,26 +1993,28 @@ pub fn chat_start_queued_impl(
     let agent = guard.agent;
     if provider_for(agent).capabilities().input.accepts_stdin() {
         interrupt_persistent_turn(&mut guard)?;
+        record_delivery(&key, Some(&turn_id), "starting");
         return Ok(true);
     }
 
     // A command-line provider cannot be interrupted over stdin. Remove this
     // exact process while the sessions lock still fences its reaper, carry the
     // promoted turn across the kill, then resume it outside the locks.
-    let mut waiting = manager.take_all_queued_turns(&session_key);
+    let Some(next) = manager.take_queued_turn(&session_key) else {
+        return Ok(false);
+    };
+    manager
+        .handoffs
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(session_key.clone());
     sessions.remove(&session_key);
     guard.stdin.take();
     let _ = guard.child.kill();
     drop(guard);
     drop(sessions);
 
-    if waiting.is_empty() {
-        return Ok(false);
-    }
-    let next = waiting.remove(0);
-    manager.requeue_front(&session_key, waiting);
     if let Err(why) = start_queued_command_turn(manager.clone(), &session_key, &key, seat, next) {
-        manager.forget_queued_turns(&session_key);
         return Err(format!("could not resume queued message: {why}"));
     }
     Ok(true)
@@ -2128,31 +2236,30 @@ fn interrupt_session(
     // Remove and kill their current one-shot process, but deliberately leave
     // `StartContext` intact so the next user turn can resume it.
     if !provider_for(agent).capabilities().input.accepts_stdin() {
-        // Lifted clear BEFORE the kill, because `end_process` discards
-        // whatever was waiting on the process it ends — right for a chat
-        // somebody stopped, wrong for a turn, where the messages behind it are
-        // the ones being asked for. The exit reaper cannot pick them up
-        // either: `end_process` takes the session out of the map, so the exit
-        // it is about to see is no longer the current one.
-        //
-        // A seat runs under its own key but SPEAKS into the room's transcript.
-        // `stream_key` and `seat` preserve those two identities when this is a
-        // targeted start; the ordinary Stop path supplies the host pair.
-        let mut waiting = manager.take_all_queued_turns(session_key);
-        end_process(manager, session_key)?;
-        if waiting.is_empty() {
+        let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        if !sessions
+            .get(session_key)
+            .is_some_and(|current| Arc::ptr_eq(current, &session))
+        {
             return Ok(());
         }
-        let next = waiting.remove(0);
-        manager.requeue_front(session_key, waiting);
-        if let Err(why) =
+        let mut guard = session.lock().map_err(|e| e.to_string())?;
+        let next = manager.take_queued_turn(session_key);
+        if next.is_some() {
+            manager
+                .handoffs
+                .lock()
+                .map_err(|e| e.to_string())?
+                .insert(session_key.to_string());
+        }
+        sessions.remove(session_key);
+        guard.stdin.take();
+        let _ = guard.child.kill();
+        drop(guard);
+        drop(sessions);
+        if let Some(next) = next {
             start_queued_command_turn(manager.clone(), session_key, stream_key, seat, next)
-        {
-            // Words held for a process that never started must not surface in
-            // some later conversation — the same rule the reaper follows when
-            // its own resume fails.
-            manager.forget_queued_turns(session_key);
-            return Err(format!("could not resume queued message: {why}"));
+                .map_err(|why| format!("could not resume queued message: {why}"))?;
         }
         return Ok(());
     }
@@ -2643,9 +2750,11 @@ pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQue
     let belongs = |candidate: &str| candidate == key || candidate.starts_with(&seats);
     // Match the send/reaper lock order, so an enqueue cannot cross this read.
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    let handoffs = manager.handoffs.lock().map_err(|e| e.to_string())?;
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
-        live: sessions.keys().any(|candidate| belongs(candidate)),
+        live: sessions.keys().any(|candidate| belongs(candidate))
+            || handoffs.iter().any(|candidate| belongs(candidate)),
         queued_turn_ids: queues
             .iter()
             .filter(|(candidate, _)| belongs(candidate))
@@ -2664,6 +2773,78 @@ mod tests {
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    #[test]
+    fn sends_during_a_process_handoff_remain_cancellable_and_durable() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("queue-handoff-{}", uuid::Uuid::new_v4());
+        manager.handoffs.lock().unwrap().insert(key.clone());
+        chat_send_user_impl(
+            manager.clone(),
+            key.clone(),
+            "arrived during replacement".into(),
+            Some(vec!["/tmp/image.png".into()]),
+            None,
+            Some("follow-up".into()),
+            None,
+        )
+        .unwrap();
+        let snapshot = chat_queue_state_impl(&manager, &key).unwrap();
+        assert!(snapshot.live);
+        assert_eq!(snapshot.queued_turn_ids, ["follow-up"]);
+        let events = crate::transcript::since(&key, 0);
+        assert_eq!(
+            events[0].event["octiq_attachments"][0]["path"],
+            "/tmp/image.png"
+        );
+        assert_eq!(events[1].event["state"], "queued");
+        assert_eq!(
+            chat_cancel_queued_impl(&manager, key.clone(), "follow-up".into()),
+            Ok(true)
+        );
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn a_failed_queue_handoff_records_failure_for_every_waiting_message() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("queue-failed-{}", uuid::Uuid::new_v4());
+        manager.handoffs.lock().unwrap().insert(key.clone());
+        for id in ["one", "two"] {
+            chat_send_user_impl(
+                manager.clone(),
+                key.clone(),
+                id.into(),
+                None,
+                None,
+                Some(id.into()),
+                None,
+            )
+            .unwrap();
+        }
+        let next = manager.take_queued_turn(&key).unwrap();
+        assert!(start_queued_command_turn(manager.clone(), &key, &key, None, next).is_err());
+        let failed: Vec<_> = crate::transcript::since(&key, 0)
+            .into_iter()
+            .filter(|event| event.event["state"] == "failed")
+            .map(|event| event.event["uuid"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(failed, ["one", "two"]);
+        assert!(!chat_queue_state_impl(&manager, &key).unwrap().live);
+        assert!(!manager.has_queued_turns(&key));
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn claude_echoes_use_the_dispatched_id_without_claiming_tool_results() {
+        let mut echo =
+            json!({"type":"user", "message":{"content":[{"type":"text", "text":"same words"}]}});
+        stamp_user_turn_id(&mut echo, ChatAgent::Claude, Some("exact-turn"));
+        assert_eq!(echo["octiq_user_turn_id"], "exact-turn");
+        let mut result = json!({"type":"user", "message":{"content":[{"type":"tool_result", "content":"done"}]}});
+        stamp_user_turn_id(&mut result, ChatAgent::Claude, Some("exact-turn"));
+        assert!(result.get("octiq_user_turn_id").is_none());
+    }
 
     #[test]
     fn queue_state_reports_host_and_seat_queues_without_other_chats() {
@@ -3790,6 +3971,7 @@ mod tests {
         manager.sessions.lock().unwrap().insert(
             session_key.clone(),
             Arc::new(Mutex::new(ChatSession {
+                user_turn_id: None,
                 child,
                 stdin: None,
                 agent: ChatAgent::Codex,
@@ -3843,6 +4025,7 @@ mod tests {
         manager.sessions.lock().unwrap().insert(
             key.clone(),
             Arc::new(Mutex::new(ChatSession {
+                user_turn_id: None,
                 child,
                 stdin: None,
                 agent: ChatAgent::Claude,
@@ -3872,6 +4055,7 @@ mod tests {
         manager.sessions.lock().unwrap().insert(
             key.clone(),
             Arc::new(Mutex::new(ChatSession {
+                user_turn_id: None,
                 child,
                 stdin: None,
                 agent: ChatAgent::Codex,
@@ -3892,7 +4076,8 @@ mod tests {
         .expect("a queued Codex user turn");
 
         let events = crate::transcript::since(&key, 0);
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event["state"], "queued");
         assert_eq!(events[0].event["uuid"], "user-1");
         assert_eq!(
             events[0].event["message"]["content"][0]["text"],
@@ -3923,6 +4108,7 @@ mod tests {
             .expect("a cat to stand in for Claude");
         let stdin = child.stdin.take();
         Arc::new(Mutex::new(ChatSession {
+            user_turn_id: None,
             child,
             stdin,
             agent: ChatAgent::Claude,
@@ -3965,13 +4151,12 @@ mod tests {
                 text: "and one more thing".into(),
                 images: vec![],
                 turn_id: Some("user-1".into()),
-                recorded: false,
+                recorded: true,
             })
         );
-        assert!(
-            crate::transcript::since(&key, 0).is_empty(),
-            "Claude writes its own copy by echoing the message back; ours would double it"
-        );
+        let events = crate::transcript::since(&key, 0);
+        assert_eq!(events[0].event["uuid"], "user-1");
+        assert_eq!(events[1].event["state"], "queued");
 
         end_process(&manager, &key).expect("end the stand-in");
         crate::transcript::forget(&key);
@@ -4160,6 +4345,7 @@ mod tests {
         let manager = Arc::new(ChatManager::default());
         let key = "codex-stop-queue";
         let session = Arc::new(Mutex::new(ChatSession {
+            user_turn_id: None,
             child: Command::new("sleep")
                 .arg("30")
                 .stdin(Stdio::null())
@@ -4218,10 +4404,9 @@ mod tests {
             Ok(true)
         );
         assert!(manager.take_queued_turn(&key).is_none());
-        assert!(
-            crate::transcript::since(&key, 0).is_empty(),
-            "there was nothing written down to take back out"
-        );
+        let events = crate::transcript::since(&key, 0);
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[2].event["type"], "octiq_user_turn_cancelled");
         // The queue is FIFO and the agent may already have been handed it. That
         // is a race nobody can win, and the page has to be told rather than
         // shown a bubble vanishing from under an answer to it.
@@ -4250,6 +4435,7 @@ mod tests {
             &manager,
             &key,
             Arc::new(Mutex::new(ChatSession {
+                user_turn_id: None,
                 child,
                 stdin: None,
                 agent: ChatAgent::Codex,
@@ -4268,7 +4454,7 @@ mod tests {
             None,
         )
         .expect("a queued Codex user turn");
-        assert_eq!(crate::transcript::since(&key, 0).len(), 1);
+        assert_eq!(crate::transcript::since(&key, 0).len(), 2);
 
         assert_eq!(
             chat_cancel_queued_impl(&manager, key.clone(), "user-1".into()),
@@ -4276,8 +4462,8 @@ mod tests {
         );
         assert!(manager.take_queued_turn(&key).is_none());
         let events = crate::transcript::since(&key, 0);
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[1].event["type"], "octiq_user_turn_cancelled");
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[2].event["type"], "octiq_user_turn_cancelled");
         assert_eq!(events[1].event["uuid"], "user-1");
 
         end_process(&manager, &key).expect("end the stand-in");
@@ -4344,6 +4530,7 @@ mod tests {
             &manager,
             &session_key,
             Arc::new(Mutex::new(ChatSession {
+                user_turn_id: None,
                 child,
                 stdin: None,
                 agent: ChatAgent::Codex,
@@ -4438,6 +4625,7 @@ mod tests {
             },
         );
         let session = Arc::new(Mutex::new(ChatSession {
+            user_turn_id: None,
             child: Command::new("sleep")
                 .arg("30")
                 .stdin(Stdio::null())
@@ -4606,6 +4794,7 @@ mod idle_tests {
             .spawn()
             .expect("a sleep to stand in for an agent");
         Arc::new(Mutex::new(ChatSession {
+            user_turn_id: None,
             child,
             stdin: None,
             agent: ChatAgent::Claude,

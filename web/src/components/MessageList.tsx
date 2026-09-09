@@ -696,27 +696,15 @@ function TurnView({
     .join("\n\n")
     .trim();
 
-  // A user turn the agent has not picked up yet. Claude echoes a message back
-  // when it STARTS on it; Codex says `turn.started` instead. Either signal
-  // takes the clock off the optimistic bubble. A second message sent
-  // mid-answer is only acknowledged after the first turn's result, so a bubble
-  // with neither signal is one sitting in the queue — the difference between
-  // "it is ignoring me" and "it will get to it".
-  // Only while the chat is actually working. A slash command like /context is
-  // answered locally and is never echoed back at all, so "no echo" on its own
-  // would leave it marked queued forever — which is how this was first wrong.
+  // Only backend ownership enables queue actions. Missing provider output
+  // can also mean connecting, already handed over, or a failed request.
+  const message = messages[0];
   const unsent = role === "user" && messages.some((m) => m.queueLost && !m.echo && !m.takenUp);
-  const queued = !!busy && !unsent && role === "user" && messages.every((m) => !m.echo && !m.takenUp);
-
-  // And whether this one can be taken back. A user turn is its own bubble now
-  // (`groupTurns`), so the one id this needs is unambiguous — but only a turn
-  // this page gave an id to at send has anything the backend can be asked to
-  // find. Everything else keeps the plain clock.
-  const waitingId = queued ? messages[0].turnId : undefined;
-  const cancel =
-    onCancelQueued && waitingId ? () => onCancelQueued(waitingId) : undefined;
-  const start =
-    onStartQueued && waitingId ? () => onStartQueued(waitingId) : undefined;
+  const queued = role === "user" && !unsent && !message.echo && !message.takenUp
+    && message.delivery === "queued";
+  const waitingId = queued ? message.turnId : undefined;
+  const cancel = onCancelQueued && waitingId ? () => onCancelQueued(waitingId) : undefined;
+  const start = onStartQueued && waitingId ? () => onStartQueued(waitingId) : undefined;
 
   // Cards 80 and 81 — a turn made ENTIRELY of things that HAPPENED takes no
   // name. A compaction is not something Claude said, and a `/model` answered by
@@ -792,7 +780,11 @@ function TurnView({
           <span className="msg-reply-preview">{replyTo.preview}</span>
         </div>
       )}
-      <MessageBubble user={role === "user"} turnId={waitingId} onStart={start} onCancel={cancel}>
+      <MessageBubble user={role === "user"} message={message} onStart={start} onCancel={cancel}
+        onRestore={unsent && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
+        onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
+        footer={role === "user" && answer ? <CopyAnswer text={answer} what="message" /> : undefined}>
+
         {/* Above the words, the way they sit above the box while you attach
             them — and because a message whose words are "look at this" makes no
             sense until you have seen the picture it came with. */}
@@ -813,91 +805,6 @@ function TurnView({
           />
         )}
         {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
-        {/* Sent, and the agent has not started on it. A clock inside the pill,
-            and deliberately OUT OF FLOW — see `.queued`.
-
-            It was a word on a row of its own, and a row of its own is the one
-            thing this must not be: it appears the moment you send and vanishes
-            the moment the agent picks the message up, which is mid-conversation
-            and unannounced. Going, it took its line AND the column's 10px gap
-            with it, and every message below stepped 23px up the page. The
-            working dots learned this first (`.dots-slot`): a thing that blinks
-            in and out never owns layout.
-
-            The word became an icon for the same reason it moved — a label
-            needs a line, a clock needs a corner. What it MEANT survives on the
-            title and the label, so nothing is lost to a reader who cannot see
-            a picture of a clock. */}
-        {/* And the one thing you can still do about it: take it back.
-
-            The ✕ lives in the clock's own corner and REPLACES it rather than
-            appearing beside it. The gutter it sits in is a fixed 40px whether
-            anything is drawn there or not (see `.msg-user .msg-body`), so a
-            second mark would have had to come from somewhere else on the pill
-            — and the one rule this corner has is that nothing here may move
-            the words. One slot, two faces: waiting, and the way out of it.
-
-            Only a message this page can still name. A turn sent before the id
-            existed, or one an agent sent on its own behalf, has nothing to
-            address a cancel to, so it keeps the plain clock it always had. */}
-        {queued &&
-          (start ? (
-            <span
-              className="queued queued-actions"
-              role="group"
-              aria-label="Queued message actions"
-            >
-              <span className="queued-face queued-waiting" aria-hidden="true">
-                <ClockIcon />
-              </span>
-              <span className="queued-controls">
-                <button
-                  type="button"
-                  className="queued-run"
-                  onClick={start}
-                  title="Stop the current turn and send this queued message now"
-                  aria-label="Send this queued message now"
-                >
-                  <SendNowIcon />
-                </button>
-                {cancel && (
-                  <button
-                    type="button"
-                    className="queued-remove"
-                    onClick={cancel}
-                    title="Take this queued message back"
-                    aria-label="Cancel this queued message"
-                  >
-                    <CancelIcon />
-                  </button>
-                )}
-              </span>
-            </span>
-          ) : cancel ? (
-            <button
-              type="button"
-              className="queued queued-cancel"
-              onClick={cancel}
-              title="Sent — the agent has not started on this yet. Click to take it back."
-              aria-label="Cancel this queued message"
-            >
-              <span className="queued-face queued-waiting" aria-hidden="true">
-                <ClockIcon />
-              </span>
-              <span className="queued-face queued-take-back" aria-hidden="true">
-                <CancelIcon />
-              </span>
-            </button>
-          ) : (
-            <span
-              className="queued"
-              role="img"
-              title="Sent — the agent has not started on this yet"
-              aria-label="Sent — the agent has not started on this yet"
-            >
-              <ClockIcon />
-            </span>
-          ))}
         {/* Copy, once the turn is over and there is prose worth taking.
             (The files the turn touched used to sit on this row too. They are a
             whole-session question now — see components/SessionFiles.)
@@ -917,37 +824,6 @@ function TurnView({
           </div>
         )}
       </MessageBubble>
-      {/* Your own words, on the same terms — but UNDER the bubble rather than
-          in it. The bubble is `.msg-body`, and a row inside the tint reads as
-          one more thing you said.
-
-          None of the assistant's timing guards apply here: a turn of yours is
-          whole the moment it is on screen, so there is no gap to flicker in.
-          What it copies is `answer`, taken from the blocks themselves — so a
-          message long enough to be cut down to a head still copies whole,
-          which is the case worth having a button for at all. A long press
-          still selects part of it, the way it always did; this is the
-          shortcut, not the replacement. */}
-      {role === "user" && answer && (
-        <div className="msg-foot">
-          {unsent && (
-            <span className="msg-unsent">
-              <span role="status" title="No acknowledgement was recorded, and this message is no longer in the server queue">Not queued</span>
-              {onRestoreUnsent && messages[0].turnId && (
-                <button type="button" onClick={() => onRestoreUnsent(messages[0].turnId!)}>
-                  Copy text to composer
-                </button>
-              )}
-              {onDismissUnsent && messages[0].turnId && (
-                <button type="button" onClick={() => onDismissUnsent(messages[0].turnId!)}>
-                  Dismiss
-                </button>
-              )}
-            </span>
-          )}
-          <CopyAnswer text={answer} what="message" />
-        </div>
-      )}
     </article>
   );
 }
@@ -976,67 +852,6 @@ function CopyAnswer({ text, what }: { text: string; what: "reply" | "message" })
         {state === "done" ? "copied" : state === "failed" ? "could not copy" : "copy"}
       </button>
     </div>
-  );
-}
-
-/** Waiting its turn. A clock rather than an hourglass or a spinner: nothing is
- *  HAPPENING to a queued message, which is the whole of what it has to say. */
-function ClockIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5.2l3.2 2" />
-    </svg>
-  );
-}
-
-/** Take it back. Drawn at the clock's own size and in its own place, because
- *  it REPLACES the clock rather than joining it — see `.queued-cancel`. */
-function CancelIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M6.5 6.5l11 11M17.5 6.5l-11 11" />
-    </svg>
-  );
-}
-
-/** Start this waiting turn now, ahead of the answer currently in flight. */
-function SendNowIcon() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5 12h13" />
-      <path d="m13 7 5 5-5 5" />
-    </svg>
   );
 }
 

@@ -82,7 +82,7 @@ describe("copying a message of your own", () => {
     // is .msg-body, so the row has to come after that element has closed.
     const html = render(said("what does this do?"));
     const bubble = html.indexOf('class="msg-body"');
-    const foot = html.indexOf('class="msg-foot"');
+    const foot = html.indexOf('class="message-delivery"');
 
     expect(bubble).toBeGreaterThan(-1);
     expect(foot).toBeGreaterThan(-1);

@@ -1,10 +1,5 @@
-// A queued message must be the same SHAPE as the message it becomes.
-//
-// The agent echoes a message back only when it starts on it, so the mark comes
-// off mid-conversation and unannounced. As a row of its own it took a line and
-// the column's gap with it, and every message below stepped up the page the
-// moment the agent got to this one. The mark is out of flow now, and these are
-// the two facts that keep it that way.
+// Delivery controls must reflect server ownership and remain consistent across
+// screen sizes, provider acknowledgements, and delayed operations.
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -13,184 +8,63 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { MessageList } from "./MessageList";
 import { addUserTurn, emptyChat, reduceChat, type Message } from "../lib/chat";
 
-const sent: Message[] = [
-  { id: "m1", role: "user", blocks: [{ kind: "text", text: "do the thing" }] } as Message,
-];
+const sent: Message = {
+  id: "m1", turnId: "u-1", role: "user", streaming: false,
+  blocks: [{ kind: "text", text: "do the thing" }], delivery: "queued",
+};
+const draw = (extra: Partial<Message> = {}, busy = true) => renderToStaticMarkup(
+  <MessageList messages={[{ ...sent, ...extra }]} busy={busy}
+    onStartQueued={() => {}} onCancelQueued={() => {}}
+    onRestoreUnsent={() => {}} onDismissUnsent={() => {}} />,
+);
 
-/** `busy` with nothing echoed back is what "queued" IS — see `TurnView`. */
-const draw = (busy: boolean) =>
-  renderToStaticMarkup(<MessageList messages={sent} busy={busy} />);
+describe("message delivery controls", () => {
+  it.each([false, true])("offers queued actions independently of another turn's busy state (%s)", (busy) => {
+    const html = draw({}, busy);
+    expect(html).toContain('>Queued</span>');
+    expect(html).toContain('>Send now</button>');
+    expect(html).toContain('>Edit</button>');
+    expect(html.match(/Send this queued message now/g)).toHaveLength(1);
+    expect(html).toContain("Send now stops that reply");
+  });
 
-describe("the queued mark", () => {
-  it.each([false, true])("shows a lost queue as unsent even when another turn is busy (%s)", (busy) => {
-    const html = renderToStaticMarkup(<MessageList
-      messages={[{ ...sent[0], turnId: "lost", queueLost: true }]}
-      busy={busy} onStartQueued={() => {}} onCancelQueued={() => {}} onRestoreUnsent={() => {}}
-      onDismissUnsent={() => {}}
-    />);
-    expect(html).toContain("Not queued");
-    expect(html).toContain("Copy text to composer");
+  it.each(["sending", "starting", "dispatched", "unknown", "failed"] as const)("never offers queue mutations for %s", (delivery) => {
+    const html = draw({ delivery });
+    expect(html).not.toContain("Send this queued message now");
+    expect(html).not.toContain("Take this queued message back to edit");
+  });
+
+  it("does not infer a queue from missing provider output", () => {
+    expect(draw({ delivery: undefined })).toContain("Delivery unconfirmed");
+    expect(draw({ delivery: undefined })).not.toContain("Send this queued message now");
+    expect(draw({ delivery: "dispatched" })).toContain("Sent to agent");
+  });
+
+  it.each(["start", "cancel"] as const)("locks both controls during %s", (queueAction) => {
+    const html = draw({ queueAction });
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+    expect(html).toContain('aria-busy="true"');
+  });
+
+  it.each([false, true])("keeps failed content recoverable while busy=%s", (busy) => {
+    const html = draw({ delivery: "failed", queueLost: true }, busy);
+    expect(html).toContain("Not sent");
+    expect(html).toContain("Restore to composer");
     expect(html).toContain("Dismiss");
     expect(html).not.toContain("Send this queued message now");
-    expect(html).not.toContain("is-queued");
-  });
-  it("comes off when Codex says it has started the turn", () => {
-    const working = reduceChat(
-      addUserTurn(emptyChat(), "do the thing"),
-      { type: "turn.started" },
-    );
-    const html = renderToStaticMarkup(
-      <MessageList messages={working.messages} busy={working.busy} />,
-    );
-
-    expect(html).not.toContain('class="queued"');
-    expect(html).not.toContain("is-queued");
   });
 
-  it("is a mark on the message, not a row under it", () => {
-    const html = draw(true);
-    // Inside the pill. A sibling of `.msg-body` would be a row again whatever
-    // its CSS said.
-    expect(html).toMatch(/class="msg-body">[\s\S]*class="queued"/);
-    expect(html).not.toContain(">queued<");
-  });
-
-  it("keeps its meaning without the word", () => {
-    // The label was readable text and the clock is not. Whatever replaced it
-    // has to say the same thing to a reader who cannot see a picture.
-    const html = draw(true);
-    expect(html).toContain('role="img"');
-    expect(html).toMatch(/aria-label="Sent — the agent has not started on this yet"/);
-  });
-
-  it("adds nothing to the message's flow but the mark itself", () => {
-    // The real assertion, and the reason this file exists: take the mark away
-    // and a queued message is byte-for-byte the message it becomes. Anything
-    // else that differed inside the pill would be something that MOVES when the
-    // agent picks the message up, which is the jump this was built to stop.
-    //
-    // Scoped to the pill on purpose. Across the whole list `busy` also lights
-    // the working dots and puts `is-queued` on the article — the first lives in
-    // a slot held open whether it draws or not (`.dots-slot`) and the second is
-    // an opacity, so neither is layout and neither belongs in this comparison.
-    const body = (html: string) =>
-      html.slice(html.indexOf('<div class="msg-body">'), html.indexOf('<div class="msg-foot"'));
-
-    const queued = body(draw(true));
-    const mark = queued.slice(queued.indexOf('<span class="queued"'));
-    const onlyMark = mark.slice(0, mark.indexOf("</span>") + "</span>".length);
-
-    expect(onlyMark).not.toBe("");
-    expect(queued.replace(onlyMark, "")).toBe(body(draw(false)));
-  });
-
-  it("offers the way out in the clock's own corner, not beside it", () => {
-    // The gutter is a fixed 40px whether anything is drawn in it or not, so a
-    // second mark would have had to come from somewhere else on the pill. One
-    // slot, two faces — and the button IS `.queued`, which is what keeps it
-    // absolutely positioned and out of the words' way.
-    const html = renderToStaticMarkup(
-      <MessageList
-        messages={[{ ...sent[0], turnId: "u-1" }]}
-        busy
-        onCancelQueued={() => {}}
-      />,
-    );
-
-    expect(html).toContain('class="queued queued-cancel"');
-    expect(html).toContain('aria-label="Cancel this queued message"');
-    // Both faces live inside the one button, which lives inside the pill.
-    expect(html).toMatch(
-      /class="msg-body">[\s\S]*<button[^>]*class="queued queued-cancel"[\s\S]*queued-waiting[\s\S]*queued-take-back[\s\S]*<\/button>/,
-    );
-  });
-
-  it("offers send now and take back from the clock's fixed gutter", () => {
-    const html = renderToStaticMarkup(
-      <MessageList
-        messages={[{ ...sent[0], turnId: "u-1" }]}
-        busy
-        onStartQueued={() => {}}
-        onCancelQueued={() => {}}
-      />,
-    );
-
-    expect(html).toContain('class="queued queued-actions"');
-    expect(html).toContain('aria-label="Queued message actions"');
-    expect(html).toContain('aria-label="Send this queued message now"');
-    expect(html).toContain('aria-label="Cancel this queued message"');
-    expect(html).toMatch(
-      /class="msg-body">[\s\S]*class="queued queued-actions"[\s\S]*queued-waiting[\s\S]*queued-controls[\s\S]*queued-run[\s\S]*queued-remove/,
-    );
-  });
-
-  it("keeps the plain clock on a turn nothing can name", () => {
-    // A turn sent before the id existed, or one an agent sent on its own
-    // behalf, has nothing to address a cancel to. Better the mark it has always
-    // had than a button that would answer a click with an error.
-    const withHandler = renderToStaticMarkup(
-      <MessageList messages={sent} busy onCancelQueued={() => {}} />,
-    );
-    const withId = renderToStaticMarkup(
-      <MessageList messages={[{ ...sent[0], turnId: "u-1" }]} busy />,
-    );
-
-    expect(withHandler).not.toContain("queued-cancel");
-    expect(withHandler).toContain('class="queued"');
-    expect(withId).not.toContain("queued-cancel");
-    expect(withId).toContain('class="queued"');
-    expect(withHandler).not.toContain("queue-actions-toggle");
-    expect(withId).not.toContain("queue-actions-toggle");
-  });
-
-  it("exposes mobile queue actions without a hidden menu", () => {
-    const html = renderToStaticMarkup(
-      <MessageList messages={[{ ...sent[0], turnId: "u-1" }]} busy
-        onStartQueued={() => {}} onCancelQueued={() => {}} />,
-    );
-    expect(html).toContain('data-noswipe=""');
-    expect(html).toContain('class="queue-action-tray"');
-    expect(html).not.toContain('inert=""');
-    expect(html).not.toContain("queue-actions-toggle");
-    expect(html).toContain("Take this queued message back to edit");
-  });
-
-  it("takes the way out away the moment the agent picks the message up", () => {
-    // The ✕ is only ever offered while the message is still OURS to hold. Once
-    // the agent has it there is nothing to cancel, and a button that stayed
-    // would promise something no backend could do.
+  it("removes stale controls after an exact acknowledgement", () => {
     const working = reduceChat(addUserTurn(emptyChat(), "do the thing", [], 1, undefined, "u-1"), {
-      type: "turn.started",
+      type: "turn.started", octiq_user_turn_id: "u-1",
     });
-    const html = renderToStaticMarkup(
-      <MessageList messages={working.messages} busy={working.busy} onCancelQueued={() => {}} />,
-    );
-
-    expect(html).not.toContain("queued-cancel");
+    expect(draw(working.messages[0])).not.toContain("Send this queued message now");
+    expect(draw(working.messages[0])).toContain('>Sent</span>');
   });
 
-  it("keeps each Codex follow-up separate so only the waiting one has a clock", () => {
-    const messages: Message[] = [
-      {
-        id: "u1",
-        role: "user",
-        blocks: [{ kind: "text", text: "earlier queued message" }],
-        streaming: false,
-        takenUp: true,
-      },
-      {
-        id: "u2",
-        role: "user",
-        blocks: [{ kind: "text", text: "later queued message" }],
-        streaming: false,
-      },
-    ];
-    const html = renderToStaticMarkup(
-      <MessageList messages={messages} busy />,
-    );
-
-    expect(html.match(/class="msg msg-user/g)).toHaveLength(2);
-    expect(html.match(/class="queued"/g)).toHaveLength(1);
+  it("keeps the bubble text identical before and after pickup", () => {
+    const body = (html: string) => html.split('<div class="msg-body">')[1].split('<div class="message-delivery"')[0];
+    expect(body(draw())).toBe(body(draw({ delivery: "dispatched", takenUp: true })));
   });
 
   it("keeps two things you typed as two things, whichever agent this is", () => {

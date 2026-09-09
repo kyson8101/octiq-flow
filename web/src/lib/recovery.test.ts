@@ -63,12 +63,17 @@ describe("messages left behind after queue loss", () => {
     expect(reconcileUnsentMessages(state, gone)).toBe(state);
   });
 
-  it("does not confuse a live worker, a busy turn or a real queue with loss", () => {
+  it("reconciles during a live response without inventing acknowledgement", () => {
     const state = pending();
-    expect(reconcileUnsentMessages(state, { ...gone, live: true })).toBe(state);
-    expect(reconcileUnsentMessages(state, { ...gone, queuedTurnIds: ["old-status"] })).toBe(state);
-    const busy = { ...state, busy: true };
-    expect(reconcileUnsentMessages(busy, gone)).toBe(busy);
+    expect(reconcileUnsentMessages(state, { ...gone, live: true }).messages[0]).toMatchObject({ delivery: "unknown" });
+    expect(reconcileUnsentMessages(state, { ...gone, queuedTurnIds: ["old-status"] }).messages[0]).toMatchObject({ delivery: "queued" });
+    expect(reconcileUnsentMessages({ ...state, busy: true }, gone).messages[0]).toMatchObject({ delivery: "failed" });
+  });
+
+  it("does not turn a handed-over message back into a queue failure", () => {
+    const state = pending();
+    state.messages[0].delivery = "dispatched";
+    expect(reconcileUnsentMessages(state, gone)).toBe(state);
   });
 
   it("does not move the old message under new replies or claim it as a new prompt", () => {

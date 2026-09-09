@@ -162,6 +162,8 @@ export type Attachment = {
   url?: string;
 };
 
+export type ReclaimedMessage = { text: string; attachments: Attachment[] };
+
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
 
 /** How many past messages Up can reach. Enough to find the thing you sent a
@@ -310,7 +312,7 @@ export function Composer({
    *  APPENDED, never assigned: whatever is half-typed here now was typed after
    *  they were, and a message put back must not take a newer one away. Emptied
    *  through `onPutBack` once it is in, so the same words cannot land twice. */
-  putBack?: readonly string[];
+  putBack?: readonly ReclaimedMessage[];
   onPutBack?: () => void;
   busy: boolean;
   disabled?: boolean;
@@ -820,11 +822,15 @@ export function Composer({
    *  The guard is the ARRAY, not a boolean — a re-render with the same words
    *  must be a no-op, or the box would keep re-filling for as long as the
    *  parent held them. */
-  const putBackDone = useRef<readonly string[] | null>(null);
+  const putBackDone = useRef<readonly ReclaimedMessage[] | null>(null);
   useEffect(() => {
     if (!putBack?.length || putBackDone.current === putBack) return;
     putBackDone.current = putBack;
-    setText((prev) => withPutBack(prev, putBack));
+    setText((prev) => withPutBack(prev, putBack.map((message) => message.text)));
+    setAttached((prev) => {
+      const restored = putBack.flatMap((message) => message.attachments);
+      return [...prev, ...restored.filter((a) => !prev.some((existing) => existing.path === a.path))];
+    });
     // Up walks history from wherever the box is, and the box has just moved.
     setRecall(-1);
     draft.current = "";

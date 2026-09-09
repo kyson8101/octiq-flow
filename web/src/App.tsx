@@ -43,6 +43,7 @@ import {
   turnOutput,
   turnOutputApprox,
   type ChatState,
+  type Message,
   type RoomView,
   type Seat,
 } from "./lib/chat";
@@ -101,7 +102,7 @@ import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { useDrawerSwipe } from "./lib/swipe";
 import { neighbour, useChatSwipe } from "./lib/chatSwipe";
 import { MessageList } from "./components/MessageList";
-import { Composer, type Attachment } from "./components/Composer";
+import { Composer, type Attachment, type ReclaimedMessage } from "./components/Composer";
 import {
   accessFor,
   accessLabel as providerAccessLabel,
@@ -144,9 +145,10 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { useChatRequests } from "./lib/useChatRequests";
 import { CarryOn } from "./components/CarryOn";
-import { queuedMessageCount, reconcileUnsentMessages, type ChatQueueState } from "./lib/recovery";
+import { queuedMessageCount, type ChatQueueState } from "./lib/recovery";
 import { AttentionInbox } from "./components/AttentionInbox";
 import { useAttentionInbox } from "./lib/useAttentionInbox";
+import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
 import { isChatPane, readChatLayout, readChatRoute, chatRouteHash, tellLayout, type ChatRoute } from "./lib/chatLayout";
@@ -184,22 +186,6 @@ function userTurnId(): string {
     return `user-${crypto.randomUUID()}`;
   }
   return `user-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-/** What one queued message says, for putting back in the box after it has been
- *  taken back.
- *
- *  Read off the bubble that is about to be removed, because that bubble is the
- *  only copy: a queued Claude turn was never written down (`QueuedTurn::
- *  recorded`), so there is no record to go back to afterwards. Text blocks
- *  only — a user turn has nothing else in it, and anything that did appear
- *  there is the agent's, not something anyone typed. */
-function typedWords(chat: ChatState | undefined, turnId: string): string {
-  const msg = chat?.messages.find((m) => m.role === "user" && m.turnId === turnId);
-  return (msg?.blocks ?? [])
-    .flatMap((b) => (b.kind === "text" ? [b.text] : []))
-    .join("\n")
-    .trim();
 }
 
 /** How long a deleted chat can be brought back. Long enough to see the ring on
@@ -1201,7 +1187,7 @@ export default function App() {
    *  Kept per CHAT rather than for the screen: an event can arrive for a
    *  conversation that is not the one on screen, and those words belong in ITS
    *  box, not in whatever is open now. */
-  const [reclaimed, setReclaimed] = useState<Record<string, string[]>>({});
+  const [reclaimed, setReclaimed] = useState<Record<string, ReclaimedMessage[]>>({});
 
   /** The turns already handed back, so no message can go in the box twice.
    *
@@ -1214,8 +1200,9 @@ export default function App() {
   const reclaimedIds = useRef<string[]>([]);
 
   /** Hold one cancelled message's words for the box. */
-  const reclaim = useCallback((id: string, turnId: string, words: string) => {
-    if (!words || reclaimedIds.current.includes(turnId)) return;
+  const reclaim = useCallback((id: string, turnId: string, message: Message | undefined) => {
+    if (!message || reclaimedIds.current.includes(turnId)) return;
+    const words = reclaimedMessage(message);
     reclaimedIds.current = [...reclaimedIds.current.slice(-199), turnId];
     setReclaimed((prev) => ({ ...prev, [id]: [...(prev[id] ?? []), words] }));
   }, []);
@@ -1326,7 +1313,7 @@ export default function App() {
           // from last week are history, not something to hand anyone back.
           const e = frame.event as { type?: unknown; uuid?: unknown } | null;
           if (e && e.type === "octiq_user_turn_cancelled" && typeof e.uuid === "string") {
-            reclaim(id, e.uuid, typedWords(chatsRef.current[id], e.uuid));
+            reclaim(id, e.uuid, chatsRef.current[id]?.messages.find((m) => m.turnId === e.uuid));
           }
           patch(id, (s) => reduceChat(s, frame.event));
         }
@@ -1592,25 +1579,35 @@ export default function App() {
     () => chat.notices.filter((notice) => shouldShowChatStatus("stderr", notice)),
     [chat.notices],
   );
-  // A missing echo can outlive the in-memory backend queue. Reconcile only
-  // after an idle chat is caught up and the current connection knows its roster.
+  const sendingTurns = useRef(new Set<string>());
+  const queueActions = useRef(new MessageQueueActions());
+  const syncQueue = useCallback(async (id: string) => {
+    const before = chatsRef.current[id];
+    if (!before) return;
+    const sending = new Set(sendingTurns.current);
+    const snapshot = await bridge.invoke<ChatQueueState>("chat_queue_state", { key: keyFor(id) });
+    // Exclude sends in flight at either end of the read, even if their RPC
+    // finished before an older snapshot reached this client.
+    const safe = { ...before, messages: before.messages.filter((m) => !m.turnId
+      || (!sending.has(m.turnId) && !sendingTurns.current.has(m.turnId))) };
+    patch(id, (state) => reconcileQueueSnapshot(state, safe, snapshot, (m) => !!m.turnId && queueActions.current.isPending(id, m.turnId)));
+  }, [patch]);
   useEffect(() => {
-    if (!conversationId || conn !== "open" || !liveKnown || chat.busy
-      || running.has(conversationId)) return;
-    if (!chat.messages.some((m) => m.role === "user" && m.turnId
-      && !m.echo && !m.takenUp && !m.queueLost)) return;
+    if (!conversationId || conn !== "open" || !liveKnown) return;
     const id = conversationId;
-    const before = chat;
-    let current = true;
-    bridge.invoke<ChatQueueState>("chat_queue_state", { key: keyFor(id) })
-      .then((queue) => {
-        if (!current) return;
-        // A new send, acknowledgement or replay invalidates this snapshot.
-        patch(id, (state) => state === before ? reconcileUnsentMessages(state, queue) : state);
-      })
-      .catch(() => {}); // Older backends cannot establish delivery; retain it as unknown.
-    return () => { current = false; };
-  }, [conversationId, conn, liveKnown, chat, running, patch]);
+    let checking = false;
+    const check = async () => {
+      const state = chatsRef.current[id];
+      if (checking || !state?.messages.some((m) => m.role === "user" && m.turnId
+        && !m.echo && !m.takenUp && m.delivery !== "dispatched" && m.delivery !== "failed")) return;
+      checking = true;
+      try { await syncQueue(id); } catch { /* Keep uncertain delivery visible. */ }
+      finally { checking = false; }
+    };
+    void check();
+    const timer = setInterval(() => { void check(); }, 2000);
+    return () => clearInterval(timer);
+  }, [conversationId, conn, liveKnown, syncQueue]);
   /** The failure worth showing. A chat's state is replayed from its transcript
    *  on every reload, so clearing `failure` is only ever true until the next
    *  one — the ✕ has to be REMEMBERED. See `lib/failureDismiss`; a failure
@@ -2688,153 +2685,165 @@ export default function App() {
         ),
       );
 
-      // Put the chat in the index NOW, before the agent is even started —
-      // rather than leaving it to the debounced save 700ms later.
-      //
-      // The transcript starts filling the moment the agent speaks, and
-      // `chat_index::reconcile` deletes, at every backend start, any transcript
-      // no index entry points at. The gap between "the agent is talking" and
-      // "the index has heard of this chat" is therefore a window in which a
-      // restart destroys the conversation. Writing the entry first closes it:
-      // an entry with no transcript is the harmless direction, and reconcile
-      // keeps it on purpose.
-      const held = conversationsRef.current.find((c) => c.id === id);
-      const startedAt = Date.now();
-      saveIndexEntry({
-        id,
-        projectId: project.id,
-        // A chat is named after the FIRST thing asked in it, so an existing one
-        // keeps the name it already has.
-        title: held?.title ?? shortTitle(text),
-        customTitle: held?.customTitle,
-        sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
-        modelId: choice.id,
-        access,
-        createdAt: held?.createdAt ?? startedAt,
-        updatedAt: startedAt,
-        pinned: held?.pinned ?? false,
-        generation: held?.generation,
-      });
-
-      const fail = (err: unknown) =>
-        patch(id, (s) => ({
-          ...s,
-          busy: false,
-          notices: [...s.notices, String((err as Error).message ?? err)],
-        }));
-
-      // Addressed to a SEAT. Its own process, started by its first message —
-      // the same two-call shape the host has always had, which is why this
-      // reads like the branch below it rather than like something new.
-      if (seat) {
-        try {
-          await bridge.invoke("chat_send", { key: keyFor(id), text, images, to: seat.id, turnId });
-        } catch (err) {
-          const said = String((err as Error).message ?? err);
-          if (!said.includes("not running")) {
-            fail(err);
-            return;
-          }
-          // It has never spoken, so there is nothing to write to yet.
-          try {
-            await bridge.invoke("chat_seat_start", {
-              key: keyFor(id),
-              seatId: seat.id,
-              cwd: project.primary_path ?? "",
-              extraDirs: project.paths ?? [],
-              env: project.env ?? {},
-              access,
-              effort,
-              images,
-              prompt: text,
-              turnId,
-            });
-          } catch (second) {
-            fail(second);
-          }
-        }
-        return;
-      }
-
-      // Already running: this is the next turn of a conversation in flight.
-      if (runningRef.current.has(id)) {
-        try {
-          await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
-        } catch (err) {
-          fail(err);
-        }
-        return;
-      }
-
-      // No process yet — a new chat, or one being picked back up. The session
-      // id comes from the chat's own state if it has run this visit, and from
-      // the stored conversation otherwise.
-      const resume =
-        chatsRef.current[id]?.sessionId ??
-        conversationsRef.current.find((c) => c.id === id)?.sessionId ??
-        null;
-
-      // Speaking into a chat whose record this page does not hold. A brand-new
-      // one has no record to hold, so it is simply ours from here. Anything
-      // else — a chat opened while the replay failed, a session picked out of
-      // history — is read first, or this turn's events would fold onto a
-      // conversation with a hole where its past belongs.
-      if (!catchUp.current.holds(keyFor(id))) {
-        if (resume)
-          await catchUpChat(id, conversationsRef.current.find((c) => c.id === id)?.seq).catch(
-            () => {},
-          );
-        else catchUp.current.own(keyFor(id));
-      }
-
-      setRunning((prev) => new Set(prev).add(id));
+      sendingTurns.current.add(turnId);
       try {
-        await bridge.invoke("chat_start", {
-          key: keyFor(id),
-          cwd: project.primary_path ?? "",
-          // A project can group several folders, and the chat starts in only
-          // one of them. The rest are named here so the agent can reach the
-          // whole project, the same way a terminal in it can.
-          extraDirs: project.paths ?? [],
-          env: project.env ?? {},
-          agent: choice.agent,
-          model: choice.flag || null,
+        // Put the chat in the index NOW, before the agent is even started —
+        // rather than leaving it to the debounced save 700ms later.
+        //
+        // The transcript starts filling the moment the agent speaks, and
+        // `chat_index::reconcile` deletes, at every backend start, any transcript
+        // no index entry points at. The gap between "the agent is talking" and
+        // "the index has heard of this chat" is therefore a window in which a
+        // restart destroys the conversation. Writing the entry first closes it:
+        // an entry with no transcript is the harmless direction, and reconcile
+        // keeps it on purpose.
+        const held = conversationsRef.current.find((c) => c.id === id);
+        const startedAt = Date.now();
+        saveIndexEntry({
+          id,
+          projectId: project.id,
+          // A chat is named after the FIRST thing asked in it, so an existing one
+          // keeps the name it already has.
+          title: held?.title ?? shortTitle(text),
+          customTitle: held?.customTitle,
+          sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
+          modelId: choice.id,
           access,
-          effort,
-          lite,
-          images,
-          prompt: text,
-          turnId,
-          // Continuing an earlier conversation: the agent picks its own
-          // context back up instead of being handed a transcript to read.
-          resume,
+          createdAt: held?.createdAt ?? startedAt,
+          updatedAt: startedAt,
+          pinned: held?.pinned ?? false,
+          generation: held?.generation,
         });
-      } catch (err) {
-        // The process is already up — this browser simply did not know about
-        // it (another tab, or a session that outlived a crash). Talk to it
-        // rather than reporting a collision as a failure.
-        if (String((err as Error).message ?? err).includes("already running")) {
+
+        const fail = (err: unknown) =>
+          patch(id, (s) => ({
+            ...s,
+            busy: runningRef.current.has(id) ? s.busy : false,
+            messages: s.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
+              ? { ...m, delivery: "unknown", queueError: String((err as Error).message ?? err) } : m),
+          }));
+
+        // Addressed to a SEAT. Its own process, started by its first message —
+        // the same two-call shape the host has always had, which is why this
+        // reads like the branch below it rather than like something new.
+        if (seat) {
+          try {
+            await bridge.invoke("chat_send", { key: keyFor(id), text, images, to: seat.id, turnId });
+          } catch (err) {
+            const said = String((err as Error).message ?? err);
+            if (!said.includes("not running")) {
+              fail(err);
+              return;
+            }
+            // It has never spoken, so there is nothing to write to yet.
+            try {
+              await bridge.invoke("chat_seat_start", {
+                key: keyFor(id),
+                seatId: seat.id,
+                cwd: project.primary_path ?? "",
+                extraDirs: project.paths ?? [],
+                env: project.env ?? {},
+                access,
+                effort,
+                images,
+                prompt: text,
+                turnId,
+              });
+            } catch (second) {
+              fail(second);
+            }
+          }
+          return;
+        }
+
+        // Already running: this is the next turn of a conversation in flight.
+        if (runningRef.current.has(id)) {
           try {
             await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
             return;
-          } catch (second) {
-            fail(second);
+          } catch (err) {
+            if (!String((err as Error).message ?? err).includes("no such chat")) {
+              fail(err);
+              return;
+            }
+            // The preceding process exited during send. Resume below; if its
+            // reaper already replaced it, the collision path sends to that one.
           }
-        } else {
-          fail(err);
         }
-        setRunning((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        });
+
+        // No process yet — a new chat, or one being picked back up. The session
+        // id comes from the chat's own state if it has run this visit, and from
+        // the stored conversation otherwise.
+        const resume =
+          chatsRef.current[id]?.sessionId ??
+          conversationsRef.current.find((c) => c.id === id)?.sessionId ??
+          null;
+
+        // Speaking into a chat whose record this page does not hold. A brand-new
+        // one has no record to hold, so it is simply ours from here. Anything
+        // else — a chat opened while the replay failed, a session picked out of
+        // history — is read first, or this turn's events would fold onto a
+        // conversation with a hole where its past belongs.
+        if (!catchUp.current.holds(keyFor(id))) {
+          if (resume)
+            await catchUpChat(id, conversationsRef.current.find((c) => c.id === id)?.seq).catch(
+              () => {},
+            );
+          else catchUp.current.own(keyFor(id));
+        }
+
+        setRunning((prev) => new Set(prev).add(id));
+        try {
+          await bridge.invoke("chat_start", {
+            key: keyFor(id),
+            cwd: project.primary_path ?? "",
+            // A project can group several folders, and the chat starts in only
+            // one of them. The rest are named here so the agent can reach the
+            // whole project, the same way a terminal in it can.
+            extraDirs: project.paths ?? [],
+            env: project.env ?? {},
+            agent: choice.agent,
+            model: choice.flag || null,
+            access,
+            effort,
+            lite,
+            images,
+            prompt: text,
+            turnId,
+            // Continuing an earlier conversation: the agent picks its own
+            // context back up instead of being handed a transcript to read.
+            resume,
+          });
+        } catch (err) {
+          // The process is already up — this browser simply did not know about
+          // it (another tab, or a session that outlived a crash). Talk to it
+          // rather than reporting a collision as a failure.
+          if (String((err as Error).message ?? err).includes("already running")) {
+            try {
+              await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
+              return;
+            } catch (second) {
+              fail(second);
+            }
+          } else {
+            fail(err);
+          }
+          setRunning((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }
+      } finally {
+        sendingTurns.current.delete(turnId);
+        void syncQueue(id).catch(() => {});
       }
     },
     // NOT `chats` and NOT `conversations` — both are read through their refs
     // above, for one value each, at the moment this runs. Listing them meant a
     // new `send` on every delta of every chat, which `MessageList` takes as
     // `onSetting` and which alone was enough to make memoising it do nothing.
-    [project, choice, access, effort, lite, conversationId, patch, catchUpChat],
+    [project, choice, access, effort, lite, conversationId, patch, catchUpChat, syncQueue],
   );
 
   /** Stop the running turn. The session survives, ready for the next one. */
@@ -2844,80 +2853,30 @@ export default function App() {
     bridge.invoke("chat_interrupt", { key: keyFor(conversationId) }).catch(() => {});
   }, [conversationId, patch]);
 
-  /** Take back a message the agent has not been given yet.
-   *
-   *  Not an interrupt and nothing like one: the running turn is untouched, and
-   *  what goes is a message that has never left this backend's own queue. Both
-   *  providers queue there now — Claude's used to go straight down its stdin,
-   *  where nothing here could reach it again.
-   *
-   *  `false` is the honest answer that it was already handed over, and the
-   *  bubble stays: an answer to it is on its way, and a message vanishing from
-   *  above the reply to it is worse than a click that did nothing. */
-  const cancelQueued = useCallback(
-    (turnId: string) => {
-      if (!conversationId) return;
-      const id = conversationId;
-      bridge
-        .invoke("chat_cancel_queued", { key: keyFor(id), turnId })
-        .then((cancelled) => {
-          if (cancelled === false) {
-            patch(id, (s) => ({ ...s, notices: [...s.notices,
-              "Could not take back this message: it is no longer in the server queue. It may already have been picked up. You can still copy its text from the message."] }));
-            return;
-          }
-          // The words go in the box, and they are read HERE, before the line
-          // below takes the bubble holding them off the screen. `reclaim` is
-          // keyed by turn id, so whichever of this and the announcement gets
-          // there first, the message is put back exactly once.
-          reclaim(id, turnId, typedWords(chatsRef.current[id], turnId));
-          // A recorded turn (Codex) is also removed by the backend's own
-          // cancellation event, which is what tells every OTHER tab. This is
-          // for the one that clicked, and for Claude's turns, which were never
-          // written down to have an event about. Doing both is a filter that
-          // finds nothing the second time.
-          patch(id, (s) => ({
-            ...s,
-            messages: s.messages.filter((m) => m.turnId !== turnId),
-          }));
-        })
-        .catch((err) =>
-          patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
-        );
-    },
-    [conversationId, patch, reclaim],
-  );
-
-  /** Stop the answer in flight and make one named queued message the next turn.
-   *
-   *  The backend owns the queue and resolves the turn id to the host or room
-   *  seat that actually holds it. Nothing is changed optimistically here: the
-   *  clock comes off when that agent really acknowledges the promoted turn. */
-  const startQueued = useCallback(
-    (turnId: string) => {
-      if (!conversationId) return;
-      const id = conversationId;
-      bridge
-        .invoke("chat_start_queued", { key: keyFor(id), turnId })
-        .then((started) => {
-          if (started === false) {
-            patch(id, (s) => ({ ...s, notices: [...s.notices,
-              "Could not send this message now: it is no longer in the server queue. It may already have been picked up. You can still copy its text from the message."] }));
-          }
-        })
-        .catch((err) =>
-          patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
-        );
-    },
-    [conversationId, patch],
-  );
+  const actOnQueue = useCallback((turnId: string, action: "start" | "cancel") => {
+    if (!conversationId || conn !== "open") return;
+    const id = conversationId;
+    void queueActions.current.run({
+      chatId: id, turnId, action,
+      read: () => chatsRef.current[id] ?? EMPTY,
+      patch: (update) => patch(id, update),
+      invoke: (command) => bridge.invoke(command, { key: keyFor(id), turnId }),
+      refresh: async () => {
+        await catchUpChat(id);
+        await syncQueue(id);
+      },
+      reclaim: (message) => reclaim(id, turnId, message),
+    });
+  }, [conversationId, conn, patch, catchUpChat, syncQueue, reclaim]);
+  const cancelQueued = useCallback((turnId: string) => actOnQueue(turnId, "cancel"), [actOnQueue]);
+  const startQueued = useCallback((turnId: string) => actOnQueue(turnId, "start"), [actOnQueue]);
 
   const restoreUnsent = useCallback((turnId: string) => {
     if (!conversationId) return;
     const state = chatsRef.current[conversationId];
     if (!state?.messages.some((m) => m.turnId === turnId && m.queueLost && !m.echo && !m.takenUp)) return;
-    const text = typedWords(state, turnId);
-    if (text) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), text] }));
+    const message = state.messages.find((m) => m.turnId === turnId);
+    if (message) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), reclaimedMessage(message)] }));
   }, [conversationId]);
 
   const dismissUnsent = useCallback((turnId: string) => {
@@ -3792,8 +3751,8 @@ export default function App() {
                       // sets it from the session, and changing provider cannot
                       // happen in place — it opens a new chat.
                       hostName={providerFor(choice.agent).name}
-                      onCancelQueued={cancelQueued}
-                      onStartQueued={startQueued}
+                      onCancelQueued={conn === "open" ? cancelQueued : undefined}
+                      onStartQueued={conn === "open" ? startQueued : undefined}
                       onRestoreUnsent={restoreUnsent}
                       onDismissUnsent={dismissUnsent}
                       // How the `/config` panel changes a setting: the very

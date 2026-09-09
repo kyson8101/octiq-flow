@@ -1,60 +1,58 @@
 import type { ReactNode } from "react";
+import type { Message } from "../lib/chat";
 import "./MessageBubble.css";
 
-/** Keep the bubble stable after pickup. Mobile queue actions have explicit
- * touch targets below the text; desktop uses the inline controls. */
-export function MessageBubble({ user, turnId, onStart, onCancel, children }: {
+/** One visible delivery row on every screen size. Its height is retained when
+ * the queue controls become a delivery receipt, so pickup doesn't move prose. */
+export function MessageBubble({ user, message, onStart, onCancel, onRestore, onDismiss, footer, children }: {
   user: boolean;
-  turnId?: string;
+  message: Message;
   onStart?: () => void;
   onCancel?: () => void;
+  onRestore?: () => void;
+  onDismiss?: () => void;
+  footer?: ReactNode;
   children: ReactNode;
 }) {
-  const actionable = user && !!turnId && !!(onStart || onCancel);
-  const body = (
-    <div className="msg-body">
-      {children}
-    </div>
-  );
+  const body = <div className="msg-body">{children}</div>;
   if (!user) return body;
+  const accepted = !!(message.echo || message.takenUp);
+  const delivery = accepted ? "dispatched" : message.queueLost ? "failed" : message.delivery;
+  const pending = !!message.queueAction;
+  const label = message.queueAction === "cancel" ? "Returning to composer…"
+    : message.queueAction === "start" || delivery === "starting" ? "Sending next…"
+    : accepted ? "Sent"
+    : delivery === "queued" ? "Queued"
+    : delivery === "sending" ? "Sending…"
+    : delivery === "dispatched" ? "Sent to agent"
+    : delivery === "failed" ? "Not sent"
+    : message.turnId ? "Delivery unconfirmed" : undefined;
+  const detail = delivery === "queued" ? "Runs after the current reply. Send now stops that reply."
+    : delivery === "dispatched" && !accepted ? "The agent has this message; waiting for its response."
+    : delivery === "failed" ? "This message is no longer waiting. Restore it to edit or send again."
+    : delivery === "unknown" ? "Delivery could not be confirmed. Check the conversation before sending again."
+    : undefined;
   return (
-    <div className="queue-swipe" data-noswipe={actionable ? "" : undefined} data-actionable={actionable || undefined}>
+    <div className="message-bubble" data-noswipe={onStart || onCancel || onRestore || onDismiss ? "" : undefined}>
       {body}
-      {actionable && (
-        <div
-          className="queue-action-tray"
-          role="group"
-          aria-label="Queued message actions"
-        >
-          {onStart && (
-            <button
-              type="button"
-              className="queue-action-start"
-              aria-label="Send this queued message now"
-              title="Stop the current turn and send this queued message now"
-              onClick={onStart}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M5 12h14m-6-6 6 6-6 6" />
-              </svg>
-              <span>Send now</span>
-            </button>
-          )}
-          {onCancel && (
-            <button
-              type="button"
-              className="queue-action-cancel"
-              aria-label="Take this queued message back to edit"
-              onClick={onCancel}
-            >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="m9 4-5 5 5 5M4 9h10a6 6 0 0 1 0 12" />
-              </svg>
-              <span>Take back</span>
-            </button>
-          )}
+      {(label || footer) && (
+        <div className="message-delivery" data-delivery={delivery} aria-busy={pending}>
+          <span className="message-delivery-status" role="status" title={detail}>{label}</span>
+          <div className="message-delivery-actions" role="group" aria-label="Message actions">
+            {onStart && <button type="button" disabled={pending}
+              title="Stop the current reply and send this message next"
+              aria-label="Send this queued message now" onClick={onStart}>Send now</button>}
+            {onCancel && <button type="button" disabled={pending}
+              title="Return this message and its attachments to the composer"
+              aria-label="Take this queued message back to edit" onClick={onCancel}>Edit</button>}
+            {onRestore && <button type="button" onClick={onRestore}>Restore to composer</button>}
+            {onDismiss && <button type="button" onClick={onDismiss}>Dismiss</button>}
+            {footer}
+          </div>
         </div>
       )}
+      {detail && !accepted && delivery !== "dispatched" && <p className="message-delivery-detail">{detail}</p>}
+      {message.queueError && <p className="message-delivery-error" role="alert">{message.queueError}</p>}
     </div>
   );
 }

@@ -32,7 +32,7 @@ export function queuedMessageCount(chat: Pick<import("./chat").ChatState, "messa
   let count = 0;
   for (let index = chat.messages.length - 1; index >= 0; index--) {
     const message = chat.messages[index];
-    if (message.queueLost) continue;
+    if (message.queueLost || message.delivery === "dispatched" || message.delivery === "unknown" || message.delivery === "sending") continue;
     if (message.role !== "user" || message.echo || message.takenUp) break;
     // Seat messages have different acceptance semantics; don't infer a host queue.
     if (message.to || !message.turnId) return undefined;
@@ -45,18 +45,20 @@ export function queuedMessageCount(chat: Pick<import("./chat").ChatState, "messa
 }
 export type ChatQueueState = { live: boolean; queuedTurnIds: string[] };
 
-/** Only reconcile a settled chat against a connected backend snapshot. A
- * completed turn alone says nothing about prompts still waiting behind it. */
+/** Reconcile transport ownership even while another answer is streaming.
+ * A live process without a queue entry is ambiguous on older transcripts;
+ * never invent a provider acknowledgement from the absence of an entry. */
 export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState): ChatState {
-  if (chat.busy || queue.live) return chat;
   const queued = new Set(queue.queuedTurnIds);
   let changed = false;
   const messages = chat.messages.map((message) => {
     if (message.role !== "user" || !message.turnId || message.echo || message.takenUp) return message;
-    const lost = !queued.has(message.turnId);
-    if (!!message.queueLost === lost) return message;
+    if (message.delivery === "dispatched" || (message.delivery === "failed" && !queued.has(message.turnId))) return message;
+    const delivery = queued.has(message.turnId) ? (message.delivery === "starting" ? "starting" : "queued") : queue.live ? "unknown" : "failed";
+    const lost = delivery === "failed";
+    if (!!message.queueLost === lost && message.delivery === delivery) return message;
     changed = true;
-    return { ...message, queueLost: lost || undefined };
+    return { ...message, delivery, queueLost: lost || undefined } as typeof message;
   });
   return changed ? { ...chat, messages } : chat;
 }

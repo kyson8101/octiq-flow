@@ -1438,10 +1438,9 @@ body {
    an attachment came to show nothing at all. */
 .msg-user .msg-body {
   width: 100%;
-  /* Reserve the action gutter before and after pickup so removing queued
-     controls never rewraps the message. Mobile uses its own reveal tray. */
+  /* Actions live below the bubble; the text keeps its full width. */
   min-height: 48px;
-  padding: 11px 96px 11px 17px;
+  padding: 11px 17px;
   border-radius: 21px;
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-1));
   color: var(--fg-0);
@@ -1464,158 +1463,6 @@ body {
 
 .msg-user .msg-body .chip:hover {
   background: color-mix(in srgb, var(--fg-0) 20%, transparent);
-}
-
-/* Sent, and not started on: a clock in the pill's right-hand gutter.
-   Absolutely positioned, which is the entire point of it. This comes and goes
-   in the middle of a conversation — the agent echoes a message back only when
-   it BEGINS on it — and in the flow it was a row plus the column's 10px gap, so
-   the instant a queued message was picked up everything below it stepped 23px
-   up the page. Out of flow it costs nothing on the way in or the way out.
-
-   Centred on the pill rather than pinned to a corner: a message can be one line
-   or thirty, and the middle of the right edge is the only place that looks
-   deliberate at both. */
-.msg-user .msg-body .queued {
-  position: absolute;
-  top: 50%;
-  right: 14px;
-  transform: translateY(-50%);
-  display: inline-flex;
-  /* `--fg-2`, not `--fg-3`: the whole pill is already at 0.62 while it waits,
-     and the quietest grey there is, dimmed again, is not a mark. */
-  color: var(--fg-2);
-  animation: queued-in 200ms cubic-bezier(0.22, 1, 0.36, 1) 110ms backwards;
-}
-
-/* It arrives with the message it belongs to, so it waits out the bubble's own
-   entrance before showing up — the same 110ms delay `.msg-user.is-new` uses,
-   for the same reason: one thing arriving, not two. */
-@keyframes queued-in {
-  from {
-    opacity: 0;
-    transform: translateY(-50%) scale(0.8);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(-50%);
-  }
-}
-
-/* Cancel-only callers retain the clock/take-back crossfade within a full
-   button target. Both decorative faces leave hit testing to the button. */
-.msg-user .msg-body button.queued {
-  right: 8px;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  transition: color 140ms ease-out;
-}
-
-.msg-user .msg-body .queued-face {
-  position: absolute;
-  inset: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  /* Opacity does not remove this positioned layer from hit testing. */
-  pointer-events: none;
-  transition: opacity 140ms ease-out;
-}
-
-.msg-user .msg-body .queued-take-back {
-  opacity: 0;
-}
-
-/* Hovering the MESSAGE, not the target itself. A way out that only appears
-   once the pointer is already on top of it is one nobody finds. */
-.msg-user:hover .msg-body .queued-waiting,
-.msg-user .msg-body button.queued:focus-visible .queued-waiting {
-  opacity: 0;
-}
-
-.msg-user:hover .msg-body .queued-take-back,
-.msg-user .msg-body button.queued:focus-visible .queued-take-back {
-  opacity: 1;
-}
-
-/* The mark itself comes up to full strength, and nothing else does. The pill
-   stays at the 0.62 that says the message is still waiting: brightening it too
-   would be a second thing moving in answer to one question. */
-.msg-user:hover .msg-body button.queued {
-  color: var(--fg-1);
-}
-
-/* Keep both queued actions visible and give each a full mouse target. The
-   clock is only needed on messages without an actionable queue entry. */
-.msg-user .msg-body .queued-actions {
-  right: 8px;
-  width: 76px;
-  height: 36px;
-  align-items: center;
-  justify-content: center;
-}
-
-.msg-user .msg-body .queued-actions > .queued-waiting {
-  display: none;
-}
-
-.msg-user .msg-body .queued-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.msg-user .msg-body .queued-controls button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 0;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--fg-0) 7%, transparent);
-  color: var(--fg-1);
-  cursor: pointer;
-  transition: color 140ms ease-out, background 140ms ease-out;
-}
-
-.msg-user .msg-body .queued-controls svg {
-  width: 16px;
-  height: 16px;
-}
-
-.msg-user .msg-body .queued-controls button:hover,
-.msg-user .msg-body .queued-controls button:focus-visible {
-  color: var(--fg-0);
-  background: color-mix(in srgb, var(--fg-0) 14%, transparent);
-}
-
-.msg-user .msg-body .queued-controls button:focus-visible,
-.msg-user .msg-body button.queued:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .msg-user .msg-body .queued {
-    animation: none;
-  }
-
-  .msg-user .msg-body .queued-face,
-  .msg-user .msg-body button.queued,
-  .msg-user .msg-body .queued-controls,
-  .msg-user .msg-body .queued-controls button {
-    transition: none;
-  }
-
-  .msg-user .msg-body {
-    transition: none;
-  }
 }
 
 /* What you typed, laid out the way you typed it. Enter makes a new line in the
@@ -9806,14 +9653,8 @@ body.is-ultra .eff {
 /* A message the agent has not started on yet. Dimmed rather than hidden: it
    was sent, it just has not been picked up. */
 .msg.is-queued .msg-body {
-  opacity: 0.62;
+  opacity: 0.86;
 }
-
-/* `.queued` is drawn by one thing only, and it draws it in the pill — see the
-   rule beside `.msg-user .msg-body`. There is deliberately no base rule here:
-   the one this replaced set `margin-top`, which an absolutely positioned
-   element still obeys, and it pushed the clock 4px off the centre it had just
-   been told to sit on. (AgentRail's "queued" is a `.rail-kind`, not this.) */
 
 /* ---- /context, drawn ---------------------------------------------------
    One bar for the categories, a legend with the numbers, and the ninety-odd
