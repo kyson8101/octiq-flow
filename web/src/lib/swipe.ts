@@ -140,58 +140,84 @@ export function useDrawerSwipe(
   useEffect(() => {
     const el = ref.current;
     if (!el || !enabled) return;
-    let s: Swipe | null = null;
-
-    const clear = () => {
-      s = null;
-      el.classList.remove("is-swiping");
-      el.style.removeProperty("--swipe-p");
-    };
-
-    const start = (e: TouchEvent) => {
-      s = null;
-      if (e.touches.length > 1) return;
-      // A highlight already on screen is being adjusted, not swiped away.
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
-      const target = e.target instanceof Element ? e.target : null;
-      if (!openRef.current && scrollsSideways(target, el)) return;
-      const t = e.touches[0];
-      const width = el.querySelector<HTMLElement>(".sidebar")?.offsetWidth || el.clientWidth;
-      s = swipeStart({ x: t.clientX, y: t.clientY, t: e.timeStamp }, { open: openRef.current, width });
-    };
-
-    const move = (e: TouchEvent) => {
-      if (!s) return;
-      if (e.touches.length > 1) return clear();
-      const t = e.touches[0];
-      s = swipeMove(s, { x: t.clientX, y: t.clientY, t: e.timeStamp });
-      if (s.phase === "dropped") return clear();
-      if (s.phase !== "swiping") return;
-      // Ours now: hold the page still under it. Not cancelable once the browser
-      // has started its own scroll, which is why the check is here and not a
-      // reason to bind this passive.
-      if (e.cancelable) e.preventDefault();
-      el.classList.add("is-swiping");
-      el.style.setProperty("--swipe-p", String(swipeProgress(s)));
-    };
-
-    const end = () => {
-      const verdict = s && swipeEnd(s);
-      clear();
-      if (verdict) changeRef.current(verdict === "open");
-    };
-
-    el.addEventListener("touchstart", start, { passive: true });
-    el.addEventListener("touchmove", move, { passive: false });
-    el.addEventListener("touchend", end, { passive: true });
-    el.addEventListener("touchcancel", clear, { passive: true });
-    return () => {
-      el.removeEventListener("touchstart", start);
-      el.removeEventListener("touchmove", move);
-      el.removeEventListener("touchend", end);
-      el.removeEventListener("touchcancel", clear);
-      clear();
-    };
+    return bindDrawerSwipe(el, () => openRef.current, (value) => changeRef.current(value));
   }, [ref, enabled]);
+}
+
+/** Bind separately from React so the complete touch/click lifecycle is testable. */
+export function bindDrawerSwipe(el: HTMLElement, isOpen: () => boolean, onChange: (open: boolean) => void) {
+  let s: Swipe | null = null;
+  let suppressClickUntil = 0;
+
+  const clear = () => {
+    s = null;
+    el.removeAttribute("data-drawer-swiping");
+    el.style.removeProperty("--swipe-p");
+  };
+
+  const start = (e: TouchEvent) => {
+    // A second touchstart can arrive during a drag (for example a pinch).
+    // Clear the painted progress too, not just the gesture state.
+    clear();
+    if (e.touches.length !== 1) return;
+    suppressClickUntil = 0;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!isOpen() && scrollsSideways(target, el)) return;
+    const t = e.touches[0];
+    const width = el.querySelector<HTMLElement>(".sidebar")?.offsetWidth || el.clientWidth;
+    s = swipeStart({ x: t.clientX, y: t.clientY, t: e.timeStamp }, { open: isOpen(), width });
+  };
+
+  const move = (e: TouchEvent) => {
+    if (!s) return;
+    if (e.touches.length !== 1) return clear();
+    // Once the browser owns scrolling, do not paint a competing drawer.
+    if (!e.cancelable) return clear();
+    const t = e.touches[0];
+    s = swipeMove(s, { x: t.clientX, y: t.clientY, t: e.timeStamp });
+    if (s.phase === "dropped") return clear();
+    if (s.phase !== "swiping") return;
+    e.preventDefault();
+    // React owns className on this element and can replace it mid-gesture.
+    // Keep transient drag state in an attribute React does not write.
+    el.setAttribute("data-drawer-swiping", "");
+    el.style.setProperty("--swipe-p", String(swipeProgress(s)));
+  };
+
+  const end = (e: TouchEvent) => {
+    const verdict = s && swipeEnd(s);
+    if (verdict) {
+      // Some mobile browsers synthesize a click after release. It must not
+      // select a chat, toggle the header, or close the drawer via its scrim.
+      if (e.cancelable) e.preventDefault();
+      suppressClickUntil = Date.now() + 700;
+    }
+    clear();
+    if (verdict) onChange(verdict === "open");
+  };
+
+  const click = (e: MouseEvent) => {
+    // Keyboard activation has detail 0. A fresh touchstart also resets this
+    // guard, so the user's next deliberate tap works immediately.
+    if (e.detail === 0 || Date.now() >= suppressClickUntil) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    suppressClickUntil = 0;
+  };
+
+  el.addEventListener("touchstart", start, { passive: true });
+  el.addEventListener("touchmove", move, { passive: false });
+  el.addEventListener("touchend", end, { passive: false });
+  el.addEventListener("touchcancel", clear, { passive: true });
+  el.addEventListener("click", click, true);
+  return () => {
+    el.removeEventListener("touchstart", start);
+    el.removeEventListener("touchmove", move);
+    el.removeEventListener("touchend", end);
+    el.removeEventListener("touchcancel", clear);
+    el.removeEventListener("click", click, true);
+    clear();
+  };
 }

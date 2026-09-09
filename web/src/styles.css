@@ -637,16 +637,16 @@ body {
 }
 
 /* While a finger is dragging it, the drawer is wherever the finger is. The
-   class comes off at the release and the transition takes over from there, so
+   attribute comes off at the release and the transition takes over from there, so
    the two never fight: during the drag there is no transition to fight with,
    and after it there is no `--swipe-p`. `--swipe-p` is 0 shut, 1 open — see
    lib/swipe, which is the only thing that sets it. */
-.app.is-swiping .sidebar {
+.app[data-drawer-swiping] .sidebar {
   transition: none;
   transform: translateX(calc(-102% * (1 - var(--swipe-p, 0))));
 }
 
-.app.is-swiping .scrim {
+.app[data-drawer-swiping] .scrim {
   transition: none;
   opacity: var(--swipe-p, 0);
 }
