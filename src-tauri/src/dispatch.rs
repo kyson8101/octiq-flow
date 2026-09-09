@@ -473,6 +473,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // ---- files --------------------------------------------------------
         "list_dir" => to_value(crate::fsbrowse::list_dir(arg(&args, "path")?)),
         "read_file_preview" => to_value(crate::fsbrowse::read_file_preview(arg(&args, "path")?)),
+        "open_file_native" => unit(crate::fsbrowse::open_file_native(arg(&args, "path")?)),
         "write_file" => unit(crate::fsbrowse::write_file_impl(
             &svc.workspaces,
             arg(&args, "path")?,

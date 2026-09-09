@@ -2,12 +2,32 @@
 // direct children of one folder for the center file browser. This command MUST
 // surface failures: a missing path, a non-directory, or a permission error
 // comes back as `Err(message)` so the browser panel can show it to the user.
-// The frontend opens a file with the opener plugin, not here.
+// Native opening runs on the backend's computer.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
+
+/// Open an existing local path without passing it through a shell.
+pub fn open_file_native(path: String) -> Result<(), String> {
+    let path = fs::canonicalize(&path).map_err(|e| format!("Cannot open path: {e}"))?;
+    #[cfg(target_os = "macos")]
+    let output = Command::new("/usr/bin/open").arg(&path).output();
+    #[cfg(target_os = "linux")]
+    let output = Command::new("xdg-open").arg(&path).output();
+    #[cfg(target_os = "windows")]
+    let output = Command::new("explorer.exe").arg(&path).output();
+    let output = output.map_err(|e| format!("Cannot open in default app: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Cannot open in default app: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}
 
 /// One entry (file or folder) directly inside a browsed directory.
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +195,17 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
         return Err(format!("File not found: {path}"));
     }
     if file_path.is_dir() {
+        if file_path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+        {
+            return Ok(FilePreview {
+                kind: "binary".into(),
+                content: String::new(),
+                truncated: false,
+                size: 0,
+            });
+        }
         return Err(format!("Not a file: {path}"));
     }
 
@@ -310,6 +341,17 @@ fn modified_ms(path: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::natural_cmp;
+
+    #[test]
+    fn app_bundles_offer_native_opening_without_reading_the_directory() {
+        let dir = std::env::temp_dir().join(format!("octiq-native-{}.app", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let preview = super::read_file_preview(dir.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(preview.kind, "binary");
+        assert!(preview.content.is_empty());
+        std::fs::remove_dir(&dir).unwrap();
+        assert!(super::open_file_native(dir.to_string_lossy().into_owned()).is_err());
+    }
 
     #[test]
     fn stat_paths_reports_a_modified_time_only_for_files_that_exist() {

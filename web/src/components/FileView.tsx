@@ -95,6 +95,7 @@ export function FileView({
         {preview.kind === "pdf" ? "A PDF" : `Not a text file`} ·{" "}
         <RollingText>{humanSize(preview.size)}</RollingText>. There is
         nothing here to edit.
+        <NativeFileOpen key={path} path={path} />
       </div>
     );
   }
@@ -121,6 +122,35 @@ export function FileView({
       onSave={() => onSave?.()}
       onSelect={onSelect}
     />
+  );
+}
+
+export function NativeFileOpen({ path }: { path: string }) {
+  const [opening, setOpening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [opened, setOpened] = useState(false);
+  async function open() {
+    setOpening(true);
+    setError(null);
+    setOpened(false);
+    try {
+      await bridge.invoke("open_file_native", { path });
+      setOpened(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOpening(false);
+    }
+  }
+  return (
+    <div>
+      <p>Open on the computer running OctiqFlow.</p>
+      <button type="button" disabled={opening} onClick={() => void open()}>
+        {opening ? "Opening…" : "Open in default app"}
+      </button>
+      {opened && <p role="status">Sent to the default app.</p>}
+      {error && <p role="alert">{error}</p>}
+    </div>
   );
 }
 

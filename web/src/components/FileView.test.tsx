@@ -29,6 +29,16 @@ const draw = (content: string) =>
     />,
   );
 
+it("offers native opening for unsupported files and app bundles", () => {
+  for (const path of ["/repo/report.docx", "/Applications/Comfy Desktop.app"]) {
+    const html = renderToStaticMarkup(
+      <FileView path={path} preview={{ kind: "binary", content: "", truncated: false, size: 0 }} draft="" onDraft={() => {}} />,
+    );
+    expect(html).toContain("Open in default app");
+    expect(html).toContain("computer running OctiqFlow");
+  }
+});
+
 describe("a markdown file, rendered", () => {
   const table = [
     "| 步 | 产物 | 谁写 | 走哪里 |",

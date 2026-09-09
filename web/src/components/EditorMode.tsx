@@ -24,7 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName, isHtml } from "../lib/files";
 import { hasTwoViews } from "../lib/fileView";
-import { FileView } from "./FileView";
+import { FileView, NativeFileOpen } from "./FileView";
 import { FileTree, rootsOf } from "./FileTree";
 import { useConfirm } from "./Confirm";
 import { RollingText } from "./RollingNumber";
@@ -372,7 +372,7 @@ export function EditorMode({ project }: { project: EditorProject | null }) {
         )}
 
         {saveError && <div className="panel-error">{saveError}</div>}
-        {current?.error && <div className="panel-error">{current.error}</div>}
+        {current?.error && <div className="panel-error">{current.error}<NativeFileOpen key={current.path} path={current.path} /></div>}
 
         {current?.file?.truncated && (
           <div className="panel-warn">

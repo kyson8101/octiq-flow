@@ -34,7 +34,7 @@ import { canQuote, lineRange, sendQuote, type Quote } from "../lib/quote";
 import { placeKey, placeOf, rememberPlace } from "../lib/scrollMemory";
 import { useConfirm } from "./Confirm";
 import { CopyBit, CopyIcon, TextIcon } from "./CopyBit";
-import { FileView } from "./FileView";
+import { FileView, NativeFileOpen } from "./FileView";
 import { RollingText } from "./RollingNumber";
 
 type Preview = {
@@ -435,7 +435,7 @@ export function FilePanel({
               </button>
             </header>
 
-            {error && <div className="panel-error">{error}</div>}
+            {error && <div className="panel-error">{error}<NativeFileOpen key={path} path={path} /></div>}
 
             {staleOnDisk && (
               <div className="panel-warn is-stale">
