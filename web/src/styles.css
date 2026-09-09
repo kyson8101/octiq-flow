@@ -917,48 +917,6 @@ body {
   min-height: 0;
 }
 
-/* The transcript follows a sideways drag between the project's chats. The other
-   half of this is lib/chatSwipe, which is the only thing that sets
-   `--chat-swipe-x` and the two classes below: `is-chat-swiping` while a finger
-   is on it, `is-chat-landing` for the settle afterwards.
-
-   Class-gated rather than left on at 0px, which would look the same and read
-   the same. A transform makes an element the containing block for everything
-   positioned inside it, and the pane holds panels that are laid over the
-   transcript. Between gestures there is nothing here to trip over. */
-.main.is-chat-swiping,
-.main.is-chat-landing {
-  /* The transcript hangs off the side while it moves. `clip` rather than
-     `hidden`: hidden would make this a scroll container, and the page would
-     gain a horizontal scrollbar to a place nothing is. */
-  overflow-x: clip;
-}
-
-.main.is-chat-swiping > .hero,
-.main.is-chat-swiping > .chat-body,
-.main.is-chat-landing > .hero,
-.main.is-chat-landing > .chat-body {
-  transform: translateX(var(--chat-swipe-x, 0px));
-  will-change: transform;
-}
-
-/* Following the finger has no transition — it IS the finger. Only the settle
-   afterwards does, and LAND_MS in lib/chatSwipe is this number. */
-.main.is-chat-landing > .hero,
-.main.is-chat-landing > .chat-body {
-  transition: transform 180ms ease-out;
-}
-
-/* Dragging is direct manipulation and stays. The slide the new chat arrives on
-   is an animation, and goes: it opens where it belongs instead. */
-@media (prefers-reduced-motion: reduce) {
-  .main.is-chat-landing > .hero,
-  .main.is-chat-landing > .chat-body {
-    transform: none;
-    transition: none;
-  }
-}
-
 /* ---- Empty state ------------------------------------------------------ */
 .hero {
   display: flex;

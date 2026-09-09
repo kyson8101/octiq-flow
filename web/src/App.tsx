@@ -100,7 +100,6 @@ import { readMention } from "./lib/mention";
 import { DRAWER, useMedia, WIDE } from "./lib/media";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { useDrawerSwipe } from "./lib/swipe";
-import { neighbour, useChatSwipe } from "./lib/chatSwipe";
 import { MessageList } from "./components/MessageList";
 import { Composer, type Attachment, type ReclaimedMessage } from "./components/Composer";
 import {
@@ -395,8 +394,7 @@ export default function App() {
   /** The app shell, which the drag gesture listens on because it holds both the
    *  drawer and everything the drawer slides over. */
   const shell = useRef<HTMLDivElement | null>(null);
-  /** The chat pane, which the OTHER drag gesture listens on: a sideways swipe
-   *  over the transcript moves along the project's chats — see lib/chatSwipe. */
+  /** The chat pane used to focus the active chat input. */
   const pane = useRef<HTMLElement | null>(null);
   // Drag in from the left edge to pull the drawer out, and back to put it away.
   // Touch only, and only while the drawer exists — see lib/swipe for how the
@@ -1903,31 +1901,6 @@ export default function App() {
     setAccess(conversationAccess);
     setDrawer(false);
   }, [catchUpChat, writeChats]);
-
-  /** This project's chats, in the order the sidebar lists them, which is the
-   *  order a swipe walks. Ids only: the gesture is about which row comes next,
-   *  and rebuilding this on every message would re-bind the listeners. */
-  const siblings = useMemo(
-    () => (projectId ? (grouped.get(projectId) ?? []).map((c) => c.id) : []),
-    [grouped, projectId],
-  );
-
-  // Swipe the transcript sideways to move along them — left for the next chat
-  // down the list, right for the one above, wrapping round at the ends. Held
-  // back while the drawer is open, because there the same drag shuts it, and
-  // while the editor is up, where there is no transcript under the finger.
-  //
-  // Read straight off this render rather than through refs: the hook keeps the
-  // callback in one of its own and refreshes it every time, so what is closed
-  // over here is always the chat currently on screen.
-  useChatSwipe(pane, {
-    enabled: mode === "chat" && !drawer && siblings.length > 1,
-    onGo: (dir) => {
-      const next = neighbour(siblings, conversationId, dir);
-      const found = next && conversations.find((c) => c.id === next);
-      if (found) openConversation(found);
-    },
-  });
 
   // The half that opens a chat a banner asked for lives further down, with the
   // panel closers it needs — see `showConversation`.
