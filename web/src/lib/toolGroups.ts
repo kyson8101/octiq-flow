@@ -176,6 +176,9 @@ export function groupRows(blocks: Block[], keepOut?: (tool: Tool) => boolean): R
 
 function foldable(tool: Tool, keepOut?: (tool: Tool) => boolean): boolean {
   if (keepOut?.(tool)) return false;
+  // A terminal stream failure uses a tool card, but must remain identifiable
+  // rather than disappearing into a generic "Used tools" activity summary.
+  if (tool.id.startsWith("agent-error-")) return false;
   const name = tool.name.toLowerCase();
   // Ask tools sometimes arrive as bare names and sometimes as an MCP-qualified
   // name such as `mcp__octiq__ask_user`. Both must stay visible on their own.

@@ -10,6 +10,17 @@ function tool(name: string, id = name + Math.random()): Block {
 const text = (t: string): Block => ({ kind: "text", text: t });
 const thought = (t: string): Block => ({ kind: "thinking", text: t });
 
+it("keeps a terminal agent stream error visible beside the preceding tool group", () => {
+  const failure: Tool = {
+    kind: "tool", id: "agent-error-m1", name: "Agent stream", argsJson: "", args: {},
+    state: "error", result: "websocket closed by server before response.completed",
+  };
+  const rows = groupRows([tool("Bash"), failure]);
+  expect(rows).toHaveLength(2);
+  expect(rows[0].kind).toBe("group");
+  expect(rows[1]).toMatchObject({ kind: "block", block: failure });
+});
+
 /** A row list. A group is "Bash|Bash+Bash": the folded run, then `+`, then the
  *  newest call — the one drawn whole on the bottom half of the same box. A lone
  *  block is just its name. */

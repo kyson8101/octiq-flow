@@ -1,0 +1,35 @@
+{
+  "artifactId": "artifact-first-review",
+  "revision": 1,
+  "title": "Artifact · 阅读与决策",
+  "description": "这是一个可操作的示例。阅读每项说明，选择你的决定并留下评论；完成后，复制 JSON 粘贴回 agent。",
+  "mode": "review",
+  "language": "zh-CN",
+  "items": [
+    {
+      "id": "reading",
+      "title": "让内容先被读懂",
+      "body": "每项都有独立标题和说明，可用于方案审阅、修改建议、章节反馈或待办清单。\n\n这一项仅收集评论。你可以留下问题，也可以先跳过；未填写会明确标记为待处理。",
+      "options": []
+    },
+    {
+      "id": "decisions",
+      "title": "逐项表达你的决定",
+      "body": "选择最符合你想法的选项，并用评论补充原因。再次点击已选选项可以取消决定。\n\n这份示例的选择只作为 artifact 反馈，不会自动发布、修改代码或执行操作。",
+      "options": [
+        { "id": "accept", "label": "接受" },
+        { "id": "modify", "label": "需要修改" },
+        { "id": "defer", "label": "暂缓" }
+      ]
+    },
+    {
+      "id": "feedback-loop",
+      "title": "把所有反馈一次交回 agent",
+      "body": "底部的「复制全部反馈 JSON」包含每项决定、评论和整体意见。未处理的项目也会保留，agent 不会把它们误认为同意。\n\n你可以保存含反馈的 HTML，稍后重新打开继续阅读；也可以通过页面底部的恢复功能导入同一版本的反馈 JSON。",
+      "options": [
+        { "id": "ready", "label": "可以使用" },
+        { "id": "refine", "label": "还需调整" }
+      ]
+    }
+  ]
+}

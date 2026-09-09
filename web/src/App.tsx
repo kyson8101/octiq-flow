@@ -149,6 +149,8 @@ import { AttentionInbox } from "./components/AttentionInbox";
 import { useAttentionInbox } from "./lib/useAttentionInbox";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
+import { isChatPane, readChatLayout, readChatRoute, chatRouteHash, tellLayout, type ChatRoute } from "./lib/chatLayout";
+import { OpenBesideButton } from "./components/OpenBesideButton";
 import { projectSlug } from "./lib/projectSlug";
 import { shouldShowChatStatus } from "./lib/chatStatus";
 
@@ -273,20 +275,11 @@ const TERM_KEY = "octiq.v2.terminalOpen";
  *  `list_workspaces` handler below), never here: this function only returns
  *  the raw decoded token. The chat half is dropped for a project with nothing
  *  open yet. */
-function readLocation(): { project?: string; chat?: string } {
-  const m = /^#\/p\/([^/]+)(?:\/c\/([^/]+))?/.exec(location.hash);
-  return m ? { project: decodeURIComponent(m[1]), chat: m[2] && decodeURIComponent(m[2]) } : {};
-}
+function readLocation(): ChatRoute { return readChatRoute(location.hash); }
 
 function writeLocation(project: string | null, chat: string | null): void {
-  const next = project
-    ? `#/p/${encodeURIComponent(project)}${chat ? `/c/${encodeURIComponent(chat)}` : ""}`
-    : "";
-  if (next === location.hash) return;
-  // replaceState, not a hash assignment: switching chats is not navigation you
-  // want to walk back through one at a time, and assigning to location.hash
-  // would push an entry for every click.
-  history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
+  const next = chatRouteHash({ project: project ?? undefined, chat: chat ?? undefined });
+  if (next !== location.hash) history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
 }
 
 /** The chat that was on screen when the page was last left. */
@@ -372,6 +365,8 @@ export default function App() {
     loadConversations().filter((c) => !isDeleted(c.id)),
   );
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [indexReady, setIndexReady] = useState(false);
+  const [unavailableChat, setUnavailableChat] = useState<string | null>(null);
   /** Which agent the rail has opened, by `task_id`, or null for the whole
    *  conversation. View state, not chat state: it is about what this person is
    *  reading, and it must not survive into another conversation. */
@@ -796,8 +791,15 @@ export default function App() {
     const { on, push: viaPush, reading, list, projects, shelved: away } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
-    if (viaPush) return;
-    if (!owed({ enabled: on, permission: permissionNow() }, focusNow(reading), id)) return;
+    if (viaPush || (isChatPane() && new URLSearchParams(location.search).get("side") === "right")) return;
+    const focus = focusNow(reading);
+    if (isChatPane()) {
+      const layout = readChatLayout(window.parent.location.hash);
+      focus.reading = layout[layout.focus]?.chat ?? reading;
+      focus.focused = window.parent.document.hasFocus();
+      focus.hidden = window.parent.document.hidden;
+    }
+    if (!owed({ enabled: on, permission: permissionNow() }, focus, id)) return;
     const chat = list.find((c) => c.id === id);
     const notice = noticeFor({
       kind,
@@ -944,6 +946,7 @@ export default function App() {
       bridge.invoke<DeletedIndexEntry[]>("chat_index_deleted"),
     ])
       .then(([answer, deleted]) => {
+        setIndexReady(true);
         const buriedOnServer = deleted ?? [];
         setDeletedChats(buriedOnServer);
         const serverDeleted = new Set(buriedOnServer.map((chat) => chat.id));
@@ -1385,6 +1388,8 @@ export default function App() {
    * this page has already asked its app-server about, while still refreshing
    * once after a browser reload even when localStorage can draw an old list. */
   const codexSkillsLoaded = useRef(new Set<string>());
+  const codexSkillsPending = useRef(new Set<string>());
+  const [codexSkillsStatus, setCodexSkillsStatus] = useState<Record<string, string>>({});
 
   // Claude's command list comes from the session's startup announcement and is
   // cached per provider from then on. Codex has no corresponding exec event;
@@ -1542,11 +1547,13 @@ export default function App() {
     () => workspaces.find((w) => w.id === projectId) ?? null,
     [workspaces, projectId],
   );
-  const loadCodexSkills = useCallback(() => {
+  const loadCodexSkills = useCallback((force = false) => {
     if (choice.agent !== "codex" || !projectId || !project?.primary_path) return;
     const key = `${projectId}:codex`;
-    if (codexSkillsLoaded.current.has(key)) return;
+    if (codexSkillsPending.current.has(key) || (!force && codexSkillsLoaded.current.has(key))) return;
     codexSkillsLoaded.current.add(key);
+    codexSkillsPending.current.add(key);
+    setCodexSkillsStatus((previous) => ({ ...previous, [key]: "loading" }));
 
     bridge
       .invoke<unknown>("codex_skills", { cwd: project.primary_path })
@@ -1563,11 +1570,16 @@ export default function App() {
           return next;
         });
       })
+      .then(() => {
+        setCodexSkillsStatus((previous) => ({ ...previous, [key]: "" }));
+      })
       .catch(() => {
+        setCodexSkillsStatus((previous) => ({ ...previous, [key]: "Could not load skills. Try again." }));
         // A reconnect or a newly installed Codex should get another chance the
         // next time the slash menu is opened.
         codexSkillsLoaded.current.delete(key);
-      });
+      })
+      .finally(() => codexSkillsPending.current.delete(key));
   }, [choice.agent, project, projectId]);
   const grouped = useMemo(() => byProject(conversations), [conversations]);
 
@@ -1604,7 +1616,7 @@ export default function App() {
    *  one — the ✕ has to be REMEMBERED. See `lib/failureDismiss`; a failure
    *  that reads differently is a different failure and still gets its banner. */
   const failure =
-    chat.failure && conversationId && !failureDismissed(conversationId, chat.failure)
+    chat.failure && !chat.failure.inline && conversationId && !failureDismissed(conversationId, chat.failure)
       ? chat.failure
       : undefined;
   /** The files this chat says are worth opening — see lib/pins. Read once up
@@ -1720,6 +1732,8 @@ export default function App() {
   const [focusBox, setFocusBox] = useState(0);
   const newChat = useCallback(
     (forProject: string) => {
+      setUnavailableChat(null);
+      awaited.current = null;
       startBlank(forProject);
       setFocusBox((n) => n + 1);
     },
@@ -1825,6 +1839,8 @@ export default function App() {
   );
 
   const openConversation = useCallback((c: Conversation) => {
+    setUnavailableChat(null);
+    awaited.current = null;
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
     const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
     meta.current[c.id] = {
@@ -1925,7 +1941,7 @@ export default function App() {
   // page, so tapping one only brings the window forward and posts the chat it
   // came from; this is the half that opens it.
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
+    if (!("serviceWorker" in navigator) || (isChatPane() && new URLSearchParams(location.search).get("side") === "right")) return;
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       if (data?.type === "open-chat" && typeof data.conversationId === "string") {
@@ -1948,6 +1964,7 @@ export default function App() {
   // every time the app comes back to the front, which is where a tap that
   // raised nothing at all finally lands.
   useEffect(() => {
+    if (isChatPane() && new URLSearchParams(location.search).get("side") === "right") return;
     const pickUp = () => {
       if (document.hidden) return;
       void push.takeTapped().then((id) => {
@@ -2021,6 +2038,7 @@ export default function App() {
     // and another tab can leave the remembered one behind after this one has
     // deleted it. Neither is a reason to go looking for it.
     if (isDeleted(wanted)) {
+      if (linked) setUnavailableChat(wanted);
       restored.current = true;
       opened.current = {};
       return;
@@ -2028,7 +2046,14 @@ export default function App() {
     // Not here YET is not the same as gone: the server's list folds in a moment
     // after the cached one, so this waits rather than giving up.
     const found = conversations.find((c) => c.id === wanted);
-    if (!found) return;
+    if (!found) {
+      if (indexReady) {
+        restored.current = true;
+        opened.current = {};
+        if (linked) setUnavailableChat(wanted);
+      }
+      return;
+    }
     restored.current = true;
     opened.current = {};
     // A tapped banner with nothing of ours open lands here, through the address
@@ -2037,7 +2062,7 @@ export default function App() {
     // was left in. A reload restores what you left, view and all.
     if (linked) onOpenChat.current(wanted);
     else openConversation(found);
-  }, [conversations, conversationId, openConversation]);
+  }, [conversations, conversationId, openConversation, indexReady]);
 
   /** Remember whether a side column is open. Split out because two of them do
    *  the same thing, and a flag that drifts from what is on screen is a panel
@@ -2177,6 +2202,7 @@ export default function App() {
   onOpenChat.current = (id) => {
     const found = notifying.current.list.find((c) => c.id === id);
     if (found) showConversation(found);
+    else if (indexReady) { awaited.current = null; setUnavailableChat(id); }
     else awaited.current = id;
   };
 
@@ -2185,10 +2211,46 @@ export default function App() {
     const id = awaited.current;
     if (!id) return;
     const found = conversations.find((c) => c.id === id);
-    if (!found) return;
+    if (!found) {
+      if (indexReady) { awaited.current = null; setUnavailableChat(id); }
+      return;
+    }
     awaited.current = null;
     showConversation(found);
-  }, [conversations, showConversation]);
+  }, [conversations, showConversation, indexReady]);
+
+  useEffect(() => {
+    if (!isChatPane()) return;
+    function navigate(event: MessageEvent) {
+      if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== "octiq-layout" || event.data.action !== "navigate") return;
+      const route = event.data.route;
+      if (!route || typeof route !== "object") return;
+      if (typeof route.chat === "string" && route.chat) {
+        onOpenChat.current(route.chat);
+      } else if (typeof route.project === "string") {
+        const project = notifying.current.projects.find(p => p.id === route.project || projectSlug(p.name) === projectSlug(route.project));
+        if (project) { setProjectId(project.id); setConversationId(null); }
+      }
+    }
+    const focus = () => tellLayout({ action: "focus" });
+    window.addEventListener("message", navigate);
+    document.addEventListener("pointerdown", focus, true);
+    document.addEventListener("keydown", focus, true);
+    tellLayout({ action: "ready" });
+    return () => {
+      window.removeEventListener("message", navigate);
+      document.removeEventListener("pointerdown", focus, true);
+      document.removeEventListener("keydown", focus, true);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!projectId || !restored.current || awaited.current) return;
+    const ws = workspaces.find(w => w.id === projectId);
+    const id = unavailableChat ?? conversationId;
+    const title = unavailableChat ? "Chat unavailable" : conversations.find(c => c.id === conversationId)?.title;
+    tellLayout({ action: "route", route: { project: ws ? projectSlug(ws.name) : projectId, ...(id ? { chat: id } : {}) }, title: unavailableChat ? title : [ws?.name, title].filter(Boolean).join(" · ") || "Chat" });
+  }, [projectId, conversationId, workspaces, conversations, unavailableChat]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
@@ -2799,7 +2861,11 @@ export default function App() {
       bridge
         .invoke("chat_cancel_queued", { key: keyFor(id), turnId })
         .then((cancelled) => {
-          if (cancelled === false) return;
+          if (cancelled === false) {
+            patch(id, (s) => ({ ...s, notices: [...s.notices,
+              "Could not take back this message: it is no longer in the server queue. It may already have been picked up. You can still copy its text from the message."] }));
+            return;
+          }
           // The words go in the box, and they are read HERE, before the line
           // below takes the bubble holding them off the screen. `reclaim` is
           // keyed by turn id, so whichever of this and the announcement gets
@@ -2833,6 +2899,12 @@ export default function App() {
       const id = conversationId;
       bridge
         .invoke("chat_start_queued", { key: keyFor(id), turnId })
+        .then((started) => {
+          if (started === false) {
+            patch(id, (s) => ({ ...s, notices: [...s.notices,
+              "Could not send this message now: it is no longer in the server queue. It may already have been picked up. You can still copy its text from the message."] }));
+          }
+        })
         .catch((err) =>
           patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] })),
         );
@@ -3440,6 +3512,7 @@ export default function App() {
 
       {conversationId && mode === "chat" && (
         <>
+          {isChatPane() && <OpenBesideButton chats={visibleConversations} projects={allProjects} current={conversationId} />}
           <CopyChatIdButton chatId={conversationId} />
           <ChatDeleteButton
             deleting={deleting.has(conversationId)}
@@ -3460,7 +3533,7 @@ export default function App() {
             const selector = kind === "permission" ? ".ask-card:not(.safety-card)"
               : kind === "question" ? ".qa-card"
                 : kind === "safety" ? ".safety-card"
-                  : kind === "failure" ? ".failure, .carry-on"
+                  : kind === "failure" ? ".failure, .tool-error, .carry-on"
                     : kind === "interrupted" ? ".carry-on" : ".conversation-overview";
             const target = pane.current?.querySelector<HTMLElement>(selector)
               ?? pane.current?.querySelector<HTMLElement>("textarea");
@@ -3633,6 +3706,7 @@ export default function App() {
         />
 
         <main className="main" hidden={mode !== "chat"} ref={pane}>
+          {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the project list.</p></div> : <>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
@@ -3868,6 +3942,8 @@ export default function App() {
             installed={installed}
             commands={providerCommands(choice.agent, (projectId && commands[projectId]?.[choice.agent]) || [])}
             onCommandOpen={loadCodexSkills}
+            onReloadSkills={choice.agent === "codex" ? () => loadCodexSkills(true) : undefined}
+            skillsStatus={codexSkillsStatus[`${projectId}:codex`]}
             contextTokens={chat.contextTokens}
             contextWindow={chat.contextWindow}
             activity={chat.activity}
@@ -3914,6 +3990,7 @@ export default function App() {
             }
           />
 
+          </>}
         </main>
 
         {editorSeen && (

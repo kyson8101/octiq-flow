@@ -6,6 +6,8 @@ interactive CLI agents (Claude Code, Codex, pi.dev) from UI buttons**.
 
 Agents can also read another OctiqFlow conversation from a supplied browser URL
 through the bundled [`read_conversation` MCP tool](docs/conversation-mcp.md).
+Agents can also create [standalone HTML artifacts](docs/artifacts.md) for reading,
+per-item decisions and comments, and copying feedback back as JSON.
 
 Because the server is headless, it can run on a machine that stays on — a Mac
 mini, a home server — while you drive it from a laptop, a phone or anything else

@@ -428,6 +428,8 @@ export type ChatState = {
 export type Failure = {
   title: string;
   detail?: string;
+  /** This failure already has a persistent activity card in the conversation. */
+  inline?: boolean;
   /** Somewhere to go about it, when the agent named one. */
   link?: string;
   /** True when the agent is out of quota rather than broken. */
@@ -1078,13 +1080,40 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // Codex that sends only one is still covered.
   if (type === "error" || type === "turn.failed") {
     const message = asStr(e.message) || asStr(asObj(e.error).message);
+    const failure = describeFailure("codex", message);
+    const messages = state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m));
+    if (!failure.outOfCredit) {
+      failure.inline = true;
+      // Keep transport failures in the transcript, using the activity card UI.
+      // They are not failures of whichever real tool happened to run last.
+      let last = messages.at(-1);
+      if (!last || last.role !== "assistant" || last.parent || last.speaker) {
+        last = { id: `m${messages.length}`, role: "assistant", blocks: [], streaming: false };
+        messages.push(last);
+      }
+      const blocks = [...last.blocks];
+      const previous = blocks.at(-1);
+      const id = `agent-error-${last.id}`;
+      const error: Block = {
+        kind: "tool", id, name: "Agent stream", argsJson: "", args: {},
+        result: message || failure.title, state: "error",
+      };
+      // Codex emits error and turn.failed for the same failure. Update the
+      // existing card instead of adding a second one during live use or replay.
+      if (previous?.kind === "tool" && previous.id === id) {
+        blocks[blocks.length - 1] = message ? error : previous;
+      } else {
+        blocks.push(error);
+      }
+      messages[messages.length - 1] = { ...last, blocks };
+    }
     return {
       ...state,
       ...turnOver,
       busy: false,
       stopping: false,
-      failure: describeFailure("codex", message),
-      messages: state.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+      failure,
+      messages,
     };
   }
 

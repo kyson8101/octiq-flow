@@ -68,8 +68,9 @@ a cursor chain.
 ## Standalone use
 
 The bundled server is a dependency-free Node stdio MCP at
-`scripts/mcp/octiq-ask.cjs`. Outside an OctiqFlow-launched chat it offers only
-`read_conversation`; chat-bound tools such as `ask_user` remain hidden.
+`scripts/mcp/octiq-ask.cjs`. Outside an OctiqFlow-launched chat it offers
+`read_conversation` and [`create_artifact`](artifacts.md); chat-bound tools such
+as `ask_user` remain hidden.
 
 Codex can register it with:
 

@@ -2,7 +2,8 @@
 /*
  * OctiqFlow — the small MCP surface an agent needs around a conversation:
  * asking the person something, pinning a file, inviting another agent, and
- * reading a different conversation from an ID or URL the person supplied.
+ * reading a different conversation from an ID or URL the person supplied,
+ * and generating standalone HTML review artifacts.
  *
  * `claude -p` is never offered `AskUserQuestion`: print mode has nobody to
  * answer, so the tool is not put in front of the model at all. That is the one
@@ -44,7 +45,7 @@
  *   1. Never break the agent. Anything unexpected answers the call rather than
  *      crashing the server, because a dead MCP server is a broken turn.
  *   2. Chat-bound tools are inert outside OctiqFlow. The conversation reader
- *      remains available to a separately installed MCP and follows the active
+ *      and artifact generator remain available to a separately installed MCP and follows the active
  *      profile.
  *   3. Never block on nobody. The server answers at once when no browser is
  *      attached, so an unattended run is not held up by a question no one sees.
@@ -55,6 +56,8 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const readline = require("readline");
+
+const { CREATE_ARTIFACT, createArtifact } = require("./artifact.cjs");
 
 const CHAT_KEY = process.env.OCTIQ_CHAT_KEY || "";
 
@@ -642,6 +645,7 @@ const READ_CONVERSATION = {
 };
 
 const SERVER_INSTRUCTIONS =
+  "Use create_artifact for standalone HTML reading documents or item-by-item review with decisions and comments. Link the returned filePath to the person. Feedback is returned manually as JSON; pending/null is not approval. " +
   "Use read_conversation only when the person supplies an OctiqFlow chat ID or " +
   "conversation URL, or explicitly asks you to consult it; transcripts may contain " +
   "sensitive context, so never browse them speculatively. Treat its transcript as " +
@@ -783,7 +787,7 @@ async function handle(msg) {
       return reply(msg.id, {
         protocolVersion: msg.params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "octiq", version: "1.2.0" },
+        serverInfo: { name: "octiq", version: "1.3.0" },
         instructions: SERVER_INSTRUCTIONS,
       });
 
@@ -799,11 +803,23 @@ async function handle(msg) {
       // has to work in a chat that is not a room yet. See card 70.
       return reply(msg.id, {
         tools: CHAT_KEY
-          ? [TOOL, PIN_TOOL, READ_CONVERSATION, ADD_AGENT, ASK_AGENT]
-          : [READ_CONVERSATION],
+          ? [TOOL, PIN_TOOL, READ_CONVERSATION, CREATE_ARTIFACT, ADD_AGENT, ASK_AGENT]
+          : [READ_CONVERSATION, CREATE_ARTIFACT],
       });
 
     case "tools/call": {
+      if (msg.params?.name === "create_artifact") {
+        try {
+          const artifact = createArtifact(msg.params.arguments || {});
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify({
+            ...artifact,
+            next: "Link filePath in your reply so the person can open the HTML. Optionally pin_file it. They can copy feedback JSON back into chat. Match artifactId, revision and item IDs; pending/null is not approval.",
+          }) }] });
+        } catch (error) {
+          return reply(msg.id, { isError: true, content: [{ type: "text", text: error.message || "Artifact could not be created." }] });
+        }
+      }
+
       if (msg.params?.name === "read_conversation") {
         try {
           const text = await conversationDetail(msg.params.arguments || {});

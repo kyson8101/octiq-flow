@@ -254,6 +254,18 @@ fn emit_unstructured_output(
             crate::diagnostics::record(agent, key, "stderr", &text);
             crate::safety_block::observe(agent, key, &text);
         }
+        OutputDisposition::SessionHistoryWarning => {
+            crate::diagnostics::record(agent, key, "stderr", &text);
+            emit_status(
+                agent,
+                ChatStatus {
+                    key: key.to_string(),
+                    kind: "stderr".into(),
+                    text: "Codex could not save some conversation history because its session record was unavailable. This does not by itself mean the task failed. History may be incomplete; details are in diagnostics. Repeated messages are grouped for this turn.".into(),
+                    code: None,
+                },
+            );
+        }
         OutputDisposition::Visible => emit_status(
             agent,
             ChatStatus {
@@ -3478,6 +3490,37 @@ mod tests {
             false,
         );
         assert!(!claude.contains("--skip-git-repo-check"), "{claude}");
+    }
+
+    #[test]
+    fn codex_missing_rollout_thread_warns_once_without_hiding_other_failures() {
+        let codex = provider_for(ChatAgent::Codex);
+        let mut state = OutputState::default();
+        let line = "2026-09-08T07:41:49.205220Z ERROR codex_core::session: failed to record rollout items: thread 01a07ff6-0e48-79b1-ae44-e34950e03069 not found";
+        assert_eq!(
+            codex.classify_output(line, &mut state),
+            OutputDisposition::SessionHistoryWarning
+        );
+        assert_eq!(
+            codex.classify_output(line, &mut state),
+            OutputDisposition::DiagnosticsOnly
+        );
+        for other in [
+            "2026-09-08T07:41:50Z ERROR codex_core::session: failed to record rollout items: disk full",
+            "2026-09-08T07:41:50Z ERROR codex_core::auth: token expired",
+            "turn.failed",
+            "process exited with code 1",
+        ] {
+            assert_eq!(codex.classify_output(other, &mut state), OutputDisposition::Visible);
+        }
+        assert_eq!(
+            codex.classify_output(line, &mut OutputState::default()),
+            OutputDisposition::SessionHistoryWarning
+        );
+        assert_eq!(
+            provider_for(ChatAgent::Claude).classify_output(line, &mut state),
+            OutputDisposition::Visible
+        );
     }
 
     #[test]

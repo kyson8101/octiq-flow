@@ -143,14 +143,15 @@ describe("the queued mark", () => {
     expect(withId).not.toContain("queue-actions-toggle");
   });
 
-  it("keeps mobile actions inaccessible until revealed and reserves the bubble's gesture", () => {
+  it("exposes mobile queue actions without a hidden menu", () => {
     const html = renderToStaticMarkup(
       <MessageList messages={[{ ...sent[0], turnId: "u-1" }]} busy
         onStartQueued={() => {}} onCancelQueued={() => {}} />,
     );
     expect(html).toContain('data-noswipe=""');
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toMatch(/class="queue-action-tray"[^>]*aria-hidden="true"[^>]*inert=""/);
+    expect(html).toContain('class="queue-action-tray"');
+    expect(html).not.toContain('inert=""');
+    expect(html).not.toContain("queue-actions-toggle");
     expect(html).toContain("Take this queued message back to edit");
   });
 

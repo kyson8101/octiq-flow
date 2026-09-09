@@ -71,6 +71,7 @@ pub enum InputTransport {
 pub(crate) enum OutputDisposition {
     Ignore,
     DiagnosticsOnly,
+    SessionHistoryWarning,
     Visible,
 }
 
@@ -80,6 +81,7 @@ pub(crate) enum OutputDisposition {
 #[derive(Debug, Default)]
 pub(crate) struct OutputState {
     multiline_diagnostic: bool,
+    session_history_warning_shown: bool,
 }
 
 impl InputTransport {
@@ -692,6 +694,13 @@ impl AgentProvider for CodexProvider {
         }
 
         let disposition = self.output_disposition(line);
+        if is_codex_missing_rollout_thread(line) {
+            if state.session_history_warning_shown {
+                return OutputDisposition::DiagnosticsOnly;
+            }
+            state.session_history_warning_shown = true;
+            return OutputDisposition::SessionHistoryWarning;
+        }
         if is_recoverable_codex_router_diagnostic(line) {
             state.multiline_diagnostic = true;
         }
@@ -840,6 +849,16 @@ fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
                 }))
 }
 
+// This can affect saved history even when the turn continues. Explain it once
+// per stream and retain every raw occurrence; do not label it harmless.
+fn is_codex_missing_rollout_thread(line: &str) -> bool {
+    is_codex_log_record(line)
+        && line
+            .split_once(" ERROR codex_core::session: failed to record rollout items: thread ")
+            .and_then(|(_, detail)| detail.strip_suffix(" not found"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+
 /// Codex's tracing output begins each independent record with an ISO-like
 /// timestamp and one of its log levels. A router error's following lines do
 /// not, which lets the adapter keep its context block together without hiding
@@ -891,6 +910,7 @@ fn codex_approval(access: Access) -> &'static str {
 
 /// An MCP server carrying the tools print mode cannot otherwise answer.
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
+const ARTIFACT_MCP: &str = include_str!("../../scripts/mcp/artifact.cjs");
 
 /// Told to Claude so the tools it was given are used at the right moments.
 const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last.\n\n`read_conversation` reads another OctiqFlow conversation from its URL. Use it only when the person gives you that URL or explicitly asks you to consult that conversation; transcripts may contain sensitive context, so never browse them speculatively. The first call returns the latest bounded page, and its `before` cursor walks backward when older context is needed. When the person's whole message is `continue <OctiqFlow conversation URL>`, you MUST call `read_conversation` with that URL before any other action, must not open it in Browser or infer its history from workspace files, and should then continue from the latest actionable next step.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
@@ -902,6 +922,7 @@ pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
     std::fs::create_dir_all(&dir).ok()?;
 
     let script = dir.join("octiq-ask.cjs");
+    std::fs::write(dir.join("artifact.cjs"), ARTIFACT_MCP).ok()?;
     std::fs::write(&script, ASK_MCP).ok()?;
 
     let config = dir.join("octiq-ask.json");

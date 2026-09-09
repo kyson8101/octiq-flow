@@ -15,6 +15,8 @@ import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/
 import { projectColor } from "../lib/projectColor";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
+import { isChatPane, openBeside } from "../lib/chatLayout";
+import { SplitIcon } from "./OpenBesideButton";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 import "./PortalLink.css";
@@ -602,6 +604,7 @@ function ProjectNode({
                         <span className="chat-title">{c.title}</span>
                       </ChatPreviewButton>
                     )}
+                    {isChatPane() && <button className="chat-beside" type="button" title="Open beside" aria-label={`Open ${c.title} beside`} disabled={going || isLeaving} onClick={() => openBeside(c.id)}><SplitIcon /></button>}
                     <button
                       className="chat-rename-btn"
                       type="button"

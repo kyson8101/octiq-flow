@@ -75,7 +75,7 @@ export function TopbarActionsMenu({
             const target = event.target instanceof Element ? event.target : null;
             // Attention owns a second disclosure. Let its trigger open that;
             // choosing an entry inside it closes this outer menu as usual.
-            if (target?.closest(".attention-trigger, .copy-chat-id")) return;
+            if (target?.closest(".attention-trigger, .copy-chat-id, .open-beside-trigger")) return;
             if (target?.closest("button, a")) setOpen(false);
           }}
         >

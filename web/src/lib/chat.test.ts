@@ -1457,6 +1457,32 @@ describe("typing a plugin slash command", () => {
 });
 
 describe("a turn that failed", () => {
+  it("keeps a Codex stream failure in activity history and deduplicates its terminal event", () => {
+    const message = "Reconnecting... 5/5 (stream disconnected before completion: websocket closed by server before response.completed)";
+    let state = addUserTurn(emptyChat(), "continue", [], 1);
+    state = reduceChat(state, { type: "error", message });
+    state = reduceChat(state, { type: "turn.failed", error: { message } });
+
+    expect(state.busy).toBe(false);
+    expect(state.failure?.inline).toBe(true);
+    const errors = state.messages.flatMap((m) => m.blocks).filter((b) => b.kind === "tool");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ name: "Agent stream", state: "error", result: message });
+
+    state = addUserTurn(state, "try again", [], 2);
+    expect(state.failure).toBeUndefined();
+    expect(state.messages.flatMap((m) => m.blocks)).toContainEqual(errors[0]);
+    state = reduceChat(state, { type: "turn.failed", error: { message } });
+    expect(state.messages.flatMap((m) => m.blocks).filter((b) => b.kind === "tool")).toHaveLength(2);
+  });
+
+  it("keeps Codex quota failures in the actionable banner", () => {
+    const state = reduceChat(emptyChat(), { type: "error", message: "out of credits" });
+    expect(state.failure?.outOfCredit).toBe(true);
+    expect(state.failure?.inline).toBeUndefined();
+    expect(state.messages).toEqual([]);
+  });
+
   // Claude has two ways of saying the same thing, and only one of them was
   // recognised. The short form is what a five-hour session limit prints, and
   // read as an ERROR it says "the agent stopped with an error" in danger red —

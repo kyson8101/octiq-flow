@@ -11767,3 +11767,27 @@ body.is-ultra .eff {
   cursor: pointer;
 }
 .history-more button:disabled { opacity: 0.6; cursor: wait; }
+
+.skill-reload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.skill-reload button {
+  font: inherit;
+  color: var(--fg-2);
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.skill-reload button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

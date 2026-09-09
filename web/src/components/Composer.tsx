@@ -257,6 +257,8 @@ export function Composer({
   started,
   commands,
   onCommandOpen,
+  onReloadSkills,
+  skillsStatus,
   contextTokens,
   contextWindow,
   activity,
@@ -329,6 +331,8 @@ export function Composer({
   commands?: readonly AgentCommand[];
   /** Lazy providers use the first command-prefix gesture to fetch their list. */
   onCommandOpen?: () => void;
+  onReloadSkills?: () => void;
+  skillsStatus?: string;
   /** How much of the model's context this session is holding, and its ceiling.
    *  Both absent until the first turn ends — the agent only reports them with
    *  its `result`. */
@@ -504,7 +508,7 @@ export function Composer({
               Number(a.id.toLowerCase() === commandQuery.toLowerCase()),
           )
           .slice(0, 40);
-  const slashOpen = matches.length > 0 && commandKey !== dismissedCommand;
+  const slashOpen = commandIntent && (matches.length > 0 || !!onReloadSkills) && commandKey !== dismissedCommand;
 
   // Card 85 — the @ menu, on exactly the same terms as the slash menu above:
   // open while the WHOLE box is one `@word`, gone the moment a space is typed.
@@ -990,7 +994,15 @@ export function Composer({
           <div className="slash-head">
             <RollingText>{`${whoList.length} to choose from · Tab to pick`}</RollingText>
           </div>
-          <ul className="slash-list">
+          {onReloadSkills && (
+            <div className="skill-reload">
+              <button type="button" disabled={skillsStatus === "loading"} onClick={onReloadSkills}>
+                {skillsStatus === "loading" ? "Reloading…" : "Reload skills"}
+              </button>
+              {skillsStatus && skillsStatus !== "loading" && <span role="alert">{skillsStatus}</span>}
+            </div>
+          )}
+          <ul className="slash-list" role="listbox">
             {whoList.map((w, i) => (
               <li key={w.key}>
                 <button
@@ -1020,13 +1032,21 @@ export function Composer({
       )}
 
       {slashOpen && (
-        <div className="slash" role="listbox">
+        <div className="slash">
           <div className="slash-head">
             <RollingText>
-              {`${matches.length} command${matches.length === 1 ? "" : "s"} · ${nothingToComplete ? "Enter to send" : "Tab to complete"}`}
+              {matches.length ? `${matches.length} command${matches.length === 1 ? "" : "s"} · ${nothingToComplete ? "Enter to send" : "Tab to complete"}` : "No matching skills"}
             </RollingText>
           </div>
-          <ul className="slash-list">
+          {onReloadSkills && (
+            <div className="skill-reload">
+              <button type="button" disabled={skillsStatus === "loading"} onClick={onReloadSkills}>
+                {skillsStatus === "loading" ? "Reloading…" : "Reload skills"}
+              </button>
+              {skillsStatus && skillsStatus !== "loading" && <span role="alert">{skillsStatus}</span>}
+            </div>
+          )}
+          <ul className="slash-list" role="listbox">
             {matches.map((command, i) => (
               <li key={command.id}>
                 <button
@@ -1165,7 +1185,7 @@ export function Composer({
               }
               // While the command list is up it owns the arrows, Tab and Enter —
               // the same keys a shell completion takes.
-              if (slashOpen) {
+              if (slashOpen && matches.length > 0) {
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
                   setPick((i) => (i + 1) % matches.length);

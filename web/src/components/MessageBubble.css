@@ -4,111 +4,43 @@
   min-width: 0;
 }
 
-.queue-actions-toggle,
-.queue-action-tray {
-  display: none;
-}
+.queue-action-tray { display: none; }
 
 @media (max-width: 700px), (pointer: coarse) {
-  /* The same space before and after pickup avoids rewrapping the message. */
   .msg-user .queue-swipe > .msg-body {
     min-height: 48px;
-    padding-right: 52px;
+    padding-right: 17px;
   }
 
-  .queue-swipe[data-actionable] {
-    --queue-reveal: 0px;
-    overflow: clip;
-    border-radius: 21px;
-  }
-
-  .queue-swipe[data-open] {
-    --queue-reveal: var(--queue-actions-width);
-  }
-
-  .msg-user .queue-swipe[data-actionable] > .msg-body {
-    transform: translateX(calc(-1 * var(--queue-reveal)));
-    transition: transform 180ms ease-out, opacity 200ms ease-out;
-  }
-
-  .queue-swipe[data-actionable] .msg-body > .queued {
+  .msg-user .queue-swipe[data-actionable] .msg-body > .queued {
     display: none;
   }
 
-  .queue-actions-toggle {
-    position: absolute;
-    top: 50%;
-    right: 2px;
-    transform: translateY(-50%);
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    border: 0;
-    padding: 0;
-    border-radius: 14px;
-    color: var(--fg-0);
-    background: none;
-    cursor: pointer;
-  }
-
   .queue-action-tray {
-    position: absolute;
-    inset: 0 0 0 auto;
     display: flex;
-    width: var(--queue-actions-width);
-    /* The waiting bubble is translucent. Clip the tray to its exposed area,
-       so no button shows through the text while the finger is moving. */
-    clip-path: inset(0 0 0 calc(100% - var(--queue-reveal)));
-    transition: clip-path 180ms ease-out;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 6px;
   }
 
   .queue-action-tray button {
-    flex: 1 1 0;
-    min-width: 0;
-    min-height: 48px;
-    display: flex;
-    flex-direction: column;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 3px;
-    padding: 6px 2px;
-    border: 0;
+    gap: 6px;
+    min-height: 44px;
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-2);
     color: var(--fg-0);
     font: inherit;
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
     cursor: pointer;
   }
 
-  .queue-action-start {
-    background: color-mix(in srgb, var(--accent) 30%, var(--bg-1));
-  }
-
-  .queue-action-cancel {
-    background: var(--bg-2);
-  }
-
-  .queue-actions-toggle:focus-visible,
   .queue-action-tray button:focus-visible {
     outline: 2px solid var(--accent);
-    outline-offset: -3px;
-  }
-
-  .msg-user .queue-swipe[data-swiping] > .msg-body,
-  .queue-swipe[data-swiping] .queue-action-tray {
-    transition: none;
-  }
-
-  .queue-swipe[data-swiping] > .msg-body {
-    -webkit-user-select: none;
-    user-select: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .msg-user .queue-swipe[data-actionable] > .msg-body,
-  .queue-action-tray {
-    transition: none;
+    outline-offset: 2px;
   }
 }
