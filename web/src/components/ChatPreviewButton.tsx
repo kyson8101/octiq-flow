@@ -20,7 +20,7 @@ export function ChatPreviewButton({ chat, enabled, busy, getPreviewMessages, loa
   const close = () => { clear(); setOpen(false); };
   const enter = () => {
     clear();
-    if (enabled) timer.current = setTimeout(() => setOpen(true), 450);
+    if (enabled) timer.current = setTimeout(() => setOpen(true), 1500);
   };
   const leave = () => { clear(); timer.current = setTimeout(() => setOpen(false), 160); };
   useEffect(() => {
