@@ -53,7 +53,12 @@ export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState):
   let changed = false;
   const messages = chat.messages.map((message) => {
     if (message.role !== "user" || !message.turnId || message.echo || message.takenUp) return message;
-    if (message.delivery === "dispatched" || (message.delivery === "failed" && !queued.has(message.turnId))) return message;
+    if ((message.delivery === "failed" || message.delivery === "unknown") && !queued.has(message.turnId)) return message;
+    if (message.delivery === "dispatched" && !queued.has(message.turnId)) {
+      if (queue.live) return message;
+      changed = true;
+      return { ...message, delivery: "unknown", queueLost: undefined } as typeof message;
+    }
     const delivery = queued.has(message.turnId) ? (message.delivery === "starting" ? "starting" : "queued") : queue.live ? "unknown" : "failed";
     const lost = delivery === "failed";
     if (!!message.queueLost === lost && message.delivery === delivery) return message;

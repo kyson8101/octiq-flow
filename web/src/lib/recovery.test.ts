@@ -73,7 +73,8 @@ describe("messages left behind after queue loss", () => {
   it("does not turn a handed-over message back into a queue failure", () => {
     const state = pending();
     state.messages[0].delivery = "dispatched";
-    expect(reconcileUnsentMessages(state, gone)).toBe(state);
+    expect(reconcileUnsentMessages(state, gone).messages[0]).toMatchObject({ delivery: "unknown" });
+    expect(reconcileUnsentMessages(state, { ...gone, live: true })).toBe(state);
   });
 
   it("does not move the old message under new replies or claim it as a new prompt", () => {

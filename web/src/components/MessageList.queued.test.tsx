@@ -37,7 +37,9 @@ describe("message delivery controls", () => {
   it("does not infer a queue from missing provider output", () => {
     expect(draw({ delivery: undefined })).toContain("Delivery unconfirmed");
     expect(draw({ delivery: undefined })).not.toContain("Send this queued message now");
-    expect(draw({ delivery: "dispatched" })).toContain("Sent to agent");
+    expect(draw({ delivery: "dispatched" })).toContain("Awaiting agent confirmation");
+    expect(draw({ delivery: "dispatched" })).not.toContain("The agent has this message");
+    expect(draw({ delivery: "unknown" })).toContain("Restore to composer");
   });
 
   it.each(["start", "cancel"] as const)("locks both controls during %s", (queueAction) => {

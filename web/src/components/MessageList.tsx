@@ -781,7 +781,7 @@ function TurnView({
         </div>
       )}
       <MessageBubble user={role === "user"} message={message} onStart={start} onCancel={cancel}
-        onRestore={unsent && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
+        onRestore={(unsent || message.delivery === "unknown") && !message.echo && !message.takenUp && onRestoreUnsent && message.turnId ? () => onRestoreUnsent(message.turnId!) : undefined}
         onDismiss={unsent && onDismissUnsent && message.turnId ? () => onDismissUnsent(message.turnId!) : undefined}
         footer={role === "user" && answer ? <CopyAnswer text={answer} what="message" /> : undefined}>
 

@@ -139,3 +139,23 @@ it("never reuses a remaining bubble's identity after editing an earlier queued m
   expect(new Set(state.messages.map((m) => m.id)).size).toBe(2);
   expect(state.messages.map((m) => m.turnId)).toEqual(["second", "third"]);
 });
+
+
+it("repairs abandoned dispatches when a later Codex turn starts, including replay", () => {
+  let state = queued();
+  state = reduceChat(state, { type: "octiq_user_turn_delivery", uuid: "turn", state: "dispatched" });
+  state = addUserTurn(state, "later", [], 2, undefined, "later");
+  state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "later" });
+  expect(state.messages.find(m => m.turnId === "turn")).toMatchObject({ delivery: "unknown" });
+  expect(state.messages.find(m => m.turnId === "later")).toMatchObject({ takenUp: true });
+  const next = reconcileQueueSnapshot(state, state, { live: false, queuedTurnIds: [] });
+  expect(next.messages.find(m => m.turnId === "turn")).toMatchObject({ delivery: "unknown" });
+});
+
+it("records an unacknowledged launch ending without changing acknowledged messages", () => {
+  let state = reduceChat(queued(), { type: "octiq_user_turn_delivery", uuid: "turn", state: "unknown" });
+  expect(state.messages[0]).toMatchObject({ delivery: "unknown" });
+  state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "turn" });
+  state = reduceChat(state, { type: "octiq_user_turn_delivery", uuid: "turn", state: "unknown" });
+  expect(state.messages[0]).toMatchObject({ takenUp: true, delivery: "dispatched" });
+});

@@ -24,11 +24,11 @@ export function MessageBubble({ user, message, onStart, onCancel, onRestore, onD
     : accepted ? "Sent"
     : delivery === "queued" ? "Queued"
     : delivery === "sending" ? "Sending…"
-    : delivery === "dispatched" ? "Sent to agent"
+    : delivery === "dispatched" ? "Awaiting agent confirmation"
     : delivery === "failed" ? "Not sent"
     : message.turnId ? "Delivery unconfirmed" : undefined;
   const detail = delivery === "queued" ? "Runs after the current reply. Send now stops that reply."
-    : delivery === "dispatched" && !accepted ? "The agent has this message; waiting for its response."
+    : delivery === "dispatched" && !accepted ? "The message was handed off, but the agent has not confirmed receipt yet."
     : delivery === "failed" ? "This message is no longer waiting. Restore it to edit or send again."
     : delivery === "unknown" ? "Delivery could not be confirmed. Check the conversation before sending again."
     : undefined;

@@ -240,6 +240,17 @@ fn stamp_user_turn_id(event: &mut Value, agent: ChatAgent, turn_id: Option<&str>
     event["octiq_user_turn_id"] = Value::String(turn_id.to_string());
 }
 
+/// Consume only a matching provider receipt; process startup is not receipt.
+fn acknowledge_user_turn(event: &mut Value, agent: ChatAgent, pending: &mut Option<String>) {
+    stamp_user_turn_id(event, agent, pending.as_deref());
+    if pending
+        .as_deref()
+        .is_some_and(|id| event["octiq_user_turn_id"].as_str() == Some(id))
+    {
+        *pending = None;
+    }
+}
+
 /// The agent said something on stderr, or the process ended.
 #[derive(Clone, Serialize)]
 struct ChatStatus {
@@ -300,6 +311,7 @@ fn emit_unstructured_output(
 }
 
 struct ChatSession {
+    /// A dispatched prompt still awaiting its provider acknowledgement.
     user_turn_id: Option<String>,
     child: Child,
     stdin: Option<ChildStdin>,
@@ -1482,15 +1494,13 @@ pub(crate) fn start_session(
                         // untouched; that is what makes a chat with no seats
                         // byte-for-byte the chat that shipped before card 66.
                         let mut event = event;
-                        stamp_user_turn_id(
-                            &mut event,
-                            stream_provider.kind(),
-                            asking
-                                .lock()
-                                .ok()
-                                .and_then(|s| s.user_turn_id.clone())
-                                .as_deref(),
-                        );
+                        if let Ok(mut session) = asking.lock() {
+                            acknowledge_user_turn(
+                                &mut event,
+                                stream_provider.kind(),
+                                &mut session.user_turn_id,
+                            );
+                        }
                         crate::chat_room::stamp_speaker(&mut event, speaker.as_ref());
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
@@ -1516,6 +1526,12 @@ pub(crate) fn start_session(
                         stream_provider.classify_output(trimmed, &mut output_state),
                     ),
                 }
+            }
+            // Drain stdout before deciding: the final buffered line may be the
+            // receipt. A killed/replaced launch must not stay "dispatched"
+            // forever, nor imply its words reached the provider's history.
+            if let Ok(mut session) = asking.lock() {
+                record_delivery(&key, session.user_turn_id.take().as_deref(), "unknown");
             }
         });
     }
@@ -2957,6 +2973,29 @@ mod tests {
         assert_eq!(event["message"]["content"][0]["text"], "look at this");
         assert_eq!(event["octiq_attachments"][0]["path"], "/tmp/screenshot.png");
         assert_eq!(event["octiq_to"]["id"], "s1");
+    }
+
+    #[test]
+    fn startup_without_a_provider_receipt_leaves_delivery_unconfirmed() {
+        let mut pending = Some("exact-turn".to_string());
+        let mut startup = json!({ "type": "thread.started", "thread_id": "thread" });
+        acknowledge_user_turn(&mut startup, ChatAgent::Codex, &mut pending);
+        assert_eq!(pending.as_deref(), Some("exact-turn"));
+        // This pending id is what the stdout EOF path reports as unknown.
+        let mut receipt = json!({ "type": "turn.started" });
+        acknowledge_user_turn(&mut receipt, ChatAgent::Codex, &mut pending);
+        assert_eq!(receipt["octiq_user_turn_id"], "exact-turn");
+        assert!(pending.is_none());
+
+        let mut pending = Some("claude-turn".to_string());
+        let mut output =
+            json!({ "type": "user", "message": { "content": [{ "type": "tool_result" }] } });
+        acknowledge_user_turn(&mut output, ChatAgent::Claude, &mut pending);
+        assert!(pending.is_some());
+        let mut receipt = json!({ "type": "user", "message": { "content": "hello" } });
+        acknowledge_user_turn(&mut receipt, ChatAgent::Claude, &mut pending);
+        assert_eq!(receipt["octiq_user_turn_id"], "claude-turn");
+        assert!(pending.is_none());
     }
 
     #[test]

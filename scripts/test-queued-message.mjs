@@ -90,7 +90,7 @@ try {
     assert.equal(await start.first().isDisabled(),true);
     assert.equal(await edit.first().isDisabled(),true);
     await page.evaluate(()=>{window.delivery("u1","dispatched");window.finish(true);});
-    await page.getByText("Sent to agent",{exact:true}).waitFor();
+    await page.getByText("Awaiting agent confirmation",{exact:true}).waitFor();
     assert.equal(await start.count(),1);
     assert.deepEqual(await page.evaluate(()=>window.calls),[{command:"chat_start_queued",turnId:"u1"}]);
     await page.locator("textarea").fill("My existing draft");
@@ -113,6 +113,7 @@ try {
   const project={id:"qp",name:"Queue Project",primary_path:"/test/queue"};
   const conversation={id:"queue-chat",projectId:"qp",title:"Queue regression",modelId:"codex:astra",sessionId:"test-thread",access:"auto",createdAt:1,updatedAt:2,pinned:false};
   const events=[]; const waiting=new Set(); const calls=[];
+  let endWithoutReceipt;
   const record=event=>{const frame={seq:events.length+1,event}; events.push(frame); return frame;};
   record({type:"user",uuid:"active",octiq_user_turn:true,message:{content:[{type:"text",text:"Review the queue"}]}});
   record({type:"octiq_user_turn_delivery",uuid:"active",state:"dispatched"});
@@ -123,6 +124,7 @@ try {
     const data=JSON.parse(String(raw)); if(data.t!=="invoke") return;
     calls.push(data); let result=[];
     const emit=event=>ws.send(JSON.stringify({t:"event",event:"chat-event",payload:{key,...record(event)}}));
+    endWithoutReceipt=id=>emit({type:"octiq_user_turn_delivery",uuid:id,state:"unknown"});
     if(data.cmd==="list_workspaces") result=[project];
     if(data.cmd==="chat_index_list") result=[conversation];
     if(data.cmd==="chat_list") result=[key];
@@ -147,7 +149,7 @@ try {
     ws.send(JSON.stringify({t:"reply",id:data.id,ok:true,result}));
   }));
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/#/p/queue-project/c/queue-chat`);
-  const app=page.frameLocator('iframe[title="Left chat workspace"]');
+  const app=page;
   const input=app.locator("textarea");
   await input.waitFor();
   for(const text of ["First rapid follow-up","Second rapid follow-up"]) {
@@ -158,19 +160,25 @@ try {
   assert.equal(calls.filter(c=>c.cmd==="chat_send").length,2);
   await input.fill("Keep my newer draft");
   await edit.first().click();
-  await page.waitForFunction(()=>document.querySelector("iframe").contentDocument.querySelector("textarea").value.includes("First rapid follow-up"));
+  await page.waitForFunction(()=>document.querySelector("textarea").value.includes("First rapid follow-up"));
   assert.equal(await input.inputValue(),"Keep my newer draft\n\nFirst rapid follow-up");
   const start=app.getByRole("button",{name:"Send this queued message now",exact:true});
   assert.equal(await start.count(),1);
   await start.click();
-  await app.getByText("Sent to agent",{exact:true}).waitFor();
+  await app.getByText("Awaiting agent confirmation",{exact:true}).waitFor();
   const sent=calls.filter(c=>c.cmd==="chat_send");
   assert.equal(calls.find(c=>c.cmd==="chat_cancel_queued").args.turnId,sent[0].args.turnId);
   assert.equal(calls.find(c=>c.cmd==="chat_start_queued").args.turnId,sent[1].args.turnId);
   assert.equal(await app.locator(".notice").count(),0);
+  endWithoutReceipt(sent[1].args.turnId);
+  await app.getByText("Delivery unconfirmed",{exact:true}).waitFor();
+  await app.getByRole("button",{name:"Restore to composer",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector("textarea").value.includes("Second rapid follow-up"));
+  assert.equal(calls.filter(c=>c.cmd==="chat_send").length,2);
   await page.reload();
   await app.getByText("Second rapid follow-up",{exact:true}).waitFor();
   assert.equal(await start.count(),0);
+  await app.getByText("Delivery unconfirmed",{exact:true}).waitFor();
   assert.equal(await app.getByText("First rapid follow-up",{exact:true}).count(),0);
   assert.deepEqual(appErrors,[]);
   await page.screenshot({path:join(artifacts,"app-queue.png"),fullPage:true});

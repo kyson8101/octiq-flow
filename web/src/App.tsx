@@ -151,8 +151,7 @@ import { useAttentionInbox } from "./lib/useAttentionInbox";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
-import { isChatPane, readChatLayout, readChatRoute, chatRouteHash, tellLayout, type ChatRoute } from "./lib/chatLayout";
-import { OpenBesideButton } from "./components/OpenBesideButton";
+import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
 import { projectSlug } from "./lib/projectSlug";
 import { shouldShowChatStatus } from "./lib/chatStatus";
 
@@ -265,7 +264,10 @@ function readLocation(): ChatRoute { return readChatRoute(location.hash); }
 
 function writeLocation(project: string | null, chat: string | null): void {
   const next = chatRouteHash({ project: project ?? undefined, chat: chat ?? undefined });
-  if (next !== location.hash) history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
+  if (next === location.hash) return;
+  const previous = readLocation();
+  const method = previous.chat && previous.chat !== chat ? "pushState" : "replaceState";
+  history[method](null, "", `${location.pathname}${location.search}${next}`);
 }
 
 /** The chat that was on screen when the page was last left. */
@@ -777,14 +779,8 @@ export default function App() {
     const { on, push: viaPush, reading, list, projects, shelved: away } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
-    if (viaPush || (isChatPane() && new URLSearchParams(location.search).get("side") === "right")) return;
+    if (viaPush) return;
     const focus = focusNow(reading);
-    if (isChatPane()) {
-      const layout = readChatLayout(window.parent.location.hash);
-      focus.reading = layout[layout.focus]?.chat ?? reading;
-      focus.focused = window.parent.document.hasFocus();
-      focus.hidden = window.parent.document.hidden;
-    }
     if (!owed({ enabled: on, permission: permissionNow() }, focus, id)) return;
     const chat = list.find((c) => c.id === id);
     const notice = noticeFor({
@@ -1515,7 +1511,9 @@ export default function App() {
     // where the link goes. The raw id fills in only while the workspace list
     // has not arrived, so a reload does not blank the address.
     const ws = workspaces.find((w) => w.id === projectId);
-    writeLocation(ws ? projectSlug(ws.name) : projectId, conversationId);
+    if (restored.current && !awaited.current) {
+      writeLocation(ws ? projectSlug(ws.name) : projectId, unavailableChat ?? conversationId);
+    }
     // Said to the browser chrome too: the tab, the phone's top bar, and a
     // home-screen shortcut all name the page by its <title>, and with several
     // OctiqFlow tabs open a static one makes them indistinguishable. The raw
@@ -1528,7 +1526,7 @@ export default function App() {
     // A store that will not take it is survivable here: the URL is still the
     // way back.
     if (conversationId) remember(LAST_KEY, conversationId);
-  }, [projectId, conversationId, workspaces]);
+  }, [projectId, conversationId, workspaces, unavailableChat]);
 
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
@@ -1599,7 +1597,7 @@ export default function App() {
     const check = async () => {
       const state = chatsRef.current[id];
       if (checking || !state?.messages.some((m) => m.role === "user" && m.turnId
-        && !m.echo && !m.takenUp && m.delivery !== "dispatched" && m.delivery !== "failed")) return;
+        && !m.echo && !m.takenUp && m.delivery !== "unknown" && m.delivery !== "failed")) return;
       checking = true;
       try { await syncQueue(id); } catch { /* Keep uncertain delivery visible. */ }
       finally { checking = false; }
@@ -1938,7 +1936,7 @@ export default function App() {
   // page, so tapping one only brings the window forward and posts the chat it
   // came from; this is the half that opens it.
   useEffect(() => {
-    if (!("serviceWorker" in navigator) || (isChatPane() && new URLSearchParams(location.search).get("side") === "right")) return;
+    if (!("serviceWorker" in navigator)) return;
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       if (data?.type === "open-chat" && typeof data.conversationId === "string") {
@@ -1961,7 +1959,6 @@ export default function App() {
   // every time the app comes back to the front, which is where a tap that
   // raised nothing at all finally lands.
   useEffect(() => {
-    if (isChatPane() && new URLSearchParams(location.search).get("side") === "right") return;
     const pickUp = () => {
       if (document.hidden) return;
       void push.takeTapped().then((id) => {
@@ -2216,38 +2213,27 @@ export default function App() {
     showConversation(found);
   }, [conversations, showConversation, indexReady]);
 
+  // Browser history and pasted hashes navigate the single workspace directly.
   useEffect(() => {
-    if (!isChatPane()) return;
-    function navigate(event: MessageEvent) {
-      if (event.origin !== location.origin || event.source !== window.parent || event.data?.type !== "octiq-layout" || event.data.action !== "navigate") return;
-      const route = event.data.route;
-      if (!route || typeof route !== "object") return;
-      if (typeof route.chat === "string" && route.chat) {
-        onOpenChat.current(route.chat);
-      } else if (typeof route.project === "string") {
-        const project = notifying.current.projects.find(p => p.id === route.project || projectSlug(p.name) === projectSlug(route.project));
-        if (project) { setProjectId(project.id); setConversationId(null); }
+    const navigate = () => {
+      const route = readLocation();
+      if (route.chat) onOpenChat.current(route.chat);
+      else if (route.project) {
+        const project = notifying.current.projects.find(p => p.id === route.project || projectSlug(p.name) === projectSlug(route.project!));
+        if (project) {
+          setUnavailableChat(null);
+          setProjectId(project.id);
+          setConversationId(null);
+        }
       }
-    }
-    const focus = () => tellLayout({ action: "focus" });
-    window.addEventListener("message", navigate);
-    document.addEventListener("pointerdown", focus, true);
-    document.addEventListener("keydown", focus, true);
-    tellLayout({ action: "ready" });
+    };
+    window.addEventListener("popstate", navigate);
+    window.addEventListener("hashchange", navigate);
     return () => {
-      window.removeEventListener("message", navigate);
-      document.removeEventListener("pointerdown", focus, true);
-      document.removeEventListener("keydown", focus, true);
+      window.removeEventListener("popstate", navigate);
+      window.removeEventListener("hashchange", navigate);
     };
   }, []);
-
-  useEffect(() => {
-    if (!projectId || !restored.current || awaited.current) return;
-    const ws = workspaces.find(w => w.id === projectId);
-    const id = unavailableChat ?? conversationId;
-    const title = unavailableChat ? "Chat unavailable" : conversations.find(c => c.id === conversationId)?.title;
-    tellLayout({ action: "route", route: { project: ws ? projectSlug(ws.name) : projectId, ...(id ? { chat: id } : {}) }, title: unavailableChat ? title : [ws?.name, title].filter(Boolean).join(" · ") || "Chat" });
-  }, [projectId, conversationId, workspaces, conversations, unavailableChat]);
 
   const toggleFolder = useCallback((id: string) => {
     setExpanded((s) => {
@@ -2874,7 +2860,7 @@ export default function App() {
   const restoreUnsent = useCallback((turnId: string) => {
     if (!conversationId) return;
     const state = chatsRef.current[conversationId];
-    if (!state?.messages.some((m) => m.turnId === turnId && m.queueLost && !m.echo && !m.takenUp)) return;
+    if (!state?.messages.some((m) => m.turnId === turnId && (m.queueLost || m.delivery === "unknown") && !m.echo && !m.takenUp)) return;
     const message = state.messages.find((m) => m.turnId === turnId);
     if (message) setReclaimed((prev) => ({ ...prev, [conversationId]: [...(prev[conversationId] ?? []), reclaimedMessage(message)] }));
   }, [conversationId]);
@@ -3471,7 +3457,6 @@ export default function App() {
 
       {conversationId && mode === "chat" && (
         <>
-          {isChatPane() && <OpenBesideButton chats={visibleConversations} projects={allProjects} current={conversationId} />}
           <CopyChatIdButton chatId={conversationId} />
           <ChatDeleteButton
             deleting={deleting.has(conversationId)}

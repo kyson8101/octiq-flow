@@ -959,7 +959,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   if (type === "octiq_user_turn_delivery") {
     const turnId = asStr(e.uuid);
     const delivery = asStr(e.state);
-    if (!["queued", "starting", "dispatched", "failed"].includes(delivery)) return state;
+    if (!["queued", "starting", "dispatched", "failed", "unknown"].includes(delivery)) return state;
     return {
       ...state,
       messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
@@ -1938,6 +1938,7 @@ function waitingForCodex(message: Message): boolean {
     !message.echo &&
     !message.takenUp &&
     !message.queueLost &&
+    message.delivery !== "unknown" &&
     !message.to
   );
 }
@@ -2029,11 +2030,17 @@ function codexTurnStarted(
   // Remove the accepted prompt from the waiting tail, then place it after all
   // settled conversation entries and before every message still queued. The
   // next Codex item is inserted at that same boundary by `withCodexCurrent`.
-  const closed = state.messages.map((m) =>
-    m.streaming && !m.parent && !m.speaker
+  const closed = state.messages.map((m) => {
+    // A later one-shot turn cannot own an earlier unacknowledged dispatch.
+    // This also repairs old transcripts whose stopped launches had no receipt.
+    if (turnId && m.turnId !== turnId && m.role === "user" && !m.to
+      && !m.echo && !m.takenUp && m.delivery === "dispatched") {
+      return { ...m, delivery: "unknown" as const, queueLost: undefined };
+    }
+    return m.streaming && !m.parent && !m.speaker
       ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) }
-      : m,
-  );
+      : m;
+  });
   let messages = closed;
   if (at >= 0) {
     const accepted: Message = { ...closed[at], takenUp: true, delivery: "dispatched", queueLost: undefined, queueAction: undefined, queueError: undefined };

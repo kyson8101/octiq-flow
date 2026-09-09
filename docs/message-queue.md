@@ -8,10 +8,10 @@ is not evidence that a message is still in the queue.
 | Sending… | The browser's send request is being accepted | Wait |
 | Queued | The server owns an editable queue entry | Send now, Edit |
 | Sending next… | The current reply is being interrupted for this message | Wait |
-| Sent to agent | The prompt has left the editable queue | Copy |
+| Awaiting agent confirmation | The prompt has left the editable queue, but the provider has not acknowledged it | Wait, Copy |
 | Sent | The provider acknowledged the prompt | Copy |
 | Not sent | The server no longer holds an unacknowledged queued message | Restore to composer, Dismiss, Copy |
-| Delivery unconfirmed | An older record or interrupted connection cannot establish delivery | Check the conversation before sending again; Copy |
+| Delivery unconfirmed | An older record, interrupted connection, or ended process cannot establish receipt | Restore to composer, Copy; check the conversation before sending again |
 
 **Send now** stops the current reply and makes the selected message the next
 turn. Other waiting messages retain their relative order. **Edit** removes only
@@ -36,6 +36,9 @@ no hover-only controls or swipe gestures are required.
 - Provider acknowledgement remains separate: Claude echoes and Codex/Pi turn
   starts are tagged with the exact dispatched message ID. Identical messages
   do not match by newest text. Optimistic React IDs also use this stable ID.
+- A process ending before acknowledgement records `unknown` after stdout drains.
+  A later Codex turn also marks abandoned earlier dispatches as unconfirmed when
+  replaying older records. Starting a process is never described as receipt.
 - Enqueue, cancellation, promotion, and one-shot process handoff share the
   session lock. A handoff reservation accepts incoming messages into the queue
   and prevents a competing browser start. The waiting tail stays in place.
