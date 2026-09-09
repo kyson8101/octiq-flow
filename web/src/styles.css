@@ -1628,6 +1628,8 @@ body {
 .prose {
   font-family: var(--prose-font);
   line-height: 1.8;
+  /* Long URLs and unbroken text must fit within the message column. */
+  overflow-wrap: anywhere;
 }
 
 .prose > :first-child {
