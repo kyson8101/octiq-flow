@@ -11,6 +11,7 @@ export function ChatActionsDialog({ chat, onClose, onRename, onPin, onDelete }: 
   onDelete: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const backdropPress = useRef(false);
   const titleId = useId();
   const close = useRef(onClose);
   close.current = onClose;
@@ -35,7 +36,13 @@ export function ChatActionsDialog({ chat, onClose, onRename, onPin, onDelete }: 
   return createPortal(
     <dialog ref={dialog} className="chat-actions-dialog" aria-labelledby={titleId}
       onCancel={(event) => { event.preventDefault(); dismiss(); }}
-      onClick={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
+      onPointerDown={(event) => { backdropPress.current = event.target === event.currentTarget; }}
+      onClick={(event) => {
+        // A hold begins on the chat underneath this dialog. Its release must
+        // not immediately dismiss the menu it just opened.
+        if (backdropPress.current && event.target === event.currentTarget) dismiss();
+        backdropPress.current = false;
+      }}>
       <div className="chat-actions-content">
         <strong id={titleId}>{chat.title}</strong>
         <button type="button" onClick={() => act(onRename)}>Rename chat</button>

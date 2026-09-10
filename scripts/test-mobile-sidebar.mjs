@@ -13,7 +13,7 @@ let browser;
 try {
 await server.listen();
 const base = `http://127.0.0.1:${server.httpServer.address().port}/`;
-browser = await chromium.launch({channel:process.env.OCTIQ_TEST_BROWSER || 'chrome',headless:true});
+browser = await chromium.launch({...(process.env.OCTIQ_TEST_BROWSER ? {channel:process.env.OCTIQ_TEST_BROWSER} : {}),headless:true});
 const context = await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
 const projects = [{id:'pa',name:'Project Alpha',primary_path:'/test/alpha'},{id:'pb',name:'Project Beta',primary_path:'/test/beta'}];
 const chats = [{id:'a',projectId:'pa',title:'Alpha chat'},{id:'b',projectId:'pb',title:'Beta chat'},{id:'c',projectId:'pa',title:'Another chat'}].map(c=>({...c,modelId:'claude-sonnet',sessionId:null,access:null,createdAt:1,updatedAt:2,pinned:false}));
@@ -27,6 +27,7 @@ await context.routeWebSocket(/.*/, ws=>ws.onMessage(raw=>{
  let result=[];
  if(data.cmd==='list_workspaces') result=projects;
  if(data.cmd==='chat_index_list') result=chats;
+ if(data.cmd==='chat_index_save') { const chat=chats.find(c=>c.id===data.args.meta.id); if(chat) Object.assign(chat,data.args.meta); }
  if(data.cmd==='chat_page') result={events:[],context:[],before:null};
  if(data.cmd==='chat_queue_state') result={live:false,queuedTurnIds:[]};
  if(data.cmd==='memory_usage') result={totalMb:25,procs:1,rows:[]};
@@ -35,6 +36,7 @@ await context.routeWebSocket(/.*/, ws=>ws.onMessage(raw=>{
  ws.send(JSON.stringify({t:'reply',id:data.id,ok:true,result}));
  if(data.cmd==='chat_interrupt') ws.send(JSON.stringify({t:'event',event:'chat-status',payload:{key:data.args.key,kind:'exit',text:'',code:0}}));
 }));
+console.log('Browser ready');
 const page=await context.newPage();
 page.setDefaultTimeout(60000);
 page.setDefaultNavigationTimeout(60000);
@@ -43,6 +45,7 @@ await page.goto(base + '#/p/project-alpha/c/a', {waitUntil:'domcontentloaded'});
 await page.locator('textarea').waitFor();
 await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
 await page.locator('.sidebar').waitFor();
+console.log('Projects loaded');
 await page.locator('.sidebar .usage-val').first().waitFor();
 const currentRow = page.locator('.chat').filter({has:page.locator('.chat-title').filter({hasText:/^Alpha chat$/})});
 assert.equal(await page.locator('.sidebar a[href="/os"]').count(),1);
@@ -87,6 +90,7 @@ await page.getByRole('dialog').getByRole('button',{name:'Delete chat',exact:true
 await renamedRow.getByRole('button',{name:'Cancel delete',exact:true}).tap();
 assert.equal(await renamedRow.locator('.chat-actions-trigger').isVisible(),true);
 
+console.log('Menu actions passed');
 // Hold opens actions; movement cancels the hold so scrolling stays navigation-free.
 const cdp=await context.newCDPSession(page);
 const titleBox=await bounds(renamedRow.locator('.chat-btn'));
@@ -102,8 +106,9 @@ await page.waitForTimeout(600);
 await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
 assert.equal(await page.getByRole('dialog').count(),0);
 
+console.log('Touch gestures passed');
 // Both readout popovers fit within the viewport, above their shared footer.
-for (const [width,height] of [[320,568],[390,500],[800,900]]) {
+for (const [width,height] of [[320,568],[390,500],[700,900]]) {
   await page.setViewportSize({width,height});
   const buttons=page.locator('.sidebar-slot.is-foot .usage-btn');
   assert.equal(await buttons.count(),2);
