@@ -7,14 +7,14 @@ import "./Mascot.css";
 export type { MascotMood } from "../lib/mascotDesign";
 
 const MOUTHS = {
-  idle: "M 42 64 Q 50 75 58 64 Q 50 67 42 64 Z",
+  idle: "M 41 64 Q 50 76 59 64",
   still: "M 45 66 Q 50 70 55 66",
   think: "M 49 68 Q 54 64 59 67",
   work: "M 45 67 Q 50 64 55 67",
   asleep: "M 47 68 C 47 63 53 63 53 68 C 53 73 47 73 47 68 Z",
 } as const;
 
-/** Soft, face-only portraits with expressions driven by the session state. */
+/** Outline portraits with expressions driven by the session state. */
 export function Mascot({
   robot = "sonnet", size = 28, alert = false, mood = "idle", asleep = false,
 }: {
@@ -40,8 +40,7 @@ export function Mascot({
       aria-hidden="true"
     >
       <svg className="mascot-avatar" viewBox="0 0 100 100" width={size} height={size} fill="none" focusable="false">
-        <circle className="mascot-avatar-base" cx="50" cy="50" r="49" />
-        <path className="mascot-avatar-shade" d="M 3 59 C 16 92 76 100 97 59 A 49 49 0 0 1 3 59 Z" />
+        <circle className="mascot-avatar-base" cx="50" cy="50" r="46" />
         <g className="mascot-avatar-mark">
           {body === "luna" ? <path d="M 56 15 A 9 9 0 1 0 61 29 A 10 10 0 0 1 56 15 Z" />
             : body === "astra" || body === "opus" ? <path d="M 50 14 Q 52 23 59 24 Q 52 26 50 33 Q 48 26 41 24 Q 48 23 50 14 Z" />
@@ -52,8 +51,7 @@ export function Mascot({
         </g>
         <g className="mascot-avatar-face" strokeLinecap="round" strokeLinejoin="round">
           <g className="mascot-avatar-cheeks">
-            <ellipse cx="24" cy="63" rx="9" ry="5" />
-            <ellipse cx="76" cy="63" rx="9" ry="5" />
+            <path d="M 20 62 L 25 64 M 75 64 L 80 62" />
           </g>
           <g className="mascot-avatar-eyes">
             {asleep ? <g className="mascot-avatar-ink" strokeWidth="3.5" fill="none">
@@ -61,7 +59,6 @@ export function Mascot({
             </g> : <>
               {[33, 67].map((x, i) => <g key={x}>
                 <ellipse className="mascot-avatar-eye" cx={x + (thinking ? 2 : 0)} cy={eyeY + (thinking && i === 0 ? 2 : 0)} rx="5.5" ry={thinking && i === 0 ? 6 : eyeHeight} />
-                <ellipse fill="#fffaf4" cx={x - 1.4 + (thinking ? 2 : 0)} cy={eyeY - 2.5 + (thinking && i === 0 ? 2 : 0)} rx="1.8" ry="2.2" />
               </g>)}
             </>}
           </g>
@@ -69,8 +66,7 @@ export function Mascot({
             <path d={thinking ? "M 27 38 Q 32 34 38 37" : "M 28 38 L 38 41"} />
             <path d={thinking ? "M 62 36 Q 67 31 72 34" : "M 62 41 L 72 38"} />
           </g>}
-          <path className={`mascot-avatar-mouth${expression === "idle" || asleep ? " is-open" : ""}`} d={MOUTHS[expression]} strokeWidth="2.5" />
-          {expression === "idle" && <path d="M 47 69 Q 50 67 53 69" stroke="#eb9b9e" strokeWidth="2.5" />}
+          <path className="mascot-avatar-mouth" d={MOUTHS[expression]} strokeWidth="3.5" />
         </g>
       </svg>
       {robot.startsWith("pi") && <span className="mascot-provider-badge" data-provider-mark="pi">P</span>}

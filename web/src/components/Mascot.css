@@ -6,16 +6,14 @@
   margin: -1px 5px 0 0;
   isolation: isolate;
   pointer-events: none;
-  --mascot-ink: #343044;
+  --mascot-ink: color-mix(in srgb, var(--robot-accent) 78%, currentColor);
 }
-.mascot-avatar { display: block; width: 100%; height: 100%; border-radius: 50%; }
-.mascot-avatar-base { fill: color-mix(in srgb, var(--robot-accent) 38%, #fff5e9); }
-.mascot-avatar-shade { fill: var(--robot-accent); opacity: .15; }
-.mascot-avatar-mark { color: var(--robot-accent); fill: currentColor; }
-.mascot-avatar-eye { fill: var(--mascot-ink); }
+.mascot-avatar { display: block; width: 100%; height: 100%; stroke-linecap: round; stroke-linejoin: round; }
+.mascot-avatar-base { fill: none; stroke: var(--mascot-ink); stroke-width: 3.5; }
+.mascot-avatar-mark { color: var(--mascot-ink); fill: none; stroke: currentColor; stroke-width: 3; }
+.mascot-avatar-eye { fill: none; stroke: var(--mascot-ink); stroke-width: 3.5; }
 .mascot-avatar-ink, .mascot-avatar-mouth { stroke: var(--mascot-ink); }
-.mascot-avatar-mouth.is-open { fill: var(--mascot-ink); }
-.mascot-avatar-cheeks { fill: #e88895; opacity: .4; }
+.mascot-avatar-cheeks { fill: none; stroke: var(--mascot-ink); stroke-width: 3; opacity: .65; }
 .mascot-avatar-eyes { transform-box: fill-box; transform-origin: center; }
 .mascot[data-expression="idle"] .mascot-avatar-eyes { animation: mascot-avatar-blink 6s infinite; }
 .mascot.is-asleep .mascot-avatar-face { opacity: .75; }
@@ -30,8 +28,9 @@
   max-width: 24px;
   max-height: 24px;
   border-radius: 50%;
-  background: #fff5e9;
-  color: var(--mascot-ink);
+  background: var(--bg-1, #19252b);
+  color: var(--robot-accent);
+  border: 1px solid currentColor;
   font: 700 8px/1 ui-rounded, system-ui, sans-serif;
   font-size: clamp(7px, calc(var(--mascot-size) * .2), 13px);
 }
