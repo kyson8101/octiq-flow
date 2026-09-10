@@ -44,42 +44,6 @@
   .sidebar .proj-btn { height: 44px; }
   .sidebar .proj-add { width: 44px; height: 44px; margin-right: 0; }
   .sidebar .proj-node { --sib-mid: 22px; }
-  .sidebar .chat-btn,
-  .sidebar .chat-more,
-  .sidebar .chat-rename { height: 44px; }
-  .sidebar .chat-btn { -webkit-touch-callout: none; user-select: none; }
-  .sidebar .chat-rename-input { font-size: 16px; }
-
-  .sidebar .chat-rename-btn,
-  .sidebar .chat-pin,
-  .sidebar .chat-del { display: none; }
-  .sidebar .chat-tail { width: 12px; height: 44px; margin: 0 2px; }
-  .sidebar .chat-mark { left: 50%; }
-  .sidebar .chat:hover .chat-mark,
-  .sidebar .chat-tail:focus-within .chat-mark { opacity: 1; transform: translate(-50%, -50%); }
-  .sidebar .chat-actions-trigger {
-    display: inline-flex;
-    flex: 0 0 44px;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: 0;
-    border-radius: var(--r-sm);
-    background: transparent;
-    color: var(--fg-2);
-    cursor: pointer;
-  }
-  .sidebar .chat-actions-trigger:hover { background: var(--bg-2); color: var(--fg-0); }
-  .sidebar .chat-mobile-pin { display: inline-flex; flex: 0 0 auto; margin-left: 6px; color: var(--fg-2); }
-  .sidebar .chat-mobile-pin svg { width: 12px; height: 12px; }
-  .sidebar .chat.is-renaming .chat-actions-trigger,
-  .sidebar .chat.is-going .chat-actions-trigger { display: none; }
-  /* Undo remains on the row for the entire deletion countdown. */
-  .sidebar .chat.is-going .chat-tail { width: 44px; margin-right: 0; }
-  .sidebar .chat.is-going .chat-del { display: flex; width: 44px; height: 44px; }
-
   .sidebar .sidebar-slot.is-foot {
     position: relative;
     display: flex;
@@ -98,4 +62,51 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+}
+
+/* Touch tablets use the same accessible action menu as phones. */
+@media (max-width: 859.98px), (pointer: coarse) {
+  .sidebar .chat-btn,
+  .sidebar .chat-rename { height: 64px; }
+  .sidebar .chat-more { height: 44px; }
+  .sidebar .chat-btn { -webkit-touch-callout: none; user-select: none; }
+  .sidebar .chat-title { font-size: 16px; }
+  .sidebar .chat-time { font-size: 11px; }
+  .sidebar .chat-snippet { font-size: 13px; padding-right: 54px; }
+  .sidebar .chat.is-pinned .chat-snippet { padding-right: 72px; }
+  .sidebar .chat-rename-input { font-size: 16px; }
+
+  .sidebar .chat-rename-btn,
+  .sidebar .chat-pin,
+  .sidebar .chat-del { display: none; }
+  .sidebar .chat-tail { right: 48px; bottom: 0; width: 12px; height: 44px; margin: 0; }
+  .sidebar .chat-mark { left: 50%; }
+  .sidebar .chat:hover .chat-mark,
+  .sidebar .chat-tail:focus-within .chat-mark { opacity: 1; transform: translate(-50%, -50%); }
+  .sidebar .chat-actions-trigger {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    display: inline-flex;
+    flex: 0 0 44px;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--fg-2);
+    cursor: pointer;
+  }
+  .sidebar .chat-actions-trigger:hover { background: var(--bg-2); color: var(--fg-0); }
+  .sidebar .chat-mobile-pin { position: absolute; right: 64px; bottom: 16px; display: inline-flex; color: var(--fg-2); }
+  .sidebar .chat-mobile-pin svg { width: 12px; height: 12px; }
+  .sidebar .chat.is-renaming .chat-actions-trigger,
+  .sidebar .chat.is-going .chat-actions-trigger { display: none; }
+  /* Undo remains on the row for the entire deletion countdown. */
+  .sidebar .chat.is-going .chat-tail { right: 0; width: 44px; margin-right: 0; }
+  .sidebar .chat.is-going .chat-del { display: flex; width: 44px; height: 44px; }
+
 }

@@ -42,7 +42,11 @@ page.setDefaultTimeout(60000);
 page.setDefaultNavigationTimeout(60000);
 page.on('pageerror',e=>errors.push(String(e)));
 await page.goto(base + '#/p/project-alpha/c/a', {waitUntil:'domcontentloaded'});
-await page.locator('textarea').waitFor();
+await page.locator('textarea').waitFor().catch(async error => {
+  await page.screenshot({path:join(artifacts,'startup-failure.png')});
+  console.error('Startup errors:', errors, 'Screenshots:', artifacts);
+  throw error;
+});
 await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
 await page.locator('.sidebar').waitFor();
 console.log('Projects loaded');
@@ -56,8 +60,10 @@ const bounds = async locator => {const box=await locator.boundingBox(); assert.o
 const footer = await bounds(page.locator('.sidebar-slot.is-foot'));
 assert.ok(footer.height<=50,`footer too tall: ${footer.height}`);
 assert.ok((await bounds(page.locator('.proj').first())).y >= (await bounds(page.locator('.sidebar-head'))).y + (await bounds(page.locator('.sidebar-head'))).height);
-assert.ok((await bounds(currentRow.locator('.chat-title'))).width > 240);
-assert.equal((await bounds(currentRow)).height,44);
+assert.ok((await bounds(currentRow.locator('.chat-title'))).width > 150);
+assert.equal((await bounds(currentRow)).height,64);
+assert.equal(await currentRow.locator('.chat-snippet').textContent(), 'No messages yet');
+assert.equal(await currentRow.locator('.chat-time').isVisible(), true);
 await page.screenshot({path:join(artifacts,'mobile-projects.png')});
 
 // Menus are keyboard accessible, restore focus, and never navigate into a chat.
@@ -126,9 +132,11 @@ for (const [width,height] of [[320,568],[390,500],[700,900]]) {
   await page.screenshot({path:join(artifacts,`projects-${width}x${height}.png`)});
 }
 await page.setViewportSize({width:1280,height:900});
-assert.equal(await renamedRow.locator('.chat-actions-trigger').isVisible(),false);
-assert.equal(await renamedRow.locator('.chat-pin').isVisible(),true);
+assert.equal(await renamedRow.locator('.chat-actions-trigger').isVisible(),true);
+assert.equal(await renamedRow.locator('.chat-pin').isVisible(),false);
+assert.equal((await bounds(renamedRow)).height,64);
+await page.screenshot({path:join(artifacts,'tablet-projects.png')});
 assert.deepEqual(errors,[]);
-console.log('PASS: compact phone layout, title space, menus, focus, rename, pin/unpin, delete undo, long press, scroll cancellation, readout popovers, desktop controls.');
+console.log('PASS: compact phone layout, title space, menus, focus, rename, pin/unpin, delete undo, long press, scroll cancellation, readout popovers, tablet touch controls.');
 console.log('Screenshots:',artifacts);
 } finally { await browser?.close(); await server.close(); }

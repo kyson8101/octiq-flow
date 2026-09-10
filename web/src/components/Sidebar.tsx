@@ -3,19 +3,16 @@
 // A project is a place you come back to, so it is a folder that holds its past
 // chats rather than just a switch that sets the agent's working directory.
 //
-// The shape is a plain outline: a folder icon and a name, then its chats
-// indented to start where that name starts. Each chat carries the robot for its
-// saved model, and any state it has is a mark on the RIGHT, where it can be
-// scanned down the edge of the list without breaking the line of text.
+// Compact conversation rows show a title, last-message snippet, and timestamp.
+// Projects organize the list; trailing status marks highlight active work.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type React from "react";
-import { modelFromId } from "../lib/agentProviders";
+import { previewMessages } from "../lib/chatPreview";
 import type { Conversation } from "../lib/store";
 import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/projectOrder";
 import { projectColor } from "../lib/projectColor";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
-import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
 import { ChatActionsDialog } from "./ChatActionsDialog";
 import "./PortalLink.css";
@@ -538,6 +535,11 @@ function ProjectNode({
               const going = deleting.has(c.id);
               const isLeaving = leaving.has(c.id);
               const isEntering = !seenChatIds.current.has(c.id);
+              const latest = previewMessages(getPreviewMessages?.(c.id) ?? c.messages).at(-1);
+              const snippet = going ? "Deleting…"
+                : busy.has(c.id) ? "Working…"
+                : latest ? `${latest.speaker === "You" ? "You: " : ""}${latest.text.replace(/\s+/g, " ")}`
+                : c.sessionId ? "Open to view messages" : "No messages yet";
               return (
                 <AnimatedChatRow entering={isEntering} leaving={isLeaving} key={c.id}>
                   <div
@@ -596,6 +598,7 @@ function ProjectNode({
                         loadPreview={loadPreview}
                         className="chat-btn"
                         type="button"
+                        aria-label={c.title}
                         disabled={isLeaving}
                         aria-description="Hover to preview. Double-click to rename. Hold for chat actions."
                         onPointerDown={(event) => {
@@ -627,13 +630,15 @@ function ProjectNode({
                           if (!going) setRenaming(c.id);
                         }}
                       >
-                        <Mascot
-                          robot={modelFromId(c.modelId ?? null)?.composerStyle}
-                          mood={busy.has(c.id) ? "work" : "idle"}
-                          size={28}
-                          asleep={!running.has(c.id) && !busy.has(c.id)}
-                        />
-                        <span className="chat-title">{c.title}</span>
+                        <span className="chat-summary">
+                          <span className="chat-heading">
+                            <span className="chat-title">{c.title}</span>
+                            <time className="chat-time" dateTime={new Date(c.updatedAt).toISOString()} title={new Date(c.updatedAt).toLocaleString()}>
+                              {chatTime(c.updatedAt)}
+                            </time>
+                          </span>
+                          <span className="chat-snippet">{snippet}</span>
+                        </span>
                         {c.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
                       </ChatPreviewButton>
                     )}
@@ -739,6 +744,17 @@ function ProjectNode({
       )}
     </li>
   );
+}
+
+function chatTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  today.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return "Yesterday";
+  return date.toLocaleDateString([], { month: "short", day: "numeric", ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" as const } : {}) });
 }
 
 /** A newly added chat gets the inverse of a delete: it starts at zero height,

@@ -175,27 +175,29 @@ describe("Sidebar", () => {
     expect(out.indexOf('class="chat-title"')).toBeLessThan(out.indexOf('class="chat-mark"'));
   });
 
-  it("puts the chat's model robot before its title", () => {
+  it("keeps model avatars out of conversation rows", () => {
     const out = html({
       conversations: new Map([["p1", [{ ...chat("a"), modelId: "codex:luna" }]]]),
       expanded: new Set(["p1"]),
     });
-    expect(out).toContain('data-robot="luna"');
-    expect(out.indexOf('data-robot="luna"')).toBeLessThan(out.indexOf('class="chat-title"'));
+    expect(out).not.toContain('data-robot=');
+    expect(out).toContain('class="chat-title">a</span>');
   });
 
-  it("works while busy, dances with a live idle session, and sleeps after reaping", () => {
+  it("communicates working and idle sessions through trailing status marks", () => {
     const base = {
       conversations: new Map([["p1", [chat("a")]]]),
       expanded: new Set(["p1"]),
     };
     const busy = html({ ...base, busy: new Set(["a"]) });
-    expect(busy).toContain('data-mood="work"');
-    expect(busy).not.toContain("is-asleep");
+    expect(busy).toContain('class="chat is-busy"');
+    expect(busy).toContain('class="chat-snippet">Working…</span>');
+    expect(busy).toContain('title="working"');
     const idle = html({ ...base, running: new Set(["a"]) });
-    expect(idle).toContain('data-mood="idle"');
-    expect(idle).not.toContain("is-asleep");
-    expect(html(base)).toContain("is-asleep");
+    expect(idle).toContain('class="chat is-live"');
+    expect(idle).toContain('title="session running"');
+    expect(idle).not.toContain('Working…');
+    expect(html(base)).not.toContain('title="session running"');
   });
 
   it("shares the trailing slot between a chat's mark and delete control", () => {

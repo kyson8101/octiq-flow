@@ -109,6 +109,7 @@ try {
   assert.equal(await preview.count(), 0, "Rename hides preview");
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 900, height: 240 });
+  await page.mouse.move(850, 220);
   await live.hover();
   await preview.waitFor();
   const small = await preview.boundingBox();
