@@ -20,7 +20,7 @@
 //
 // Nothing here touches the DOM, so the rules above are testable; `useDrawerSwipe`
 // at the bottom is the thin part that listens and paints.
-import { useEffect, useRef, type RefObject } from "react";
+import { useCallback, useRef } from "react";
 
 /** How far in from the left edge a drag has to begin to mean "the drawer".
  *  Narrow on purpose: it is the one strip where a sideways drag can be nothing
@@ -128,7 +128,6 @@ export function scrollsSideways(el: Element | null, root: Element): boolean {
  *  a highlight, and there is no telling the two apart. On a desktop the pointer
  *  has the top bar anyway. */
 export function useDrawerSwipe(
-  ref: RefObject<HTMLElement | null>,
   { enabled, open, onChange }: { enabled: boolean; open: boolean; onChange: (open: boolean) => void },
 ) {
   // Read through refs so the listeners are bound once per screen size, not
@@ -138,11 +137,12 @@ export function useDrawerSwipe(
   const changeRef = useRef(onChange);
   changeRef.current = onChange;
 
-  useEffect(() => {
-    const el = ref.current;
+  // Bind when the shell actually mounts, including after the Connect screen.
+  // An effect on a RefObject would miss that mount if enabled stayed true.
+  return useCallback((el: HTMLElement | null) => {
     if (!el || !enabled) return;
     return bindDrawerSwipe(el, () => openRef.current, (value) => changeRef.current(value));
-  }, [ref, enabled]);
+  }, [enabled]);
 }
 
 /** Bind separately from React so the complete touch/click lifecycle is testable. */

@@ -98,6 +98,7 @@ import { backgroundCalls } from "./lib/background";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
 import { MOBILE, useMedia, WIDE } from "./lib/media";
+import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
 import { Composer, type Attachment, type ReclaimedMessage } from "./components/Composer";
@@ -391,6 +392,14 @@ export default function App() {
   /** The chat pane used to focus the active chat input. */
   const pane = useRef<HTMLElement | null>(null);
   const showingProjects = isMobile && projectsScreen;
+  const projectSwipeRef = useDrawerSwipe({
+    enabled: isMobile,
+    open: showingProjects,
+    onChange: (open) => {
+      if (open) setChatWide(false);
+      setProjectsScreen(open);
+    },
+  });
   // There must always be a visible way back. A narrow layout already gives the
   // chat the whole body, and the editor owns a different kind of workspace.
   useEffect(() => {
@@ -3513,6 +3522,7 @@ export default function App() {
 
   return (
     <div
+      ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""}`}
     >
       {conn !== "open" && (

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bindDrawerSwipe } from "./swipe";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { bindDrawerSwipe, useDrawerSwipe } from "./swipe";
 
 class Shell extends EventTarget {
   attributes = new Map<string, string>();
@@ -62,6 +64,40 @@ describe("drawer touch lifecycle", () => {
     expectCleared();
     expect(click(shell).defaultPrevented).toBe(true);
     expect(pickChat).not.toHaveBeenCalled();
+  });
+
+  it("binds on the first shell attachment, even when the shell appears after connection", () => {
+    dispose();
+    let attach!: ReturnType<typeof useDrawerSwipe>;
+    function Harness() {
+      attach = useDrawerSwipe({ enabled: true, open: false, onChange: changed });
+      return null;
+    }
+    renderToStaticMarkup(createElement(Harness));
+    attach(null);
+    dispose = attach(shell as unknown as HTMLElement)!;
+    drag();
+    touch(shell, "touchend", 180, 110, 0);
+    expect(changed).toHaveBeenCalledExactlyOnceWith(true);
+    dispose();
+    changed.mockClear();
+    drag();
+    touch(shell, "touchend", 180, 220, 0);
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it("does not attach mobile navigation gestures on desktop", () => {
+    dispose();
+    let attach!: ReturnType<typeof useDrawerSwipe>;
+    function Harness() {
+      attach = useDrawerSwipe({ enabled: false, open: false, onChange: changed });
+      return null;
+    }
+    renderToStaticMarkup(createElement(Harness));
+    expect(attach(shell as unknown as HTMLElement)).toBeUndefined();
+    drag();
+    touch(shell, "touchend", 180, 110, 0);
+    expect(changed).not.toHaveBeenCalled();
   });
 
   it("reserves the closed drawer's edge before browser history navigation can start", () => {
