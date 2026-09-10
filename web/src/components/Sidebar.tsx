@@ -17,7 +17,9 @@ import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { Mascot } from "./Mascot";
 import { RollingNumber } from "./RollingNumber";
+import { ChatActionsDialog } from "./ChatActionsDialog";
 import "./PortalLink.css";
+import "./MobileSidebar.css";
 
 export type Project = {
   id: string;
@@ -188,9 +190,9 @@ export function Sidebar({
 
   return (
     <nav className="sidebar">
-      <a className="sidebar-os-link" href="/os" target="_blank" rel="noopener noreferrer">
+      {!head && <a className="sidebar-os-link" href="/os" target="_blank" rel="noopener noreferrer">
         <span aria-hidden="true">◈</span> OctiqOS
-      </a>
+      </a>}
       {head && <div className="sidebar-slot">{head}</div>}
 
       <div className="sidebar-head">
@@ -399,6 +401,14 @@ function ProjectNode({
 } & ChatPreviewSource) {
   const [showAll, setShowAll] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [actionsId, setActionsId] = useState<string | null>(null);
+  const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const holdStart = useRef({ x: 0, y: 0 });
+  const held = useRef(false);
+  const cancelHold = () => clearTimeout(hold.current);
+  useEffect(() => () => clearTimeout(hold.current), []);
+  useEffect(() => { if (!open) setActionsId(null); }, [open]);
+  const actionsChat = chats.find((chat) => chat.id === actionsId);
   // The chats present on this project's first paint are already here — making
   // all of history slide in every time the sidebar mounts would be noise. A
   // later id is a new row, and gets the short expand transition below.
@@ -587,8 +597,32 @@ function ProjectNode({
                         className="chat-btn"
                         type="button"
                         disabled={isLeaving}
-                        aria-description="Hover to preview. Double-click to rename."
-                        onClick={() => onPickConversation(c)}
+                        aria-description="Hover to preview. Double-click to rename. Hold for chat actions."
+                        onPointerDown={(event) => {
+                          cancelHold();
+                          held.current = false;
+                          if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px)").matches) return;
+                          holdStart.current = { x: event.clientX, y: event.clientY };
+                          hold.current = setTimeout(() => {
+                            held.current = true;
+                            setActionsId(c.id);
+                          }, 500);
+                        }}
+                        onPointerMove={(event) => {
+                          if (Math.hypot(event.clientX - holdStart.current.x, event.clientY - holdStart.current.y) > 10) cancelHold();
+                        }}
+                        onPointerUp={cancelHold}
+                        onPointerCancel={cancelHold}
+                        onContextMenu={(event) => {
+                          if (!window.matchMedia("(max-width: 859.98px)").matches) return;
+                          event.preventDefault();
+                          cancelHold();
+                          if (!going && !isLeaving) setActionsId(c.id);
+                        }}
+                        onClick={() => {
+                          if (held.current) { held.current = false; return; }
+                          onPickConversation(c);
+                        }}
                         onDoubleClick={() => {
                           if (!going) setRenaming(c.id);
                         }}
@@ -600,6 +634,7 @@ function ProjectNode({
                           asleep={!running.has(c.id) && !busy.has(c.id)}
                         />
                         <span className="chat-title">{c.title}</span>
+                        {c.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
                       </ChatPreviewButton>
                     )}
                     <button
@@ -666,6 +701,18 @@ function ProjectNode({
                         {going ? <DeleteCountdownIcon ms={deleteMs} /> : <CloseIcon />}
                       </button>
                     </span>
+                    <button
+                      className="chat-actions-trigger"
+                      type="button"
+                      aria-label={`Actions for ${c.title}`}
+                      aria-haspopup="dialog"
+                      disabled={isLeaving || going}
+                      onClick={() => setActionsId(c.id)}
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
+                      </svg>
+                    </button>
                   </div>
                 </AnimatedChatRow>
               );
@@ -680,6 +727,15 @@ function ProjectNode({
             )}
           </ul>
         </div>
+      )}
+      {actionsChat && open && !deleting.has(actionsChat.id) && !leaving.has(actionsChat.id) && (
+        <ChatActionsDialog
+          chat={actionsChat}
+          onClose={() => setActionsId(null)}
+          onRename={() => setRenaming(actionsChat.id)}
+          onPin={() => onPin(actionsChat.id)}
+          onDelete={() => onDelete(actionsChat.id)}
+        />
       )}
     </li>
   );

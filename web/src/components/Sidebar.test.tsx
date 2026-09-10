@@ -220,7 +220,7 @@ describe("Sidebar", () => {
     const out = html(open);
     expect(out).toContain('aria-label="Rename a"');
     expect(out).toContain('aria-label="Rename b"');
-    expect(out).toContain('aria-description="Hover to preview. Double-click to rename."');
+    expect(out).toContain('aria-description="Hover to preview. Double-click to rename. Hold for chat actions."');
   });
 
   it("keeps the pin out of the trailing slot", () => {
@@ -250,8 +250,8 @@ describe("Sidebar", () => {
     expect(out).toContain("chat is-leaving");
     // The row cannot offer Undo once the committed delete is collapsing it.
     expect(out).not.toContain('aria-label="Cancel delete"');
-    // Pick, rename, pin, and delete are all inert while the row leaves.
-    expect(out.match(/disabled=""/g)).toHaveLength(4);
+    // Pick, rename, pin, delete, and the mobile actions are inert while leaving.
+    expect(out.match(/disabled=""/g)).toHaveLength(5);
   });
 
   it("turns that row's × into the way back", () => {

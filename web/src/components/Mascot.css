@@ -6,47 +6,46 @@
   margin: -1px 5px 0 0;
   isolation: isolate;
   pointer-events: none;
+  --mascot-ink: #343044;
 }
 .mascot-avatar { display: block; width: 100%; height: 100%; border-radius: 50%; }
-.mascot-avatar-base { fill: color-mix(in srgb, var(--robot-accent) 14%, #19252b); }
-.mascot-avatar-ring { stroke: var(--robot-accent); opacity: .5; transition: opacity 180ms ease; }
-.mascot-avatar-face { stroke: var(--robot-accent); transform: translate(-6px, -7px) scale(1.12); transform-origin: 0 0; }
-.mascot.is-asleep .mascot-avatar-face { opacity: .7; }
+.mascot-avatar-base { fill: color-mix(in srgb, var(--robot-accent) 38%, #fff5e9); }
+.mascot-avatar-shade { fill: var(--robot-accent); opacity: .15; }
+.mascot-avatar-mark { color: var(--robot-accent); fill: currentColor; }
+.mascot-avatar-eye { fill: var(--mascot-ink); }
+.mascot-avatar-ink, .mascot-avatar-mouth { stroke: var(--mascot-ink); }
+.mascot-avatar-mouth.is-open { fill: var(--mascot-ink); }
+.mascot-avatar-cheeks { fill: #e88895; opacity: .4; }
 .mascot-avatar-eyes { transform-box: fill-box; transform-origin: center; }
 .mascot[data-expression="idle"] .mascot-avatar-eyes { animation: mascot-avatar-blink 6s infinite; }
-.mascot.is-alert .mascot-avatar-ring { stroke: #ffbb62; opacity: 1; stroke-dasharray: 6 4; }
-.mascot-provider-badge {
+.mascot.is-asleep .mascot-avatar-face { opacity: .75; }
+.mascot-provider-badge, .mascot-z {
   position: absolute;
-  left: 0;
-  bottom: 0;
   display: grid;
   place-items: center;
-  width: 30%;
-  height: 30%;
+  width: 27%;
+  height: 27%;
   min-width: 8px;
   min-height: 8px;
   max-width: 24px;
   max-height: 24px;
-  border: 1px solid var(--robot-accent);
   border-radius: 50%;
-  background: #19252b;
-  color: var(--robot-accent);
-  font: 700 8px/1 ui-monospace, monospace;
+  background: #fff5e9;
+  color: var(--mascot-ink);
+  font: 700 8px/1 ui-rounded, system-ui, sans-serif;
   font-size: clamp(7px, calc(var(--mascot-size) * .2), 13px);
 }
-.mascot-z {
+.mascot-provider-badge { left: 0; bottom: 0; }
+.mascot-z { right: 0; top: 0; }
+.mascot-task-dot {
   position: absolute;
   right: 0;
-  top: 0;
-  display: grid;
-  place-items: center;
-  width: 30%;
-  height: 30%;
+  bottom: 1%;
+  width: 22%;
+  height: 22%;
+  border: 1.5px solid var(--bg-1, #19252b);
   border-radius: 50%;
-  background: #19252b;
-  color: var(--robot-accent);
-  font: 600 10px/1 ui-monospace, monospace;
-  font-size: clamp(8px, calc(var(--mascot-size) * .22), 22px);
+  background: #e5a63f;
 }
 @keyframes mascot-avatar-blink {
   0%, 43%, 47%, 100% { transform: scaleY(1); }
@@ -54,5 +53,4 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .mascot .mascot-avatar-eyes { animation: none; }
-  .mascot-avatar-ring { transition: none; }
 }

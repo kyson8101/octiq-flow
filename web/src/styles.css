@@ -568,30 +568,55 @@ body {
   overflow-x: clip;
 }
 
-/* On a phone this is a full-screen page, not a panel with the chat showing
-   down one side. Two reasons, and the second is the one that decided it: a
-   300px drawer gave a project name and its chats about 240px of line before
-   the ellipsis, which is not enough to tell two chats in the same project
-   apart; and a strip of unreadable chat behind it invites a tap that closes
-   the list you came to read. Full width, so picking up a chat is a page you
-   are ON, and the top bar above it is the way back. */
+/* Mobile navigation is a separate page in the body, never an overlay.
+   Both views stay mounted so drafts and the list's scroll position survive. */
 .sidebar {
-  position: absolute;
+  position: relative;
   z-index: 20;
-  inset: 0 auto 0 0;
   width: 100%;
-  display: flex;
+  display: none;
+  min-height: 0;
   flex-direction: column;
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--bg-sunken);
   border-right: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  transform: translateX(-102%);
-  transition: transform 0.2s ease;
 }
 
-.drawer-open .sidebar {
-  transform: translateX(0);
+.projects-return {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.projects-return:hover { background: var(--bg-1); }
+.topbar-back { flex: 0 0 auto; }
+
+@media (max-width: 859.98px) {
+  .app.projects-screen .sidebar {
+    display: flex;
+    flex: 1 1 auto;
+    border-right: 0;
+  }
+
+  /* Includes file/git panels portalled into the dock: none can cover the list. */
+  .app.projects-screen .body > :not(.sidebar) {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .app.projects-screen .sidebar { animation: projects-enter 120ms ease-out; }
+  }
+}
+
+@keyframes projects-enter {
+  from { opacity: 0.65; }
+  to { opacity: 1; }
 }
 
 /* The column's right edge, made draggable. It sits ON the dividing line and
@@ -619,42 +644,6 @@ body {
   .nav-resizer {
     display: none;
   }
-}
-
-.scrim {
-  position: absolute;
-  inset: 0;
-  z-index: 10;
-  background: rgba(0, 0, 0, 0.45);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.2s ease;
-}
-
-.drawer-open .scrim {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-/* While a finger is dragging it, the drawer is wherever the finger is. The
-   attribute comes off at the release and the transition takes over from there, so
-   the two never fight: during the drag there is no transition to fight with,
-   and after it there is no `--swipe-p`. `--swipe-p` is 0 shut, 1 open — see
-   lib/swipe, which is the only thing that sets it. */
-.app[data-drawer-swiping] .sidebar {
-  transition: none;
-  transform: translateX(calc(-102% * (1 - var(--swipe-p, 0))));
-}
-
-/* The drawer moves under the finger; none of its controls is a tap target
-   until release. The capture guard in swipe.ts also blocks release clicks. */
-.app[data-drawer-swiping] .sidebar * {
-  pointer-events: none;
-}
-
-.app[data-drawer-swiping] .scrim {
-  transition: none;
-  opacity: var(--swipe-p, 0);
 }
 
 .sidebar-utility-count {
@@ -4666,6 +4655,7 @@ body.is-ultra .eff {
   }
 
   .sidebar {
+    display: flex;
     /* `relative`, not `static`: the resize handle is positioned against this
        edge, and a static column is not something to position against. */
     position: relative;
@@ -4698,9 +4688,6 @@ body.is-ultra .eff {
       visibility 0s linear 260ms;
   }
 
-  .scrim {
-    display: none;
-  }
 }
 
 /* ---- Full-width chat layout ------------------------------------------ */
@@ -4721,21 +4708,6 @@ body.is-ultra .eff {
 .app.chat-wide .gitp-scrim,
 .app.chat-wide .fpanel-scrim {
   display: none;
-}
-
-/* Below the column breakpoint the project list is a drawer. Keep it shut and
-   out of the focus order while the chat owns the body. */
-@media (max-width: 859px) {
-  .app.chat-wide .sidebar {
-    transform: translateX(-102%);
-    visibility: hidden;
-    pointer-events: none;
-  }
-
-  .app.chat-wide .scrim {
-    opacity: 0;
-    pointer-events: none;
-  }
 }
 
 /* Above it the project list is a real column, so reclaim its actual width. */

@@ -97,9 +97,8 @@ import { BackgroundProvider } from "./components/Background";
 import { backgroundCalls } from "./lib/background";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
-import { DRAWER, useMedia, WIDE } from "./lib/media";
+import { MOBILE, useMedia, WIDE } from "./lib/media";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
-import { useDrawerSwipe } from "./lib/swipe";
 import { MessageList } from "./components/MessageList";
 import { Composer, type Attachment, type ReclaimedMessage } from "./components/Composer";
 import {
@@ -279,8 +278,7 @@ const LAST_KEY = "octiq.v2.lastChat";
  *  missing key means the layout decides; see `gitOpen`. */
 const GIT_KEY = "octiq.v2.gitColumn";
 /** The project column, put away. Only means anything at 860px and up, where
- *  the sidebar is a column; below that it is a drawer and `drawer` is the flag
- *  that says whether it is out. */
+ *  the sidebar is a column; below that the project list is a separate screen. */
 const NAV_KEY = "octiq.v2.navShut";
 /** How wide that column was dragged. */
 const NAV_W_KEY = "octiq.v2.navWidth";
@@ -336,7 +334,7 @@ export default function App() {
    *  what keeps a cut-turn notice off a chat that is perfectly alive — see
    *  lib/carryOn. */
   const [liveKnown, setLiveKnown] = useState(false);
-  const [drawer, setDrawer] = useState(false);
+  const [projectsScreen, setProjectsScreen] = useState(false);
   const [mode, setMode] = useState<Mode>(() =>
     localStorage.getItem(MODE_KEY) === "editor" ? "editor" : "chat",
   );
@@ -359,7 +357,7 @@ export default function App() {
    *  reading, and it must not survive into another conversation. */
   const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
   /** Wide enough for a sidebar column — and so for a top bar that can hold the
-   *  view switch and the usage meter. Below it those live in the drawer. */
+   *  view switch and the usage meter. Below it those live on the projects screen. */
   const wide = useMedia(WIDE);
   /** A temporary focus view for the tablet layout. On a desktop each column
    *  already has its own control on the bar — the project name, the Git
@@ -370,12 +368,11 @@ export default function App() {
    *  Remembered: someone who works with the chat full width wants it that way
    *  the next time too. */
   const [navShut, setNavShut] = useState(() => localStorage.getItem(NAV_KEY) === "1");
-  /** Whether the sidebar is a drawer at all. Not the same question as `wide`:
-   *  the top bar gains room at 700px, the drawer only becomes a column at 860.
-   *  Between the two there is still something to swipe. */
-  const hasDrawer = useMedia(DRAWER);
+  /** The project list is a separate screen below 860px and a column above it.
+   *  `wide` only decides how many controls fit in the top bar. */
+  const isMobile = useMedia(MOBILE);
   /** The width of that column, dragged by its right edge and remembered. Only
-   *  read above the drawer breakpoint, where the sidebar is a column; a drawer
+   *  read on desktop, where the sidebar is a column; the mobile list
    *  is the width of the screen. */
   const nav = useDockWidth(NAV_W_KEY, NAV_SIZES, "left");
   /* Published on the root rather than on the shell, because the layout is not
@@ -391,20 +388,14 @@ export default function App() {
   useLayoutEffect(() => {
     document.documentElement.style.setProperty("--nav-w", `${nav.width}px`);
   }, [nav.width]);
-  /** The app shell, which the drag gesture listens on because it holds both the
-   *  drawer and everything the drawer slides over. */
-  const shell = useRef<HTMLDivElement | null>(null);
   /** The chat pane used to focus the active chat input. */
   const pane = useRef<HTMLElement | null>(null);
-  // Drag in from the left edge to pull the drawer out, and back to put it away.
-  // Touch only, and only while the drawer exists — see lib/swipe for how the
-  // gesture keeps out of the way of scrolling and of highlighting text.
-  useDrawerSwipe(shell, { enabled: hasDrawer && !chatExpanded, open: drawer, onChange: setDrawer });
+  const showingProjects = isMobile && projectsScreen;
   // There must always be a visible way back. A narrow layout already gives the
   // chat the whole body, and the editor owns a different kind of workspace.
   useEffect(() => {
-    if (!wide || !hasDrawer || mode !== "chat") setChatWide((was) => (was ? false : was));
-  }, [wide, hasDrawer, mode]);
+    if (!wide || !isMobile || mode !== "chat") setChatWide((was) => (was ? false : was));
+  }, [wide, isMobile, mode]);
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
@@ -434,10 +425,10 @@ export default function App() {
   const [gitOpen, setGitOpen] = useState(() => {
     const saved = recall(GIT_KEY);
     if (saved !== null) return saved === "1";
-    // The same question `hasDrawer` answers, asked one render earlier: the
+    // The same question `isMobile` answers, asked one render earlier: the
     // media hook has not run yet, and a column that appears a frame late reads
     // as the page still loading.
-    return typeof window !== "undefined" && !window.matchMedia(DRAWER).matches;
+    return typeof window !== "undefined" && !window.matchMedia(MOBILE).matches;
   });
   /** Kept mounted while the panel slides away, so closing it on a phone is the
    *  reverse of opening rather than the panel blinking out. Unmounting on
@@ -447,7 +438,7 @@ export default function App() {
    *  column of the workspace and takes its width from the chat rather than
    *  covering it. About its SHAPE, not about whether it can be put away — it
    *  can, in either shape, from the same top-bar button. */
-  const desktopGit = !hasDrawer;
+  const desktopGit = !isMobile;
   // The files column, on the same terms as the git one beside it: the button
   // that opens it is in the top bar, the panel it opens is a column in the
   // body, and only one piece of state joins them.
@@ -803,6 +794,7 @@ export default function App() {
 
   const pickMode = useCallback((next: Mode) => {
     setMode(next);
+    setProjectsScreen(false);
     if (next === "editor") setEditorSeen(true);
     remember(MODE_KEY, next);
   }, []);
@@ -1704,7 +1696,7 @@ export default function App() {
       meta.current[id] = { projectId: forProject, modelId: next.model.id, access: next.access };
       setProjectId(forProject);
       setConversationId(id);
-      setDrawer(false);
+      setProjectsScreen(false);
     },
     [choice.id, access],
   );
@@ -1825,7 +1817,7 @@ export default function App() {
         );
       setProjectId(forProject);
       setConversationId(id);
-      setDrawer(false);
+      setProjectsScreen(false);
     },
     // `chats` is read through its ref, for one length, at the moment this runs.
     [workspaces, projectId, conversationId, access, effort, patch],
@@ -1899,7 +1891,7 @@ export default function App() {
     setConversationId(c.id);
     if (c.modelId) setChoice(model);
     setAccess(conversationAccess);
-    setDrawer(false);
+    setProjectsScreen(false);
   }, [catchUpChat, writeChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
@@ -2048,7 +2040,7 @@ export default function App() {
     // A drawer over the transcript defeats the point of widening it. Its
     // previous open/closed preference is not changed; this only puts it away
     // for the focused view.
-    setDrawer(false);
+    setProjectsScreen(false);
     setChatWide((was) => !was);
   }, []);
 
@@ -3370,7 +3362,7 @@ export default function App() {
 
   /* The two "where do I stand" numbers: how much of the plan is gone, and how
      much memory this app is holding. Built once and placed once — on a wide
-     screen in the top bar, otherwise in the drawer footer — because each of
+     screen in the top bar, otherwise in the project list footer — because each of
      them polls, and a second copy would be a second poll saying the same
      thing. The memory readout is given the names it cannot know: the backend
      reports a chat by its session key and a terminal by its PTY id, and what
@@ -3424,7 +3416,7 @@ export default function App() {
       <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
 
       {/* Full-width chat is only useful where there are columns to put away. */}
-      {wide && hasDrawer && mode === "chat" && (
+      {wide && isMobile && mode === "chat" && (
         <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
       )}
 
@@ -3521,8 +3513,7 @@ export default function App() {
 
   return (
     <div
-      className={`app ${drawer ? "drawer-open" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""}`}
-      ref={shell}
+      className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""}`}
     >
       {conn !== "open" && (
         <div className="conn-strip">
@@ -3533,20 +3524,26 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-leading">
           {/* The project name is also the way back to the project list. The
-              same control opens the drawer below desktop and restores the
-              project column above it. */}
+              same control opens the projects screen on mobile and restores
+              the project column on desktop. */}
           <button
             className="topbar-title"
             type="button"
-            aria-label="Projects and chats"
-            aria-expanded={chatExpanded ? false : hasDrawer ? drawer : !navShut}
+            aria-label={isMobile && !showingProjects ? "Back to projects and chats" : "Projects and chats"}
+            aria-expanded={isMobile ? undefined : !navShut}
             onClick={() => {
-              if (chatExpanded) return;
-              if (hasDrawer) setDrawer((v) => !v);
-              else showNav(true);
+              if (isMobile) {
+                setChatWide(false);
+                setProjectsScreen(true);
+              } else if (!chatExpanded) showNav(true);
             }}
-            disabled={chatExpanded || (!hasDrawer && !navShut)}
+            disabled={isMobile ? showingProjects : chatExpanded || !navShut}
           >
+            {isMobile && !showingProjects && (
+              <svg className="topbar-back" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            )}
             <img
               className="topbar-logo"
               src={`${import.meta.env.BASE_URL}icon-192.png`}
@@ -3554,10 +3551,10 @@ export default function App() {
               aria-hidden="true"
             />
             <span className="topbar-identity">
-              <span className="topbar-name">{project?.name ?? "OctiqFlow"}</span>
+              <span className="topbar-name">{showingProjects ? "Projects & chats" : project?.name ?? "OctiqFlow"}</span>
               <span className="topbar-version">v{__APP_VERSION__}</span>
             </span>
-            <span className="topbar-caret" aria-hidden="true">
+            {!isMobile && <span className="topbar-caret" aria-hidden="true">
               <svg
                 width="12"
                 height="12"
@@ -3570,7 +3567,7 @@ export default function App() {
               >
                 <path d="m6 9 6 6 6-6" />
               </svg>
-            </span>
+            </span>}
           </button>
         </div>
 
@@ -3579,7 +3576,11 @@ export default function App() {
         <div className="topbar-center">{wide && viewSwitch}</div>
 
         <div className="topbar-actions">
-          {wide ? topbarActions : <TopbarActionsMenu attentionCount={attention.entries.length}>{topbarActions}</TopbarActionsMenu>}
+          {showingProjects ? (
+            <button className="projects-return" type="button" onClick={() => setProjectsScreen(false)}>
+              {mode === "chat" ? "Return to chat" : "Return to files"}
+            </button>
+          ) : wide ? topbarActions : <TopbarActionsMenu attentionCount={attention.entries.length}>{topbarActions}</TopbarActionsMenu>}
         </div>
       </header>
 
@@ -3588,8 +3589,6 @@ export default function App() {
           to be a sibling of the views to take width from them, and nothing that
           opens a file is anywhere near them in the tree. */}
       <div className="body" id="dock">
-        <div className="scrim" onClick={() => setDrawer(false)} />
-
         <Sidebar
           projects={workspaces}
           shelved={shelved}
@@ -3608,21 +3607,27 @@ export default function App() {
           deleteMs={UNDO_MS}
           expanded={expanded}
           onToggle={toggleFolder}
-          onPickConversation={openConversation}
-          onNewChat={newChat}
+          onPickConversation={(conversation) => {
+            if (isMobile) pickMode("chat");
+            openConversation(conversation);
+          }}
+          onNewChat={(id) => {
+            if (isMobile) pickMode("chat");
+            newChat(id);
+          }}
           onDelete={deleteConversation}
           onPin={togglePin}
           onRename={renameConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
           onReorder={reorderWorkspaces}
-          onHide={hasDrawer ? undefined : () => showNav(false)}
-          onResize={hasDrawer ? undefined : nav.startDrag}
+          onHide={isMobile ? undefined : () => showNav(false)}
+          onResize={isMobile ? undefined : nav.startDrag}
           head={wide ? undefined : viewSwitch}
           foot={wide ? undefined : readouts}
         />
 
-        <main className="main" hidden={mode !== "chat"} ref={pane}>
+        <main className="main" hidden={mode !== "chat" || showingProjects} ref={pane}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the project list.</p></div> : <>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
@@ -3911,7 +3916,7 @@ export default function App() {
         </main>
 
         {editorSeen && (
-          <div className="ws-host" hidden={mode !== "editor"}>
+          <div className="ws-host" hidden={mode !== "editor" || showingProjects}>
             <Suspense fallback={<div className="dots" aria-label="loading" />}>
               <EditorMode project={project} />
             </Suspense>

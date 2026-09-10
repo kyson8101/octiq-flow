@@ -19,12 +19,14 @@ describe("Mascot", () => {
     expect(out).toContain("width:44px;height:44px");
   });
 
-  it("renders a complete avatar for every model without a renderer", () => {
+  it("renders a complete cartoon face for every model", () => {
     for (const model of MODELS) {
       const out = renderToStaticMarkup(<Mascot robot={model.composerStyle} />);
       expect(out).toContain(`data-robot="${model.composerStyle}"`);
       expect(out).toContain("mascot-avatar-base");
-      expect(out).not.toContain("mascot-avatar-shell");
+      expect(out).toContain("mascot-avatar-cheeks");
+      expect(out).toContain("mascot-avatar-mark");
+      expect(out).not.toContain("mascot-fallback-torso");
       expect(out).toContain("mascot-avatar-eyes");
       expect(out).toContain("mascot-avatar-mouth");
     }

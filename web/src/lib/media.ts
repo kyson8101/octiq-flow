@@ -35,9 +35,6 @@ export function useMedia(query: string): boolean {
  *  Kept in step with the `700px` media queries in styles.css. */
 export const WIDE = "(min-width: 701px)";
 
-/** Below this the sidebar is a drawer that slides over the chat; at and above
- *  it, it is a column and there is nothing to slide. A second breakpoint rather
- *  than WIDE because they are two different questions — WIDE asks whether the
- *  top bar has room, this asks whether the drawer exists. Kept in step with the
- *  `860px` media query in styles.css. */
-export const DRAWER = "(max-width: 859.98px)";
+/** Below this the project list occupies its own screen; at and above it,
+ *  projects remain a column beside the workspace. Matches styles.css. */
+export const MOBILE = "(max-width: 859.98px)";

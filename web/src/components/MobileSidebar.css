@@ -1,0 +1,101 @@
+.chat-actions-trigger,
+.chat-mobile-pin {
+  display: none;
+}
+
+.chat-actions-dialog {
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  box-shadow: var(--shadow);
+}
+
+.chat-actions-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.chat-actions-content { display: grid; padding: 8px; }
+.chat-actions-content strong { padding: 12px; overflow-wrap: anywhere; font-weight: 500; }
+.chat-actions-content button {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-1);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.chat-actions-content button:hover { background: var(--bg-2); }
+.chat-actions-content button.is-danger { color: var(--danger); }
+.chat-actions-content button:focus-visible,
+.chat-actions-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Keep the phone's fixed chrome small and give the remaining height to chats.
+   Scope to the page breakpoint so a desktop column keeps its existing density. */
+@media (max-width: 859.98px) {
+  .sidebar .sidebar-slot { padding: 4px 8px 0; }
+  .sidebar .sidebar-slot .mode-btn { min-height: 44px; padding: 0 8px; }
+  .sidebar .sidebar-head { flex: 0 0 auto; gap: 0; padding: 0 8px 0 14px; }
+  .sidebar .sidebar-add { width: 44px; height: 44px; }
+  .sidebar .proj-list { overscroll-behavior: contain; padding: 0 8px 8px; }
+  .sidebar .proj-btn { height: 44px; }
+  .sidebar .proj-add { width: 44px; height: 44px; margin-right: 0; }
+  .sidebar .proj-node { --sib-mid: 22px; }
+  .sidebar .chat-btn,
+  .sidebar .chat-more,
+  .sidebar .chat-rename { height: 44px; }
+  .sidebar .chat-btn { -webkit-touch-callout: none; user-select: none; }
+  .sidebar .chat-rename-input { font-size: 16px; }
+
+  .sidebar .chat-rename-btn,
+  .sidebar .chat-pin,
+  .sidebar .chat-del { display: none; }
+  .sidebar .chat-tail { width: 12px; height: 44px; margin: 0 2px; }
+  .sidebar .chat-mark { left: 50%; }
+  .sidebar .chat:hover .chat-mark,
+  .sidebar .chat-tail:focus-within .chat-mark { opacity: 1; transform: translate(-50%, -50%); }
+  .sidebar .chat-actions-trigger {
+    display: inline-flex;
+    flex: 0 0 44px;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--fg-2);
+    cursor: pointer;
+  }
+  .sidebar .chat-actions-trigger:hover { background: var(--bg-2); color: var(--fg-0); }
+  .sidebar .chat-mobile-pin { display: inline-flex; flex: 0 0 auto; margin-left: 6px; color: var(--fg-2); }
+  .sidebar .chat-mobile-pin svg { width: 12px; height: 12px; }
+  .sidebar .chat.is-renaming .chat-actions-trigger,
+  .sidebar .chat.is-going .chat-actions-trigger { display: none; }
+  /* Undo remains on the row for the entire deletion countdown. */
+  .sidebar .chat.is-going .chat-tail { width: 44px; margin-right: 0; }
+  .sidebar .chat.is-going .chat-del { display: flex; width: 44px; height: 44px; }
+
+  .sidebar .sidebar-slot.is-foot {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 2px 8px;
+  }
+  .sidebar .sidebar-slot.is-foot .usage { position: static; min-width: 0; }
+  .sidebar .sidebar-slot.is-foot .usage-btn { min-height: 44px; padding: 4px; gap: 8px; }
+  .sidebar .sidebar-slot.is-foot .usage-pill { gap: 4px; }
+  .sidebar .sidebar-slot.is-foot .usage-pop {
+    inset: auto 8px calc(100% + 6px);
+    width: auto;
+    max-height: calc(100dvh - 100px - env(safe-area-inset-bottom));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
