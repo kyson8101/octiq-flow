@@ -14,7 +14,7 @@ describe("AttachList", () => {
     const out = html();
     expect(out).toContain("Reference a file");
     expect(out).toContain("on the machine running the agents");
-    expect(out).toContain("Upload an image");
+    expect(out).toContain("Upload a file");
     expect(out).toContain("from this device");
   });
 

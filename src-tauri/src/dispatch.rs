@@ -468,6 +468,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "save_attachment" => to_value(crate::agent_chat::save_attachment(
             arg(&args, "dataBase64")?,
             arg(&args, "extension")?,
+            arg(&args, "filename")?,
         )),
 
         // ---- files --------------------------------------------------------

@@ -580,17 +580,12 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 420)}px`;
   }, [text]);
 
-  /** Take files from a paste or a file input and turn each into an attachment.
-   *
-   *  Images are saved on the server and travel as a path, because that is what
-   *  both agents can use: Codex wants `-i <FILE>`, and Claude needs bytes to
-   *  read. Anything that is not an image is refused here rather than silently
-   *  dropped later — see `attachPaths` for referencing a file that already
-   *  exists on the machine. */
+  /** Upload files from the browser's native picker or clipboard, then pass
+   *  their server paths through the existing attachment flow. */
   const attachFiles = useCallback(async (files: File[]) => {
     for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        setAttachError("Only images can be pasted. Use “Attach” for other files.");
+      if (file.size > 12 * 1024 * 1024) {
+        setAttachError(`${file.name}: file is larger than 12 MB`);
         continue;
       }
       try {
@@ -602,21 +597,24 @@ export function Composer({
         for (let i = 0; i < bytes.length; i += 8192) {
           binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
         }
-        const extension = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+        const extension = (file.type.split("/")[1] || "bin").replace("jpeg", "jpg");
+        const name = file.name || `pasted.${extension}`;
+        const isImage = IMAGE_EXT.test(name);
         const path = await bridge.invoke<string>("save_attachment", {
           dataBase64: btoa(binary),
           extension,
+          filename: name,
         });
         setAttachError(null);
         setAttached((prev) => [
           ...prev,
           {
             path,
-            name: file.name || `pasted.${extension}`,
-            isImage: true,
+            name,
+            isImage,
             // The bytes are already here; showing them costs nothing and
             // needs no trip back to the server.
-            url: URL.createObjectURL(file),
+            url: isImage ? URL.createObjectURL(file) : undefined,
           },
         ]);
       } catch (err) {
@@ -1277,7 +1275,7 @@ export function Composer({
               aria-haspopup="menu"
               aria-expanded={attachMenu}
               aria-label="Attach"
-              title="Reference a file, or upload an image"
+              title="Reference a file, or upload a file"
               onClick={() => setAttachMenu((v) => !v)}
             >
               <PlusIcon />
@@ -1335,7 +1333,6 @@ export function Composer({
             ref={fileRef}
             className="attach-input"
             type="file"
-            accept="image/*"
             multiple
             onChange={(e) => {
               void attachFiles([...(e.target.files ?? [])]);
