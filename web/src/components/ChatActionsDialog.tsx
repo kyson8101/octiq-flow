@@ -22,23 +22,26 @@ export function ChatActionsDialog({ chat, onClose, onRename, onPin, onDelete }: 
     return () => { element.close(); window.removeEventListener("resize", resized); };
   }, []);
 
-  const act = (action: () => void) => {
-    // Restore the trigger's focus before Rename mounts its autofocus field.
+  const dismiss = () => {
+    // Close while still connected so the browser can restore the opener's focus.
     dialog.current?.close();
     onClose();
+  };
+  const act = (action: () => void) => {
+    dismiss();
     action();
   };
 
   return createPortal(
     <dialog ref={dialog} className="chat-actions-dialog" aria-labelledby={titleId}
-      onCancel={onClose}
-      onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      onCancel={(event) => { event.preventDefault(); dismiss(); }}
+      onClick={(event) => { if (event.target === event.currentTarget) dismiss(); }}>
       <div className="chat-actions-content">
         <strong id={titleId}>{chat.title}</strong>
         <button type="button" onClick={() => act(onRename)}>Rename chat</button>
         <button type="button" onClick={() => act(onPin)}>{chat.pinned ? "Unpin chat" : "Pin chat"}</button>
         <button type="button" className="is-danger" onClick={() => act(onDelete)}>Delete chat</button>
-        <button type="button" onClick={onClose}>Cancel</button>
+        <button type="button" onClick={dismiss}>Cancel</button>
       </div>
     </dialog>, document.body,
   );

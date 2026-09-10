@@ -590,7 +590,7 @@ function ProjectNode({
                     ) : (
                       <ChatPreviewButton
                         chat={c}
-                        enabled={showing && !going && !isLeaving && !dragging}
+                        enabled={showing && !going && !isLeaving && !dragging && !actionsId}
                         busy={busy.has(c.id)}
                         getPreviewMessages={getPreviewMessages}
                         loadPreview={loadPreview}
@@ -707,7 +707,7 @@ function ProjectNode({
                       aria-label={`Actions for ${c.title}`}
                       aria-haspopup="dialog"
                       disabled={isLeaving || going}
-                      onClick={() => setActionsId(c.id)}
+                      onClick={(event) => { event.currentTarget.focus(); setActionsId(c.id); }}
                     >
                       <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                         <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
