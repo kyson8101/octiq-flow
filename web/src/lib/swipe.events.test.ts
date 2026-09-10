@@ -64,6 +64,63 @@ describe("drawer touch lifecycle", () => {
     expect(pickChat).not.toHaveBeenCalled();
   });
 
+  it("reserves the closed drawer's edge before browser history navigation can start", () => {
+    const edge = touch(shell, "touchstart", 5, 0);
+    expect(edge.defaultPrevented).toBe(true);
+    expect(changed).not.toHaveBeenCalled();
+    touch(shell, "touchmove", 180, 100);
+    touch(shell, "touchend", 180, 110, 0);
+    expect(changed).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("registers a non-passive touchstart so the edge can cancel native navigation", () => {
+    dispose();
+    const listen = vi.spyOn(shell, "addEventListener");
+    dispose = bindDrawerSwipe(shell as unknown as HTMLElement, () => false, changed);
+    expect(listen).toHaveBeenCalledWith("touchstart", expect.any(Function), { passive: false });
+    listen.mockRestore();
+  });
+
+  it("does not reserve ordinary touches outside the edge", () => {
+    expect(touch(shell, "touchstart", 80, 0).defaultPrevented).toBe(false);
+    dispose();
+    dispose = bindDrawerSwipe(shell as unknown as HTMLElement, () => true, changed);
+    expect(touch(shell, "touchstart", 80, 10).defaultPrevented).toBe(false);
+    touch(shell, "touchend", 80, 20, 0);
+    expect(click(shell).defaultPrevented).toBe(false);
+  });
+
+  it("also prevents native back navigation from the edge of an open drawer", () => {
+    dispose();
+    dispose = bindDrawerSwipe(shell as unknown as HTMLElement, () => true, changed);
+    expect(touch(shell, "touchstart", 5, 0).defaultPrevented).toBe(true);
+  });
+
+  it("blocks clicks throughout the drag, before touchend arrives", () => {
+    const pickChat = vi.fn();
+    shell.addEventListener("click", pickChat);
+    drag();
+    expect(click(shell).defaultPrevented).toBe(true);
+    expect(click(shell, 0).defaultPrevented).toBe(true);
+    expect(pickChat).not.toHaveBeenCalled();
+  });
+
+  it("blocks zero-detail and repeated synthetic clicks after release", () => {
+    drag();
+    touch(shell, "touchend", 180, 110, 0);
+    expect(click(shell, 0).defaultPrevented).toBe(true);
+    expect(click(shell).defaultPrevented).toBe(true);
+    expect(click(shell).defaultPrevented).toBe(true);
+  });
+
+  it("keeps click protection after the browser cancels a claimed swipe", () => {
+    drag();
+    touch(shell, "touchcancel", 180, 110, 0);
+    expectCleared();
+    expect(click(shell, 0).defaultPrevented).toBe(true);
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it("blocks a synthetic click even when touchend cannot be canceled", () => {
     drag();
     touch(shell, "touchend", 180, 110, 0, false);
@@ -94,6 +151,9 @@ describe("drawer touch lifecycle", () => {
     expect(click(shell).defaultPrevented).toBe(false);
     drag();
     touch(shell, "touchend", 180, 110, 0);
+    const key = new Event("keydown");
+    Object.defineProperty(key, "key", { value: "Enter" });
+    shell.dispatchEvent(key);
     expect(click(shell, 0).defaultPrevented).toBe(false);
   });
 

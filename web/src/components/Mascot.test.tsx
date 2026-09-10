@@ -8,24 +8,25 @@ describe("Mascot", () => {
     const out = renderToStaticMarkup(<Mascot />);
     expect(out).toContain('aria-hidden="true"');
     expect(out).not.toContain("aria-label");
-    expect(out).toContain("<canvas");
+    expect(out).toContain("<svg");
+    expect(out).not.toContain("<canvas");
     expect(out).toContain('data-mood="idle"');
   });
 
-  it("reserves a fixed full-body slot at the requested size", () => {
+  it("reserves a fixed avatar slot at the requested size", () => {
     const out = renderToStaticMarkup(<Mascot size={44} />);
     expect(out).toContain('width="44" height="44"');
     expect(out).toContain("width:44px;height:44px");
   });
 
-  it("has a full-body fallback for every model while Three.js loads", () => {
+  it("renders a complete avatar for every model without a renderer", () => {
     for (const model of MODELS) {
       const out = renderToStaticMarkup(<Mascot robot={model.composerStyle} />);
       expect(out).toContain(`data-robot="${model.composerStyle}"`);
-      expect(out).toContain("mascot-fallback-head");
-      expect(out).toContain("mascot-fallback-torso");
-      expect(out.match(/mascot-fallback-arm/g)).toHaveLength(2);
-      expect(out.match(/mascot-fallback-leg/g)).toHaveLength(2);
+      expect(out).toContain("mascot-avatar-base");
+      expect(out).not.toContain("mascot-avatar-shell");
+      expect(out).toContain("mascot-avatar-eyes");
+      expect(out).toContain("mascot-avatar-mouth");
     }
   });
 
@@ -41,4 +42,15 @@ describe("Mascot", () => {
     expect(asleep).toContain("is-asleep");
     expect(asleep).toContain('class="mascot-z">z');
   });
+  it("uses distinct faces for every state and gives sleep precedence", () => {
+    const faces = ["idle", "think", "work", "still"].map(mood => {
+      const out = renderToStaticMarkup(<Mascot mood={mood as "idle" | "think" | "work" | "still"} />);
+      return out.slice(out.indexOf('<g class="mascot-avatar-face"'), out.indexOf("</svg>"));
+    });
+    expect(new Set(faces).size).toBe(4);
+    const asleep = renderToStaticMarkup(<Mascot mood="work" asleep alert />);
+    expect(asleep).toContain('data-expression="asleep"');
+    expect(asleep).toContain("is-alert");
+  });
+
 });

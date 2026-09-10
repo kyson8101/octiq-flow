@@ -36,6 +36,8 @@ import { useConfirm } from "./Confirm";
 import { CopyBit, CopyIcon, TextIcon } from "./CopyBit";
 import { FileView, NativeFileOpen } from "./FileView";
 import { RollingText } from "./RollingNumber";
+import { useReaderChat } from "./ReaderChat";
+import { captureReadingAnchor, restoreReadingAnchor, type ReadingAnchor } from "../lib/readingAnchor";
 
 type Preview = {
   /** "text" | "image" | "pdf" | "binary" */
@@ -92,6 +94,10 @@ export function FilePanel({
    *  history for the life of one mount, so a reload has to give it a new `key`
    *  or it would go on showing text the file no longer holds. */
   const [generation, setGeneration] = useState(0);
+  const readerChat = useReaderChat(open, path);
+  const readingAnchor = useRef<ReadingAnchor | null>(null);
+  const quotedText = useRef<string | null>(null);
+  const readVersion = useRef(0);
   const confirm = useConfirm();
   const { width, startDrag, entered } = useDockWidth(WIDTH_KEY, SIZES);
 
@@ -125,11 +131,22 @@ export function FilePanel({
    *  of the editor they were in would be its own small betrayal. */
   const load = useCallback(
     async (keepEditor: boolean) => {
+      const version = ++readVersion.current;
+      const beforeRead = draftRef.current;
       try {
         const p = await bridge.invoke<Preview>("read_file_preview", { path });
+        if (version !== readVersion.current) return;
+        if (keepEditor && draftRef.current !== beforeRead) {
+          setStaleOnDisk(true);
+          return;
+        }
+        if (keepEditor && bodyRef.current && proseRef.current) {
+          readingAnchor.current = captureReadingAnchor(bodyRef.current, proseRef.current);
+        }
         setPreview(p);
         setDraft(p.content ?? "");
         setGeneration((n) => n + 1);
+        setPending(null);
         setStaleOnDisk(false);
         setError(null);
         // Card 89 — this flag now means "show markdown as SOURCE", not "show a
@@ -138,6 +155,7 @@ export function FilePanel({
         // rendered, which is what it is for.
         if (!keepEditor) setEditing(false);
       } catch (e) {
+        if (version !== readVersion.current) return;
         setError(String((e as Error).message ?? e));
       }
     },
@@ -149,7 +167,10 @@ export function FilePanel({
     setError(null);
     setEditing(false);
     setPending(null);
+    readingAnchor.current = null;
+    quotedText.current = null;
     void load(false);
+    return () => { readVersion.current++; };
   }, [path, load]);
 
   // Where this file was left, rather than the top of it. Opening a long file,
@@ -167,6 +188,21 @@ export function FilePanel({
     const at = placeOf<number>(placeKey("prose", path));
     if (at) el.scrollTop = at;
   }, [path, showingProse]);
+
+  useLayoutEffect(() => {
+    if (showingProse && bodyRef.current && proseRef.current && readingAnchor.current) {
+      restoreReadingAnchor(bodyRef.current, proseRef.current, readingAnchor.current);
+    }
+  }, [generation, showingProse, readerChat.size]);
+
+  useEffect(() => {
+    if (readerChat.size !== "closed" || !quotedText.current || !proseRef.current) return;
+    const block = Array.from(proseRef.current.children).find((el) => el.textContent?.includes(quotedText.current!));
+    if (!block) return;
+    block.classList.add("reader-return-highlight");
+    const timer = setTimeout(() => block.classList.remove("reader-return-highlight"), 1800);
+    return () => { clearTimeout(timer); block.classList.remove("reader-return-highlight"); };
+  }, [readerChat.size]);
 
   // Follow the file while it is open. An agent editing it in another chat, a
   // git checkout, a build writing a report — the panel is a window onto the
@@ -210,7 +246,8 @@ export function FilePanel({
     const text = live.toString();
     if (!text.trim()) return setPending(null);
     const at = draftRef.current.indexOf(text);
-    const lines = at >= 0 ? lineRange(draftRef.current, at, at + text.length) : { from: 0, to: 0 };
+    const unique = at >= 0 && draftRef.current.lastIndexOf(text) === at;
+    const lines = unique ? lineRange(draftRef.current, at, at + text.length) : { from: 0, to: 0 };
     const rect = range.getBoundingClientRect();
     setPending({
       quote: { path, text, ...lines },
@@ -255,9 +292,14 @@ export function FilePanel({
   /** Put the highlight in the prompt box. */
   const quote = useCallback(() => {
     if (!pending) return;
+    quotedText.current = pending.quote.text;
+    if (bodyRef.current && proseRef.current) {
+      readingAnchor.current = captureReadingAnchor(bodyRef.current, proseRef.current);
+    }
+    readerChat.show();
     sendQuote(pending.quote);
     setPending(null);
-  }, [pending]);
+  }, [pending, readerChat]);
 
   // Escape closes and Cmd+S saves — but ONLY while this panel has the focus.
   // It is a column beside a live chat now, not a sheet over a dead one, and a
@@ -274,6 +316,7 @@ export function FilePanel({
         // The button first: it is the newer thing on screen, so it is the one
         // Escape is aimed at.
         if (pending) return setPending(null);
+        if (readerChat.size !== "closed") return readerChat.collapse();
         if (!dirty) onClose();
       }
       if (e.key === "s" && (e.metaKey || e.ctrlKey)) {
@@ -463,6 +506,7 @@ export function FilePanel({
               onScroll={(e) => {
                 if (!showingProse) return;
                 rememberPlace(placeKey("prose", path), e.currentTarget.scrollTop);
+                if (proseRef.current) readingAnchor.current = captureReadingAnchor(e.currentTarget, proseRef.current);
               }}
             >
               {!preview && !error && <div className="dots" aria-label="loading" />}
@@ -489,10 +533,12 @@ export function FilePanel({
               )}
 
             </div>
+            {readerChat.launcher}
           </aside>
         </>,
         host,
       )}
+      {readerChat.controls}
 
       {/* On the page, not in the dock: the button is placed in VIEWPORT
           coordinates, so it must not sit inside anything that could clip or
@@ -502,12 +548,13 @@ export function FilePanel({
         canQuote() &&
         createPortal(
           <button
-            className="quote-btn"
+            className="quote-btn reader-quote"
             type="button"
             style={{ left: `${pending.x}px`, top: `${pending.y}px` }}
             // The pointer coming DOWN on it would clear the selection first, and
             // there would be nothing left to quote by the time the click landed.
             onMouseDown={(e) => e.preventDefault()}
+            onPointerDown={(e) => e.preventDefault()}
             onClick={quote}
           >
             <span className="quote-btn-plus" aria-hidden="true">

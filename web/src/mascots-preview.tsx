@@ -14,10 +14,10 @@ function RobotStudio() {
   const [shown, setShown] = useState(true);
   return (
     <main className={light ? "studio light" : "studio"}>
-      <header><span className="wordmark">octiqflow <span>/ robot studio</span></span><button onClick={() => setLight(!light)}>{light ? "Dark surface" : "Light surface"}</button></header>
-      <section className="intro"><p className="eyebrow">MEET YOUR LITTLE CREW</p><h1>Big ideas.<br /><span>Little robots.</span></h1><p>Ten personalities. Fifteen companions.<br />A little dance between the hard work.</p></section>
-      <nav aria-label="Animation state">
-        {([ ["idle", "Dance"], ["think", "Think"], ["work", "Work"], ["still", "Pose"] ] as const).map(([value, label]) => <button key={value} aria-pressed={mood === value && !asleep} onClick={() => { setMood(value); setAsleep(false); }}>{label}</button>)}
+      <header><span className="wordmark">octiqflow <span>/ avatar studio</span></span><button onClick={() => setLight(!light)}>{light ? "Dark surface" : "Light surface"}</button></header>
+      <section className="intro"><p className="eyebrow">MEET YOUR LITTLE CREW</p><h1>Familiar faces.<br /><span>Every state.</span></h1><p>Your models, at a glance.<br />Expressions that follow the conversation.</p></section>
+      <nav aria-label="Expression state">
+        {([ ["idle", "Smile"], ["think", "Think"], ["work", "Work"], ["still", "Neutral"] ] as const).map(([value, label]) => <button key={value} aria-pressed={mood === value && !asleep} onClick={() => { setMood(value); setAsleep(false); }}>{label}</button>)}
         <button aria-pressed={asleep} onClick={() => setAsleep(!asleep)}>Sleep</button>
         <label><input type="checkbox" checked={alert} onChange={e => setAlert(e.target.checked)} /> Background task</label>
       </nav>
@@ -29,7 +29,7 @@ function RobotStudio() {
           <div className="sizes"><span><Mascot robot={m.composerStyle} size={28} mood={mood} asleep={asleep} alert={alert} />Chat · 28</span><span><Mascot robot={m.composerStyle} size={44} mood={mood} asleep={asleep} alert={alert} />Picker · 44</span></div>
         </article>)}
       </section>
-      <footer><span>PROCEDURAL CHARACTERS · THREE.JS</span><button onClick={() => setShown(!shown)}>{shown ? "Unmount crew" : "Mount crew"}</button></footer>
+      <footer><span>MODEL AVATARS · LIVE EXPRESSIONS</span><button onClick={() => setShown(!shown)}>{shown ? "Unmount crew" : "Mount crew"}</button></footer>
     </main>
   );
 }

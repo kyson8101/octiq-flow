@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import type { ComposerStyle } from "../lib/agentProviders";
 import { ROBOT_DESIGNS, robotBody } from "../lib/mascotDesign";
@@ -7,56 +6,45 @@ import "./Mascot.css";
 
 export type { MascotMood } from "../lib/mascotDesign";
 
-/** Big-headed model companions. Animation stays inside a fixed layout slot. */
+const EXPRESSIONS = {
+  idle: { left: "M 29 44 Q 34 36 39 44", right: "M 61 44 Q 66 36 71 44", mouth: "M 40 61 Q 50 70 60 61" },
+  still: { left: "M 34 39 L 34 46", right: "M 66 39 L 66 46", mouth: "M 44 63 L 56 63" },
+  think: { left: "M 32 39 L 32 44", right: "M 64 37 L 64 42", mouth: "M 48 64 Q 54 60 59 63" },
+  work: { left: "M 29 40 L 39 43 L 34 48", right: "M 71 40 L 61 43 L 66 48", mouth: "M 43 62 Q 50 66 57 62" },
+  asleep: { left: "M 28 44 Q 34 49 40 44", right: "M 60 44 Q 66 49 72 44", mouth: "M 47 63 Q 50 66 53 63" },
+} as const;
+
+/** Circular model portraits; expressions follow the existing session state. */
 export function Mascot({
   robot = "sonnet", size = 28, alert = false, mood = "idle", asleep = false,
 }: {
   robot?: ComposerStyle;
   size?: number;
   alert?: boolean;
-  /** Idle dances, think ponders, work types; still is an explicit static pose. */
+  /** Idle smiles, think ponders, work focuses; still is a static neutral face. */
   mood?: MascotMood;
-  /** A reaped session sleeps instead of dancing. */
+  /** A reaped session closes its eyes. */
   asleep?: boolean;
 }) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const host = useRef<HTMLSpanElement>(null);
-  const refresh = useRef<(() => void) | undefined>(undefined);
-  const state = useRef({ mood, alert, asleep });
-  state.current = { mood, alert, asleep };
-
-  useEffect(() => {
-    let cancelled = false;
-    let detach: (() => void) | undefined;
-    // Keep Three.js out of the initial application bundle and SSR path.
-    void import("../lib/mascotRenderer").then(({ mountMascot }) => {
-      if (!cancelled && canvas.current && host.current) {
-        const handle = mountMascot(canvas.current, host.current, robot, () => state.current);
-        detach = handle.dispose;
-        refresh.current = handle.invalidate;
-      }
-    }).catch(() => { /* The full-body CSS placeholder also covers unavailable WebGL. */ });
-    return () => { cancelled = true; refresh.current = undefined; detach?.(); };
-  }, [robot]);
-
-  useEffect(() => { refresh.current?.(); }, [mood, alert, asleep, size]);
-
+  const expression = asleep ? "asleep" : mood;
+  const face = EXPRESSIONS[expression];
   return (
     <span
-      ref={host}
       className={`mascot${alert ? " is-alert" : ""}${asleep ? " is-asleep" : ""}`}
       data-robot={robot}
       data-mood={mood}
+      data-expression={expression}
       style={{ width: size, height: size, "--mascot-size": `${size}px`, "--robot-accent": ROBOT_DESIGNS[robotBody(robot)].color } as CSSProperties}
       aria-hidden="true"
     >
-      <span className="mascot-fallback">
-        <span className="mascot-fallback-head"><i /><i /></span>
-        <span className="mascot-fallback-torso" />
-        <span className="mascot-fallback-arm is-left" /><span className="mascot-fallback-arm is-right" />
-        <span className="mascot-fallback-leg is-left" /><span className="mascot-fallback-leg is-right" />
-      </span>
-      <canvas ref={canvas} width={size} height={size} />
+      <svg className="mascot-avatar" viewBox="0 0 100 100" width={size} height={size} fill="none" focusable="false">
+        <circle className="mascot-avatar-base" cx="50" cy="50" r="48" />
+        <circle className="mascot-avatar-ring" cx="50" cy="50" r="46" strokeWidth="2" />
+        <g className="mascot-avatar-face" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round">
+          <g className="mascot-avatar-eyes"><path d={face.left} /><path d={face.right} /></g>
+          <path className="mascot-avatar-mouth" d={face.mouth} strokeWidth="3" />
+        </g>
+      </svg>
       {robot.startsWith("pi") && <span className="mascot-provider-badge" data-provider-mark="pi">P</span>}
       {asleep && <span className="mascot-z">z</span>}
     </span>

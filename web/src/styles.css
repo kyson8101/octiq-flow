@@ -646,6 +646,12 @@ body {
   transform: translateX(calc(-102% * (1 - var(--swipe-p, 0))));
 }
 
+/* The drawer moves under the finger; none of its controls is a tap target
+   until release. The capture guard in swipe.ts also blocks release clicks. */
+.app[data-drawer-swiping] .sidebar * {
+  pointer-events: none;
+}
+
 .app[data-drawer-swiping] .scrim {
   transition: none;
   opacity: var(--swipe-p, 0);

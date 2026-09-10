@@ -636,7 +636,7 @@ export function Composer({
       setText((prev) => prev + value);
       return;
     }
-    area.focus();
+    area.focus({ preventScroll: true });
     area.setRangeText(value, area.selectionStart, area.selectionEnd, "end");
     setText(area.value);
   }, []);

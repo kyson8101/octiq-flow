@@ -1,0 +1,95 @@
+.reader-chat-head, .reader-chat-launch { display: none; }
+
+@media (max-width: 700px) {
+  .app.is-file-reading { height: var(--reader-viewport-height, 100dvh); }
+  #dock[data-reader-chat] { --reader-sheet-height: 56%; }
+  #dock[data-reader-chat="large"] { --reader-sheet-height: 82%; }
+  #dock[data-reader-chat] > .fpanel-scrim { display: none; }
+  #dock[data-reader-chat] > .main {
+    position: absolute;
+    inset: auto 0 0;
+    z-index: 8;
+    height: var(--reader-sheet-height);
+    padding-top: 48px;
+    background: var(--bg-0);
+    border-top: 1px solid var(--border-strong);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, .18);
+    overflow: hidden;
+  }
+  #dock[data-reader-chat="closed"] > .main {
+    visibility: hidden;
+    pointer-events: none;
+  }
+  #dock[data-reader-chat]:not([data-reader-chat="closed"]) > .fpanel {
+    bottom: var(--reader-sheet-height);
+    padding-bottom: 0;
+  }
+  #dock[data-reader-chat] .panel-body { overflow-anchor: none; overscroll-behavior: contain; }
+  #dock[data-reader-chat] .reader-return-highlight { background: var(--accent-tint); }
+  #dock[data-reader-chat] .composer { flex-shrink: 0; padding: 8px 10px max(8px, env(safe-area-inset-bottom)); }
+  #dock[data-reader-chat] .composer > :not(.composer-box) { display: none; }
+  #dock[data-reader-chat] .composer-box {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-1);
+    box-shadow: none;
+    padding: 4px;
+  }
+  #dock[data-reader-chat] .composer-box::before { display: none; }
+  #dock[data-reader-chat] .composer-input {
+    min-height: 44px;
+    max-height: min(100px, 20dvh);
+    padding: 10px;
+  }
+  #dock[data-reader-chat] .composer-row { padding: 0; border: 0; gap: 4px; }
+  #dock[data-reader-chat] .composer-row > :not(.send) { display: none; }
+  #dock[data-reader-chat] .composer-row .send { width: 44px; height: 44px; }
+  #dock[data-reader-chat] .composer-box > .attach { grid-column: 1 / -1; }
+  .reader-chat-head {
+    position: absolute;
+    inset: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 48px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .reader-chat-head button, .reader-chat-launch {
+    min-height: 44px;
+    border: 0;
+    color: var(--fg-1);
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
+  }
+  .reader-chat-resize { display: flex; gap: 10px; align-items: center; touch-action: none; }
+  .reader-chat-grip { width: 28px; height: 4px; border-radius: 2px; background: var(--fg-3); }
+  .reader-chat-launch {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--fg-0);
+  }
+  .reader-chat-head button:focus-visible, .reader-chat-launch:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -3px;
+  }
+  .quote-btn.reader-quote {
+    left: 50% !important;
+    top: auto !important;
+    bottom: calc(64px + env(safe-area-inset-bottom));
+    max-width: calc(100vw - 24px);
+    transform: translateX(-50%);
+    animation: none;
+    min-height: 44px;
+  }
+}

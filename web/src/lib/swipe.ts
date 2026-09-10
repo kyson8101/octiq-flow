@@ -11,6 +11,7 @@
 // place, as a small state machine over the points a touch reports, and it is
 // deliberately slow to commit:
 //
+//   - the edge strip is reserved at touchstart to stop native back navigation,
 //   - it only ever starts in a narrow strip at the very edge (or anywhere, once
 //     the drawer is open and the only thing left to do is shut it),
 //   - it drops the moment the finger is going more up-and-down than sideways,
@@ -150,6 +151,8 @@ export function bindDrawerSwipe(el: HTMLElement, isOpen: () => boolean, onChange
   let suppressClickUntil = 0;
 
   const clear = () => {
+    // Cancellation and multi-touch must retain the same protection as release.
+    if (s?.phase === "swiping") suppressClickUntil = Date.now() + 700;
     s = null;
     el.removeAttribute("data-drawer-swiping");
     el.style.removeProperty("--swipe-p");
@@ -168,6 +171,10 @@ export function bindDrawerSwipe(el: HTMLElement, isOpen: () => boolean, onChange
     const t = e.touches[0];
     const width = el.querySelector<HTMLElement>(".sidebar")?.offsetWidth || el.clientWidth;
     s = swipeStart({ x: t.clientX, y: t.clientY, t: e.timeStamp }, { open: isOpen(), width });
+    // Safari can claim its native back gesture before the first touchmove.
+    // That navigates chat history without firing any click. Reserve only the
+    // drawer's edge strip at touchstart; interior taps/scrolling stay native.
+    if (s && t.clientX <= EDGE_PX && e.cancelable) e.preventDefault();
   };
 
   const move = (e: TouchEvent) => {
@@ -192,32 +199,39 @@ export function bindDrawerSwipe(el: HTMLElement, isOpen: () => boolean, onChange
       // Some mobile browsers synthesize a click after release. It must not
       // select a chat, toggle the header, or close the drawer via its scrim.
       if (e.cancelable) e.preventDefault();
-      suppressClickUntil = Date.now() + 700;
     }
     clear();
     if (verdict) onChange(verdict === "open");
   };
 
   const click = (e: MouseEvent) => {
-    // Keyboard activation has detail 0. A fresh touchstart also resets this
-    // guard, so the user's next deliberate tap works immediately.
-    if (e.detail === 0 || Date.now() >= suppressClickUntil) return;
+    // Block from the first claimed move through release/cancellation. A click's
+    // detail is not proof of keyboard input: synthetic clicks can also be zero.
+    if (s?.phase !== "swiping" && Date.now() >= suppressClickUntil) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    suppressClickUntil = 0;
   };
 
-  el.addEventListener("touchstart", start, { passive: true });
+  const keydown = (e: KeyboardEvent) => {
+    // A real new activation restores clicks, just like a fresh touchstart.
+    if (s?.phase !== "swiping" && (e.key === "Enter" || e.key === " ")) suppressClickUntil = 0;
+  };
+
+  el.addEventListener("touchstart", start, { passive: false });
   el.addEventListener("touchmove", move, { passive: false });
   el.addEventListener("touchend", end, { passive: false });
   el.addEventListener("touchcancel", clear, { passive: true });
   el.addEventListener("click", click, true);
+  el.addEventListener("dblclick", click, true);
+  el.addEventListener("keydown", keydown, true);
   return () => {
     el.removeEventListener("touchstart", start);
     el.removeEventListener("touchmove", move);
     el.removeEventListener("touchend", end);
     el.removeEventListener("touchcancel", clear);
     el.removeEventListener("click", click, true);
+    el.removeEventListener("dblclick", click, true);
+    el.removeEventListener("keydown", keydown, true);
     clear();
   };
 }
