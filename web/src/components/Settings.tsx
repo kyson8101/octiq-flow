@@ -171,7 +171,7 @@ export function Settings({ current, onPick, notify, onNotify, onClose }: {
           <div className="set-field">
             <span className="set-label">Theme</span>
             <p className="set-hint">
-              Colours only. The text and terminal fonts stay as they are.
+              Choose One Dark or One Light, or personalize the palette.
             </p>
 
             <div className="thm-grid" role="radiogroup" aria-label="Theme">

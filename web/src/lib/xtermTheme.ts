@@ -75,12 +75,12 @@ export function xtermTheme() {
     "var(--danger)",
     "var(--ok)",
     "var(--warn)",
-    "var(--accent)",
+    "var(--link)",
 
     bright("var(--danger)"),
     bright("var(--ok)"),
     bright("var(--warn)"),
-    bright("var(--accent)"),
+    bright("var(--link)"),
   ]);
 
   return {

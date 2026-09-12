@@ -1,75 +1,9 @@
-/* OctiqFlow v2 — one stylesheet, dark, phone-first.
-   The palette follows the desktop app's macOS-system tokens so the two do not
-   look like different products. */
+/* Flow workbench layout and components. Shared tokens: design-system.css. */
 
 :root {
-  --bg-0: #1c1c1e;
-  --bg-1: #2c2c2e;
-  --bg-2: #3a3a3c;
-  --bg-sunken: #232325;
-  --fg-0: #f5f5f7;
-  --fg-1: #d8d8dc;
-  --fg-2: rgba(235, 235, 245, 0.6);
-  --fg-3: rgba(235, 235, 245, 0.32);
-  --border: rgba(84, 84, 88, 0.65);
-  --border-strong: #48484a;
-  --accent: #0a84ff;
-  --accent-tint: rgba(10, 132, 255, 0.16);
-  /* What is legible ON the fills above. White is right for the built-in
-     palette; a theme whose accent is pale sets its own. */
-  --accent-fg: #fff;
-  --danger-fg: #fff;
-  --ok: #30d158;
-  --warn: #ff9f0a;
-  --danger: #ff453a;
-  --r-sm: 6px;
-  --r-md: 10px;
-  --r-lg: 14px;
-  /* Where the text on a tool row begins, in two parts, because the things that
-     line up against it are measured from different origins: the tally sits
-     INSIDE the row's button and starts past its padding already, while the
-     answer strip and the folder header above a run start at the card's own
-     edge. `--tool-pad` is that padding, `--tool-indent` the icon plus the gap
-     after it. Change the icon's size or the row's gap and change these with
-     them, or four things that have always lined up quietly stop.
-
-     They are READ OFF `.tool-head`, which is the row everything else aligns to:
-     `padding: 5px 4px` is the pad, and a 20px `.tool-icon` plus the row's 8px
-     gap is the indent. They had drifted 7px and 6px past those, which put the
-     answer strip 13px right of the very label it hangs under and the folder
-     header 7px right of the icon below it — the drift the comment above was
-     written to prevent. */
   --tool-pad: 4px;
   --tool-indent: 28px;
-  /* The project column's width, above the breakpoint where it IS a column.
-     App.tsx overwrites this on the root as the handle is dragged, and this is
-     the width a first visit gets — kept here rather than only in the layout so
-     a right-hand panel working out what it can afford has an answer to read
-     before the first drag. */
   --nav-w: 260px;
-  --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-  --font: "LXGW WenKai Screen", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-    sans-serif;
-  /* Sarasa Mono SC first, and the reason is Chinese: its CJK glyphs are
-     EXACTLY twice the Latin advance, so a line of 中文 mixed with `inline
-     code`, and a markdown table drawn in ASCII pipes, both stay in column.
-     Menlo has no CJK at all — every Chinese character fell through to a
-     substitute face at another width, which is what made a table of them
-     ragged. Then JetBrains Mono, then the old chain: neither Sarasa nor
-     JetBrains is installed on a phone, and this client is opened from one.
-
-     This is now a DIFFERENT face from the terminal's, which draws its own
-     hardcoded stack (components/Terminal.tsx) and still lands on Menlo. That
-     was a deliberate call — Sarasa ships a terminal-shaped cut (Sarasa Term)
-     and the terminal can be moved to it, but xterm re-measures its whole grid
-     on a font change and that is not a change to make by side effect. */
-  --mono: "Sarasa Mono SC", "JetBrains Mono", Menlo, ui-monospace, SFMono-Regular, "SF Mono",
-    monospace;
-  /* Replies and markdown previews share the bundled reading face with the UI.
-     Code uses the separate monospace stack above for column alignment. */
-  --prose-font: var(--font);
-
-  color-scheme: dark;
 }
 
 * {
@@ -125,7 +59,7 @@ body {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 0 0 auto;
   /* Installed to a home screen the page starts at the very top of the display,
      under the clock: `apple-mobile-web-app-status-bar-style` is
@@ -277,12 +211,12 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: var(--control-md);
+  height: var(--control-md);
   flex: 0 0 auto;
   padding: 0;
   border: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-1);
   cursor: pointer;
@@ -925,16 +859,18 @@ body {
 
 .hero-title {
   margin: 0;
-  font-size: 21px;
+  font-size: var(--text-title);
   font-weight: 600;
   color: var(--fg-0);
+  letter-spacing: -0.03em;
 }
 
 .hero-sub {
   margin: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--fg-3);
-  font-family: var(--mono);
+  font-family: var(--font);
+  max-width: 60ch;
 }
 
 /* The same middle of the page while a picked session is still being read back.
@@ -1753,7 +1689,7 @@ body {
 }
 
 .prose a {
-  color: var(--accent);
+  color: var(--link);
 }
 
 /* A file path an agent wrote, once the backend has confirmed the file is
@@ -2797,17 +2733,19 @@ body {
      recolour the transcript and project chrome around it. */
   --composer-accent: #0a84ff;
   --composer-on-accent: #fff;
-  --composer-glow-x: 18%;
-  --composer-glow-y: -18%;
-  --composer-sheen-angle: 122deg;
   /* Rebind the app's semantic accent tokens only inside this subtree. That
      keeps every existing selected/focused state in step — including the model
      grid and the phone sheet — without teaching each control about models. */
-  --accent: var(--composer-accent);
+  --accent: var(--composer-ink, var(--composer-accent));
   --accent-tint: color-mix(in srgb, var(--composer-accent) 16%, transparent);
-  --accent-fg: var(--composer-on-accent);
+  --accent-fg: var(--composer-label, var(--composer-on-accent));
   flex: 0 0 auto;
   padding: 8px 12px calc(10px + env(safe-area-inset-bottom));
+}
+
+:root[data-color-scheme="light"] .composer {
+  --composer-ink: color-mix(in oklab, var(--composer-accent) 60%, #000);
+  --composer-label: #fff;
 }
 
 /* Claude's models: richer work leans violet, the everyday model keeps
@@ -2816,41 +2754,26 @@ body {
 .composer[data-composer-style="opus"] {
   --composer-accent: #b99cff;
   --composer-on-accent: #1b112b;
-  --composer-glow-x: 16%;
-  --composer-glow-y: -22%;
-  --composer-sheen-angle: 128deg;
 }
 
 .composer[data-composer-style="sonnet"] {
   --composer-accent: #e07a59;
   --composer-on-accent: #21110b;
-  --composer-glow-x: 28%;
-  --composer-glow-y: -26%;
-  --composer-sheen-angle: 118deg;
 }
 
 .composer[data-composer-style="haiku"] {
   --composer-accent: #59c9c5;
   --composer-on-accent: #081b1a;
-  --composer-glow-x: 82%;
-  --composer-glow-y: -24%;
-  --composer-sheen-angle: 62deg;
 }
 
 .composer[data-composer-style="fable"] {
   --composer-accent: #e48db7;
   --composer-on-accent: #25101a;
-  --composer-glow-x: 72%;
-  --composer-glow-y: -18%;
-  --composer-sheen-angle: 54deg;
 }
 
 .composer[data-composer-style="claude"] {
   --composer-accent: #d97757;
   --composer-on-accent: #21110b;
-  --composer-glow-x: 24%;
-  --composer-glow-y: -22%;
-  --composer-sheen-angle: 120deg;
 }
 
 /* Codex's named models follow their own imagery: a star, then sunlight, earth
@@ -2862,45 +2785,30 @@ body {
 .composer[data-composer-style="pi-astra"] {
   --composer-accent: #d76bf0;
   --composer-on-accent: #1d0a24;
-  --composer-glow-x: 34%;
-  --composer-glow-y: -30%;
-  --composer-sheen-angle: 108deg;
 }
 
 .composer[data-composer-style="sol"],
 .composer[data-composer-style="pi-sol"] {
   --composer-accent: #f1b84b;
   --composer-on-accent: #211807;
-  --composer-glow-x: 18%;
-  --composer-glow-y: -28%;
-  --composer-sheen-angle: 132deg;
 }
 
 .composer[data-composer-style="terra"],
 .composer[data-composer-style="pi-terra"] {
   --composer-accent: #78c892;
   --composer-on-accent: #0a1d10;
-  --composer-glow-x: 50%;
-  --composer-glow-y: -30%;
-  --composer-sheen-angle: 96deg;
 }
 
 .composer[data-composer-style="luna"],
 .composer[data-composer-style="pi-luna"] {
   --composer-accent: #84a9ff;
   --composer-on-accent: #0c1528;
-  --composer-glow-x: 84%;
-  --composer-glow-y: -28%;
-  --composer-sheen-angle: 58deg;
 }
 
 .composer[data-composer-style="codex"],
 .composer[data-composer-style="pi"] {
   --composer-accent: #8eb3c3;
   --composer-on-accent: #0d191e;
-  --composer-glow-x: 76%;
-  --composer-glow-y: -22%;
-  --composer-sheen-angle: 66deg;
 }
 
 /* A turn the backend stopped mid-answer, and the one way back to it. Sits
@@ -3215,48 +3123,17 @@ body {
   position: relative;
   max-width: var(--chat-column);
   margin: 0 auto;
-  padding: 9px 10px 7px;
-  border: 1px solid color-mix(in srgb, var(--composer-accent) 28%, var(--border));
+  padding: var(--space-3);
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
-  background:
-    radial-gradient(
-      ellipse at var(--composer-glow-x) var(--composer-glow-y),
-      color-mix(in srgb, var(--composer-accent) 16%, transparent) 0,
-      transparent 58%
-    ),
-    linear-gradient(
-      var(--composer-sheen-angle),
-      color-mix(in srgb, var(--composer-accent) 5%, transparent),
-      transparent 44%
-    ),
-    var(--bg-1);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--composer-accent) 10%, transparent);
-  transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease,
-    background-color 160ms ease;
-}
-
-/* A one-pixel signature is visible before the field is focused, without
-   turning the whole prompt into a coloured card. */
-.composer-box::before {
-  content: "";
-  position: absolute;
-  top: -1px;
-  right: 18px;
-  left: 18px;
-  height: 1px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, transparent, var(--composer-accent), transparent);
-  opacity: 0.8;
-  pointer-events: none;
+  background: var(--bg-1);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .composer-box:focus-within {
-  border-color: var(--composer-accent);
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--composer-accent) 13%, transparent),
-    inset 0 1px 0 color-mix(in srgb, var(--composer-accent) 16%, transparent);
+  border-color: var(--focus);
+  box-shadow: var(--focus-ring);
 }
 
 .composer-input-wrap {
@@ -3752,7 +3629,7 @@ body {
   flex: 0 0 auto;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: var(--r-pill);
   background: var(--accent);
   color: var(--accent-fg);
   cursor: pointer;
@@ -3860,7 +3737,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px;
+  padding: var(--space-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--bg-1);
@@ -3880,7 +3757,7 @@ body {
   /* Room on the right for the tick, kept whether one is there or not — a
      label that shifted sideways when it became the chosen one would make
      every pick look like a layout bug. */
-  padding: 7px 28px 7px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -4734,18 +4611,19 @@ body.is-ultra .eff {
 .gate-card {
   width: 100%;
   max-width: 420px;
-  padding: 22px;
+  padding: var(--space-6);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--bg-1);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-sm);
 }
 
 .gate-title {
   margin: 0 0 8px;
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 600;
   color: var(--fg-0);
+  letter-spacing: -0.02em;
 }
 
 .gate-body,
@@ -4778,15 +4656,16 @@ body.is-ultra .eff {
 .gate-input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 9px 11px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: var(--bg-0);
   color: var(--fg-0);
   font-family: var(--mono);
   /* 16px: anything smaller makes iOS Safari zoom on focus. */
   font-size: 16px;
   outline: none;
+  min-height: var(--control-touch);
 }
 
 .gate-input:focus {
@@ -4795,9 +4674,9 @@ body.is-ultra .eff {
 
 .gate-btn {
   flex: 0 0 auto;
-  padding: 9px 15px;
+  padding: var(--space-2) var(--space-4);
   border: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-pill);
   background: var(--accent);
   color: var(--accent-fg);
   font: inherit;
@@ -5031,13 +4910,14 @@ body.is-ultra .eff {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 8px 4px 14px;
+  padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
 }
 
 .sidebar-title {
   flex: 1 1 auto;
-  font-size: 13px;
-  color: var(--fg-3);
+  font-size: var(--text-xs);
+  color: var(--fg-2);
+  font-weight: 500;
 }
 
 .sidebar-add {
@@ -5502,7 +5382,7 @@ body.is-ultra .eff {
   left: 28px;
   right: 8px;
   height: 1px;
-  background: var(--border);
+  background: transparent;
   opacity: 0.4;
   pointer-events: none;
 }
@@ -6635,12 +6515,12 @@ body.is-ultra .eff {
   -webkit-user-drag: none;
   user-select: none;
   /* A checkerboard so a transparent PNG reads as transparent, not as black. */
-  background-color: #2c2c2e;
+  background-color: var(--bg-1);
   background-image:
-    linear-gradient(45deg, #3a3a3c 25%, transparent 25%),
-    linear-gradient(-45deg, #3a3a3c 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #3a3a3c 75%),
-    linear-gradient(-45deg, transparent 75%, #3a3a3c 75%);
+    linear-gradient(45deg, var(--bg-2) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-2) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-2) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-2) 75%);
   background-size: 16px 16px;
   background-position: 0 0, 0 8px, 8px -8px, -8px 0;
 }
@@ -6782,10 +6662,10 @@ body.is-ultra .eff {
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
-  padding: 10px 10px 10px 14px;
+  padding: var(--space-4);
   padding-top: calc(10px + env(safe-area-inset-top));
   border-bottom: 1px solid var(--border);
-  background: var(--bg-sunken);
+  background: var(--bg-1);
 }
 
 .panel-id {
@@ -6797,12 +6677,13 @@ body.is-ultra .eff {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-family: var(--mono);
-  font-size: 13px;
+  font-family: var(--font);
+  font-size: var(--text-lg);
   color: var(--fg-0);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+  font-weight: 600;
 }
 
 /* Unsaved work, said quietly. */
@@ -6877,14 +6758,15 @@ body.is-ultra .eff {
 
 .panel-btn {
   flex: 0 0 auto;
-  padding: 6px 11px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-1);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+  min-height: var(--control-sm);
 }
 
 .panel-btn:hover:not(:disabled) {
@@ -6905,10 +6787,10 @@ body.is-ultra .eff {
 
 .panel-close {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: var(--control-sm);
+  height: var(--control-sm);
   border: 0;
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-2);
   cursor: pointer;
@@ -7085,10 +6967,10 @@ body.is-ultra .eff {
 }
 
 .set-label {
-  font-size: 12px;
+  font-size: var(--text-md);
   font-weight: 600;
   letter-spacing: 0.02em;
-  text-transform: uppercase;
+  text-transform: none;
   color: var(--fg-3);
 }
 
@@ -7164,14 +7046,15 @@ body.is-ultra .eff {
 
 .set-input {
   width: 100%;
-  padding: 9px 11px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border);
-  border-radius: var(--r-md);
+  border-radius: var(--r-sm);
   background: var(--bg-1);
   color: var(--fg-0);
   font: inherit;
   /* 16px stops iOS zooming the page when the field takes focus. */
   font-size: 16px;
+  min-height: var(--control-md);
 }
 
 .set-input:focus {
@@ -7411,10 +7294,10 @@ body.is-ultra .eff {
 .fp-picker-row {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-2);
   width: 100%;
   /* Comfortably tappable: this list is meant to be walked on a phone. */
-  padding: 10px 10px;
+  padding: var(--space-3);
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -7422,6 +7305,7 @@ body.is-ultra .eff {
   font: inherit;
   text-align: left;
   cursor: pointer;
+  min-height: var(--control-touch);
 }
 
 .fp-picker-row:hover {
@@ -7920,7 +7804,7 @@ body.is-ultra .eff {
 
 .ask {
   width: min(400px, 100%);
-  padding: 20px;
+  padding: var(--space-6);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--bg-1);
@@ -7974,14 +7858,15 @@ body.is-ultra .eff {
 }
 
 .ask-btn {
-  padding: 8px 14px;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-pill);
   background: var(--bg-2);
   color: var(--fg-1);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+  min-height: var(--control-md);
 }
 
 .ask-btn:hover {
@@ -10450,18 +10335,19 @@ body.is-ultra .eff {
 
 .mode-switch {
   display: flex;
-  gap: 2px;
+  gap: var(--space-1);
   flex: 0 0 auto;
-  padding: 2px;
+  padding: var(--space-1);
   border-radius: 999px;
-  background: var(--bg-1);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
 }
 
 .mode-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 11px;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -10470,12 +10356,14 @@ body.is-ultra .eff {
   font-size: 12px;
   line-height: 1.4;
   cursor: pointer;
+  min-height: 28px;
 }
 
 .mode-btn.is-on {
-  background: var(--accent-tint);
+  background: var(--bg-1);
   color: var(--fg-0);
   font-weight: 600;
+  box-shadow: var(--shadow-sm);
 }
 
 /* Under this the usage pill and the project name both need the room, and an
@@ -11013,7 +10901,7 @@ body.is-ultra .eff {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  padding: 7px;
+  padding: var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--bg-1);
@@ -11086,7 +10974,7 @@ body.is-ultra .eff {
 }
 
 .thm-name {
-  font-size: 12.5px;
+  font-size: var(--text-xs);
   font-weight: 500;
   padding-left: 1px;
 }

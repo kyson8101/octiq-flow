@@ -4,6 +4,8 @@
 // a node runner with no DOM. Everything that touches `document` is here.
 import { MANAGED, mapTokens, parseThemeCss, type Theme } from "./theme";
 
+import oneLight from "./themes/one-light.css?raw";
+
 import candyland from "./themes/candyland.css?raw";
 import bubblegum from "./themes/bubblegum.css?raw";
 import mono from "./themes/mono.css?raw";
@@ -67,12 +69,13 @@ const PASTED: Array<{ id: string; name: string; css: string }> = [
 ];
 
 /** The built-in theme has no tokens because it does not need any: it is what
- *  `styles.css` already says. Choosing it CLEARS the overrides rather than
+ *  `design-system.css` already says. Choosing it CLEARS the overrides rather than
  *  setting a copy of the defaults, so the stylesheet stays the one truth. */
 export const BUILT_IN = "octiq";
 
 export const THEMES: Theme[] = [
-  { id: BUILT_IN, name: "OctiqFlow" },
+  { id: BUILT_IN, name: "One Dark" },
+  { id: "one-light", name: "One Light", scheme: "light", dark: parseThemeCss(oneLight).light },
   ...PASTED.map(({ id, name, css }) => ({ id, name, dark: parseThemeCss(css).dark })),
 ];
 
@@ -81,16 +84,16 @@ export const THEMES: Theme[] = [
  *  cannot promise a colour the app then does not show. */
 export type Preview = { bg: string; sunken: string; card: string; accent: string; fg: string };
 
-/** Mirrors the `:root` block of `styles.css`. The built-in theme is the ONLY
+/** Mirrors the `:root` block of `design-system.css`. The built-in theme is the ONLY
  *  one that has to be written out twice: it is applied by removing overrides,
  *  so there is nothing to read the swatches back off. Keep in step with the
  *  stylesheet if those four values ever change. */
 const BUILT_IN_PREVIEW: Preview = {
-  bg: "#1c1c1e",
-  sunken: "#232325",
-  card: "#2c2c2e",
-  accent: "#0a84ff",
-  fg: "#f5f5f7",
+  bg: "#101010",
+  sunken: "#141414",
+  card: "#1b1b1b",
+  accent: "#f5f5f5",
+  fg: "#fafafa",
 };
 
 export function preview(theme: Theme): Preview {
@@ -139,8 +142,7 @@ export function applyTheme(id: string): void {
     }
     root.setAttribute("data-theme", theme.id);
   }
-  // `color-scheme` is not touched: `styles.css` sets it to dark once, and a
-  // theme cannot change that.
+  root.setAttribute("data-color-scheme", theme.scheme ?? "dark");
 
   try {
     localStorage.setItem(KEY, theme.id);

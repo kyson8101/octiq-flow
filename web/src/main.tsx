@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { ConfirmProvider } from "./components/Confirm";
 import { OpenFileProvider } from "./components/OpenFile";
 import "lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css";
+import "@fontsource-variable/inter";
+import "./design-system.css";
 import "./styles.css";
 import { applyTheme, savedThemeId } from "./lib/themeStore";
 

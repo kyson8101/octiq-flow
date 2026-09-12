@@ -1,20 +1,18 @@
 .ow {
-  --ow-bg: #111c20;
-  --ow-panel: #18262b;
-  --ow-line: #2d4046;
-  --ow-text: #e1e9e7;
-  --ow-muted: #91a7a9;
-  --ow-accent: #b7e4b7;
+  --ow-bg: var(--bg-0);
+  --ow-panel: var(--bg-1);
+  --ow-line: var(--border);
+  --ow-text: var(--fg-1);
+  --ow-muted: var(--fg-2);
+  --ow-accent: var(--accent);
   background: var(--ow-bg);
   color: var(--ow-text);
   font:
-    14px/1.5 ui-sans-serif,
-    system-ui,
-    sans-serif;
+    var(--text-md)/1.5 var(--font);
   min-height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  color-scheme: dark;
+  color-scheme: inherit;
 }
 .ow * {
   box-sizing: border-box;
@@ -33,18 +31,18 @@
 .ow button,
 .ow-dialog button {
   cursor: pointer;
-  border: 1px solid #34494e;
-  background: #21343a;
-  border-radius: 8px;
-  padding: 9px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-1);
+  border-radius: var(--r-sm);
+  padding: var(--space-2) var(--space-4);
   transition:
     background 0.15s,
     border-color 0.15s;
 }
 .ow button:hover,
 .ow-dialog button:hover {
-  background: #2b4248;
-  border-color: #829e96;
+  background: var(--bg-2);
+  border-color: var(--border-strong);
 }
 .ow button:disabled,
 .ow-dialog button:disabled {
@@ -54,7 +52,7 @@
 .ow button:focus-visible,
 .ow a:focus-visible,
 .ow-dialog button:focus-visible {
-  outline: 2px solid #c8e9b4;
+  outline: 2px solid var(--focus);
   outline-offset: 4px;
 }
 .ow a {
@@ -97,13 +95,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 26px;
-  background: #142126;
+  padding: 0 var(--space-6);
+  background: var(--bg-sunken);
 }
 .ow-brand {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
   font-size: 21px;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -126,7 +124,7 @@
 .ow-top-right {
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: var(--space-5);
   font-size: 12px;
   color: var(--ow-muted);
 }
@@ -136,11 +134,11 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #b67d65;
+  background: var(--fg-3);
   margin-right: 7px;
 }
 .ow-connection.open:before {
-  background: #b7e4b7;
+  background: var(--ok);
 }
 .ow-shell {
   display: flex;
@@ -150,31 +148,31 @@
   width: 215px;
   flex-shrink: 0;
   border-right: 1px solid var(--ow-line);
-  padding: 24px 14px;
+  padding: var(--space-6) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  background: #142126;
+  gap: var(--space-1);
+  background: var(--bg-sunken);
   overflow: auto;
 }
 .ow-rail > button {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   text-align: left;
   background: transparent;
   border-color: transparent;
-  padding: 11px 12px;
+  padding: var(--space-3) var(--space-3);
   font-size: 13px;
 }
 .ow-rail > button.active {
-  background: #293d39;
-  color: #d1efc5;
-  border-color: #3d5548;
+  background: var(--accent-tint);
+  color: var(--fg-0);
+  border-color: var(--border);
 }
 .ow-rail > button > small {
   margin-left: auto;
-  color: #e7b276;
+  color: var(--fg-2);
 }
 .ow-rail > .ow-eyebrow {
   margin: 26px 12px 10px;
@@ -183,34 +181,34 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.17em;
-  color: #8ca7a5;
-  text-transform: uppercase;
+  color: var(--fg-2);
+  text-transform: none;
 }
 .ow-rail .ow-add-link {
-  color: #9aafab;
+  color: var(--fg-2);
   font-size: 12px;
 }
 .ow-rail-bottom {
   margin-top: auto;
-  padding: 28px 12px 0;
+  padding: 28px var(--space-3) 0;
 }
 .ow-rail-bottom > strong {
   display: block;
   font-size: 40px;
   line-height: 1.2;
-  color: #e6c28a;
-  margin-top: 12px;
+  color: var(--fg-1);
+  margin-top: var(--space-3);
 }
 .ow-rail-bottom > p {
   font-size: 11px;
-  color: #91a7a9;
+  color: var(--fg-2);
 }
 .ow-rail-bottom > button {
   font-size: 11px;
   display: block;
   text-align: left;
   width: 100%;
-  margin-top: 8px;
+  margin-top: var(--space-2);
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
@@ -219,13 +217,13 @@
   flex: 1;
   min-width: 0;
   overflow: auto;
-  padding: 30px 34px 40px;
+  padding: var(--space-8) var(--space-8) var(--space-10);
 }
 .ow-page-heading {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 20px;
+  gap: var(--space-5);
   margin: 4px 0 30px;
 }
 .ow-page-heading p,
@@ -235,28 +233,29 @@
 }
 .ow .ow-primary,
 .ow-dialog .ow-primary {
-  background: #bfdfac;
-  color: #1a2c23;
-  border: 1px solid #cbeabd;
-  font-weight: 650;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: 1px solid var(--accent);
+  font-weight: 600;
+  border-radius: var(--r-pill);
 }
 .ow .ow-primary:hover,
 .ow-dialog .ow-primary:hover {
-  background: #d0ebc0;
+  background: var(--accent);
 }
 .ow-map {
   min-height: 550px;
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  border: 1px solid #365049;
-  border-radius: 16px;
-  background-color: #233c35;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background-color: var(--bg-2);
   background-image:
     linear-gradient(#afcba908 1px, transparent 1px),
     linear-gradient(90deg, #afcba908 1px, transparent 1px);
   background-size: 32px 32px;
-  box-shadow: inset 0 0 80px #14262099;
+  box-shadow: inset 0 0 80px rgb(0 0 0 / 12%);
 }
 .ow-map-label {
   position: absolute;
@@ -449,20 +448,20 @@
 }
 .ow-tabs {
   display: flex;
-  gap: 5px;
+  gap: var(--space-1);
 }
 .ow .ow-tabs button {
   background: transparent;
   border: 0;
   border-radius: 0;
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   text-transform: capitalize;
   color: var(--ow-muted);
   border-bottom: 2px solid transparent;
 }
 .ow .ow-tabs button.active {
-  color: #d3eabd;
-  border-bottom-color: #c1dfa6;
+  color: var(--fg-0);
+  border-bottom-color: var(--border);
 }
 .ow-office {
   border: 1px solid #56706a;
@@ -539,7 +538,7 @@
   padding: 7px;
   writing-mode: vertical-rl;
   font: 700 9px/1 monospace;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
   color: #dce9c9;
   background: #496256;
   border-radius: 4px;
@@ -811,10 +810,10 @@
 }
 .ow select,
 .ow-dialog select {
-  background: #15262c;
-  border: 1px solid #3b5158;
-  border-radius: 7px;
-  padding: 9px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--space-2) var(--space-3);
   max-width: 100%;
 }
 .ow-board-tools select {
@@ -822,7 +821,7 @@
 }
 .ow-board {
   display: flex;
-  gap: 14px;
+  gap: var(--space-4);
   overflow-x: auto;
   min-height: 480px;
   padding-bottom: 20px;
@@ -831,15 +830,15 @@
   min-width: 235px;
   width: 235px;
   flex-shrink: 0;
-  background: #152327;
-  border: 1px solid #2a3e42;
-  border-radius: 10px;
-  padding: 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--space-3);
 }
 .ow-lane > h3 {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--space-2);
   font-size: 12px;
   margin: 0 0 16px;
 }
@@ -850,24 +849,24 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #819597;
+  background: var(--fg-3);
 }
 .ow-status-dot.needs_input {
-  background: #e4b168;
+  background: var(--warn);
 }
 .ow-status-dot.working,
 .ow-status-dot.done {
-  background: #adcd8c;
+  background: var(--ok);
 }
 .ow .ow-task-card {
   display: block;
   text-align: left;
   width: 100%;
-  background: #22343a;
-  border: 1px solid #3a4b4d;
-  padding: 14px;
-  margin-bottom: 10px;
-  box-shadow: 0 3px 5px #0002;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  padding: var(--space-4);
+  margin-bottom: var(--space-2);
+  box-shadow: var(--shadow-sm);
 }
 .ow-task-card strong {
   display: block;
@@ -876,7 +875,7 @@
 }
 .ow-task-card p {
   font-size: 11px;
-  color: #9bb1ae;
+  color: var(--fg-2);
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
@@ -886,42 +885,42 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 18px;
+  margin-top: var(--space-4);
 }
 .ow-tag {
   display: inline-block;
-  border-radius: 4px;
-  padding: 3px 6px;
-  background: #30453e;
-  color: #c6d9be;
+  border-radius: var(--r-sm);
+  padding: var(--space-1) var(--space-2);
+  background: var(--bg-2);
+  color: var(--fg-1);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.04em;
 }
 .ow-tag.warm {
-  background: #51432f;
-  color: #e1bf81;
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-1));
+  color: var(--warn);
 }
 .ow-tag.good {
-  background: #354d3a;
-  color: #c0dfa9;
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg-1));
+  color: var(--ok);
 }
 .ow-section-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   margin: 10px 0 22px;
 }
 .ow-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 18px;
+  gap: var(--space-4);
 }
 .ow .ow-meeting-card {
   text-align: left;
-  padding: 24px;
-  background: #1b2c30;
+  padding: var(--space-6);
+  background: var(--bg-1);
 }
 .ow-meeting-card h3 {
   margin: 15px 0;
@@ -933,18 +932,18 @@
 .ow-mini-avatars {
   display: flex;
   margin: 22px 0 12px;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .ow-setup {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
-  gap: 24px;
+  gap: var(--space-6);
 }
 .ow-setup > section {
   border: 1px solid var(--ow-line);
-  background: #18282c;
-  border-radius: 10px;
-  padding: 22px;
+  background: var(--bg-1);
+  border-radius: var(--r-md);
+  padding: var(--space-6);
 }
 .ow-setup .ow-section-heading {
   margin-top: 0;
@@ -953,8 +952,8 @@
   font-size: 19px;
 }
 .ow-setup-row {
-  padding: 15px 0;
-  border-bottom: 1px solid #2e4345;
+  padding: var(--space-4) 0;
+  border-bottom: 1px solid var(--border);
 }
 .ow-setup-row:last-child {
   border: 0;
@@ -974,27 +973,27 @@
   width: 400px;
   flex-shrink: 0;
   overflow: auto;
-  background: #18292e;
-  border-left: 1px solid #3c5157;
-  padding: 22px;
+  background: var(--bg-1);
+  border-left: 1px solid var(--border);
+  padding: var(--space-6);
 }
 .ow-inspector > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 22px;
+  margin-bottom: var(--space-6);
 }
 .ow-inspector > header button {
   font-size: 22px;
   line-height: 1;
   border: 0;
   background: transparent;
-  padding: 3px 8px;
+  padding: var(--space-1) var(--space-2);
 }
 .ow-profile-head {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: var(--space-4);
 }
 .ow-profile-head h3 {
   font-size: 26px;
@@ -1008,7 +1007,7 @@
 .ow-xp {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 5px 10px;
+  gap: var(--space-1) var(--space-2);
   margin: 24px 0;
   font-size: 11px;
 }
@@ -1017,16 +1016,16 @@
   width: 100%;
   height: 7px;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--r-sm);
   overflow: hidden;
-  accent-color: #c1dda9;
-  background: #30434a;
+  accent-color: var(--accent);
+  background: var(--bg-2);
 }
 .ow-xp progress::-webkit-progress-bar {
-  background: #30434a;
+  background: var(--bg-2);
 }
 .ow-xp progress::-webkit-progress-value {
-  background: #c1dda9;
+  background: var(--accent);
 }
 .ow-xp small {
   grid-column: 1/-1;
@@ -1035,19 +1034,19 @@
 .ow-two {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: var(--space-4);
 }
 .ow-three {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  gap: var(--space-2);
 }
 .ow-metrics {
   margin: 20px 0;
-  background: #1e3337;
-  border: 1px solid #354b4c;
-  border-radius: 8px;
-  padding: 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--space-4);
 }
 .ow-metrics strong {
   display: block;
@@ -1061,7 +1060,7 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 18px 0;
 }
 .ow-actions > button {
@@ -1069,23 +1068,23 @@
 }
 .ow-inspector .ow-tabs {
   margin-top: 28px;
-  border-bottom: 1px solid #35484e;
+  border-bottom: 1px solid var(--border);
 }
 .ow-inspector .ow-tabs button {
-  padding: 10px 11px;
+  padding: var(--space-2) var(--space-3);
   font-size: 12px;
 }
 .ow-note {
   font-size: 12px !important;
-  color: #adbfaf !important;
-  background: #293d35;
-  border: 1px solid #3d5546;
-  border-radius: 8px;
-  padding: 13px 15px;
+  color: var(--fg-2) !important;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--space-3) var(--space-4);
   margin: 18px 0 !important;
 }
 .ow-muted {
-  color: #91a7a9 !important;
+  color: var(--fg-2) !important;
   font-size: 12px;
   display: block;
 }
@@ -1095,17 +1094,17 @@
   font-size: 13px;
 }
 .ow-empty {
-  padding: 35px 18px;
-  color: #91a7a9;
+  padding: 36px var(--space-4);
+  color: var(--fg-2);
   text-align: center;
   font-size: 13px;
 }
 .ow-memory {
   margin: 15px 0;
-  padding: 15px;
-  background: #203439;
-  border: 1px solid #344b51;
-  border-radius: 8px;
+  padding: var(--space-4);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
 }
 .ow-memory p {
   white-space: pre-wrap;
@@ -1117,36 +1116,36 @@
 }
 .ow-memory .ow-actions button {
   font-size: 10px;
-  padding: 5px 8px;
+  padding: var(--space-1) var(--space-2);
 }
 .ow-status {
   font-size: 10px;
-  padding: 4px 8px;
-  border-radius: 5px;
-  background: #35444b;
-  color: #c0cdd1;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  color: var(--fg-1);
 }
 .ow-status.needs_input {
-  background: #59452f;
-  color: #f2ce8d;
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-1));
+  color: var(--warn);
 }
 .ow-status.working,
 .ow-status.done {
-  background: #354d36;
-  color: #c5e7ac;
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg-1));
+  color: var(--ok);
 }
 .ow-steps {
   padding-left: 22px;
-  border-top: 1px solid #344c51;
-  margin-top: 22px;
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-6);
 }
 .ow-steps li {
   font-size: 12px;
-  padding: 12px 0;
-  color: #99ada9;
+  padding: var(--space-3) 0;
+  color: var(--fg-2);
 }
 .ow-steps li.current {
-  color: #daebc3;
+  color: var(--fg-1);
 }
 .ow-steps li strong {
   font-size: 12px;
@@ -1158,31 +1157,31 @@
   margin: 22px 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-4);
 }
 .ow-transcript article {
-  padding: 13px 15px;
-  background: #21363b;
-  border: 1px solid #354d52;
-  border-radius: 9px;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
 }
 .ow-transcript article.founder {
-  background: #2c3d32;
-  border-color: #405743;
+  background: var(--accent-tint);
+  border-color: var(--border);
 }
 .ow-transcript article header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-transcript strong {
   font-size: 11px;
-  color: #c9ddbc;
+  color: var(--fg-1);
 }
 .ow-transcript time {
   font-size: 9px;
-  color: #7f9999;
+  color: var(--fg-2);
 }
 .ow-transcript p {
   white-space: pre-wrap;
@@ -1190,43 +1189,43 @@
   overflow-wrap: anywhere;
 }
 .ow-compose {
-  border-top: 1px solid #395057;
+  border-top: 1px solid var(--border);
   padding-top: 10px;
 }
 .ow .ow-danger {
-  color: #e6b69a;
-  background: #4b3730;
-  border-color: #685044;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-1));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 .ow-verify {
   margin: 24px 0;
-  border-top: 1px solid #405849;
+  border-top: 1px solid var(--border);
   padding-top: 20px;
 }
 .ow-participants {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: var(--space-3);
   margin: 20px 0;
 }
 .ow-participants > div {
   display: flex;
   align-items: center;
   flex-direction: column;
-  background: #21363a;
-  border-radius: 8px;
-  padding: 10px 8px;
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  padding: var(--space-2) var(--space-2);
   min-width: 75px;
 }
 .ow-participants strong {
   font-size: 11px;
-  margin-top: 6px;
+  margin-top: var(--space-2);
 }
 .ow-participants small {
   font-size: 9px;
 }
 .ow-meeting-handoff {
-  border-top: 1px dashed #49615b;
+  border-top: 1px dashed var(--border);
   margin-top: 28px;
   padding-top: 18px;
 }
@@ -1235,25 +1234,25 @@
 }
 .ow-meeting-handoff small {
   display: block;
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 .ow-live {
   font-size: 12px;
-  color: #cee2ad;
-  padding: 10px;
-  background: #304132;
-  border-radius: 6px;
+  color: var(--fg-1);
+  padding: var(--space-2);
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
 }
 .ow-error {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  margin-bottom: 18px;
-  background: #503630;
-  border: 1px solid #81564a;
-  color: #f0c9b5;
-  border-radius: 8px;
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  color: var(--danger);
+  border-radius: var(--r-sm);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -1263,39 +1262,37 @@
   border: 0 !important;
 }
 .ow-welcome {
-  padding: 80px 20px;
+  padding: 80px var(--space-5);
   max-width: 640px;
   margin: auto;
 }
 .ow-welcome p {
-  color: #9eb2ad;
+  color: var(--fg-2);
 }
 .ow-dialog {
-  --ow-muted: #91a7a9;
-  background: #192b30;
-  color: #e1e9e7;
-  border: 1px solid #4a6265;
-  border-radius: 14px;
+  --ow-muted: var(--fg-2);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   max-width: 600px;
   width: calc(100vw - 40px);
   max-height: 85dvh;
-  padding: 26px;
+  padding: var(--space-6);
   font:
-    14px/1.5 ui-sans-serif,
-    system-ui,
-    sans-serif;
-  box-shadow: 0 30px 90px #0008;
-  color-scheme: dark;
+    var(--text-md)/1.5 var(--font);
+  box-shadow: var(--shadow);
+  color-scheme: inherit;
 }
 .ow-dialog::backdrop {
-  background: #081316b8;
+  background: var(--scrim);
   backdrop-filter: blur(4px);
 }
 .ow-dialog > header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 22px;
+  margin-bottom: var(--space-6);
 }
 .ow-dialog h2 {
   font-size: 23px;
@@ -1305,27 +1302,27 @@
   background: transparent;
   border: 0;
   font-size: 27px;
-  padding: 3px 9px;
+  padding: var(--space-1) var(--space-2);
 }
 .ow-field {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  margin-bottom: 18px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
   font-size: 12px;
 }
 .ow-field > span {
-  color: #b5c8c1;
+  color: var(--fg-1);
 }
 .ow input:not([type="checkbox"]),
 .ow textarea,
 .ow-dialog input:not([type="checkbox"]),
 .ow-dialog textarea {
   width: 100%;
-  background: #12242a;
-  border: 1px solid #3a5158;
-  border-radius: 7px;
-  padding: 10px 12px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--space-2) var(--space-3);
   outline: none;
   font-size: 13px;
 }
@@ -1335,8 +1332,8 @@
 .ow-dialog input:focus,
 .ow-dialog textarea:focus,
 .ow-dialog select:focus {
-  border-color: #bedb9f;
-  outline: 1px solid #bedb9f;
+  border-color: var(--focus);
+  outline: 1px solid var(--focus);
 }
 .ow textarea,
 .ow-dialog textarea {
@@ -1347,27 +1344,27 @@
 .ow textarea::placeholder,
 .ow-dialog input::placeholder,
 .ow-dialog textarea::placeholder {
-  color: #6f888a;
+  color: var(--fg-3);
 }
 .ow-dialog footer {
   display: flex;
   justify-content: flex-end;
-  margin-top: 25px;
+  margin-top: var(--space-6);
 }
 .ow-route {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: var(--space-3);
   margin: 20px 0;
 }
 .ow-route button {
-  padding: 15px;
+  padding: var(--space-4);
   text-align: left;
-  background: #20373b;
+  background: var(--bg-2);
 }
 .ow-route button.selected {
-  border-color: #b9dba2;
-  background: #304634;
+  border-color: var(--accent);
+  background: var(--accent-tint);
 }
 .ow-route strong {
   display: block;
@@ -1375,30 +1372,30 @@
 }
 .ow-route small {
   display: block;
-  margin-top: 4px;
+  margin-top: var(--space-1);
   font-size: 11px;
-  color: #93aba0;
+  color: var(--fg-2);
 }
 .ow-scope {
-  border: 1px solid #3b5355;
-  border-radius: 8px;
-  padding: 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--space-4);
   margin: 20px 0;
   font-size: 12px;
 }
 .ow-scope legend {
   font-size: 12px;
-  color: #b6c8bc;
-  padding: 0 5px;
+  color: var(--fg-1);
+  padding: 0 var(--space-1);
 }
 .ow-scope label {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 8px 0;
 }
 .ow-scope input {
-  accent-color: #c2dea9;
+  accent-color: var(--accent);
   width: 15px;
   height: 15px;
 }
@@ -1408,19 +1405,19 @@
 .ow-dialog .ow-two {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: var(--space-4);
 }
 .ow-dialog .ow-note {
   font-size: 12px;
-  background: #293e35;
-  border: 1px solid #405c45;
-  border-radius: 8px;
-  color: #b7c9b3;
-  padding: 13px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--fg-1);
+  padding: var(--space-3);
   margin: 15px 0;
 }
 .ow-dialog .ow-muted {
-  color: #92aaa1;
+  color: var(--fg-2);
   font-size: 12px;
 }
 .ow-dialog.ow-secretary-modal {
@@ -1435,12 +1432,12 @@
 }
 .ow-secretary-modal > header {
   flex-shrink: 0;
-  margin-bottom: 18px;
+  margin-bottom: var(--space-4);
 }
 .ow-secretary-desk {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 20px;
+  gap: var(--space-5);
   flex: 1;
   min-height: 0;
 }
@@ -1453,21 +1450,21 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border: 1px solid #40575a;
-  border-radius: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
   overflow: hidden;
 }
 .ow-secretary-plan {
-  background: #16282c;
+  background: var(--bg-1);
 }
 .ow-secretary-pane-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 14px 18px;
-  border-bottom: 1px solid #40575a;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-4);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 .ow-secretary-pane-header h3 {
@@ -1480,21 +1477,21 @@
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 18px;
+  padding: var(--space-4);
   overflow-wrap: anywhere;
 }
 .ow-secretary-message {
   max-width: 94%;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  border: 1px solid #40575a;
+  padding: var(--space-4) var(--space-4);
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--border);
   border-radius: 12px 12px 12px 3px;
-  background: #20353a;
+  background: var(--bg-1);
 }
 .ow-secretary-message-user {
   margin-left: auto;
-  background: #2b443a;
-  border-color: #536e56;
+  background: var(--accent-tint);
+  border-color: var(--border);
   border-radius: 12px 12px 3px 12px;
 }
 .ow-secretary-message p {
@@ -1503,19 +1500,19 @@
 }
 .ow-secretary-question {
   padding-top: 10px;
-  border-top: 1px solid #526961;
-  color: #e0edcb;
+  border-top: 1px solid var(--border);
+  color: var(--fg-0);
 }
 .ow-secretary-thinking {
-  color: #b5c8c1;
+  color: var(--fg-1);
 }
 .ow-secretary-composer {
   flex-shrink: 0;
-  border-top: 1px solid #40575a;
-  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  padding: var(--space-4) var(--space-4);
 }
 .ow-secretary-folder-access {
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2);
   font-size: 12px;
 }
 .ow-secretary-composer-with-access {
@@ -1526,15 +1523,15 @@
 .ow-secretary-folder-access summary,
 .ow-secretary-file-activity summary {
   cursor: pointer;
-  padding: 5px 0;
+  padding: var(--space-1) 0;
 }
 .ow-secretary-folder-access p { margin: 8px 0; }
 .ow-secretary-folder {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 .ow-secretary-folder button { flex-shrink: 0; }
 .ow-workspace-path,
@@ -1543,7 +1540,7 @@
 .ow-secretary-file-activity ul { padding-left: 18px; }
 .ow-secretary-file-activity small { display: block; }
 .ow-secretary-composer .ow-field {
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2);
 }
 .ow-secretary-composer textarea {
   max-height: 160px;
@@ -1555,18 +1552,18 @@
   margin-top: 0;
 }
 .ow-secretary-empty {
-  padding: 36px 12px;
-  color: #a9bbb5;
+  padding: 36px var(--space-3);
+  color: var(--fg-2);
 }
 .ow-secretary-empty h3 {
-  color: #e1e9e7;
+  color: var(--fg-0);
 }
 .ow-secretary-actions,
 .ow-secretary-confirm {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-secretary-actions > span {
   margin-right: auto;
@@ -1575,7 +1572,7 @@
   margin: 0;
 }
 .ow-blueprint-summary {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 .ow-blueprint-summary h3 {
   margin: 5px 0;
@@ -1585,25 +1582,25 @@
 }
 .ow-blueprint-summary p,
 .ow-secretary-confirm p {
-  color: #91aaa1;
+  color: var(--fg-2);
 }
 .ow-blueprint-warnings,
 .ow-blueprint-error,
 .ow-blueprint-applied {
-  padding: 13px 15px;
+  padding: var(--space-3) var(--space-4);
   margin: 12px 0;
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .ow-blueprint-warnings,
 .ow-blueprint-error {
-  color: #efc2b3;
-  background: #482e2d;
-  border: 1px solid #784a46;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
 }
 .ow-blueprint-applied {
-  color: #d7ecc6;
-  background: #284332;
-  border: 1px solid #4d7458;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, var(--bg-1));
+  border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--border));
 }
 .ow-blueprint-warnings p {
   margin: 5px 0 0;
@@ -1611,53 +1608,53 @@
 .ow-blueprint-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-blueprint-grid article {
   min-width: 0;
-  padding: 14px;
-  border: 1px solid #40575a;
-  border-radius: 8px;
-  background: #14272c;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
 }
 .ow-blueprint-grid .ow-blueprint-changed {
-  border-color: #afcf91;
-  box-shadow: inset 3px 0 #afcf91;
+  border-color: var(--border);
+  box-shadow: inset 3px 0 color-mix(in srgb, var(--fg-0) 12%, transparent);
 }
 .ow-blueprint-grid article header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 9px;
+  margin-bottom: var(--space-2);
 }
 .ow-blueprint-grid article > strong {
   display: block;
 }
 .ow-blueprint-grid article p {
   margin: 7px 0;
-  color: #a9bbb5;
+  color: var(--fg-2);
   font-size: 12px;
 }
 .ow-secretary-confirm {
   flex-shrink: 0;
   align-items: stretch;
   flex-direction: column;
-  padding: 14px 18px;
-  border-top: 1px solid #40575a;
+  padding: var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border);
 }
 .ow-secretary-confirm p {
   margin: 0 auto 0 0;
   font-size: 12px;
 }
 .ow-secretary-confirm .ow-blueprint-error {
-  color: #efc2b3;
+  color: var(--danger);
 }
 .ow-task-session {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-task-back {
   align-self: flex-start;
@@ -1684,12 +1681,12 @@
   margin-left: auto;
 }
 .ow-task-controls {
-  margin-top: 10px;
+  margin-top: var(--space-2);
   font-size: 12px;
 }
 .ow-task-controls summary {
   cursor: pointer;
-  color: #b5c8c1;
+  color: var(--fg-1);
 }
 .ow-task-controls .ow-actions {
   margin: 8px 0;
@@ -1697,7 +1694,7 @@
 .ow-task-composer-note {
   margin: 8px 0 0;
   font-size: 11px;
-  color: #91a7a9;
+  color: var(--fg-2);
 }
 .ow-task-workspace .ow-secretary-composer {
   max-height: 55%;
@@ -1707,30 +1704,30 @@
   list-style: none;
   padding: 0;
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-task-plan-steps li {
-  border: 1px solid #40575a;
-  border-radius: 8px;
-  padding: 14px;
-  background: #14272c;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: var(--space-4);
+  background: var(--bg-1);
 }
 .ow-task-plan-steps li.current {
-  border-color: #afcf91;
-  box-shadow: inset 3px 0 #afcf91;
+  border-color: var(--border);
+  box-shadow: inset 3px 0 color-mix(in srgb, var(--fg-0) 12%, transparent);
 }
 .ow-task-plan-steps header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .ow-task-plan-steps details {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 .ow-task-verify .ow-field {
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2);
 }
 .ow-task-verify button {
   width: 100%;
@@ -1742,29 +1739,29 @@
 .ow-task-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin: 16px 0;
 }
 .ow-task-filters button {
   font-size: 12px;
-  padding: 7px 10px;
+  padding: var(--space-2) var(--space-2);
 }
 .ow-task-filters button[aria-pressed="true"] {
-  background: #c2dea9;
-  color: #243d27;
+  background: var(--accent);
+  color: var(--accent-fg);
 }
 .ow-agent-task-list {
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-agent-task-list .ow-agent-task {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   text-align: left;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 0;
-  padding: 14px;
+  padding: var(--space-4);
   overflow-wrap: anywhere;
 }
 .ow-agent-task strong {
@@ -1773,7 +1770,7 @@
 .ow-agent-task p {
   margin: 0;
   font-size: 12px;
-  color: #b5c8c1;
+  color: var(--fg-1);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -1781,7 +1778,7 @@
 }
 .ow-agent-task small {
   font-size: 11px;
-  color: #c2dea9;
+  color: var(--fg-1);
 }
 @media (max-width: 800px) {
   .ow-dialog.ow-secretary-modal {
@@ -1789,24 +1786,24 @@
     max-width: none;
     height: 94dvh;
     max-height: 94dvh;
-    padding: 14px;
+    padding: var(--space-4);
   }
   .ow-secretary-desk {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    gap: 12px;
+    gap: var(--space-3);
   }
   .ow-secretary-panel-switch {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
   }
   .ow-secretary-panel-switch button {
     flex: 1;
   }
   .ow-secretary-panel-switch button[aria-pressed="true"] {
-    background: #c2dea9;
-    color: #243d27;
-    border-color: #c2dea9;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
   }
   .ow-secretary-desk[data-panel="conversation"] .ow-secretary-plan,
   .ow-secretary-desk[data-panel="blueprint"] .ow-secretary-conversation {
@@ -1817,7 +1814,7 @@
   .ow-secretary-transcript,
   .ow-secretary-plan-scroll,
   .ow-secretary-confirm {
-    padding: 12px;
+    padding: var(--space-3);
   }
   .ow-secretary-desk .ow-secretary-actions {
     flex-direction: row;
@@ -1826,7 +1823,7 @@
 }
 @media (min-width: 1650px) {
   .ow-main {
-    padding: 38px 46px;
+    padding: var(--space-10) var(--space-12);
   }
   .ow-map {
     min-height: 630px;
@@ -1836,7 +1833,7 @@
   }
   .ow-desks {
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 35px;
+    gap: 36px;
   }
 }
 @media (max-width: 1200px) {
@@ -1844,7 +1841,7 @@
     width: 180px;
   }
   .ow-main {
-    padding: 25px 22px;
+    padding: var(--space-6) var(--space-6);
   }
   .ow-inspector {
     position: fixed;
@@ -1854,21 +1851,21 @@
     z-index: 5;
     width: 400px;
     max-width: 100vw;
-    box-shadow: -20px 0 70px #0007;
+    box-shadow: var(--shadow);
   }
   .ow-office-floor {
     grid-template-columns: 1fr 165px;
-    padding: 20px;
-    gap: 16px;
+    padding: var(--space-5);
+    gap: var(--space-4);
   }
   .ow-office-zones {
     padding-left: 15px;
   }
   .ow-office-wall {
-    padding: 20px;
+    padding: var(--space-5);
   }
   .ow-wall-windows {
-    gap: 10px;
+    gap: var(--space-2);
   }
   .ow-wall-windows i {
     width: 45px;
@@ -1880,7 +1877,7 @@
 @media (max-width: 760px) {
   .ow-topbar {
     height: 58px;
-    padding: 0 16px;
+    padding: 0 var(--space-4);
   }
   .ow-brand {
     font-size: 17px;
@@ -1897,13 +1894,13 @@
   }
   .ow-rail {
     width: 62px;
-    padding: 18px 8px;
+    padding: var(--space-4) var(--space-2);
   }
   .ow-rail > button {
     font-size: 0;
     gap: 0;
     justify-content: center;
-    padding: 12px 5px;
+    padding: var(--space-3) var(--space-1);
   }
   .ow-rail > button span {
     font-size: 20px;
@@ -1923,7 +1920,7 @@
     font-size: 23px;
   }
   .ow-main {
-    padding: 23px 16px;
+    padding: var(--space-6) var(--space-4);
   }
   .ow h1 {
     font-size: 28px;
@@ -1931,15 +1928,15 @@
   .ow-page-heading {
     align-items: flex-start;
     flex-direction: column;
-    margin-bottom: 24px;
-    gap: 14px;
+    margin-bottom: var(--space-6);
+    gap: var(--space-4);
   }
   .ow-map {
     min-height: 580px;
   }
   .ow-buildings {
     grid-template-columns: 1fr;
-    padding: 75px 30px;
+    padding: 76px var(--space-8);
   }
   .ow-building {
     max-width: 245px !important;
@@ -1949,7 +1946,7 @@
   }
   .ow-office-wall {
     height: 85px;
-    padding: 14px;
+    padding: var(--space-4);
     font-size: 9px;
   }
   .ow-wall-windows i {
@@ -1963,15 +1960,15 @@
   .ow-office-floor {
     display: flex;
     flex-direction: column;
-    padding: 16px;
+    padding: var(--space-4);
   }
   .ow-desks {
     grid-template-columns: repeat(auto-fill, minmax(125px, 1fr));
-    gap: 15px;
+    gap: var(--space-4);
   }
   .ow .ow-reception {
     grid-template-columns: auto auto 1fr;
-    padding: 10px;
+    padding: var(--space-2);
   }
   .ow-reception > b {
     display: none;
@@ -1983,10 +1980,10 @@
   }
   .ow-office-zones {
     border-left: 0;
-    border-top: 3px solid #74876d;
+    border-top: 3px solid var(--border);
     flex-direction: row;
-    padding: 18px 0 0;
-    gap: 12px;
+    padding: var(--space-4) 0 0;
+    gap: var(--space-3);
   }
   .ow-office-zones > button {
     width: 50%;
@@ -1997,7 +1994,7 @@
   }
   .ow-board-tools {
     align-items: flex-start;
-    gap: 12px;
+    gap: var(--space-3);
     flex-direction: column;
   }
   .ow-tabs button {
@@ -2014,7 +2011,7 @@
     font-size: 19px;
   }
   .ow-dialog {
-    padding: 20px;
+    padding: var(--space-5);
   }
   .ow-dialog .ow-two {
     grid-template-columns: 1fr;
@@ -2027,22 +2024,22 @@
   }
 }
 .ow-role-current {
-  padding: 14px;
+  padding: var(--space-4);
   margin: 16px 0;
   border: 1px solid var(--ow-line);
-  border-radius: 8px;
+  border-radius: var(--r-sm);
 }
 .ow-role-chat .ow-transcript {
   max-height: 40dvh;
   overflow: auto;
 }
 .ow-role-chat .ow-transcript article {
-  margin-bottom: 10px;
+  margin-bottom: var(--space-2);
 }
 .ow-role-manual,
 .ow-agent-settings,
 .ow-onboarding-scope {
-  margin-top: 24px;
+  margin-top: var(--space-6);
   padding-top: 16px;
   border-top: 1px solid var(--ow-line);
 }
@@ -2071,12 +2068,12 @@
 }
 .ow-mobile-filters {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
 }
 .ow-mobile-filters label {
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
   flex: 1;
   min-width: 0;
   color: var(--ow-muted);
@@ -2087,15 +2084,15 @@
 }
 .ow-mobile-list {
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow .ow-mobile-item {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: var(--space-2);
   text-align: left;
-  padding: 18px;
+  padding: var(--space-4);
   overflow-wrap: anywhere;
   min-width: 0;
 }
@@ -2133,7 +2130,7 @@
     display: none;
   }
   .ow-main {
-    padding: 20px 16px;
+    padding: var(--space-5) var(--space-4);
     width: 100%;
     min-width: 0;
     overscroll-behavior: contain;
@@ -2141,14 +2138,14 @@
   .ow-mobile-scope {
     display: flex;
     align-items: end;
-    gap: 8px;
-    padding: 8px 16px 12px;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-4) var(--space-3);
     flex: 0 0 auto;
     border-bottom: 1px solid var(--ow-line);
   }
   .ow-mobile-scope label {
     display: grid;
-    gap: 4px;
+    gap: var(--space-1);
     min-width: 0;
     flex: 1;
     font-size: 11px;
@@ -2182,8 +2179,8 @@
     position: relative;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
-    padding: 5px 2px;
+    gap: 0px;
+    padding: var(--space-1) 0px;
     background: transparent;
     border: 0;
     color: var(--ow-muted);
@@ -2198,17 +2195,17 @@
     font-weight: 500;
   }
   .ow-mobile-nav button[aria-current="page"] {
-    background: #2d4440;
+    background: var(--accent-tint);
     color: var(--ow-accent);
   }
   .ow-mobile-nav small {
     position: absolute;
     right: 12%;
     top: 0;
-    border-radius: 20px;
-    background: #d6eeb4;
-    color: #14232a;
-    padding: 0 5px;
+    border-radius: var(--r-lg);
+    background: var(--bg-2);
+    color: var(--fg-3);
+    padding: 0 var(--space-1);
     font-size: 10px;
   }
   .ow button,
@@ -2217,13 +2214,14 @@
   .ow-dialog select {
     min-height: 44px;
   }
-  .ow input,
+  .ow input:not([type="checkbox"]),
   .ow select,
   .ow textarea,
-  .ow-dialog input,
+  .ow-dialog input:not([type="checkbox"]),
   .ow-dialog select,
   .ow-dialog textarea {
     font-size: 16px;
+    min-height: var(--control-touch);
   }
   .ow .ow-dialog {
     width: 100vw;
@@ -2239,9 +2237,9 @@
     position: sticky;
     top: 0;
     z-index: 2;
-    background: #18292e;
+    background: var(--bg-1);
     padding: calc(16px + env(safe-area-inset-top)) 0 14px;
-    margin-bottom: 18px;
+    margin-bottom: var(--space-4);
   }
   .ow .ow-mobile-detail {
     position: static;
@@ -2273,14 +2271,14 @@
   }
   .ow-mobile-task-actions {
     display: flex;
-    gap: 8px;
+    gap: var(--space-2);
     margin: 12px 0;
   }
   .ow-mobile-task-actions button {
     flex: 1;
   }
   .ow-office-floor {
-    padding: 12px;
+    padding: var(--space-3);
   }
   .ow-page-heading > .ow-primary {
     width: 100%;
@@ -2297,7 +2295,7 @@
 .ow-workflow-step {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .ow-workflow-step > .ow-field {
   flex: 1;
@@ -2307,5 +2305,5 @@
   margin: 0;
 }
 .ow-workflow-step button {
-  padding: 6px 10px;
+  padding: var(--space-2) var(--space-2);
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AppearanceToggle } from "../../components/AppearanceToggle";
 import { bridge, type ConnectionState } from "../../lib/bridge";
 import { useMedia } from "../../lib/media";
 import {
@@ -183,6 +184,7 @@ export function WorldPortal() {
           <small>AGENT WORLD</small>
         </a>
         <div className="ow-top-right">
+          <AppearanceToggle />
           <span className={`ow-connection ${connection}`}>
             {connection === "open" ? "Connected" : connection}
           </span>

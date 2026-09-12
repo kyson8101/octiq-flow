@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { AppearanceToggle } from "../components/AppearanceToggle";
 
 import { bridge, type ConnectionState } from "../lib/bridge";
 import "./portal.css";
@@ -622,6 +623,7 @@ export function OsPortal() {
           <span aria-hidden="true" />
           {connection === "open" ? "Shared control plane" : "Connecting"}
         </div>
+        <AppearanceToggle />
       </header>
 
       <div className="os-frame">

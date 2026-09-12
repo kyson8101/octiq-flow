@@ -1,0 +1,29 @@
+/* Locally authored One-inspired light palette. Read by the theme store. */
+:root {
+  --background: #f7f7f7;
+  --foreground: #171717;
+  --card: #ffffff;
+  --card-foreground: #171717;
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+  --primary: #202020;
+  --primary-foreground: #ffffff;
+  --secondary: #efefef;
+  --surface-raised: #eeeeee;
+  --selection-tint: rgb(0 0 0 / 6%);
+  --secondary-foreground: #303030;
+  --muted: #efefef;
+  --muted-foreground: #626262;
+  --accent: #ebebeb;
+  --accent-foreground: #171717;
+  --destructive: #bb3543;
+  --destructive-foreground: #ffffff;
+  --border: #e0e0e0;
+  --input: #d4d4d4;
+  --ring: #3866da;
+  --chart-1: oklch(0.48 0.12 145);
+  --chart-2: oklch(0.48 0.12 85);
+  --chart-3: oklch(0.5 0.15 260);
+  --sidebar: #f2f2f2;
+  --radius: 0.625rem;
+}

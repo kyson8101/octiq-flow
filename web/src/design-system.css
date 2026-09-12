@@ -1,0 +1,115 @@
+/* OctiqFlow's implementation of the public One Design System reference.
+   These are locally authored tokens, not an export of the paid Figma kit.
+   Palette, controls and spacing are shared by Flow and both OS portals. */
+:root {
+  --bg-0: #101010;
+  --bg-1: #1b1b1b;
+  --bg-2: #282828;
+  --bg-sunken: #141414;
+  --fg-0: #fafafa;
+  --fg-1: #e0e0e0;
+  --fg-2: #ababab;
+  --fg-3: #919191;
+  --border: #303030;
+  --border-strong: #505050;
+  --accent: #f5f5f5;
+  --accent-fg: #171717;
+  --accent-tint: rgb(255 255 255 / 8%);
+  --ok: #75cc96;
+  --warn: #edbd69;
+  --danger: #f28787;
+  --danger-fg: #261111;
+  --link: #92b8ff;
+  --focus: #82aaff;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-title: 24px;
+  --control-sm: 32px;
+  --control-md: 36px;
+  --control-touch: 44px;
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-pill: 999px;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 12%);
+  --shadow: 0 16px 48px rgb(0 0 0 / 24%);
+  --scrim: rgb(0 0 0 / 44%);
+  --focus-ring: 0 0 0 3px color-mix(in srgb, var(--focus) 24%, transparent);
+  --font: "Inter Variable", "LXGW WenKai Screen", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "Sarasa Mono SC", "JetBrains Mono", Menlo, ui-monospace, SFMono-Regular, "SF Mono", monospace;
+  --prose-font: var(--font);
+  --syntax-comment: var(--fg-3);
+  --syntax-keyword: #d6a6ee;
+  --syntax-string: #a2cf91;
+  --syntax-number: #e0b184;
+  --syntax-function: #92b8ff;
+  --syntax-type: #e5cd93;
+  --syntax-property: #efa2a9;
+  color-scheme: dark;
+}
+
+:root[data-color-scheme="light"] {
+  --link: #285dcc;
+  --focus: #3866da;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 5%);
+  --shadow: 0 16px 48px rgb(0 0 0 / 12%);
+  --syntax-keyword: #7b3ba3;
+  --syntax-string: #38702d;
+  --syntax-number: #995918;
+  --syntax-function: #285dcc;
+  --syntax-type: #7d611d;
+  --syntax-property: #b0344b;
+  color-scheme: light;
+}
+
+/* Low specificity lets specialized controls retain their interaction shapes. */
+:where(button, input, textarea, select) { font-family: var(--font); }
+:where(button, a, input, textarea, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+:where(button):disabled { cursor: default; }
+:where(input, textarea)::placeholder { color: var(--fg-3); opacity: 1; }
+:where(input[type="checkbox"], input[type="radio"]) { accent-color: var(--accent); }
+::selection { background: color-mix(in srgb, var(--focus) 25%, transparent); }
+
+:is(.ow, .os-shell) button.appearance-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--fg-1);
+  background: var(--bg-1);
+  cursor: pointer;
+}
+:is(.ow, .os-shell) button.appearance-toggle:hover { background: var(--bg-2); }
+
+@media (pointer: coarse) {
+  :is(.ow, .os-shell) button.appearance-toggle { width: var(--control-touch); height: var(--control-touch); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

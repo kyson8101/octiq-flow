@@ -23,8 +23,10 @@ export type Tokens = Record<string, string>;
 export type Theme = {
   id: string;
   name: string;
-  /** The pasted file's `.dark` block. Missing for the built-in theme: it IS
-   *  the stylesheet, so there is nothing to apply. */
+  scheme?: "light" | "dark";
+  /** Active palette tokens. The historical field name remains `dark`; a
+   *  light theme supplies its `:root` block and declares scheme: "light".
+   *  Missing for the built-in theme, which is defined in the stylesheet. */
   dark?: Tokens;
 };
 
@@ -58,9 +60,8 @@ function block(css: string, selector: string): Tokens {
   return out;
 }
 
-/** Both blocks, because that is the shape of the file. Only `.dark` is ever
- *  applied: OctiqFlow is a dark app, and the `:root` half of a pasted theme is
- *  read only so the parser can be checked against the real format. */
+/** Parse both palette blocks. Custom themes use `.dark`; One Light uses
+ *  `:root`. The store chooses the active block and native color scheme. */
 export function parseThemeCss(css: string): { light: Tokens; dark: Tokens } {
   return { light: block(css, ":root"), dark: block(css, ".dark") };
 }
@@ -155,21 +156,21 @@ export function mapTokens(t: Tokens): Record<string, string> {
     // One step further from the background than the card is, always — the
     // pasted `muted` is sometimes DARKER than the card (Bubblegum), which
     // would fold the three-step ladder flat.
-    "--bg-2": mix(card, 84, fg),
+    "--bg-2": t["surface-raised"] ?? mix(card, 84, fg),
     // Ours is the top bar and the sidebar, which is what theirs names too.
     "--bg-sunken": t["sidebar"] ?? mix(bg, 92, fg),
 
     "--fg-0": fg,
     "--fg-1": mix(fg, 86, bg),
     "--fg-2": dim,
-    "--fg-3": mix(dim, 55, bg),
+    "--fg-3": mix(dim, 88, bg),
 
     "--border": border,
     "--border-strong": mix(border, 72, fg),
 
     "--accent": primary,
     "--accent-fg": t["primary-foreground"] ?? "#fff",
-    "--accent-tint": mix(primary, 18, "transparent"),
+    "--accent-tint": t["selection-tint"] ?? mix(primary, 18, "transparent"),
 
     "--ok": semanticColor(t, 145),
     "--warn": semanticColor(t, 85),

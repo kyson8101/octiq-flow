@@ -52,21 +52,21 @@ type Spot = ReturnType<EditorView["scrollSnapshot"]>;
  *  read in the editor and the same file printed by an agent in the terminal
  *  drawer are not two different-looking things. */
 const HIGHLIGHT = HighlightStyle.define([
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: "#5c6370", fontStyle: "italic" },
-  { tag: [t.keyword, t.modifier, t.controlKeyword, t.moduleKeyword], color: "#c678dd" },
-  { tag: [t.string, t.special(t.string), t.regexp], color: "#98c379" },
-  { tag: [t.number, t.bool, t.null, t.atom], color: "#d19a66" },
-  { tag: [t.function(t.variableName), t.function(t.propertyName), t.labelName], color: "#61afef" },
-  { tag: [t.typeName, t.className, t.namespace, t.self], color: "#e5c07b" },
-  { tag: [t.propertyName, t.attributeName], color: "#e06c75" },
-  { tag: [t.variableName, t.definition(t.variableName)], color: "#c9c9c5" },
-  { tag: [t.operator, t.punctuation, t.separator, t.bracket], color: "#abb2bf" },
-  { tag: [t.tagName], color: "#e06c75" },
-  { tag: [t.heading], color: "#61afef", fontWeight: "600" },
-  { tag: [t.link, t.url], color: "#56b6c2", textDecoration: "underline" },
+  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: "var(--syntax-comment)", fontStyle: "italic" },
+  { tag: [t.keyword, t.modifier, t.controlKeyword, t.moduleKeyword], color: "var(--syntax-keyword)" },
+  { tag: [t.string, t.special(t.string), t.regexp], color: "var(--syntax-string)" },
+  { tag: [t.number, t.bool, t.null, t.atom], color: "var(--syntax-number)" },
+  { tag: [t.function(t.variableName), t.function(t.propertyName), t.labelName], color: "var(--syntax-function)" },
+  { tag: [t.typeName, t.className, t.namespace, t.self], color: "var(--syntax-type)" },
+  { tag: [t.propertyName, t.attributeName], color: "var(--syntax-property)" },
+  { tag: [t.variableName, t.definition(t.variableName)], color: "var(--fg-1)" },
+  { tag: [t.operator, t.punctuation, t.separator, t.bracket], color: "var(--fg-2)" },
+  { tag: [t.tagName], color: "var(--syntax-property)" },
+  { tag: [t.heading], color: "var(--syntax-function)", fontWeight: "600" },
+  { tag: [t.link, t.url], color: "var(--link)", textDecoration: "underline" },
   { tag: [t.emphasis], fontStyle: "italic" },
   { tag: [t.strong], fontWeight: "600" },
-  { tag: [t.invalid], color: "#e06c75" },
+  { tag: [t.invalid], color: "var(--syntax-property)" },
 ]);
 
 /** The editor's own chrome. Sizes come from CSS custom properties rather than
@@ -93,7 +93,7 @@ const THEME = EditorView.theme(
     ".cm-content": { caretColor: "var(--accent)", padding: "10px 0 0" },
     ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
     "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, ::selection": {
-      backgroundColor: "rgba(10, 132, 255, 0.28)",
+      backgroundColor: "color-mix(in srgb, var(--focus) 25%, transparent)",
     },
     ".cm-gutters": {
       backgroundColor: "var(--bg-0)",
@@ -101,11 +101,11 @@ const THEME = EditorView.theme(
       border: "0",
       paddingRight: "4px",
     },
-    ".cm-activeLine": { backgroundColor: "rgba(255, 255, 255, 0.035)" },
+    ".cm-activeLine": { backgroundColor: "color-mix(in srgb, var(--fg-0) 4%, transparent)" },
     ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--fg-2)" },
-    ".cm-selectionMatch": { backgroundColor: "rgba(229, 192, 123, 0.2)" },
+    ".cm-selectionMatch": { backgroundColor: "color-mix(in srgb, var(--warn) 20%, transparent)" },
     ".cm-matchingBracket, &.cm-focused .cm-matchingBracket": {
-      backgroundColor: "rgba(10, 132, 255, 0.24)",
+      backgroundColor: "color-mix(in srgb, var(--focus) 24%, transparent)",
       outline: "0",
     },
     ".cm-panels": { backgroundColor: "var(--bg-sunken)", color: "var(--fg-1)" },
