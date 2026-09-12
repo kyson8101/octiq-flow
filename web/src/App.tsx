@@ -3592,8 +3592,14 @@ export default function App() {
 
         <div className="topbar-actions">
           {showingProjects ? (
-            <button className="projects-return" type="button" onClick={() => setProjectsScreen(false)}>
-              {mode === "chat" ? "Return to chat" : "Return to files"}
+            <button className="projects-return" type="button"
+              aria-label={mode === "chat" ? "Return to chat" : "Return to files"}
+              title={mode === "chat" ? "Return to chat" : "Return to files"}
+              onClick={() => setProjectsScreen(false)}>
+              <span>{mode === "chat" ? "Return to chat" : "Return to files"}</span>
+              <svg className="projects-return-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M5 12h14m-6-6 6 6-6 6" />
+              </svg>
             </button>
           ) : wide ? topbarActions : <TopbarActionsMenu attentionCount={attention.entries.length}>{topbarActions}</TopbarActionsMenu>}
         </div>

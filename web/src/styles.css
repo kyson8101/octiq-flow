@@ -529,6 +529,8 @@ body {
 }
 
 .projects-return:hover { background: var(--bg-1); }
+.projects-return-icon { display: none; }
+.sidebar-toolbar { flex: 0 0 auto; }
 .topbar-back { flex: 0 0 auto; }
 
 @media (max-width: 859.98px) {
@@ -11498,4 +11500,64 @@ body.is-ultra .eff {
 .skill-reload button:disabled {
   opacity: 0.6;
   cursor: wait;
+}
+
+/* Mobile project navigation shares one row with its direct actions. Keep
+   touch targets generous; reclaim the separate heading and pill padding. */
+@media (max-width: 859.98px) {
+  .projects-screen .projects-return {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .projects-screen .projects-return > span { display: none; }
+  .projects-screen .projects-return-icon { display: block; }
+
+  .sidebar-toolbar.has-navigation {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-toolbar.has-navigation > .sidebar-slot {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+  }
+  .sidebar-toolbar.has-navigation .mode-switch {
+    gap: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+  .sidebar-toolbar.has-navigation .mode-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 6px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+  }
+  .sidebar-toolbar.has-navigation .mode-icon { display: none; }
+  .sidebar-toolbar.has-navigation .sidebar-head {
+    flex: 0 0 auto;
+    gap: 0;
+    padding: 0;
+  }
+  .sidebar-toolbar.has-navigation .sidebar-title { display: none; }
+  .sidebar-toolbar.has-navigation .sidebar-add {
+    width: 44px;
+    height: 44px;
+  }
+  .projects-screen .proj-list { padding-top: 4px; }
+  .projects-screen .proj-btn { height: 44px; }
+  .projects-screen .proj-node { --sib-mid: 22px; }
+}
+
+@media (max-width: 379.98px) {
+  .sidebar-toolbar.has-navigation .mode-os-link > span { display: none; }
+  .sidebar-toolbar.has-navigation .mode-os-link .mode-icon { display: block; }
 }

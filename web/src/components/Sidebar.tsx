@@ -186,54 +186,56 @@ export function Sidebar({
   };
 
   return (
-    <nav className="sidebar">
+    <nav className="sidebar" aria-label="Projects and chats">
       {!head && <a className="sidebar-os-link" href="/os" target="_blank" rel="noopener noreferrer">
         <span aria-hidden="true">◈</span> OctiqOS
       </a>}
-      {head && <div className="sidebar-slot">{head}</div>}
+      <div className={`sidebar-toolbar${head ? " has-navigation" : ""}`}>
+        {head && <div className="sidebar-slot">{head}</div>}
 
-      <div className="sidebar-head">
-        <span className="sidebar-title">Projects</span>
-        <button className="sidebar-add" type="button" title="New project" onClick={onNewProject}>
-          <PlusIcon />
-        </button>
-        {shelved.length > 0 && (
-          <button
-            className="sidebar-add"
-            type="button"
-            title={`Shelved projects (${shelved.length})`}
-            aria-label={`Shelved projects (${shelved.length})`}
-            onClick={onShowShelved}
-          >
-            <ArchiveIcon />
-            <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
+        <div className="sidebar-head">
+          <span className="sidebar-title">Projects</span>
+          <button className="sidebar-add" type="button" title="New project" onClick={onNewProject}>
+            <PlusIcon />
           </button>
-        )}
-        {deletedCount > 0 && onShowDeleted && (
-          <button
-            className="sidebar-add"
-            type="button"
-            title={`Deleted chats (${deletedCount})`}
-            aria-label={`Deleted chats (${deletedCount})`}
-            onClick={onShowDeleted}
-          >
-            <TrashIcon />
-            <span className="sidebar-utility-count"><RollingNumber value={deletedCount} /></span>
-          </button>
-        )}
-        {/* Last, against the edge that goes away. The way back is the project
-            name in the top bar, which gets its caret back once this is used. */}
-        {onHide && (
-          <button
-            className="sidebar-add"
-            type="button"
-            title="Hide projects"
-            aria-label="Hide projects"
-            onClick={onHide}
-          >
-            <CollapseIcon />
-          </button>
-        )}
+          {shelved.length > 0 && (
+            <button
+              className="sidebar-add"
+              type="button"
+              title={`Shelved projects (${shelved.length})`}
+              aria-label={`Shelved projects (${shelved.length})`}
+              onClick={onShowShelved}
+            >
+              <ArchiveIcon />
+              <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
+            </button>
+          )}
+          {deletedCount > 0 && onShowDeleted && (
+            <button
+              className="sidebar-add"
+              type="button"
+              title={`Deleted chats (${deletedCount})`}
+              aria-label={`Deleted chats (${deletedCount})`}
+              onClick={onShowDeleted}
+            >
+              <TrashIcon />
+              <span className="sidebar-utility-count"><RollingNumber value={deletedCount} /></span>
+            </button>
+          )}
+          {/* Last, against the edge that goes away. The way back is the project
+              name in the top bar, which gets its caret back once this is used. */}
+          {onHide && (
+            <button
+              className="sidebar-add"
+              type="button"
+              title="Hide projects"
+              aria-label="Hide projects"
+              onClick={onHide}
+            >
+              <CollapseIcon />
+            </button>
+          )}
+        </div>
       </div>
 
       <ul className="proj-list">
