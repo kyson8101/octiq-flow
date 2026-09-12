@@ -25,6 +25,7 @@ mod fsbrowse;
 mod git;
 mod git_ops;
 mod git_watch;
+mod image_preview;
 mod memory;
 mod mission_control;
 mod mission_migrations;

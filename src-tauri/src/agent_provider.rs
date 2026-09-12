@@ -400,7 +400,7 @@ impl AgentProvider for ClaudeProvider {
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(
                     "mcp__octiq__ask_user mcp__octiq__read_conversation \\
-                     mcp__octiq__add_agent mcp__octiq__ask_agent",
+                     mcp__octiq__add_agent mcp__octiq__ask_agent mcp__octiq__preview_image mcp__octiq__preview_html",
                 ),
                 sh_quote(ASK_PROMPT),
             ));
@@ -910,6 +910,7 @@ fn codex_approval(access: Access) -> &'static str {
 
 /// An MCP server carrying the tools print mode cannot otherwise answer.
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
+const PREVIEW_MCP: &str = include_str!("../../scripts/mcp/preview.cjs");
 const ARTIFACT_MCP: &str = include_str!("../../scripts/mcp/artifact.cjs");
 
 /// Told to Claude so the tools it was given are used at the right moments.
@@ -923,6 +924,7 @@ pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
 
     let script = dir.join("octiq-ask.cjs");
     std::fs::write(dir.join("artifact.cjs"), ARTIFACT_MCP).ok()?;
+    std::fs::write(dir.join("preview.cjs"), PREVIEW_MCP).ok()?;
     std::fs::write(&script, ASK_MCP).ok()?;
 
     let config = dir.join("octiq-ask.json");

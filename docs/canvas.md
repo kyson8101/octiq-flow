@@ -1,5 +1,8 @@
 # Canvas
 
+This documents the legacy terminal canvas. Current browser chats use the
+[Preview panel](image-preview.md) and the `preview_image` / `preview_html` MCP tools.
+
 The **canvas** is a togglable pane beside the project terminals that renders a
 live **HTML or Markdown** document an agent writes. While you talk with Claude in
 a terminal, Claude can draw a plan, a diagram, a spec, or a decision log onto the

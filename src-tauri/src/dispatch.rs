@@ -465,6 +465,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             crate::agent_chat::chat_forget(arg(&args, "key")?);
             Ok(Value::Null)
         }
+        "image_preview_list" => to_value(crate::image_preview::list(&arg::<String>(&args, "key")?)),
         "save_attachment" => to_value(crate::agent_chat::save_attachment(
             arg(&args, "dataBase64")?,
             arg(&args, "extension")?,

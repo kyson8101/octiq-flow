@@ -132,6 +132,8 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { Memory } from "./components/Memory";
 import { GitButton, GitPanel } from "./components/GitPanel";
+import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
+import { useImagePreviews, previewSlots } from "./lib/imagePreview";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
 import { FullscreenButton } from "./components/FullscreenButton";
 import { InstalledReload } from "./components/InstalledReload";
@@ -1613,6 +1615,8 @@ export default function App() {
     chat.failure && !chat.failure.inline && conversationId && !failureDismissed(conversationId, chat.failure)
       ? chat.failure
       : undefined;
+  const previews = useImagePreviews(conversationId ? keyFor(conversationId) : "", chat.busy);
+  const previewVisible = mode === "chat" && previews.open;
   /** The files this chat says are worth opening — see lib/pins. Read once up
    *  here rather than twice below: the button needs the count and the panel
    *  needs the list, and walking the transcript for each of them would do the
@@ -3411,18 +3415,19 @@ export default function App() {
 
       <RailButton
         count={chat.agents.length}
-        open={!railShut}
-        onToggle={() => showRail(railShut)}
+        open={!railShut && !previewVisible}
+        onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }}
       />
 
+      {conversationId && mode === "chat" && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
       <FilesButton
         count={sessionFiles.length}
-        open={filesOpen}
-        onToggle={() => showFiles(!filesOpen)}
+        open={filesOpen && !previewVisible}
+        onToggle={() => { previews.setOpen(false); showFiles(previewVisible || !filesOpen); }}
       />
 
       {/* The way in and out of the changes column at every width. */}
-      <GitButton project={project} open={gitOpen} onToggle={() => showGit(!gitOpen)} />
+      <GitButton project={project} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
 
       {/* Full-width chat is only useful where there are columns to put away. */}
       {wide && isMobile && mode === "chat" && (
@@ -3946,7 +3951,7 @@ export default function App() {
             here it takes width from the view, so the transcript and the prompt
             box move together and stay lined up — which is what the git and
             files panels beside it have always done. */}
-        {mode === "chat" && !railShut && chat.agents.length > 0 && (
+        {mode === "chat" && !previewVisible && !railShut && chat.agents.length > 0 && (
           <aside className="side">
             <AgentRail
               agents={chat.agents}
@@ -3961,7 +3966,7 @@ export default function App() {
             so whichever view is showing gives up width while this is open and
             takes it straight back when it closes. On a phone the stylesheet
             turns the same element into a sheet that slides in from the right. */}
-        {gitMounted && (
+        {gitMounted && !previewVisible && (
           <GitPanel
             project={project}
             open={gitOpen}
@@ -3970,7 +3975,8 @@ export default function App() {
           />
         )}
 
-        {filesMounted && (
+        {previewVisible && conversationId && <ImagePreviewPanel key={conversationId} conversationKey={keyFor(conversationId)} images={previews.images} error={previews.error} onClose={() => previews.setOpen(false)} />}
+        {filesMounted && !previewVisible && (
           <SessionFilesPanel
             pins={sessionFiles}
             open={filesOpen}

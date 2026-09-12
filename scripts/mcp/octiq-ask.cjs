@@ -59,6 +59,8 @@ const readline = require("readline");
 
 const { CREATE_ARTIFACT, createArtifact } = require("./artifact.cjs");
 
+const { PREVIEW_IMAGE, PREVIEW_HTML, previewImage, previewHtml } = require("./preview.cjs");
+
 const CHAT_KEY = process.env.OCTIQ_CHAT_KEY || "";
 
 /** The active profile's data root.
@@ -645,6 +647,8 @@ const READ_CONVERSATION = {
 };
 
 const SERVER_INSTRUCTIONS =
+  "Use preview_html to publish a self-contained HTML document (path or inline html) to the Preview panel for the person to click and view. " +
+  "Use preview_image to show local images beside this chat. Reuse slot for image revisions; earlier snapshots remain available. " +
   "Use create_artifact for standalone HTML reading documents or item-by-item review with decisions and comments. Link the returned filePath to the person. Feedback is returned manually as JSON; pending/null is not approval. " +
   "Use read_conversation only when the person supplies an OctiqFlow chat ID or " +
   "conversation URL, or explicitly asks you to consult it; transcripts may contain " +
@@ -803,17 +807,27 @@ async function handle(msg) {
       // has to work in a chat that is not a room yet. See card 70.
       return reply(msg.id, {
         tools: CHAT_KEY
-          ? [TOOL, PIN_TOOL, READ_CONVERSATION, CREATE_ARTIFACT, ADD_AGENT, ASK_AGENT]
+          ? [TOOL, PIN_TOOL, PREVIEW_IMAGE, PREVIEW_HTML, READ_CONVERSATION, CREATE_ARTIFACT, ADD_AGENT, ASK_AGENT]
           : [READ_CONVERSATION, CREATE_ARTIFACT],
       });
 
     case "tools/call": {
+      if (msg.params?.name === "preview_image" || msg.params?.name === "preview_html") {
+        try {
+          const publish = msg.params.name === "preview_html" ? previewHtml : previewImage;
+          const preview = publish(msg.params.arguments || {}, profileRoot(), CHAT_KEY);
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(preview) }] });
+        } catch (error) {
+          return reply(msg.id, { isError: true, content: [{ type: "text", text: error.message || "Preview could not be published." }] });
+        }
+      }
+
       if (msg.params?.name === "create_artifact") {
         try {
           const artifact = createArtifact(msg.params.arguments || {});
           return reply(msg.id, { content: [{ type: "text", text: JSON.stringify({
             ...artifact,
-            next: "Link filePath in your reply so the person can open the HTML. Optionally pin_file it. They can copy feedback JSON back into chat. Match artifactId, revision and item IDs; pending/null is not approval.",
+            next: "Link filePath in your reply so the person can open the HTML. Optionally publish it with preview_html (path: filePath) for a clickable Preview card. They can copy feedback JSON back into chat. Match artifactId, revision and item IDs; pending/null is not approval.",
           }) }] });
         } catch (error) {
           return reply(msg.id, { isError: true, content: [{ type: "text", text: error.message || "Artifact could not be created." }] });

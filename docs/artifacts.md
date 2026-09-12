@@ -27,7 +27,9 @@ It also works outside an OctiqFlow chat and without a running backend.
 ```
 
 The result includes `filePath`. Link that absolute path in the reply so the
-person can open it; `pin_file` can also place it beside the chat. OctiqFlow's
+person can open it; [`preview_html`](image-preview.md) can also publish it to
+the chat Preview panel (`path: filePath`), with a clickable Open HTML card.
+`pin_file` remains available for the pinned file list. OctiqFlow's
 existing HTML file opener shows it in a native browser tab. No new endpoint or
 automatic feedback submission is involved.
 

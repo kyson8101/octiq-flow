@@ -37,6 +37,16 @@ describe("Mascot", () => {
     expect(renderToStaticMarkup(<Mascot robot="terra" />)).not.toContain("data-provider-mark");
   });
 
+  it("keeps each portrait's iris paint local when many models share a page", () => {
+    const out = renderToStaticMarkup(<>{MODELS.map(model => <Mascot key={model.id} robot={model.composerStyle} />)}</>);
+    const ids = [...out.matchAll(/<linearGradient id="([^"]+)"/g)].map(match => match[1]);
+    const paints = [...out.matchAll(/fill="url\(#([^)]+)\)"/g)].map(match => match[1]);
+    expect(ids).toHaveLength(MODELS.length);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(paints).toHaveLength(MODELS.length * 2);
+    for (const id of ids) expect(paints.filter(paint => paint === id)).toHaveLength(2);
+  });
+
   it("preserves working, thinking, sleeping and background-task signals", () => {
     expect(renderToStaticMarkup(<Mascot mood="work" alert />)).toContain("is-alert");
     expect(renderToStaticMarkup(<Mascot mood="think" />)).toContain('data-mood="think"');
