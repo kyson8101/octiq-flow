@@ -56,6 +56,27 @@
   gap: 28px;
 }
 
+.app.focus-mode .prose {
+  font-size: 16px;
+}
+
+.app.focus-mode .prose :is(h1, h2, h3) {
+  font-size: 18px;
+}
+
+.app.focus-mode .prose code,
+.app.focus-mode .prose-path.is-code {
+  font-size: 14px;
+}
+
+.app.focus-mode .prose table {
+  font-size: 15px;
+}
+
+.app.focus-mode .composer-input {
+  font-size: 17px;
+}
+
 .app.focus-mode .composer-focus {
   padding: 12px 24px calc(24px + env(safe-area-inset-bottom));
 }
