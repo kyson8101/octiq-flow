@@ -1,0 +1,240 @@
+/* A quiet reading column using the current theme's ink, paper and font.
+   Hide workspace surfaces without unmounting their drafts or sessions. */
+.app.focus-mode {
+  --chat-column: 720px;
+  --zen-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+  background: var(--bg-0);
+  padding-top: calc(52px + env(safe-area-inset-top));
+}
+
+.app.focus-mode > .topbar,
+.app.focus-mode > .body > :not(.main),
+.app.focus-mode .main > .drawer,
+.app.focus-mode .chat-main > .focus,
+.app.focus-mode .conversation-map {
+  display: none !important;
+}
+
+.app.focus-mode .main {
+  width: 100%;
+}
+
+.focus-mode-exit {
+  position: absolute;
+  top: calc(6px + env(safe-area-inset-top));
+  right: max(16px, env(safe-area-inset-right));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 240ms ease, background-color 240ms ease;
+}
+
+.focus-mode-exit:hover {
+  color: var(--fg-0);
+  background: var(--bg-1);
+}
+
+.focus-mode-exit:focus-visible,
+.composer-focus .focus-options-toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.app.focus-mode .msgs-inner {
+  padding: 24px 24px 16px;
+  gap: 28px;
+}
+
+.app.focus-mode .composer-focus {
+  padding: 12px 24px calc(24px + env(safe-area-inset-bottom));
+}
+
+.app.focus-mode .composer-box {
+  background: var(--bg-0);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: none;
+  padding: 14px 16px 10px;
+  transition: border-color 300ms ease, background-color 300ms ease;
+}
+
+.app.focus-mode .composer-box:focus-within {
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+
+.composer-focus .composer-hint,
+.composer-focus .think-live,
+.composer-focus:not(.focus-options-open) .room-strip,
+.composer-focus:not(.focus-options-open) .composer-row > :not(.composer-attach, .composer-gap, .focus-options-toggle, .send) {
+  display: none;
+}
+
+.focus-activity {
+  max-width: var(--chat-column);
+  margin: 0 auto 8px;
+  padding-inline: 4px;
+  color: var(--fg-2);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.app.focus-mode .composer .send:not(.stop) {
+  background: var(--fg-0);
+  color: var(--bg-0);
+  box-shadow: none;
+}
+
+.app.focus-mode .composer .send:not(.stop):hover:not(:disabled) {
+  background: var(--fg-1);
+}
+
+.composer-focus.focus-options-open .composer-row {
+  flex-wrap: wrap;
+}
+
+/* Capture the viewport-sized conversation and the input separately. Only the
+   snapshots travel; the mounted transcript never changes scroll containers. */
+html[data-zen-transition] .app .chat-body,
+html[data-zen-transition] .app .main > .hero { view-transition-name: zen-chat; }
+html[data-zen-transition] .app .composer-box { view-transition-name: zen-composer; }
+html[data-zen-transition] .app > .topbar { view-transition-name: zen-header; }
+html[data-zen-transition] .app .sidebar { view-transition-name: zen-sidebar; }
+html[data-zen-transition] .focus-mode-exit { view-transition-name: zen-exit; }
+
+html[data-zen-transition]::view-transition { pointer-events: none; }
+
+html[data-zen-transition]::view-transition-group(*) {
+  animation-duration: 560ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Reflow changes the column width. Keep letters at their actual size while
+   the snapshot bounds move; stretching a screenshot would magnify the text. */
+html[data-zen-transition]::view-transition-old(zen-chat),
+html[data-zen-transition]::view-transition-new(zen-chat) {
+  height: 100%;
+  object-fit: none;
+  object-position: center bottom;
+}
+
+html[data-zen-transition]::view-transition-old(root),
+html[data-zen-transition]::view-transition-old(zen-chat),
+html[data-zen-transition]::view-transition-old(zen-composer) {
+  animation: zen-dissolve 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  mix-blend-mode: plus-lighter;
+}
+
+html[data-zen-transition]::view-transition-new(root),
+html[data-zen-transition]::view-transition-new(zen-chat),
+html[data-zen-transition]::view-transition-new(zen-composer) {
+  animation: zen-arrive 560ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  mix-blend-mode: plus-lighter;
+}
+
+html[data-zen-transition="enter"]::view-transition-old(zen-header) {
+  animation: zen-header-away 220ms ease-out both;
+}
+
+html[data-zen-transition="enter"]::view-transition-old(zen-sidebar) {
+  animation: zen-sidebar-away 260ms ease-out both;
+}
+
+html[data-zen-transition="exit"]::view-transition-new(zen-header),
+html[data-zen-transition="exit"]::view-transition-new(zen-sidebar),
+html[data-zen-transition="enter"]::view-transition-new(zen-exit) {
+  animation: zen-arrive 380ms ease-out 140ms both;
+}
+
+html[data-zen-transition="exit"]::view-transition-old(zen-exit) {
+  animation: zen-dissolve 160ms ease-out both;
+}
+
+html[data-zen-transition="options"]::view-transition-group(*) { animation-duration: 320ms; }
+html[data-zen-transition="options"]::view-transition-old(*) { animation: zen-dissolve 320ms ease-out both; }
+html[data-zen-transition="options"]::view-transition-new(*) { animation: zen-arrive 320ms ease-out both; }
+
+@keyframes zen-dissolve { to { opacity: 0; } }
+@keyframes zen-arrive { from { opacity: 0; } to { opacity: 1; } }
+@keyframes zen-header-away { to { opacity: 0; transform: translateY(-8px); } }
+@keyframes zen-sidebar-away { to { opacity: 0; transform: translateX(-16px); } }
+
+/* No bounce, shimmer or per-word blur. One gentle arrival, then stillness. */
+.app.focus-mode .msg-user.is-new {
+  animation: zen-message-in 360ms var(--zen-ease) 100ms backwards;
+}
+
+@keyframes zen-message-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.app.focus-mode .prose .w {
+  animation: zen-arrive 220ms ease-out both;
+}
+
+.app.focus-mode .tool-expand,
+.app.focus-mode .picker-menu,
+.app.focus-mode .sheet,
+.app.focus-mode .slash {
+  animation: zen-message-in 260ms var(--zen-ease) both;
+}
+
+.app.focus-mode .tool-expand { box-shadow: none; }
+
+.app.focus-mode :is(.roll.is-fresh, .dots, .prose-shot-wait, .compacted-line.is-running),
+.app.focus-mode .prose.is-typing > :last-child::after {
+  animation: none;
+}
+
+.app.focus-mode .prose.is-typing > :last-child::after { opacity: 0.45; }
+.app.focus-mode .compacting-truck { display: none; }
+.app.focus-mode .roll-stack { animation: none; transform: translateY(-33.3333%); }
+.app.focus-mode .tool-spinner { animation-duration: 2.4s; }
+
+.app.focus-mode :is(.picker-btn, .send, .msg-copy, .jump, .tool-head, .thinking-head) {
+  transition: color 240ms ease, background-color 240ms ease, border-color 240ms ease, opacity 240ms ease;
+}
+
+.app.focus-mode .composer .send:not(.stop):hover:not(:disabled) {
+  transform: none;
+  filter: none;
+  box-shadow: none;
+}
+
+@media (max-width: 700px) {
+  .app.focus-mode .msgs-inner {
+    padding: 12px 20px;
+    gap: 20px;
+  }
+
+  .app.focus-mode .composer-focus {
+    padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app.focus-mode *,
+  .app.focus-mode *::before,
+  .app.focus-mode *::after,
+  .focus-mode-exit {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  html[data-zen-transition]::view-transition-group(*),
+  html[data-zen-transition]::view-transition-old(*),
+  html[data-zen-transition]::view-transition-new(*) { animation-duration: 0s !important; animation-delay: 0s !important; }
+}

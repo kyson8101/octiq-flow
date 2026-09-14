@@ -12,6 +12,7 @@
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
 import { elapsedLabel, workingLine } from "../lib/working";
@@ -244,6 +245,7 @@ export function withPutBack(current: string, words: readonly string[]): string {
 }
 
 export function Composer({
+  focusMode = false,
   session,
   focusOn,
   choice,
@@ -292,6 +294,8 @@ export function Composer({
   lastDurationMs,
   lastCostUsd,
 }: {
+  /** Quiet presentation only: the same mounted input retains its draft. */
+  focusMode?: boolean;
   /** Which chat this is, so Up walks back through ITS input and no one else's.
    *  Absent for a chat that has not been saved yet. */
   session?: string;
@@ -405,6 +409,8 @@ export function Composer({
   lastCostUsd?: number;
 }) {
   const [text, setText] = useState("");
+  const [focusOptions, setFocusOptions] = useState(false);
+  useEffect(() => { setFocusOptions(false); }, [focusMode]);
   const [caret, setCaret] = useState(0);
   const [menu, setMenu] = useState(false);
   /** The phone's stand-in for the three pickers: one sheet holding all of them. */
@@ -875,7 +881,8 @@ export function Composer({
   }
 
   return (
-    <div className="composer" data-composer-style={choice.composerStyle} data-model-id={choice.id}>
+    <div className={`composer ${focusMode ? "composer-focus" : ""} ${focusMode && focusOptions ? "focus-options-open" : ""}`} data-composer-style={choice.composerStyle} data-model-id={choice.id}>
+      {focusMode && <div className="focus-activity" role="status">{activity || (busy ? "Working…" : "\u00a0")}</div>}
       {/* Everything ABOUT the turn sits above the box: the thought being had,
           and under it how long this has taken and how much has been written.
           Both are lines of text, and a line of text in a row of buttons gets
@@ -1140,6 +1147,7 @@ export function Composer({
           <textarea
             ref={areaRef}
             className="composer-input"
+            aria-label="Message"
             rows={2}
             value={text}
             placeholder={disabled ? "Pick a project first" : `Ask ${choice.name} to…`}
@@ -1268,7 +1276,7 @@ export function Composer({
               side by side, which read as the same idea drawn twice — see
               `AttachList` for why they are not, and why naming them beats
               guessing at two icons. */}
-          <div className="picker">
+          <div className="picker composer-attach">
             <button
               className="picker-btn attach-btn"
               type="button"
@@ -1560,6 +1568,18 @@ export function Composer({
               line of its own now, above the box. This holds its place in the
               row and keeps Send at the right end. */}
           <span className="composer-gap" />
+
+          {focusMode && (
+            <button className="picker-btn focus-options-toggle" type="button"
+              aria-label={focusOptions ? "Hide composer options" : "Show composer options"}
+              title={focusOptions ? "Hide composer options" : "Composer options"}
+              aria-expanded={focusOptions}
+              onClick={() => transitionZen("options", () => setFocusOptions(value => !value))}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" />
+              </svg>
+            </button>
+          )}
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
 

@@ -1257,8 +1257,9 @@ const MessageListBody = function MessageList({
     if (from !== el.scrollTop) el.scrollTop = from;
 
     const t0 = performance.now();
+    const duration = el.closest(".focus-mode") ? 440 : GLIDE_MS;
     const step = (now: number) => {
-      const p = (now - t0) / GLIDE_MS;
+      const p = (now - t0) / duration;
       el.scrollTop = glideAt(from, el.scrollHeight - el.clientHeight, p);
       if (p < 1) {
         glide.current = requestAnimationFrame(step);

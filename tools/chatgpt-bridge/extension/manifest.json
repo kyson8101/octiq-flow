@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Local ChatGPT Bridge",
+  "version": "0.1.1",
+  "description": "Let a local MCP client consult the ChatGPT tab you explicitly attach.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Local ChatGPT Bridge" }
+}

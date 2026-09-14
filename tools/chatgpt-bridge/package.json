@@ -1,0 +1,15 @@
+{
+  "name": "local-chatgpt-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local stdio MCP bridge to a user-attached ChatGPT browser tab.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.13"
+  }
+}

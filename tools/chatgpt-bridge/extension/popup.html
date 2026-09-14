@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Local ChatGPT Bridge</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <h1>Local ChatGPT Bridge</h1>
+  <p>Attach a dedicated ChatGPT tab for Codex questions. Choose the model in ChatGPT before attaching.</p>
+  <form id="connect">
+    <label for="port">Local bridge port</label><input id="port" type="number" min="1024" max="65535" value="43189" required>
+    <label for="token">Pairing token</label><input id="token" type="password" autocomplete="off" placeholder="From state/config.json">
+    <p id="paired" class="muted"></p>
+    <button type="submit">Attach this ChatGPT tab</button>
+  </form>
+  <button id="disconnect" type="button" class="secondary">Disconnect</button>
+  <p id="status" role="status" aria-live="polite">Checking connection…</p>
+  <p class="muted">Questions are sent to ChatGPT using your signed-in session. Keep this tab open; do not type in it while a job runs.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

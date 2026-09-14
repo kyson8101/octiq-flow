@@ -1,0 +1,8 @@
+:root { color-scheme: light dark; font: 14px/1.45 system-ui, sans-serif; }
+body { width: 310px; padding: 16px; margin: 0; }
+h1 { font-size: 19px; margin: 0 0 12px; }
+label { display: block; margin: 12px 0 4px; font-weight: 600; }
+input, button { box-sizing: border-box; width: 100%; padding: 9px; font: inherit; border-radius: 6px; border: 1px solid #888; }
+button { cursor: pointer; margin-top: 12px; }
+.muted { font-size: 12px; opacity: .75; }
+#status { overflow-wrap: anywhere; }

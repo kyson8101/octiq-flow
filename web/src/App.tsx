@@ -155,6 +155,8 @@ import { RollingNumber } from "./components/RollingNumber";
 import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
 import { projectSlug } from "./lib/projectSlug";
 import { shouldShowChatStatus } from "./lib/chatStatus";
+import { FocusModeButton, useFocusMode } from "./components/FocusMode";
+import "./components/FocusMode.css";
 
 /** The editor and its text-editing engine are a third of the app's code and
  *  nobody who only ever chats should download them. Split off here, they arrive
@@ -374,6 +376,7 @@ export default function App() {
   /** The project list is a separate screen below 860px and a column above it.
    *  `wide` only decides how many controls fit in the top bar. */
   const isMobile = useMedia(MOBILE);
+  const { focusMode, enterFocus, exitFocus } = useFocusMode(mode === "chat" && !(isMobile && projectsScreen));
   /** The width of that column, dragged by its right edge and remembered. Only
    *  read on desktop, where the sidebar is a column; the mobile list
    *  is the width of the screen. */
@@ -395,7 +398,7 @@ export default function App() {
   const pane = useRef<HTMLElement | null>(null);
   const showingProjects = isMobile && projectsScreen;
   const projectSwipeRef = useDrawerSwipe({
-    enabled: isMobile,
+    enabled: isMobile && !focusMode,
     open: showingProjects,
     onChange: (open) => {
       if (open) setChatWide(false);
@@ -3429,6 +3432,9 @@ export default function App() {
       {/* The way in and out of the changes column at every width. */}
       <GitButton project={project} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
 
+      {mode === "chat" && project && !unavailableChat && (
+        <FocusModeButton onClick={enterFocus} />
+      )}
       {/* Full-width chat is only useful where there are columns to put away. */}
       {wide && isMobile && mode === "chat" && (
         <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
@@ -3528,8 +3534,9 @@ export default function App() {
   return (
     <div
       ref={projectSwipeRef}
-      className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""}`}
+      className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
     >
+      {focusMode && <FocusModeButton active onClick={exitFocus} />}
       {conn !== "open" && (
         <div className="conn-strip">
           {conn === "connecting" ? "Connecting to OctiqFlow…" : "Reconnecting…"}
@@ -3866,6 +3873,7 @@ export default function App() {
           )}
 
           <Composer
+            focusMode={focusMode}
             session={conversationId ?? undefined}
             focusOn={focusBox}
             choice={choice}
@@ -3923,7 +3931,7 @@ export default function App() {
             lastCostUsd={chat.lastCostUsd}
             terminalOpen={termOpen}
             onTerminal={
-              project
+              project && !focusMode
                 ? () =>
                     setTermOpen((open) => {
                       remember(TERM_KEY, open ? "0" : "1");
