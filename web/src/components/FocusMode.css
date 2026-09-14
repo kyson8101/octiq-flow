@@ -1,7 +1,7 @@
 /* A quiet reading column using the current theme's ink, paper and font.
    Hide workspace surfaces without unmounting their drafts or sessions. */
 .app.focus-mode {
-  --chat-column: 720px;
+  --chat-column: 900px;
   --zen-ease: cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   background: var(--bg-0);
