@@ -860,12 +860,8 @@ export function Composer({
     areaRef.current?.focus();
   }, [focusOn, disabled]);
 
-  function send() {
-    const value = text.trim();
-    if ((!value && attached.length === 0) || disabled) return;
-    onSend(value, attached);
-    // Remembered before the box is cleared. A repeat of the last message does
-    // not stack: two identical entries in a row make Up feel broken.
+  function rememberSent(value: string) {
+    // A repeat of the last message does not stack in input history.
     setHistory((prev) => {
       const next = prev[0] === value ? prev : [value, ...prev].slice(0, HISTORY_MAX);
       saveHistory(session, next);
@@ -873,6 +869,20 @@ export function Composer({
     });
     setRecall(-1);
     draft.current = "";
+  }
+
+  function sendQuickResponse() {
+    if (disabled) return;
+    const value = "👌 OK";
+    onSend(value, []);
+    rememberSent(value);
+  }
+
+  function send() {
+    const value = text.trim();
+    if ((!value && attached.length === 0) || disabled) return;
+    onSend(value, attached);
+    rememberSent(value);
     setText("");
     // The message owns them now; these previews are done.
     forget(attached);
@@ -1582,6 +1592,19 @@ export function Composer({
           )}
 
           <ContextMeter tokens={contextTokens} window={contextWindow} />
+
+          {focusMode && (
+            <button
+              className="focus-quick-response"
+              type="button"
+              aria-label="Send 👌 OK"
+              title="Send 👌 OK"
+              disabled={!!disabled}
+              onClick={sendQuickResponse}
+            >
+              <span aria-hidden="true">👌</span>
+            </button>
+          )}
 
           {/* Stop and Send used to SHARE this spot, so while a turn ran there
               was no send button at all — you could not add "and also check the

@@ -46,7 +46,8 @@
 }
 
 .focus-mode-exit:focus-visible,
-.composer-focus .focus-options-toggle:focus-visible {
+.composer-focus .focus-options-toggle:focus-visible,
+.composer-focus .focus-quick-response:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
@@ -98,7 +99,7 @@
 .composer-focus .composer-hint,
 .composer-focus .think-live,
 .composer-focus:not(.focus-options-open) .room-strip,
-.composer-focus:not(.focus-options-open) .composer-row > :not(.composer-attach, .composer-gap, .focus-options-toggle, .send) {
+.composer-focus:not(.focus-options-open) .composer-row > :not(.composer-attach, .composer-gap, .focus-options-toggle, .focus-quick-response, .send) {
   display: none;
 }
 
@@ -123,6 +124,30 @@
 
 .composer-focus.focus-options-open .composer-row {
   flex-wrap: wrap;
+}
+
+.composer-focus .focus-quick-response {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  font-size: 23px;
+  cursor: pointer;
+}
+
+.composer-focus .focus-quick-response:hover:not(:disabled) {
+  background: var(--bg-1);
+}
+
+.composer-focus .focus-quick-response:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 /* Capture the viewport-sized conversation and the input separately. Only the
