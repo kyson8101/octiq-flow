@@ -11,7 +11,8 @@ export function isInternalCodexToolRecovery(text: string): boolean {
   return (
     /codex_core::util:\s*Custom tool call output is missing for call id:/i.test(text) ||
     (/codex_core::tools::router:/i.test(text) &&
-      /error=write_stdin failed:\s*Unknown process id\s+\d+/i.test(text))
+      (/error=write_stdin failed:\s*Unknown process id\s+\d+/i.test(text) ||
+        /error=collab spawn failed:/i.test(text)))
   );
 }
 

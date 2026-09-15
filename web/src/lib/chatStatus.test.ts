@@ -16,6 +16,13 @@ describe("chat status visibility", () => {
     expect(shouldShowChatStatus("stderr", text)).toBe(false);
   });
 
+  it("hides the stderr copy of a collaboration spawn failure", () => {
+    const text = "2026-09-14T18:14:29.286752Z ERROR codex_core::tools::router: error=collab spawn failed: agent thread limit reached";
+
+    expect(isInternalCodexToolRecovery(text)).toBe(true);
+    expect(shouldShowChatStatus("stderr", text)).toBe(false);
+  });
+
   it("leaves real errors and process exits alone", () => {
     expect(shouldShowChatStatus("stderr", "write_stdin failed: Unknown process id 29017")).toBe(true);
     expect(shouldShowChatStatus("stderr", "Error loading config.toml")).toBe(true);

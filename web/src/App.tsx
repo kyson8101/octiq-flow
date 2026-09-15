@@ -94,6 +94,7 @@ import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail, RailButton } from "./components/AgentRail";
 import { BackgroundProvider } from "./components/Background";
+import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
@@ -3808,20 +3809,10 @@ export default function App() {
           )}
 
           {conversationId && visibleNotices.length > 0 && (
-            <div className="notices">
-              <button
-                className="notices-dismiss"
-                type="button"
-                onClick={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
-              >
-                Dismiss all
-              </button>
-              {visibleNotices.map((n, i) => (
-                <div key={i} className="notice">
-                  {n}
-                </div>
-              ))}
-            </div>
+            <ChatNotices
+              notices={visibleNotices}
+              onClear={() => patch(conversationId, (s) => ({ ...s, notices: [] }))}
+            />
           )}
 
           {conversationId && (

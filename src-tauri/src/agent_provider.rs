@@ -839,6 +839,10 @@ fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
             // copy is no more actionable than the other tool failures above.
             || (line.contains("error=write_stdin failed")
                 && line.contains("Unknown process id"))
+            // A failed collaboration spawn is returned to Codex as the tool
+            // result, where it can reuse a worker or continue alone. The
+            // tracing copy gives the person no additional action.
+            || line.contains("error=collab spawn failed")
             // A repeated sub-agent name is returned to Codex so it can reuse
             // that agent or choose another name. Preserve the duplicate trace
             // in diagnostics without presenting it as a failed chat turn.

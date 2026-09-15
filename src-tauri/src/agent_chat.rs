@@ -3840,6 +3840,13 @@ mod tests {
             ),
             OutputDisposition::DiagnosticsOnly,
         );
+        assert_eq!(
+            codex.output_disposition(
+                "2026-09-14T18:14:29.286752Z ERROR codex_core::tools::router: \
+                 error=collab spawn failed: agent thread limit reached"
+            ),
+            OutputDisposition::DiagnosticsOnly,
+        );
         // Real agent failures still reach the user.
         assert_eq!(
             codex.output_disposition("Error loading config.toml"),

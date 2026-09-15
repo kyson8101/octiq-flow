@@ -2685,46 +2685,205 @@ body {
   }
 }
 
-/* ---- Notices ---------------------------------------------------------- */
-.notices {
+/* ---- Background notices ----------------------------------------------
+   Provider diagnostics are useful when debugging, but they are not part of
+   the conversation and usually offer no immediate action. One quiet row keeps
+   them available without turning raw logs into a stack of warning cards. */
+.chat-notices {
   max-width: var(--chat-column);
   width: 100%;
-  margin: 0 auto;
+  margin: 0 auto 6px;
   padding: 0 16px;
 }
 
-.notices-dismiss {
-  display: block;
-  margin: 0 0 6px auto;
-  border: 0;
+.chat-notices-bar {
+  display: flex;
+  align-items: stretch;
+  min-height: 38px;
+  border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  background: transparent;
-  padding: 3px 5px;
+  background: color-mix(in srgb, var(--bg-1) 74%, transparent);
   color: var(--fg-2);
-  font: 11.5px var(--mono);
+}
+
+.chat-notices.is-open .chat-notices-bar {
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  background: var(--bg-1);
+}
+
+.chat-notices-toggle {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 7px 8px 7px 10px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 
-.notices-dismiss:hover {
+.chat-notices-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.chat-notices-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-notices-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-notices-title {
+  flex: 0 1 auto;
+  overflow: hidden;
+  color: var(--fg-1);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-notices-hint {
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-notices-chevron {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--fg-3);
+  transition: transform 140ms ease;
+}
+
+.chat-notices-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-notices.is-open .chat-notices-chevron {
+  transform: rotate(180deg);
+}
+
+.chat-notices-clear {
+  flex: 0 0 34px;
+  border: 0;
+  border-left: 1px solid transparent;
+  background: transparent;
+  padding: 0;
+  color: var(--fg-2);
+  font: 17px/1 var(--sans);
+  cursor: pointer;
+}
+
+.chat-notices-toggle:hover,
+.chat-notices-clear:hover {
   background: var(--bg-2);
   color: var(--fg-1);
 }
 
-.notices-dismiss:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+.chat-notices-clear:hover {
+  border-left-color: var(--border);
 }
 
-.notice {
-  margin-bottom: 6px;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
-  border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  font-family: var(--mono);
-  font-size: 11.5px;
+.chat-notices-toggle:focus-visible,
+.chat-notices-clear:focus-visible,
+.chat-notice-technical summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.chat-notices-panel {
+  max-height: min(42vh, 360px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+  background: var(--bg-0);
+}
+
+.chat-notice-item {
+  padding: 11px 12px;
+}
+
+.chat-notice-item + .chat-notice-item {
+  border-top: 1px solid var(--border);
+}
+
+.chat-notice-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fg-1);
+}
+
+.chat-notice-count {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.chat-notice-item p {
+  margin: 4px 0 0;
+  color: var(--fg-2);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.chat-notice-technical {
+  margin-top: 7px;
+}
+
+.chat-notice-technical summary {
+  width: max-content;
+  border-radius: 2px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.chat-notice-technical pre {
+  max-height: 130px;
+  margin: 7px 0 0;
+  overflow: auto;
+  padding: 8px 9px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunken);
+  color: var(--fg-2);
+  font: 10.5px/1.45 var(--mono);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .chat-notices-hint {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-notices-chevron {
+    transition: none;
+  }
 }
 
 /* ---- Composer --------------------------------------------------------- */
