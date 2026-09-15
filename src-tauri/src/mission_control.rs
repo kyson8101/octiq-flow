@@ -871,7 +871,8 @@ fn profile_workspace(
         .into_iter()
         .find(|workspace| workspace.id == workspace_id)
         .ok_or_else(|| "Choose a workspace from the OctiqFlow workspace registry.".to_string())?;
-    if workspace.primary_path.trim().is_empty() || !std::path::Path::new(&workspace.primary_path).is_dir()
+    if workspace.primary_path.trim().is_empty()
+        || !std::path::Path::new(&workspace.primary_path).is_dir()
     {
         return Err("The selected workspace folder is no longer available on this machine.".into());
     }
@@ -1638,7 +1639,9 @@ pub fn send_founder_direction_impl(
                     }
                 })
         };
-        delivered.map_err(|why| format!("The direction was recorded, but the runner could not receive it: {why}"))?;
+        delivered.map_err(|why| {
+            format!("The direction was recorded, but the runner could not receive it: {why}")
+        })?;
     }
     dashboard_value(&mut client)
 }
@@ -1878,7 +1881,18 @@ fn record_runner_completion(run_id: &str, response: &str) {
     let Some(run) = run else { return };
     let task_id: String = run.get("task_id");
     let pending_founder_direction: bool = run.get("pending_founder_direction");
-    let (status, waiting_for_founder, pending_founder_direction, current_step, task_stage, next_step, event_kind, event_message, message_kind, message_body) = if failed {
+    let (
+        status,
+        waiting_for_founder,
+        pending_founder_direction,
+        current_step,
+        task_stage,
+        next_step,
+        event_kind,
+        event_message,
+        message_kind,
+        message_body,
+    ) = if failed {
         (
             "blocked",
             false,
@@ -2176,7 +2190,9 @@ mod tests {
         );
         assert!(clean_founder_direction("  ".into()).is_err());
         assert_eq!(
-            agent_question_from_response("Progress report\nNEEDS FOUNDER DECISION: Deploy only to staging?\n"),
+            agent_question_from_response(
+                "Progress report\nNEEDS FOUNDER DECISION: Deploy only to staging?\n"
+            ),
             Some("Deploy only to staging?".into())
         );
         assert_eq!(agent_question_from_response("I can continue safely."), None);

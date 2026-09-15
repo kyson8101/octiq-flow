@@ -18,8 +18,6 @@
 // leave — its answer arrives, folds into its own transcript, and is saved,
 // whether or not it is the chat on screen.
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -98,7 +96,7 @@ import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
 import { roomCount } from "./lib/roomCount";
 import { readMention } from "./lib/mention";
-import { MOBILE, useMedia, WIDE } from "./lib/media";
+import { MOBILE, TOPBAR_ACTIONS, TOPBAR_READOUTS, useMedia, WIDE } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
@@ -148,8 +146,6 @@ import { ChatRequests } from "./components/ChatRequests";
 import { useChatRequests } from "./lib/useChatRequests";
 import { CarryOn } from "./components/CarryOn";
 import { queuedMessageCount, type ChatQueueState } from "./lib/recovery";
-import { AttentionInbox } from "./components/AttentionInbox";
-import { useAttentionInbox } from "./lib/useAttentionInbox";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
@@ -158,13 +154,6 @@ import { projectSlug } from "./lib/projectSlug";
 import { shouldShowChatStatus } from "./lib/chatStatus";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
 import "./components/FocusMode.css";
-
-/** The editor and its text-editing engine are a third of the app's code and
- *  nobody who only ever chats should download them. Split off here, they arrive
- *  the first time someone taps Files. */
-const EditorMode = lazy(() =>
-  import("./components/EditorMode").then((m) => ({ default: m.EditorMode })),
-);
 
 type Workspace = Project & {
   paths?: string[];
@@ -308,13 +297,6 @@ const RAIL_KEY = "octiq.v2.railShut";
 /** How long the panel's slide-out takes. Kept in step with the transition in
  *  styles.css; it only decides when the closed panel leaves the DOM. */
 const GIT_SLIDE_MS = 220;
-const MODE_KEY = "octiq.v2.mode";
-
-/** The two top-level views. Chat is the conversation about the code; the editor
- *  is the code. They share the project sidebar and the connection, and neither
- *  stops when you look at the other. */
-type Mode = "chat" | "editor";
-
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -341,13 +323,6 @@ export default function App() {
    *  lib/carryOn. */
   const [liveKnown, setLiveKnown] = useState(false);
   const [projectsScreen, setProjectsScreen] = useState(false);
-  const [mode, setMode] = useState<Mode>(() =>
-    localStorage.getItem(MODE_KEY) === "editor" ? "editor" : "chat",
-  );
-  // Once the editor has been opened it stays MOUNTED behind the chat, hidden
-  // rather than unmounted. Its open files hold unsaved drafts, and a tap on
-  // "Chat" is not a decision to throw them away.
-  const [editorSeen, setEditorSeen] = useState(() => localStorage.getItem(MODE_KEY) === "editor");
   // The stored list, minus everything this browser has deleted. The two are
   // written at different moments — a save already on its way when the × was
   // clicked lands after it — so the copy on disk can still carry a chat whose
@@ -362,22 +337,25 @@ export default function App() {
    *  conversation. View state, not chat state: it is about what this person is
    *  reading, and it must not survive into another conversation. */
   const [focusedAgent, setFocusedAgent] = useState<string | null>(null);
-  /** Wide enough for a sidebar column — and so for a top bar that can hold the
-   *  view switch and the usage meter. Below it those live on the projects screen. */
+  /** Wide enough to keep the primary navigation in the top bar. Below this it moves
+   *  into the projects screen; actions and readouts use wider thresholds. */
   const wide = useMedia(WIDE);
+  const expandedTopbarActions = useMedia(TOPBAR_ACTIONS);
+  const topbarReadouts = useMedia(TOPBAR_READOUTS);
   /** A temporary focus view for the tablet layout. On a desktop each column
    *  already has its own control on the bar — the project name, the Git
    *  button — so one more that sweeps both away at once adds nothing. */
   const [chatWide, setChatWide] = useState(false);
-  const chatExpanded = chatWide && wide && mode === "chat";
+  const chatExpanded = chatWide && wide;
   /** The project column, put away, on the screens where it is a column.
    *  Remembered: someone who works with the chat full width wants it that way
    *  the next time too. */
   const [navShut, setNavShut] = useState(() => localStorage.getItem(NAV_KEY) === "1");
   /** The project list is a separate screen below 860px and a column above it.
-   *  `wide` only decides how many controls fit in the top bar. */
+   *  Top-bar action/readout capacity has its own, wider breakpoints: a desktop
+   *  column layout does not imply that every control fits in one header row. */
   const isMobile = useMedia(MOBILE);
-  const { focusMode, enterFocus, exitFocus } = useFocusMode(mode === "chat" && !(isMobile && projectsScreen));
+  const { focusMode, enterFocus, exitFocus } = useFocusMode(!(isMobile && projectsScreen));
   /** The width of that column, dragged by its right edge and remembered. Only
    *  read on desktop, where the sidebar is a column; the mobile list
    *  is the width of the screen. */
@@ -407,10 +385,10 @@ export default function App() {
     },
   });
   // There must always be a visible way back. A narrow layout already gives the
-  // chat the whole body, and the editor owns a different kind of workspace.
+  // chat the whole body.
   useEffect(() => {
-    if (!wide || !isMobile || mode !== "chat") setChatWide((was) => (was ? false : was));
-  }, [wide, isMobile, mode]);
+    if (!wide || !isMobile) setChatWide((was) => (was ? false : was));
+  }, [wide, isMobile]);
   // Switching conversations closes the focus panel. Without this the next
   // conversation opens showing "conversation" as a back arrow over a blank
   // panel until something is clicked.
@@ -806,13 +784,6 @@ export default function App() {
     },
     [announce],
   );
-
-  const pickMode = useCallback((next: Mode) => {
-    setMode(next);
-    setProjectsScreen(false);
-    if (next === "editor") setEditorSeen(true);
-    remember(MODE_KEY, next);
-  }, []);
 
   useEffect(() => bridge.onState(setConn), []);
 
@@ -1620,7 +1591,7 @@ export default function App() {
       ? chat.failure
       : undefined;
   const previews = useImagePreviews(conversationId ? keyFor(conversationId) : "", chat.busy);
-  const previewVisible = mode === "chat" && previews.open;
+  const previewVisible = previews.open;
   /** The files this chat says are worth opening — see lib/pins. Read once up
    *  here rather than twice below: the button needs the count and the panel
    *  needs the list, and walking the transcript for each of them would do the
@@ -2164,12 +2135,11 @@ export default function App() {
   const showConversation = useCallback(
     (c: Conversation) => {
       openConversation(c);
-      pickMode("chat");
       dismissGit();
       showFiles(false);
       closeFile();
     },
-    [openConversation, pickMode, dismissGit, showFiles, closeFile],
+    [openConversation, dismissGit, showFiles, closeFile],
   );
 
   // Tapping a notification brings the window forward — this is what then puts
@@ -3328,45 +3298,23 @@ export default function App() {
     [conversationId, restartForAccess],
   );
 
-  const allProjects = useMemo(() => [...workspaces, ...shelved], [workspaces, shelved]);
-  const visibleConversations = useMemo(() => conversations.filter((c) =>
-    !deleting.has(c.id) && !leaving.has(c.id) && !isDeleted(c.id),
-  ), [conversations, deleting, leaving]);
-  const attention = useAttentionInbox({
-    conversations: visibleConversations, projects: allProjects, chats, running,
-    liveKnown, connected: conn === "open",
-    asks, questions, safetyBlocks, activeRounds, interruptedIds,
-  });
-
   if (conn === "unauthorized") return <Connect />;
 
   /* Workspace navigation. Marked by a filled pill, not an edge stripe: on a 48px-tall
      bar a thin marker is a thing you squint at. */
-  const viewSwitch = (
+  const primaryNavigation = (
     <div className="mode-switch" role="group" aria-label="View">
       <button
-        className={`mode-btn ${mode === "chat" ? "is-on" : ""}`}
+        className="mode-btn is-on"
         type="button"
-        aria-pressed={mode === "chat"}
+        aria-pressed="true"
         title="Chat"
-        onClick={() => pickMode("chat")}
+        onClick={() => setProjectsScreen(false)}
       >
         <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.6-4.7A8.4 8.4 0 0 1 3.6 11 8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z" />
         </svg>
         <span className="mode-label">Chat</span>
-      </button>
-      <button
-        className={`mode-btn ${mode === "editor" ? "is-on" : ""}`}
-        type="button"
-        aria-pressed={mode === "editor"}
-        title="Files"
-        onClick={() => pickMode("editor")}
-      >
-        <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m8 17-4-5 4-5M16 7l4 5-4 5" />
-        </svg>
-        <span className="mode-label">Files</span>
       </button>
       <a className="mode-btn mode-os-link" href="/os" target="_blank" rel="noopener noreferrer" title="Open OctiqOS">
         <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -3423,7 +3371,7 @@ export default function App() {
         onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }}
       />
 
-      {conversationId && mode === "chat" && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
+      {conversationId && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
       <FilesButton
         count={sessionFiles.length}
         open={filesOpen && !previewVisible}
@@ -3433,15 +3381,15 @@ export default function App() {
       {/* The way in and out of the changes column at every width. */}
       <GitButton project={project} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
 
-      {mode === "chat" && project && !unavailableChat && (
+      {project && !unavailableChat && (
         <FocusModeButton onClick={enterFocus} />
       )}
       {/* Full-width chat is only useful where there are columns to put away. */}
-      {wide && isMobile && mode === "chat" && (
+      {wide && isMobile && (
         <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
       )}
 
-      {conversationId && mode === "chat" && (
+      {conversationId && (
         <>
           <CopyChatIdButton chatId={conversationId} />
           <ChatDeleteButton
@@ -3452,30 +3400,6 @@ export default function App() {
           />
         </>
       )}
-
-      <AttentionInbox
-        entries={attention.entries}
-        connected={conn === "open"}
-        onOpen={(conversation) => {
-          const kind = attention.entries.find((entry) => entry.conversation.id === conversation.id)?.kind;
-          showConversation(conversation);
-          requestAnimationFrame(() => {
-            const selector = kind === "permission" ? ".ask-card:not(.safety-card)"
-              : kind === "question" ? ".qa-card"
-                : kind === "safety" ? ".safety-card"
-                  : kind === "failure" ? ".failure, .tool-error, .carry-on"
-                    : kind === "interrupted" ? ".carry-on" : ".conversation-overview";
-            const target = pane.current?.querySelector<HTMLElement>(selector)
-              ?? pane.current?.querySelector<HTMLElement>("textarea");
-            if (!target) return;
-            if (target instanceof HTMLDetailsElement) target.open = true;
-            target.scrollIntoView({ block: "nearest" });
-            const control = target.querySelector<HTMLElement>("summary, button, textarea, input") ?? target;
-            if (control === target && !control.hasAttribute("tabindex")) control.tabIndex = -1;
-            control.focus({ preventScroll: true });
-          });
-        }}
-      />
 
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
@@ -3528,7 +3452,7 @@ export default function App() {
         </button>
       )}
 
-      {wide && readouts}
+      {topbarReadouts && readouts}
     </>
   );
 
@@ -3594,22 +3518,22 @@ export default function App() {
           </button>
         </div>
 
-        {/* A dedicated middle slot keeps the view switch centred instead of
+        {/* A dedicated middle slot keeps the primary navigation centred instead of
             letting the changing number of actions on the right push it. */}
-        <div className="topbar-center">{wide && viewSwitch}</div>
+        <div className="topbar-center">{wide && primaryNavigation}</div>
 
         <div className="topbar-actions">
           {showingProjects ? (
             <button className="projects-return" type="button"
-              aria-label={mode === "chat" ? "Return to chat" : "Return to files"}
-              title={mode === "chat" ? "Return to chat" : "Return to files"}
+              aria-label="Return to chat"
+              title="Return to chat"
               onClick={() => setProjectsScreen(false)}>
-              <span>{mode === "chat" ? "Return to chat" : "Return to files"}</span>
+              <span>Return to chat</span>
               <svg className="projects-return-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M5 12h14m-6-6 6 6-6 6" />
               </svg>
             </button>
-          ) : wide ? topbarActions : <TopbarActionsMenu attentionCount={attention.entries.length}>{topbarActions}</TopbarActionsMenu>}
+          ) : expandedTopbarActions ? topbarActions : <TopbarActionsMenu>{topbarActions}</TopbarActionsMenu>}
         </div>
       </header>
 
@@ -3637,11 +3561,9 @@ export default function App() {
           expanded={expanded}
           onToggle={toggleFolder}
           onPickConversation={(conversation) => {
-            if (isMobile) pickMode("chat");
             openConversation(conversation);
           }}
           onNewChat={(id) => {
-            if (isMobile) pickMode("chat");
             newChat(id);
           }}
           onDelete={deleteConversation}
@@ -3652,11 +3574,11 @@ export default function App() {
           onReorder={reorderWorkspaces}
           onHide={isMobile ? undefined : () => showNav(false)}
           onResize={isMobile ? undefined : nav.startDrag}
-          head={wide ? undefined : viewSwitch}
-          foot={wide ? undefined : readouts}
+          head={wide ? undefined : primaryNavigation}
+          foot={topbarReadouts ? undefined : readouts}
         />
 
-        <main className="main" hidden={mode !== "chat" || showingProjects} ref={pane}>
+        <main className="main" hidden={showingProjects} ref={pane}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the project list.</p></div> : <>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
@@ -3935,14 +3857,6 @@ export default function App() {
           </>}
         </main>
 
-        {editorSeen && (
-          <div className="ws-host" hidden={mode !== "editor" || showingProjects}>
-            <Suspense fallback={<div className="dots" aria-label="loading" />}>
-              <EditorMode project={project} />
-            </Suspense>
-          </div>
-        )}
-
         {/* The agent column: the agents this chat started, as a card that
             looks like it is floating but keeps its own space — the chat ends
             where the column begins, so nothing is ever underneath it.
@@ -3956,7 +3870,7 @@ export default function App() {
             here it takes width from the view, so the transcript and the prompt
             box move together and stay lined up — which is what the git and
             files panels beside it have always done. */}
-        {mode === "chat" && !previewVisible && !railShut && chat.agents.length > 0 && (
+        {!previewVisible && !railShut && chat.agents.length > 0 && (
           <aside className="side">
             <AgentRail
               agents={chat.agents}
@@ -3966,11 +3880,10 @@ export default function App() {
           </aside>
         )}
 
-        {/* The third desktop column, kept at the far right for both Chat and
-            Files: a sibling of the views rather than something laid over them,
-            so whichever view is showing gives up width while this is open and
-            takes it straight back when it closes. On a phone the stylesheet
-            turns the same element into a sheet that slides in from the right. */}
+        {/* The Git column stays at the far right as a sibling of the chat,
+            rather than something laid over it, so the chat gives up width while
+            this is open and takes it straight back when it closes. On a phone
+            the stylesheet turns it into a sheet that slides in from the right. */}
         {gitMounted && !previewVisible && (
           <GitPanel
             project={project}

@@ -1,9 +1,10 @@
 // Is the window wide enough for the layout that needs the room?
 //
 // CSS answers this for STYLE, and that is where the answer belongs whenever it
-// is a matter of style. It cannot answer it for PLACE: the view switch and the
-// plan-usage meter live in the top bar on a wide screen and inside the drawer
-// on a phone, and no media query moves an element from one parent to another.
+// is a matter of style. It cannot answer it for PLACE: the view switch, action
+// group, and live readouts move between the top bar, its overflow menu, and the
+// sidebar as room appears. A media query cannot move one element between those
+// parents.
 //
 // Rendering both and hiding one would be the other way, and it is worse here:
 // the usage meter polls an endpoint that rate-limits per account, so a second
@@ -30,10 +31,21 @@ export function useMedia(query: string): boolean {
   return matches;
 }
 
-/** The one breakpoint the app turns on: below it the sidebar is a drawer, the
- *  right column is not a column, and the top bar has room for four things.
- *  Kept in step with the `700px` media queries in styles.css. */
+/** The first layout breakpoint: below it the sidebar is a drawer, the right
+ *  column is not a column, and primary navigation moves off the top bar. Kept in
+ *  step with the `700px` media queries in styles.css. */
 export const WIDE = "(min-width: 701px)";
+
+/** Enough room for the ordinary chat actions beside centred navigation.
+ *  Below this they stay behind one disclosure. This deliberately starts well
+ *  above the 860px desktop-layout boundary: an 878px window can hold the three
+ *  app columns, but it cannot also hold every chat action across one row. */
+export const TOPBAR_ACTIONS = "(min-width: 1180px)";
+
+/** Enough room for the two account-usage figures and memory readout as well as
+ *  the ordinary actions. At intermediate widths the live figures remain in
+ *  the sidebar footer, where they do not compete with navigation. */
+export const TOPBAR_READOUTS = "(min-width: 1500px)";
 
 /** Below this the project list occupies its own screen; at and above it,
  *  projects remain a column beside the workspace. Matches styles.css. */

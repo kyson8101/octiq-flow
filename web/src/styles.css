@@ -79,9 +79,9 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-/* Three deliberate regions: project, the view switch, and actions. The middle
+/* Three deliberate regions: project, primary navigation, and actions. The middle
    region is a real centre on a desktop, so Git activity changing on the right
-   no longer nudges Chat / Files sideways. */
+   no longer nudges navigation sideways. */
 .topbar-leading,
 .topbar-center,
 .topbar-actions {
@@ -451,9 +451,9 @@ body {
   color: var(--danger);
 }
 
-/* Where the view switch and the usage meter go instead. The switch leads the
-   drawer, since choosing Chat or Files is the same kind of choice as choosing
-   a project; the meter sits at the bottom with the other quiet readouts. */
+/* Where the view switch and live readouts go when the top bar has no room.
+   The switch leads the drawer on a narrow screen; the figures stay at the
+   bottom at narrow and intermediate widths, with the other quiet readouts. */
 .sidebar-slot {
   flex: 0 0 auto;
   padding: 8px 10px 4px;
@@ -7786,20 +7786,24 @@ body.is-ultra .eff {
   box-shadow: var(--shadow);
 }
 
-/* On a phone the meter lives in the drawer footer, not the top bar. Opening
-   down and right-aligning from that 300px drawer placed a 340px card partly to
-   the LEFT of the viewport (and below the control, against the browser chrome).
-   Keep the card inside the drawer and open it into the available space above
-   the footer instead. A short landscape viewport can scroll the breakdown
-   without making the app shell itself scroll. */
+/* Whenever the meter lives in the sidebar footer, open its detail card up into
+   the workspace. Opening down would put it beyond the viewport; right-aligning
+   a 340px card to the 260px desktop sidebar would put part of it off the left
+   edge. A short viewport can scroll the card without scrolling the app shell. */
+.sidebar-slot.is-foot .usage-pop {
+  inset: auto auto calc(100% + 6px) 0;
+  width: min(340px, calc(100vw - 20px));
+  max-height: calc(100dvh - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
 @media (max-width: 700px) {
   .sidebar-slot.is-foot .usage-pop {
-    inset: auto 0 calc(100% + 6px);
+    right: 0;
+    left: 0;
     width: auto;
-    max-height: calc(100dvh - 96px);
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    -webkit-overflow-scrolling: touch;
   }
 }
 
@@ -10593,21 +10597,9 @@ body.is-ultra .eff {
   padding: 8px 12px;
 }
 
-/* ---- Chat / Files switch ------------------------------------------------
-   Both views stay mounted and one is hidden, so the chat keeps its scroll
-   position and the editor keeps its unsaved drafts. `[hidden]` alone would not
-   do it: the class rules above already set `display`, and a UA style loses to
-   any author rule. */
-.main[hidden],
-.ws-host[hidden] {
+/* ---- Primary navigation ------------------------------------------------ */
+.main[hidden] {
   display: none;
-}
-
-.ws-host {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
 }
 
 .mode-switch {
@@ -10643,8 +10635,8 @@ body.is-ultra .eff {
   box-shadow: var(--shadow-sm);
 }
 
-/* Under this the usage pill and the project name both need the room, and an
-   icon says "chat" or "code" perfectly well on its own. */
+/* Under this the usage pill and the project name both need the room, and each
+   destination already has an icon that works on its own. */
 @media (max-width: 620px) {
   .mode-label {
     display: none;

@@ -3321,6 +3321,10 @@ mod tests {
             r#""/tmp/a\", evil = \"yes""#
         );
         assert_eq!(toml_string(r"/tmp/back\slash"), r#""/tmp/back\\slash""#);
+        assert_eq!(
+            toml_string("line one\nline two\tend"),
+            r#""line one\nline two\tend""#
+        );
     }
 
     #[test]
@@ -3698,6 +3702,10 @@ mod tests {
         assert!(!c.contains("--add-dir"));
         assert!(c.contains("-c sandbox_mode='read-only'"));
         assert!(c.contains("-c model_reasoning_effort='high'"));
+        assert!(c.contains("developer_instructions=\"You are running inside OctiqFlow"));
+        assert!(c.contains("effort: high"));
+        assert!(c.contains("OctiqFlow label: Read-only"));
+        assert!(c.contains("OctiqFlow did not select an explicit model"));
         assert!(c.contains("writable_roots"));
 
         // A FIRST turn has no thread yet, so it is a plain exec with the flags.

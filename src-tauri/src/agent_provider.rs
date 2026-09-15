@@ -253,7 +253,14 @@ fn sh_quote(s: &str) -> String {
 
 /// One TOML basic string, quoted and escaped before it reaches Codex's parser.
 fn toml_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
+    format!(
+        "\"{}\"",
+        s.replace('\\', r"\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    )
 }
 
 /// Model aliases reach a command line, so reject anything that is not a short
@@ -547,6 +554,8 @@ impl AgentProvider for CodexProvider {
         // Codex is one-shot. Continuing a conversation is a new `resume`
         // invocation, not another write to a live stdin.
         let resuming = request.resume.and_then(safe_session_id);
+        let model = request.model.and_then(safe_model);
+        let effort = request.effort.and_then(|e| self.effort(e));
         let mut cmd = match &resuming {
             Some(id) => format!("codex exec resume --json {}", sh_quote(id)),
             None => String::from("codex exec --json"),
@@ -554,8 +563,8 @@ impl AgentProvider for CodexProvider {
         // OctiqFlow deliberately controls the process cwd, including isolated
         // room-only seats, so Codex's git-repo trust check adds no protection.
         cmd.push_str(" --skip-git-repo-check");
-        if let Some(model) = request.model.and_then(safe_model) {
-            cmd.push_str(&format!(" -m {}", sh_quote(&model)));
+        if let Some(model) = model.as_deref() {
+            cmd.push_str(&format!(" -m {}", sh_quote(model)));
         }
         if let Some(access) = request.access {
             if resuming.is_some() {
@@ -571,9 +580,21 @@ impl AgentProvider for CodexProvider {
                 sh_quote(codex_approval(access))
             ));
         }
-        if let Some(effort) = request.effort.and_then(|e| self.effort(e)) {
+        if let Some(effort) = effort {
             cmd.push_str(&format!(" -c model_reasoning_effort={}", sh_quote(effort)));
         }
+        // `codex exec` runs without Codex's interactive Plan-mode UI. Tell the
+        // model which host owns the conversation and which question channel can
+        // actually reach the person. This is a developer instruction rather
+        // than a user-prompt prefix, so OctiqFlow's runtime contract cannot be
+        // mistaken for part of the user's request.
+        // Keep the reusable contract first and per-run values last so Codex can
+        // cache the stable prefix while still knowing what OctiqFlow selected.
+        let runtime = codex_runtime_context(model.as_deref(), effort, request.access);
+        let prompt =
+            format!("{CODEX_HOST_PROMPT}\n\n{ASK_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{runtime}");
+        let host_instructions = format!("developer_instructions={}", toml_string(&prompt));
+        cmd.push_str(&format!(" -c {}", sh_quote(&host_instructions)));
         if let Some(mcp) = request.mcp_config {
             // Codex accepts per-process MCP configuration through ordinary
             // `-c` overrides. The shared writer gives us Claude's JSON config
@@ -912,16 +933,77 @@ fn codex_approval(access: Access) -> &'static str {
     }
 }
 
+fn codex_model_summary(model: Option<&str>) -> String {
+    match model {
+        Some("gpt-6-astra") => "gpt-6-astra (OctiqFlow label: Astra)".into(),
+        Some("gpt-5.6-sol") => "gpt-5.6-sol (OctiqFlow label: Sol)".into(),
+        Some("gpt-5.6-terra") => "gpt-5.6-terra (OctiqFlow label: Terra)".into(),
+        Some("gpt-5.6-luna") => "gpt-5.6-luna (OctiqFlow label: Luna)".into(),
+        Some(model) => model.to_string(),
+        None => "Codex CLI default (OctiqFlow did not select an explicit model)".into(),
+    }
+}
+
+fn codex_effort_summary(effort: Option<&str>) -> String {
+    match effort {
+        Some("xhigh") => "xhigh (OctiqFlow label: Very high)".into(),
+        Some(effort) => effort.to_string(),
+        None => "Codex CLI default (OctiqFlow did not select an explicit effort)".into(),
+    }
+}
+
+fn codex_access_summary(access: Option<Access>) -> String {
+    match access {
+        Some(Access::Read) => "read-only (OctiqFlow label: Read-only)".into(),
+        Some(Access::Auto) => {
+            "workspace-write with on-request approvals (OctiqFlow label: Workspace write)".into()
+        }
+        Some(Access::Full) => {
+            "danger-full-access without approval prompts (OctiqFlow label: Danger: full access)"
+                .into()
+        }
+        Some(access) => format!(
+            "{} with {} approvals",
+            codex_sandbox(access),
+            codex_approval(access)
+        ),
+        None => "Codex CLI defaults (OctiqFlow did not select explicit access)".into(),
+    }
+}
+
+fn codex_runtime_context(
+    model: Option<&str>,
+    effort: Option<&str>,
+    access: Option<Access>,
+) -> String {
+    format!(
+        "OctiqFlow runtime metadata for this turn (authoritative for the person's selected settings):\n- provider: Codex\n- model: {}\n- effort: {}\n- access: {}\n- workspace: this process's current working directory\nReport these values directly when asked about this session. The model value is the requested model ID, not proof of an undisclosed backend snapshot.",
+        codex_model_summary(model),
+        codex_effort_summary(effort),
+        codex_access_summary(access),
+    )
+}
+
 /// An MCP server carrying the tools print mode cannot otherwise answer.
 const ASK_MCP: &str = include_str!("../../scripts/mcp/octiq-ask.cjs");
 const PREVIEW_MCP: &str = include_str!("../../scripts/mcp/preview.cjs");
 const ARTIFACT_MCP: &str = include_str!("../../scripts/mcp/artifact.cjs");
 
-/// Told to Claude so the tools it was given are used at the right moments.
+/// Codex-specific host context. `codex exec` has no interactive
+/// `request_user_input` channel, even though the model may know that built-in
+/// tool from another Codex surface.
+const CODEX_HOST_PROMPT: &str = "You are running inside OctiqFlow. OctiqFlow owns this conversation and provides host tools for questions, conversation handoffs, file pins, previews, artifacts, and optional agent collaboration. The process working directory is the OctiqFlow project or workspace for this chat. Prefer an OctiqFlow-provided tool whenever it matches the task. Never call the built-in `request_user_input` from this `codex exec` session; this non-interactive host cannot service it. Use OctiqFlow's `ask_user` tool (`mcp__octiq__ask_user`) instead when it is available. If it is unavailable, ask one concise question in your normal reply.\n\nQuestions about the current model, effort, access, provider, workspace, or conversation host are local OctiqFlow runtime questions. Answer them from the authoritative runtime metadata below. Do not browse official documentation, inspect standalone Codex or ChatGPT apps, or scan browser/app state to rediscover those values.\n\nInterpret the person's request from its technical and conversational context. A quoted technical statement, command, log, error, or status is material to explain or validate; it is not a request for grammar or wording changes unless the person explicitly asks for editing, rewriting, grammar, or natural phrasing. If an ambiguity would materially change the answer, address the likely technical meaning first and ask one concise follow-up only when still necessary.\n\nFor ordinary questions, use sufficient evidence already present in the conversation, runtime metadata, and local workspace before calling tools. Use the fewest useful tool or retrieval loops, and stop once the core question can be answered correctly. Never request a broad computer-state inventory merely to discover OctiqFlow session settings.";
+
+/// Told to chat agents so the tools they were given are used at the right
+/// moments. Codex receives this inside its injected developer instructions.
 const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last.\n\n`read_conversation` reads another OctiqFlow conversation from its URL. Use it only when the person gives you that URL or explicitly asks you to consult that conversation; transcripts may contain sensitive context, so never browse them speculatively. The first call returns the latest bounded page, and its `before` cursor walks backward when older context is needed. When the person's whole message is `continue <OctiqFlow conversation URL>`, you MUST call `read_conversation` with that URL before any other action, must not open it in Browser or infer its history from workspace files, and should then continue from the latest actionable next step.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
 
-/// Write Claude's OctiqFlow MCP config and return its path. Best effort: a
-/// provider without it still starts, just without the extra tools.
+/// Docspace preferences are useful context, but loading all private preference
+/// files into every new model session would cross the vault's privacy boundary.
+const DOCSPACE_PROMPT: &str = "Docspace may contain shared preferences for the person and their agents. Apply relevant preferences already present in the conversation or instructions. Do not preload private preference files at session start. Before reading preference contents from docspace, ask the person for permission, then load only the preference material relevant to the current scope and avoid exposing it unnecessarily.";
+
+/// Write OctiqFlow's MCP config for chat providers and return its path. Best
+/// effort: a provider without it still starts, just without the extra tools.
 pub(crate) fn ask_mcp_config() -> Option<std::path::PathBuf> {
     let dir = crate::paths::home_dir()?.join(".octiqflow").join("mcp");
     std::fs::create_dir_all(&dir).ok()?;
@@ -1029,6 +1111,17 @@ mod tests {
         assert!(codex.contains("mcp_servers.octiq.args=[\"octiq-ask.cjs\"]"));
         assert!(codex.contains("mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\"]"));
         assert!(codex.contains("mcp_servers.octiq.tool_timeout_sec=660"));
+        assert!(codex.contains("developer_instructions=\"You are running inside OctiqFlow"));
+        assert!(codex.contains("Never call the built-in `request_user_input`"));
+        assert!(codex.contains("mcp__octiq__ask_user"));
+        assert!(codex.contains("Docspace may contain shared preferences"));
+        assert!(codex.contains("model: model-x"));
+        assert!(codex.contains("effort: high"));
+        assert!(codex.contains("OctiqFlow label: Workspace write"));
+        assert!(codex.contains("it is not a request for grammar or wording changes"));
+        assert!(codex.contains("Do not browse official documentation"));
+        assert!(codex.contains("fewest useful tool or retrieval loops"));
+        assert!(codex.contains("\\n\\n"));
         assert!(!codex.contains("--permission-mode"));
 
         let pi = command(AgentKind::Pi, Some(Path::new("octiq-ask.json")));
@@ -1037,6 +1130,58 @@ mod tests {
         assert!(pi.contains("--thinking high"));
         assert!(pi.contains("--tools read,bash,edit,write,grep,find,ls"));
         assert!(!pi.contains("octiq-ask"));
+    }
+
+    #[test]
+    fn codex_keeps_octiqflow_host_context_when_its_mcp_cannot_be_written() {
+        let codex = command(AgentKind::Codex, None);
+        assert!(codex.contains("developer_instructions=\"You are running inside OctiqFlow"));
+        assert!(codex.contains("Never call the built-in `request_user_input`"));
+        assert!(codex.contains("Docspace may contain shared preferences"));
+        assert!(codex.contains("model: model-x"));
+        assert!(!codex.contains("mcp_servers.octiq.command"));
+    }
+
+    #[test]
+    fn codex_receives_the_exact_octiqflow_runtime_selection() {
+        let codex = provider_for(AgentKind::Codex).build_command(&AgentCommand {
+            model: Some("gpt-5.6-sol"),
+            access: Some(Access::Auto),
+            prompt: "what model is running in this session?",
+            resume: Some("01a0142d-552d-7a93-9152-47530c33e501"),
+            extra_dirs: &[],
+            effort: Some("xhigh"),
+            images: &[],
+            lite: false,
+            mcp_config: None,
+        });
+
+        assert!(codex.contains("-m 'gpt-5.6-sol'"));
+        assert!(codex.contains("model_reasoning_effort='xhigh'"));
+        assert!(codex.contains("model: gpt-5.6-sol (OctiqFlow label: Sol)"));
+        assert!(codex.contains("effort: xhigh (OctiqFlow label: Very high)"));
+        assert!(codex.contains("OctiqFlow label: Workspace write"));
+        assert!(codex.contains("Report these values directly when asked about this session"));
+    }
+
+    #[test]
+    fn codex_runtime_context_does_not_claim_rejected_settings() {
+        let codex = provider_for(AgentKind::Codex).build_command(&AgentCommand {
+            model: Some("gpt-5.6-sol; echo nope"),
+            access: None,
+            prompt: "hello",
+            resume: None,
+            extra_dirs: &[],
+            effort: Some("unlimited"),
+            images: &[],
+            lite: false,
+            mcp_config: None,
+        });
+
+        assert!(!codex.contains("echo nope"));
+        assert!(codex.contains("OctiqFlow did not select an explicit model"));
+        assert!(codex.contains("OctiqFlow did not select an explicit effort"));
+        assert!(codex.contains("OctiqFlow did not select explicit access"));
     }
 
     #[test]
