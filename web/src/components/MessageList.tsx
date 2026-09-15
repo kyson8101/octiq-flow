@@ -127,6 +127,51 @@ function Prose({ text, animate }: { text: string; animate: boolean }) {
   );
 }
 
+/** Codex commentary is a live instrument readout, not the answer.
+ *
+ * While the turn runs, only the newest update stays open. Earlier updates are
+ * one disclosure away. Once the answer lands, the whole working log folds and
+ * the final prose takes the visual foreground. */
+function ProgressLog({
+  updates,
+  candidate,
+  streaming,
+}: {
+  updates: string[];
+  candidate?: string;
+  streaming: boolean;
+}) {
+  const all = [...updates, ...(candidate ? [candidate] : [])];
+  if (!all.length) return null;
+
+  const latest = streaming ? all.at(-1) : undefined;
+  const earlier = latest ? all.slice(0, -1) : all;
+  const countLabel = `${earlier.length} ${latest ? "earlier " : ""}progress ${earlier.length === 1 ? "update" : "updates"}`;
+
+  return (
+    <div className={`agent-progress ${streaming ? "is-live" : "is-settled"}`}>
+      {latest && (
+        <div className="agent-progress-live" role="status" aria-live="polite">
+          <span className="agent-progress-pulse" aria-hidden="true" />
+          <Prose text={latest} animate={false} />
+        </div>
+      )}
+      {earlier.length > 0 && (
+        <details className="agent-progress-log">
+          <summary>{countLabel}</summary>
+          <div className="agent-progress-items">
+            {earlier.map((update, index) => (
+              <div className="agent-progress-item" key={`${index}:${update.slice(0, 24)}`}>
+                <Prose text={update} animate={false} />
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 /** How far back the `/config` panel looks for the CLI's `Set … to …` answers.
  *
  *  Far enough to cover a run of settings changed one after another, short
@@ -686,6 +731,8 @@ function TurnView({
   const replyTo = messages.find((m) => m.replyTo)?.replyTo;
   const streaming = messages.some((m) => m.streaming);
   const blocks = messages.flatMap((m) => m.blocks);
+  const progress = messages.flatMap((m) => m.progress ?? []);
+  const codexCandidate = [...messages].reverse().find((m) => m.codexCandidate)?.codexCandidate;
   // The answer as it reads on screen. Thinking is left out — it is folded away
   // here for the same reason, it is not the answer — and so are tool calls,
   // whose arguments and results are machinery rather than something you would
@@ -789,6 +836,9 @@ function TurnView({
             them — and because a message whose words are "look at this" makes no
             sense until you have seen the picture it came with. */}
         <SentFiles files={files} />
+        {role === "assistant" && (
+          <ProgressLog updates={progress} candidate={codexCandidate} streaming={streaming} />
+        )}
         {/* Each message you sent is cut on its own — two long pastes in a row
             are two messages, and one "show more" over both would open the pair.
             Anything else in a user turn (there is nothing today) still goes the

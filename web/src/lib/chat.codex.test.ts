@@ -28,6 +28,7 @@ function replay(text: string, start: ChatState = emptyChat()): ChatState {
 
 const said = (m: Message) =>
   m.blocks.filter((b) => b.kind === "text").map((b) => ("text" in b ? b.text : "")).join("\n");
+const progress = (m: Message) => [...(m.progress ?? []), ...(m.codexCandidate ? [m.codexCandidate] : [])].join("\n");
 
 describe("a Codex seat answering", () => {
   const after = replay(codexTurn);
@@ -40,7 +41,7 @@ describe("a Codex seat answering", () => {
   });
 
   it("carries the words it actually wrote", () => {
-    const all = after.messages.map(said).join("\n");
+    const all = after.messages.flatMap((m) => [progress(m), said(m)]).join("\n");
 
     expect(all).toContain("I’m Codex");
     expect(all).toContain("coding and problem-solving agent");
@@ -158,13 +159,14 @@ describe("a Codex chat of its own", () => {
       type: "item.completed",
       item: { id: "item_0", type: "agent_message", text: "answer to the earlier message" },
     });
+    const done = reduceChat(answered, { type: "turn.completed" });
 
-    expect(answered.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-    expect(answered.messages[0].takenUp).toBe(true);
-    expect(said(answered.messages[1])).toBe("answer to the earlier message");
-    expect(answered.messages[1].replyTo).toBeUndefined();
-    expect(said(answered.messages[2])).toBe("later queued message");
-    expect(answered.messages[2].takenUp).toBeUndefined();
+    expect(done.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(done.messages[0].takenUp).toBe(true);
+    expect(said(done.messages[1])).toBe("answer to the earlier message");
+    expect(done.messages[1].replyTo).toBeUndefined();
+    expect(said(done.messages[2])).toBe("later queued message");
+    expect(done.messages[2].takenUp).toBeUndefined();
   });
 
   it("keeps successive queued answers tied to their own prompts", () => {
@@ -181,6 +183,7 @@ describe("a Codex chat of its own", () => {
       type: "item.completed",
       item: { id: "item_0", type: "agent_message", text: "second answer" },
     });
+    state = reduceChat(state, { type: "turn.completed" }, 6);
 
     expect(state.messages.map((m) => m.role)).toEqual([
       "user",
@@ -253,7 +256,8 @@ describe("a Codex chat of its own", () => {
     });
 
     expect(state.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-    expect(said(state.messages[1])).toBe("I am checking the file.\nUpdated and verified.");
+    expect(progress(state.messages[1])).toBe("I am checking the file.\nUpdated and verified.");
+    expect(said(state.messages[1])).toBe("");
     expect(state.messages[1].blocks.some((b) => b.kind === "tool")).toBe(true);
     expect(said(state.messages[2])).toBe("updated?");
     expect(state.messages[2].takenUp).toBeUndefined();
@@ -293,7 +297,7 @@ describe("a Codex chat of its own", () => {
       "assistant",
     ]);
     expect(said(state.messages[2])).toBe("updated?");
-    expect(said(state.messages[3])).toBe("Not yet; I am finishing it now.");
+    expect(progress(state.messages[3])).toBe("Not yet; I am finishing it now.");
     expect(state.messages[1].streaming).toBe(false);
     expect(state.messages[2].takenUp).toBe(true);
     expect(state.messages[3].replyTo).toBeUndefined();
@@ -309,5 +313,42 @@ describe("a Codex chat of its own", () => {
 
     const done = reduceChat(busy, { type: "turn.completed", usage: { output_tokens: 12 } });
     expect(done.busy).toBe(false);
+  });
+
+  it("keeps only the newest unphased message live and promotes it at the turn boundary", () => {
+    let state = reduceChat(addUserTurn(emptyChat(), "do the thing"), { type: "turn.started" });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", text: "I am checking the file." },
+    });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_1", type: "agent_message", text: "Tests are running." },
+    });
+
+    expect(state.messages[1].progress).toEqual(["I am checking the file."]);
+    expect(state.messages[1].codexCandidate).toBe("Tests are running.");
+    expect(said(state.messages[1])).toBe("");
+
+    state = reduceChat(state, { type: "turn.completed" });
+    expect(state.messages[1].progress).toEqual(["I am checking the file."]);
+    expect(state.messages[1].codexCandidate).toBeUndefined();
+    expect(said(state.messages[1])).toBe("Tests are running.");
+  });
+
+  it("uses message phases directly when the provider includes them", () => {
+    let state = reduceChat(addUserTurn(emptyChat(), "do the thing"), { type: "turn.started" });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_0", type: "agent_message", phase: "commentary", text: "Checking now." },
+    });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: { id: "item_1", type: "agent_message", phase: "final_answer", text: "Done." },
+    });
+
+    expect(state.messages[1].progress).toEqual(["Checking now."]);
+    expect(state.messages[1].codexCandidate).toBeUndefined();
+    expect(said(state.messages[1])).toBe("Done.");
   });
 });

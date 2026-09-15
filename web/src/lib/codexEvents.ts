@@ -23,7 +23,7 @@ import type { ToolState } from "./chat";
 
 export type CodexRead =
   /** Codex wrote something. It arrives whole — there are no deltas. */
-  | { kind: "say"; text: string }
+  | { kind: "say"; text: string; phase?: "commentary" | "final_answer" }
   /** Codex ran something. `id` is stable across the started/completed pair. */
   | { kind: "tool"; id: string; name: string; args: unknown; state: ToolState; result?: string; details?: { exit_code: number } }
   /** The turn is over, so nothing may be left looking like it is still writing. */
@@ -71,7 +71,11 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
     // and drawing an empty one would put an blank bubble under the seat's name.
     case "agent_message": {
       const text = str(item.text).trim();
-      return completed && text ? { kind: "say", text } : null;
+      const rawPhase = str(item.phase);
+      const phase = rawPhase === "commentary" || rawPhase === "final_answer"
+        ? rawPhase
+        : undefined;
+      return completed && text ? { kind: "say", text, ...(phase ? { phase } : {}) } : null;
     }
 
     // Codex in the shell. Named `Bash` so it takes the icon, the colour and the

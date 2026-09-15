@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const http = require("node:http");
-const { Broker, createServer, initConfig, readConfig } = require("../bridge.cjs");
+const { Broker, createServer, initConfig, readConfig, callMcpTool } = require("../bridge.cjs");
 
 const client = "test-client";
 const url = "https://chatgpt.com/c/test-conversation";
@@ -130,7 +130,7 @@ test("config creation is private and refuses to overwrite an existing token", ()
   assert.throws(() => initConfig(file), /EEXIST/);
   assert.deepEqual(readConfig(file), config);
 });
-test("real stdio MCP round trip through HTTP and a simulated browser", async t => {
+test("real stdio MCP automatically returns the answer and supports async mode", { timeout: 10000 }, async t => {
   const { config, post } = await serverFixture(t);
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), "chatgpt-mcp-test-"));
   const file = path.join(folder, "config.json");
@@ -150,12 +150,65 @@ test("real stdio MCP round trip through HTTP and a simulated browser", async t =
   assert.equal((await tool("ask_chatgpt", { prompt: "test" })).isError, true);
   await post("/extension/attach", { client, url });
   await post("/extension/poll", { client, url, ready: true, busy: false });
-  const job = JSON.parse((await tool("ask_chatgpt", { prompt: "What is 2 + 2?" })).content[0].text);
-  const browserJob = await (await post("/extension/poll", { client, url, ready: true, busy: false })).json();
+  const waiting = tool("ask_chatgpt", { prompt: "What is 2 + 2?" });
+  let browserJob;
+  do {
+    browserJob = await (await post("/extension/poll", { client, url, ready: true, busy: false })).json();
+    if (!browserJob.job) await new Promise(resolve => setTimeout(resolve, 10));
+  } while (!browserJob.job);
+  // A waiting ask must not block other MCP requests.
+  assert.equal((await rpc("ping")).error, undefined);
   assert.equal(browserJob.job.prompt, "What is 2 + 2?");
-  await post("/extension/result", { client, url, job_id: job.job_id, status: "completed", answer: "4" });
-  const answer = JSON.parse((await tool("get_chatgpt_answer", { job_id: job.job_id, wait_seconds: 0 })).content[0].text);
+  await post("/extension/result", { client, url, job_id: browserJob.job.job_id, status: "completed", answer: "4" });
+  const completed = await waiting;
+  assert.equal(completed.isError, false);
+  const answer = JSON.parse(completed.content[0].text);
   assert.equal(answer.answer, "4");
   assert.equal(answer.status, "completed");
+  assert.equal(answer.job_id, browserJob.job.job_id);
+  await post("/extension/poll", { client, url, ready: true, busy: false });
+  const queued = JSON.parse((await tool("ask_chatgpt", { prompt: "async", wait_for_answer: false })).content[0].text);
+  assert.equal(queued.status, "queued");
+  await tool("cancel_chatgpt_job", { job_id: queued.job_id });
+  const cancelled = await tool("get_chatgpt_answer", { job_id: queued.job_id, wait_seconds: 0 });
+  assert.equal(cancelled.isError, true);
   process.stdin.end();
+});
+
+for (const status of ["completed", "failed", "cancelled"]) {
+  test(`automatic wait polls the same job to ${status} without resubmission`, async () => {
+    const calls = [];
+    const results = [
+      { job_id: "one", status: "queued" },
+      { job_id: "one", status: "running" },
+      { job_id: "one", status, ...(status === "completed" ? { answer: "done" } : {}) },
+    ];
+    const final = await callMcpTool({}, { name: "ask_chatgpt", arguments: { prompt: "hello", timeout_seconds: 60 } }, async (_, endpoint, body) => {
+      assert.equal(endpoint, "/tool");
+      calls.push(body);
+      return results.shift();
+    });
+    assert.equal(final.status, status);
+    assert.deepEqual(calls, [
+      { name: "ask_chatgpt", arguments: { prompt: "hello", timeout_seconds: 60 } },
+      { name: "get_chatgpt_answer", arguments: { job_id: "one", wait_seconds: 20 } },
+      { name: "get_chatgpt_answer", arguments: { job_id: "one", wait_seconds: 20 } },
+    ]);
+  });
+}
+test("interrupted waits retain the job handle for recovery without resending", async () => {
+  let calls = 0;
+  const result = await callMcpTool({}, { name: "ask_chatgpt", arguments: { prompt: "hello" } }, async () => {
+    if (++calls === 1) return { job_id: "recoverable", status: "queued" };
+    throw new Error("Connection lost");
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.job_id, "recoverable");
+  assert.equal(result.wait_interrupted, true);
+  assert.match(result.next, /get_chatgpt_answer/);
+});
+test("invalid wait mode fails before submitting", async () => {
+  await assert.rejects(callMcpTool({}, { name: "ask_chatgpt", arguments: { prompt: "hello", wait_for_answer: "yes" } }, async () => {
+    assert.fail("must not submit");
+  }), /Invalid wait_for_answer/);
 });

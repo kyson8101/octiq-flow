@@ -43,8 +43,10 @@ Requires Node.js 22+ and a Chromium browser such as Chrome, Brave, or Edge. No r
    [mcp_servers.chatgpt-bridge]
    command = "node"
    args = ["/absolute/path/chatgpt-bridge/bridge.cjs", "mcp"]
-   tool_timeout_sec = 30
+   tool_timeout_sec = 1860
    ```
+
+   Set `tool_timeout_sec = 1860` in the MCP entry even if you registered it with the CLI: the default synchronous call can last up to the job deadline (900 seconds by default, at most 1800). Restart the MCP client/session after changing its configuration. Clients with a shorter fixed tool timeout should use `wait_for_answer: false` and poll instead.
 
 5. Ask Codex:
 
@@ -55,9 +57,18 @@ Requires Node.js 22+ and a Chromium browser such as Chrome, Brave, or Edge. No r
 | Tool | Purpose |
 | --- | --- |
 | `chatgpt_status` | Check connection, readiness and active job. |
-| `ask_chatgpt` | Submit `prompt` (up to 60,000 characters); returns `job_id`. Optional `timeout_seconds`: 30–1800, default 900. |
+| `ask_chatgpt` | Submit `prompt` (up to 60,000 characters) and automatically return the final answer. Optional `timeout_seconds`: 30–1800, default 900. Set `wait_for_answer: false` to return `job_id` immediately. |
 | `get_chatgpt_answer` | Fetch a job by `job_id`; `wait_seconds`: 0–20, default 20. Poll the same job until terminal. |
 | `cancel_chatgpt_job` | Cancel local tracking. Does not remove an already sent ChatGPT message or stop its generation. |
+
+A normal MCP call needs no follow-up polling by the agent:
+
+```text
+ask_chatgpt({ "prompt": "What is a JavaScript closure?" })
+→ { "job_id": "…", "status": "completed", "answer": "…", ... }
+```
+
+The stdio MCP process submits once, then performs bounded HTTP polls internally until completion, failure, cancellation, or a connection error. Status and cancellation tools remain usable while it waits. If polling loses the connection, the tool returns an error with the original `job_id` and `wait_interrupted: true`; recover with `get_chatgpt_answer`, without sending the prompt again. An MCP client timeout does not undo submission. The private daemon `/tool` endpoint remains asynchronous; automatic waiting lives in the MCP process and works with the existing daemon and extension. Restart the MCP client/session to load this update.
 
 Only one job may be active across connected MCP clients. Further questions continue the same attached conversation, so use a dedicated conversation per topic. `ask_chatgpt` sends exactly the supplied prompt; the tool does not read or automatically attach local files. Text explicitly included in the prompt is sent to ChatGPT. The answer is visible text (code-block text included), not a byte-exact Markdown export.
 

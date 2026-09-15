@@ -273,6 +273,20 @@ export type Message = {
   attachments?: Attached[];
   /** True while the agent is still writing it. */
   streaming: boolean;
+  /** User-visible progress Codex emitted before its answer.
+   *
+   * Codex names these `commentary` when the provider exposes message phases.
+   * `codex exec --json` currently omits that field, so the reducer also keeps
+   * every superseded answer candidate here. The transcript can then fold the
+   * working log away without throwing it away. */
+  progress?: string[];
+  /** The newest unphased Codex message while its turn is still open.
+   *
+   * The protocol does not identify the final answer until `turn.completed`.
+   * Keep one candidate visible as live activity; the next message demotes it
+   * to `progress`, while the turn boundary promotes the last candidate to the
+   * ordinary text blocks that make up the answer. */
+  codexCandidate?: string;
   /** For a USER turn: the uuid of the agent's own replay of it.
    *
    *  A user turn reaches the screen twice by two different routes — once
@@ -1715,17 +1729,35 @@ function foldCodex(
       ...(mine ? { ...turnOver, busy: false, stopping: false } : {}),
       messages: state.messages.map((m) =>
         m.streaming && m.parent === parent && m.speaker?.id === speaker?.id
-          ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) }
+          ? finishCodexMessage(m)
           : m,
       ),
     };
   }
 
   if (read.kind === "say") {
-    return withCodexCurrent(state, parent, speaker, (m) => ({
-      ...m,
-      blocks: [...m.blocks, { kind: "text", text: read.text }],
-    }));
+    return withCodexCurrent(state, parent, speaker, (m) => {
+      const superseded = m.codexCandidate ? [m.codexCandidate] : [];
+      const progress = [...(m.progress ?? []), ...superseded];
+
+      if (read.phase === "commentary") {
+        return { ...m, progress: [...progress, read.text], codexCandidate: undefined };
+      }
+      if (read.phase === "final_answer") {
+        return {
+          ...m,
+          progress: progress.length ? progress : undefined,
+          codexCandidate: undefined,
+          blocks: [...m.blocks, { kind: "text", text: read.text }],
+        };
+      }
+
+      return {
+        ...m,
+        progress: progress.length ? progress : undefined,
+        codexCandidate: read.text,
+      };
+    });
   }
 
   const key = `codex:${speaker?.id ?? "host"}:${read.id}`;
@@ -1972,7 +2004,7 @@ function withCodexCurrent(
   }
 
   const messages = state.messages.map((m, i) =>
-    i === idx ? { ...m, streaming: false } : m,
+    i === idx ? finishCodexMessage(m) : m,
   );
   const seeded = fn({
     id: `m${state.messages.length}`,
@@ -1989,6 +2021,21 @@ function withCodexCurrent(
   const next = [...messages];
   next.splice(waitingAt, 0, seeded);
   return { ...state, messages: next };
+}
+
+/** Close one Codex message without losing the answer candidate that only the
+ * turn boundary can identify as final. */
+function finishCodexMessage(message: Message): Message {
+  const candidate = message.codexCandidate?.trim();
+  return {
+    ...message,
+    streaming: false,
+    codexCandidate: undefined,
+    blocks: [
+      ...message.blocks.map(stopIfRunning),
+      ...(candidate ? [{ kind: "text" as const, text: candidate }] : []),
+    ],
+  };
 }
 
 /** Codex's one-shot turn has accepted its prompt.
@@ -2038,7 +2085,7 @@ function codexTurnStarted(
       return { ...m, delivery: "unknown" as const, queueLost: undefined };
     }
     return m.streaming && !m.parent && !m.speaker
-      ? { ...m, streaming: false, blocks: m.blocks.map(stopIfRunning) }
+      ? finishCodexMessage(m)
       : m;
   });
   let messages = closed;

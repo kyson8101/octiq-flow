@@ -1546,6 +1546,122 @@ body {
   min-width: 0;
 }
 
+/* Codex's intermediary words are a changing status display, not a permanent
+   wall of prose. The current reading stays visible while work runs; its history
+   uses one quiet disclosure and folds completely once the final answer lands. */
+.agent-progress {
+  min-width: 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+
+.agent-progress-live {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 9px 11px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--fg-2) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-2) 12%, transparent);
+}
+
+.agent-progress-pulse {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: agent-progress-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes agent-progress-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.82); }
+  50% { opacity: 0.9; transform: scale(1); }
+}
+
+.agent-progress .prose {
+  line-height: 1.55;
+}
+
+.agent-progress .prose :is(p, ul, ol) {
+  margin-bottom: 7px;
+}
+
+.agent-progress-log {
+  margin-top: 5px;
+}
+
+.agent-progress-log > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 3px;
+  border-radius: var(--r-sm);
+  color: var(--fg-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.agent-progress-log > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-progress-log > summary::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 140ms ease-out;
+}
+
+.agent-progress-log[open] > summary::before {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.agent-progress-log > summary:hover {
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--fg-2) 7%, transparent);
+}
+
+.agent-progress-log > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.agent-progress-items {
+  display: grid;
+  gap: 9px;
+  margin-top: 6px;
+  padding: 10px 11px;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--fg-2) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-2) 10%, transparent);
+}
+
+.agent-progress-item + .agent-progress-item {
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-progress.is-settled .agent-progress-log {
+  margin-top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-progress-pulse {
+    animation: none;
+    opacity: 0.7;
+  }
+
+  .agent-progress-log > summary::before {
+    transition: none;
+  }
+}
+
 /* Markdown */
 
 /* Prose is the one thing here that is READ rather than glanced at, and it is

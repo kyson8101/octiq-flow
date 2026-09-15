@@ -124,6 +124,40 @@ describe("the working dots", () => {
   });
 });
 
+describe("Codex progress", () => {
+  it("shows only the latest update live and folds the earlier ones", () => {
+    const message: Message = {
+      id: "a-progress",
+      role: "assistant",
+      blocks: [],
+      progress: ["Started the review.", "Found the affected handler."],
+      codexCandidate: "The targeted tests are running.",
+      streaming: true,
+    };
+    const html = renderToStaticMarkup(<MessageList messages={[message]} busy />);
+
+    expect(html).toContain('role="status"');
+    expect(html).toContain("The targeted tests are running.");
+    expect(html).toContain("2 earlier progress updates");
+    expect(html).not.toContain('<details class="agent-progress-log" open=""');
+  });
+
+  it("folds the whole working log after the final answer lands", () => {
+    const message: Message = {
+      id: "a-progress",
+      role: "assistant",
+      blocks: [{ kind: "text", text: "Updated and verified." }],
+      progress: ["Started the review.", "The targeted tests are running."],
+      streaming: false,
+    };
+    const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
+
+    expect(html).not.toContain('role="status"');
+    expect(html).toContain("2 progress updates");
+    expect(html).toContain("Updated and verified.");
+  });
+});
+
 describe("a Task card", () => {
   const started: Message = {
     id: "a-task",
