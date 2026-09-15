@@ -67,26 +67,36 @@
 /* Touch tablets use the same accessible action menu as phones. */
 @media (max-width: 859.98px), (pointer: coarse) {
   .sidebar .chat-btn,
-  .sidebar .chat-rename { height: 64px; }
+  .sidebar .chat-rename { height: 52px; }
   .sidebar .chat-more { height: 44px; }
-  .sidebar .chat-btn { -webkit-touch-callout: none; user-select: none; }
-  .sidebar .chat-title { font-size: 16px; }
-  .sidebar .chat-time { font-size: 11px; }
-  .sidebar .chat-snippet { font-size: 13px; padding-right: 54px; }
+  .sidebar .chat-btn {
+    padding-top: 5px;
+    padding-bottom: 5px;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+  .sidebar .chat-title { font-size: 14px; line-height: 18px; }
+  .sidebar .chat-time { font-size: 10px; }
+  .sidebar .chat-snippet {
+    margin-top: 1px;
+    padding-right: 54px;
+    font-size: 12px;
+    line-height: 16px;
+  }
   .sidebar .chat.is-pinned .chat-snippet { padding-right: 72px; }
   .sidebar .chat-rename-input { font-size: 16px; }
 
   .sidebar .chat-rename-btn,
   .sidebar .chat-pin,
   .sidebar .chat-del { display: none; }
-  .sidebar .chat-tail { right: 48px; bottom: 0; width: 12px; height: 44px; margin: 0; }
+  .sidebar .chat-tail { right: 48px; bottom: 4px; width: 12px; height: 44px; margin: 0; }
   .sidebar .chat-mark { left: 50%; }
   .sidebar .chat:hover .chat-mark,
   .sidebar .chat-tail:focus-within .chat-mark { opacity: 1; transform: translate(-50%, -50%); }
   .sidebar .chat-actions-trigger {
     position: absolute;
     right: 0;
-    bottom: 0;
+    bottom: 4px;
     display: inline-flex;
     flex: 0 0 44px;
     align-items: center;
@@ -101,7 +111,7 @@
     cursor: pointer;
   }
   .sidebar .chat-actions-trigger:hover { background: var(--bg-2); color: var(--fg-0); }
-  .sidebar .chat-mobile-pin { position: absolute; right: 64px; bottom: 16px; display: inline-flex; color: var(--fg-2); }
+  .sidebar .chat-mobile-pin { position: absolute; right: 64px; bottom: 12px; display: inline-flex; color: var(--fg-2); line-height: 0; }
   .sidebar .chat-mobile-pin svg { width: 12px; height: 12px; }
   .sidebar .chat.is-renaming .chat-actions-trigger,
   .sidebar .chat.is-going .chat-actions-trigger { display: none; }
