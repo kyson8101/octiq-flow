@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 // there is no location in node. The same stub its sibling tests use.
 vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
-import { glideAt } from "./MessageList";
+import { glideAt, isJumpControl } from "./MessageList";
 
 describe("glideAt", () => {
   it("starts where the reader was looking", () => {
@@ -60,5 +60,18 @@ describe("glideAt", () => {
     // being left hanging past the end.
     expect(glideAt(500, 300, 1)).toBe(300);
     expect(glideAt(500, 300, 0.5)).toBeLessThan(500);
+  });
+});
+
+describe("jump-to-end gesture handling", () => {
+  it("does not mistake a press on the jump button for manual scrolling", () => {
+    const button = { closest: (selector: string) => selector === ".jump" } as unknown as EventTarget;
+    expect(isJumpControl(button)).toBe(true);
+  });
+
+  it("still treats presses elsewhere in the transcript as manual scrolling", () => {
+    const message = { closest: () => null } as unknown as EventTarget;
+    expect(isJumpControl(message)).toBe(false);
+    expect(isJumpControl(null)).toBe(false);
   });
 });

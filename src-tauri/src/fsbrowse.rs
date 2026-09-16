@@ -156,14 +156,15 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 /// A preview descriptor for one file for the in-app preview pane. The frontend
 /// renders it by `kind`:
 ///   * "text"   — show `content` (the capped UTF-8 text).
-///   * "image"  — load the file itself via the asset protocol (convertFileSrc).
-///   * "pdf"    — load the file itself via the asset protocol in an iframe.
+///   * "image"  — load the file itself through the authenticated file route.
+///   * "video"  — play the file itself through the authenticated file route.
+///   * "pdf"    — offer native opening (inline PDF support varies by browser).
 ///   * "binary" — offer "open externally" only (no inline preview).
-/// For image/pdf/binary, `content` is empty: the bytes are not read here.
+/// For image/video/pdf/binary, `content` is empty: the bytes are not read here.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct FilePreview {
-    /// One of "text", "image", "pdf", "binary" (see the struct doc).
+    /// One of "text", "image", "video", "pdf", "binary" (see the struct doc).
     pub kind: String,
     /// The file's text content, capped at PREVIEW_MAX_BYTES. Empty unless text.
     pub content: String,
@@ -178,6 +179,11 @@ pub struct FilePreview {
 const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "svg", "avif", "apng",
 ];
+
+/// Video containers the browsers OctiqFlow runs in can commonly play. Codec
+/// support still belongs to the browser; the frontend falls back to native
+/// opening when a particular file cannot be decoded.
+const VIDEO_EXTS: &[&str] = &["mp4", "m4v", "mov", "webm", "ogv"];
 
 /// Largest slice of a file we read for the preview pane. Keeps the webview
 /// responsive and stops a huge log or blob from being loaded whole.
@@ -213,9 +219,8 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
         .map_err(|e| format!("Cannot read file: {e}"))?
         .len();
 
-    // Images and PDFs are shown by loading the file itself through the asset
-    // protocol on the frontend, so classify them by extension and skip reading
-    // their bytes here.
+    // Media and PDFs are handled without putting their bytes in a WebSocket
+    // JSON frame, so classify them by extension and skip reading them here.
     let ext = file_path
         .extension()
         .and_then(|e| e.to_str())
@@ -224,6 +229,14 @@ pub fn read_file_preview(path: String) -> Result<FilePreview, String> {
     if IMAGE_EXTS.contains(&ext.as_str()) {
         return Ok(FilePreview {
             kind: "image".into(),
+            content: String::new(),
+            truncated: false,
+            size,
+        });
+    }
+    if VIDEO_EXTS.contains(&ext.as_str()) {
+        return Ok(FilePreview {
+            kind: "video".into(),
             content: String::new(),
             truncated: false,
             size,
@@ -341,6 +354,19 @@ fn modified_ms(path: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::natural_cmp;
+
+    #[test]
+    fn browser_video_files_are_classified_for_inline_playback() {
+        let path = std::env::temp_dir().join(format!("octiq-video-{}.mp4", uuid::Uuid::new_v4()));
+        std::fs::write(&path, [0_u8, 1, 2, 3]).unwrap();
+
+        let preview = super::read_file_preview(path.to_string_lossy().into_owned()).unwrap();
+
+        assert_eq!(preview.kind, "video");
+        assert_eq!(preview.size, 4);
+        assert!(preview.content.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn app_bundles_offer_native_opening_without_reading_the_directory() {

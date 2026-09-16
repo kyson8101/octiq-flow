@@ -33,6 +33,10 @@ describe("what a file should be drawn as", () => {
     expect(drawAs("/p/shot.png", text({ kind: "image" }))).toBe("image");
   });
 
+  it("is an inline player for a video", () => {
+    expect(drawAs("/p/preview.mp4", text({ kind: "video" }))).toBe("video");
+  });
+
   it("is nothing to edit for a PDF or a binary", () => {
     expect(drawAs("/p/spec.pdf", text({ kind: "pdf" }))).toBe("none");
     expect(drawAs("/p/a.bin", text({ kind: "binary" }))).toBe("none");

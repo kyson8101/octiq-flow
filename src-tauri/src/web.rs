@@ -921,6 +921,11 @@ fn file_mime(path: &std::path::Path) -> &'static str {
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("svg") => "image/svg+xml",
+        Some("mp4") => "video/mp4",
+        Some("m4v") => "video/x-m4v",
+        Some("mov") => "video/quicktime",
+        Some("webm") => "video/webm",
+        Some("ogv") => "video/ogg",
         Some("pdf") => "application/pdf",
         Some("html") | Some("htm") => "text/html; charset=utf-8",
         _ => "application/octet-stream",
@@ -1463,6 +1468,17 @@ mod tests {
             file_mime(std::path::Path::new("REPORT.HTM")),
             "text/html; charset=utf-8"
         );
+    }
+
+    #[test]
+    fn video_files_are_served_with_playable_content_types() {
+        for (name, expected) in [
+            ("preview.mp4", "video/mp4"),
+            ("preview.webm", "video/webm"),
+            ("preview.mov", "video/quicktime"),
+        ] {
+            assert_eq!(file_mime(std::path::Path::new(name)), expected);
+        }
     }
 
     #[test]

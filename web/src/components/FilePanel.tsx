@@ -40,7 +40,7 @@ import { useReaderChat } from "./ReaderChat";
 import { captureReadingAnchor, restoreReadingAnchor, type ReadingAnchor } from "../lib/readingAnchor";
 
 type Preview = {
-  /** "text" | "image" | "pdf" | "binary" */
+  /** "text" | "image" | "video" | "pdf" | "binary" */
   kind: string;
   content: string;
   truncated: boolean;

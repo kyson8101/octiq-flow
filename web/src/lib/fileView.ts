@@ -15,8 +15,8 @@
 /** `read_file_preview`'s answer. Snake_case on the wire; the bridge hands it
  *  back in this shape. */
 export type Preview = {
-  /** `text` | `image` | `pdf` | `binary`, decided by the backend having opened
-   *  the thing — which beats guessing from the name. */
+  /** `text` | `image` | `video` | `pdf` | `binary`, decided by the backend
+   *  having opened the thing — which beats guessing from the name. */
   kind: string;
   content: string;
   /** The backend returned only the head of a large file. */
@@ -27,9 +27,9 @@ export type Preview = {
 /** How a file should be drawn.
  *
  *  `prose` is markdown rendered; `page` is html rendered; `code` is the editor;
- *  `image` is the bytes; `none` is a size and a plain statement that there is
- *  nothing here to edit. */
-export type Drawn = "prose" | "page" | "code" | "image" | "none";
+ *  `image` and `video` are the file bytes; `none` is a compact fallback with a
+ *  native-open action. */
+export type Drawn = "prose" | "page" | "code" | "image" | "video" | "none";
 
 const MARKDOWN = /\.(md|markdown|mdx)$/i;
 const HTML = /\.html?$/i;
@@ -44,6 +44,7 @@ const HTML = /\.html?$/i;
  *  empty file is a blank page with nowhere to start typing. */
 export function drawAs(path: string, preview: Preview): Drawn {
   if (preview.kind === "image") return "image";
+  if (preview.kind === "video") return "video";
   if (preview.kind !== "text") return "none";
   if (!preview.content.trim()) return "code";
   if (MARKDOWN.test(path)) return "prose";

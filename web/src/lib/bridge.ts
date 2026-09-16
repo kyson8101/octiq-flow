@@ -246,7 +246,10 @@ class Bridge {
     form.remove();
   }
 
-  private fileUrl(path: string): string {
+  /** Authenticated source URL for browser-native media elements. Keeping video
+   *  on the ordinary HTTP path lets the browser buffer and decode it directly
+   *  instead of first copying the whole file into a JavaScript blob. */
+  fileUrl(path: string): string {
     return `${this.fileEndpoint()}?path=${encodeURIComponent(path)}&token=${encodeURIComponent(readToken())}`;
   }
 

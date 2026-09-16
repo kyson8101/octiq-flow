@@ -38,8 +38,8 @@ export type EditorProject = {
 
 /** `read_file_preview`'s answer. Snake_case on the wire, but every field here
  *  happens to be one word, so the Rust names carry over unchanged. `kind` is
- *  "text" | "image" | "pdf" | "binary", and `size` is the file's REAL size —
- *  `content` may be shorter when `truncated`. */
+ *  "text" | "image" | "video" | "pdf" | "binary", and `size` is the file's
+ *  REAL size — `content` may be shorter when `truncated`. */
 type Preview = { kind: string; content: string; truncated: boolean; size: number };
 
 type OpenFile = {

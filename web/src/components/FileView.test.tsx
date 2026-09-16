@@ -3,7 +3,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 // The image branch fetches bytes over the socket, and that module opens the
 // connection the moment it is imported. Nothing here asks for a file.
-vi.mock("../lib/bridge", () => ({ bridge: { fetchFile: async () => new Blob() } }));
+vi.mock("../lib/bridge", () => ({
+  bridge: {
+    fetchFile: async () => new Blob(),
+    fileUrl: (path: string) => `/file?path=${encodeURIComponent(path)}`,
+  },
+}));
 // CodeMirror is never rendered by the prose branch, but importing the real
 // editor drags the whole package in for nothing.
 vi.mock("./CodeEditor", () => ({ CodeEditor: () => null }));
@@ -35,8 +40,26 @@ it("offers native opening for unsupported files and app bundles", () => {
       <FileView path={path} preview={{ kind: "binary", content: "", truncated: false, size: 0 }} draft="" onDraft={() => {}} />,
     );
     expect(html).toContain("Open in default app");
-    expect(html).toContain("computer running OctiqFlow");
+    expect(html).toContain("On the computer running OctiqFlow");
+    expect(html).toContain("Preview unavailable");
   }
+});
+
+it("plays a video in the panel instead of treating it as an uneditable file", () => {
+  const html = renderToStaticMarkup(
+    <FileView
+      path="/repo/walk-run.mp4"
+      preview={{ kind: "video", content: "", truncated: false, size: 11_000_000 }}
+      draft=""
+      onDraft={() => {}}
+    />,
+  );
+
+  expect(html).toContain("<video");
+  expect(html).toContain("controls");
+  expect(html).toContain("playsInline");
+  expect(html).toContain("%2Frepo%2Fwalk-run.mp4");
+  expect(html).not.toContain("nothing here to edit");
 });
 
 describe("a markdown file, rendered", () => {

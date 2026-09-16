@@ -66,37 +66,56 @@
 
 /* Touch tablets use the same accessible action menu as phones. */
 @media (max-width: 859.98px), (pointer: coarse) {
+  /* On touch, chat content and chat actions are two real columns. The old
+     absolutely-positioned menu floated over the end of the summary, so long
+     titles, timestamps, state dots and the menu all fought for the same last
+     few pixels. A reserved rail keeps the text width honest and gives every
+     row the same tap target. */
+  .sidebar .chat {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 52px;
+    align-items: stretch;
+  }
   .sidebar .chat-btn,
   .sidebar .chat-rename { height: 52px; }
   .sidebar .chat-more { height: 44px; }
   .sidebar .chat-btn {
+    grid-column: 1;
+    width: 100%;
     padding-top: 5px;
+    padding-right: 8px;
     padding-bottom: 5px;
     -webkit-touch-callout: none;
     user-select: none;
   }
+  .sidebar .chat-rename { grid-column: 1 / -1; }
   .sidebar .chat-title { font-size: 14px; line-height: 18px; }
   .sidebar .chat-time { font-size: 10px; }
   .sidebar .chat-snippet {
     margin-top: 1px;
-    padding-right: 54px;
+    padding-right: 0;
     font-size: 12px;
     line-height: 16px;
   }
-  .sidebar .chat.is-pinned .chat-snippet { padding-right: 72px; }
+  .sidebar .chat.is-pinned .chat-snippet { padding-right: 20px; }
   .sidebar .chat-rename-input { font-size: 16px; }
 
   .sidebar .chat-rename-btn,
   .sidebar .chat-pin,
   .sidebar .chat-del { display: none; }
+  /* The state dot sits at the seam. It remains readable without becoming a
+     second button or stealing the centre of the action target. */
   .sidebar .chat-tail { right: 48px; bottom: 4px; width: 12px; height: 44px; margin: 0; }
   .sidebar .chat-mark { left: 50%; }
   .sidebar .chat:hover .chat-mark,
   .sidebar .chat-tail:focus-within .chat-mark { opacity: 1; transform: translate(-50%, -50%); }
   .sidebar .chat-actions-trigger {
-    position: absolute;
-    right: 0;
-    bottom: 4px;
+    position: relative;
+    inset: auto;
+    grid-column: 2;
+    grid-row: 1;
+    align-self: center;
+    justify-self: center;
     display: inline-flex;
     flex: 0 0 44px;
     align-items: center;
@@ -105,13 +124,19 @@
     height: 44px;
     padding: 0;
     border: 0;
-    border-radius: var(--r-sm);
-    background: transparent;
+    border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--bg-2) 48%, transparent);
     color: var(--fg-2);
     cursor: pointer;
   }
-  .sidebar .chat-actions-trigger:hover { background: var(--bg-2); color: var(--fg-0); }
-  .sidebar .chat-mobile-pin { position: absolute; right: 64px; bottom: 12px; display: inline-flex; color: var(--fg-2); line-height: 0; }
+  .sidebar .chat-actions-trigger svg { width: 17px; height: 17px; }
+  .sidebar .chat-actions-trigger:hover,
+  .sidebar .chat-actions-trigger:active { background: var(--bg-2); color: var(--fg-0); }
+  .sidebar .chat.is-on .chat-actions-trigger {
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    color: var(--fg-1);
+  }
+  .sidebar .chat-mobile-pin { position: absolute; right: 60px; bottom: 12px; display: inline-flex; color: var(--fg-2); line-height: 0; }
   .sidebar .chat-mobile-pin svg { width: 12px; height: 12px; }
   .sidebar .chat.is-renaming .chat-actions-trigger,
   .sidebar .chat.is-going .chat-actions-trigger { display: none; }
@@ -119,4 +144,34 @@
   .sidebar .chat.is-going .chat-tail { right: 0; width: 44px; margin-right: 0; }
   .sidebar .chat.is-going .chat-del { display: flex; width: 44px; height: 44px; }
 
+}
+
+/* The top navigation already has two destinations; the utility buttons are a
+   separate action group. This divider and inset keep the right edge from
+   reading like three more tabs, while retaining full 44px touch targets. */
+@media (max-width: 859.98px) {
+  .sidebar-toolbar.has-navigation { gap: 8px; }
+  .sidebar-toolbar.has-navigation .sidebar-head {
+    margin-left: 0;
+    padding-left: 7px;
+    border-left: 1px solid var(--border);
+  }
+  .sidebar-toolbar.has-navigation .sidebar-add {
+    border-radius: var(--r-md);
+    line-height: 0;
+  }
+  .sidebar-toolbar.has-navigation .sidebar-add:active {
+    background: var(--bg-2);
+    color: var(--fg-0);
+  }
+
+  /* Project actions use the same seam as the chat action rail. Their boxes
+     were already the right size; the inset is what makes them read as a group
+     instead of as loose icons after the project name. */
+  .sidebar .proj > .proj-btn + .proj-add {
+    margin-left: 4px;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+  }
+  .sidebar .proj > .proj-add:last-child { border-radius: var(--r-md); }
 }

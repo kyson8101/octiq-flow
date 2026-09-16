@@ -89,15 +89,12 @@ export function FileView({
 
   if (as === "image") return <ImageDoc path={path} />;
 
+  if (as === "video") {
+    return <VideoDoc key={`${path}:${generation ?? 0}`} path={path} size={preview.size} />;
+  }
+
   if (as === "none") {
-    return (
-      <div className="panel-note">
-        {preview.kind === "pdf" ? "A PDF" : `Not a text file`} ·{" "}
-        <RollingText>{humanSize(preview.size)}</RollingText>. There is
-        nothing here to edit.
-        <NativeFileOpen key={path} path={path} />
-      </div>
-    );
+    return <UnsupportedDoc path={path} preview={preview} />;
   }
 
   if (as === "page") return <PageDoc path={path} html={draft} />;
@@ -143,13 +140,36 @@ export function NativeFileOpen({ path }: { path: string }) {
     }
   }
   return (
-    <div>
-      <p>Open on the computer running OctiqFlow.</p>
-      <button type="button" disabled={opening} onClick={() => void open()}>
+    <div className="native-open">
+      <button className="native-open-btn" type="button" disabled={opening} onClick={() => void open()}>
         {opening ? "Opening…" : "Open in default app"}
       </button>
-      {opened && <p role="status">Sent to the default app.</p>}
-      {error && <p role="alert">{error}</p>}
+      <p className="native-open-note">On the computer running OctiqFlow</p>
+      {opened && <p className="native-open-status" role="status">Opened.</p>}
+      {error && <p className="native-open-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
+function UnsupportedDoc({
+  path,
+  preview,
+  reason = "Preview unavailable",
+}: {
+  path: string;
+  preview: Preview;
+  reason?: string;
+}) {
+  const type = preview.kind === "pdf" ? "PDF document" : "File";
+  return (
+    <div className="panel-unsupported">
+      <div className="panel-unsupported-copy">
+        <strong>{reason}</strong>
+        <span>
+          {type} · <RollingText>{humanSize(preview.size)}</RollingText>
+        </span>
+      </div>
+      <NativeFileOpen key={path} path={path} />
     </div>
   );
 }
@@ -217,6 +237,37 @@ function ImageDoc({ path }: { path: string }) {
   return (
     <div className="ws-image">
       <img src={url} alt={baseName(path)} />
+    </div>
+  );
+}
+
+/** Video stays on the authenticated HTTP file route so the browser owns
+ *  decoding, buffering, fullscreen and Picture in Picture. If the container or
+ *  codec is not playable in this browser, the view becomes the same compact
+ *  native-open fallback used by other unsupported files. */
+function VideoDoc({ path, size }: { path: string; size: number }) {
+  const [unplayable, setUnplayable] = useState(false);
+
+  if (unplayable) {
+    return (
+      <UnsupportedDoc
+        path={path}
+        preview={{ kind: "video", content: "", truncated: false, size }}
+        reason="This video can’t play in this browser"
+      />
+    );
+  }
+
+  return (
+    <div className="ws-video">
+      <video
+        src={bridge.fileUrl(path)}
+        controls
+        playsInline
+        preload="metadata"
+        aria-label={baseName(path)}
+        onError={() => setUnplayable(true)}
+      />
     </div>
   );
 }

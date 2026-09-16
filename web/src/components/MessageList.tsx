@@ -1071,6 +1071,16 @@ function reducedMotion() {
  *  place worth remembering — because they are the same question. */
 const NEAR_BOTTOM = 80;
 
+/** A press on the jump control is not a gesture taking the transcript away
+ *  from follow mode. The control lives inside the scroller, so its pointer and
+ *  touch events bubble through the same listeners that detect a reader
+ *  grabbing the scrollbar. Treating that press as a manual scroll cancels the
+ *  glide on its first programmatic scroll event and leaves the reader short of
+ *  the end. Kept as a small predicate so mouse and touch regress together. */
+export function isJumpControl(target: EventTarget | null): boolean {
+  return !!(target as Element | null)?.closest?.(".jump");
+}
+
 /** How long after the reader stops moving their place is written down. Long
  *  enough that one flick is one write, short enough to be there after the
  *  reload that follows every client build. */
@@ -1342,7 +1352,8 @@ const MessageListBody = function MessageList({
     const el = scrollerRef.current;
     if (!el) return;
     let until = 0;
-    const mark = () => {
+    const mark = (event?: Event) => {
+      if (isJumpControl(event?.target ?? null)) return;
       gesture.current = true;
       // The reader has taken the scroller. An animation still running under
       // their finger fights them for it, and they win either way — so it ends
