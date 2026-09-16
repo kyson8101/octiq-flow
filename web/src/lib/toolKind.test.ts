@@ -8,29 +8,21 @@ import { describe, expect, it } from "vitest";
 import { toolLook } from "./toolKind";
 
 describe("toolLook", () => {
-  it("names a skill by the skill it ran, not by the tool that ran it", () => {
+  it("keeps a skill tool's actual name and classifies it as a skill", () => {
     expect(toolLook("Skill", { skill: "pandahrms:slice", args: "--fast" })).toMatchObject({
       kind: "skill",
-      label: "/slice",
-      scope: "pandahrms",
+      label: "Skill",
     });
   });
 
-  it("keeps a plugin-less skill whole", () => {
-    expect(toolLook("Skill", { skill: "ship" })).toMatchObject({ kind: "skill", label: "/ship" });
+  it("does not change a skill tool's name when its arguments stream in", () => {
+    expect(toolLook("Skill", undefined)).toMatchObject({ kind: "skill", label: "Skill" });
   });
 
-  it("falls back to the tool's own name when the skill did not arrive yet", () => {
-    // The args stream in one JSON fragment at a time, so the first render of a
-    // Skill card has no `skill` to read.
-    expect(toolLook("Skill", undefined)).toMatchObject({ kind: "skill", label: "skill" });
-  });
-
-  it("unwraps an MCP tool into its server and its tool", () => {
+  it("keeps an MCP tool's fully qualified actual name", () => {
     expect(toolLook("mcp__docspace__save_decision", {})).toMatchObject({
       kind: "mcp",
-      label: "save_decision",
-      scope: "docspace",
+      label: "mcp__docspace__save_decision",
     });
   });
 
@@ -39,18 +31,21 @@ describe("toolLook", () => {
     expect(kindOf("Read")).toBe("read");
     expect(kindOf("Write")).toBe("edit");
     expect(kindOf("MultiEdit")).toBe("edit");
+    expect(kindOf("file_change")).toBe("edit");
     expect(kindOf("Bash")).toBe("run");
+    expect(kindOf("command_execution")).toBe("run");
     expect(kindOf("Grep")).toBe("search");
     expect(kindOf("WebSearch")).toBe("web");
+    expect(kindOf("web_search")).toBe("web");
     expect(kindOf("Task")).toBe("agent");
     expect(kindOf("Workflow")).toBe("agent");
     expect(kindOf("SendMessage")).toBe("message");
     expect(kindOf("TodoWrite")).toBe("plan");
   });
 
-  it("uses reader-facing labels for the internal routing helpers", () => {
-    expect(toolLook("ToolSearch", {}).label).toBe("Search tools");
-    expect(toolLook("SendMessage", {}).label).toBe("Send message");
+  it("does not replace tool names with reader-facing aliases", () => {
+    expect(toolLook("ToolSearch", {}).label).toBe("ToolSearch");
+    expect(toolLook("SendMessage", {}).label).toBe("SendMessage");
   });
 
   it("is case-insensitive, because the agent is not consistent about it", () => {

@@ -36,7 +36,7 @@ describe("pi.dev JSON events", () => {
       kind: "message",
       content: [
         { kind: "thinking", text: "checking" },
-        { kind: "tool", id: "call-1", name: "Bash", args: { command: "pwd" } },
+        { kind: "tool", id: "call-1", name: "bash", args: { command: "pwd" } },
       ],
       model: "gpt-5.6-terra",
       usage: { input: 10, output: 2, cacheRead: 5, cacheWrite: 0 },
@@ -57,7 +57,7 @@ describe("pi.dev JSON events", () => {
     ).toEqual({
       kind: "tool",
       id: "call-1",
-      name: "Bash",
+      name: "bash",
       args: { command: "pwd" },
       state: "done",
       result: "/repo",

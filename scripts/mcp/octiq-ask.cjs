@@ -47,8 +47,8 @@
  *   2. Chat-bound tools are inert outside OctiqFlow. The conversation reader
  *      and artifact generator remain available to a separately installed MCP and follows the active
  *      profile.
- *   3. Never block on nobody. The server answers at once when no browser is
- *      attached, so an unattended run is not held up by a question no one sees.
+ *   3. Questions survive a disconnected browser and a tool timeout. The server
+ *      saves them and resumes the original conversation when answers arrive.
  */
 "use strict";
 
@@ -390,7 +390,7 @@ function askOctiq(questions) {
     } catch {
       return resolve("OctiqFlow is not reachable, so the user could not be asked.");
     }
-    const body = JSON.stringify({ chatKey: CHAT_KEY, questions });
+    const body = JSON.stringify({ chatKey: CHAT_KEY, sessionKey: process.env.OCTIQ_SESSION_KEY || CHAT_KEY, launchId: process.env.OCTIQ_LAUNCH_ID || undefined, questions });
     const req = http.request(
       {
         host: "127.0.0.1",

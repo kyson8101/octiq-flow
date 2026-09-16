@@ -60,8 +60,13 @@ const html = (
   );
 
 describe("Sidebar", () => {
-  it("offers to put the column away when there is a column", () => {
-    expect(html({ onHide: () => {} })).toContain('aria-label="Hide projects"');
+  it("keeps global actions behind one disclosure", () => {
+    const out = html({ onHide: () => {}, deletedCount: 2, onShowDeleted: () => {} });
+    expect(out).toContain('aria-label="Project list actions"');
+    expect(out).toContain('aria-haspopup="menu" aria-expanded="false"');
+    expect(out).not.toContain('title="New project"');
+    expect(out).not.toContain('aria-label="Hide projects"');
+    expect(out).not.toContain('aria-label="Deleted chats (2)"');
   });
 
   it("offers nothing to put away when the sidebar is the drawer", () => {
@@ -79,9 +84,12 @@ describe("Sidebar", () => {
     expect(html()).not.toContain("nav-resizer");
   });
 
-  it("gives every project an accessible reorder handle", () => {
-    expect(html()).toContain('aria-label="Reorder octiq-flow"');
-    expect(html()).toContain('draggable="true"');
+  it("puts project actions in a labelled menu and preserves desktop drag", () => {
+    const out = html();
+    expect(out).toContain('aria-label="Actions for project octiq-flow"');
+    expect(out).toContain('draggable="true"');
+    expect(out).not.toContain('class="proj-drag"');
+    expect(out).not.toContain('class="proj-add"');
   });
 
   it("uses the project row as its chat-folder toggle", () => {
@@ -141,12 +149,6 @@ describe("Sidebar", () => {
     expect(html()).not.toContain("proj-count");
   });
 
-  it("offers the Trash panel while a deleted chat is still restorable", () => {
-    expect(html({ deletedCount: 2, onShowDeleted: () => {} })).toContain(
-      'aria-label="Deleted chats (2)"',
-    );
-  });
-
   it("keeps Trash out of the header when it is empty", () => {
     expect(html({ deletedCount: 0, onShowDeleted: () => {} })).not.toContain("Deleted chats");
   });
@@ -200,36 +202,23 @@ describe("Sidebar", () => {
     expect(html(base)).not.toContain('title="session running"');
   });
 
-  it("shares the trailing slot between a chat's mark and delete control", () => {
-    const out = html(open);
-    expect(out).toMatch(
-      /<span class="chat-tail"><span class="chat-mark"[^>]*><\/span><button class="chat-del\b/,
-    );
-  });
-
-  it("offers to pin any chat, and to unpin a pinned one", () => {
+  it("shows a pinned status without putting pin actions on the row", () => {
     const out = html({
       conversations: new Map([["p1", [chat("a"), { ...chat("b"), pinned: true }]]]),
       expanded: new Set(["p1"]),
     });
-    expect(out).toContain('aria-label="Pin this chat to the top"');
-    expect(out).toContain('aria-label="Unpin this chat"');
-    expect(out).toContain("chat-pin is-pinned");
+    expect(out).toContain('aria-label="Pinned"');
     expect(out).toContain("chat is-pinned");
+    expect(out).not.toContain('class="chat-pin');
   });
 
-  it("offers an accessible rename action for every chat", () => {
+  it("gives each chat a menu instead of individual action buttons", () => {
     const out = html(open);
-    expect(out).toContain('aria-label="Rename a"');
-    expect(out).toContain('aria-label="Rename b"');
-    expect(out).toContain('aria-description="Hover to preview. Double-click to rename. Hold for chat actions."');
-  });
-
-  it("keeps the pin out of the trailing slot", () => {
-    // The mark and the × still share the tail; the pin has a box of its own,
-    // before it, so the title is measured the same with and without the pointer.
-    const out = html(open);
-    expect(out.indexOf('class="chat-pin')).toBeLessThan(out.indexOf('class="chat-tail"'));
+    expect(out).toContain('aria-label="Actions for a"');
+    expect(out).toContain('aria-label="Actions for b"');
+    expect(out).toContain('aria-description="Hover to preview. Hold for chat actions."');
+    expect(out).not.toContain('class="chat-rename-btn"');
+    expect(out).not.toContain('class="chat-del');
   });
 
   // A chat deleted a moment ago. Its row is still in the list on purpose: it is
@@ -252,21 +241,21 @@ describe("Sidebar", () => {
     expect(out).toContain("chat is-leaving");
     // The row cannot offer Undo once the committed delete is collapsing it.
     expect(out).not.toContain('aria-label="Cancel delete"');
-    // Pick, rename, pin, delete, and the mobile actions are inert while leaving.
-    expect(out.match(/disabled=""/g)).toHaveLength(5);
+    // Neither navigation nor the menu can be used once the delete commits.
+    expect(out.match(/disabled=""/g)).toHaveLength(2);
   });
 
-  it("turns that row's × into the way back", () => {
+  it("keeps the menu reachable while deletion counts down", () => {
     const out = html({ ...open, deleting: new Set(["a"]) });
-    expect(out).toContain('aria-label="Cancel delete"');
+    expect(out).toContain('aria-label="Actions for a"');
     expect(out).toContain("chat-drain-arc");
+    expect(out).not.toContain('disabled=""');
   });
 
-  it("leaves every other row's × alone", () => {
+  it("only counts down the row being deleted", () => {
     const out = html({ ...open, deleting: new Set(["a"]) });
-    expect(out).toContain('aria-label="Delete this chat"');
-    // One counting down, one not — not two of either.
     expect(out.match(/chat-drain-arc/g)).toHaveLength(1);
+    expect(out).toContain('aria-label="Actions for b"');
   });
 
   it("counts down for as long as the delete waits", () => {
@@ -281,7 +270,7 @@ describe("Sidebar", () => {
     // either one can still be taken back.
     const out = html({ ...open, deleting: new Set(["a", "b"]) });
     expect(out.match(/chat-drain-arc/g)).toHaveLength(2);
-    expect(out.match(/aria-label="Cancel delete"/g)).toHaveLength(2);
+    expect(out.match(/aria-label="Actions for [ab]"/g)).toHaveLength(2);
     expect(out).not.toContain('aria-label="Delete this chat"');
   });
 

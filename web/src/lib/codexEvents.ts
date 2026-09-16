@@ -78,15 +78,15 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
       return completed && text ? { kind: "say", text, ...(phase ? { phase } : {}) } : null;
     }
 
-    // Codex in the shell. Named `Bash` so it takes the icon, the colour and the
-    // card every other shell call in this app already has — a reader scanning a
-    // transcript is looking for "it ran something", not for whose protocol said
-    // so.
+    // Keep the provider's own item type as the tool name. Tool names are
+    // evidence: changing `command_execution` to a Claude-flavoured `Bash`
+    // makes the transcript claim a different tool was called. `toolLook`
+    // classifies it as a run for its icon and colour without renaming it.
     case "command_execution":
       return {
         kind: "tool",
         id,
-        name: "Bash",
+        name: "command_execution",
         args: { command: str(item.command) },
         state: runState(status, completed),
         ...(completed ? { result: str(item.aggregated_output) } : {}),
@@ -95,14 +95,16 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
       };
 
     // A write. `changes` is a list; the card shows the first path, which is
-    // what the row has room for, and the rest are in the arguments.
+    // what the row has room for, and the rest are in the arguments. As above,
+    // the name remains the one Codex emitted rather than being rewritten to
+    // another provider's `Edit` tool.
     case "file_change": {
       const changes = Array.isArray(item.changes) ? item.changes : [];
       const first = obj(changes[0]);
       return {
         kind: "tool",
         id,
-        name: "Edit",
+        name: "file_change",
         args: { file_path: str(first.path), changes },
         state: runState(status, completed),
       };
@@ -112,7 +114,7 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
       return {
         kind: "tool",
         id,
-        name: "WebSearch",
+        name: "web_search",
         args: { query: str(item.query) },
         state: runState(status, completed),
       };

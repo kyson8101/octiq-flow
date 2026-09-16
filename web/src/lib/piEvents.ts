@@ -56,20 +56,11 @@ function contentText(value: unknown): string {
   return str(result.output) || str(result.text) || contentText(result.content);
 }
 
-/** Use the names the existing tool cards recognise. Extension tools keep their
- * own name, which still gives them a truthful generic card. */
+/** Preserve the exact name Pi reported. Classification belongs to
+ * `toolLook`; changing spelling or case here makes the transcript cease to be
+ * a faithful record of the provider event. */
 function toolName(value: unknown): string {
-  const raw = str(value);
-  const known: Record<string, string> = {
-    bash: "Bash",
-    edit: "Edit",
-    write: "Write",
-    read: "Read",
-    grep: "Grep",
-    find: "Find",
-    ls: "Ls",
-  };
-  return known[raw.toLowerCase()] ?? raw;
+  return str(value);
 }
 
 function messageContent(raw: unknown): PiContent[] {

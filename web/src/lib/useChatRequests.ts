@@ -32,12 +32,8 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
 
   // What is waiting on YOU right now, asked for rather than waited for.
   //
-  // A permission card and an `ask_user` question are announced ONCE, on a
-  // broadcast with no replay, and they live only in this page's memory. So a
-  // reload used to lose them outright — while the server went on holding the
-  // agent's turn open, three minutes for a permission and ten for a question,
-  // for an answer that could no longer be given. The chat just sat there, and
-  // the way out was to send something and start a fresh turn.
+  // Announcements have no replay. Fetch the server's current cards on every
+  // connection; durable questions also survive a tool timeout or server restart.
   //
   // The server is the one that knows what is still waiting, so it is asked, on
   // every connect. Its answer replaces the state from before that request:
@@ -104,6 +100,10 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       if (!gone?.id) return;
       prompts.publish(prompts.store.remove(gone.id));
     });
+    const offQuestionUpdated = bridge.on<Question>("question-updated", (q) => {
+      if (!q?.id || !requestConversation(q)) return;
+      prompts.publish(prompts.store.add(q));
+    });
     return () => {
       offAsk();
       offGone();
@@ -111,6 +111,7 @@ export function useChatRequests(conn: ConnectionState, announce: Announce) {
       offSafetyGone();
       offQuestion();
       offQuestionGone();
+      offQuestionUpdated();
     };
   }, []);
 

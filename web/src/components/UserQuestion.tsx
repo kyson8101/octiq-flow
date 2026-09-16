@@ -1,9 +1,8 @@
 // The agent asking you something — or several things at once.
 //
 // Print mode is never offered AskUserQuestion, so these arrive through a tool
-// of our own (scripts/mcp/octiq-ask.cjs). The agent is blocked on every one of
-// them: it asked because the decision is yours, and it will not guess while it
-// waits.
+// of our own (scripts/mcp/octiq-ask.cjs). Questions remain available after
+// the original tool or agent turn ends; saved answers resume that conversation.
 //
 // An agent can ask more than one thing in a single turn — Claude batches
 // independent tool calls. A batch stays ONE card, but it is read a PAGE AT A
@@ -47,6 +46,7 @@ import { bridge } from "../lib/bridge";
 import { choicesOf, optionIsOn, pendingAnswer, togglePick } from "../lib/questionAnswer";
 import type { Choice } from "../lib/questionAnswer";
 import { RollingText } from "./RollingNumber";
+import { missingQuestionCommand, PartialQuestionSubmission, submitLegacyQuestionAnswers, submitQuestionAnswers } from "../lib/submitQuestionAnswers";
 
 export type Question = {
   id: string;
@@ -73,14 +73,14 @@ export type Question = {
   /** How many questions the call this one belongs to carried. Present only
    *  alongside `batch`. */
   batchSize?: number;
+  answer?: string;
+  status?: "pending" | "saved" | "failed";
+  error?: string;
+  retryable?: boolean;
 };
 
-/** What it says when you close the card instead of answering.
- *
- *  Closing is an answer, not a disappearance: the agent is blocked, so
- *  dismissing without replying would leave it waiting out the full timeout
- *  having been told nothing. Worded like the timeout message so it does not
- *  invent a preference you never expressed. */
+/** Explicitly skipped questions in a submitted batch, and the legacy server's
+ *  close action. The durable protocol has a separate cancellation command. */
 const DECLINED =
   "The user closed this question without answering. Do not assume an answer — " +
   "say what you need and stop, or continue in a way that does not depend on it.";
@@ -108,6 +108,12 @@ export function UserQuestion({
   const [picks, setPicks] = useState<Record<string, string[]>>({});
   const [text, setText] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [savedAnswers, setSavedAnswers] = useState<Record<string, string>>({});
+  const savedAnswer = (q: Question) => q.answer ?? savedAnswers[q.id];
+  const allSaved = questions.length > 0 && questions.every((q) => savedAnswer(q) !== undefined);
+  const deliveryError = questions.find((q) => q.error)?.error;
+  const title = deliveryError ? "Answers need attention" : allSaved ? "Answers saved · waiting for agent" : "Agent is asking";
   /** Put aside from the moment it appears — see the note at the top of the
    *  file. Fresh per batch: the card is keyed on the first question's id, so a
    *  new batch is a new card and starts put aside again, while a question
@@ -144,6 +150,7 @@ export function UserQuestion({
    *  A text answer still beats a one-of selection; a set still combines ticks
    *  and a typed addition. */
   const answerFor = (question: Question): string => {
+    if (savedAnswer(question) !== undefined) return savedAnswer(question)!;
     const options = choicesOf(question.options);
     return pendingAnswer({
       many: !!question.multiple && options.length > 0,
@@ -179,16 +186,50 @@ export function UserQuestion({
   const submit = async (values: Record<string, string>) => {
     if (sending) return;
     setSending(true);
-    const ids = questions.map((question) => question.id);
-    await Promise.all(
-      ids.map((id) =>
-        bridge
-          .invoke("question_answer", { id, answer: values[id] ?? DECLINED })
-          // Expired while you were deciding; either way it is answered or gone.
-          .catch(() => undefined),
-      ),
-    );
-    onDone(ids);
+    setSendError(null);
+    const answers = questions.map(({ id }) => ({ id, answer: values[id] ?? DECLINED }));
+    try {
+      const receipt = await submitQuestionAnswers((command, args) => bridge.invoke(command, args), answers);
+      if (receipt === "delivered") { onDone(answers.map((a) => a.id)); return; }
+      setSavedAnswers(Object.fromEntries(answers.map(({ id, answer }) => [id, answer])));
+      // Keep the saved card until the backend reports delivery. An RPC receipt
+      // confirms storage, not that the agent has resumed yet.
+    } catch (error) {
+      if (error instanceof PartialQuestionSubmission) onDone(error.deliveredIds);
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (sending) return;
+    setSending(true);
+    setSendError(null);
+    const ids = questions.map((q) => q.id);
+    try {
+      try {
+        await bridge.invoke("question_cancel", { ids });
+      } catch (error) {
+        if (!missingQuestionCommand(error, "question_cancel")) throw error;
+        await submitLegacyQuestionAnswers((command, args) => bridge.invoke(command, args), ids.map((id) => ({ id, answer: DECLINED })));
+      }
+      onDone(ids);
+    } catch (error) {
+      if (error instanceof PartialQuestionSubmission) onDone(error.deliveredIds);
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally { setSending(false); }
+  };
+
+  const retry = async () => {
+    if (sending) return;
+    setSending(true);
+    setSendError(null);
+    try {
+      await bridge.invoke("question_retry", { ids: questions.map((q) => q.id) });
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : String(error));
+    } finally { setSending(false); }
   };
 
   // Put aside — which is how it arrives, and where it goes back to on the "–".
@@ -206,7 +247,7 @@ export function UserQuestion({
         >
           <span className="qa-dot" aria-hidden="true" />
           <span className="qa-min-copy">
-            <span className="qa-min-title">Claude is asking</span>
+            <span className="qa-min-title">{title}</span>
             <span className="qa-min-q">{questions[0]?.question ?? "For your answers"}</span>
           </span>
           {total > 1 && (
@@ -214,8 +255,25 @@ export function UserQuestion({
               <RollingText>{total + " questions"}</RollingText>
             </span>
           )}
-          <span className="qa-min-cue">Answer</span>
+          <span className="qa-min-cue">{allSaved ? "View" : "Answer"}</span>
         </button>
+      </div>
+    );
+  }
+
+  if (allSaved) {
+    return (
+      <div className="qa-card" role="status">
+        <div className="qa-head"><span className="qa-label">{title}</span></div>
+        <div className="qa-questions">
+          {questions.map((q) => <section className="qa-question-item" key={q.id}>
+            <p className="qa-question">{q.question}</p><p className="qa-hint">{savedAnswer(q)}</p>
+          </section>)}
+          <p className="qa-hint">Your answers are saved. You can leave this page while the agent continues.</p>
+          {(sendError || deliveryError) && <p className="qa-hint" role="alert">{sendError || deliveryError}</p>}
+          {deliveryError && questions.some((q) => q.error && q.retryable !== false) && <button className="ask-btn is-primary" disabled={sending} onClick={() => void retry()}>Retry delivery</button>}
+          <button className="ask-btn" disabled={sending} onClick={() => void cancel()}>Cancel pending delivery</button>
+        </div>
       </div>
     );
   }
@@ -268,14 +326,14 @@ export function UserQuestion({
     >
       <div className="qa-head">
         <span className="qa-dot" aria-hidden="true" />
-        <span className="qa-label">Claude is asking</span>
+        <span className="qa-label">{title}</span>
         {total > 1 && (
           <span className="qa-count">
             <RollingText>{total + " questions"}</RollingText>
           </span>
         )}
-        {/* Not a close. The agent is blocked, so closing is an answer — and
-            the answer is often in the conversation this card is covering. */}
+        {/* Minimise while reading the conversation; the adjacent close action
+            explicitly cancels the question and any pending continuation. */}
         <button
           className="qa-min-btn"
           type="button"
@@ -292,12 +350,13 @@ export function UserQuestion({
           disabled={sending}
           title="Close without answering"
           aria-label="Close without answering"
-          onClick={() => void submit({})}
+          onClick={() => void cancel()}
         >
           ×
         </button>
       </div>
 
+      {sendError && <p className="qa-hint" role="alert">{sendError}</p>}
       <div className="qa-questions">
         {/* The last page of a batch: everything you decided, in one read, with
             the send under it. Each line goes back to its own question, so
@@ -345,7 +404,7 @@ export function UserQuestion({
           const many = !!question.multiple && options.length > 0;
           const ticked = picks[question.id] ?? [];
           const chosen = selected[question.id];
-          const typed = text[question.id] ?? "";
+          const typed = savedAnswer(question) ?? text[question.id] ?? "";
 
           return (
             <section className={"qa-question-item is-" + dir} key={question.id}>
@@ -396,7 +455,7 @@ export function UserQuestion({
                         type="button"
                         role={many ? "checkbox" : "radio"}
                         aria-checked={on}
-                        disabled={sending}
+                        disabled={sending || savedAnswer(question) !== undefined}
                         onClick={() =>
                           many
                             ? setPicks((prev) => ({
@@ -445,7 +504,7 @@ export function UserQuestion({
                         ? "…and anything else"
                         : "…or say something else"
                   }
-                  disabled={sending}
+                  disabled={sending || savedAnswer(question) !== undefined}
                   onChange={(event) =>
                     setText((prev) => ({ ...prev, [question.id]: event.target.value }))
                   }

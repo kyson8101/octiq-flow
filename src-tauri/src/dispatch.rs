@@ -53,7 +53,10 @@ impl Services {
         // roster is the whole of it. What does NOT come back is the discussion:
         // `round::Rounds` is in memory and is written nowhere, so a restored
         // seat's view of the room starts here.
-        let chats = Arc::new(ChatManager::default());
+        let question_path = crate::transcript::chats_dir()
+            .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
+            .join("questions.json");
+        let chats = Arc::new(ChatManager::with_saved_questions(question_path));
         if let Some(path) = crate::chat_room::rooms_path() {
             crate::chat_room::load_rooms(&chats, &path);
         }
@@ -454,15 +457,29 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "sessionId")?,
         )?)),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
-        "chat_index_remove" => unit(crate::agent_chat::chat_index_remove(
-            arg(&args, "id")?,
-            arg(&args, "key")?,
-            arg(&args, "expectedGeneration")?,
-            arg(&args, "meta")?,
-        )),
+        "chat_index_remove" => {
+            let id: String = arg(&args, "id")?;
+            crate::agent_chat::chat_index_remove(
+                id.clone(),
+                arg(&args, "key")?,
+                arg(&args, "expectedGeneration")?,
+                arg(&args, "meta")?,
+            )?;
+            // An old delete retried after restore is a no-op, including for
+            // questions in the restored chat.
+            if crate::chat_index::deleted()
+                .iter()
+                .any(|meta| meta.id == id)
+            {
+                crate::agent_chat::chat_stop_impl(&svc.chats, format!("chat:{id}"))?;
+            }
+            Ok(Value::Null)
+        }
         "chat_index_restore" => to_value(crate::agent_chat::chat_index_restore(arg(&args, "id")?)),
         "chat_forget" => {
-            crate::agent_chat::chat_forget(arg(&args, "key")?);
+            let key: String = arg(&args, "key")?;
+            crate::agent_chat::chat_stop_impl(&svc.chats, key.clone())?;
+            crate::agent_chat::chat_forget(key);
             Ok(Value::Null)
         }
         "image_preview_list" => to_value(crate::image_preview::list(&arg::<String>(&args, "key")?)),
@@ -558,13 +575,40 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )?,))),
 
         // ---- questions ----------------------------------------------------
-        // The same, for `ask_user`. Its wait is ten minutes, so a question
-        // stranded by a reload was the longest a chat could sit looking dead.
-        "question_pending" => Ok(json!(crate::question::pending())),
-        "question_answer" => Ok(json!(crate::question::answer(
-            &arg::<String>(&args, "id")?,
-            arg(&args, "answer")?,
-        ))),
+        "question_pending" => to_value(svc.chats.questions.pending()),
+        "question_answer" => {
+            svc.chats
+                .questions
+                .answer(&[crate::question_store::Answer {
+                    id: arg(&args, "id")?,
+                    answer: arg(&args, "answer")?,
+                }])?;
+            Ok(json!(true))
+        }
+        "question_answer_batch" => {
+            svc.chats
+                .questions
+                .answer(&arg::<Vec<crate::question_store::Answer>>(
+                    &args, "answers",
+                )?)?;
+            Ok(json!({ "saved": true }))
+        }
+        "question_cancel" => unit(crate::agent_chat::cancel_questions(
+            &svc.chats,
+            &arg::<Vec<String>>(&args, "ids")?,
+        )),
+        "question_retry" => {
+            let _delivery = svc
+                .chats
+                .questions
+                .delivery_lock
+                .lock()
+                .map_err(|e| e.to_string())?;
+            svc.chats
+                .questions
+                .retry(&arg::<Vec<String>>(&args, "ids")?)?;
+            Ok(json!({ "saved": true }))
+        }
 
         // ---- git ----------------------------------------------------------
         // No `_impl` split here: git.rs and git_ops.rs never held managed state,

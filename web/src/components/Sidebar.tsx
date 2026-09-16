@@ -14,7 +14,7 @@ import { projectColor } from "../lib/projectColor";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { RollingNumber } from "./RollingNumber";
-import { ChatActionsDialog } from "./ChatActionsDialog";
+import { SidebarMenu } from "./SidebarMenu";
 import "./PortalLink.css";
 import "./MobileSidebar.css";
 
@@ -137,6 +137,7 @@ export function Sidebar({
   head?: ReactNode;
   foot?: ReactNode;
 } & ChatPreviewSource) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ id: string; edge: "before" | "after" } | null>(
     null,
@@ -195,46 +196,13 @@ export function Sidebar({
 
         <div className="sidebar-head">
           <span className="sidebar-title">Projects</span>
-          <button className="sidebar-add" type="button" title="New project" onClick={onNewProject}>
-            <PlusIcon />
-          </button>
-          {shelved.length > 0 && (
-            <button
-              className="sidebar-add"
-              type="button"
-              title={`Shelved projects (${shelved.length})`}
-              aria-label={`Shelved projects (${shelved.length})`}
-              onClick={onShowShelved}
-            >
-              <ArchiveIcon />
-              <span className="sidebar-utility-count"><RollingNumber value={shelved.length} /></span>
-            </button>
-          )}
-          {deletedCount > 0 && onShowDeleted && (
-            <button
-              className="sidebar-add"
-              type="button"
-              title={`Deleted chats (${deletedCount})`}
-              aria-label={`Deleted chats (${deletedCount})`}
-              onClick={onShowDeleted}
-            >
-              <TrashIcon />
-              <span className="sidebar-utility-count"><RollingNumber value={deletedCount} /></span>
-            </button>
-          )}
-          {/* Last, against the edge that goes away. The way back is the project
-              name in the top bar, which gets its caret back once this is used. */}
-          {onHide && (
-            <button
-              className="sidebar-add"
-              type="button"
-              title="Hide projects"
-              aria-label="Hide projects"
-              onClick={onHide}
-            >
-              <CollapseIcon />
-            </button>
-          )}
+          <SidebarMenu label="Project list actions" open={menuOpen} onOpenChange={setMenuOpen}
+            items={[
+              { id: "new", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
+              ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
+              ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
+              ...(onHide ? [{ id: "hide", label: "Hide projects", icon: <CollapseIcon />, onSelect: onHide }] : []),
+            ]} />
         </div>
       </div>
 
@@ -399,6 +367,7 @@ function ProjectNode({
   onMove: (direction: -1 | 1) => void;
 } & ChatPreviewSource) {
   const [showAll, setShowAll] = useState(false);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -407,7 +376,6 @@ function ProjectNode({
   const cancelHold = () => clearTimeout(hold.current);
   useEffect(() => () => clearTimeout(hold.current), []);
   useEffect(() => { if (!open) setActionsId(null); }, [open]);
-  const actionsChat = chats.find((chat) => chat.id === actionsId);
   // The chats present on this project's first paint are already here — making
   // all of history slide in every time the sidebar mounts would be noise. A
   // later id is a new row, and gets the short expand transition below.
@@ -441,26 +409,12 @@ function ProjectNode({
     >
       <div className={`proj ${current ? "is-on" : ""}`} onDragOver={onDragOver} onDrop={onDrop}>
         <button
-          className="proj-drag"
-          type="button"
-          draggable
-          title="Drag or use the arrow keys to reorder"
-          aria-label={`Reorder ${project.name}`}
-          aria-keyshortcuts="ArrowUp ArrowDown"
-          onDragStart={onDragStart}
-          onDragEnd={onDragEnd}
-          onKeyDown={(event) => {
-            if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-            event.preventDefault();
-            onMove(event.key === "ArrowUp" ? -1 : 1);
-          }}
-        >
-          <GripIcon />
-        </button>
-        <button
           className="proj-btn"
           type="button"
           aria-expanded={showing}
+          draggable
+          onDragStart={onDragStart}
+          onDragEnd={onDragEnd}
           onClick={() => onToggle(project.id)}
         >
           <span
@@ -479,10 +433,7 @@ function ProjectNode({
               <LinkIcon />
             </span>
           )}
-          {/* How many chats are in here. Written at the right edge of the name,
-              so the numbers line up in a column that can be read straight down
-              the list — and left out entirely at zero, because an empty project
-              is told from a full one fastest by there being nothing there. */}
+          {/* Quiet metadata beside the project name; only busy work is accented. */}
           {chats.length > 0 && (
             <span
               className={`proj-count ${working ? "is-busy" : live ? "is-live" : ""}`}
@@ -498,28 +449,13 @@ function ProjectNode({
             </span>
           )}
         </button>
-        <button
-          className="proj-add"
-          type="button"
-          title="Project settings"
-          onClick={(e) => {
-            e.stopPropagation();
-            onSettings(project.id);
-          }}
-        >
-          <GearIcon />
-        </button>
-        <button
-          className="proj-add"
-          type="button"
-          title="New chat in this project"
-          onClick={(e) => {
-            e.stopPropagation();
-            onNewChat(project.id);
-          }}
-        >
-          <PlusIcon />
-        </button>
+        <SidebarMenu label={`Actions for project ${project.name}`} open={projectMenuOpen}
+          onOpenChange={setProjectMenuOpen} items={[
+            { id: "new", label: "New chat in this project", icon: <PlusIcon />, onSelect: () => onNewChat(project.id) },
+            { id: "settings", label: "Project settings", icon: <GearIcon />, onSelect: () => onSettings(project.id) },
+            { id: "up", label: "Move project up", icon: <MoveIcon />, onSelect: () => onMove(-1) },
+            { id: "down", label: "Move project down", icon: <MoveIcon down />, onSelect: () => onMove(1) },
+          ]} />
       </div>
 
       {/* Mounted whenever the project HAS chats, open or shut, because a folder
@@ -602,11 +538,12 @@ function ProjectNode({
                         type="button"
                         aria-label={c.title}
                         disabled={isLeaving}
-                        aria-description="Hover to preview. Double-click to rename. Hold for chat actions."
+                        aria-current={c.id === currentConversation ? "page" : undefined}
+                        aria-description="Hover to preview. Hold for chat actions."
                         onPointerDown={(event) => {
                           cancelHold();
                           held.current = false;
-                          if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px)").matches) return;
+                          if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
                           holdStart.current = { x: event.clientX, y: event.clientY };
                           hold.current = setTimeout(() => {
                             held.current = true;
@@ -619,7 +556,7 @@ function ProjectNode({
                         onPointerUp={cancelHold}
                         onPointerCancel={cancelHold}
                         onContextMenu={(event) => {
-                          if (!window.matchMedia("(max-width: 859.98px)").matches) return;
+                          if (!window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
                           event.preventDefault();
                           cancelHold();
                           if (!going && !isLeaving) setActionsId(c.id);
@@ -628,98 +565,35 @@ function ProjectNode({
                           if (held.current) { held.current = false; return; }
                           onPickConversation(c);
                         }}
-                        onDoubleClick={() => {
-                          if (!going) setRenaming(c.id);
-                        }}
                       >
                         <span className="chat-summary">
-                          <span className="chat-heading">
-                            <span className="chat-title">{c.title}</span>
+                          <span className="chat-title">{c.title}</span>
+                          <span className="chat-meta">
+                            <span className={`chat-snippet${!latest && !going && !busy.has(c.id) ? " is-placeholder" : ""}`}>{snippet}</span>
                             <time className="chat-time" dateTime={new Date(c.updatedAt).toISOString()} title={new Date(c.updatedAt).toLocaleString()}>
                               {chatTime(c.updatedAt)}
                             </time>
                           </span>
-                          <span className="chat-snippet">{snippet}</span>
                         </span>
-                        {c.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
                       </ChatPreviewButton>
                     )}
-                    <button
-                      className="chat-rename-btn"
-                      type="button"
-                      title="Rename this chat"
-                      aria-label={`Rename ${c.title}`}
-                      disabled={isLeaving || going || renaming === c.id}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setRenaming(c.id);
-                      }}
-                    >
-                      <PencilIcon />
-                    </button>
-                    {/* The pin, in a slot of its own before the trailing one. A
-                        pinned chat wears it all the time — it is the reason the
-                        row sits above newer ones — and any other row offers it
-                        on hover. Its own fixed box, so the title never
-                        re-measures when the pointer arrives. */}
-                    <button
-                      className={`chat-pin ${c.pinned ? "is-pinned" : ""}`}
-                      type="button"
-                      title={c.pinned ? "Unpin this chat" : "Pin this chat to the top"}
-                      aria-label={c.pinned ? "Unpin this chat" : "Pin this chat to the top"}
-                      aria-pressed={!!c.pinned}
-                      disabled={isLeaving}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onPin(c.id);
-                      }}
-                    >
-                      <PinIcon />
-                    </button>
-                    <span className="chat-tail">
-                      {/* State follows the title: a dot for the chat you are
-                          in, a grey one for a session that is up but idle, and
-                          a pulsing green one for a chat still working. On hover
-                          it gives this same slot to the delete control. */}
-                      <span
-                        className="chat-mark"
-                        aria-hidden="true"
-                        title={
-                          busy.has(c.id)
-                            ? "working"
-                            : running.has(c.id)
-                              ? "session running"
-                              : undefined
-                        }
-                      />
-                      {/* The same button, twice: it deletes, and while the
-                          delete is still counting down it takes it back. */}
-                      <button
-                        className={`chat-del ${going ? "is-going" : ""}`}
-                        type="button"
-                        title={going ? "Cancel delete" : "Delete this chat"}
-                        aria-label={going ? "Cancel delete" : "Delete this chat"}
-                        disabled={isLeaving}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDelete(c.id);
-                        }}
-                      >
-                        {going ? <DeleteCountdownIcon ms={deleteMs} /> : <CloseIcon />}
-                      </button>
+                    <span className="chat-indicators">
+                      {c.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
+                      <span className="chat-mark" aria-hidden="true"
+                        title={busy.has(c.id) ? "working" : running.has(c.id) ? "session running" : undefined} />
                     </span>
-                    <button
+                    {renaming !== c.id && <SidebarMenu
                       className="chat-actions-trigger"
-                      type="button"
-                      aria-label={`Actions for ${c.title}`}
-                      aria-haspopup="dialog"
-                      disabled={isLeaving || going}
-                      onClick={(event) => { event.currentTarget.focus(); setActionsId(c.id); }}
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                        <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
-                      </svg>
-                    </button>
+                      label={`Actions for ${c.title}`}
+                      open={actionsId === c.id && showing}
+                      onOpenChange={(open) => setActionsId(open ? c.id : null)}
+                      disabled={isLeaving}
+                      icon={going ? <DeleteCountdownIcon ms={deleteMs} /> : undefined}
+                      items={[
+                        { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(c.id) },
+                        { id: "pin", label: c.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(c.id) },
+                        { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(c.id) },
+                      ]} />}
                   </div>
                 </AnimatedChatRow>
               );
@@ -735,15 +609,7 @@ function ProjectNode({
           </ul>
         </div>
       )}
-      {actionsChat && open && !deleting.has(actionsChat.id) && !leaving.has(actionsChat.id) && (
-        <ChatActionsDialog
-          chat={actionsChat}
-          onClose={() => setActionsId(null)}
-          onRename={() => setRenaming(actionsChat.id)}
-          onPin={() => onPin(actionsChat.id)}
-          onDelete={() => onDelete(actionsChat.id)}
-        />
-      )}
+
     </li>
   );
 }
@@ -826,17 +692,10 @@ function GearIcon() {
   );
 }
 
-function GripIcon() {
-  return (
-    <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" aria-hidden="true">
-      <circle cx="3" cy="3" r="1" />
-      <circle cx="9" cy="3" r="1" />
-      <circle cx="3" cy="7" r="1" />
-      <circle cx="9" cy="7" r="1" />
-      <circle cx="3" cy="11" r="1" />
-      <circle cx="9" cy="11" r="1" />
-    </svg>
-  );
+function MoveIcon({ down = false }: { down?: boolean }) {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={down ? { transform: "rotate(180deg)" } : undefined}>
+    <path d="M12 19V5m-6 6 6-6 6 6" />
+  </svg>;
 }
 
 function LinkIcon() {
@@ -884,14 +743,6 @@ function TrashIcon() {
       <path d="M8 6V4h8v2" />
       <path d="m6 6 1 14h10l1-14" />
       <path d="M10 10v6M14 10v6" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <path d="M18 6 6 18M6 6l12 12" />
     </svg>
   );
 }

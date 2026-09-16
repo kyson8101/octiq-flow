@@ -92,7 +92,8 @@ assert.equal(await page.locator('.ws-host').isVisible(),false);
 await page.setViewportSize({width:1280,height:900});
 await page.locator('.sidebar').waitFor();
 assert.equal(await page.locator('.main').isVisible(),true);
-await page.getByRole('button',{name:'Hide projects',exact:true}).click();
+await page.getByRole('button',{name:'Project list actions',exact:true}).click();
+await page.getByRole('menuitem',{name:'Hide projects',exact:true}).click();
 await page.locator('.sidebar').waitFor({state:'hidden'});
 await page.getByRole('button',{name:'Projects and chats',exact:true}).click();
 await page.locator('.sidebar').waitFor();
@@ -110,7 +111,8 @@ for (const [width,height] of [[800,900],[390,500],[320,568]]) {
   await page.getByRole('button',{name:'Return to chat',exact:true}).tap();
 }
 await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
-await page.getByRole('button',{name:'New chat in this project',exact:true}).first().tap();
+await page.getByRole('button',{name:'Actions for project Project Alpha',exact:true}).tap();
+await page.getByRole('menuitem',{name:'New chat in this project',exact:true}).tap();
 await page.locator('.main').waitFor();
 assert.equal(await page.locator('.sidebar').isVisible(),false);
 assert.equal(await page.locator('textarea').inputValue(),'');

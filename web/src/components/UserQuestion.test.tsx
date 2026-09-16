@@ -32,6 +32,28 @@ const arrive = (over: Partial<Question> = {}) =>
   renderToStaticMarkup(<UserQuestion questions={[ask(over)]} onDone={() => {}} />);
 
 describe("UserQuestion", () => {
+  it("restores saved answers and shows that delivery is still pending", () => {
+    const html = draw({ answer: "SQLite", status: "saved" });
+    expect(html).toContain("Answers saved");
+    expect(html).toContain("SQLite");
+    expect(html).toContain("waiting for agent");
+    expect(html).not.toContain("Send answers");
+  });
+
+  it("keeps a failed delivery visible with the saved answer and retry action", () => {
+    const html = draw({ answer: "SQLite", status: "failed", error: "Could not start agent" });
+    expect(html).toContain("Could not start agent");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain("SQLite");
+    expect(html).toContain("Retry delivery");
+  });
+
+  it("does not offer automatic retry when receipt is uncertain", () => {
+    const html = draw({ answer: "SQLite", status: "failed", error: "Check the chat before continuing", retryable: false });
+    expect(html).toContain("Check the chat before continuing");
+    expect(html).not.toContain("Retry delivery");
+  });
+
   const batch = (startPage = 0) =>
     renderToStaticMarkup(
       <UserQuestion
@@ -231,7 +253,7 @@ describe("a question arrives put aside", () => {
     const html = arrive();
 
     expect(html).toContain('class="qa-min-copy"');
-    expect(html).toContain('class="qa-min-title">Claude is asking</span>');
+    expect(html).toContain('class="qa-min-title">Agent is asking</span>');
     expect(html).toContain('class="qa-min-q">Which database?</span>');
   });
 

@@ -71,7 +71,7 @@ function toolSucceeded(tool: Tool): boolean {
 function editedPaths(tool: Tool): string[] {
   if (!toolSucceeded(tool)) return [];
   const name = tool.name.toLowerCase().replace(/^functions\./, "");
-  if (!["edit", "write", "multiedit", "notebookedit", "applypatch", "apply_patch"].includes(name)) return [];
+  if (!["edit", "write", "multiedit", "notebookedit", "applypatch", "apply_patch", "file_change"].includes(name)) return [];
   const args = obj(tool.args);
   const paths = [str(args.file_path), str(args.path), str(args.notebook_path)];
   if (Array.isArray(args.changes)) paths.push(...args.changes.map((change) => str(obj(change).path)));

@@ -1,11 +1,9 @@
-// What a tool call is, in the two words a row has room for.
+// What family a tool call belongs to, without changing its name.
 //
-// The names the agent sends are wiring: `Skill` for every skill there is,
-// `Task` for every subagent, `mcp__docspace__save_decision` for one MCP call.
-// A reader scanning a long reply is not looking for the wiring. They are
-// looking for "it read a file", "it ran something", "it called /slice" — so
-// each call is sorted into a small family, which is what earns it an icon and
-// a colour, and given the name of the thing that actually ran.
+// The provider's name is evidence: `Skill`, `bash`, `command_execution`, and
+// `mcp__docspace__save_decision` must reach the UI exactly as reported. Calls
+// are still sorted into a small family for their icon, colour and folding
+// behaviour, but that presentation metadata must never rename the call.
 //
 // The families are deliberately few. A dozen colours down the left edge is not
 // a legend, it is confetti; these are the distinctions a reader actually makes
@@ -44,16 +42,19 @@ const FAMILY: Record<string, ToolKind> = {
   multiedit: "edit",
   notebookedit: "edit",
   applypatch: "edit",
+  file_change: "edit",
   bash: "run",
   bashoutput: "run",
   killshell: "run",
   killbash: "run",
+  command_execution: "run",
   glob: "search",
   grep: "search",
   ls: "search",
   toolsearch: "search",
   webfetch: "web",
   websearch: "web",
+  web_search: "web",
   task: "agent",
   agent: "agent",
   workflow: "agent",
@@ -77,40 +78,25 @@ function argString(args: unknown, key: string): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-export function toolLook(name: string, args: unknown): ToolLook {
+export function toolLook(name: string, _args: unknown): ToolLook {
   const raw = name || "";
   const lower = raw.toLowerCase();
 
-  // A skill call is `Skill` every time — the skill's own name is an argument.
-  // Reading it out is the whole difference between a reply that says it ran
-  // five skills and a reply that says which five.
+  // Arguments can explain which skill was requested, but the tool is still
+  // named `Skill`. The card shows the argument separately; its name remains
+  // the exact provider value.
   if (lower === "skill") {
-    const id = argString(args, "skill");
-    if (!id) return { kind: "skill", label: "skill" };
-    const [scope, rest] = id.includes(":") ? [id.slice(0, id.indexOf(":")), id.slice(id.indexOf(":") + 1)] : ["", id];
-    return { kind: "skill", label: `/${rest}`, scope: scope || undefined };
+    return { kind: "skill", label: raw || "tool" };
   }
 
-  // `mcp__<server>__<tool>`: the server is worth keeping — it is the answer to
-  // "who is this talking to" — but not at the cost of the tool's own name,
-  // which is the part that says what happened.
+  // An MCP prefix is part of the actual callable name. Keep it intact rather
+  // than splitting and reordering it into a friendly label and scope badge.
   if (lower.startsWith("mcp__")) {
-    const parts = raw.split("__");
-    if (parts.length >= 3) {
-      return { kind: "mcp", label: parts.slice(2).join("__"), scope: parts[1] };
-    }
-    return { kind: "mcp", label: raw.slice(5) || raw };
+    return { kind: "mcp", label: raw };
   }
 
   const kind = FAMILY[lower] ?? "other";
-  const label = lower === "toolsearch"
-    ? "Search tools"
-    : lower === "sendmessage"
-      ? "Send message"
-      : lower === "listagents"
-        ? "List agents"
-        : raw || "tool";
-  return { kind, label };
+  return { kind, label: raw || "tool" };
 }
 
 /** The one detail worth showing on a collapsed row: which file, which pattern,
@@ -126,13 +112,16 @@ export function toolDetail(name: string, args: unknown, isAgent = false): string
   // nothing, so the row takes the short name the caller gave the job instead —
   // the briefing itself is one click away, under `arguments`.
   //
-  // A skill has already put the thing that ran in the row's name, so the only
-  // detail left worth showing is what it was called with.
-  const keys = toolLook(name, args).kind === "skill"
-    ? ["args"]
-    : isAgent
-      ? ["description", "subagent_type", "prompt"]
-      : ["file_path", "path", "pattern", "command", "query", "url", "prompt"];
+  // The row keeps the actual tool name (`Skill`), so its detail carries which
+  // skill was requested and what arguments it received.
+  if (toolLook(name, args).kind === "skill") {
+    const skill = argString(args, "skill");
+    const calledWith = argString(args, "args");
+    return [skill, calledWith].filter(Boolean).join(" ");
+  }
+  const keys = isAgent
+    ? ["description", "subagent_type", "prompt"]
+    : ["file_path", "path", "pattern", "command", "query", "url", "prompt"];
   for (const key of keys) {
     const v = bag[key];
     if (typeof v === "string" && v.trim()) return v;

@@ -340,7 +340,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/hook/ask", post(ask_handler))
             .route("/hook/room", post(room_handler))
             .fallback(get(asset_handler))
-            .with_state(ctx);
+            .with_state(ctx.clone());
 
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
@@ -359,6 +359,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
         // to wonder whether the bookmark they kept went stale — it does not, it
         // lands here, token and all.
         println!("[web] (the older /v2/ URL redirects to this one)");
+        crate::agent_chat::start_question_recovery(ctx.services.chats.clone());
         let service = router.into_make_service_with_connect_info::<SocketAddr>();
         if let Err(e) = axum::serve(listener, service).await {
             eprintln!("[web] server stopped: {e}");
@@ -1013,7 +1014,7 @@ async fn ask_handler(
     if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
-    let answer = crate::question::ask_request(request).await;
+    let answer = crate::question::ask_request(ctx.services.chats.clone(), request).await;
     axum::Json(json!({ "answer": answer })).into_response()
 }
 

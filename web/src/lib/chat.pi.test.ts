@@ -58,7 +58,7 @@ describe("pi.dev conversations", () => {
       {
         kind: "tool",
         id: "pi:host:tool-1",
-        name: "Read",
+        name: "read",
         args: { path: "README.md" },
         argsJson: '{"path":"README.md"}',
         result: "contents",

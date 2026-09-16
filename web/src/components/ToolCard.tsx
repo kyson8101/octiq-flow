@@ -185,9 +185,8 @@ export function ToolCard({
         className="tool-head"
         onClick={() => (opensAgent ? onOpenAgent!() : setOpen((v) => !v))}
         type="button"
-        // The name on the row is the thing that ran, which for a skill or an
-        // MCP call is not the name the agent used. The real one stays here, for
-        // the reader who needs it to search a log.
+        // The row keeps the exact name the provider reported. Keep it in the
+        // title too so a long name truncated by layout is still inspectable.
         title={opensAgent ? "Open read-only agent chat" : tool.name}
         aria-label={opensAgent ? "Open read-only agent chat" : undefined}
       >

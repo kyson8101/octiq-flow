@@ -20,6 +20,31 @@ const backgrounded = (finish?: Tool["finish"]): Tool => ({
 
 const render = (tool: Tool) => renderToStaticMarkup(<ToolCard tool={tool} />);
 
+describe("the reported tool name", () => {
+  const called = (name: string, args: unknown): Tool => ({
+    kind: "tool",
+    id: `tool-${name}`,
+    name,
+    argsJson: JSON.stringify(args),
+    args,
+    state: "done",
+  });
+
+  it("shows Skill as the tool and keeps the requested skill in its arguments", () => {
+    const html = render(called("Skill", { skill: "pandahrms:slice", args: "--fast" }));
+
+    expect(html).toContain('<span class="tool-name">Skill</span>');
+    expect(html).toContain("pandahrms:slice --fast");
+    expect(html).not.toContain('<span class="tool-name">/slice</span>');
+  });
+
+  it("shows an MCP tool's exact qualified name", () => {
+    const html = render(called("mcp__docspace__save_decision", {}));
+
+    expect(html).toContain('<span class="tool-name">mcp__docspace__save_decision</span>');
+  });
+});
+
 describe("a card whose work ran in the background", () => {
   it("says on the folded row how that work ended", () => {
     const html = render(

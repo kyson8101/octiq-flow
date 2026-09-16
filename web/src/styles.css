@@ -2255,7 +2255,11 @@ body {
    strength. Everything else — the scope, the path, the counts, the caret —
    stays quiet and is read only once the name has brought you here. */
 .tool-name {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-family: var(--font);
   font-size: 13px;
   color: var(--fg-2);

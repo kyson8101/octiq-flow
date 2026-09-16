@@ -65,6 +65,29 @@ describe("a Codex seat answering", () => {
 
     expect(tools.length).toBeGreaterThan(0);
     expect(JSON.stringify(tools)).toContain("openai-docs");
+    expect(tools[0]?.name).toBe("command_execution");
+  });
+
+  it("keeps Codex's actual item type instead of substituting another provider's tool name", () => {
+    const command = reduceChat(emptyChat(), {
+      type: "item.started",
+      item: { id: "command", type: "command_execution", command: "pwd", status: "in_progress" },
+    });
+    const file = reduceChat(emptyChat(), {
+      type: "item.completed",
+      item: { id: "file", type: "file_change", status: "completed", changes: [{ path: "a.ts" }] },
+    });
+    const web = reduceChat(emptyChat(), {
+      type: "item.completed",
+      item: { id: "web", type: "web_search", query: "actual names" },
+    });
+    const name = (state: ChatState) => state.messages
+      .flatMap((message) => message.blocks)
+      .find((block) => block.kind === "tool")?.name;
+
+    expect(name(command)).toBe("command_execution");
+    expect(name(file)).toBe("file_change");
+    expect(name(web)).toBe("web_search");
   });
 
   it("marks a command as finished once its result is in", () => {

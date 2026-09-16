@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent_provider::{
@@ -311,6 +311,7 @@ fn emit_unstructured_output(
 }
 
 struct ChatSession {
+    launch_id: String,
     /// A dispatched prompt still awaiting its provider acknowledgement.
     user_turn_id: Option<String>,
     child: Child,
@@ -402,7 +403,7 @@ fn idle_timeout() -> Option<Duration> {
 /// Kept in memory only. A backend restart loses it, and an agent whose process
 /// has not been started since is simply not resumed — the words are all in the
 /// transcript either way.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StartContext {
     cwd: String,
     agent: ChatAgent,
@@ -418,6 +419,17 @@ pub(crate) struct StartContext {
     /// event. Restarting without it would hand the agent an empty memory and
     /// a brief about a discussion it had never heard of.
     session_id: Option<String>,
+}
+
+/// Saved with the question, including the exact seat and provider memory.
+/// These settings stay in the private profile and never go to the browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct QuestionOrigin {
+    pub chat_key: String,
+    pub session_key: String,
+    pub launch_id: String,
+    start: StartContext,
+    seat: Option<crate::chat_room::Seat>,
 }
 
 /// A message the person has sent that its agent has not been given yet.
@@ -447,6 +459,7 @@ struct QueuedTurn {
 
 #[derive(Default)]
 pub struct ChatManager {
+    pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
     /// Only chats opened as rooms appear here. No entry means no room.
     ///
@@ -466,6 +479,55 @@ pub struct ChatManager {
 }
 
 impl ChatManager {
+    pub(crate) fn with_saved_questions(path: std::path::PathBuf) -> Self {
+        Self {
+            questions: Arc::new(crate::question_store::QuestionStore::load(path)),
+            ..Self::default()
+        }
+    }
+    pub(crate) fn question_origin(
+        &self,
+        chat_key: &str,
+        session_key: Option<&str>,
+        launch_id: Option<&str>,
+    ) -> Result<QuestionOrigin, String> {
+        let session_key = session_key.unwrap_or(chat_key);
+        let seat = if session_key == chat_key {
+            None
+        } else {
+            Some(
+                crate::chat_room::room_impl(self, chat_key)?
+                    .seats
+                    .into_iter()
+                    .find(|seat| {
+                        crate::chat_room::seat_session_key(chat_key, &seat.id) == session_key
+                    })
+                    .ok_or("The question's agent is no longer in this conversation")?,
+            )
+        };
+        let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let session = sessions
+            .get(session_key)
+            .ok_or("The asking agent is no longer running")?;
+        let session = session.lock().map_err(|e| e.to_string())?;
+        if !session.busy || launch_id.is_some_and(|id| id != session.launch_id) {
+            return Err("The asking agent's turn has already ended".into());
+        }
+        let start = self
+            .start_context(session_key)
+            .ok_or("The asking agent has no saved settings")?;
+        if start.session_id.is_none() {
+            return Err("The asking agent has not announced its conversation yet".into());
+        }
+        Ok(QuestionOrigin {
+            chat_key: chat_key.into(),
+            session_key: session_key.into(),
+            launch_id: session.launch_id.clone(),
+            start,
+            seat,
+        })
+    }
+
     /// Remember how an agent was started, so it can be started that way again.
     fn remember_start(&self, session_key: &str, start: StartContext) {
         if let Ok(mut m) = self.starts.lock() {
@@ -1015,6 +1077,225 @@ pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> 
     }
 }
 
+fn cancel_question_work(manager: &ChatManager, key: &str) -> Result<(), String> {
+    let records = manager.questions.outbox()?;
+    manager.questions.cancel_chat(key)?;
+    for record in records
+        .into_iter()
+        .filter(|r| r.origin.chat_key == key || r.origin.session_key == key)
+    {
+        if let Some(turn) = manager.cancel_queued_turn(&record.origin.chat_key, &record.turn_id()) {
+            announce_cancelled(&record.origin.chat_key, &turn);
+        }
+    }
+    Ok(())
+}
+
+/// The durable prompt id is also the retry key. A crash after dispatch must
+/// never cause an automatic second execution of an answer already handed over.
+fn question_receipt(record: &crate::question_store::Record) -> Option<String> {
+    let id = record.turn_id();
+    let mut state = None;
+    for item in crate::transcript::since(&record.origin.chat_key, 0) {
+        let event = item.event;
+        if event["octiq_user_turn_id"].as_str() == Some(&id) {
+            return Some("received".into());
+        }
+        if event["uuid"].as_str() == Some(&id) {
+            match event["type"].as_str() {
+                Some("octiq_user_turn_delivery") => {
+                    state = event["state"].as_str().map(str::to_string)
+                }
+                Some("octiq_user_turn_cancelled") => return Some("cancelled".into()),
+                _ => {}
+            }
+        }
+    }
+    state
+}
+
+fn resume_question(
+    manager: Arc<ChatManager>,
+    record: &crate::question_store::Record,
+) -> Result<(), String> {
+    let origin = &record.origin;
+    let start = manager
+        .start_context(&origin.session_key)
+        .unwrap_or_else(|| origin.start.clone());
+    if start.agent != origin.start.agent || start.session_id != origin.start.session_id {
+        return Err("This conversation now uses a different agent session. Your answers are saved; continue from them in the chat.".into());
+    }
+    // Looking up the seat again refuses a removed or replaced seat; it never
+    // redirects a seat's answers into the host's context.
+    let target = crate::chat_room::target_impl(
+        &manager,
+        &origin.chat_key,
+        origin.seat.as_ref().map(|s| s.id.as_str()),
+    )?;
+    if let (crate::chat_room::Target::Seat(current), Some(saved)) = (&target, &origin.seat) {
+        if current.agent != saved.agent || current.kind != saved.kind {
+            return Err("The asking agent has changed. Your answers are saved; continue from them in the chat.".into());
+        }
+    }
+    let text = record.continuation();
+    match chat_send_with_user_turn(
+        manager.clone(),
+        origin.chat_key.clone(),
+        text.clone(),
+        None,
+        origin.seat.as_ref().map(|s| s.id.clone()),
+        Some(record.turn_id()),
+    ) {
+        Ok(()) => return Ok(()),
+        Err(why) if why == "no such chat" || why.ends_with("is not running") => {}
+        Err(why) => return Err(why),
+    }
+    manager.remember_start(&origin.session_key, start.clone());
+    let voice = match target {
+        crate::chat_room::Target::Host => Voice::host(origin.chat_key.clone()),
+        crate::chat_room::Target::Seat(seat) => Voice::seat(&origin.chat_key, seat),
+    };
+    start_session(
+        manager,
+        voice,
+        start.cwd,
+        start.agent,
+        start.model,
+        start.access,
+        Some(text),
+        start.session_id,
+        start.extra_dirs,
+        start.env,
+        start.effort,
+        None,
+        start.lite,
+        Some(record.turn_id()),
+        true,
+    )
+}
+
+/// Runs after a saved submission and at startup. Reconciliation keeps queued
+/// answers recoverable when a process exits before consuming its queue.
+pub(crate) fn deliver_question_answers(manager: Arc<ChatManager>) -> Result<(), String> {
+    deliver_question_answers_with(manager.clone(), |record| {
+        resume_question(manager.clone(), record)
+    })
+}
+
+fn deliver_question_answers_with(
+    manager: Arc<ChatManager>,
+    mut send: impl FnMut(&crate::question_store::Record) -> Result<(), String>,
+) -> Result<(), String> {
+    use crate::question_store::Delivery;
+    let _delivery = manager
+        .questions
+        .delivery_lock
+        .lock()
+        .map_err(|e| e.to_string())?;
+    for record in manager.questions.outbox()? {
+        let receipt = question_receipt(&record);
+        if matches!(record.delivery, Delivery::Dispatching | Delivery::Queued) && receipt.is_none()
+        {
+            manager.questions.set_delivery(&record.id, Delivery::Uncertain, Some("Your answers are saved, but delivery was interrupted before it could be confirmed. Check the conversation and continue there; this answer will not be resent automatically.".into()))?;
+            continue;
+        }
+        match receipt.as_deref() {
+            Some("received") => {
+                manager
+                    .questions
+                    .set_delivery(&record.id, Delivery::Delivered, None)?;
+                continue;
+            }
+            Some("cancelled") => {
+                manager.questions.cancel(&record.ids)?;
+                continue;
+            }
+            Some("dispatched") | Some("unknown") => {
+                let running = manager
+                    .sessions
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .contains_key(&record.origin.session_key);
+                if !running {
+                    manager.questions.set_delivery(&record.id, Delivery::Uncertain, Some("Your answers were saved, but the agent stopped before confirming receipt. Check the chat and continue there; the answers will not be sent twice automatically.".into()))?;
+                }
+                continue;
+            }
+            Some("queued") => {
+                let queued = manager
+                    .queued_turns
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .get(&record.origin.session_key)
+                    .is_some_and(|q| {
+                        q.iter()
+                            .any(|t| t.turn_id.as_deref() == Some(&record.turn_id()))
+                    });
+                let handoff = manager
+                    .handoffs
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .contains(&record.origin.session_key);
+                if queued || handoff {
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        manager
+            .questions
+            .set_delivery(&record.id, Delivery::Dispatching, None)?;
+        match send(&record) {
+            Ok(()) => manager
+                .questions
+                .set_delivery(&record.id, Delivery::Queued, None)?,
+            Err(why) => manager.questions.set_delivery(
+                &record.id,
+                Delivery::Failed,
+                Some(format!(
+                    "Your answers are saved. Could not continue the agent: {why}"
+                )),
+            )?,
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn start_question_recovery(manager: Arc<ChatManager>) {
+    thread::spawn(move || {
+        let mut previous_error = None;
+        loop {
+            let error = deliver_question_answers(manager.clone()).err();
+            if error != previous_error {
+                if let Some(why) = &error {
+                    eprintln!("[questions] {why}");
+                }
+                previous_error = error;
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+    });
+}
+
+pub(crate) fn cancel_questions(manager: &ChatManager, ids: &[String]) -> Result<(), String> {
+    let _delivery = manager
+        .questions
+        .delivery_lock
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let records = manager.questions.outbox()?;
+    manager.questions.cancel(ids)?;
+    for record in records
+        .into_iter()
+        .filter(|r| r.ids.iter().any(|id| ids.contains(id)))
+    {
+        if let Some(turn) = manager.cancel_queued_turn(&record.origin.chat_key, &record.turn_id()) {
+            announce_cancelled(&record.origin.chat_key, &turn);
+        }
+    }
+    Ok(())
+}
+
 /// Start the next queued command-line turn after its preceding process exits.
 /// Its adapter owns the provider's resume syntax and has no persistent stdin
 /// channel (see `start_session`). `session_key` identifies the process to
@@ -1173,6 +1454,7 @@ pub(crate) fn start_session(
 
     // Login shell, for PATH — see the module docs.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let launch_id = uuid::Uuid::new_v4().to_string();
     let mut child = Command::new(&shell)
         .args(["-lc", &format!("exec {line}")])
         .current_dir(if cwd.trim().is_empty() {
@@ -1191,6 +1473,8 @@ pub(crate) fn start_session(
         // The hook answers only for agents we started, and needs to know
         // which chat is asking so the UI can attach the question to it.
         .env("OCTIQ_CHAT_KEY", &key)
+        .env("OCTIQ_SESSION_KEY", &session_key)
+        .env("OCTIQ_LAUNCH_ID", &launch_id)
         // The conversation reader in that MCP must use this exact profile.
         // A standalone install can follow config.json; an in-app agent should
         // not have to rediscover a value the server already knows.
@@ -1240,6 +1524,7 @@ pub(crate) fn start_session(
     let stdin = child.stdin.take();
 
     let session = Arc::new(Mutex::new(ChatSession {
+        launch_id: launch_id.clone(),
         user_turn_id: user_turn_id.clone(),
         child,
         stdin,
@@ -1401,12 +1686,8 @@ pub(crate) fn start_session(
                         // it once, under different names, in their opening
                         // event. A host always resumes its own memory; a seat
                         // needs that record only when its provider is one-shot.
-                        if speaker.is_none()
-                            || !stream_provider.capabilities().input.accepts_stdin()
-                        {
-                            if let Some(id) = observed.session_id {
-                                reading.remember_session(&session_key, id);
-                            }
+                        if let Some(id) = observed.session_id {
+                            reading.remember_session(&session_key, id);
                         }
                         // Codex says nothing on its full stop, so its closing
                         // words have to be kept as they go past — see
@@ -1428,6 +1709,7 @@ pub(crate) fn start_session(
                             // carries the next turn into a fresh command.
                             let mut refused = None;
                             if let Ok(mut s) = asking.lock() {
+                                reading.questions.detach_launch(&s.launch_id);
                                 s.turn_ended();
                                 if stream_provider.capabilities().input.accepts_stdin() {
                                     if let Some(turn) = reading.take_queued_turn(&session_key) {
@@ -1531,6 +1813,7 @@ pub(crate) fn start_session(
             // receipt. A killed/replaced launch must not stay "dispatched"
             // forever, nor imply its words reached the provider's history.
             if let Ok(mut session) = asking.lock() {
+                reading.questions.detach_launch(&session.launch_id);
                 record_delivery(&key, session.user_turn_id.take().as_deref(), "unknown");
             }
         });
@@ -2285,7 +2568,14 @@ fn interrupt_session(
 }
 
 pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
-    interrupt_session(manager, &key, &key, None)
+    let _delivery = manager
+        .questions
+        .delivery_lock
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let cancelled = cancel_question_work(manager, &key);
+    interrupt_session(manager, &key, &key, None)?;
+    cancelled
 }
 
 /// Put the question to the person, then write the answer back to the agent.
@@ -2430,12 +2720,19 @@ pub fn chat_set_access_impl(
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
 pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    let _delivery = manager
+        .questions
+        .delivery_lock
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let cancelled = cancel_question_work(manager, &key);
     // Anything the person allowed "always" was allowed for THIS piece of work.
     // Outliving it would be a permission nobody remembers giving.
     crate::permission::forget_chat(&key);
     crate::safety_block::forget_chat(&key);
     with_access(|a| a.remove(&key));
-    end_process(manager, &key).map(|_| ())
+    end_process(manager, &key)?;
+    cancelled
 }
 
 /// End this chat's agent on purpose, and keep everything else about the chat.
@@ -3721,7 +4018,7 @@ mod tests {
             false,
         );
         assert!(first.starts_with("codex exec --json"));
-        assert!(!first.contains("resume"));
+        assert!(!first.starts_with("codex exec resume"));
         assert!(first.contains("--sandbox read-only"));
         assert!(first.contains("--add-dir '/tmp/api'"));
     }
@@ -4090,6 +4387,7 @@ mod tests {
         manager.sessions.lock().unwrap().insert(
             session_key.clone(),
             Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
                 user_turn_id: None,
                 child,
                 stdin: None,
@@ -4144,6 +4442,7 @@ mod tests {
         manager.sessions.lock().unwrap().insert(
             key.clone(),
             Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
                 user_turn_id: None,
                 child,
                 stdin: None,
@@ -4174,6 +4473,7 @@ mod tests {
         manager.sessions.lock().unwrap().insert(
             key.clone(),
             Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
                 user_turn_id: None,
                 child,
                 stdin: None,
@@ -4227,6 +4527,7 @@ mod tests {
             .expect("a cat to stand in for Claude");
         let stdin = child.stdin.take();
         Arc::new(Mutex::new(ChatSession {
+            launch_id: "test-launch".into(),
             user_turn_id: None,
             child,
             stdin,
@@ -4464,6 +4765,7 @@ mod tests {
         let manager = Arc::new(ChatManager::default());
         let key = "codex-stop-queue";
         let session = Arc::new(Mutex::new(ChatSession {
+            launch_id: "test-launch".into(),
             user_turn_id: None,
             child: Command::new("sleep")
                 .arg("30")
@@ -4554,6 +4856,7 @@ mod tests {
             &manager,
             &key,
             Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
                 user_turn_id: None,
                 child,
                 stdin: None,
@@ -4649,6 +4952,7 @@ mod tests {
             &manager,
             &session_key,
             Arc::new(Mutex::new(ChatSession {
+                launch_id: "test-launch".into(),
                 user_turn_id: None,
                 child,
                 stdin: None,
@@ -4744,6 +5048,7 @@ mod tests {
             },
         );
         let session = Arc::new(Mutex::new(ChatSession {
+            launch_id: "test-launch".into(),
             user_turn_id: None,
             child: Command::new("sleep")
                 .arg("30")
@@ -4913,6 +5218,7 @@ mod idle_tests {
             .spawn()
             .expect("a sleep to stand in for an agent");
         Arc::new(Mutex::new(ChatSession {
+            launch_id: "test-launch".into(),
             user_turn_id: None,
             child,
             stdin: None,
@@ -5332,5 +5638,288 @@ mod idle_tests {
             session.lock().unwrap().still_for().unwrap() < Duration::from_secs(1),
             "and the clock restarts from the end of the turn, not from before it"
         );
+    }
+}
+
+#[cfg(test)]
+mod question_delivery_tests {
+    use super::*;
+    use crate::question_store::{test_origin, Answer, Delivery, Record};
+
+    fn setup() -> (Arc<ChatManager>, String, String, Vec<Answer>) {
+        let key = format!("question-{}", uuid::Uuid::new_v4());
+        let manager = Arc::new(ChatManager::default());
+        let questions =
+            vec![serde_json::from_value(json!({"question": "Which database?"})).unwrap()];
+        let (id, _rx) = manager
+            .questions
+            .insert(test_origin(&key), questions)
+            .unwrap();
+        let answers = manager
+            .questions
+            .pending()
+            .unwrap()
+            .into_iter()
+            .map(|q| Answer {
+                id: q.id,
+                answer: "SQLite".into(),
+            })
+            .collect();
+        (manager, key, id, answers)
+    }
+
+    fn received(record: &Record) {
+        crate::transcript::append(
+            &record.origin.chat_key,
+            &json!({
+                "type": "turn.started", "octiq_user_turn_id": record.turn_id(),
+            }),
+        );
+    }
+
+    #[tokio::test]
+    async fn the_actual_tool_timeout_leaves_an_answerable_question_without_a_browser() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("question-timeout-{}", uuid::Uuid::new_v4());
+        let origin = test_origin(&key);
+        manager.remember_start(&key, origin.start);
+        let child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        manager.sessions.lock().unwrap().insert(
+            key.clone(),
+            Arc::new(Mutex::new(ChatSession {
+                launch_id: "launch-1".into(),
+                user_turn_id: None,
+                child,
+                stdin: None,
+                agent: ChatAgent::Codex,
+                busy: true,
+                last_active: Instant::now(),
+            })),
+        );
+        let request = serde_json::from_value(json!({ "chatKey": key, "launchId": "launch-1", "questions": [{"question":"Which database?"}] })).unwrap();
+        let result = crate::question::ask_request_with_timeout(
+            manager.clone(),
+            request,
+            Duration::from_millis(10),
+        )
+        .await;
+        assert!(result.contains("saved and still waiting"), "{result}");
+        let q = manager.questions.pending().unwrap().remove(0);
+        assert_eq!(q.question.question, "Which database?");
+        manager
+            .questions
+            .answer(&[Answer {
+                id: q.id,
+                answer: "SQLite".into(),
+            }])
+            .unwrap();
+        deliver_question_answers_with(manager.clone(), |record| {
+            received(record);
+            Ok(())
+        })
+        .unwrap();
+        deliver_question_answers_with(manager.clone(), |_| panic!("duplicate continuation"))
+            .unwrap();
+        assert!(manager.questions.pending().unwrap().is_empty());
+        end_process(&manager, &key).unwrap();
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn an_ended_turn_gets_one_continuation_with_its_original_question_and_settings() {
+        let (manager, key, _id, answers) = setup();
+        manager.questions.detach_launch("launch-1");
+        manager.questions.answer(&answers).unwrap();
+        let mut sends = 0;
+        deliver_question_answers_with(manager.clone(), |record| {
+            sends += 1;
+            assert!(record
+                .continuation()
+                .contains("Q1: Which database?\nA1: SQLite"));
+            assert_eq!(record.origin.start.model.as_deref(), Some("gpt-test"));
+            assert_eq!(record.origin.start.session_id.as_deref(), Some("session-1"));
+            assert_eq!(record.origin.start.access, Some(Access::Manual));
+            received(record);
+            Ok(())
+        })
+        .unwrap();
+        manager.questions.answer(&answers).unwrap();
+        deliver_question_answers_with(manager.clone(), |_| panic!("duplicate continuation"))
+            .unwrap();
+        assert_eq!(sends, 1);
+        assert!(manager.questions.pending().unwrap().is_empty());
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn saved_answers_resume_after_a_server_restart_without_a_browser() {
+        let path = std::env::temp_dir()
+            .join(format!("octiq-question-recovery-{}", uuid::Uuid::new_v4()))
+            .join("questions.json");
+        let manager = Arc::new(ChatManager::with_saved_questions(path.clone()));
+        let key = format!("question-restart-{}", uuid::Uuid::new_v4());
+        manager
+            .questions
+            .insert(
+                test_origin(&key),
+                vec![serde_json::from_value(json!({"question": "Ship?"})).unwrap()],
+            )
+            .unwrap();
+        let question = manager.questions.pending().unwrap().remove(0);
+        manager
+            .questions
+            .answer(&[Answer {
+                id: question.id,
+                answer: "Yes".into(),
+            }])
+            .unwrap();
+        drop(manager);
+        let restored = Arc::new(ChatManager::with_saved_questions(path));
+        deliver_question_answers_with(restored.clone(), |record| {
+            assert_eq!(record.origin.start.agent, ChatAgent::Codex);
+            assert_eq!(record.origin.start.cwd, "/tmp");
+            received(record);
+            Ok(())
+        })
+        .unwrap();
+        deliver_question_answers_with(restored.clone(), |_| panic!("duplicate continuation"))
+            .unwrap();
+        assert!(restored.questions.pending().unwrap().is_empty());
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn an_unconfirmed_dispatch_is_never_replayed_automatically() {
+        let (manager, key, id, answers) = setup();
+        manager.questions.detach(&id);
+        manager.questions.answer(&answers).unwrap();
+        manager
+            .questions
+            .set_delivery(&id, Delivery::Dispatching, None)
+            .unwrap();
+        deliver_question_answers_with(manager.clone(), |_| {
+            panic!("cannot prove it was not already sent")
+        })
+        .unwrap();
+        let saved = manager.questions.pending().unwrap();
+        assert_eq!(saved[0].status, "failed");
+        assert_eq!(saved[0].answer.as_deref(), Some("SQLite"));
+        assert!(saved[0].error.as_deref().unwrap().contains("interrupted"));
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn a_failed_spawn_retains_answers_and_only_retries_when_requested() {
+        let (manager, key, id, answers) = setup();
+        manager.questions.detach(&id);
+        manager.questions.answer(&answers).unwrap();
+        deliver_question_answers_with(manager.clone(), |_| Err("CLI unavailable".into())).unwrap();
+        deliver_question_answers_with(manager.clone(), |_| panic!("failed answers wait for retry"))
+            .unwrap();
+        assert_eq!(manager.questions.pending().unwrap()[0].status, "failed");
+        manager
+            .questions
+            .retry(&answers.iter().map(|a| a.id.clone()).collect::<Vec<_>>())
+            .unwrap();
+        deliver_question_answers_with(manager.clone(), |record| {
+            received(record);
+            Ok(())
+        })
+        .unwrap();
+        deliver_question_answers_with(manager.clone(), |_| panic!("duplicate continuation"))
+            .unwrap();
+        assert!(manager.questions.pending().unwrap().is_empty());
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn stop_cancels_saved_answers_and_their_queued_continuation() {
+        let (manager, key, id, answers) = setup();
+        manager.questions.detach(&id);
+        manager.questions.answer(&answers).unwrap();
+        let record = manager.questions.outbox().unwrap().remove(0);
+        manager
+            .queue_turn(
+                &key,
+                QueuedTurn {
+                    text: record.continuation(),
+                    images: vec![],
+                    turn_id: Some(record.turn_id()),
+                    recorded: true,
+                },
+            )
+            .unwrap();
+        record_delivery(&key, Some(&record.turn_id()), "queued");
+        chat_stop_impl(&manager, key.clone()).unwrap();
+        assert!(manager.questions.pending().unwrap().is_empty());
+        assert!(!manager.has_queued_turns(&key));
+        assert!(manager.questions.answer(&answers).is_err());
+        deliver_question_answers_with(manager.clone(), |_| {
+            panic!("stopped work must stay stopped")
+        })
+        .unwrap();
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn an_answer_rejoins_a_live_persistent_agent_through_the_normal_send_path() {
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("question-live-{}", uuid::Uuid::new_v4());
+        let mut origin = test_origin(&key);
+        origin.start.agent = ChatAgent::Claude;
+        manager.remember_start(&key, origin.start.clone());
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take();
+        manager.sessions.lock().unwrap().insert(
+            key.clone(),
+            Arc::new(Mutex::new(ChatSession {
+                launch_id: "launch-1".into(),
+                user_turn_id: None,
+                child,
+                stdin,
+                agent: ChatAgent::Claude,
+                busy: false,
+                last_active: Instant::now(),
+            })),
+        );
+        let (id, _rx) = manager
+            .questions
+            .insert(
+                origin,
+                vec![serde_json::from_value(json!({"question": "Which database?"})).unwrap()],
+            )
+            .unwrap();
+        let q = manager.questions.pending().unwrap().remove(0);
+        manager.questions.detach(&id);
+        manager
+            .questions
+            .answer(&[Answer {
+                id: q.id,
+                answer: "SQLite".into(),
+            }])
+            .unwrap();
+        deliver_question_answers(manager.clone()).unwrap();
+        let record = manager.questions.outbox().unwrap().remove(0);
+        assert_eq!(question_receipt(&record).as_deref(), Some("dispatched"));
+        assert!(manager.sessions.lock().unwrap()[&key].lock().unwrap().busy);
+        deliver_question_answers(manager.clone()).unwrap();
+        let prompts = crate::transcript::since(&key, 0)
+            .iter()
+            .filter(|r| r.event["type"] == "user")
+            .count();
+        assert_eq!(prompts, 1);
+        received(&record);
+        deliver_question_answers(manager.clone()).unwrap();
+        assert!(manager.questions.pending().unwrap().is_empty());
+        end_process(&manager, &key).unwrap();
+        crate::transcript::forget(&key);
     }
 }

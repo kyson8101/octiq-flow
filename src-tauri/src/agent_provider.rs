@@ -107,7 +107,7 @@ pub struct AgentCapabilities {
 /// The value stays semantic and provider-neutral here. Each adapter maps it to
 /// its own native flags, which keeps CLI spelling out of the web client and the
 /// shared chat lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {
     Read,
@@ -610,7 +610,7 @@ impl AgentProvider for CodexProvider {
                 "mcp_servers.octiq.args=[{}]",
                 toml_string(&script.to_string_lossy())
             );
-            let env_vars = "mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\"]";
+            let env_vars = "mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\"]";
             // `ask_user` deliberately waits for a person for up to ten
             // minutes. Give the MCP call one minute beyond the server's own
             // deadline so Codex receives OctiqFlow's precise timeout result
@@ -996,7 +996,7 @@ const CODEX_HOST_PROMPT: &str = "You are running inside OctiqFlow. OctiqFlow own
 
 /// Told to chat agents so the tools they were given are used at the right
 /// moments. Codex receives this inside its injected developer instructions.
-const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last.\n\n`read_conversation` reads another OctiqFlow conversation from its URL. Use it only when the person gives you that URL or explicitly asks you to consult that conversation; transcripts may contain sensitive context, so never browse them speculatively. The first call returns the latest bounded page, and its `before` cursor walks backward when older context is needed. When the person's whole message is `continue <OctiqFlow conversation URL>`, you MUST call `read_conversation` with that URL before any other action, must not open it in Browser or infer its history from workspace files, and should then continue from the latest actionable next step.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
+const ASK_PROMPT: &str = "When a decision is the user's to make rather than yours — which of several approaches to take, what something should be called, whether an assumption you are about to build on is right — call the `ask_user` tool and wait for their answer. Prefer it over guessing and over stopping to ask in prose: they may be on a phone, and it puts the question in front of them wherever they are. Ask everything you need in ONE `ask_user` call — it takes a list of questions and the person answers the whole list on one card; one question per call makes them answer one at a time, each behind the last. After answers return, continue the task already authorized using those answers; do not end the turn merely to acknowledge receipt. If the tool says the questions are saved and still pending, end the turn without assuming an answer or asking them again; OctiqFlow will resume the conversation when the user answers.\n\n`read_conversation` reads another OctiqFlow conversation from its URL. Use it only when the person gives you that URL or explicitly asks you to consult that conversation; transcripts may contain sensitive context, so never browse them speculatively. The first call returns the latest bounded page, and its `before` cursor walks backward when older context is needed. When the person's whole message is `continue <OctiqFlow conversation URL>`, you MUST call `read_conversation` with that URL before any other action, must not open it in Browser or infer its history from workspace files, and should then continue from the latest actionable next step.\n\nThis chat can hold other agents beside you. `add_agent` puts one in it and `ask_agent` puts a question to one and waits for the answer — you choose exactly what it is told, so a seat sees nothing of this conversation unless you put it in the prompt. A seat added with `room_only` cannot see the project at all, which is the point of it: an agent that can read the files ends up agreeing with you. Do NOT reach for either unasked. Bring someone in when the person asks for another opinion, or when you are genuinely stuck and say so first. Adding the first seat is what turns a chat into a group, so there is nothing to switch on first — but adding an outside service always asks the person before anything this room said leaves the machine.";
 
 /// Docspace preferences are useful context, but loading all private preference
 /// files into every new model session would cross the vault's privacy boundary.
@@ -1109,7 +1109,7 @@ mod tests {
         assert!(codex.contains("approval_policy='on-request'"));
         assert!(codex.contains("mcp_servers.octiq.command=\"node\""));
         assert!(codex.contains("mcp_servers.octiq.args=[\"octiq-ask.cjs\"]"));
-        assert!(codex.contains("mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\"]"));
+        assert!(codex.contains("mcp_servers.octiq.env_vars=[\"OCTIQ_CHAT_KEY\",\"OCTIQ_ROOT\",\"OCTIQ_SESSION_KEY\",\"OCTIQ_LAUNCH_ID\"]"));
         assert!(codex.contains("mcp_servers.octiq.tool_timeout_sec=660"));
         assert!(codex.contains("developer_instructions=\"You are running inside OctiqFlow"));
         assert!(codex.contains("Never call the built-in `request_user_input`"));

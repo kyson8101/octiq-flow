@@ -38,6 +38,7 @@ mod profile_lock;
 mod pty;
 mod push;
 mod question;
+mod question_store;
 mod round;
 mod safety_block;
 mod transcript;

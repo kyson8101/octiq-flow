@@ -1,48 +1,122 @@
-.chat-actions-trigger,
-.chat-mobile-pin {
-  display: none;
-}
-
-.chat-actions-dialog {
-  width: min(360px, calc(100vw - 24px));
-  max-height: calc(100dvh - 24px);
+/* One disclosure per level. The hit area stays generous without painting a
+   second tile inside every conversation row. Shared by mouse and touch. */
+.sidebar-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
   padding: 0;
-  border: 1px solid var(--border);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.sidebar-menu-trigger:hover,
+.sidebar-menu-trigger[aria-expanded="true"] { background: var(--bg-2); color: var(--fg-0); }
+.sidebar-menu-trigger:disabled { pointer-events: none; opacity: 0.4; }
+.sidebar-menu-trigger:focus-visible,
+.sidebar-dropdown button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.sidebar-dropdown {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: 232px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
   background: var(--bg-1);
   color: var(--fg-0);
   box-shadow: var(--shadow);
 }
-
-.chat-actions-dialog::backdrop { background: rgb(0 0 0 / 45%); }
-.chat-actions-content { display: grid; padding: 8px; }
-.chat-actions-content strong { padding: 12px; overflow-wrap: anywhere; font-weight: 500; }
-.chat-actions-content button {
-  min-height: 44px;
-  padding: 10px 12px;
+.sidebar-dropdown::backdrop { background: transparent; }
+.sidebar-dropdown button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 9px 10px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-1);
-  text-align: left;
   font: inherit;
+  font-size: 13px;
+  text-align: left;
   cursor: pointer;
 }
-.chat-actions-content button:hover { background: var(--bg-2); }
-.chat-actions-content button.is-danger { color: var(--danger); }
-.chat-actions-content button:focus-visible,
-.chat-actions-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sidebar-dropdown button svg { flex: 0 0 16px; width: 16px; height: 16px; }
+.sidebar-dropdown button:hover { background: var(--bg-2); }
+.sidebar-dropdown button.is-danger { color: var(--danger); }
+.sidebar-dropdown button:disabled { opacity: 0.4; cursor: default; }
 
-/* Keep the phone's fixed chrome small and give the remaining height to chats.
-   Scope to the page breakpoint so a desktop column keeps its existing density. */
+.sidebar .proj-node { --sib-rail: 6px; }
+.sidebar .proj-name { flex: 0 1 auto; font-size: 13px; font-weight: 500; }
+.sidebar .proj-count { margin-left: 0; background: transparent; padding: 0; color: var(--fg-2); }
+.sidebar .proj-count.is-busy { color: var(--ok); }
+.sidebar .proj-btn { gap: 8px; }
+.sidebar .chat { display: grid; grid-template-columns: minmax(0, 1fr) 32px; align-items: center; }
+.sidebar .chat-btn { grid-column: 1; width: 100%; height: 56px; padding: 7px 8px 7px 27px; }
+.sidebar .chat-rename { grid-column: 1 / -1; height: 56px; padding-left: 27px; }
+.sidebar .chat-title { font-size: 14px; line-height: 20px; font-weight: 500; }
+.sidebar .chat-meta { display: flex; align-items: baseline; gap: 10px; margin-top: 1px; min-width: 0; }
+.sidebar .chat-snippet { flex: 1; min-width: 0; margin: 0; padding: 0; font-size: 12px; line-height: 17px; }
+.sidebar .chat-snippet.is-placeholder { visibility: hidden; }
+.sidebar .chat-time { font-size: 10px; }
+.sidebar .chat-actions-trigger { grid-column: 2; grid-row: 1; align-self: center; }
+.sidebar .chat-indicators {
+  position: absolute;
+  left: 9px;
+  top: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  pointer-events: none;
+}
+.sidebar .chat-mobile-pin { display: inline-flex; color: var(--fg-2); line-height: 0; }
+.sidebar .chat-mobile-pin svg { width: 11px; height: 11px; }
+.sidebar .chat-mark,
+.sidebar .chat:hover .chat-mark {
+  position: static;
+  display: none;
+  width: 5px;
+  height: 5px;
+  opacity: 1;
+  transform: none;
+}
+.sidebar .chat:is(.is-busy, .is-live) .chat-mark { display: block; }
+.sidebar .chat.is-going .sidebar-menu-trigger { color: var(--danger); }
+
+@media (max-width: 859.98px), (pointer: coarse) {
+  .sidebar .sidebar-menu-trigger { width: 44px; height: 44px; }
+  .sidebar-dropdown button { min-height: 44px; font-size: 14px; }
+  .sidebar .chat { grid-template-columns: minmax(0, 1fr) 44px; }
+  .sidebar .chat-btn { -webkit-touch-callout: none; user-select: none; }
+  .sidebar .chat-rename-input { font-size: 16px; }
+  .sidebar .chat-more { height: 44px; }
+}
+
 @media (max-width: 859.98px) {
-  .sidebar .sidebar-slot { padding: 4px 8px 0; }
-  .sidebar .sidebar-slot .mode-btn { min-height: 44px; padding: 0 8px; }
-  .sidebar .sidebar-head { flex: 0 0 auto; gap: 0; padding: 0 8px 0 14px; }
-  .sidebar .sidebar-add { width: 44px; height: 44px; }
-  .sidebar .proj-list { overscroll-behavior: contain; padding: 0 8px 8px; }
-  .sidebar .proj-btn { height: 44px; }
-  .sidebar .proj-add { width: 44px; height: 44px; margin-right: 0; }
+  .sidebar .sidebar-toolbar.has-navigation { gap: 8px; padding: 2px 8px; }
+  .sidebar .sidebar-toolbar.has-navigation .sidebar-head { flex: 0 0 auto; padding: 0; gap: 0; border: 0; }
+  .sidebar .sidebar-toolbar.has-navigation .mode-btn { flex: 0 0 auto; min-width: 68px; min-height: 44px; padding: 0 12px; }
+  .sidebar .sidebar-toolbar.has-navigation .mode-btn.is-on { background: transparent; box-shadow: none; }
+  .sidebar .sidebar-toolbar.has-navigation .mode-os-link > span { display: inline; }
+  .sidebar .sidebar-toolbar.has-navigation .mode-icon { display: none; }
+  .sidebar .proj-list { overscroll-behavior: contain; padding: 2px 8px 8px; }
+  .sidebar .proj-btn { height: 40px; }
   .sidebar .proj-node { --sib-mid: 22px; }
   .sidebar .sidebar-slot.is-foot {
     position: relative;
@@ -62,116 +136,4 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-}
-
-/* Touch tablets use the same accessible action menu as phones. */
-@media (max-width: 859.98px), (pointer: coarse) {
-  /* On touch, chat content and chat actions are two real columns. The old
-     absolutely-positioned menu floated over the end of the summary, so long
-     titles, timestamps, state dots and the menu all fought for the same last
-     few pixels. A reserved rail keeps the text width honest and gives every
-     row the same tap target. */
-  .sidebar .chat {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 52px;
-    align-items: stretch;
-  }
-  .sidebar .chat-btn,
-  .sidebar .chat-rename { height: 52px; }
-  .sidebar .chat-more { height: 44px; }
-  .sidebar .chat-btn {
-    grid-column: 1;
-    width: 100%;
-    padding-top: 5px;
-    padding-right: 8px;
-    padding-bottom: 5px;
-    -webkit-touch-callout: none;
-    user-select: none;
-  }
-  .sidebar .chat-rename { grid-column: 1 / -1; }
-  .sidebar .chat-title { font-size: 14px; line-height: 18px; }
-  .sidebar .chat-time { font-size: 10px; }
-  .sidebar .chat-snippet {
-    margin-top: 1px;
-    padding-right: 0;
-    font-size: 12px;
-    line-height: 16px;
-  }
-  .sidebar .chat.is-pinned .chat-snippet { padding-right: 20px; }
-  .sidebar .chat-rename-input { font-size: 16px; }
-
-  .sidebar .chat-rename-btn,
-  .sidebar .chat-pin,
-  .sidebar .chat-del { display: none; }
-  /* The state dot sits at the seam. It remains readable without becoming a
-     second button or stealing the centre of the action target. */
-  .sidebar .chat-tail { right: 48px; bottom: 4px; width: 12px; height: 44px; margin: 0; }
-  .sidebar .chat-mark { left: 50%; }
-  .sidebar .chat:hover .chat-mark,
-  .sidebar .chat-tail:focus-within .chat-mark { opacity: 1; transform: translate(-50%, -50%); }
-  .sidebar .chat-actions-trigger {
-    position: relative;
-    inset: auto;
-    grid-column: 2;
-    grid-row: 1;
-    align-self: center;
-    justify-self: center;
-    display: inline-flex;
-    flex: 0 0 44px;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    padding: 0;
-    border: 0;
-    border-radius: var(--r-md);
-    background: color-mix(in srgb, var(--bg-2) 48%, transparent);
-    color: var(--fg-2);
-    cursor: pointer;
-  }
-  .sidebar .chat-actions-trigger svg { width: 17px; height: 17px; }
-  .sidebar .chat-actions-trigger:hover,
-  .sidebar .chat-actions-trigger:active { background: var(--bg-2); color: var(--fg-0); }
-  .sidebar .chat.is-on .chat-actions-trigger {
-    background: color-mix(in srgb, var(--accent) 11%, transparent);
-    color: var(--fg-1);
-  }
-  .sidebar .chat-mobile-pin { position: absolute; right: 60px; bottom: 12px; display: inline-flex; color: var(--fg-2); line-height: 0; }
-  .sidebar .chat-mobile-pin svg { width: 12px; height: 12px; }
-  .sidebar .chat.is-renaming .chat-actions-trigger,
-  .sidebar .chat.is-going .chat-actions-trigger { display: none; }
-  /* Undo remains on the row for the entire deletion countdown. */
-  .sidebar .chat.is-going .chat-tail { right: 0; width: 44px; margin-right: 0; }
-  .sidebar .chat.is-going .chat-del { display: flex; width: 44px; height: 44px; }
-
-}
-
-/* The top navigation already has two destinations; the utility buttons are a
-   separate action group. This divider and inset keep the right edge from
-   reading like three more tabs, while retaining full 44px touch targets. */
-@media (max-width: 859.98px) {
-  .sidebar-toolbar.has-navigation { gap: 8px; }
-  .sidebar-toolbar.has-navigation .sidebar-head {
-    margin-left: 0;
-    padding-left: 7px;
-    border-left: 1px solid var(--border);
-  }
-  .sidebar-toolbar.has-navigation .sidebar-add {
-    border-radius: var(--r-md);
-    line-height: 0;
-  }
-  .sidebar-toolbar.has-navigation .sidebar-add:active {
-    background: var(--bg-2);
-    color: var(--fg-0);
-  }
-
-  /* Project actions use the same seam as the chat action rail. Their boxes
-     were already the right size; the inset is what makes them read as a group
-     instead of as loose icons after the project name. */
-  .sidebar .proj > .proj-btn + .proj-add {
-    margin-left: 4px;
-    border-left: 1px solid var(--border);
-    border-radius: 0;
-  }
-  .sidebar .proj > .proj-add:last-child { border-radius: var(--r-md); }
 }
