@@ -34,6 +34,26 @@ export function allowOnceReply(block: SafetyBlockNotice): string {
   );
 }
 
+/**
+ * Codex's safety reviewer reads the conversation when it evaluates a later
+ * call. A plain "always allow" is too broad to be useful there, so keep the
+ * grant attached to the action class and destination the reviewer described,
+ * and expire it with this chat just like the live permission card's Always.
+ */
+export function allowForChatReply(block: SafetyBlockNotice): string {
+  const boundary = block.kind === "external-data"
+    ? "the same kind of data, purpose, and external destination"
+    : "the same kind of action, files or resources, scope, and intended effect";
+  return (
+    "I explicitly authorize one retry of the exact action that was just blocked, " +
+    "and future actions matching it for the remainder of this chat. " +
+    `The blocked action was described as: ${block.summary} ` +
+    `This continuing authorization is limited to ${boundary}. ` +
+    "It does not authorize a different destination, broader scope, or materially different action. " +
+    "Ask again if any of those boundaries change."
+  );
+}
+
 export function SafetyBlock({
   block,
   onContinue,
@@ -46,16 +66,21 @@ export function SafetyBlock({
   startOpen?: boolean;
 }) {
   const [open, setOpen] = useState(startOpen);
-  const [sending, setSending] = useState<"local" | "allow" | null>(null);
+  const [sending, setSending] = useState<"local" | "allow" | "always" | null>(null);
 
-  const choose = async (choice: "local" | "allow") => {
+  const choose = async (choice: "local" | "allow" | "always") => {
     setSending(choice);
     // Remove the choice first, across every open browser. The original command
     // is already dead; the message below is the new instruction, not an answer
     // travelling back into a suspended call.
     await bridge.invoke("safety_block_dismiss", { id: block.id }).catch(() => undefined);
     onAnswered(block.id);
-    await onContinue(choice === "local" ? saferReply(block) : allowOnceReply(block));
+    const message = choice === "local"
+      ? saferReply(block)
+      : choice === "always"
+        ? allowForChatReply(block)
+        : allowOnceReply(block);
+    await onContinue(message);
   };
 
   const external = block.kind === "external-data";
@@ -112,6 +137,15 @@ export function SafetyBlock({
           className="ask-btn safety-allow"
           type="button"
           disabled={!!sending}
+          title="Allow matching actions with the same boundaries until this chat is stopped"
+          onClick={() => void choose("always")}
+        >
+          {sending === "always" ? "Authorizing…" : "Allow for this chat"}
+        </button>
+        <button
+          className="ask-btn safety-allow"
+          type="button"
+          disabled={!!sending}
           onClick={() => void choose("allow")}
         >
           {sending === "allow" ? "Authorizing…" : "Allow once"}
@@ -119,7 +153,8 @@ export function SafetyBlock({
       </div>
 
       <p className="ask-card-note">
-        Approve once applies only to this exact action. The rejected action cannot resume by itself.
+        “Allow for this chat” covers only later actions with the same stated boundaries. The rejected
+        action cannot resume by itself, so either approval starts a new turn.
       </p>
     </div>
   );
