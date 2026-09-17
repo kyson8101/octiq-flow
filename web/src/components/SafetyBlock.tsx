@@ -38,19 +38,19 @@ export function allowOnceReply(block: SafetyBlockNotice): string {
  * Codex's safety reviewer reads the conversation when it evaluates a later
  * call. A plain "always allow" is too broad to be useful there, so keep the
  * grant attached to the action class and destination the reviewer described,
- * and expire it with this chat just like the live permission card's Always.
+ * and persist it only for the project where the person made the choice.
  */
-export function allowForChatReply(block: SafetyBlockNotice): string {
+export function allowForProjectReply(block: SafetyBlockNotice): string {
   const boundary = block.kind === "external-data"
     ? "the same kind of data, purpose, and external destination"
     : "the same kind of action, files or resources, scope, and intended effect";
   return (
     "I explicitly authorize one retry of the exact action that was just blocked, " +
-    "and future actions matching it for the remainder of this chat. " +
+    "and future actions matching it in this OctiqFlow project, including new chats and sessions. " +
     `The blocked action was described as: ${block.summary} ` +
     `This continuing authorization is limited to ${boundary}. ` +
     "It does not authorize a different destination, broader scope, or materially different action. " +
-    "Ask again if any of those boundaries change."
+    "Do not ask again for a matching action. Ask again only if any of those boundaries change."
   );
 }
 
@@ -67,20 +67,31 @@ export function SafetyBlock({
 }) {
   const [open, setOpen] = useState(startOpen);
   const [sending, setSending] = useState<"local" | "allow" | "always" | null>(null);
+  const [error, setError] = useState("");
 
   const choose = async (choice: "local" | "allow" | "always") => {
     setSending(choice);
-    // Remove the choice first, across every open browser. The original command
-    // is already dead; the message below is the new instruction, not an answer
-    // travelling back into a suspended call.
-    await bridge.invoke("safety_block_dismiss", { id: block.id }).catch(() => undefined);
-    onAnswered(block.id);
-    const message = choice === "local"
-      ? saferReply(block)
-      : choice === "always"
-        ? allowForChatReply(block)
-        : allowOnceReply(block);
-    await onContinue(message);
+    setError("");
+    try {
+      // The rejected command is already dead. A one-time choice removes its
+      // card; the project choice first saves the exact boundary for future
+      // Codex processes, then removes the card atomically on the backend.
+      if (choice === "always") {
+        await bridge.invoke("safety_block_authorize_project", { id: block.id });
+      } else {
+        await bridge.invoke("safety_block_dismiss", { id: block.id });
+      }
+      onAnswered(block.id);
+      const message = choice === "local"
+        ? saferReply(block)
+        : choice === "always"
+          ? allowForProjectReply(block)
+          : allowOnceReply(block);
+      await onContinue(message);
+    } catch (why) {
+      setError(String((why as Error)?.message ?? why));
+      setSending(null);
+    }
   };
 
   const external = block.kind === "external-data";
@@ -137,10 +148,10 @@ export function SafetyBlock({
           className="ask-btn safety-allow"
           type="button"
           disabled={!!sending}
-          title="Allow matching actions with the same boundaries until this chat is stopped"
+          title="Remember this exact authorization for future chats and sessions in this project"
           onClick={() => void choose("always")}
         >
-          {sending === "always" ? "Authorizing…" : "Allow for this chat"}
+          {sending === "always" ? "Saving…" : "Always allow in this project"}
         </button>
         <button
           className="ask-btn safety-allow"
@@ -152,9 +163,12 @@ export function SafetyBlock({
         </button>
       </div>
 
+      {error && <p className="ask-card-note safety-card-error">Could not save authorization: {error}</p>}
+
       <p className="ask-card-note">
-        “Allow for this chat” covers only later actions with the same stated boundaries. The rejected
-        action cannot resume by itself, so either approval starts a new turn.
+        “Always allow in this project” also applies to new chats and sessions in this project, only
+        within the same stated boundaries. The rejected action cannot resume by itself, so either
+        approval starts a new turn.
       </p>
     </div>
   );

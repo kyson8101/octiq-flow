@@ -6,7 +6,7 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 import {
-  allowForChatReply,
+  allowForProjectReply,
   allowOnceReply,
   LOCAL_ONLY_REPLY,
   SAFER_APPROACH_REPLY,
@@ -39,7 +39,7 @@ describe("SafetyBlock", () => {
     expect(html).toContain("OctiqFlow is still running. The command did not run, and no data was sent.");
     expect(html).toContain("Keep it local");
     expect(html).toContain("Technical details");
-    expect(html).toContain("Allow for this chat");
+    expect(html).toContain("Always allow in this project");
     expect(html).toContain("Allow once");
     expect(html).not.toContain(block.detail);
   });
@@ -61,14 +61,14 @@ describe("SafetyBlock", () => {
   });
 
   it("can authorize matching future actions without broadening the boundary", () => {
-    const reply = allowForChatReply(block);
+    const reply = allowForProjectReply(block);
 
     expect(reply).toContain("future actions matching it");
-    expect(reply).toContain("remainder of this chat");
+    expect(reply).toContain("including new chats and sessions");
     expect(reply).toContain(block.summary);
     expect(reply).toContain("same kind of data, purpose, and external destination");
     expect(reply).toContain("does not authorize a different destination");
-    expect(reply).toContain("Ask again if any of those boundaries change");
+    expect(reply).toContain("Ask again only if any of those boundaries change");
   });
 
   it("keeps the safer continuation fully local", () => {
@@ -87,7 +87,7 @@ describe("SafetyBlock", () => {
     expect(html).toContain("OctiqFlow is still running. The blocked action made no changes.");
     expect(html).toContain("Use safer approach");
     expect(saferReply(generic)).toBe(SAFER_APPROACH_REPLY);
-    expect(allowForChatReply(generic)).toContain(
+    expect(allowForProjectReply(generic)).toContain(
       "same kind of action, files or resources, scope, and intended effect",
     );
   });
