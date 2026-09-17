@@ -43,6 +43,19 @@ describe("the reported tool name", () => {
 
     expect(html).toContain('<span class="tool-name">mcp__docspace__save_decision</span>');
   });
+
+  it("puts the full tool identity above its command detail", () => {
+    const html = render(
+      called("command_execution", {
+        command: "/bin/zsh -lc 'find bible/seasons/01 -maxdepth 1 -type f -print | sort'",
+      }),
+    );
+
+    expect(html).toMatch(
+      /class="tool-copy"><span class="tool-identity"><span class="tool-name">command_execution<\/span><\/span><span class="tool-detail"/,
+    );
+    expect(html).toContain("find bible/seasons/01");
+  });
 });
 
 describe("a card whose work ran in the background", () => {

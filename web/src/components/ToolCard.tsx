@@ -193,46 +193,50 @@ export function ToolCard({
         <span className="tool-icon" data-kind={look.kind} aria-hidden="true">
           <ToolIcon kind={look.kind} />
         </span>
-        <span className="tool-name">{look.label}</span>
-        {look.scope && <span className="tool-scope">{look.scope}</span>}
-        {skillArgs && <span className="tool-args">{skillArgs}</span>}
-        {detail && (
-          <span className="tool-detail">
-            {/* The span reads right-to-left so a long path keeps its useful
-                end; the <bdi> keeps the characters themselves in order. */}
-            <bdi>{detail}</bdi>
+        {/* Keep identity and detail on separate lines. Tool names are evidence,
+            so they remain fully visible; the potentially unbounded command or
+            path is the part that yields to an ellipsis. */}
+        <span className="tool-copy">
+          <span className="tool-identity">
+            <span className="tool-name">{look.label}</span>
+            {look.scope && <span className="tool-scope">{look.scope}</span>}
+            {skillArgs && <span className="tool-args">{skillArgs}</span>}
           </span>
-        )}
-        {/* Holds the right-hand end of the row open. Without it, a call with
-            nothing to summarise — TodoWrite, a skill run bare — leaves its
-            state and caret huddled against the name, and a column of rows
-            stops lining up. */}
-        <span className="tool-gap" />
-        {diff && <DiffStat diff={diff} />}
-        {/* Beside the state, and not instead of it, because the two answer
-            different questions: the tick says the call went through, this says
-            how the work it started actually ended. */}
-        {tool.finish?.status && (
-          <span className="tool-finish" data-status={tool.finish.status}>
-            {tool.finish.status}
-          </span>
-        )}
-        {/* The call answered; the work it started has not. A tick here would be
-            the card's own small share of a screen that reads as finished, so
-            the tick waits and this pulses in its place. */}
-        {stillRunning ? (
-          <span className="tool-state is-background">
-            <span className="tool-spinner" aria-hidden="true" />
-            in background
-          </span>
-        ) : (
-          <ToolState state={tool.state} />
-        )}
-        {!opensAgent && (
-          <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
-            <Chevron />
-          </span>
-        )}
+          {detail && (
+            <span className="tool-detail" title={detail}>
+              {/* The span reads right-to-left so a long path keeps its useful
+                  end; the <bdi> keeps the characters themselves in order. */}
+              <bdi>{detail}</bdi>
+            </span>
+          )}
+        </span>
+        <span className="tool-head-actions">
+          {diff && <DiffStat diff={diff} />}
+          {/* Beside the state, and not instead of it, because the two answer
+              different questions: the tick says the call went through, this says
+              how the work it started actually ended. */}
+          {tool.finish?.status && (
+            <span className="tool-finish" data-status={tool.finish.status}>
+              {tool.finish.status}
+            </span>
+          )}
+          {/* The call answered; the work it started has not. A tick here would be
+              the card's own small share of a screen that reads as finished, so
+              the tick waits and this pulses in its place. */}
+          {stillRunning ? (
+            <span className="tool-state is-background">
+              <span className="tool-spinner" aria-hidden="true" />
+              in background
+            </span>
+          ) : (
+            <ToolState state={tool.state} />
+          )}
+          {!opensAgent && (
+            <span className={`tool-caret ${open ? "is-open" : ""}`} aria-hidden="true">
+              <Chevron />
+            </span>
+          )}
+        </span>
       </button>
       {opensAgent && (
         <button

@@ -2251,17 +2251,36 @@ body {
   --tint: var(--danger);
 }
 
+/* The copy gets the available middle of the row. Identity and detail are two
+   deliberate lines: provider tool names are evidence and stay fully visible,
+   while an unbounded command or path may be ellipsised below them. */
+.tool-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tool-identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 7px;
+  min-width: 0;
+}
+
 /* The name carries the row, so it is the one thing in it drawn at full
-   strength. Everything else — the scope, the path, the counts, the caret —
-   stays quiet and is read only once the name has brought you here. */
+   strength. Long qualified MCP names wrap instead of losing the very suffix
+   that distinguishes one tool from another. Everything else — the scope, the
+   path, the counts, the caret — stays quiet. */
 .tool-name {
   flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   font-family: var(--font);
   font-size: 13px;
+  line-height: 1.35;
   color: var(--fg-2);
 }
 
@@ -2279,9 +2298,8 @@ body {
 }
 
 .tool-detail {
-  /* Sized to its text, shrinking to an ellipsis only when the row runs out —
-     the spacer beside it, not this, is what fills a short row. */
-  flex: 0 1 auto;
+  display: block;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -2294,8 +2312,11 @@ body {
   color: var(--fg-3);
 }
 
-.tool-gap {
-  flex: 1 1 auto;
+.tool-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .tool-state {
