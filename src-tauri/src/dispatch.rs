@@ -573,6 +573,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "safety_block_dismiss" => Ok(json!(crate::safety_block::dismiss(&arg::<String>(
             &args, "id"
         )?,))),
+        "safety_block_authorize_project" => {
+            let id: String = arg(&args, "id")?;
+            Ok(json!(crate::safety_block::authorize_for_project(&id)?))
+        }
 
         // ---- questions ----------------------------------------------------
         "question_pending" => to_value(svc.chats.questions.pending()),

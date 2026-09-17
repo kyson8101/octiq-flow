@@ -805,6 +805,7 @@ pub(crate) fn remember_access(key: &str, access: Access) {
 }
 
 /// Build one provider-owned command from the normalized chat request.
+#[cfg(test)]
 fn build_command(
     agent: ChatAgent,
     model: Option<&str>,
@@ -816,13 +817,34 @@ fn build_command(
     images: &[String],
     lite: bool,
 ) -> String {
+    build_command_for_project(
+        agent, model, access, prompt, resume, extra_dirs, effort, images, lite, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_command_for_project(
+    agent: ChatAgent,
+    model: Option<&str>,
+    access: Option<Access>,
+    prompt: &str,
+    resume: Option<&str>,
+    extra_dirs: &[String],
+    effort: Option<&str>,
+    images: &[String],
+    lite: bool,
+    project_cwd: Option<&str>,
+) -> String {
     let provider = provider_for(agent);
     let mcp = provider
         .capabilities()
         .uses_octiq_mcp
         .then(ask_mcp_config)
         .flatten();
-    build_command_with_mcp(
+    let authorizations = (agent == ChatAgent::Codex)
+        .then(|| project_cwd.and_then(crate::safety_block::project_authorizations))
+        .flatten();
+    build_command_with_context(
         agent,
         model,
         access,
@@ -833,12 +855,14 @@ fn build_command(
         images,
         lite,
         mcp.as_deref(),
+        authorizations.as_deref(),
     )
 }
 
 /// The testable command-builder seam. Provider-specific syntax lives in the
 /// selected adapter, while this function preserves the shared chat input shape.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn build_command_with_mcp(
     agent: ChatAgent,
     model: Option<&str>,
@@ -850,6 +874,25 @@ fn build_command_with_mcp(
     images: &[String],
     lite: bool,
     mcp_config: Option<&std::path::Path>,
+) -> String {
+    build_command_with_context(
+        agent, model, access, prompt, resume, extra_dirs, effort, images, lite, mcp_config, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_command_with_context(
+    agent: ChatAgent,
+    model: Option<&str>,
+    access: Option<Access>,
+    prompt: &str,
+    resume: Option<&str>,
+    extra_dirs: &[String],
+    effort: Option<&str>,
+    images: &[String],
+    lite: bool,
+    mcp_config: Option<&std::path::Path>,
+    persistent_authorizations: Option<&str>,
 ) -> String {
     let prompt = if mcp_config.is_some() {
         routed_prompt(agent, prompt)
@@ -866,6 +909,7 @@ fn build_command_with_mcp(
         images,
         lite,
         mcp_config,
+        persistent_authorizations,
     })
 }
 
@@ -1440,7 +1484,8 @@ pub(crate) fn start_session(
     let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
     let images = images.unwrap_or_default();
-    let line = build_command(
+    crate::safety_block::remember_project(&key, &cwd);
+    let line = build_command_for_project(
         agent,
         model.as_deref(),
         access,
@@ -1450,6 +1495,7 @@ pub(crate) fn start_session(
         effort.as_deref(),
         &images,
         lite.unwrap_or(false),
+        Some(&cwd),
     );
 
     // Login shell, for PATH — see the module docs.

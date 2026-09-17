@@ -12,9 +12,11 @@
 //! local or authorising one retry.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::agent_provider::AgentKind;
 
@@ -27,10 +29,30 @@ pub struct BlockedAction {
     title: &'static str,
     summary: String,
     detail: String,
+    #[serde(skip_serializing)]
+    project_scope: Option<String>,
 }
 
 static PENDING: Mutex<Option<HashMap<String, BlockedAction>>> = Mutex::new(None);
 static DRAFTS: Mutex<Option<HashMap<String, SafetyDraft>>> = Mutex::new(None);
+static PROJECT_SCOPES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+static AUTHORIZATIONS: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PersistentAuthorization {
+    id: String,
+    project_scope: String,
+    kind: String,
+    summary: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthorizationStore {
+    #[serde(default)]
+    authorizations: Vec<PersistentAuthorization>,
+}
 
 #[derive(Debug, Clone)]
 struct SafetyDraft {
@@ -46,6 +68,127 @@ fn with_pending<T>(f: impl FnOnce(&mut HashMap<String, BlockedAction>) -> T) -> 
 fn with_drafts<T>(f: impl FnOnce(&mut HashMap<String, SafetyDraft>) -> T) -> T {
     let mut guard = DRAFTS.lock().unwrap_or_else(|e| e.into_inner());
     f(guard.get_or_insert_with(HashMap::new))
+}
+
+fn with_project_scopes<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
+    let mut guard = PROJECT_SCOPES.lock().unwrap_or_else(|e| e.into_inner());
+    f(guard.get_or_insert_with(HashMap::new))
+}
+
+fn normalized_scope(cwd: &str) -> Option<String> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(cwd);
+    Some(
+        path.canonicalize()
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Associate a conversation with the project folder it was launched in. The
+/// safety diagnostic itself carries only a chat key, so this is the durable
+/// boundary used by "Always allow in this project".
+pub fn remember_project(chat_key: &str, cwd: &str) {
+    if let Some(scope) = normalized_scope(cwd) {
+        with_project_scopes(|scopes| {
+            scopes.insert(chat_key.to_string(), scope);
+        });
+    }
+}
+
+fn authorization_path() -> PathBuf {
+    crate::profile::profile_dir().join("safety-authorizations.json")
+}
+
+fn read_authorizations(path: &Path) -> Result<AuthorizationStore, String> {
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|_| "Saved safety authorizations could not be read.".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AuthorizationStore::default()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn write_authorizations(path: &Path, store: &AuthorizationStore) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let body = serde_json::to_vec_pretty(store).map_err(|e| e.to_string())?;
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, body).map_err(|e| e.to_string())?;
+    fs::rename(&temp, path).map_err(|e| e.to_string())
+}
+
+fn save_authorization(path: &Path, block: &BlockedAction) -> Result<(), String> {
+    let project_scope = block
+        .project_scope
+        .clone()
+        .ok_or("This chat is not attached to a project folder, so the authorization cannot be saved across sessions.")?;
+    let _guard = AUTHORIZATIONS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut store = read_authorizations(path)?;
+    let duplicate = store.authorizations.iter().any(|grant| {
+        grant.project_scope == project_scope
+            && grant.kind == block.kind
+            && grant.summary == block.summary
+    });
+    if !duplicate {
+        store.authorizations.push(PersistentAuthorization {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_scope,
+            kind: block.kind.to_string(),
+            summary: block.summary.clone(),
+        });
+        write_authorizations(path, &store)?;
+    }
+    Ok(())
+}
+
+/// Persist one narrowly scoped grant and remove its post-hoc decision card.
+/// Future Codex processes launched in the same project receive the grant in
+/// their developer instructions, including processes for brand-new chats.
+pub fn authorize_for_project(id: &str) -> Result<bool, String> {
+    let block = with_pending(|pending| pending.get(id).cloned())
+        .ok_or("This safety request is no longer pending.")?;
+    save_authorization(&authorization_path(), &block)?;
+    Ok(dismiss(id))
+}
+
+fn project_authorizations_at(path: &Path, cwd: &str) -> Option<String> {
+    let scope = normalized_scope(cwd)?;
+    let store = read_authorizations(path).ok()?;
+    let grants = store
+        .authorizations
+        .iter()
+        .filter(|grant| grant.project_scope == scope)
+        .collect::<Vec<_>>();
+    if grants.is_empty() {
+        return None;
+    }
+
+    let entries = grants
+        .iter()
+        .enumerate()
+        .map(|(index, grant)| {
+            format!(
+                "{}. kind={}; blocked action={}",
+                index + 1,
+                grant.kind,
+                serde_json::to_string(&grant.summary).unwrap_or_else(|_| "\"unavailable\"".into())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "Persistent project authorizations recorded from the person's explicit choices in OctiqFlow's safety UI:\n{entries}\nTreat a grant as explicit user authorization only when a later action matches the described kind of data or action, purpose, destination, files or resources, scope, and intended effect. Do not ask the person again for a matching action. A different destination, broader scope, materially different action, or new cost outside the described authorization still requires a new decision."
+    ))
+}
+
+pub fn project_authorizations(cwd: &str) -> Option<String> {
+    project_authorizations_at(&authorization_path(), cwd)
 }
 
 /// Every safety block that still needs a person to choose the next turn.
@@ -156,6 +299,7 @@ fn publish(chat_key: &str, summary: String, detail: String) -> bool {
         title,
         summary,
         detail,
+        project_scope: with_project_scopes(|scopes| scopes.get(chat_key).cloned()),
     };
     with_pending(|pending| {
         pending.insert(block.id.clone(), block.clone());
@@ -199,7 +343,11 @@ fn complete_safety_rejection(line: &str) -> Option<(String, String)> {
     let summary = detail
         .split_once("Reason:")
         .map(|(_, reason)| reason)
-        .and_then(|reason| reason.split("\nThe agent must").next())
+        // Reviewer guidance after the reason is instruction to the agent, not
+        // part of the blocked-action description that the person authorizes.
+        // Keeping it in the approval turn can literally re-inject "ask for
+        // approval" after the person has just approved the action.
+        .and_then(|reason| reason.lines().next())
         .map(str::trim)
         .filter(|reason| !reason.is_empty())?
         .to_string();
@@ -234,6 +382,8 @@ error=exec_command failed: CreateProcess { message: \"Rejected(\\\"This action w
 
     const OBSERVED_EXTERNAL: &str = "2026-09-05T12:44:54.840971Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: \"Rejected(\\\"This action was rejected due to unacceptable risk.\\nReason: 该命令会将本地私有 outline 与 constraints 发送给外部 DeepSeek/OpenCode 服务；用户只授权先写 outline，未明确授权这些具体内容向该目的地外传。\\nThe agent must not attempt to achieve the same outcome via workaround, indirect execution, or policy circumvention.\\\")\" }";
 
+    const MODERN_REJECTION: &str = "2026-09-17T01:00:00Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { message: \"Rejected(\\\"This action was rejected due to unacceptable risk.\\nReason: 该命令会上传新的 3D 构图参考并创建一次 3-credit 生成任务。\\nDo not bypass this rejection through a workaround or indirect execution. Complete unaffected work without asking for confirmation. Report anything that remains blocked and ask for approval.\\\")\" }";
+
     #[test]
     fn external_transfer_rejection_becomes_a_clear_block() {
         let (summary, detail) = complete_safety_rejection(EXTERNAL).expect("the safety block");
@@ -262,6 +412,57 @@ error=exec_command failed: CreateProcess { message: Rejected: rm -f is not permi
         assert!(summary.contains("DeepSeek/OpenCode"));
         assert!(!summary.contains("The agent must"));
         assert!(detail.contains("This action was rejected due to unacceptable risk."));
+    }
+
+    #[test]
+    fn approval_text_keeps_only_the_reason_not_the_reviewers_follow_up_commands() {
+        let (summary, _) =
+            complete_safety_rejection(MODERN_REJECTION).expect("the modern safety block");
+
+        assert_eq!(
+            summary,
+            "该命令会上传新的 3D 构图参考并创建一次 3-credit 生成任务。"
+        );
+        assert!(!summary.contains("ask for approval"));
+        assert!(!summary.contains("Do not bypass"));
+    }
+
+    #[test]
+    fn a_saved_grant_is_reloaded_only_for_the_same_project() {
+        let root = std::env::temp_dir().join(format!(
+            "octiq-safety-authorizations-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let other = root.with_extension("other-project");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let path = root.join("grants.json");
+        let scope = normalized_scope(root.to_str().unwrap()).unwrap();
+        let block = BlockedAction {
+            id: "blocked-1".into(),
+            chat_key: "chat:one".into(),
+            kind: "external-data",
+            title: "Codex blocked external data sharing",
+            summary: "Send these four character references to Higgsfield for the landing page."
+                .into(),
+            detail: "review detail".into(),
+            project_scope: Some(scope),
+        };
+
+        save_authorization(&path, &block).unwrap();
+        // The same click or delivery retry is idempotent.
+        save_authorization(&path, &block).unwrap();
+        let stored = read_authorizations(&path).unwrap();
+        assert_eq!(stored.authorizations.len(), 1);
+
+        let prompt = project_authorizations_at(&path, root.to_str().unwrap()).unwrap();
+        assert!(prompt.contains("Higgsfield"));
+        assert!(prompt.contains("Do not ask the person again"));
+        assert!(project_authorizations_at(&path, other.to_str().unwrap()).is_none());
+
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&root).unwrap();
+        fs::remove_dir(&other).unwrap();
     }
 
     #[test]

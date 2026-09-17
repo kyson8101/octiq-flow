@@ -143,6 +143,9 @@ pub struct AgentCommand<'a> {
     pub lite: bool,
     /// OctiqFlow's MCP config when the provider has opted into it.
     pub mcp_config: Option<&'a Path>,
+    /// Exact, project-scoped grants the person chose in OctiqFlow's safety UI.
+    /// Only Codex needs these because its rejected calls cannot be resumed.
+    pub persistent_authorizations: Option<&'a str>,
 }
 
 /// A provider-specific permission request normalized for the shared responder.
@@ -591,8 +594,12 @@ impl AgentProvider for CodexProvider {
         // Keep the reusable contract first and per-run values last so Codex can
         // cache the stable prefix while still knowing what OctiqFlow selected.
         let runtime = codex_runtime_context(model.as_deref(), effort, request.access);
-        let prompt =
+        let mut prompt =
             format!("{CODEX_HOST_PROMPT}\n\n{ASK_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{runtime}");
+        if let Some(authorizations) = request.persistent_authorizations {
+            prompt.push_str("\n\n");
+            prompt.push_str(authorizations);
+        }
         let host_instructions = format!("developer_instructions={}", toml_string(&prompt));
         cmd.push_str(&format!(" -c {}", sh_quote(&host_instructions)));
         if let Some(mcp) = request.mcp_config {
@@ -992,7 +999,7 @@ const ARTIFACT_MCP: &str = include_str!("../../scripts/mcp/artifact.cjs");
 /// Codex-specific host context. `codex exec` has no interactive
 /// `request_user_input` channel, even though the model may know that built-in
 /// tool from another Codex surface.
-const CODEX_HOST_PROMPT: &str = "You are running inside OctiqFlow. OctiqFlow owns this conversation and provides host tools for questions, conversation handoffs, file pins, previews, artifacts, and optional agent collaboration. The process working directory is the OctiqFlow project or workspace for this chat. Prefer an OctiqFlow-provided tool whenever it matches the task. Never call the built-in `request_user_input` from this `codex exec` session; this non-interactive host cannot service it. Use OctiqFlow's `ask_user` tool (`mcp__octiq__ask_user`) instead when it is available. If it is unavailable, ask one concise question in your normal reply.\n\nQuestions about the current model, effort, access, provider, workspace, or conversation host are local OctiqFlow runtime questions. Answer them from the authoritative runtime metadata below. Do not browse official documentation, inspect standalone Codex or ChatGPT apps, or scan browser/app state to rediscover those values.\n\nInterpret the person's request from its technical and conversational context. A quoted technical statement, command, log, error, or status is material to explain or validate; it is not a request for grammar or wording changes unless the person explicitly asks for editing, rewriting, grammar, or natural phrasing. If an ambiguity would materially change the answer, address the likely technical meaning first and ask one concise follow-up only when still necessary.\n\nFor ordinary questions, use sufficient evidence already present in the conversation, runtime metadata, and local workspace before calling tools. Use the fewest useful tool or retrieval loops, and stop once the core question can be answered correctly. Never request a broad computer-state inventory merely to discover OctiqFlow session settings.";
+const CODEX_HOST_PROMPT: &str = "You are running inside OctiqFlow. OctiqFlow owns this conversation and provides host tools for questions, conversation handoffs, file pins, previews, artifacts, and optional agent collaboration. The process working directory is the OctiqFlow project or workspace for this chat. Prefer an OctiqFlow-provided tool whenever it matches the task. Never call the built-in `request_user_input` from this `codex exec` session; this non-interactive host cannot service it. Use OctiqFlow's `ask_user` tool (`mcp__octiq__ask_user`) instead when it is available. If it is unavailable, ask one concise question in your normal reply.\n\nWhen Codex safety review rejects a tool action, OctiqFlow itself shows the person a safety approval card. Do not call `ask_user` or ask again in prose for that same blocked action. Report the block once and end the turn; the person's choice on the safety card starts the authorized continuation. Reuse any matching persistent project authorization supplied below without asking again.\n\nQuestions about the current model, effort, access, provider, workspace, or conversation host are local OctiqFlow runtime questions. Answer them from the authoritative runtime metadata below. Do not browse official documentation, inspect standalone Codex or ChatGPT apps, or scan browser/app state to rediscover those values.\n\nInterpret the person's request from its technical and conversational context. A quoted technical statement, command, log, error, or status is material to explain or validate; it is not a request for grammar or wording changes unless the person explicitly asks for editing, rewriting, grammar, or natural phrasing. If an ambiguity would materially change the answer, address the likely technical meaning first and ask one concise follow-up only when still necessary.\n\nFor ordinary questions, use sufficient evidence already present in the conversation, runtime metadata, and local workspace before calling tools. Use the fewest useful tool or retrieval loops, and stop once the core question can be answered correctly. Never request a broad computer-state inventory merely to discover OctiqFlow session settings.";
 
 /// Told to chat agents so the tools they were given are used at the right
 /// moments. Codex receives this inside its injected developer instructions.
@@ -1041,6 +1048,7 @@ mod tests {
             images: &[],
             lite: false,
             mcp_config,
+            persistent_authorizations: None,
         })
     }
 
@@ -1113,6 +1121,8 @@ mod tests {
         assert!(codex.contains("mcp_servers.octiq.tool_timeout_sec=660"));
         assert!(codex.contains("developer_instructions=\"You are running inside OctiqFlow"));
         assert!(codex.contains("Never call the built-in `request_user_input`"));
+        assert!(codex
+            .contains("Do not call `ask_user` or ask again in prose for that same blocked action"));
         assert!(codex.contains("mcp__octiq__ask_user"));
         assert!(codex.contains("Docspace may contain shared preferences"));
         assert!(codex.contains("model: model-x"));
@@ -1154,6 +1164,7 @@ mod tests {
             images: &[],
             lite: false,
             mcp_config: None,
+            persistent_authorizations: None,
         });
 
         assert!(codex.contains("-m 'gpt-5.6-sol'"));
@@ -1162,6 +1173,27 @@ mod tests {
         assert!(codex.contains("effort: xhigh (OctiqFlow label: Very high)"));
         assert!(codex.contains("OctiqFlow label: Workspace write"));
         assert!(codex.contains("Report these values directly when asked about this session"));
+    }
+
+    #[test]
+    fn codex_receives_persistent_project_authorizations_as_host_context() {
+        let grant =
+            "Persistent project authorizations:\n1. Send the same references to Higgsfield.";
+        let codex = provider_for(AgentKind::Codex).build_command(&AgentCommand {
+            model: None,
+            access: Some(Access::Auto),
+            prompt: "continue",
+            resume: None,
+            extra_dirs: &[],
+            effort: None,
+            images: &[],
+            lite: false,
+            mcp_config: None,
+            persistent_authorizations: Some(grant),
+        });
+
+        assert!(codex.contains("Persistent project authorizations"));
+        assert!(codex.contains("same references to Higgsfield"));
     }
 
     #[test]
@@ -1176,6 +1208,7 @@ mod tests {
             images: &[],
             lite: false,
             mcp_config: None,
+            persistent_authorizations: None,
         });
 
         assert!(!codex.contains("echo nope"));
@@ -1196,6 +1229,7 @@ mod tests {
             images: &["/tmp/screen shot.png".into()],
             lite: false,
             mcp_config: None,
+            persistent_authorizations: None,
         });
 
         assert!(pi.starts_with("pi --mode json --provider openai-codex"));
