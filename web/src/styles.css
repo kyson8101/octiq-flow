@@ -1566,6 +1566,22 @@ body {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-2) 12%, transparent);
 }
 
+.agent-progress-log + .agent-progress-live {
+  margin-top: 5px;
+}
+
+.agent-progress-live-copy {
+  min-width: 0;
+}
+
+.agent-progress-live-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
 .agent-progress-pulse {
   width: 6px;
   height: 6px;
@@ -1589,11 +1605,13 @@ body {
 }
 
 .agent-progress-log {
-  margin-top: 5px;
+  margin-top: 0;
 }
 
 .agent-progress-log > summary {
   display: inline-flex;
+  max-width: 100%;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 2px 3px;
@@ -1602,6 +1620,13 @@ body {
   font-size: 11.5px;
   cursor: pointer;
   list-style: none;
+}
+
+.agent-progress-order {
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+  color: color-mix(in srgb, var(--fg-3) 78%, transparent);
+  font-size: 10.5px;
 }
 
 .agent-progress-log > summary::-webkit-details-marker {
@@ -1633,15 +1658,13 @@ body {
 }
 
 .agent-progress-items {
-  display: grid;
-  gap: 9px;
   /* A long-running turn can produce dozens of commentary updates. Opening the
      history must not turn that secondary log into a page taller than the
      conversation around it. Keep enough room to compare several updates and
      let the log itself carry the rest. `dvh` follows the usable phone viewport
      while the pixel ceiling keeps the box disciplined on a large display. */
   max-height: min(42dvh, 360px);
-  margin-top: 6px;
+  margin: 6px 0 0;
   padding: 10px 11px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1656,13 +1679,48 @@ body {
   outline-offset: 2px;
 }
 
+.agent-progress-list {
+  position: relative;
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0 0 0 18px;
+  list-style: none;
+}
+
+.agent-progress-list::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 3px;
+  width: 1px;
+  background: color-mix(in srgb, var(--fg-3) 28%, transparent);
+}
+
+.agent-progress-item {
+  position: relative;
+}
+
 .agent-progress-item + .agent-progress-item {
   padding-top: 9px;
   border-top: 1px solid var(--border);
 }
 
-.agent-progress.is-settled .agent-progress-log {
-  margin-top: 0;
+.agent-progress-item::before {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: -17px;
+  width: 5px;
+  height: 5px;
+  border: 1.5px solid color-mix(in srgb, var(--fg-3) 72%, transparent);
+  border-radius: 50%;
+  background: var(--bg-1);
+}
+
+.agent-progress-item + .agent-progress-item::before {
+  top: 16px;
 }
 
 @media (prefers-reduced-motion: reduce) {

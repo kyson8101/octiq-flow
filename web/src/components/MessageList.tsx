@@ -150,28 +150,36 @@ function ProgressLog({
 
   return (
     <div className={`agent-progress ${streaming ? "is-live" : "is-settled"}`}>
-      {latest && (
-        <div className="agent-progress-live" role="status" aria-live="polite">
-          <span className="agent-progress-pulse" aria-hidden="true" />
-          <Prose text={latest} animate={false} />
-        </div>
-      )}
       {earlier.length > 0 && (
         <details className="agent-progress-log">
-          <summary>{countLabel}</summary>
+          <summary>
+            <span>{countLabel}</span>
+            <span className="agent-progress-order">Oldest first</span>
+          </summary>
           <div
             className="agent-progress-items"
             role="region"
-            aria-label="Progress history"
+            aria-label="Progress history, oldest first"
             tabIndex={0}
           >
-            {earlier.map((update, index) => (
-              <div className="agent-progress-item" key={`${index}:${update.slice(0, 24)}`}>
-                <Prose text={update} animate={false} />
-              </div>
-            ))}
+            <ol className="agent-progress-list">
+              {earlier.map((update, index) => (
+                <li className="agent-progress-item" key={`${index}:${update.slice(0, 24)}`}>
+                  <Prose text={update} animate={false} />
+                </li>
+              ))}
+            </ol>
           </div>
         </details>
+      )}
+      {latest && (
+        <div className="agent-progress-live" role="status" aria-live="polite">
+          <span className="agent-progress-pulse" aria-hidden="true" />
+          <div className="agent-progress-live-copy">
+            <span className="agent-progress-live-label">Latest update</span>
+            <Prose text={latest} animate={false} />
+          </div>
+        </div>
       )}
     </div>
   );

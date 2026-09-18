@@ -139,6 +139,11 @@ describe("Codex progress", () => {
     expect(html).toContain('role="status"');
     expect(html).toContain("The targeted tests are running.");
     expect(html).toContain("2 earlier progress updates");
+    expect(html).toContain("Oldest first");
+    expect(html).toContain("Latest update");
+    expect(html.indexOf("Started the review.")).toBeLessThan(
+      html.indexOf("The targeted tests are running."),
+    );
     expect(html).not.toContain('<details class="agent-progress-log" open=""');
   });
 
@@ -154,6 +159,7 @@ describe("Codex progress", () => {
 
     expect(html).not.toContain('role="status"');
     expect(html).toContain("2 progress updates");
+    expect(html).toContain("Oldest first");
     expect(html).toContain("Updated and verified.");
   });
 
@@ -167,9 +173,10 @@ describe("Codex progress", () => {
     };
     const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
 
+    expect(html).toContain('<ol class="agent-progress-list"');
     expect(html).toContain('class="agent-progress-items"');
     expect(html).toContain('role="region"');
-    expect(html).toContain('aria-label="Progress history"');
+    expect(html).toContain('aria-label="Progress history, oldest first"');
     expect(html).toContain('tabindex="0"');
   });
 });
