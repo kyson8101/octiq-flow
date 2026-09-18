@@ -1,12 +1,10 @@
-import type { ChatState } from "./chat";
-
 export type WorkspacePeer = {
   id: string;
   title: string;
   /** Observed conversation cwd only; project defaults are not evidence. */
   cwd?: string;
   busy: boolean;
-  /** Includes room seats and running rounds. */
+  /** Whether this conversation currently owns a live provider process. */
   live: boolean;
 };
 
@@ -77,19 +75,4 @@ export function createWorkspaceLookup(
       revision++;
     },
   };
-}
-
-/** Seat output is folded into the room transcript with a speaker stamp. A
- * resident seat process alone is not evidence that the seat is busy. */
-export function isWorkspaceBusy(
-  id: string,
-  chat: Pick<ChatState, "busy" | "messages"> | undefined,
-  running: ReadonlySet<string>,
-  round: boolean,
-): boolean {
-  if (round || chat?.busy) return true;
-  return !!chat?.messages.some((message) => {
-    if (!message.speaker || !running.has(`${id}-seat-${message.speaker.id}`)) return false;
-    return message.streaming || message.blocks.some((block) => block.kind === "tool" && block.state === "running");
-  });
 }

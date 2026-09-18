@@ -107,7 +107,7 @@ await page.locator('.main').waitFor();
 assert.equal(await page.locator('.sidebar').isVisible(),false);
 assert.equal(await page.locator('textarea').inputValue(),'');
 assert.equal(await page.getByRole('heading',{name:'Start new chat',exact:true}).isVisible(),true);
-assert.match(await page.locator('textarea').getAttribute('placeholder'),/^@project-name/);
+assert.match(await page.locator('textarea').getAttribute('placeholder'),/@project-name/);
 assert.deepEqual(errors,[]);
 assert.equal(calls.some(c=>['chat_start','chat_send'].includes(c.cmd)),false);
 console.log('PASS: mobile pages, touch gestures, task selection, draft retention, browser history, desktop collapse, tablet and short phone; no browser errors.');

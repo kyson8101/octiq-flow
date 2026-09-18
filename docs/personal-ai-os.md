@@ -163,7 +163,6 @@ RunManifest
   workspace + extra folders
   selected provider/model/effort/access
   enabled host tools and grants
-  active seat configuration
   current provider binding
   last acknowledged turn
   schema_version
@@ -524,7 +523,7 @@ Acceptance:
 
 1. Persist the fields currently held only by `StartContext`.
 2. Store provider-native sessions as bindings rather than one chat field.
-3. Restore host and seat launch state after a backend restart.
+3. Restore provider launch state after a backend restart.
 4. Keep the existing browser wire shape through a compatibility projection.
 
 Acceptance:

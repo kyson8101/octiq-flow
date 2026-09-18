@@ -129,7 +129,7 @@ it.each([false, true])("keeps an optimistic prompt while prepending history (ech
   await loadChat({ ...options, history, request: async () => [], requestPage: async () => ({
     events: [frame(2)], context: [], before: 2,
   }) });
-  options.publish(addUserTurn(options.getState(), "queued locally", [], 100, undefined, "pending"));
+  options.publish(addUserTurn(options.getState(), "queued locally", [], 100, "pending"));
   await loadEarlierChat({ ...options, history, request: async () => echo ? [{ seq: 3, event: {
     type: "user", uuid: "echoed", message: { content: [{ type: "text", text: "queued locally" }] },
   } }] : [], requestPage: async () => ({ events: [frame(1)], context: [], before: null }) });

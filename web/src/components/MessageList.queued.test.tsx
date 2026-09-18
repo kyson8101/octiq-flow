@@ -57,7 +57,7 @@ describe("message delivery controls", () => {
   });
 
   it("removes stale controls after an exact acknowledgement", () => {
-    const working = reduceChat(addUserTurn(emptyChat(), "do the thing", [], 1, undefined, "u-1"), {
+    const working = reduceChat(addUserTurn(emptyChat(), "do the thing", [], 1, "u-1"), {
       type: "turn.started", octiq_user_turn_id: "u-1",
     });
     expect(draw(working.messages[0])).not.toContain("Send this queued message now");

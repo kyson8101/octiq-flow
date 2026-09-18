@@ -9,7 +9,6 @@
 // window went; what is left is the part that did the work.
 
 mod access;
-mod agent_api;
 mod agent_chat;
 mod agent_history;
 mod agent_provider;
@@ -17,7 +16,6 @@ mod agents;
 mod bus;
 mod canvas;
 mod chat_index;
-mod chat_room;
 mod diagnostics;
 mod dispatch;
 mod file_watch;
@@ -37,7 +35,6 @@ mod pty;
 mod push;
 mod question;
 mod question_store;
-mod round;
 mod safety_block;
 mod transcript;
 mod usage_limits;

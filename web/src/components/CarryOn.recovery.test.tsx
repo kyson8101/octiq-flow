@@ -26,7 +26,7 @@ describe("recovery strip", () => {
     expect(html).not.toContain("<button");
     expect(html).not.toContain("server reports no active");
   });
-  it("shows an observed exit code and suppresses itself for a live room", () => {
+  it("shows an observed exit code and suppresses itself for a live chat", () => {
     expect(render({ exited: { code: 137 } })).toContain("exited with code 137");
     expect(render({ live: true })).toBe("");
   });

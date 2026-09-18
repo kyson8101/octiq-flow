@@ -1,25 +1,7 @@
-// The host answering its own room.
-//
-// A room's seats are separate processes. What one says goes into the ROOM's
-// transcript — it never goes down the host's stdin — so after `@dee look at
-// this` the host has not read a word of the answer sitting on screen above it.
-// Until now it also said nothing about it, which read as the main agent
-// ignoring the discussion happening in its own chat.
-//
-// So the backend hands it over: once the others have spoken, and nobody else is
-// waiting on them, `round.rs` emits `chat-followup` with a brief of what was
-// said. The client sends that to the host the same way it sends anything else.
-//
-// The brief is long — it quotes every answer in full, because the host cannot
-// see them any other way — and putting it on screen as a message would print
-// the whole discussion a second time directly underneath itself. So the bubble
-// is replaced by ONE LINE, and this module is what recognises a brief in order
-// to draw it that way. Recognised from the TEXT rather than from a flag, so a
-// conversation rebuilt from the transcript reads exactly like the live one: the
-// flag would be this page's memory, and the transcript keeps only the words.
+// Compatibility parser for follow-up briefs stored by the removed multi-agent
+// feature. It keeps old transcripts compact without exposing any new room UI.
 
-/** The first line of every brief `round::followup_brief` writes. Changing it
- *  here without changing it there turns every brief back into a wall of text. */
+/** The first line used by historical follow-up briefs. */
 export const RELAY_HEAD = "=== what the others in this chat just said ===";
 
 /** `--- Name ---`, the heading each answer sits under. */

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createWorkspaceLookup, isWorkspaceBusy, sharedWorkspacePeers, workspaceIdentity, type WorkspaceGitStatus, type WorkspacePeer } from "./workspaceContext";
+import { createWorkspaceLookup, sharedWorkspacePeers, workspaceIdentity, type WorkspaceGitStatus, type WorkspacePeer } from "./workspaceContext";
 
 const status = (path: string, branch = "main"): WorkspaceGitStatus => ({ path, repo_root: path, branch, is_repo: true });
 const peer = (id: string, cwd?: string, busy = true, live = true): WorkspacePeer => ({ id, title: id, cwd, busy, live });
@@ -11,9 +11,9 @@ function deferred<T>() {
 }
 
 describe("observed concurrent workspace", () => {
-  it("includes live busy peers including room identities, excludes current and idle chats", () => {
-    const peers = [peer("self", "/repo"), peer("room", "/repo/"), peer("idle", "/repo", false), peer("stale", "/repo", true, false)];
-    expect(sharedWorkspacePeers("self", "/repo", peers).map((item) => item.id)).toEqual(["room"]);
+  it("includes live busy peers and excludes the current and idle chats", () => {
+    const peers = [peer("self", "/repo"), peer("other", "/repo/"), peer("idle", "/repo", false), peer("stale", "/repo", true, false)];
+    expect(sharedWorkspacePeers("self", "/repo", peers).map((item) => item.id)).toEqual(["other"]);
   });
   it("does not equate separate worktrees, unknown paths, symlinks or directory prefixes", () => {
     const peers = [peer("separate", "/repo-other"), peer("unknown"), peer("child", "/repo/sub"), peer("relative", "repo")];
@@ -60,31 +60,5 @@ describe("workspace lookup race handling", () => {
     const lookup = createWorkspaceLookup(async () => { throw new Error("unavailable"); }, publish, "/repo");
     await lookup.refresh();
     expect(publish).toHaveBeenLastCalledWith({ kind: "unknown" });
-  });
-});
-
-
-describe("room workspace activity", () => {
-  const speaker = { id: "seat-one", name: "Seat", agent: "claude" };
-  const room = (streaming: boolean): Pick<import("./chat").ChatState, "busy" | "messages"> => ({ busy: false, messages: [{ id: "message", role: "assistant", streaming, speaker, blocks: [] }] });
-  const running = new Set(["room-seat-seat-one"]);
-  it("reads busy seat evidence from the room transcript rather than a nonexistent seat chat", () => {
-    expect(isWorkspaceBusy("room", room(true), running, false)).toBe(true);
-    expect(isWorkspaceBusy("room", room(false), running, false)).toBe(false);
-    expect(isWorkspaceBusy("room", room(true), new Set(), false)).toBe(false);
-    expect(isWorkspaceBusy("other-room", room(true), running, false)).toBe(false);
-  });
-  it("recognizes a live seat running a tool after its message stopped streaming", () => {
-    const chat = room(false);
-    chat.messages[0].blocks = [{ kind: "tool", id: "tool", name: "Bash", args: {}, argsJson: "{}", state: "running" }];
-    expect(isWorkspaceBusy("room", chat, running, false)).toBe(true);
-    chat.messages[0].blocks = chat.messages[0].blocks.map((block) =>
-      block.kind === "tool" ? { ...block, state: "done" } : block);
-    expect(isWorkspaceBusy("room", chat, running, false)).toBe(false);
-  });
-  it("includes active rounds across handover gaps and ordinary host turns", () => {
-    expect(isWorkspaceBusy("room", room(false), new Set(), true)).toBe(true);
-    expect(isWorkspaceBusy("chat", { busy: true, messages: [] }, new Set(["chat"]), false)).toBe(true);
-    expect(isWorkspaceBusy("unknown", undefined, new Set(), false)).toBe(false);
   });
 });

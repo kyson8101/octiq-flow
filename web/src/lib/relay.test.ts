@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { RELAY_HEAD, readRelay } from "./relay";
 import { emptyChat, reduceChat } from "./chat";
 
-/** A brief as `round::followup_brief` writes it. */
+/** A brief stored by the removed multi-agent implementation. */
 function brief(...parts: [string, string][]): string {
   return [
     RELAY_HEAD,

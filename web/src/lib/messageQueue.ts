@@ -85,7 +85,7 @@ export function reclaimedMessage(message: Message) {
   const suffix = `Files to look at:\n${files.map((a) => `- ${a.path}`).join("\n")}`;
   if (files.length && text.endsWith(suffix)) text = text.slice(0, -suffix.length).trimEnd();
   return {
-    text: message.to ? `@${message.to.name} ${text}` : text,
+    text,
     attachments: (message.attachments ?? []).map((a) => ({ ...a, isImage: !!a.isImage })),
   };
 }

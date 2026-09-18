@@ -17,9 +17,8 @@ export type AttentionInput = {
   asks?: Pending;
   questions?: Pending;
   safetyBlocks?: Pending;
-  activeRounds?: ReadonlySet<string>;
-  /** Optional recovery policy, including room handover grace. When provided,
-   * only these missing-process busy chats may be labelled interrupted. */
+  /** Optional recovery policy. When provided, only these missing-process busy
+   * chats may be labelled interrupted. */
   interruptedIds?: ReadonlySet<string>;
 };
 
@@ -43,14 +42,14 @@ export function selectAttention(input: AttentionInput): AttentionEntry[] {
   for (const conversation of input.conversations) {
     const id = conversation.id;
     const chat = input.chats[id];
-    const live = someoneWorking({ id, running: input.running, round: input.activeRounds?.has(id) ?? false });
+    const live = someoneWorking({ id, running: input.running });
     const permissions = input.asks?.[id]?.length ?? 0;
     const questions = input.questions?.[id]?.length ?? 0;
     const blocked = input.safetyBlocks?.[id]?.length ?? 0;
     let kind: AttentionKind;
     let reason: string;
     // Pending-request events are authoritative and can precede the roster's
-    // adoption of a newly started process or a room handover.
+    // adoption of a newly started process.
     if (fresh && permissions) {
       kind = "permission";
       reason = `${permissions} permission ${permissions === 1 ? "request" : "requests"}`;

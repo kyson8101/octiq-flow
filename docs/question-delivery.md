@@ -15,9 +15,9 @@ approval and timeout behavior.
   that tool. A timeout or ended agent turn detaches the live waiter; the same
   questions remain available on every device.
 - A later answer creates one continuation containing the original questions and
-  answers. It uses the saved provider session, model, workspace, access settings,
-  and seat. A removed seat or a different provider session is reported instead
-  of redirecting the answers to another agent.
+  answers. It uses the saved provider session, model, workspace, and access
+  settings. A different provider session is reported instead of redirecting the
+  answers to another process.
 - Continuations use the existing chat queue and a stable user-turn ID. Startup
   recovery replays saved answers that were not dispatched, including a queue
   lost with the old server process. A provider receipt closes the saved card.
@@ -30,7 +30,7 @@ approval and timeout behavior.
 
 The launch supplies `OCTIQ_CHAT_KEY`, `OCTIQ_SESSION_KEY`, and `OCTIQ_LAUNCH_ID`
 to the MCP child. The conversation key selects the UI; the process and launch
-identities prevent a seat's question from resuming the host or a stale process.
+identities prevent an old question from resuming a stale process.
 Saved answers are never interpreted as permission to resume explicitly stopped
 work.
 

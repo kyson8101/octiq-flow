@@ -4,12 +4,12 @@ import { observeInterruptions, type InterruptionInput } from "./interruptions";
 export function useInterruptedChats(input: InterruptionInput): ReadonlySet<string> {
   const since = useRef<ReadonlyMap<string, number>>(new Map());
   const [ids, setIds] = useState<ReadonlySet<string>>(new Set());
-  const { chats, running, activeRounds, rooms, known } = input;
+  const { chats, running, known } = input;
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const refresh = () => {
       const now = Date.now();
-      const observed = observeInterruptions(since.current, { chats, running, activeRounds, rooms, known }, now);
+      const observed = observeInterruptions(since.current, { chats, running, known }, now);
       since.current = observed.missing;
       setIds((previous) => previous.size === observed.interrupted.size
         && [...previous].every((id) => observed.interrupted.has(id)) ? previous : observed.interrupted);
@@ -17,9 +17,8 @@ export function useInterruptedChats(input: InterruptionInput): ReadonlySet<strin
     };
     refresh();
     return () => { if (timer !== undefined) clearTimeout(timer); };
-  }, [chats, running, activeRounds, rooms, known]);
+  }, [chats, running, known]);
   // A resolved turn or new connection must clear synchronously, before effects.
   return new Set([...ids].filter((id) => known && chats[id]?.busy && !chats[id]?.stopping
-    && !running.has(id) && !activeRounds.has(id)
-    && ![...running].some((key) => key.startsWith(`${id}-seat-`))));
+    && !running.has(id)));
 }

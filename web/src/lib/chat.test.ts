@@ -1174,7 +1174,7 @@ describe("a compaction", () => {
 // The agent halves of these events are lifted VERBATIM from
 // `task-subagent.jsonl`, which is a real captured stream. `octiq_speaker` is
 // not part of any capture and never will be: OctiqFlow's own backend stamps it
-// on, in `chat_room::stamp_speaker`, on the way to the record and the wire. So
+// on by the former room backend on the way to the record and the wire. So
 // it is authored here — the agent's shapes stay real, and only our own envelope
 // field is written by hand.
 describe("a room with several agents in it", () => {
@@ -1343,18 +1343,7 @@ describe("a room with several agents in it", () => {
     expect(last.speaker?.name).toBe("Unknown");
   });
 
-  it("does not open the room's own turn for a message addressed to a seat", () => {
-    // `@dee look at this` is a question for the SEAT's process. The room's own
-    // agent was not asked and owes nothing, so its turn stays closed — and a
-    // chat that is not working must not read as one whose answer was cut off
-    // (see lib/carryOn: "busy with nothing running it" IS the cut-turn test).
-    const state = addUserTurn(emptyChat(), "look at this", [], 1, { id: "s1", name: "Codex" });
-
-    expect(state.messages[0].to).toEqual({ id: "s1", name: "Codex" });
-    expect(state.busy).toBe(false);
-  });
-
-  it("still opens the turn for a message with no seat named on it", () => {
+  it("opens the turn when the user sends a message", () => {
     expect(addUserTurn(emptyChat(), "hello", [], 1).busy).toBe(true);
   });
 
@@ -1524,8 +1513,8 @@ describe("a message taken back before the agent was given it", () => {
     ({ type: "octiq_user_turn_cancelled", uuid: turnId });
 
   it("leaves the conversation as though it had never been sent", () => {
-    let state = addUserTurn(emptyChat(), "first", [], 1, undefined, "u-1");
-    state = addUserTurn(state, "never mind", [], 2, undefined, "u-2");
+    let state = addUserTurn(emptyChat(), "first", [], 1, "u-1");
+    state = addUserTurn(state, "never mind", [], 2, "u-2");
     expect(state.messages).toHaveLength(2);
 
     state = reduceChat(state, cancelling("u-2"));
@@ -1534,7 +1523,7 @@ describe("a message taken back before the agent was given it", () => {
   });
 
   it("takes back only the one it names", () => {
-    let state = addUserTurn(emptyChat(), "keep this", [], 1, undefined, "u-1");
+    let state = addUserTurn(emptyChat(), "keep this", [], 1, "u-1");
     state = reduceChat(state, cancelling("u-2"));
 
     expect(state.messages).toHaveLength(1);
@@ -1555,8 +1544,8 @@ describe("a lost queued message dismissed by the user", () => {
     ({ type: "octiq_user_turn_dismissed", uuid: turnId });
 
   it("removes only the named message from replayed history", () => {
-    let state = addUserTurn(emptyChat(), "keep this", [], 1, undefined, "u-1");
-    state = addUserTurn(state, "lost after restart", [], 2, undefined, "u-2");
+    let state = addUserTurn(emptyChat(), "keep this", [], 1, "u-1");
+    state = addUserTurn(state, "lost after restart", [], 2, "u-2");
 
     state = reduceChat(state, dismissing("u-2"));
 

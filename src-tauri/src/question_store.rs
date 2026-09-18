@@ -425,7 +425,6 @@ pub(crate) fn test_origin(key: &str) -> QuestionOrigin {
         "chat_key": key, "session_key": key, "launch_id": "launch-1",
         "start": { "cwd": "/tmp", "agent": "codex", "model": "gpt-test", "access": "manual",
             "extra_dirs": ["/tmp/extra"], "env": {}, "effort": "high", "lite": false, "session_id": "session-1" },
-        "seat": null,
     })).unwrap()
 }
 

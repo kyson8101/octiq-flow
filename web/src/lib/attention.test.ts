@@ -37,13 +37,7 @@ describe("attention precedence", () => {
     expect(selectAttention({ ...busy(), running: new Set(), asks: { c: [{}] } })[0].kind).toBe("permission");
     expect(selectAttention({ ...busy(), running: new Set() })[0].kind).toBe("interrupted");
   });
-  it("recognizes seat processes and rounds as live work", () => {
-    for (const snapshot of [
-      { ...busy(), running: new Set(["c-seat-reviewer"]) },
-      { ...busy(), running: new Set<string>(), activeRounds: new Set(["c"]) },
-    ]) expect(selectAttention(snapshot)).toEqual([]);
-  });
-  it("honors an authoritative interruption set while a room handover settles", () => {
+  it("honors an authoritative interruption set", () => {
     const missing = { ...busy(), running: new Set<string>() };
     expect(selectAttention({ ...missing, interruptedIds: new Set() })).toEqual([]);
     expect(selectAttention({ ...missing, interruptedIds: new Set(["c"]) })[0].kind).toBe("interrupted");

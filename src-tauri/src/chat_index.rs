@@ -52,9 +52,11 @@ pub struct ChatMeta {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access: Option<String>,
-    /// When it started. The sidebar orders by this, pinned ones first, and it never changes.
+    /// When it started. This never changes, even as recent activity reorders the list.
     #[serde(default)]
     pub created_at: i64,
+    /// Latest meaningful activity: a user send or a completed agent turn.
+    /// Streaming deltas deliberately keep the previous value.
     #[serde(default)]
     pub updated_at: i64,
     /// Kept at the top of its project, above every newer chat. Left out of the
@@ -166,8 +168,8 @@ fn write(index: &Index) -> Result<(), String> {
     fs::rename(&temp, &path).map_err(|e| e.to_string())
 }
 
-/// Every chat, pinned ones first and then newest first — the order the sidebar
-/// shows them in.
+/// Every chat, pinned ones first and then most recently active — the order the
+/// task-oriented sidebar shows them in.
 pub fn list() -> Vec<ChatMeta> {
     let mut chats: Vec<_> = read()
         .chats
@@ -177,7 +179,7 @@ pub fn list() -> Vec<ChatMeta> {
     chats.sort_by(|a, b| {
         b.pinned
             .cmp(&a.pinned)
-            .then(b.created_at.cmp(&a.created_at))
+            .then(b.updated_at.cmp(&a.updated_at))
     });
     chats
 }
@@ -193,9 +195,8 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
         }
     };
     match index.chats.iter_mut().find(|c| c.id == meta.id) {
-        // `created_at` is the one field a later save must not move: the sidebar
-        // orders by it, and a list that re-sorts while you type moves the row
-        // you are reading.
+        // `created_at` is historical identity, not activity. A later save may
+        // move `updated_at`, but can never rewrite when the chat began.
         Some(existing) => {
             let created = existing.created_at;
             let deleted_at = existing.deleted_at;
@@ -530,10 +531,12 @@ mod tests {
     }
 
     #[test]
-    fn the_list_comes_back_newest_first() {
+    fn the_list_comes_back_most_recently_active_first() {
         let (old, new) = ("test-index-old", "test-index-new");
         cleanup(&[old, new]);
-        upsert(meta(old, 1_000)).unwrap();
+        let mut old_but_active = meta(old, 1_000);
+        old_but_active.updated_at = 3_000;
+        upsert(old_but_active).unwrap();
         upsert(meta(new, 2_000)).unwrap();
 
         let ours: Vec<String> = list()
@@ -541,7 +544,7 @@ mod tests {
             .filter(|c| c.id == old || c.id == new)
             .map(|c| c.id)
             .collect();
-        assert_eq!(ours, vec![new.to_string(), old.to_string()]);
+        assert_eq!(ours, vec![old.to_string(), new.to_string()]);
         cleanup(&[old, new]);
     }
 

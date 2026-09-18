@@ -5,7 +5,7 @@ export type RecoveryEvidence = {
   /** A roster received on the current connection, not one from before disconnect. */
   rosterKnown: boolean;
   busy: boolean;
-  /** Includes room seats and active rounds. */
+  /** Whether this conversation owns a live provider process. */
   live: boolean;
   /** An exit recorded for this conversation's latest turn. */
   exited?: { code: number | null };
@@ -50,7 +50,7 @@ export function queuedMessageCount(chat: Pick<import("./chat").ChatState, "messa
     const message = chat.messages[index];
     if (message.queueLost || message.delivery === "dispatched" || message.delivery === "unknown" || message.delivery === "sending") continue;
     if (message.role !== "user" || message.echo || message.takenUp) break;
-    // Seat messages have different acceptance semantics; don't infer a host queue.
+    // Historical targeted messages have different acceptance semantics.
     if (message.to || !message.turnId) return undefined;
     count++;
   }

@@ -20,17 +20,18 @@ import { Mascot } from "./Mascot";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
-import { RoomPanel, RoomSheet } from "./RoomPanel";
-import { completeMention, mentionMatches, mentionPicks, mentionQuery } from "../lib/mention";
-import { projectMentionToken, type MentionableProject } from "../lib/projectMention";
-import { RoundBar, type RoundState } from "./RoundBar";
+import {
+  mentionMatches,
+  mentionPicks,
+  mentionQuery,
+  projectMentionToken,
+  type MentionableProject,
+} from "../lib/projectMention";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
-import type { Seat } from "../lib/chat";
 import type { BackgroundTask } from "../lib/background";
 import { BackgroundNote } from "./Background";
-import { useMedia, WIDE } from "../lib/media";
 import { RollingText } from "./RollingNumber";
 import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/commandMenu";
 import {
@@ -346,17 +347,8 @@ export function Composer({
   onEffort,
   lite,
   onLite,
-  room,
-  seats,
   projects,
   projectRequired,
-  round,
-  onAsk,
-  onStopRound,
-  onNewTopic,
-  topicDrawn,
-  onAddSeat,
-  onRemoveSeat,
   cwd,
   onTerminal,
   terminalOpen,
@@ -446,28 +438,10 @@ export function Composer({
    *  the NEXT chat. */
   lite: boolean;
   onLite: (on: boolean) => void;
-  /** Card 66 — the room controls, passed straight through to the settings
-   *  sheet. Optional: a composer given none draws no room controls.
-   *
-   *  Card 82: `room` is DERIVED now, not stored — a chat is a group when it has
-   *  a seat in it. It is still a prop because the caller is the one holding the
-   *  seat list, and two places computing the same thing is two places to get it
-   *  wrong. */
-  room?: boolean;
-  seats?: Seat[];
   /** Projects are offered through @ completion before a new task is bound to
    *  a workspace. The mention becomes the chat's project on first send. */
   projects?: readonly MentionableProject[];
   projectRequired?: boolean;
-  /** Card 68 — the round in flight, and the two things you can do about it. */
-  round?: RoundState | null;
-  onAsk?: () => void;
-  onStopRound?: () => void;
-  /** Card 69 — draw a line under the discussion so far. */
-  onNewTopic?: () => void;
-  topicDrawn?: boolean;
-  onAddSeat?: (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => void;
-  onRemoveSeat?: (seatId: string) => void;
   /** The project folder, so the file picker opens where the work is. */
   cwd?: string;
   /** Show the shell drawer. Absent when there is no project to open one in. */
@@ -491,15 +465,6 @@ export function Composer({
   const [menu, setMenu] = useState(false);
   /** The phone's stand-in for the three pickers: one sheet holding all of them. */
   const [sheet, setSheet] = useState(false);
-  /** Who is in this chat, opened by the person+ button. Its OWN state, not the
-   *  settings sheet's: card 90 split them, because "who else is here" is not a
-   *  setting of the agent you are talking to. */
-  const [roomOpen, setRoomOpen] = useState(false);
-  /** Which shape that panel takes. A dropdown over the row where there is a row
-   *  to hang it over; a sheet from the bottom edge where a 360px bar cannot
-   *  hold one. Asked of the browser, not of CSS, because the two are different
-   *  ELEMENTS in different places — see lib/media.ts. */
-  const wide = useMedia(WIDE);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
   const [dismissedCommand, setDismissedCommand] = useState<string | null>(null);
@@ -595,29 +560,19 @@ export function Composer({
           .slice(0, 40);
   const slashOpen = commandIntent && (matches.length > 0 || !!onReloadSkills) && commandKey !== dismissedCommand;
 
-  // Card 85 — the @ menu, on exactly the same terms as the slash menu above:
-  // open while the WHOLE box is one `@word`, gone the moment a space is typed.
-  // Absent in a chat with nobody else in it, where an `@` is just a character.
-  const atQuery = projectRequired || (seats ?? []).length > 0 ? mentionQuery(text) : undefined;
-  const whoList: { key: string; label: string; insert: string; seat?: Seat; project?: boolean }[] =
+  // The @ menu chooses a project before a new task is bound to one. It is open
+  // while the whole box is one `@word`, and closes once message text begins.
+  const atQuery = projectRequired ? mentionQuery(text) : undefined;
+  const whoList: { key: string; label: string; insert: string }[] =
     atQuery === undefined
       ? []
-      : (projectRequired
-          ? (projects ?? []).map((project) => ({
-              key: project.id,
-              label: project.name,
-              insert: projectMentionToken(project.name),
-              project: true,
-              seat: undefined,
-            }))
-          : [
-              // Everyone first: it is the one that is always there, and the one
-              // whose name never changes.
-              { key: "all", label: "all", insert: "all", seat: undefined, project: false },
-              ...(seats ?? []).map((seat) => ({ key: seat.id, label: seat.name, insert: seat.name, seat, project: false })),
-            ]).filter((w) =>
-          mentionMatches(w.label, w.seat?.id, atQuery),
-        );
+      : (projects ?? [])
+          .map((project) => ({
+            key: project.id,
+            label: project.name,
+            insert: projectMentionToken(project.name),
+          }))
+          .filter((project) => mentionMatches(project.label, project.key, atQuery));
   // One highlight serves both menus. They can never both be open — a box cannot
   // start with a `/` and an `@` at once — which is what makes that safe.
   const atOpen = whoList.length > 0;
@@ -657,7 +612,7 @@ export function Composer({
   }
 
   function completeWho(choice: (typeof whoList)[number]) {
-    setText(choice.project ? `@${choice.insert} ` : completeMention(choice.insert));
+    setText(`@${choice.insert} `);
     areaRef.current?.focus();
   }
 
@@ -1092,9 +1047,8 @@ export function Composer({
         </div>
       </div>
 
-      {/* Card 85 — who this message is for. Same shape and same keys as the
-          slash menu below it, because it is the same gesture: a character that
-          opens a list, arrows and Tab to choose, and a space to give up on it. */}
+      {/* Project selection uses the same keyboard shape as the command menu:
+          arrows and Tab to choose, and a space to continue writing. */}
       {atOpen && (
         <div className="slash" role="listbox" aria-label={projectRequired ? "Choose project" : "Send to"}>
           <div className="slash-head">
@@ -1119,18 +1073,8 @@ export function Composer({
                   onMouseEnter={() => setPick(i)}
                   onClick={() => completeWho(w)}
                 >
-                  {w.seat ? (
-                    <AgentLogo agent={w.seat.agent === "claude" ? "claude" : "codex"} size={12} />
-                  ) : null}
-                  @{w.project ? w.insert : w.label}
-                  {/* Said here because this is where the choice is made:
-                      picking a seat without knowing it cannot see the project
-                      is picking blind. */}
-                  {w.seat?.context === "room_only" && (
-                    <span className="slash-note">room-only</span>
-                  )}
-                  {w.project && <span className="slash-note">{w.label}</span>}
-                  {!w.seat && !w.project && <span className="slash-note">everyone, in turn</span>}
+                  @{w.insert}
+                  <span className="slash-note">{w.label}</span>
                 </button>
               </li>
             ))}
@@ -1183,31 +1127,6 @@ export function Composer({
           onClose={() => setFilePicker(false)}
         />
       )}
-      {/* Card 78 — the group's own row, above the box.
-          It stays MOUNTED when this is not a room, collapsed to nothing. A CSS
-          transition cannot run on an element that has been removed, and the ask
-          was for it to slide down on the way out as well as up on the way in —
-          so an ordinary chat carries one empty, zero-height row here. It shows
-          nothing and takes no space; it is not literally nothing, which is the
-          price of the animation. */}
-      <div className={`room-strip ${room ? "is-open" : ""}`} aria-hidden={!room}>
-        <div className="room-strip-inner">
-          {room && (
-            <>
-              {onAsk && onStopRound && (
-                <RoundBar
-                  seats={seats ?? []}
-                  round={round ?? null}
-                  onAsk={onAsk}
-                  onStop={onStopRound}
-                  onNewTopic={onNewTopic}
-                  topicDrawn={topicDrawn}
-                />
-              )}
-            </>
-          )}
-        </div>
-      </div>
       <div className="composer-box">
         {(attached.length > 0 || attachError || cleared) && (
           <div className="attach">
@@ -1246,7 +1165,7 @@ export function Composer({
             aria-label="Message"
             rows={2}
             value={text}
-            placeholder={disabled ? "Create a project first" : projectRequired ? "@project-name Describe the task…" : `Ask ${choice.name} to…`}
+            placeholder={disabled ? "Chat unavailable" : projectRequired ? "Describe the task, or start with @project-name…" : `Ask ${choice.name} to…`}
             disabled={disabled}
             onChange={(e) => {
               // Input events are the reliable signal on a software keyboard;
@@ -1606,61 +1525,6 @@ export function Composer({
             </button>
           )}
 
-          {/* Card 82 — the way somebody else gets into this chat.
-              Beside the terminal button because it is the same kind of
-              decision: who does this. In EVERY chat, because a seat is what
-              makes a chat a group and there is no longer a mode to turn on
-              first — the room's own controls appear above the box once
-              somebody is actually in it.
-
-              Card 90 — and it opens the ROOM, not the settings sheet. This
-              button used to open the same pile as the button beside it, with
-              the room fourth in it under Model, Access and Effort; pressing the
-              one drawn as a person and getting a model picker is not what the
-              icon promised. */}
-          {onAddSeat && onRemoveSeat && (
-            <div className="picker">
-              <button
-                className={`picker-btn ${room ? "is-on" : ""}`}
-                type="button"
-                aria-haspopup="dialog"
-                aria-expanded={roomOpen}
-                title={room ? "Who is in this chat" : "Add an agent to this chat"}
-                aria-label={room ? "Who is in this chat" : "Add an agent to this chat"}
-                onClick={() => setRoomOpen((v) => !v)}
-              >
-                <AddAgentIcon />
-              </button>
-              {roomOpen &&
-                (wide ? (
-                  <>
-                    <div className="picker-scrim" onClick={() => setRoomOpen(false)} />
-                    {/* No Done: a dropdown closes on the scrim, the same as the
-                        three beside it. And it does NOT close on adding a seat
-                        — adding two is one act, and the list you are adding to
-                        is the thing you want to keep watching. */}
-                    <div className="picker-menu is-room" role="dialog" aria-label="Who is in this chat">
-                      <RoomPanel
-                        seats={seats ?? []}
-                        onAdd={onAddSeat}
-                        onRemove={onRemoveSeat}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="sheet-scrim" onClick={() => setRoomOpen(false)} />
-                    <RoomSheet
-                      seats={seats ?? []}
-                      onAdd={onAddSeat}
-                      onRemove={onRemoveSeat}
-                      onDone={() => setRoomOpen(false)}
-                    />
-                  </>
-                ))}
-            </div>
-          )}
-
           {/* What used to be the status line stood here, between the buttons
               and Send, and took whatever width was left — which on a phone was
               about eight characters of it. It is a line of text, so it is on a
@@ -1758,29 +1622,6 @@ export function Composer({
         )}
       </div>
     </div>
-  );
-}
-
-/** Somebody else joining: two figures, and a plus for the one who is not here
- *  yet. Named on the button rather than in the drawing — the convention every
- *  other icon button in this composer already keeps. */
-function AddAgentIcon() {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.9"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="9" cy="8" r="3.2" />
-      <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
-      <path d="M18 8.5v5M15.5 11h5" />
-    </svg>
   );
 }
 

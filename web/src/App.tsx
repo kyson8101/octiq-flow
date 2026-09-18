@@ -30,7 +30,6 @@ import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { loadChat, loadEarlierChat } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
 import { CARRY_ON, someoneWorking, wasCutOff } from "./lib/carryOn";
-import type { RoundState } from "./components/RoundBar";
 import {
   addUserTurn,
   emptyChat,
@@ -41,8 +40,6 @@ import {
   turnOutputApprox,
   type ChatState,
   type Message,
-  type RoomView,
-  type Seat,
 } from "./lib/chat";
 import {
   byTask,
@@ -93,8 +90,6 @@ import { AgentRail, RailButton } from "./components/AgentRail";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
-import { roomCount } from "./lib/roomCount";
-import { readMention } from "./lib/mention";
 import { MOBILE, TOPBAR_ACTIONS, TOPBAR_READOUTS, useMedia, WIDE } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
@@ -148,10 +143,10 @@ import { CarryOn } from "./components/CarryOn";
 import { provesLiveTurn, queuedMessageCount, type ChatQueueState } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
-import { RollingNumber } from "./components/RollingNumber";
 import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
 import { projectSlug } from "./lib/projectSlug";
-import { readProjectMention } from "./lib/projectMention";
+import { inferProjectFromText, readProjectMention } from "./lib/projectMention";
+import { ensureGeneralProject } from "./lib/generalProject";
 import { modelHandoff } from "./lib/modelHandoff";
 import { shouldShowChatStatus } from "./lib/chatStatus";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
@@ -195,7 +190,7 @@ const DELETE_COLLAPSE_MS = 180;
 /** A delete that has happened on screen and nowhere else yet.
  *
  *  Nothing has reached the server while this is held: the transcript, the index
- *  entry, the room and the agent's own process are all still there, untouched.
+ *  entry and the agent's own process are both still there, untouched.
  *  That is what lets a cancel leave the chat ALONE rather than build a copy of
  *  it — and it is why the wait is seconds rather than minutes, since a chat
  *  that is still working carries on working for the whole of it.
@@ -631,7 +626,7 @@ export default function App() {
    *  someone else's business — `commitDelete` deletes it, and the index says so
    *  when another device did — this is only the copy in front of you: its
    *  transcript in memory, what it was started with, how far it had been read,
-   *  its seats, and the screen if it is the one you are looking at. */
+   *  and the screen if it is the one you are looking at. */
   const forgetLocally = useCallback(
     (id: string) => {
     gone.current.add(id);
@@ -647,12 +642,6 @@ export default function App() {
       delete next[id];
       writeChats(next, true);
     }
-    setSeats((prev) => {
-      if (!(id in prev)) return prev;
-      const next = { ...prev };
-      delete next[id];
-      return next;
-    });
     delete meta.current[id];
     pendingModelHandoffs.current.delete(id);
     modelSwitches.current.delete(id);
@@ -821,6 +810,21 @@ export default function App() {
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
 
+  /** Return the ordinary persisted workspace used when a task has no reliable
+   * project clue. It is created lazily, on the first such send, so existing
+   * profiles are not mutated merely by opening the app. An earlier General
+   * that was shelved is brought back because it is now the explicit fallback
+   * destination for new tasks. */
+  const ensureGeneralWorkspace = useCallback(async (): Promise<Workspace> => {
+    const result = await ensureGeneralProject(
+      workspaces,
+      shelved,
+      (command, args) => bridge.invoke(command, args),
+    );
+    setWorkspaces(result.active);
+    setShelved(result.shelved);
+    return result.project;
+  }, [workspaces, shelved]);
 
   /** Ask the backend which agent CLIs resolve on this machine.
    *
@@ -1394,8 +1398,8 @@ export default function App() {
           if (before && before.messages === s.messages) continue;
           // Everything the row already knew is CARRIED, and only what this
           // save actually recomputes is laid over it. Listing the carried
-          // fields by hand is how `synced` went missing once and `room` went
-          // missing again — see `rewriteConversation`.
+          // fields by hand is how `synced` went missing once — see
+          // `rewriteConversation`.
           const next: Conversation = rewriteConversation(before, {
             ...(before ?? ({} as Conversation)),
             id,
@@ -1410,10 +1414,13 @@ export default function App() {
             messages: s.messages,
             modelId: info.modelId,
             permission: info.access,
-            // Set once, on the first save. Its whole job is to stay put — see
-            // byTask in lib/store.ts.
+            // Set once, on the first save. It records when the task began;
+            // updatedAt below carries the meaningful activity used by byTask.
             createdAt: before?.createdAt ?? Date.now(),
-            updatedAt: Date.now(),
+            // Streaming deltas update the transcript and latest-response
+            // preview, but must not churn the list. User sends and completed
+            // turns touch this timestamp at their own boundaries.
+            updatedAt: before?.updatedAt ?? Date.now(),
             // Only when this page holds the chat from the beginning. For one
             // it does not, its own mark is 0 — writing that would throw away a
             // perfectly good stored position and replay the lot next time.
@@ -1648,7 +1655,37 @@ export default function App() {
     for (const [id, s] of Object.entries(chats)) {
       const before = wasBusy.current[id];
       wasBusy.current[id] = s.busy;
-      if (before && !s.busy) announce("done", id, lastSaid(s.messages));
+      if (before && !s.busy) {
+        announce("done", id, lastSaid(s.messages));
+        const held = conversationsRef.current.find((conversation) => conversation.id === id);
+        if (!held) continue;
+        const finishedAt = Date.now();
+        const response = latestAgentResponse(s.messages)?.text ?? held.latestResponse;
+        const completed = { ...held, latestResponse: response, updatedAt: finishedAt };
+        setConversations((current) => {
+          const existing = current.find((conversation) => conversation.id === id);
+          if (!existing) return current;
+          const next = current.map((conversation) => conversation.id === id
+            ? { ...conversation, latestResponse: response, updatedAt: finishedAt }
+            : conversation);
+          saveConversations(next);
+          return next;
+        });
+        saveIndexEntry({
+          id: completed.id,
+          projectId: completed.projectId,
+          title: completed.title,
+          latestResponse: completed.latestResponse,
+          customTitle: completed.customTitle,
+          sessionId: completed.sessionId ?? null,
+          modelId: completed.modelId ?? null,
+          access: completed.permission ?? null,
+          createdAt: completed.createdAt,
+          updatedAt: completed.updatedAt,
+          pinned: completed.pinned ?? false,
+          generation: completed.generation,
+        });
+      }
     }
   }, [chats, announce]);
 
@@ -1665,8 +1702,9 @@ export default function App() {
     });
   }, []);
 
-  /** A new task starts before it belongs to a project. The first @project tag
-   *  binds it to a workspace; the old chat stays intact as a durable record.
+  /** A new task starts before it belongs to a project. An explicit @project
+   *  binds it; otherwise the first send infers one or falls back to General.
+   *  The old chat stays intact as a durable record.
    *
    *  A counter rather than a flag: two new chats in a row are two requests,
    *  and a boolean's second `true` is not a change for an effect to see. The
@@ -2271,11 +2309,6 @@ export default function App() {
       // restore window; the row is only lingering here for layout.
       forgetLocally(id);
       removeIndexEntry(id, keyFor(id), generation, trashEntry);
-      // The room goes with the chat. Everyone in it is ended and the record
-      // dropped; leaving it would hold a room, and every process in it, for the
-      // life of the server on behalf of a conversation that no longer exists.
-      bridge.invoke("chat_forget_room", { key: keyFor(id) }).catch(() => {});
-
       // Motion-reduced users get the settled result immediately. Everyone else
       // sees the row fold itself out, carrying the chats below it rather than
       // making them jump to their new positions.
@@ -2423,8 +2456,8 @@ export default function App() {
   }, []);
 
   // Closing the tab inside those seconds must not quietly forget the delete.
-  // Nothing has been sent yet at that point — the transcript, the index entry
-  // and the room are all still there — so a delete left half done is a delete
+  // Nothing has been sent yet at that point — the transcript and index entry
+  // are both still there — so a delete left half done is a delete
   // that never happened, and the chat is back in the sidebar on the next
   // visit. Held in a ref so the listener is installed once and still calls the
   // current one.
@@ -2456,21 +2489,37 @@ export default function App() {
       let targetProject = project;
       if (!targetProject) {
         const routed = readProjectMention(text, workspaces);
-        if (routed.kind === "missing") {
-          setNewChatError("Start the message with a project, for example @octiq-flow.");
-          return;
-        }
         if (routed.kind === "unknown") {
           setNewChatError(`No project matches @${routed.tag}. Choose one from the @ list.`);
           return;
         }
-        if (!routed.text && attachments.length === 0) {
-          setNewChatError("Add the task after the project name.");
-          return;
+        if (routed.kind === "project") {
+          if (!routed.text && attachments.length === 0) {
+            setNewChatError("Add the task after the project name.");
+            return;
+          }
+          targetProject = workspaces.find((workspace) => workspace.id === routed.project.id) ?? null;
+          text = routed.text;
+        } else {
+          // No routing tag: choose only when the words contain a unique,
+          // high-confidence project name/path clue. Ambiguous and unrelated
+          // tasks go to General instead of silently landing in the wrong repo.
+          const inferred = inferProjectFromText(text, workspaces);
+          targetProject = inferred
+            ? workspaces.find((workspace) => workspace.id === inferred.id) ?? null
+            : null;
+          if (!targetProject) {
+            try {
+              targetProject = await ensureGeneralWorkspace();
+            } catch (error) {
+              setNewChatError(
+                `Could not open General: ${String((error as Error).message ?? error)}`,
+              );
+              return;
+            }
+          }
         }
-        targetProject = workspaces.find((workspace) => workspace.id === routed.project.id) ?? null;
         if (!targetProject) return;
-        text = routed.text;
         setProjectId(targetProject.id);
         setNewChatError(null);
       }
@@ -2549,67 +2598,6 @@ export default function App() {
       // The same files the agent is given, kept on the bubble so the message
       // shows what was sent with it. The object URLs are dropped: they are this
       // page's copy of the bytes, and a stored one points at nothing.
-      // Card 85 — who this one is for, read off the message itself and resolved
-      // BEFORE anything is sent, so the bubble and the wire agree.
-      //
-      // Read AFTER the file list is appended, which is safe and deliberate: the
-      // tag is at the START, so appending to the end cannot disturb it, and the
-      // files stay attached to the message the seat actually receives.
-      const addressed = readMention(text, mySeats);
-
-      // A name that is nobody. Refused rather than quietly answered by the host:
-      // the message was plainly meant for someone, and answering it here is the
-      // one outcome where nobody ever finds out it went to the wrong place.
-      if (addressed.kind === "unknown") {
-        patch(id, (s) => ({
-          ...s,
-          notices: [
-            ...s.notices,
-            `Nobody here is called "${addressed.tag}". In this chat: ${
-              mySeats.map((x) => `@${x.name}`).join(", ") || "nobody yet"
-            }, or @all.`,
-          ],
-        }));
-        return;
-      }
-
-      // Card 86 — `@all` puts THIS message to every seat in turn.
-      //
-      // Not the same as the "Ask the room" button, which puts your LAST message
-      // to everyone: that button has no words of its own, so inventing a
-      // question would put words in your mouth. This one has words — the ones
-      // after the tag.
-      if (addressed.kind === "all") {
-        if (mySeats.length === 0) {
-          patch(id, (s) => ({
-            ...s,
-            notices: [...s.notices, "Nobody else is in this chat yet, so @all has nobody to ask."],
-          }));
-          return;
-        }
-        patch(id, (s) => addUserTurn(s, text));
-        try {
-          await bridge.invoke("chat_round", {
-            key: keyFor(id),
-            order: mySeats.map((x) => x.id),
-            text: addressed.text,
-            cwd: targetProject.primary_path ?? "",
-            extraDirs: targetProject.paths ?? [],
-            access,
-            effort,
-          });
-        } catch (err) {
-          patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
-        }
-        return;
-      }
-
-      const seat =
-        addressed.kind === "seat" ? mySeats.find((s) => s.id === addressed.seatId) ?? null : null;
-      // What the agent is actually sent: the tag is a decision about routing,
-      // not part of the question, so a seat is asked what you asked rather than
-      // being told its own name first.
-      text = addressed.text;
       const turnId = userTurnId();
       patch(id, (s) =>
         addUserTurn(
@@ -2617,7 +2605,6 @@ export default function App() {
           text,
           attachments.map((a) => ({ path: a.path, name: a.name, isImage: !!a.isImage })),
           undefined,
-          seat ? { id: seat.id, name: seat.name } : undefined,
           turnId,
         ),
       );
@@ -2636,7 +2623,8 @@ export default function App() {
         // keeps it on purpose.
         const held = conversationsRef.current.find((c) => c.id === id);
         const startedAt = Date.now();
-        saveIndexEntry({
+        const activity: Conversation = rewriteConversation(held, {
+          ...(held ?? ({} as Conversation)),
           id,
           projectId: targetProject.id,
           // A chat is named after the FIRST thing asked in it, so an existing one
@@ -2644,13 +2632,36 @@ export default function App() {
           title: held?.title ?? shortTitle(text),
           latestResponse: held?.latestResponse,
           customTitle: held?.customTitle,
-          sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
+          sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId,
+          messages: chatsRef.current[id]?.messages ?? held?.messages ?? [],
           modelId: choice.id,
-          access,
+          permission: access,
           createdAt: held?.createdAt ?? startedAt,
           updatedAt: startedAt,
           pinned: held?.pinned ?? false,
           generation: held?.generation,
+        });
+        // A user send is meaningful activity and moves the row immediately.
+        // The later streaming transcript saves preserve this timestamp until
+        // the agent finishes the turn and touches it once more.
+        setConversations((current) => {
+          const next = [activity, ...current.filter((conversation) => conversation.id !== id)];
+          saveConversations(next);
+          return next;
+        });
+        saveIndexEntry({
+          id: activity.id,
+          projectId: activity.projectId,
+          title: activity.title,
+          latestResponse: activity.latestResponse,
+          customTitle: activity.customTitle,
+          sessionId: activity.sessionId ?? null,
+          modelId: activity.modelId ?? null,
+          access: activity.permission ?? null,
+          createdAt: activity.createdAt,
+          updatedAt: activity.updatedAt,
+          pinned: activity.pinned ?? false,
+          generation: activity.generation,
         });
 
         const fail = (err: unknown) =>
@@ -2660,39 +2671,6 @@ export default function App() {
             messages: s.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
               ? { ...m, delivery: "unknown", queueError: String((err as Error).message ?? err) } : m),
           }));
-
-        // Addressed to a SEAT. Its own process, started by its first message —
-        // the same two-call shape the host has always had, which is why this
-        // reads like the branch below it rather than like something new.
-        if (seat) {
-          try {
-            await bridge.invoke("chat_send", { key: keyFor(id), text, images, to: seat.id, turnId });
-          } catch (err) {
-            const said = String((err as Error).message ?? err);
-            if (!said.includes("not running")) {
-              fail(err);
-              return;
-            }
-            // It has never spoken, so there is nothing to write to yet.
-            try {
-              await bridge.invoke("chat_seat_start", {
-                key: keyFor(id),
-                seatId: seat.id,
-                cwd: targetProject.primary_path ?? "",
-                extraDirs: targetProject.paths ?? [],
-                env: targetProject.env ?? {},
-                access,
-                effort,
-                images,
-                prompt: text,
-                turnId,
-              });
-            } catch (second) {
-              fail(second);
-            }
-          }
-          return;
-        }
 
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
@@ -2784,7 +2762,19 @@ export default function App() {
     // above, for one value each, at the moment this runs. Listing them meant a
     // new `send` on every delta of every chat, which `MessageList` takes as
     // `onSetting` and which alone was enough to make memoising it do nothing.
-    [project, workspaces, choice, access, effort, lite, conversationId, patch, catchUpChat, syncQueue],
+    [
+      project,
+      workspaces,
+      ensureGeneralWorkspace,
+      choice,
+      access,
+      effort,
+      lite,
+      conversationId,
+      patch,
+      catchUpChat,
+      syncQueue,
+    ],
   );
 
   /** Stop the running turn. The session survives, ready for the next one. */
@@ -2855,7 +2845,7 @@ export default function App() {
       const turnId = userTurnId();
       // Show it in the transcript. It IS a turn — the agent answers it — and a
       // setting that changed with no trace is a setting you cannot trust.
-      patch(conversationId, (st) => addUserTurn(st, command, [], undefined, undefined, turnId));
+      patch(conversationId, (st) => addUserTurn(st, command, [], undefined, turnId));
       bridge
         .invoke("chat_send", { key: keyFor(conversationId), text: command, turnId })
         .catch(() => {});
@@ -2897,7 +2887,7 @@ export default function App() {
       const setStoredTarget = (model: ModelChoice, sessionId?: string) => {
         setConversations((current) => {
           const list = current.map((conversation) => conversation.id === id
-            ? { ...conversation, modelId: model.id, sessionId, updatedAt: Date.now() }
+            ? { ...conversation, modelId: model.id, sessionId }
             : conversation);
           saveConversations(list);
           return list;
@@ -3031,9 +3021,8 @@ export default function App() {
    *
    *  `chat_restart`, not `chat_stop`, and the difference is not cosmetic:
    *  stopping drops the standing permissions the person granted this piece of
-   *  work, and ends the host of a room WITHOUT its seats — leaving them running
-   *  against nobody, holding half a gigabyte each until the server goes. The
-   *  fallback is for the gap this repo's two-speed deploy opens: `web/dist` is
+   *  work. The fallback is for the gap this repo's two-speed deploy opens:
+   *  `web/dist` is
    *  read off disk, so this page can reach a browser before the binary that
    *  knows the command does. Stopping is worse on both counts and still better
    *  than a button that does nothing. */
@@ -3074,246 +3063,21 @@ export default function App() {
    *  permissions off part-way, and says so — so `restartForAccess` is still
    *  there for the ones that cannot. Nothing running is the easy case: the next
    *  message starts an agent on the new level anyway. */
-  // Card 66 — who is in this chat. Card 82 — and that is the whole question.
-  //
-  // There is no stored mode any more. A chat is a group when somebody else is
-  // sitting in it, so the seat list is both the roster and the answer to "is
-  // this a group" — one fact, in one place, which is what stops the two
-  // disagreeing after a reload or a restart.
-  const [seats, setSeats] = useState<Record<string, Seat[]>>({});
-  const mySeats = (conversationId && seats[conversationId]) || [];
-  const room = mySeats.length > 0;
-  // Card 84 — the number at the top. Null in an ordinary chat, which is what
-  // keeps this off every chat in the app.
-  const seatCount = roomCount(mySeats.length);
-  // Card 85 — there is no longer any "who the next message is for" STATE. It
-  // was a mode: pick a seat and every message went there until you remembered
-  // to change it back, and a removed seat left a target the backend no longer
-  // knew. The tag is read off each message instead, so there is nothing to
-  // leave switched on and nothing to go stale.
-
-  /** Ask the backend who is in this room.
-   *
-   *  Card 82 deleted the other half of this. It used to reconcile the browser's
-   *  stored mode against the backend's, because each could be ahead of the other
-   *  and both happened in practice. With the mode gone there is nothing to
-   *  reconcile: the seat list is the only answer, and it comes from here. */
-  const refreshSeats = useCallback(async (id: string) => {
-    try {
-      const view = (await bridge.invoke("chat_room", { key: keyFor(id) })) as RoomView;
-      setSeats((prev) => ({ ...prev, [id]: view.seats }));
-    } catch {
-      // A backend that cannot answer leaves the list alone rather than
-      // emptying it — an empty rail would read as "everyone left".
-    }
-  }, []);
-
-  // Who is in the chat now on screen.
-  //
-  // The seat list is the BACKEND's — nothing about a room is stored in this
-  // browser (card 82), so opening a chat means asking. Without this, a chat that
-  // already had seats in it would open looking like an ordinary one until
-  // something else happened to ask.
-  useEffect(() => {
-    if (!conversationId) return;
-    void refreshSeats(conversationId);
-  }, [conversationId, refreshSeats]);
-
-  const addSeat = useCallback(
-    async (want: { label: string; agent: "claude" | "codex"; kind?: "on_demand"; provider?: string; context?: "room_only" }) => {
-      if (!conversationId) return;
-      const id = conversationId;
-      try {
-        // Card 82 — nothing to open first. This call IS what makes the chat a
-        // room, and the backend creates the room around the seat.
-        await bridge.invoke("chat_add_agent", {
-          key: keyFor(id),
-          seat: {
-            name: want.label,
-            agent: want.agent,
-            kind: want.kind,
-            provider: want.provider,
-            context: want.context,
-          },
-        });
-      } catch (err) {
-        patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
-      }
-      void refreshSeats(id);
-    },
-    [conversationId, refreshSeats],
-  );
-
-  const removeSeat = useCallback(
-    async (seatId: string) => {
-      if (!conversationId) return;
-      const id = conversationId;
-      try {
-        await bridge.invoke("chat_remove_agent", { key: keyFor(id), seatId });
-      } catch {
-        // Nothing to say: a seat that could not be removed is still listed,
-        // which is the truth.
-      }
-      void refreshSeats(id);
-    },
-    [conversationId, refreshSeats],
-  );
-
-  // Card 68 — the round in flight, per conversation. The BACKEND runs it (a
-  // round takes minutes and one driven from here would die with the page), so
-  // this is only ever a picture of what it is doing.
-  const [rounds, setRounds] = useState<Record<string, RoundState | null>>({});
-  const myRound = (conversationId && rounds[conversationId]) || null;
-  const activeRounds = useMemo(() => new Set(
-    Object.entries(rounds).filter(([, round]) => round?.running).map(([id]) => id),
-  ), [rounds]);
-  const roomIds = useMemo(() => new Set(Object.keys(chats).filter((id) =>
-    !!seats[id]?.length || chats[id].messages.some((m) => !!m.speaker),
-  )), [chats, seats]);
   const interruptedIds = useInterruptedChats({
-    chats, running, activeRounds, rooms: roomIds, known: liveKnown && conn === "open",
+    chats, running, known: liveKnown && conn === "open",
   });
 
   /** The chat on screen says it is working, and nobody is working on it.
    *
-   *  The roster confirms the process is absent; it cannot tell us why.
-   *  A browser disconnect alone is not evidence of an interrupted process.
-   *
-   *  "Nobody" is the word that has to be read carefully: a room's work is done
-   *  by processes that are not the room's own — see `someoneWorking`. */
+   *  The roster confirms the process is absent; it cannot tell us why. A
+   *  browser disconnect alone is not evidence of an interrupted process. */
   const stalled = wasCutOff({
     busy: chat.busy,
-    live:
-      !!conversationId &&
-      someoneWorking({ id: conversationId, running, round: !!myRound?.running }),
+    live: !!conversationId && someoneWorking({ id: conversationId, running }),
     known: liveKnown && conn === "open",
   });
 
   const cutOff = !!conversationId && interruptedIds.has(conversationId);
-
-  const refreshRound = useCallback(async (id: string) => {
-    try {
-      const state = (await bridge.invoke("chat_round_state", {
-        key: keyFor(id),
-      })) as RoundState;
-      setRounds((prev) => ({ ...prev, [id]: state.running ? state : null }));
-    } catch {
-      // Leave the last picture alone rather than claiming nothing is running.
-    }
-  }, []);
-
-  const askRoom = useCallback(async () => {
-    if (!conversationId || !project) return;
-    const id = conversationId;
-    // What the room is asked: the last thing YOU said. A round is "put that to
-    // everyone", so inventing a different question would put words in your
-    // mouth — and there is nothing else in the conversation that is yours.
-    const mine = [...(chatsRef.current[id]?.messages ?? [])]
-      .reverse()
-      .find((m) => m.role === "user");
-    const text = mine?.blocks
-      .map((b) => ("text" in b ? b.text : ""))
-      .join(" ")
-      .trim();
-    if (!text) {
-      patch(id, (s) => ({
-        ...s,
-        notices: [...s.notices, "Say something first — a round puts YOUR last message to the room."],
-      }));
-      return;
-    }
-    try {
-      await bridge.invoke("chat_round", {
-        key: keyFor(id),
-        order: mySeats.map((s) => s.id),
-        text,
-        cwd: project.primary_path ?? "",
-        extraDirs: project.paths ?? [],
-        access,
-        effort,
-      });
-    } catch (err) {
-      patch(id, (s) => ({ ...s, notices: [...s.notices, String((err as Error).message ?? err)] }));
-    }
-    void refreshRound(id);
-    // `chats` is read through its ref, for the last thing you said, when the
-    // round is actually started.
-  }, [conversationId, project, mySeats, access, effort, patch, refreshRound]);
-
-  // Card 69 — whether a topic line has been drawn in this chat.
-  //
-  // Shown on the ROUND BAR, in the composer, rather than as a rule in the
-  // transcript: every control and every notice about the room lives in the
-  // composer, by the user's rule of 2026-08-23. The BACKEND is what actually
-  // refuses to show a seat anything older; this is only the acknowledgement.
-  const [topicDrawn, setTopicDrawn] = useState<Record<string, boolean>>({});
-
-  const newTopic = useCallback(async () => {
-    if (!conversationId) return;
-    const id = conversationId;
-    try {
-      await bridge.invoke("chat_new_topic", { key: keyFor(id) });
-    } catch {
-      // Not acknowledged if the backend did not take it — saying the seats have
-      // forgotten, when they have not, is worse than saying nothing.
-      return;
-    }
-    setTopicDrawn((prev) => ({ ...prev, [id]: true }));
-  }, [conversationId]);
-
-  const stopRound = useCallback(async () => {
-    if (!conversationId) return;
-    const id = conversationId;
-    try {
-      await bridge.invoke("chat_round_stop", { key: keyFor(id) });
-    } catch {
-      // Nothing to say: a round that could not be stopped is still shown
-      // running, which is the truth.
-    }
-    void refreshRound(id);
-  }, [conversationId, refreshRound]);
-
-  // A round says when it is over. Between those it is polled, because the
-  // seats speak on their own schedule and a bar that only moved at the end
-  // would look frozen for the whole discussion.
-  useEffect(
-    () =>
-      bridge.on<{ key: string }>("chat-round", (payload) => {
-        const id = payload && convOf(payload.key);
-        if (id) void refreshRound(id);
-      }),
-    [refreshRound],
-  );
-
-  useEffect(() => {
-    if (!conversationId || !myRound?.running) return;
-    const id = conversationId;
-    const tick = setInterval(() => void refreshRound(id), 2000);
-    return () => clearInterval(tick);
-  }, [conversationId, myRound?.running, refreshRound]);
-
-  // The host has been told what the other agents in its room said, and is
-  // answering it now. The BACKEND asked it — this is only the news, which is
-  // why nothing here sends anything: every open tab hears this, and a tab that
-  // acted on it would ask the host the same thing again.
-  //
-  // The turn goes on screen because a host that suddenly speaks with nothing
-  // above it reads as an agent talking to itself. It is drawn as one line
-  // rather than as its words — the brief quotes the answers already sitting
-  // above it — see lib/relay.
-  useEffect(
-    () =>
-      bridge.on<{ key: string; text: string }>("chat-followup", (payload) => {
-        const id = payload && convOf(payload.key);
-        if (!id || !payload.text) return;
-        // Started by the backend if it had to be, so this browser may never
-        // have heard the process come up. Without this the live mark stays off
-        // for a chat that is plainly working.
-        setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
-        patch(id, (st) => addUserTurn(st, payload.text));
-      }),
-    [patch],
-  );
 
   const changeAccess = useCallback(
     (p: AccessLevel) => {
@@ -3361,30 +3125,6 @@ export default function App() {
 
   const topbarActions = (
     <>
-      {/* A read-only room count. Membership is still managed only from the
-          composer, beside the conversation it changes. */}
-      {seatCount && (
-        <span className="topbar-room" title={seatCount.label} aria-label={seatCount.label}>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="9" cy="8" r="3.2" />
-            <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
-            <path d="M16 5.6a3.2 3.2 0 0 1 0 4.8M18.4 19a5.6 5.6 0 0 0-2.4-4.6" />
-          </svg>
-          <span className="topbar-action-label">People</span>
-          <RollingNumber value={seatCount.total} />
-        </span>
-      )}
-
       <RailButton
         count={chat.agents.length}
         open={!railShut && !previewVisible}
@@ -3614,7 +3354,7 @@ export default function App() {
               <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "Start new chat"}</h1>
               {!project && (
                 <>
-                  <p className="hero-sub">Begin with <code>@project-name</code>, then describe the task.</p>
+                  <p className="hero-sub">Describe the task, or use <code>@project-name</code> to choose explicitly.</p>
                   {newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>}
                 </>
               )}
@@ -3788,7 +3528,7 @@ export default function App() {
                 connected: conn === "open",
                 rosterKnown: liveKnown,
                 busy: chat.busy && (!stalled || cutOff),
-                live: someoneWorking({ id: conversationId, running, round: !!myRound?.running }),
+                live: someoneWorking({ id: conversationId, running }),
                 exited: stalled && !cutOff ? undefined : chat.exited,
                 checkpointSeq: catchUp.current.mark(keyFor(conversationId)) || undefined,
                 queuedCount: queuedMessageCount(chat),
@@ -3813,7 +3553,6 @@ export default function App() {
             putBack={(conversationId && reclaimed[conversationId]) || undefined}
             onPutBack={() => conversationId && tookBack(conversationId)}
             busy={chat.busy && !cutOff}
-            disabled={workspaces.length === 0}
             installed={installed}
             commands={providerCommands(choice.agent, (projectId && commands[projectId]?.[choice.agent]) || [])}
             onCommandOpen={loadCodexSkills}
@@ -3838,17 +3577,8 @@ export default function App() {
             onRestart={
               conversationId && running.has(conversationId) ? restartAgent : undefined
             }
-            room={room}
-            seats={mySeats}
             projects={workspaces}
             projectRequired={!project}
-            round={myRound}
-            onAsk={askRoom}
-            onStopRound={stopRound}
-            onNewTopic={newTopic}
-            topicDrawn={!!(conversationId && topicDrawn[conversationId])}
-            onAddSeat={addSeat}
-            onRemoveSeat={removeSeat}
             cwd={project?.primary_path ?? ""}
             /* The last turn's receipt. It had a row of its own under the box
                until now; it rides on the composer's own eyebrow instead. */

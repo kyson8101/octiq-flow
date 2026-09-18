@@ -41,25 +41,15 @@ pub struct Services {
     /// The fs watcher behind the live git counts and branch chips.
     pub git_watch: Arc<GitWatchState>,
     pub ptys: Arc<PtyManager>,
-    /// Rounds in flight (card 68). One per chat, at most.
-    pub rounds: Arc<crate::round::Rounds>,
 }
 
 impl Services {
     /// Load state from disk, as the app does at startup.
     pub fn load() -> Self {
-        // Card 83 — who was sitting in each chat when this last stopped. A seat
-        // has no process to restore (it is spawned when it is asked), so the
-        // roster is the whole of it. What does NOT come back is the discussion:
-        // `round::Rounds` is in memory and is written nowhere, so a restored
-        // seat's view of the room starts here.
         let question_path = crate::transcript::chats_dir()
             .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
             .join("questions.json");
         let chats = Arc::new(ChatManager::with_saved_questions(question_path));
-        if let Some(path) = crate::chat_room::rooms_path() {
-            crate::chat_room::load_rooms(&chats, &path);
-        }
         // A chat nobody has touched for a quarter of an hour is ended and
         // resumed on its next message. This is where it matters most: the
         // service runs for days, and every chat left open holds an agent and
@@ -71,7 +61,6 @@ impl Services {
             watch: Arc::new(FileWatchState::default()),
             git_watch: Arc::new(GitWatchState::default()),
             ptys: Arc::new(PtyManager::default()),
-            rounds: Arc::new(crate::round::Rounds::default()),
         }
     }
 }
@@ -224,22 +213,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "turnId")?,
             arg(&args, "recordUser")?,
         )),
-        // Card 67 — a seat's own process, started by its first message. The
-        // mirror of `chat_start`, and the same two-call shape the client
-        // already uses for the host.
-        "chat_seat_start" => unit(crate::agent_chat::chat_seat_start_user_impl(
-            svc.chats.clone(),
-            arg(&args, "key")?,
-            arg(&args, "seatId")?,
-            arg(&args, "cwd")?,
-            arg(&args, "prompt")?,
-            arg(&args, "access")?,
-            arg(&args, "extraDirs")?,
-            arg(&args, "env")?,
-            arg(&args, "effort")?,
-            arg(&args, "images")?,
-            arg(&args, "turnId")?,
-        )),
         // Take back a message the agent has not been given yet. Answers
         // `false` when it was already handed over, which the page needs: the
         // bubble stays, because an answer to it is on its way.
@@ -276,10 +249,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &svc.chats,
             arg(&args, "key")?,
         )),
-        // Replace only the host provider behind one user conversation. Unlike
-        // `chat_stop`, a model switch keeps standing permissions and room
-        // seats; unlike `chat_restart`, the old provider's start context must
-        // not be resumable while the browser prepares its handoff.
+        // Replace the provider behind one user conversation. Unlike
+        // `chat_stop`, a model switch keeps standing permissions; unlike
+        // `chat_restart`, the old provider's start context must not be
+        // resumable while the browser prepares its handoff.
         "chat_retarget" => unit(crate::agent_chat::chat_retarget_impl(
             &svc.chats,
             arg(&args, "key")?,
@@ -293,92 +266,6 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
         "chat_list" => to_value(crate::agent_chat::chat_list_impl(&svc.chats)),
         "chat_queue_state" => to_value(crate::agent_chat::chat_queue_state_impl(
-            &svc.chats,
-            &arg::<String>(&args, "key")?,
-        )),
-        // Card 68 — put one thing to every seat, in order, one at a time.
-        "chat_round" => unit(crate::round::start_round_impl(
-            svc.rounds.clone(),
-            svc.chats.clone(),
-            arg(&args, "key")?,
-            arg(&args, "order")?,
-            arg(&args, "text")?,
-            arg(&args, "cwd")?,
-            arg(&args, "access")?,
-            arg(&args, "extraDirs")?,
-            arg(&args, "effort")?,
-            // Card 69 — what the host chose to show them. Absent means the
-            // mechanical window.
-            arg(&args, "history")?,
-        )),
-        // Card 70 — the HOST agent's own two tools, reached through the MCP
-        // server it was handed at spawn.
-        "chat_seat_ask" => to_value(crate::round::ask_seat_impl(
-            svc.rounds.clone(),
-            svc.chats.clone(),
-            arg(&args, "key")?,
-            arg(&args, "seatId")?,
-            arg(&args, "prompt")?,
-            arg(&args, "cwd")?,
-        )),
-        "chat_new_topic" => {
-            svc.rounds.new_topic(&arg::<String>(&args, "key")?);
-            Ok(json!(null))
-        }
-        "chat_round_stop" => {
-            svc.rounds.raise_hand(&arg::<String>(&args, "key")?);
-            Ok(json!(null))
-        }
-        "chat_round_state" => Ok(json!(crate::round::state_impl(
-            &svc.rounds,
-            &arg::<String>(&args, "key")?
-        ))),
-        // Card 66 — the room.
-        // Card 82 removed `chat_set_room`: adding a seat is what makes a chat a
-        // room, so there is nothing left to switch.
-        "chat_add_agent" => {
-            let key: String = arg(&args, "key")?;
-            // Card 77 — a seat is shown the room from here on, never before.
-            let joined_at = svc.rounds.said_so_far(&key);
-            let added =
-                crate::chat_room::add_seat_at(&svc.chats, &key, arg(&args, "seat")?, joined_at);
-            // Card 83 — the roster has to survive this process.
-            if added.is_ok() {
-                crate::chat_room::remember_rooms(&svc.chats);
-            }
-            to_value(added)
-        }
-        "chat_remove_agent" => {
-            let key: String = arg(&args, "key")?;
-            unit(
-                crate::chat_room::remove_seat_impl(
-                    &svc.chats,
-                    &key,
-                    &arg::<String>(&args, "seatId")?,
-                )
-                .and_then(|ended| {
-                    crate::chat_room::end_seats(&svc.chats, ended);
-                    // Card 82 — the last one out takes the discussion too.
-                    if crate::chat_room::is_empty(&svc.chats, &key)? {
-                        crate::round::forget_room(&svc.rounds, &key);
-                    }
-                    crate::chat_room::remember_rooms(&svc.chats);
-                    Ok(())
-                }),
-            )
-        }
-        // A deleted chat gives up its room, everyone in it, and what they said.
-        "chat_forget_room" => {
-            let key: String = arg(&args, "key")?;
-            unit(
-                crate::chat_room::forget_room_impl(&svc.chats, &key).map(|ended| {
-                    crate::chat_room::end_seats(&svc.chats, ended);
-                    crate::round::forget_room(&svc.rounds, &key);
-                    crate::chat_room::remember_rooms(&svc.chats);
-                }),
-            )
-        }
-        "chat_room" => to_value(crate::chat_room::room_impl(
             &svc.chats,
             &arg::<String>(&args, "key")?,
         )),

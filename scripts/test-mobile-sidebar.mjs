@@ -135,7 +135,7 @@ try {
   await page.locator('.main').waitFor();
   assert.equal(await sidebar.isVisible(), false);
   assert.equal(await page.getByRole('heading', { name: 'Start new chat', exact: true }).isVisible(), true);
-  assert.match(await page.locator('textarea').getAttribute('placeholder'), /^@project-name/);
+  assert.match(await page.locator('textarea').getAttribute('placeholder'), /@project-name/);
   assert.equal(await page.locator('textarea').inputValue(), '');
 
   await page.setViewportSize({ width: 1280, height: 900 });

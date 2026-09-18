@@ -47,12 +47,11 @@ function currentTurn(chat: ChatState): { prompt?: Message; messages: Message[] }
     const message = chat.messages[i];
     if (message.role === "assistant" && !message.parent) followingReplies.add(message.speaker?.id ?? "");
     if (!isPrompt(message)) continue;
-    const seat = message.to?.id ?? "";
-    // Addressed room messages dispatch directly to that seat; they are not in
-    // the host's queued tail and must not keep showing an older host objective.
-    if (message.to || message.echo || message.takenUp || (!markers.has(seat) && followingReplies.has(seat))) { start = i; break; }
+    const target = message.to?.id ?? "";
+    // Historical targeted messages have their own acknowledgement trail.
+    if (message.to || message.echo || message.takenUp || (!markers.has(target) && followingReplies.has(target))) { start = i; break; }
     pending = i;
-    followingReplies.delete(seat);
+    followingReplies.delete(target);
   }
   if (start < 0) start = pending;
   if (start < 0) return { messages: [] };

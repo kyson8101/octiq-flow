@@ -132,12 +132,7 @@ struct ChatEvent {
 /// Claude's stream already contains a `user` event for each accepted prompt.
 /// Codex's command-line protocol does not, so the transcript needs this small
 /// canonical envelope in order to rebuild the conversation after a refresh.
-fn durable_user_event(
-    turn_id: &str,
-    text: &str,
-    images: &[String],
-    to: Option<&crate::chat_room::Seat>,
-) -> Value {
+fn durable_user_event(turn_id: &str, text: &str, images: &[String]) -> Value {
     let mut event = json!({
         "type": "user",
         "uuid": turn_id,
@@ -161,9 +156,6 @@ fn durable_user_event(
     if !attachments.is_empty() {
         event["octiq_attachments"] = Value::Array(attachments);
     }
-    if let Some(seat) = to {
-        event["octiq_to"] = json!({ "id": seat.id, "name": seat.name });
-    }
     event
 }
 
@@ -172,14 +164,8 @@ fn durable_user_event(
 /// This uses the same transcript-before-bus ordering as agent stdout. A page
 /// that reconnects therefore sees the prompt before the Codex events it caused,
 /// while the current page reconciles it with its optimistic bubble by `uuid`.
-fn record_durable_user_turn(
-    key: &str,
-    turn_id: &str,
-    text: &str,
-    images: &[String],
-    to: Option<&crate::chat_room::Seat>,
-) {
-    let event = durable_user_event(turn_id, text, images, to);
+fn record_durable_user_turn(key: &str, turn_id: &str, text: &str, images: &[String]) {
+    let event = durable_user_event(turn_id, text, images);
     let seq = crate::transcript::append(key, &event);
     crate::bus::emit(
         "chat-event",
@@ -387,18 +373,15 @@ fn idle_timeout() -> Option<Duration> {
     }
 }
 
-/// How an agent process was last started, so the backend can start it again.
+/// How an agent process was last started, so one-shot providers can resume it.
 ///
 /// Every one of these fields belongs to the client: the model came from the
 /// picker, the folders from the project, the level from the access control. The
 /// backend has never needed them, because the client has always been the thing
 /// that starts a chat.
 ///
-/// A room's host can be spoken to by the backend itself once the other agents
-/// have answered (`round::ask_host`), after its process may have gone idle.
-/// Codex seats need the same record for a different reason: each turn is a new
-/// `resume` process, so a quick follow-up waits for the prior one to exit and
-/// starts again with this context.
+/// Each Codex turn is a new `resume` process, so a quick follow-up waits for the
+/// prior one to exit and starts again with this context.
 ///
 /// Kept in memory only. A backend restart loses it, and an agent whose process
 /// has not been started since is simply not resumed — the words are all in the
@@ -410,18 +393,16 @@ pub(crate) struct StartContext {
     model: Option<String>,
     access: Option<Access>,
     extra_dirs: Option<Vec<String>>,
-    /// The project's environment, so a host this backend restarts itself runs
-    /// under the same one it was first started with.
+    /// The project's environment, kept across command-line turns.
     env: Option<std::collections::BTreeMap<String, String>>,
     effort: Option<String>,
     lite: Option<bool>,
     /// The agent's own id for this conversation, learned from its opening
-    /// event. Restarting without it would hand the agent an empty memory and
-    /// a brief about a discussion it had never heard of.
+    /// event. Restarting without it would hand the agent an empty memory.
     session_id: Option<String>,
 }
 
-/// Saved with the question, including the exact seat and provider memory.
+/// Saved with the question, including its exact process and provider memory.
 /// These settings stay in the private profile and never go to the browser.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct QuestionOrigin {
@@ -429,7 +410,6 @@ pub(crate) struct QuestionOrigin {
     pub session_key: String,
     pub launch_id: String,
     start: StartContext,
-    seat: Option<crate::chat_room::Seat>,
 }
 
 /// A message the person has sent that its agent has not been given yet.
@@ -461,17 +441,11 @@ struct QueuedTurn {
 pub struct ChatManager {
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
-    /// Only chats opened as rooms appear here. No entry means no room.
-    ///
-    /// Stored here because a seat that speaks needs a session and a round
-    /// needs both at once — everything ELSE about a room lives in `chat_room`.
-    pub(crate) rooms: Mutex<HashMap<String, crate::chat_room::Room>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
-    /// process key: a host and each resident seat resume independently.
+    /// process key, so each chat resumes independently.
     starts: Mutex<HashMap<String, StartContext>>,
     /// What each agent has been sent but not yet given — see `QueuedTurn`.
-    /// Keyed by process key, so a room's host and each of its seats queue
-    /// separately, exactly as they run separately.
+    /// Keyed by process key, so chats queue independently.
     queued_turns: Mutex<HashMap<String, VecDeque<QueuedTurn>>>,
     /// A one-shot process is being replaced. Sends still join its queue, and
     /// another browser must not start a competing process in this gap.
@@ -492,19 +466,9 @@ impl ChatManager {
         launch_id: Option<&str>,
     ) -> Result<QuestionOrigin, String> {
         let session_key = session_key.unwrap_or(chat_key);
-        let seat = if session_key == chat_key {
-            None
-        } else {
-            Some(
-                crate::chat_room::room_impl(self, chat_key)?
-                    .seats
-                    .into_iter()
-                    .find(|seat| {
-                        crate::chat_room::seat_session_key(chat_key, &seat.id) == session_key
-                    })
-                    .ok_or("The question's agent is no longer in this conversation")?,
-            )
-        };
+        if session_key != chat_key {
+            return Err("Questions from removed additional agents can no longer be resumed".into());
+        }
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let session = sessions
             .get(session_key)
@@ -524,7 +488,6 @@ impl ChatManager {
             session_key: session_key.into(),
             launch_id: session.launch_id.clone(),
             start,
-            seat,
         })
     }
 
@@ -610,69 +573,36 @@ impl ChatManager {
 
     /// Take one named message back out of the queue.
     ///
-    /// Addressed by the CHAT and the browser's own turn id rather than by
-    /// process key, because that is all the page sending it knows: a message
-    /// put to a seat is queued under the seat's key, and the bubble on screen
-    /// carries only the id it was given at send. So every queue this chat owns
-    /// — its host's and each seat's — is searched for that one entry.
-    ///
     /// `None` means it was not there to cancel: the queue is FIFO and the
     /// agent had already been handed it, which is a race nobody can win and
     /// the caller has to be told about rather than shown a message vanishing
     /// from under an answer to it.
     fn cancel_queued_turn(&self, chat_key: &str, turn_id: &str) -> Option<QueuedTurn> {
-        let seats = format!("{chat_key}-seat-");
         let mut turns = self.queued_turns.lock().ok()?;
-        let mut emptied = None;
-        let mut cancelled = None;
-        for (key, queue) in turns.iter_mut() {
-            if key != chat_key && !key.starts_with(&seats) {
-                continue;
-            }
-            let Some(at) = queue
-                .iter()
-                .position(|t| t.turn_id.as_deref() == Some(turn_id))
-            else {
-                continue;
-            };
-            cancelled = queue.remove(at);
-            if queue.is_empty() {
-                emptied = Some(key.clone());
-            }
-            break;
-        }
-        if let Some(key) = emptied {
-            turns.remove(&key);
+        let queue = turns.get_mut(chat_key)?;
+        let at = queue
+            .iter()
+            .position(|turn| turn.turn_id.as_deref() == Some(turn_id))?;
+        let cancelled = queue.remove(at);
+        if queue.is_empty() {
+            turns.remove(chat_key);
         }
         cancelled
     }
 
     /// Move one named message to the front of the queue it already belongs to.
     ///
-    /// The page names the conversation and the optimistic turn id, not the
-    /// process behind it. A room seat has its own process key, so this searches
-    /// the same family of queues as `cancel_queued_turn` and returns the exact
-    /// process that now needs to be interrupted.
     fn promote_queued_turn(&self, chat_key: &str, turn_id: &str) -> Option<String> {
-        let seats = format!("{chat_key}-seat-");
         let mut turns = self.queued_turns.lock().ok()?;
-        for (key, queue) in turns.iter_mut() {
-            if key != chat_key && !key.starts_with(&seats) {
-                continue;
-            }
-            let Some(at) = queue
-                .iter()
-                .position(|turn| turn.turn_id.as_deref() == Some(turn_id))
-            else {
-                continue;
-            };
-            if at > 0 {
-                let turn = queue.remove(at)?;
-                queue.push_front(turn);
-            }
-            return Some(key.clone());
+        let queue = turns.get_mut(chat_key)?;
+        let at = queue
+            .iter()
+            .position(|turn| turn.turn_id.as_deref() == Some(turn_id))?;
+        if at > 0 {
+            let turn = queue.remove(at)?;
+            queue.push_front(turn);
         }
-        None
+        Some(chat_key.to_string())
     }
 
     /// Which process queue holds one named user turn, without changing it.
@@ -681,27 +611,24 @@ impl ChatManager {
     /// promotes under those locks. If the answer changes between the two, the
     /// agent won the race and the action becomes an honest no-op.
     fn queued_turn_session_key(&self, chat_key: &str, turn_id: &str) -> Option<String> {
-        let seats = format!("{chat_key}-seat-");
         self.queued_turns
             .lock()
             .ok()?
-            .iter()
-            .find_map(|(key, queue)| {
-                ((key == chat_key || key.starts_with(&seats))
-                    && queue
-                        .iter()
-                        .any(|turn| turn.turn_id.as_deref() == Some(turn_id)))
-                .then(|| key.clone())
+            .get(chat_key)
+            .is_some_and(|queue| {
+                queue
+                    .iter()
+                    .any(|turn| turn.turn_id.as_deref() == Some(turn_id))
             })
+            .then(|| chat_key.to_string())
     }
 
     /// Ending a process deliberately is also the end of every turn waiting only
     /// for that process. Otherwise a later, unrelated resume could unexpectedly
     /// receive words the person meant to cancel.
     fn forget_queued_turns(&self, key: &str) {
-        let stream_key = key.split("-seat-").next().unwrap_or(key);
         for turn in self.take_all_queued_turns(key) {
-            record_delivery(stream_key, turn.turn_id.as_deref(), "failed");
+            record_delivery(key, turn.turn_id.as_deref(), "failed");
         }
     }
 
@@ -754,9 +681,8 @@ fn announce_cancelled(key: &str, turn: &QueuedTurn) {
 /// So the hook no longer decides — and neither, now, does this. `permission::ask`
 /// runs LAST, over the agent's own control channel, so every question that
 /// reaches it is one the agent's own rules already decided a person must answer;
-/// there is nothing left to pre-filter. What is kept here is the WRITE side: a
-/// seat must not overwrite the level its room is on, and that rule is worth
-/// holding on to for the reader that comes back.
+/// there is nothing left to pre-filter. The write side remains for diagnostics
+/// and tests.
 ///
 /// Entries are written by `chat_start` and `chat_set_access` and dropped by
 /// `chat_stop`. A chat that ends on its own leaves its entry behind on purpose:
@@ -770,38 +696,17 @@ fn with_access<T>(f: impl FnOnce(&mut HashMap<String, Access>) -> T) -> T {
     f(guard.get_or_insert_with(HashMap::new))
 }
 
-/// Remember the level the hook will answer at, unless a SEAT is asking.
-///
-/// The permission channel is keyed by the CONVERSATION — `OCTIQ_CHAT_KEY` has to
-/// name the chat, or `ask_user` would put its question in front of the wrong one
-/// — so a room's host and every seat in it share ONE entry.
-///
-/// That makes writing to it a HOST-only act. A seat that wrote its own level
-/// here would answer the host's permission questions at that level, and nothing
-/// on screen would say the picker no longer meant what it says. A seat inherits
-/// whatever the room is already on, which is the only reading that can be true
-/// for both of them at once.
-pub(crate) fn record_access_for(key: &str, access: Option<Access>, is_seat: bool) {
-    if is_seat {
-        return;
-    }
+/// Remember the level the hook will answer at.
+pub(crate) fn record_access_for(key: &str, access: Option<Access>) {
     with_access(|a| a.insert(key.to_string(), access.unwrap_or(Access::Read)));
 }
 
 /// What a chat may do at this moment, or None when no chat by that key is known.
 ///
-/// No production reader since asking moved to the agent's own control channel;
-/// the room tests read it to prove a seat leaves the host's level alone.
+/// No production reader since asking moved to the agent's own control channel.
 #[allow(dead_code)]
 pub fn access_now(key: &str) -> Option<Access> {
     with_access(|a| a.get(key).copied())
-}
-
-/// Pretend a chat by this key is running at this level. Tests only: the real
-/// recorders are `chat_start` and `chat_set_access`, and both want a process.
-#[cfg(test)]
-pub(crate) fn remember_access(key: &str, access: Access) {
-    with_access(|a| a.insert(key.to_string(), access));
 }
 
 /// Build one provider-owned command from the normalized chat request.
@@ -916,14 +821,7 @@ fn build_command_with_context(
 /// Start a chat session. `key` names it for every later call, exactly as a PTY
 /// id does. Starting a key that already runs is an error, not a silent replace —
 /// a second process on the same key would interleave two conversations.
-/// Which process this is, where its words go, and whose voice they are.
-///
-/// For the HOST the first two are the same string, which is why one `key` was
-/// enough until rooms existed. A SEAT's are not: it runs as its own process, so
-/// it needs its own entry in the sessions map — but what it SAYS belongs to the
-/// room's transcript, under the room's key, or the conversation would be split
-/// across as many records as it has voices and no reader could put it back
-/// together.
+/// Which process this is and where its words go.
 pub(crate) struct Voice {
     /// The sessions-map key. Identifies the PROCESS.
     pub session_key: String,
@@ -931,53 +829,15 @@ pub(crate) struct Voice {
     /// questions attach to, and `OCTIQ_CHAT_KEY` names. Identifies the
     /// CONVERSATION.
     pub stream_key: String,
-    /// Stamped onto every event this process produces. `None` is the host, and
-    /// a host's events are never touched at all.
-    pub seat: Option<crate::chat_room::Seat>,
 }
 
 impl Voice {
-    /// A chat's own agent: one key, no seat — the shape every chat had before
-    /// rooms.
     fn host(key: String) -> Self {
         Self {
             session_key: key.clone(),
             stream_key: key,
-            seat: None,
         }
     }
-
-    /// One seat in a room. Its own process, the room's transcript.
-    pub(crate) fn seat(room_key: &str, seat: crate::chat_room::Seat) -> Self {
-        Self {
-            session_key: crate::chat_room::seat_session_key(room_key, &seat.id),
-            stream_key: room_key.to_string(),
-            seat: Some(seat),
-        }
-    }
-}
-
-/// Start a chat.
-#[allow(clippy::too_many_arguments)]
-pub fn chat_start_impl(
-    manager: Arc<ChatManager>,
-    key: String,
-    cwd: String,
-    agent: ChatAgent,
-    model: Option<String>,
-    access: Option<Access>,
-    prompt: Option<String>,
-    resume: Option<String>,
-    extra_dirs: Option<Vec<String>>,
-    env: Option<std::collections::BTreeMap<String, String>>,
-    effort: Option<String>,
-    images: Option<Vec<String>>,
-    lite: Option<bool>,
-) -> Result<(), String> {
-    chat_start_with_user_turn(
-        manager, key, cwd, agent, model, access, prompt, None, resume, extra_dirs, env, effort,
-        images, lite, None,
-    )
 }
 
 /// Start a chat from a person-visible send action.
@@ -1094,52 +954,6 @@ fn model_handoff_prompt(history: &str, current: &str) -> String {
     )
 }
 
-/// Say something to a chat's own agent, starting it first if it is not up.
-///
-/// The two-step the client has always done for the host, moved down here so the
-/// BACKEND can do it too. Its one caller is `round::ask_host`: a room's host is
-/// told what the other agents said, and by then its process may be gone — the
-/// idle sweeper ends the host of a room whose seats are still answering.
-///
-/// A host that was never started in this process cannot be started by this:
-/// nothing here knows which model to pick or which folders to open, and
-/// guessing would start the wrong agent on the wrong project. It says so and
-/// nothing is sent, which loses only the follow-up — every word is already in
-/// the transcript.
-pub(crate) fn send_to_host(manager: Arc<ChatManager>, key: &str, text: &str) -> Result<(), String> {
-    match chat_send_impl(
-        manager.clone(),
-        key.to_string(),
-        text.to_string(),
-        None,
-        None,
-    ) {
-        Ok(()) => Ok(()),
-        // Swept while it had nothing to do, or ended with the last restart.
-        Err(why) if why.contains("no such chat") => {
-            let start = manager
-                .start_context(key)
-                .ok_or_else(|| format!("nothing here knows how to start '{key}'"))?;
-            chat_start_impl(
-                manager,
-                key.to_string(),
-                start.cwd,
-                start.agent,
-                start.model,
-                start.access,
-                Some(text.to_string()),
-                start.session_id,
-                start.extra_dirs,
-                start.env,
-                start.effort,
-                None,
-                start.lite,
-            )
-        }
-        Err(why) => Err(why),
-    }
-}
-
 fn cancel_question_work(manager: &ChatManager, key: &str) -> Result<(), String> {
     let records = manager.questions.outbox()?;
     manager.questions.cancel_chat(key)?;
@@ -1188,17 +1002,8 @@ fn resume_question(
     if start.agent != origin.start.agent || start.session_id != origin.start.session_id {
         return Err("This conversation now uses a different agent session. Your answers are saved; continue from them in the chat.".into());
     }
-    // Looking up the seat again refuses a removed or replaced seat; it never
-    // redirects a seat's answers into the host's context.
-    let target = crate::chat_room::target_impl(
-        &manager,
-        &origin.chat_key,
-        origin.seat.as_ref().map(|s| s.id.as_str()),
-    )?;
-    if let (crate::chat_room::Target::Seat(current), Some(saved)) = (&target, &origin.seat) {
-        if current.agent != saved.agent || current.kind != saved.kind {
-            return Err("The asking agent has changed. Your answers are saved; continue from them in the chat.".into());
-        }
+    if origin.session_key != origin.chat_key {
+        return Err("Answers for removed additional agents are saved, but cannot be delivered automatically. Continue from them in the chat.".into());
     }
     let text = record.continuation();
     match chat_send_with_user_turn(
@@ -1206,7 +1011,7 @@ fn resume_question(
         origin.chat_key.clone(),
         text.clone(),
         None,
-        origin.seat.as_ref().map(|s| s.id.clone()),
+        None,
         Some(record.turn_id()),
     ) {
         Ok(()) => return Ok(()),
@@ -1214,13 +1019,9 @@ fn resume_question(
         Err(why) => return Err(why),
     }
     manager.remember_start(&origin.session_key, start.clone());
-    let voice = match target {
-        crate::chat_room::Target::Host => Voice::host(origin.chat_key.clone()),
-        crate::chat_room::Target::Seat(seat) => Voice::seat(&origin.chat_key, seat),
-    };
     start_session(
         manager,
-        voice,
+        Voice::host(origin.chat_key.clone()),
         start.cwd,
         start.agent,
         start.model,
@@ -1363,21 +1164,15 @@ pub(crate) fn cancel_questions(manager: &ChatManager, ids: &[String]) -> Result<
 /// Start the next queued command-line turn after its preceding process exits.
 /// Its adapter owns the provider's resume syntax and has no persistent stdin
 /// channel (see `start_session`). `session_key` identifies the process to
-/// resume; `stream_key` keeps a seat's words in its room transcript.
+/// resume; `stream_key` is the transcript key for that chat.
 fn start_queued_command_turn(
     manager: Arc<ChatManager>,
     session_key: &str,
     stream_key: &str,
-    seat: Option<crate::chat_room::Seat>,
     turn: QueuedTurn,
 ) -> Result<(), String> {
-    let result = start_queued_command_turn_inner(
-        manager.clone(),
-        session_key,
-        stream_key,
-        seat,
-        turn.clone(),
-    );
+    let result =
+        start_queued_command_turn_inner(manager.clone(), session_key, stream_key, turn.clone());
     // Failure cleanup belongs to this handoff, before a new send can start.
     let _sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     if result.is_err() {
@@ -1396,7 +1191,6 @@ fn start_queued_command_turn_inner(
     manager: Arc<ChatManager>,
     session_key: &str,
     stream_key: &str,
-    seat: Option<crate::chat_room::Seat>,
     turn: QueuedTurn,
 ) -> Result<(), String> {
     let start = manager
@@ -1417,13 +1211,9 @@ fn start_queued_command_turn_inner(
         // why `start_session` below is told not to write it a second time.
         recorded: _,
     } = turn;
-    let voice = match seat {
-        Some(seat) => Voice::seat(stream_key, seat),
-        None => Voice::host(stream_key.to_string()),
-    };
     start_session(
         manager,
-        voice,
+        Voice::host(stream_key.to_string()),
         start.cwd,
         start.agent,
         start.model,
@@ -1441,12 +1231,7 @@ fn start_queued_command_turn_inner(
     )
 }
 
-/// Start one agent process — the host's, or a seat's.
-///
-/// Everything below reads `key` as the CONVERSATION: the transcript it appends
-/// to, the events it emits, the permission questions it raises, the value of
-/// `OCTIQ_CHAT_KEY`. Only the sessions map wants the other one, and it is named
-/// `session_key` at each of the three places it does.
+/// Start one agent process.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn start_session(
     manager: Arc<ChatManager>,
@@ -1474,12 +1259,7 @@ pub(crate) fn start_session(
     let Voice {
         session_key,
         stream_key: key,
-        seat,
     } = voice;
-    // Read before `seat` is moved into the reader thread below. The reaper
-    // needs its own copy to resume a queued Codex seat under the same voice.
-    let is_seat = seat.is_some();
-    let seat_for_reaper = seat.clone();
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
     // Keep creation and insertion atomic with other starts and sends.
@@ -1611,13 +1391,13 @@ pub(crate) fn start_session(
     sessions.insert(session_key.clone(), session.clone());
     // The level the hook will be answered with, from here until it changes.
     // Unset is the most cautious of the three, matching `OCTIQ_ACCESS` above.
-    record_access_for(&key, access, is_seat);
+    record_access_for(&key, access);
 
     // All providers share a durable prompt identity. Write it before the
     // reader can forward an acknowledgement or a following enqueue can land.
     if record_user_turn && has_prompt {
         if let Some(turn_id) = user_turn_id.as_deref() {
-            record_durable_user_turn(&key, turn_id, durable_prompt, &images, seat.as_ref());
+            record_durable_user_turn(&key, turn_id, durable_prompt, &images);
         }
     }
 
@@ -1647,20 +1427,13 @@ pub(crate) fn start_session(
         let session_key = session_key.clone();
         let stream_provider = provider;
         let asking = session.clone();
-        // Whose stdout this is. `None` is the host, and a host's events go
-        // through completely untouched — see `stamp_speaker`. A seat names
-        // itself on every event it produces, in the record as well as on the
-        // wire, so a reader coming back to the conversation still knows who
-        // said what.
-        let speaker = seat;
         // The runtime the answer will be waited on. Captured HERE, on the thread
         // that still has one: `chat_start` is called from an async handler, the
         // reader below is a plain thread, and `Handle::current()` panics there.
         // Absent only on the desktop build, which has no server runtime — see
         // `answer_permission`.
         let rt = tokio::runtime::Handle::try_current().ok();
-        // The reader is where a chat learns its own session id and where a
-        // seat's answer is handed on, and both of those want the manager.
+        // The reader is where a chat learns its own session id.
         let reading = manager.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -1755,8 +1528,7 @@ pub(crate) fn start_session(
                         // backend can RESUME this chat rather than start a
                         // blank one — see `StartContext`. Both agents announce
                         // it once, under different names, in their opening
-                        // event. A host always resumes its own memory; a seat
-                        // needs that record only when its provider is one-shot.
+                        // event. A resumed chat always uses its own memory.
                         if let Some(id) = observed.session_id {
                             reading.remember_session(&session_key, id);
                         }
@@ -1821,25 +1593,7 @@ pub(crate) fn start_session(
                             let said = observed.final_text.unwrap_or(&carried).to_string();
                             carried.clear();
                             crate::push::notify_chat(Some(&key), "done", &said);
-                            // A full stop is the only honest signal that an
-                            // agent has finished its turn. A round may be
-                            // waiting to hear exactly this; a seat that nobody
-                            // was waiting on hands the room's host something to
-                            // answer. Silent for every ordinary chat, which has
-                            // no seats and nobody listening.
-                            crate::round::turn_ended(
-                                reading.clone(),
-                                &key,
-                                speaker.as_ref(),
-                                &said,
-                            );
                         }
-                        // Who said this — BEFORE the record is written, so a
-                        // client that catches up later is told the same thing a
-                        // client watching live was told. `None` is the host,
-                        // and the host's events go through completely
-                        // untouched; that is what makes a chat with no seats
-                        // byte-for-byte the chat that shipped before card 66.
                         let mut event = event;
                         if let Ok(mut session) = asking.lock() {
                             acknowledge_user_turn(
@@ -1848,7 +1602,6 @@ pub(crate) fn start_session(
                                 &mut session.user_turn_id,
                             );
                         }
-                        crate::chat_room::stamp_speaker(&mut event, speaker.as_ref());
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.
@@ -1984,7 +1737,6 @@ pub(crate) fn start_session(
                         manager_for_exit.clone(),
                         &session_key_for_exit,
                         &key,
-                        seat_for_reaper,
                         turn,
                     ) {
                         Ok(()) => return,
@@ -2013,9 +1765,6 @@ pub(crate) fn start_session(
                     code,
                 },
             );
-            // And nothing may go on waiting for a turn it will never finish —
-            // see `round::session_gone`.
-            crate::round::session_gone(&session_key_for_exit);
         });
     }
 
@@ -2078,23 +1827,7 @@ fn write_user_message(
     result
 }
 
-/// Send the next user turn to a running chat, with any images attached to it.
-pub fn chat_send_impl(
-    manager: Arc<ChatManager>,
-    key: String,
-    text: String,
-    images: Option<Vec<String>>,
-    // Who this is for. `None` is the chat's own agent — every message of every
-    // chat that is not a room, and the default inside one.
-    to: Option<String>,
-) -> Result<(), String> {
-    chat_send_with_user_turn(manager, key, text, images, to, None)
-}
-
-/// The browser-facing counterpart of `chat_send_impl`.
-///
-/// Internal callers use the function above for agent-to-agent briefs. Only a
-/// person-visible send gets a canonical prompt envelope in the transcript.
+/// Send the next person-visible turn to a running chat.
 pub fn chat_send_user_impl(
     manager: Arc<ChatManager>,
     key: String,
@@ -2117,39 +1850,14 @@ fn chat_send_with_user_turn(
     key: String,
     text: String,
     images: Option<Vec<String>>,
-    // Who this is for. `None` is the chat's own agent — every message of every
-    // chat that is not a room, and the default inside one.
     to: Option<String>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
-    // WHO first, because an unknown seat must be refused before anything is
-    // written anywhere. Falling through to the host would put a message meant
-    // for one agent in front of a different one.
-    let target = crate::chat_room::target_impl(&manager, &key, to.as_deref())?;
-    let images = images.unwrap_or_default();
-    let target_seat = match &target {
-        crate::chat_room::Target::Host => None,
-        crate::chat_room::Target::Seat(seat) => Some(seat),
-    };
-    let session_key = match &target {
-        crate::chat_room::Target::Host => key.clone(),
-        crate::chat_room::Target::Seat(seat) => crate::chat_room::seat_session_key(&key, &seat.id),
-    };
-    // A seat with no process behind it never had a session to find. Card 71:
-    // it is an HTTP call, so the words go straight out and the answer is
-    // already back by the time this returns.
-    if let crate::chat_room::Target::Seat(seat) = &target {
-        if seat.kind == crate::chat_room::SeatKind::OnDemand {
-            // It has no stdout stream that could echo the prompt. Write before
-            // asking so a replay preserves the same user → answer order.
-            if let Some(turn_id) = user_turn_id.as_deref() {
-                record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
-            }
-            record_delivery(&key, user_turn_id.as_deref(), "dispatched");
-            crate::agent_api::ask(seat, &key, &text)?;
-            return Ok(());
-        }
+    if to.is_some() {
+        return Err("additional agents are no longer supported".into());
     }
+    let images = images.unwrap_or_default();
+    let session_key = key.clone();
     {
         // A command-line follow-up and its reaper share this lock order.
         // Holding the sessions entry until the turn reaches the queue means the
@@ -2174,32 +1882,20 @@ fn chat_send_with_user_turn(
                     },
                 )?;
                 if let Some(turn_id) = user_turn_id.as_deref() {
-                    record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+                    record_durable_user_turn(&key, turn_id, &text, &images);
                     record_delivery(&key, Some(turn_id), "queued");
                 }
                 return Ok(());
             }
-            // Two different failures, said differently on purpose. A seat is a
-            // RECORD until someone talks to it, so "it has not started yet" is
-            // an ordinary state the client answers by starting it — the same
-            // thing it already does for the host's own first message. "No such
-            // chat" is not recoverable and must not be mistaken for it.
-            return Err(match target {
-                crate::chat_room::Target::Seat(seat) => {
-                    format!("seat '{}' is not running", seat.name)
-                }
-                crate::chat_room::Target::Host => "no such chat".into(),
-            });
+            return Err("no such chat".into());
         };
 
         // Nothing goes to an agent that is not ready for it, and nothing goes
-        // round anything already waiting. Three reasons, one queue:
+        // around anything already waiting. Three reasons, one queue:
         //
         // A command-line provider's stdin is deliberately `null` — an open pipe
         // can make a one-shot command wait for more prompt text forever — so it
-        // is never ready, and every command-line process, including a resident
-        // Codex seat, has launch context saved under its process key to resume
-        // from. A persistent provider IS ready, but only between turns: write
+        // is never ready. A persistent provider IS ready, but only between turns: write
         // to it mid-answer and the message lands in the agent's own internal
         // queue, out of this backend's reach and past taking back. And a queue
         // with anything in it is reason enough on its own — see
@@ -2223,7 +1919,7 @@ fn chat_send_with_user_turn(
                     },
                 )?;
                 if let Some(turn_id) = user_turn_id.as_deref() {
-                    record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+                    record_durable_user_turn(&key, turn_id, &text, &images);
                     record_delivery(&key, Some(turn_id), "queued");
                 }
                 // A queued turn is still work the person is waiting for. This also
@@ -2233,7 +1929,7 @@ fn chat_send_with_user_turn(
                 return Ok(());
             }
             if let Some(turn_id) = user_turn_id.as_deref() {
-                record_durable_user_turn(&key, turn_id, &text, &images, target_seat);
+                record_durable_user_turn(&key, turn_id, &text, &images);
             }
             let result =
                 write_user_message_locked(&mut guard, &text, &images, user_turn_id.as_deref());
@@ -2310,9 +2006,9 @@ pub fn chat_dismiss_unsent_impl(
 /// Stop the current turn and make one selected queued message the next turn.
 ///
 /// This is deliberately addressed by user-turn id rather than by queue
-/// position. Several messages may be waiting, and a room may have several
-/// independent process queues; the bubble the person clicked is the only
-/// unambiguous target. Messages that were ahead of it remain queued behind it.
+/// position. Several messages may be waiting; the bubble the person clicked is
+/// the only unambiguous target. Messages that were ahead of it remain queued
+/// behind it.
 ///
 /// `false` means the agent already took the message before the click arrived.
 /// In that race there is nothing left to promote or interrupt, and the page can
@@ -2324,19 +2020,6 @@ pub fn chat_start_queued_impl(
 ) -> Result<bool, String> {
     let Some(session_key) = manager.queued_turn_session_key(&key, &turn_id) else {
         return Ok(false);
-    };
-
-    let seat = if session_key != key {
-        crate::chat_room::room_impl(manager, &key)?
-            .seats
-            .into_iter()
-            .find(|seat| crate::chat_room::seat_session_key(&key, &seat.id) == session_key)
-            .ok_or_else(|| {
-                "the queued message belongs to a seat that is no longer here".to_string()
-            })?
-            .into()
-    } else {
-        None
     };
 
     // Hold the session map and this process together across the promotion and
@@ -2378,167 +2061,10 @@ pub fn chat_start_queued_impl(
     drop(guard);
     drop(sessions);
 
-    if let Err(why) = start_queued_command_turn(manager.clone(), &session_key, &key, seat, next) {
+    if let Err(why) = start_queued_command_turn(manager.clone(), &session_key, &key, next) {
         return Err(format!("could not resume queued message: {why}"));
     }
     Ok(true)
-}
-
-/// Start ONE seat's process, with its first message.
-///
-/// The mirror of `chat_start_impl` for a seat, and deliberately the same shape:
-/// the client already knows "not running yet, so start it with the prompt;
-/// otherwise send", because that is how it has always talked to the host. A
-/// seat gets the same two calls rather than a cleverer one.
-///
-/// The context comes from the caller because the CLIENT is the thing that knows
-/// it — the project's folders, the access level, the effort. Keeping a copy on
-/// the room would be a second source of truth that could drift from the one the
-/// host was started with.
-#[allow(clippy::too_many_arguments)]
-pub fn chat_seat_start_impl(
-    manager: Arc<ChatManager>,
-    key: String,
-    seat_id: String,
-    cwd: String,
-    prompt: Option<String>,
-    access: Option<Access>,
-    extra_dirs: Option<Vec<String>>,
-    env: Option<std::collections::BTreeMap<String, String>>,
-    effort: Option<String>,
-    images: Option<Vec<String>>,
-) -> Result<(), String> {
-    chat_seat_start_with_user_turn(
-        manager, key, seat_id, cwd, prompt, access, extra_dirs, env, effort, images, None,
-    )
-}
-
-/// Start a seat from a person-visible send action.
-#[allow(clippy::too_many_arguments)]
-pub fn chat_seat_start_user_impl(
-    manager: Arc<ChatManager>,
-    key: String,
-    seat_id: String,
-    cwd: String,
-    prompt: Option<String>,
-    access: Option<Access>,
-    extra_dirs: Option<Vec<String>>,
-    env: Option<std::collections::BTreeMap<String, String>>,
-    effort: Option<String>,
-    images: Option<Vec<String>>,
-    turn_id: Option<String>,
-) -> Result<(), String> {
-    chat_seat_start_with_user_turn(
-        manager,
-        key,
-        seat_id,
-        cwd,
-        prompt,
-        access,
-        extra_dirs,
-        env,
-        effort,
-        images,
-        Some(fresh_turn_id(turn_id)),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn chat_seat_start_with_user_turn(
-    manager: Arc<ChatManager>,
-    key: String,
-    seat_id: String,
-    cwd: String,
-    prompt: Option<String>,
-    access: Option<Access>,
-    extra_dirs: Option<Vec<String>>,
-    env: Option<std::collections::BTreeMap<String, String>>,
-    effort: Option<String>,
-    images: Option<Vec<String>>,
-    user_turn_id: Option<String>,
-) -> Result<(), String> {
-    let crate::chat_room::Target::Seat(seat) =
-        crate::chat_room::target_impl(&manager, &key, Some(&seat_id))?
-    else {
-        return Err("that is the host, not a seat".into());
-    };
-    // Nothing to start. Refused rather than quietly doing nothing, or a caller
-    // would go on to wait for a turn that is never coming.
-    if seat.kind == crate::chat_room::SeatKind::OnDemand {
-        return Err(format!(
-            "'{}' has no process to start — it is asked directly",
-            seat.name
-        ));
-    }
-    let agent = seat.agent;
-    let model = seat.model.clone();
-    // Card 69 — WHERE this seat runs is the seat's own business, not the
-    // caller's. A `room_only` seat is put somewhere the project is not, and an
-    // agent merely TOLD to ignore a repository will read it the moment the
-    // question gets hard. Deciding it here means no call site can forget.
-    let (cwd, extra_dirs) =
-        crate::chat_room::seat_workspace(&seat, &key, &cwd, &extra_dirs.unwrap_or_default());
-    // A RoomOnly seat is deliberately put where the project is not — handing it
-    // the project's own environment would leak project context through a side
-    // channel a mere instruction to ignore the repo cannot close. A Project
-    // seat shares the project's folders already, so it gets the same
-    // environment the host would.
-    let env = if seat.context == crate::chat_room::ContextMode::Project {
-        env
-    } else {
-        None
-    };
-    // A folder it has never used will not exist yet, and `current_dir` on a
-    // missing path fails the spawn outright.
-    let _ = std::fs::create_dir_all(&cwd);
-    let extra_dirs = Some(extra_dirs);
-    let session_key = crate::chat_room::seat_session_key(&key, &seat.id);
-    // A resident command-line seat can be a one-shot provider. Its old process
-    // may have exited between messages, so retain the id it announced and
-    // resume it instead of starting a second opinion from an empty
-    // conversation. Stream-provider seats keep their existing fresh-start
-    // behavior when deliberately restarted.
-    let resume = if provider_for(agent).capabilities().input.accepts_stdin() {
-        None
-    } else {
-        manager
-            .start_context(&session_key)
-            .and_then(|start| start.session_id)
-    };
-    manager.remember_start(
-        &session_key,
-        StartContext {
-            cwd: cwd.clone(),
-            agent,
-            model: model.clone(),
-            access,
-            extra_dirs: extra_dirs.clone(),
-            env: env.clone(),
-            effort: effort.clone(),
-            lite: Some(true),
-            session_id: resume.clone(),
-        },
-    );
-    start_session(
-        manager,
-        Voice::seat(&key, seat),
-        cwd,
-        agent,
-        model,
-        access,
-        prompt,
-        resume,
-        extra_dirs,
-        env,
-        effort,
-        images,
-        // A seat is a second opinion, not a second copy of this machine's
-        // setup. It starts clean for the same reason `lite` exists.
-        Some(true),
-        user_turn_id,
-        true,
-        None,
-    )
 }
 
 /// Send the interrupt understood by a provider with a persistent stdin.
@@ -2587,7 +2113,6 @@ fn interrupt_session(
     manager: &Arc<ChatManager>,
     session_key: &str,
     stream_key: &str,
-    seat: Option<crate::chat_room::Seat>,
 ) -> Result<(), String> {
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -2623,7 +2148,7 @@ fn interrupt_session(
         drop(guard);
         drop(sessions);
         if let Some(next) = next {
-            start_queued_command_turn(manager.clone(), session_key, stream_key, seat, next)
+            start_queued_command_turn(manager.clone(), session_key, stream_key, next)
                 .map_err(|why| format!("could not resume queued message: {why}"))?;
         }
         return Ok(());
@@ -2640,7 +2165,7 @@ pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<()
         .lock()
         .map_err(|e| e.to_string())?;
     let cancelled = cancel_question_work(manager, &key);
-    interrupt_session(manager, &key, &key, None)?;
+    interrupt_session(manager, &key, &key)?;
     cancelled
 }
 
@@ -2804,8 +2329,8 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
 /// End only the host provider process so the same application conversation can
 /// continue on another model. The old native session cannot be resumed by the
 /// backend during the handoff; the next browser send supplies a fresh start
-/// context for the selected provider. Permissions, access, transcript, and any
-/// room seats belong to the user conversation and remain intact.
+/// context for the selected provider. Permissions, access, and the transcript
+/// belong to the user conversation and remain intact.
 pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
     end_process(manager, &key)?;
     manager
@@ -2824,35 +2349,12 @@ pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), Stri
 /// this there was no way to a fresh process but to leave the chat alone for the
 /// fifteen minutes the sweeper takes.
 ///
-/// `end_process`, NOT `chat_stop_impl`, and for both halves of what separates
-/// them. The standing permissions and the access level belong to the WORK, and
-/// the work is carrying straight on — re-asking about a command already allowed
-/// "always" would be a decision quietly taken back. And a room is ended as one
-/// thing, or its seats are left running against nobody, holding their memory
-/// until the server goes.
-///
-/// Unlike the sweeper this ends a seat that is still ANSWERING. The sweeper
-/// spares one because it is guessing at whether a quiet room is finished; there
-/// is no guess here. And a seat left behind would be the one thing the person
-/// pressed this to be rid of — a process still holding the old set of tools.
+/// `end_process`, NOT `chat_stop_impl`, because standing permissions and the
+/// access level belong to the work, and the work is carrying straight on.
 ///
 /// Answers how many processes went, which is 0 for a chat already stopped.
 pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, String> {
-    let mut ended = 0;
-    // The room's seats first, while the room can still be read.
-    let seats = crate::chat_room::room_impl(manager, &key)
-        .map(|room| room.seats)
-        .unwrap_or_default();
-    for seat in seats {
-        let seat_key = crate::chat_room::seat_session_key(&key, &seat.id);
-        if end_process(manager, &seat_key)? {
-            ended += 1;
-        }
-    }
-    if end_process(manager, &key)? {
-        ended += 1;
-    }
-    Ok(ended)
+    Ok(usize::from(end_process(manager, &key)?))
 }
 
 /// End one chat process while preserving its transcript and remembered settings.
@@ -2896,52 +2398,10 @@ fn still_keys(manager: &ChatManager, timeout: Duration) -> Vec<String> {
         .collect()
 }
 
-/// Is this session part-way through a turn right now?
-fn is_working(manager: &ChatManager, key: &str) -> bool {
-    let Ok(sessions) = manager.sessions.lock() else {
-        // Cannot tell, so assume it is working. Every wrong answer in this
-        // direction costs memory; the other one costs somebody's turn.
-        return true;
-    };
-    sessions
-        .get(key)
-        .map(|s| s.lock().map(|s| s.busy).unwrap_or(true))
-        .unwrap_or(false)
-}
-
-/// End every chat that has been sitting still too long, and everyone sitting
-/// in it.
-///
-/// A room is swept as ONE thing. Its seats are separate processes under their
-/// own keys, so ending the host alone would leave them running with nobody left
-/// to talk to them and nothing that would ever end them — the memory would come
-/// back in part, and the part that did not would need a restart. Seats lose
-/// nothing by it: a seat is handed the discussion it needs each time it is
-/// spoken to (`round::round_brief`), and the client already knows how to start
-/// one that has no process.
-///
-/// The exception is a seat that is ANSWERING. A round runs with nobody watching
-/// it and gives each seat up to twenty minutes, so an idle host with a seat
-/// still thinking is an ordinary sight rather than a stuck one — and the seat's
-/// answer reaches the room's transcript through its own reader whether the host
-/// is up or not. It keeps its process, and sweeps itself once it has been quiet
-/// as long as anyone else.
+/// End every chat that has been sitting still too long.
 fn sweep_still_chats(manager: &ChatManager, timeout: Duration) -> Vec<String> {
     let mut ended = Vec::new();
     for key in still_keys(manager, timeout) {
-        // The room's seats first, while the room can still be read.
-        let seats = crate::chat_room::room_impl(manager, &key)
-            .map(|room| room.seats)
-            .unwrap_or_default();
-        for seat in seats {
-            let seat_key = crate::chat_room::seat_session_key(&key, &seat.id);
-            if is_working(manager, &seat_key) {
-                continue;
-            }
-            if end_process(manager, &seat_key) == Ok(true) {
-                ended.push(seat_key);
-            }
-        }
         if end_process(manager, &key) == Ok(true) {
             ended.push(key);
         }
@@ -3205,19 +2665,16 @@ pub struct ChatQueueState {
 }
 
 pub fn chat_queue_state_impl(manager: &ChatManager, key: &str) -> Result<ChatQueueState, String> {
-    let seats = format!("{key}-seat-");
-    let belongs = |candidate: &str| candidate == key || candidate.starts_with(&seats);
     // Match the send/reaper lock order, so an enqueue cannot cross this read.
     let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
     let handoffs = manager.handoffs.lock().map_err(|e| e.to_string())?;
     let queues = manager.queued_turns.lock().map_err(|e| e.to_string())?;
     Ok(ChatQueueState {
-        live: sessions.keys().any(|candidate| belongs(candidate))
-            || handoffs.iter().any(|candidate| belongs(candidate)),
+        live: sessions.contains_key(key) || handoffs.contains(key),
         queued_turn_ids: queues
-            .iter()
-            .filter(|(candidate, _)| belongs(candidate))
-            .flat_map(|(_, turns)| turns.iter().filter_map(|turn| turn.turn_id.clone()))
+            .get(key)
+            .into_iter()
+            .flat_map(|turns| turns.iter().filter_map(|turn| turn.turn_id.clone()))
             .collect(),
     })
 }
@@ -3295,7 +2752,7 @@ mod tests {
             .unwrap();
         }
         let next = manager.take_queued_turn(&key).unwrap();
-        assert!(start_queued_command_turn(manager.clone(), &key, &key, None, next).is_err());
+        assert!(start_queued_command_turn(manager.clone(), &key, &key, next).is_err());
         let failed: Vec<_> = crate::transcript::since(&key, 0)
             .into_iter()
             .filter(|event| event.event["state"] == "failed")
@@ -3319,13 +2776,9 @@ mod tests {
     }
 
     #[test]
-    fn queue_state_reports_host_and_seat_queues_without_other_chats() {
+    fn queue_state_reports_only_the_requested_chat_queue() {
         let manager = ChatManager::default();
-        for (key, id) in [
-            ("chat-check", "host"),
-            ("chat-check-seat-one", "seat"),
-            ("chat-other", "other"),
-        ] {
+        for (key, id) in [("chat-check", "host"), ("chat-other", "other")] {
             manager
                 .queue_turn(
                     key,
@@ -3341,20 +2794,10 @@ mod tests {
         let mut snapshot = chat_queue_state_impl(&manager, "chat-check").unwrap();
         snapshot.queued_turn_ids.sort();
         assert!(!snapshot.live);
-        assert_eq!(snapshot.queued_turn_ids, ["host", "seat"]);
+        assert_eq!(snapshot.queued_turn_ids, ["host"]);
         let empty = chat_queue_state_impl(&ChatManager::default(), "chat-check").unwrap();
         assert!(!empty.live);
         assert!(empty.queued_turn_ids.is_empty());
-    }
-
-    #[test]
-    fn queue_state_recognizes_a_live_seat_even_without_a_host() {
-        let manager = Arc::new(ChatManager::default());
-        hold(&manager, "chat-check-seat-one", claude_session(true));
-        assert!(chat_queue_state_impl(&manager, "chat-check").unwrap().live);
-        assert!(!chat_queue_state_impl(&manager, "chat-other").unwrap().live);
-        end_process(&manager, "chat-check-seat-one").unwrap();
-        assert!(!chat_queue_state_impl(&manager, "chat-check").unwrap().live);
     }
 
     #[test]
@@ -3404,31 +2847,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_prompt_event_keeps_text_attachments_and_target() {
-        let seat = crate::chat_room::Seat {
-            id: "s1".into(),
-            name: "Second opinion".into(),
-            agent: ChatAgent::Codex,
-            model: None,
-            role: None,
-            context: Default::default(),
-            kind: Default::default(),
-            joined_at: 0,
-            provider: None,
-        };
-        let event = durable_user_event(
-            "user-1",
-            "look at this",
-            &["/tmp/screenshot.png".into()],
-            Some(&seat),
-        );
+    fn codex_prompt_event_keeps_text_and_attachments() {
+        let event = durable_user_event("user-1", "look at this", &["/tmp/screenshot.png".into()]);
 
         assert_eq!(event["type"], "user");
         assert_eq!(event["uuid"], "user-1");
         assert_eq!(event["octiq_user_turn"], true);
         assert_eq!(event["message"]["content"][0]["text"], "look at this");
         assert_eq!(event["octiq_attachments"][0]["path"], "/tmp/screenshot.png");
-        assert_eq!(event["octiq_to"]["id"], "s1");
     }
 
     #[test]
@@ -3539,12 +2965,7 @@ mod tests {
     }
 
     #[test]
-    fn the_host_is_given_the_room_tools_in_every_chat_not_only_a_room() {
-        // Card 70, and since card 82 there is nothing left to gate them on: a
-        // chat becomes a room by taking a seat, so the tool that adds the first
-        // one has to be offered in a chat that is not a room yet. The list a
-        // process is given is fixed when it SPAWNS, which is why this could
-        // never have been decided per-chat anyway.
+    fn removed_agent_tools_are_not_exposed_to_the_host() {
         let c = build_command_with_mcp(
             ChatAgent::Claude,
             None,
@@ -3559,14 +2980,13 @@ mod tests {
         );
 
         assert!(
-            c.contains("mcp__octiq__add_agent"),
-            "add_agent is not allowed: {c}"
+            !c.contains("mcp__octiq__add_agent"),
+            "add_agent remains: {c}"
         );
         assert!(
-            c.contains("mcp__octiq__ask_agent"),
-            "ask_agent is not allowed: {c}"
+            !c.contains("mcp__octiq__ask_agent"),
+            "ask_agent remains: {c}"
         );
-        // And the one that was always there still is.
         assert!(c.contains("mcp__octiq__ask_user"));
         assert!(c.contains("mcp__octiq__search_conversations"));
         assert!(c.contains("mcp__octiq__read_conversation"));
@@ -4120,12 +3540,10 @@ mod tests {
 
     #[test]
     fn codex_is_allowed_to_run_where_there_is_no_git_repo() {
-        // An outside seat is started in an empty scratch folder on purpose
-        // (`chat_room::seat_workspace`), and that folder is neither a git repo
-        // nor a trusted project. Codex 0.147 refuses to start there at all —
+        // A chat can be started in an empty scratch folder that is neither a
+        // git repo nor a trusted project. Codex 0.147 refuses to start there —
         // "Not inside a trusted directory and --skip-git-repo-check was not
-        // specified." — so the seat died before it read a word of the prompt
-        // and the room sat waiting on an answer that could never come.
+        // specified." — before it reads a word of the prompt.
         let first = build_command(
             ChatAgent::Codex,
             None,
@@ -4445,80 +3863,6 @@ mod tests {
             false,
         );
         assert!(!c.contains("-i "));
-    }
-
-    #[test]
-    fn a_codex_seat_queues_its_follow_up_by_its_own_process_key() {
-        // Codex has no stdin conversation. A seat still has to be able to
-        // receive a message sent before its previous one-shot process exits,
-        // without putting the next turn in the room host's queue.
-        let manager = Arc::new(ChatManager::default());
-        let seat = crate::chat_room::add_seat_impl(
-            &manager,
-            "chat-a",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .expect("a resident Codex seat");
-        let session_key = crate::chat_room::seat_session_key("chat-a", &seat.id);
-        manager.remember_start(
-            &session_key,
-            StartContext {
-                cwd: "/tmp".into(),
-                agent: ChatAgent::Codex,
-                model: None,
-                access: Some(Access::Read),
-                extra_dirs: None,
-                env: None,
-                effort: None,
-                lite: Some(true),
-                session_id: Some("01a0142d-552d-7a93-9152-47530c33e501".into()),
-            },
-        );
-        let child = Command::new("sleep")
-            .arg("30")
-            .stdin(Stdio::null())
-            .spawn()
-            .expect("a Codex stand-in");
-        manager.sessions.lock().unwrap().insert(
-            session_key.clone(),
-            Arc::new(Mutex::new(ChatSession {
-                launch_id: "test-launch".into(),
-                user_turn_id: None,
-                child,
-                stdin: None,
-                agent: ChatAgent::Codex,
-                busy: true,
-                last_active: Instant::now(),
-            })),
-        );
-
-        chat_send_impl(
-            manager.clone(),
-            "chat-a".into(),
-            "follow up".into(),
-            Some(vec!["/tmp/shot.png".into()]),
-            Some(seat.id),
-        )
-        .expect("a Codex seat queues instead of writing to absent stdin");
-
-        assert!(manager.take_queued_turn("chat-a").is_none());
-        assert_eq!(
-            manager.take_queued_turn(&session_key),
-            Some(QueuedTurn {
-                text: "follow up".into(),
-                images: vec!["/tmp/shot.png".into()],
-                turn_id: None,
-                recorded: false,
-            })
-        );
-        assert_eq!(
-            manager
-                .start_context(&session_key)
-                .and_then(|start| start.session_id),
-            Some("01a0142d-552d-7a93-9152-47530c33e501".into()),
-            "the reaper has the exact session it needs for codex exec resume"
-        );
-        end_process(&manager, &session_key).expect("end the stand-in");
     }
 
     #[test]
@@ -5026,101 +4370,6 @@ mod tests {
     }
 
     #[test]
-    fn a_seat_message_is_cancelled_by_the_chat_that_holds_the_seat() {
-        // The page sending the cancel knows the chat and the id on the bubble.
-        // It does not know the seat's process key, which is where the message
-        // is actually queued — so every queue the chat owns is searched.
-        let manager = Arc::new(ChatManager::default());
-        let seat = crate::chat_room::add_seat_impl(
-            &manager,
-            "chat-cancel-seat",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .expect("a resident Codex seat");
-        let session_key = crate::chat_room::seat_session_key("chat-cancel-seat", &seat.id);
-        let child = Command::new("sleep")
-            .arg("30")
-            .stdin(Stdio::null())
-            .spawn()
-            .expect("a Codex stand-in");
-        hold(
-            &manager,
-            &session_key,
-            Arc::new(Mutex::new(ChatSession {
-                launch_id: "test-launch".into(),
-                user_turn_id: None,
-                child,
-                stdin: None,
-                agent: ChatAgent::Codex,
-                busy: true,
-                last_active: Instant::now(),
-            })),
-        );
-
-        chat_send_user_impl(
-            manager.clone(),
-            "chat-cancel-seat".into(),
-            "to the seat".into(),
-            None,
-            Some(seat.id),
-            Some("user-1".into()),
-            None,
-        )
-        .expect("a queued message for a seat");
-
-        assert_eq!(
-            chat_cancel_queued_impl(&manager, "chat-cancel-seat".into(), "user-1".into()),
-            Ok(true)
-        );
-        assert!(manager.take_queued_turn(&session_key).is_none());
-
-        end_process(&manager, &session_key).expect("end the stand-in");
-        crate::transcript::forget("chat-cancel-seat");
-    }
-
-    #[test]
-    fn a_room_can_start_the_exact_message_waiting_for_one_of_its_seats() {
-        let manager = Arc::new(ChatManager::default());
-        let key = "chat-start-seat";
-        let seat = crate::chat_room::add_seat_impl(
-            &manager,
-            key,
-            crate::chat_room::NewSeat::for_test("Claude", ChatAgent::Claude),
-        )
-        .expect("a resident Claude seat");
-        let session_key = crate::chat_room::seat_session_key(key, &seat.id);
-        let session = claude_session(true);
-        hold(&manager, &session_key, session.clone());
-
-        chat_send_user_impl(
-            manager.clone(),
-            key.into(),
-            "take this now".into(),
-            None,
-            Some(seat.id),
-            Some("user-1".into()),
-            None,
-        )
-        .expect("a queued message for a seat");
-
-        assert_eq!(
-            chat_start_queued_impl(&manager, key.into(), "user-1".into()),
-            Ok(true)
-        );
-        assert!(
-            !session.lock().unwrap().busy,
-            "the seat's turn, not the absent host's, was interrupted"
-        );
-        assert_eq!(
-            manager.take_queued_turn(&session_key).map(|turn| turn.text),
-            Some("take this now".into())
-        );
-
-        end_process(&manager, &session_key).expect("end the stand-in");
-        crate::transcript::forget(key);
-    }
-
-    #[test]
     fn interrupting_codex_ends_its_one_shot_process_but_keeps_its_thread() {
         // Codex has no stdin control channel: stopping its current turn means
         // killing this one process. Its remembered thread is the context the
@@ -5383,93 +4632,12 @@ mod idle_tests {
     }
 
     #[test]
-    fn a_room_swept_takes_its_seats_with_it() {
-        // Seats are separate processes under their own keys, and nothing else
-        // in the app would ever end them once their host is gone: only
-        // DELETING the conversation does that. Ending the host alone would
-        // hand back a fraction of the memory and strand the rest until a
-        // restart.
+    fn retargeting_ends_the_agent_and_keeps_conversation_permissions() {
         let m = ChatManager::default();
-        let seat = crate::chat_room::add_seat_impl(
-            &m,
-            "chat-a",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .expect("a seat to sit down");
-        let seat_key = crate::chat_room::seat_session_key("chat-a", &seat.id);
-
-        put(
-            &m,
-            "chat-a",
-            still_session(false, Duration::from_secs(20 * 60)),
-        );
-        // The seat itself answered a while back and has been quiet since.
-        put(&m, &seat_key, still_session(false, Duration::from_secs(60)));
-
-        let ended = sweep_still_chats(&m, FIFTEEN);
-
-        assert!(ended.contains(&seat_key), "the seat went with its host");
-        assert!(ended.contains(&"chat-a".to_string()));
-        assert!(chat_list_impl(&m).unwrap().is_empty());
-        assert_eq!(
-            crate::chat_room::room_impl(&m, "chat-a")
-                .unwrap()
-                .seats
-                .len(),
-            1,
-            "and the ROSTER stays — the room is not being disbanded, only its \
-             processes ended"
-        );
-    }
-
-    #[test]
-    fn a_seat_still_answering_keeps_its_process_when_its_host_is_swept() {
-        // A round runs with nobody watching and gives each seat up to twenty
-        // minutes, so an idle host with a seat still thinking is an ordinary
-        // sight — and sweeping the room would kill the answer being written.
-        // The seat's own words reach the room's transcript whether the host is
-        // up or not, so it is simply left to finish.
-        let m = ChatManager::default();
-        let seat = crate::chat_room::add_seat_impl(
-            &m,
-            "chat-a",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .unwrap();
-        let seat_key = crate::chat_room::seat_session_key("chat-a", &seat.id);
-
-        put(
-            &m,
-            "chat-a",
-            still_session(false, Duration::from_secs(20 * 60)),
-        );
-        put(&m, &seat_key, still_session(true, Duration::from_secs(60)));
-
-        let ended = sweep_still_chats(&m, FIFTEEN);
-
-        assert_eq!(ended, vec!["chat-a".to_string()], "only the host went");
-        assert_eq!(
-            chat_list_impl(&m).unwrap(),
-            vec![seat_key],
-            "the seat is still there, writing its answer"
-        );
-    }
-
-    #[test]
-    fn retargeting_replaces_only_the_host_and_keeps_conversation_permissions() {
-        let m = ChatManager::default();
-        let seat = crate::chat_room::add_seat_impl(
-            &m,
-            "retarget-room",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .unwrap();
-        let seat_key = crate::chat_room::seat_session_key("retarget-room", &seat.id);
-        put(&m, "retarget-room", still_session(false, Duration::ZERO));
-        put(&m, &seat_key, still_session(false, Duration::ZERO));
-        with_access(|access| access.insert("retarget-room".into(), Access::Auto));
+        put(&m, "retarget-chat", still_session(false, Duration::ZERO));
+        with_access(|access| access.insert("retarget-chat".into(), Access::Auto));
         m.remember_start(
-            "retarget-room",
+            "retarget-chat",
             StartContext {
                 cwd: "/tmp".into(),
                 agent: ChatAgent::Claude,
@@ -5483,70 +4651,11 @@ mod idle_tests {
             },
         );
 
-        chat_retarget_impl(&m, "retarget-room".into()).unwrap();
+        chat_retarget_impl(&m, "retarget-chat".into()).unwrap();
 
-        assert_eq!(chat_list_impl(&m).unwrap(), vec![seat_key]);
-        assert!(m.start_context("retarget-room").is_none());
-        assert!(with_access(|access| access.contains_key("retarget-room")));
-    }
-
-    #[test]
-    fn a_restart_ends_the_room_as_one_thing() {
-        // The same reason the sweeper does it: a host ended alone leaves seats
-        // running against nobody, holding their memory until the server goes.
-        // Pressing a button labelled "restart agent" must not be the way to
-        // leak half a gigabyte.
-        let m = ChatManager::default();
-        let seat = crate::chat_room::add_seat_impl(
-            &m,
-            "restart-room",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .expect("a seat to sit down");
-        let seat_key = crate::chat_room::seat_session_key("restart-room", &seat.id);
-
-        put(&m, "restart-room", still_session(false, Duration::ZERO));
-        put(&m, &seat_key, still_session(false, Duration::ZERO));
-
-        assert_eq!(
-            chat_restart_impl(&m, "restart-room".into()),
-            Ok(2),
-            "the host and the one sitting with it"
-        );
         assert!(chat_list_impl(&m).unwrap().is_empty());
-        assert_eq!(
-            crate::chat_room::room_impl(&m, "restart-room")
-                .unwrap()
-                .seats
-                .len(),
-            1,
-            "and the ROSTER stays — the seat is coming back with everyone else"
-        );
-    }
-
-    #[test]
-    fn a_restart_ends_a_seat_the_sweeper_would_spare() {
-        // The sweeper leaves a seat mid-answer because it is GUESSING at
-        // whether a quiet room is finished. Nobody is guessing here, and a seat
-        // that lived through the restart would be the one thing it was pressed
-        // to be rid of: a process still holding the old set of tools.
-        let m = ChatManager::default();
-        let seat = crate::chat_room::add_seat_impl(
-            &m,
-            "restart-busy",
-            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
-        )
-        .unwrap();
-        let seat_key = crate::chat_room::seat_session_key("restart-busy", &seat.id);
-
-        put(&m, "restart-busy", still_session(false, Duration::ZERO));
-        put(&m, &seat_key, still_session(true, Duration::ZERO));
-
-        assert_eq!(chat_restart_impl(&m, "restart-busy".into()), Ok(2));
-        assert!(
-            chat_list_impl(&m).unwrap().is_empty(),
-            "the answering seat went too"
-        );
+        assert!(m.start_context("retarget-chat").is_none());
+        assert!(with_access(|access| access.contains_key("retarget-chat")));
     }
 
     #[test]
@@ -5648,9 +4757,8 @@ mod idle_tests {
 
     #[test]
     fn codexs_closing_words_have_to_be_kept_as_they_go_past() {
-        // `turn.completed` carries a usage block and NOTHING else. This is why
-        // a Codex seat in a round said its piece, was never heard, and was
-        // written down as "did not answer in time" twenty minutes later.
+        // `turn.completed` carries a usage block and NOTHING else, so the last
+        // spoken text must be retained before the boundary arrives.
         let spoke = json!({
             "type": "item.completed",
             "item": { "id": "item_4", "type": "agent_message", "text": "Hi! I am Codex." },
@@ -5739,18 +4847,6 @@ mod idle_tests {
                 .session_id,
             None
         );
-    }
-
-    #[test]
-    fn a_host_the_backend_never_started_cannot_be_started_by_it() {
-        // The honest limit of `send_to_host`. Nothing down here knows which
-        // model to pick or which folders to open, and guessing would start the
-        // wrong agent on the wrong project.
-        let manager = Arc::new(ChatManager::default());
-        let why = send_to_host(manager, "chat-never-seen", "what did they say?")
-            .expect_err("there is no chat and no record of one");
-
-        assert!(why.contains("chat-never-seen"), "{why}");
     }
 
     #[test]

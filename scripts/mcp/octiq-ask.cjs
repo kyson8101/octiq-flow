@@ -1028,122 +1028,6 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
-/** Ask OctiqFlow to do something to this chat's room, and wait for the answer.
- *
- *  Card 70. Every refusal the browser would get, the agent gets too — the seat
- *  cap, an unknown seat id, an unreachable service. Card 82 removed the one that
- *  used to matter most here ("this chat is not a room"): a chat is a room when
- *  somebody is in it, so adding the first seat is what opens one.
- *
- *  Long timeout, because `ask_agent` waits for a whole agent turn. */
-function roomCall(body) {
-  return new Promise((resolve) => {
-    let cfg;
-    try {
-      cfg = serverConfig();
-    } catch {
-      return resolve({ error: "OctiqFlow is not reachable." });
-    }
-    const payload = JSON.stringify({ chatKey: CHAT_KEY, ...body });
-    const req = http.request(
-      {
-        host: "127.0.0.1",
-        port: cfg.port,
-        path: `/hook/room?token=${encodeURIComponent(cfg.token)}`,
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "content-length": Buffer.byteLength(payload),
-        },
-      },
-      (res) => {
-        let out = "";
-        res.on("data", (d) => (out += d));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(out));
-          } catch {
-            resolve({ error: "OctiqFlow gave no answer." });
-          }
-        });
-      },
-    );
-    req.on("error", () => resolve({ error: "OctiqFlow is not reachable." }));
-    req.setTimeout(21 * 60 * 1000, () => {
-      req.destroy();
-      resolve({ error: "OctiqFlow did not answer in time." });
-    });
-    req.write(payload);
-    req.end();
-  });
-}
-
-const ADD_AGENT = {
-  name: "add_agent",
-  description:
-    "Add another agent to THIS conversation as a seat, so it can be asked things " +
-    "and its answers appear in the chat under its own name. Works in any chat: " +
-    "a seat is what makes a conversation a group, and there is nothing to turn " +
-    "on first.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      name: { type: "string", description: "What to call this seat on screen." },
-      agent: {
-        type: "string",
-        enum: ["claude", "codex"],
-        description: "Which agent to run.",
-      },
-      role: {
-        type: "string",
-        description: "What this seat is here to do, in one line. Shown to the person.",
-      },
-      context: {
-        type: "string",
-        enum: ["project", "room_only"],
-        description:
-          "What it may see. `project` sees the files this chat sees. `room_only` " +
-          "sees NOTHING but what is said to it — use that when you want an " +
-          "outside opinion, because a seat that can read the project ends up " +
-          "agreeing with you.",
-      },
-      kind: {
-        type: "string",
-        enum: ["resident", "on_demand"],
-        description:
-          "`resident` is a CLI agent on this machine with a process of its own. " +
-          "`on_demand` has no process at all — it is an HTTP call to an outside " +
-          "service, asked and answered and gone, and it remembers nothing " +
-          "between questions. Adding one ALWAYS asks the person first, because " +
-          "what is said in this room then leaves the machine.",
-      },
-      provider: {
-        type: "string",
-        description:
-          "Which outside service answers an `on_demand` seat — currently only " +
-          "`deepseek`. Ignored for a resident seat.",
-      },
-    },
-    required: ["name", "agent"],
-  },
-};
-
-const ASK_AGENT = {
-  name: "ask_agent",
-  description:
-    "Put something to ONE seat and wait for its answer, which comes back as the " +
-    "result of this call. You choose exactly what it is told — it does not see " +
-    "this conversation unless you put it in the prompt.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      seat: { type: "string", description: "The seat id returned by add_agent." },
-      prompt: { type: "string", description: "Exactly what to put to it." },
-    },
-    required: ["seat", "prompt"],
-  },
-};
-
 function reply(id, result) {
   if (id === undefined || id === null) return; // a notification wants no reply
   send({ jsonrpc: "2.0", id, result });
@@ -1165,13 +1049,9 @@ async function handle(msg) {
       // fails. Reading a supplied conversation reference is deliberately still
       // useful to a separately installed copy of this MCP, so it remains
       // available.
-      //
-      // The two room tools are offered in every chat. Since card 82 a chat
-      // becomes a room by taking a seat, so the tool that adds the first one
-      // has to work in a chat that is not a room yet. See card 70.
       return reply(msg.id, {
         tools: CHAT_KEY
-          ? [TOOL, PIN_TOOL, PREVIEW_IMAGE, PREVIEW_HTML, SEARCH_CONVERSATIONS, READ_CONVERSATION, CREATE_ARTIFACT, ADD_AGENT, ASK_AGENT]
+          ? [TOOL, PIN_TOOL, PREVIEW_IMAGE, PREVIEW_HTML, SEARCH_CONVERSATIONS, READ_CONVERSATION, CREATE_ARTIFACT]
           : [READ_CONVERSATION, CREATE_ARTIFACT],
       });
 
@@ -1225,72 +1105,6 @@ async function handle(msg) {
             isError: true,
           });
         }
-      }
-
-      if (msg.params?.name === "add_agent" || msg.params?.name === "ask_agent") {
-        const a = msg.params.arguments || {};
-
-        // An OUTSIDE seat is never added on the agent's say-so alone.
-        //
-        // A resident seat is another program on this machine. An on-demand one
-        // is a third party, and everything said in the room afterwards goes to
-        // it — including code somebody pasted in. That is the person's call to
-        // make, not ours, so it is put to them in their own words before
-        // anything is created.
-        if (msg.params.name === "add_agent" && a.kind === "on_demand") {
-          const service = a.provider || "an outside service";
-          const answer = await askOctiq([
-            {
-              question:
-                `Add ${a.name || service} to this chat? It runs on ${service}, so what is ` +
-                `said in this room from now on is sent there — including anything ` +
-                `quoted into the chat. It cannot open your files.`,
-              options: ["Add it", "No"],
-              recommended: 1,
-              multiple: false,
-            },
-          ]);
-          if (!/add it/i.test(String(answer || ""))) {
-            return reply(msg.id, {
-              content: [
-                {
-                  type: "text",
-                  text:
-                    `Not added — the person did not agree to send this room's ` +
-                    `words to ${service}. Do not ask again unless they bring it up.`,
-                },
-              ],
-            });
-          }
-        }
-
-        const out = await roomCall(
-          msg.params.name === "add_agent"
-            ? {
-                action: "add",
-                name: a.name,
-                agent: a.agent,
-                role: a.role,
-                context: a.context,
-                kind: a.kind,
-                provider: a.provider,
-              }
-            : {
-                action: "ask",
-                seat: a.seat,
-                prompt: a.prompt,
-                cwd: process.env.OCTIQ_CWD || process.cwd(),
-              },
-        );
-        // A refusal comes back as ordinary text, not as a protocol error: the
-        // agent has to be able to READ what went wrong and say so, and an
-        // error result reaches it as a broken tool instead of an answer.
-        const text = out.error
-          ? out.error
-          : typeof out.ok === "string"
-            ? out.ok
-            : JSON.stringify(out.ok);
-        return reply(msg.id, { content: [{ type: "text", text }] });
       }
 
       // Nothing to do but say yes: the panel draws the CALL, which is already

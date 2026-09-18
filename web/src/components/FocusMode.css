@@ -98,7 +98,6 @@
 
 .composer-focus .composer-hint,
 .composer-focus .think-live,
-.composer-focus:not(.focus-options-open) .room-strip,
 .composer-focus:not(.focus-options-open) .composer-row > :not(.composer-attach, .composer-gap, .focus-options-toggle, .focus-quick-response, .send) {
   display: none;
 }

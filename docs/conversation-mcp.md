@@ -41,8 +41,8 @@ read_conversation({ "id": "...", "before": 235 })
 defaults to 60,000. If a page is too large, the oldest entries in that page are
 dropped first and their entry number becomes the next `before` cursor.
 
-Ordinary reads include user and assistant prose, room speaker names, Codex
-agent messages, and compaction boundaries. Stream deltas, token counters, hook
+Ordinary reads include user and assistant prose, historical speaker names,
+Codex agent messages, and compaction boundaries. Stream deltas, token counters, hook
 chatter, and other lifecycle records are removed. A skill invocation is reduced
 to its skill name and arguments instead of returning the whole `SKILL.md`.
 

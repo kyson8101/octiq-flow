@@ -349,7 +349,6 @@ body {
 
 .topbar .mobile-actions-panel > .icon-btn,
 .topbar .mobile-actions-panel > .gitp-toggle,
-.topbar .mobile-actions-panel > .topbar-room,
 .topbar .mobile-actions-panel > .attention-inbox .attention-trigger {
   width: 100%;
   min-height: 40px;
@@ -371,10 +370,6 @@ body {
 .topbar .mobile-actions-panel > .attention-inbox .attention-trigger[aria-expanded="true"] {
   background: var(--bg-2);
   color: var(--fg-0);
-}
-
-.mobile-actions-panel > .topbar-room {
-  cursor: default;
 }
 
 .mobile-actions-panel > .attention-inbox {
@@ -3871,13 +3866,6 @@ body {
   color: var(--fg-3);
 }
 
-/* Who is in the chat, on a phone. One group, so it is never tall enough to
-   need the settings sheet's compact scale — and it must not inherit it either:
-   the seat rows here are the touch targets. */
-.room-sheet {
-  max-height: 70vh;
-}
-
 /* ---- Compact scale, and only in here ------------------------------------
    The controls are dropdowns on a desktop, where each opens alone and has
    room to breathe. The sheet is narrower and its rows are thumb targets, so a
@@ -4340,24 +4328,6 @@ body {
 /* Auto: every bar lit, none of them a claim about how hard it will think. */
 .eff-bars.is-auto rect.is-lit {
   fill: var(--accent);
-}
-
-/* Card 90 — the room as a dropdown, where there is a row to hang one from.
-   Wider than the option lists beside it: a seat row carries a name, what the
-   seat is, and the button that drops it, and the warning under the add buttons
-   is a sentence rather than a hint. */
-.picker-menu.is-room {
-  min-width: 268px;
-  max-width: 330px;
-  padding: 6px;
-}
-
-/* The panel's own rows are drawn for a sheet, whose ground is `--bg-1`. That is
-   also this menu's ground, so in here they would be invisible seams; one step
-   up separates them from it. */
-.picker-menu.is-room .room-seat,
-.picker-menu.is-room .room-warn {
-  background: var(--bg-2);
 }
 
 .picker-menu.is-effort {
@@ -7124,18 +7094,15 @@ body.is-ultra .eff {
   color: var(--fg-0);
 }
 
-/* Card 85 — the @ menu shares the slash menu's list, because it is the same
-   gesture: a character opens a list, arrows and Tab choose. It carries an agent
-   mark and a word about the seat, which a command has no use for. */
+/* The @ project menu shares the slash menu's list: a character opens a list,
+   then arrows and Tab choose. */
 .slash-item {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
-/* What is worth knowing about a seat at the moment you pick it. `room-only` is
-   the important one: an outside seat's whole value is what it CANNOT see, and
-   picking it without knowing that is picking blind. */
+/* The readable project name beside its compact @ token. */
 .slash-note {
   margin-left: auto;
   padding: 1px 6px;
@@ -11828,76 +11795,6 @@ body.is-ultra .eff {
   color: var(--fg-3);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-/* ---- Card 84: how many agents are in this chat ------------------------
-   READ ONLY, unlike everything else on this bar. Who is in the room is changed
-   from the composer and only from there, so this is shaped as a reading rather
-   than as a control: no hover, no press, no caret. */
-.topbar-room {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: var(--bg-2);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg-2);
-  cursor: default;
-  user-select: none;
-}
-
-/* ---- The group's own row, above the box ------------------------------
-   These styles lived in `ChatModeTabs.css` until card 82 deleted that file
-   along with the mode tabs, and the strip was left with no CSS at all — no
-   width, no clipping, no animation. On a wide screen the controls then sat
-   against the left edge of the VIEWPORT while the box they belong to was
-   centred, which is how it was spotted.
-
-   It stays MOUNTED when this is not a room, collapsed to nothing. A CSS
-   transition cannot run on an element that has been removed, and the ask was
-   for it to slide down on the way out as well as up on the way in — so an
-   ordinary chat carries one empty, zero-height row here. */
-.room-strip {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 160ms ease;
-  /* Lined up with `.composer-box` and `.composer-hint`, which is what was
-     missing. The strip belongs to the box; sharing the box's own measurements
-     is the only thing that keeps it there at every width. */
-  max-width: var(--chat-column);
-  margin: 0 auto;
-  padding: 0 13px;
-}
-
-.room-strip.is-open {
-  grid-template-rows: 1fr;
-}
-
-/* The grid row is what animates; this is what gets clipped while it does. */
-.room-strip-inner {
-  overflow: hidden;
-  min-height: 0;
-}
-
-.room-strip.is-open .room-strip-inner {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  padding: 0 0 0.375rem;
-  /* Only once open. Overflow stays hidden while it moves, or the target list
-     would be clipped by the very row it opens out of. */
-  overflow: visible;
-}
-
-/* Somebody who has asked for less motion gets the state change without it. */
-@media (prefers-reduced-motion: reduce) {
-  .room-strip {
-    transition: none;
-  }
 }
 
 /* ── The board ─────────────────────────────────────────────────────────────

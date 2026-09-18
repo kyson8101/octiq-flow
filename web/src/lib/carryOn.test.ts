@@ -50,29 +50,16 @@ describe("someoneWorking", () => {
   const room = "room-1";
 
   it("is true while the chat's own process is up", () => {
-    expect(someoneWorking({ id: room, running: new Set([room]), round: false })).toBe(true);
+    expect(someoneWorking({ id: room, running: new Set([room]) })).toBe(true);
   });
 
-  it("is true while a SEAT of this room is answering", () => {
-    // A seat runs as its own process, under a key of its own. Nothing is
-    // running on the room's key while it writes — and the room is plainly
-    // being worked on.
+  it("is not fooled by another chat", () => {
     expect(
-      someoneWorking({ id: room, running: new Set([`${room}-seat-s1`]), round: false }),
-    ).toBe(true);
-  });
-
-  it("is true while a round is going, whichever seat is speaking", () => {
-    expect(someoneWorking({ id: room, running: new Set(), round: true })).toBe(true);
-  });
-
-  it("is not fooled by another room's seat", () => {
-    expect(
-      someoneWorking({ id: room, running: new Set(["room-2-seat-s1"]), round: false }),
+      someoneWorking({ id: room, running: new Set(["room-2"]) }),
     ).toBe(false);
   });
 
   it("is false when nothing at all is up", () => {
-    expect(someoneWorking({ id: room, running: new Set(), round: false })).toBe(false);
+    expect(someoneWorking({ id: room, running: new Set() })).toBe(false);
   });
 });

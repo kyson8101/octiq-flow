@@ -16,8 +16,8 @@ is not evidence that a message is still in the queue.
 **Send now** stops the current reply and makes the selected message the next
 turn. Other waiting messages retain their relative order. **Edit** removes only
 the selected queued message and restores its text and attachments to the
-composer without overwriting an existing draft. Seat routing is restored too.
-Queue actions are unavailable offline.
+composer without overwriting an existing draft. Queue actions are unavailable
+offline.
 
 The message text and its delivery controls use separate surfaces. Desktop and
 mobile share the same visible text buttons, with 44px minimum targets and

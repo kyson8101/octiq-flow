@@ -138,11 +138,11 @@ describe("a Codex chat of its own", () => {
   });
 
   it("reconciles the durable prompt with its optimistic bubble in either order", () => {
-    const sent = addUserTurn(emptyChat(), "do the thing", [], 1, undefined, "user-1");
+    const sent = addUserTurn(emptyChat(), "do the thing", [], 1, "user-1");
     expect(reduceChat(sent, durablePrompt).messages).toHaveLength(1);
 
     const eventFirst = reduceChat(emptyChat(), durablePrompt);
-    expect(addUserTurn(eventFirst, "do the thing", [], 1, undefined, "user-1").messages).toHaveLength(1);
+    expect(addUserTurn(eventFirst, "do the thing", [], 1, "user-1").messages).toHaveLength(1);
   });
 
   it("takes the sent message out of the queue when its turn starts", () => {
@@ -157,8 +157,8 @@ describe("a Codex chat of its own", () => {
   });
 
   it("claims queued messages in Codex's FIFO order, never newest-first", () => {
-    let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
-    queued = addUserTurn(queued, "later queued message", [], 2, undefined, "user-2");
+    let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, "user-1");
+    queued = addUserTurn(queued, "later queued message", [], 2, "user-2");
 
     // Older transcripts have an untagged Codex `turn.started`. The backend's
     // queue is FIFO, so its compatibility path must claim the oldest waiting
@@ -170,8 +170,8 @@ describe("a Codex chat of its own", () => {
   });
 
   it("uses the exact queued-turn id and leaves later prompts at the bottom", () => {
-    let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
-    queued = addUserTurn(queued, "later queued message", [], 2, undefined, "user-2");
+    let queued = addUserTurn(emptyChat(), "earlier queued message", [], 1, "user-1");
+    queued = addUserTurn(queued, "later queued message", [], 2, "user-2");
 
     const working = reduceChat(
       queued,
@@ -193,8 +193,8 @@ describe("a Codex chat of its own", () => {
   });
 
   it("keeps successive queued answers tied to their own prompts", () => {
-    let state = addUserTurn(emptyChat(), "earlier queued message", [], 1, undefined, "user-1");
-    state = addUserTurn(state, "later queued message", [], 2, undefined, "user-2");
+    let state = addUserTurn(emptyChat(), "earlier queued message", [], 1, "user-1");
+    state = addUserTurn(state, "later queued message", [], 2, "user-2");
     state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "user-1" }, 3);
     state = reduceChat(state, {
       type: "item.completed",
@@ -224,7 +224,7 @@ describe("a Codex chat of its own", () => {
   });
 
   it("does not add a reply label when the Codex prompt is already adjacent", () => {
-    const sent = addUserTurn(emptyChat(), "ordinary message", [], 1, undefined, "user-1");
+    const sent = addUserTurn(emptyChat(), "ordinary message", [], 1, "user-1");
     const working = reduceChat(
       sent,
       { type: "turn.started", octiq_user_turn_id: "user-1" },
@@ -239,7 +239,7 @@ describe("a Codex chat of its own", () => {
   });
 
   it("keeps a follow-up at the bottom until Codex takes it", () => {
-    let state = addUserTurn(emptyChat(), "update the instructions", [], 1, undefined, "user-1");
+    let state = addUserTurn(emptyChat(), "update the instructions", [], 1, "user-1");
     state = reduceChat(
       state,
       { type: "turn.started", octiq_user_turn_id: "user-1" },
@@ -253,7 +253,7 @@ describe("a Codex chat of its own", () => {
     // Sent while Codex is still working. Until its own `turn.started`, this is
     // a waiting message rather than part of the conversation. Later items from
     // the active turn stay above it.
-    state = addUserTurn(state, "updated?", [], 3, undefined, "user-2");
+    state = addUserTurn(state, "updated?", [], 3, "user-2");
     state = reduceChat(state, {
       type: "item.started",
       item: {
@@ -287,7 +287,7 @@ describe("a Codex chat of its own", () => {
   });
 
   it("starts a queued Codex reply below its prompt when the prior turn omitted its full stop", () => {
-    let state = addUserTurn(emptyChat(), "update the instructions", [], 1, undefined, "user-1");
+    let state = addUserTurn(emptyChat(), "update the instructions", [], 1, "user-1");
     state = reduceChat(
       state,
       { type: "turn.started", octiq_user_turn_id: "user-1" },
@@ -297,7 +297,7 @@ describe("a Codex chat of its own", () => {
       type: "item.completed",
       item: { id: "item_0", type: "agent_message", text: "I am checking the file." },
     });
-    state = addUserTurn(state, "updated?", [], 3, undefined, "user-2");
+    state = addUserTurn(state, "updated?", [], 3, "user-2");
 
     // This is the exact boundary in the captured conversation: the resumed
     // process starts the queued turn before the preceding process contributes

@@ -167,38 +167,6 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 process owns a profile at a time (a second one refuses to start rather than
 overwrite the first's project list).
 
-### The host answers its own room
-
-A room's seats are separate processes. What one says goes into the **room's**
-transcript and never down the host's stdin, so after `@dee look at this` the
-host has not read a word of the answer on screen above it. It is now told:
-
-- **Once the others have finished, and only when nobody else was waiting on
-  them**, `round.rs` builds a brief of what was said (`followup_brief`) and
-  sends it to the host itself (`agent_chat::send_to_host`).
-- **A round is followed up once, at the end** — never between seats, which
-  would break the ordering the round exists for. Not at all after a round the
-  person **stopped**: cutting in is a decision that the answer is no longer
-  wanted.
-- **The discriminator is `DRIVEN`**, a set of seat sessions a round or the
-  host's own `ask_agent` started. Nothing registers for `@dee`, and that
-  absence is what says the host has not heard it. Kept separate from
-  `LISTENING` because cutting in drops the listener while the seat keeps
-  thinking — a late answer must still be known as the round's. Cleared when the
-  turn ends, when nothing was sent, and when the process dies (`session_gone`).
-- **The backend sends it, not the client.** A browser is not required for a
-  room to work, and two open tabs acting on an announcement would ask the host
-  the same thing twice. So `ChatManager` remembers how each host was started
-  (`HostStart`, plus the session id read off its opening event) and can restart
-  a host the idle sweeper ended mid-round. A host this backend has never
-  started cannot be started by it — the follow-up is logged and dropped.
-- **`chat-followup` is a notice, not an instruction.** The client draws the
-  turn (`addUserTurn`) so a host that suddenly speaks is not talking to itself,
-  and draws it as **one line** rather than its words: the brief quotes the
-  answers already sitting above it. `web/src/lib/relay.ts` recognises a brief by
-  its first line, so a conversation rebuilt from the transcript reads like the
-  live one — a flag would be one page's memory, the transcript keeps only words.
-
 ### Both agents' full stops carry their closing words
 
 `turn_is_over` reads `result` (Claude) and `turn.completed` / `turn.failed`
@@ -206,8 +174,7 @@ host has not read a word of the answer on screen above it. It is now told:
 and nothing else — and what it said is in the last `item.completed` of type
 `agent_message` before it, so the reader keeps that line as it goes past
 (`codex_said`) and `closing_words` hands over whichever half applies. Without
-this a Codex seat in a round said its piece, was never heard, and was written
-down as "did not answer in time" twenty minutes later.
+this a Codex response could disappear at the turn boundary.
 
 ### The queue behind a running turn is ours, for both agents
 
@@ -231,8 +198,8 @@ bubble vanishing from above the answer to it. Taking one back is the ✕ and onl
 the ✕ — the one control that says WHICH message.
 
 The same bubble can also say **send this one now**. `chat_start_queued` finds
-that exact turn id across the host and seat queues, moves it to the front of the
-queue it already belongs to, and interrupts that process. The remaining turns
+that exact turn id in the chat queue, moves it to the front, and interrupts the
+process. The remaining turns
 stay queued behind it. A stale click answers `false` without interrupting
 anything when the agent already took the selected message.
 
@@ -249,8 +216,6 @@ what `chat_interrupt` is for. Two things hold it up:
   lock that ends the turn. Codex has no reader to do it — its process is being
   killed — so `chat_interrupt_impl` lifts the queue clear BEFORE `end_process`,
   which would otherwise discard it, and starts the first message itself.
-  Ordinary Stop targets the host; `chat_start_queued` can target a seat and
-  preserves its separate process and transcript identities through `Voice::seat`.
 - **A send may not go round a queue that has anything in it**
   (`has_queued_turns`). The interrupt ends the turn immediately — the
   still-clock has to start somewhere — so between a Stop and the reader picking
@@ -285,11 +250,6 @@ on disk, the client's send path already starts a chat it has no process for with
   (`result` / `turn.completed` / `turn.failed`). An agent inside a 20-minute
   build, or parked on a permission card, says *nothing* — read silence and you
   kill the one turn that mattered.
-- **A room is swept as one thing.** Seats are separate processes under
-  `"{room}-seat-{id}"`, and `chat_stop` only ever ends the key it is given, so
-  ending a host alone strands its seats until a restart — nothing else reaps
-  them but deleting the conversation. A seat that is still **answering** is the
-  exception: it keeps its process and sweeps itself later.
 - Why it is worth having: a chat costs ~480 MB — the agent plus its own copy of
   every MCP server it starts. Nine left open overnight held 4.3 GB.
 

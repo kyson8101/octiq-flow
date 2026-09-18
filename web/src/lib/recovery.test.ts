@@ -19,11 +19,9 @@ describe("recovery evidence", () => {
     expect(deriveRecovery({ ...missing, busy: false, exited: { code: 0 } }).kind).toBe("hidden");
     expect(deriveRecovery({ ...missing, busy: false, exited: { code: null } }).kind).toBe("exited");
   });
-  it("does not resurrect a stopped turn while a new worker or room seat is alive", () => {
-    const live = someoneWorking({ id: "room", running: new Set(["room-seat-one"]), round: false });
+  it("does not resurrect a stopped turn while its worker is alive", () => {
+    const live = someoneWorking({ id: "room", running: new Set(["room"]) });
     expect(deriveRecovery({ ...missing, live, exited: { code: 1 } }).canContinue).toBe(false);
-    const round = someoneWorking({ id: "room", running: new Set(), round: true });
-    expect(deriveRecovery({ ...missing, live: round }).kind).toBe("hidden");
   });
   it("asks to inspect previous actions without inventing a restart or intact history", () => {
     expect(CARRY_ON).toContain("Check what is already done");
@@ -65,7 +63,7 @@ describe("current queued messages", () => {
 });
 
 describe("messages left behind after queue loss", () => {
-  const pending = () => ({ ...addUserTurn(emptyChat(), "status?", [], 1, undefined, "old-status"), busy: false });
+  const pending = () => ({ ...addUserTurn(emptyChat(), "status?", [], 1, "old-status"), busy: false });
   const gone = { live: false, queuedTurnIds: [] };
 
   it("keeps an unacknowledged message but stops claiming it is queued", () => {
@@ -92,7 +90,7 @@ describe("messages left behind after queue loss", () => {
 
   it("does not move the old message under new replies or claim it as a new prompt", () => {
     let state = reconcileUnsentMessages(pending(), gone);
-    state = addUserTurn(state, "new task", [], 2, undefined, "new-task");
+    state = addUserTurn(state, "new task", [], 2, "new-task");
     state = reduceChat(state, { type: "turn.started" });
     expect(state.messages.map(m => [m.turnId, !!m.takenUp])).toEqual([["old-status", false], ["new-task", true]]);
     state = reduceChat(state, { type: "item.completed", item: { id: "answer", type: "agent_message", text: "New reply" } });

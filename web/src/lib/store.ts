@@ -36,10 +36,12 @@ export type Conversation = {
    *  does not silently change either. */
   modelId?: string;
   permission?: string;
-  /** When the chat was STARTED. This is what the sidebar orders by, and it
-   *  never changes — ordering by `updatedAt` made the list re-sort under the
-   *  cursor as you typed, so the chat you were reading moved. */
+  /** When the chat was started. Kept separately from the meaningful activity
+   *  time below so creation history is never lost when the task list moves. */
   createdAt: number;
+  /** Latest meaningful activity: a user send, or a completed agent turn.
+   *  Streaming deltas do not change it, so auto-sort moves a row at most twice
+   *  per turn instead of on every token. */
   updatedAt: number;
   /** How far into the server's record of this chat these messages go.
    *
@@ -101,7 +103,8 @@ export function saveConversations(list: Conversation[]): void {
   // Bounded, dropping the LEAST RECENTLY USED first: a long transcript of tool
   // results can be large, and a quota error would otherwise lose the whole
   // store rather than one entry. This is eviction order only — what the sidebar
-  // shows is ordered by byTask, which never moves a row while work streams.
+  // shows is ordered by byTask, which uses meaningful activity rather than
+  // streaming deltas.
   const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
 
   // Each conversation is serialised ONCE, and what fits is joined back into an
@@ -214,18 +217,13 @@ export function chatName(
   return kept && kept !== UNNAMED ? kept : titleFrom(messages);
 }
 
-/** Group conversations under their project, pinned chats first and then newest
- *  chat first.
- *
- *  Ordered by when each chat STARTED, not when it was last used: a list that
- *  re-sorts while you are talking moves the row you are reading, and every
- *  other row with it. A chat appears at the top of its project when you start
- *  it and stays exactly there. A pin is the one move a row makes, and only
- *  because it was asked for. */
+/** Group conversations under their project, pinned chats first and then most
+ *  recently active. Kept for remaining project-scoped callers; the primary
+ *  navigation uses the global task list below. */
 export function byProject(list: Conversation[]): Map<string, Conversation[]> {
   const out = new Map<string, Conversation[]>();
   const sorted = [...list].sort(
-    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt - a.createdAt,
+    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt,
   );
   for (const c of sorted) {
     const bucket = out.get(c.projectId);
@@ -237,12 +235,12 @@ export function byProject(list: Conversation[]): Map<string, Conversation[]> {
 
 /** One task-oriented chat list, independent of project folders.
  *
- * The order keeps the same deliberate stability the old folders had: a new
- * task appears at the top and stays put while its answer streams. Pinning is
- * the only action that moves an existing row. */
+ * Pinned tasks stay above the rest. Each section auto-sorts by meaningful
+ * activity: sending moves the task immediately, and a completed agent response
+ * confirms it as most recent. Streaming tokens never churn the list. */
 export function byTask(list: Conversation[]): Conversation[] {
   return [...list].sort(
-    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt - a.createdAt,
+    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.updatedAt - a.updatedAt,
   );
 }
 

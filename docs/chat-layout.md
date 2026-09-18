@@ -6,12 +6,17 @@ chat switches the single workspace; browser Back and Forward return to
 previously visited chats. Switching chats preserves drafts and leaves
 server-owned agents running.
 
-`Start new chat` opens an unbound task. Its first message begins with a project
-mention such as `@octiq-flow`; that mention selects the workspace used for the
-agent's `cwd`, extra folders, and environment. The routing tag is removed from
-the task text sent to the agent. Starting a task creates a new durable chat
-instead of clearing the previous chat, so completed work remains available for
-reference.
+`Start new chat` opens an unbound task. A leading project mention such as
+`@octiq-flow` selects the workspace explicitly and is removed from the text sent
+to the agent. Without a mention, OctiqFlow looks for one unambiguous project
+name or folder clue in the task. Ambiguous or unrelated work goes to the
+persisted `General` workspace, whose default path is the person's home folder.
+Starting a task creates a new durable chat instead of clearing the previous
+chat, so completed work remains available for reference.
+
+The list always auto-sorts within its pinned and unpinned sections. A user send
+moves the task immediately; a completed agent turn updates it once more.
+Streaming response deltas never reorder the list under the pointer.
 
 Agents can retrieve that history through OctiqFlow's read-only MCP flow.
 `search_conversations` searches the current project by default and returns a

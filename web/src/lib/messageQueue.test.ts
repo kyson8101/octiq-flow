@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { addUserTurn, emptyChat, reduceChat, type ChatState } from "./chat";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./messageQueue";
 
-const queued = () => reduceChat(addUserTurn(emptyChat(), "next", [], 1, undefined, "turn"), {
+const queued = () => reduceChat(addUserTurn(emptyChat(), "next", [], 1, "turn"), {
   type: "octiq_user_turn_delivery", uuid: "turn", state: "queued",
 });
 const deferred = () => {
@@ -99,7 +99,7 @@ describe("provider-independent delivery", () => {
     expect(state.messages[0].delivery).toBe("dispatched");
   });
   it("claims the exact Claude echo when identical text is queued twice", () => {
-    let state = addUserTurn(queued(), "next", [], 2, undefined, "second");
+    let state = addUserTurn(queued(), "next", [], 2, "second");
     state = reduceChat(state, { type: "user", uuid: "echo-second", octiq_user_turn_id: "second", message: { content: [{ type: "text", text: "next" }] } });
     expect(state.messages[0].echo).toBeUndefined();
     expect(state.messages[1].echo).toBe("echo-second");
@@ -115,13 +115,13 @@ describe("provider-independent delivery", () => {
 
 
 describe("restoring a message", () => {
-  it("restores attachment paths and seat routing without repeating file instructions", () => {
+  it("restores attachment paths without repeating file instructions", () => {
     const state = queued();
     const message = { ...state.messages[0], to: { id: "seat", name: "Dee" },
       blocks: [{ kind: "text" as const, text: "Review this\n\nFiles to look at:\n- /tmp/spec.md" }],
       attachments: [{ path: "/tmp/spec.md", name: "spec.md", isImage: false }, { path: "/tmp/shot.png", name: "shot.png", isImage: true }],
     };
-    expect(reclaimedMessage(message)).toEqual({ text: "@Dee Review this", attachments: message.attachments });
+    expect(reclaimedMessage(message)).toEqual({ text: "Review this", attachments: message.attachments });
   });
   it("clears a checkpoint's obsolete action lock while keeping live operations locked", () => {
     const state = queued(); state.messages[0].queueAction = "start";
@@ -133,9 +133,9 @@ describe("restoring a message", () => {
 
 
 it("never reuses a remaining bubble's identity after editing an earlier queued message", () => {
-  let state = addUserTurn(queued(), "second", [], 2, undefined, "second");
+  let state = addUserTurn(queued(), "second", [], 2, "second");
   state = reduceChat(state, { type: "octiq_user_turn_cancelled", uuid: "turn" });
-  state = addUserTurn(state, "third", [], 3, undefined, "third");
+  state = addUserTurn(state, "third", [], 3, "third");
   expect(new Set(state.messages.map((m) => m.id)).size).toBe(2);
   expect(state.messages.map((m) => m.turnId)).toEqual(["second", "third"]);
 });
@@ -144,7 +144,7 @@ it("never reuses a remaining bubble's identity after editing an earlier queued m
 it("repairs abandoned dispatches when a later Codex turn starts, including replay", () => {
   let state = queued();
   state = reduceChat(state, { type: "octiq_user_turn_delivery", uuid: "turn", state: "dispatched" });
-  state = addUserTurn(state, "later", [], 2, undefined, "later");
+  state = addUserTurn(state, "later", [], 2, "later");
   state = reduceChat(state, { type: "turn.started", octiq_user_turn_id: "later" });
   expect(state.messages.find(m => m.turnId === "turn")).toMatchObject({ delivery: "unknown" });
   expect(state.messages.find(m => m.turnId === "later")).toMatchObject({ takenUp: true });

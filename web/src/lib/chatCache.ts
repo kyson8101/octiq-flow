@@ -1,7 +1,7 @@
 import type { ChatState } from "./chat";
 
 /** A reducer checkpoint, not just messages: an incremental replay also needs
- * pending tool calls, compaction state, and the room's state. */
+ * pending tool calls, compaction state, and replay metadata. */
 export type ChatCheckpoint = { id: string; seq: number; state: ChatState; updatedAt: number };
 const DATABASE = "octiq.chat-cache";
 const TABLE = "checkpoints";

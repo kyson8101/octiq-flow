@@ -16,9 +16,8 @@ const source = {
 const row = (kind: string, id: string): MemoryRow => ({ kind, id, mb: 100, procs: 1 });
 
 describe("splitChatKey", () => {
-  it("reads a host key and a seat key", () => {
-    expect(splitChatKey("chat:c1")).toEqual({ conversationId: "c1", seat: false });
-    expect(splitChatKey("chat:c1-seat-s2")).toEqual({ conversationId: "c1", seat: true });
+  it("reads a chat key", () => {
+    expect(splitChatKey("chat:c1")).toEqual({ conversationId: "c1" });
   });
 
   it("refuses to guess at a key it does not recognise", () => {
@@ -35,10 +34,6 @@ describe("nameRow", () => {
       name: "Fix the queue",
       where: "octiq-flow",
     });
-  });
-
-  it("marks a seat as part of the conversation it sits in", () => {
-    expect(nameRow(row("chat", "chat:c1-seat-s2"), source).name).toBe("Fix the queue · seat");
   });
 
   it("still shows a chat this browser has never held", () => {

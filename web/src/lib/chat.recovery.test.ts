@@ -14,9 +14,6 @@ describe("recovery exit evidence", () => {
       type: "stream_event", event: { type: "message_start", message: { id: "new-answer" } },
     }).exited).toBeUndefined();
   });
-  it("keeps the host exit when only a seat is addressed", () => {
-    expect(addUserTurn(crashed(), "Review", [], 0, { id: "seat", name: "Reviewer" }).exited?.code).toBe(1);
-  });
   it("preserves actual Codex command exit evidence through start and completion", () => {
     let chat = reduceChat(emptyChat(), {
       type: "item.started", item: { id: "check", type: "command_execution", command: "pnpm test", status: "in_progress" },

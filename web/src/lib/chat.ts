@@ -52,11 +52,8 @@ import { taskLabel, type BackgroundTask } from "./background";
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
  *  person typed.
  *
- *  Two of them now — a room's follow-up brief and a carry-on after the backend
- *  stopped — and both are recognised by their own words rather than by a flag,
- *  because a conversation rebuilt from the transcript has nothing else to go
- *  on. Kept in one place so both the live path and the rebuild agree; they are
- *  two different lines of code for the same message. */
+ *  Historical multi-agent follow-up briefs and current carry-on messages are
+ *  recognised by their own words because replay has no separate flag. */
 function asOneLine(text: string): string | undefined {
   return readRelay(text) ?? readCarryOn(text);
 }
@@ -202,60 +199,14 @@ export type AgentRun = {
  *  The path is enough: the picture is fetched back through `/file`. */
 export type Attached = { path: string; name: string; isImage: boolean };
 
-/** One voice in a room: the seat that wrote a message.
- *
- *  Ours, not the agent's. The backend stamps it into the event as
- *  `octiq_speaker` (see `chat_room::stamp_speaker`) — namespaced so it can
- *  never be mistaken for a field an agent stream starts sending one day, and
- *  renamed here, exactly as `parent_tool_use_id` is renamed to `parent`. */
+/** A speaker stamp from an older multi-agent transcript. Kept so existing
+ * conversations remain readable after that feature's removal. */
 export type Speaker = {
   id: string;
   name: string;
-  /** "claude" | "codex" — which logo to draw. Left as a string because the
-   *  backend's list of agents will grow (card 72 adds an API seat) and a union
-   *  here would have to be edited every time it does. */
+  /** Provider name used to select the historical speaker logo. */
   agent: string;
 };
-
-/** One seat in a room, as the backend describes it.
- *
- *  Mirrors `chat_room::Seat` on the Rust side. `context` is stored by card 66
- *  and USED by card 69 — a seat that cannot see the project is the only one
- *  reading as a newcomer would, and the screen has to say which is which. */
-export type Seat = {
-  id: string;
-  name: string;
-  agent: string;
-  model?: string;
-  /** What this seat was added FOR, in the user's own words. */
-  role?: string;
-  /** `"project"` sees the project as every chat here always has; `"room_only"`
-   *  sees nothing but what has been said in the room. */
-  context: "project" | "room_only";
-  /** Card 71 — whether there is a process behind this seat.
-   *
-   *  `resident` is a CLI agent with its own process, running until the room
-   *  closes. `on_demand` is an HTTP call: asked, answered, gone. Nothing of it
-   *  exists in between, which is what makes it cheap to keep around — and it
-   *  has no memory of its own, which is what it costs. Absent means resident,
-   *  which is every seat that existed before card 71. */
-  kind?: "resident" | "on_demand";
-  /** Card 72 — which service answers for an on-demand seat ("deepseek"). Absent
-   *  for a resident seat, which is answered by its own process.
-   *
-   *  Kept apart from `agent` on purpose: that one names a BINARY the backend may
-   *  spawn, and a service name does not belong in the same field. */
-  provider?: string;
-};
-
-/** Who is in a chat. Mirrors `chat_room::RoomView`.
- *
- *  Card 82 removed `open`. There used to be two questions — "is this a room" and
- *  "who is in it" — kept in two places that could disagree: the browser stored
- *  the mode on the conversation, the backend held rooms in memory and forgot
- *  them on restart. With no mode there is one question, and this is the whole
- *  answer to it: a chat is a group when this list is not empty. */
-export type RoomView = { seats: Seat[] };
 
 /** The user message a non-adjacent Codex answer belongs to.
  *
@@ -329,11 +280,7 @@ export type Message = {
    *  so it is visibly the system's resolution rather than a second line you
    *  said. Absent when nothing was rewritten. */
   ranSkill?: string;
-  /** Which SEAT this was addressed to, on a USER turn in a room.
-   *
-   *  The mirror of `speaker`: that one says who WROTE a message, this says who
-   *  one was sent TO. Undefined means the whole room, which is where every
-   *  message has always gone. */
+  /** Historical target metadata retained when replaying older transcripts. */
   to?: { id: string; name: string };
   /** The one line to draw instead of this turn's words, when the turn is one
    *  the CLIENT sent rather than something a person typed: a room's follow-up
@@ -345,14 +292,7 @@ export type Message = {
    *  it, and a carry-on is machinery aimed at the agent. Neither is anything
    *  the reader of the conversation needs to read. */
   relay?: string;
-  /** Which SEAT wrote this, when the chat is a room and it was not the host.
-   *
-   *  A different axis from `parent`, not a replacement for it: `parent` says
-   *  "a Task subagent of whoever is writing", `speaker` says "which agent in
-   *  this room". A seat can spawn its own subagent, and then both are set.
-   *
-   *  Undefined for the host, which is every message in every chat that is not a
-   *  room — so a conversation with no seats carries this field nowhere. */
+  /** Historical speaker metadata retained when replaying older transcripts. */
   speaker?: Speaker;
   /** True when `message_start` opened this message, i.e. its partials are
    *  streaming into it. Such a message ends on `message_stop` and on nothing
@@ -2377,9 +2317,6 @@ export function addUserTurn(
   text: string,
   attachments: Attached[] = [],
   now: number = Date.now(),
-  /** The seat this was addressed to (card 67). Absent for the whole room,
-   *  which is where every message has always gone. */
-  to?: { id: string; name: string },
   /** Stable id shared with OctiqFlow's durable Codex prompt event. */
   turnId?: string,
 ): ChatState {
@@ -2389,11 +2326,6 @@ export function addUserTurn(
   // in between.
   const line = text.trim();
   const asked = (MODEL_COMMAND.exec(line) ?? CONFIG_MODEL.exec(line))?.[1];
-  // Addressed to a SEAT, this opens the seat's turn and not this chat's. The
-  // host was not asked, owes nothing, and has no process running — so marking
-  // the chat busy here was the flag `lib/carryOn` reads as a cut-off turn, put
-  // up by `@dee look at this` and never taken down by anything.
-  const mine = !to;
   // The backend can publish a fast Codex event before this React update runs.
   // In that order the durable event already made the bubble; never append it a
   // second time just because this was the optimistic path.
@@ -2401,18 +2333,18 @@ export function addUserTurn(
   return {
     ...state,
     ...(asked ? { model: asked, modelAsked: true } : {}),
-    busy: mine ? true : state.busy,
+    busy: true,
     stopping: false,
     stoppedAt: undefined,
     // A second message sent MID-TURN joins the turn already running rather than
     // restarting its clock — the agent reads it as the next thing it is told,
     // and the time and tokens so far are still this turn's.
-    turnStartedAt: mine && !state.busy ? now : state.turnStartedAt,
-    turnTokens: mine && !state.busy ? 0 : state.turnTokens,
-    turnDraft: mine && !state.busy ? 0 : state.turnDraft,
+    turnStartedAt: !state.busy ? now : state.turnStartedAt,
+    turnTokens: !state.busy ? 0 : state.turnTokens,
+    turnDraft: !state.busy ? 0 : state.turnDraft,
     // The last failure belonged to the last turn; asking again clears it.
     failure: undefined,
-    exited: mine ? undefined : state.exited,
+    exited: undefined,
     messages: [
       ...state.messages,
       {
@@ -2421,7 +2353,6 @@ export function addUserTurn(
         blocks: [{ kind: "text", text }],
         streaming: false,
         ...(attachments.length ? { attachments } : {}),
-        ...(to ? { to } : {}),
         ...(turnId ? { turnId, delivery: "sending" as const } : {}),
         ...(asOneLine(text) ? { relay: asOneLine(text) } : {}),
       },
