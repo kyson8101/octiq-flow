@@ -288,7 +288,9 @@ body {
 @media (max-width: 700px) {
   .topbar {
     gap: 3px;
-    padding: 0 max(4px, env(safe-area-inset-right)) 0 max(4px, env(safe-area-inset-left));
+    /* Match the drawer's 8px outer gutter. With 4px here, the return arrow
+       sat four pixels to the right of the chat-list menu on phones. */
+    padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
   }
 
   .topbar .icon-btn {
