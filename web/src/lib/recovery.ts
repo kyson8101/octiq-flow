@@ -15,6 +15,22 @@ export type RecoveryEvidence = {
   queuedCount?: number;
 };
 
+/** A live provider event that proves a turn has started on this connection.
+ *
+ * Backend-initiated continuations (notably an answered saved question) do not
+ * pass through the browser's send path, so the browser cannot optimistically
+ * add their process to its running roster. The first live turn event is the
+ * authoritative replacement for that missing local knowledge. Keep this
+ * narrower than "any chat event": durable user and delivery envelopes can be
+ * emitted before a worker exists. */
+export function provesLiveTurn(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const event = raw as { type?: unknown; event?: unknown };
+  if (event.type === "turn.started") return true;
+  if (event.type !== "stream_event" || !event.event || typeof event.event !== "object") return false;
+  return (event.event as { type?: unknown }).type === "message_start";
+}
+
 export function deriveRecovery(evidence: RecoveryEvidence) {
   const { connected, rosterKnown, busy, live, exited } = evidence;
   const interrupted = busy || (exited !== undefined && exited.code !== 0);

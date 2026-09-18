@@ -145,7 +145,7 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { useChatRequests } from "./lib/useChatRequests";
 import { CarryOn } from "./components/CarryOn";
-import { queuedMessageCount, type ChatQueueState } from "./lib/recovery";
+import { provesLiveTurn, queuedMessageCount, type ChatQueueState } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
@@ -1273,6 +1273,15 @@ export default function App() {
       bridge.on<{ key: string; seq?: number; event: unknown }>("chat-event", (payload) => {
         const id = payload && convOf(payload.key);
         if (!id) return;
+        // A saved question resumes from the backend, not through `send`, so no
+        // browser gets the usual optimistic running mark. `turn.started` (or
+        // Claude's `message_start`) is direct proof that the worker exists.
+        // Record it before folding the event that sets `busy`, otherwise the
+        // recovery banner briefly and incorrectly offers Carry on while the
+        // resumed agent is already working.
+        if (provesLiveTurn(payload.event)) {
+          setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+        }
         // What is safe to fold RIGHT NOW. Nothing, while a catch-up for this
         // chat is in the air — that catch-up is about to rebuild it, and would
         // wipe anything folded on top in the meantime.

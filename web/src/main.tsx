@@ -2,6 +2,7 @@ import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { ConfirmProvider } from "./components/Confirm";
 import { OpenFileProvider } from "./components/OpenFile";
+import { WorkspaceLoader } from "./components/WorkspaceLoader";
 import "lxgw-wenkai-screen-webfont/lxgwwenkaiscreen.css";
 import "@fontsource-variable/inter";
 import "./design-system.css";
@@ -38,7 +39,7 @@ createRoot(document.getElementById("root")!).render(
       {/* Inside the confirm one: the file panel asks before throwing unsaved
           edits away. */}
       <OpenFileProvider>
-        <Suspense fallback={<p role="status">Loading workspace…</p>}>
+        <Suspense fallback={<WorkspaceLoader />}>
           <Portal />
         </Suspense>
       </OpenFileProvider>

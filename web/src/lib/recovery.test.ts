@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveRecovery, queuedMessageCount, reconcileUnsentMessages, type RecoveryEvidence } from "./recovery";
+import { deriveRecovery, provesLiveTurn, queuedMessageCount, reconcileUnsentMessages, type RecoveryEvidence } from "./recovery";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
 import { CARRY_ON, someoneWorking } from "./carryOn";
 
@@ -30,6 +30,19 @@ describe("recovery evidence", () => {
     expect(CARRY_ON).toContain("cause of the interruption is unknown");
     expect(CARRY_ON).not.toContain("backend restart");
     expect(CARRY_ON).not.toContain("Everything you had already done is in");
+  });
+});
+
+describe("live turn evidence", () => {
+  it("recognises backend-started Codex and Claude turns", () => {
+    expect(provesLiveTurn({ type: "turn.started" })).toBe(true);
+    expect(provesLiveTurn({ type: "stream_event", event: { type: "message_start" } })).toBe(true);
+  });
+
+  it("does not mistake durable queue envelopes or completed turns for a live worker", () => {
+    expect(provesLiveTurn({ type: "user", octiq_user_turn: true })).toBe(false);
+    expect(provesLiveTurn({ type: "octiq_user_turn_delivery", state: "dispatched" })).toBe(false);
+    expect(provesLiveTurn({ type: "turn.completed" })).toBe(false);
   });
 });
 

@@ -159,7 +159,12 @@ function ProgressLog({
       {earlier.length > 0 && (
         <details className="agent-progress-log">
           <summary>{countLabel}</summary>
-          <div className="agent-progress-items">
+          <div
+            className="agent-progress-items"
+            role="region"
+            aria-label="Progress history"
+            tabIndex={0}
+          >
             {earlier.map((update, index) => (
               <div className="agent-progress-item" key={`${index}:${update.slice(0, 24)}`}>
                 <Prose text={update} animate={false} />

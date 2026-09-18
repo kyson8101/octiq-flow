@@ -156,6 +156,22 @@ describe("Codex progress", () => {
     expect(html).toContain("2 progress updates");
     expect(html).toContain("Updated and verified.");
   });
+
+  it("makes an opened progress history its own keyboard-scrollable region", () => {
+    const message: Message = {
+      id: "a-progress",
+      role: "assistant",
+      blocks: [{ kind: "text", text: "Done." }],
+      progress: Array.from({ length: 20 }, (_, index) => `Progress update ${index + 1}.`),
+      streaming: false,
+    };
+    const html = renderToStaticMarkup(<MessageList messages={[message]} busy={false} />);
+
+    expect(html).toContain('class="agent-progress-items"');
+    expect(html).toContain('role="region"');
+    expect(html).toContain('aria-label="Progress history"');
+    expect(html).toContain('tabindex="0"');
+  });
 });
 
 describe("a Task card", () => {

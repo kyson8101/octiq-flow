@@ -1635,11 +1635,25 @@ body {
 .agent-progress-items {
   display: grid;
   gap: 9px;
+  /* A long-running turn can produce dozens of commentary updates. Opening the
+     history must not turn that secondary log into a page taller than the
+     conversation around it. Keep enough room to compare several updates and
+     let the log itself carry the rest. `dvh` follows the usable phone viewport
+     while the pixel ceiling keeps the box disciplined on a large display. */
+  max-height: min(42dvh, 360px);
   margin-top: 6px;
   padding: 10px 11px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--fg-2) 5%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-2) 10%, transparent);
+}
+
+.agent-progress-items:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .agent-progress-item + .agent-progress-item {
