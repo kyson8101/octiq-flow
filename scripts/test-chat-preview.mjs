@@ -26,10 +26,9 @@ const loadPreview = async (chat, cancelled) => {
 };
 function App() {
   const [live, setLive] = useState([message("a", "Can I preview the latest conversation?"), message("b", "Hover over a chat to see a quick peek of the latest messages, without leaving your current conversation.", "assistant"), message("c", "Great, keep it small and readable.")]);
-  const [expanded, setExpanded] = useState(new Set(["p"]));
   window.updateLive = () => setLive(v => [...v, message("d", "Streaming update just arrived.", "assistant")]);
   return React.createElement("div", { style: { display: "flex", height: "100vh" } },
-    React.createElement(Sidebar, { projects: [{id: "p", name: "OctiqFlow"}], shelved: [], onShowShelved() {}, conversations: new Map([["p", chats]]), currentProject: "p", currentConversation: "0", running: new Set(["0"]), busy: new Set(["0"]), expanded, onToggle: () => setExpanded(v => v.size ? new Set() : new Set(["p"])), onPickConversation: c => window.picked.push(c.id), onNewChat() {}, onDelete() {}, onPin() {}, onRename: (id, title) => window.renamed.push({id,title}), onSettings() {}, onNewProject() {}, onReorder() {}, getPreviewMessages: id => id === "0" ? live : undefined, loadPreview }),
+    React.createElement(Sidebar, { projects: [{id: "p", name: "OctiqFlow"}], shelved: [], onShowShelved() {}, conversations: chats, currentConversation: "0", running: new Set(["0"]), busy: new Set(["0"]), onPickConversation: c => window.picked.push(c.id), onNewChat() {}, onDelete() {}, onPin() {}, onRename: (id, title) => window.renamed.push({id,title}), onSettings() {}, onNewProject() {}, getPreviewMessages: id => id === "0" ? live : undefined, loadPreview }),
     React.createElement("main", { style: { padding: "60px", flex: 1 } }, "Current conversation stays open"));
 }
 createRoot(document.getElementById("root")).render(React.createElement(App));
@@ -59,7 +58,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__chat-preview-test`);
-  const row = name => page.getByRole("button", { name, exact: true });
+  const row = name => page.getByRole("button", { name: new RegExp(`^${name},`) });
   const preview = page.getByRole("tooltip");
   const live = row("Live conversation");
   await live.hover();
@@ -104,7 +103,8 @@ try {
   assert.equal(await live.getAttribute("aria-describedby"), await preview.getAttribute("id"));
   await page.keyboard.press("Escape");
   await preview.waitFor({ state: "hidden" });
-  await live.dblclick();
+  await page.getByRole("button", { name: "Actions for Live conversation", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Rename chat", exact: true }).click();
   await page.getByRole("textbox", { name: "Chat title" }).waitFor();
   assert.equal(await preview.count(), 0, "Rename hides preview");
   await page.keyboard.press("Escape");

@@ -55,6 +55,10 @@ describe("sameIndex", () => {
     expect(sameIndex([chat()], [chat({ title: "renamed on the phone" })])).toBe(false);
   });
 
+  it("is false when the task list receives a newer response", () => {
+    expect(sameIndex([chat()], [chat({ latestResponse: "Finished the task." })])).toBe(false);
+  });
+
   it("is false when a chat title becomes user-owned", () => {
     expect(sameIndex([chat()], [chat({ customTitle: true })])).toBe(false);
   });

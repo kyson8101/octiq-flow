@@ -10,6 +10,7 @@ const path = require("node:path");
 const {
   compactSkillPrompt,
   conversationDetail,
+  conversationSearch,
   conversationIdRef,
   conversationRef,
   profileRoot,
@@ -17,6 +18,8 @@ const {
 } = require("./octiq-ask.cjs");
 
 const ID = "c9c2ffa8-ea18-4073-ac86-eb0d700b18cc";
+const RELATED_ID = "96c5a95f-fadb-4241-ada4-5d46a7d449dd";
+const OTHER_ID = "db2289e9-748b-4215-bd95-6df7c9b84f9a";
 const URL = `https://optiqflow.app/#/p/pandahrms/c/${ID}`;
 
 async function main() {
@@ -42,13 +45,15 @@ async function main() {
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-mcp-conversation-"));
   const oldRoot = process.env.OCTIQ_ROOT;
+  const oldChatKey = process.env.OCTIQ_CHAT_KEY;
   process.env.OCTIQ_ROOT = root;
+  process.env.OCTIQ_CHAT_KEY = `chat:${ID}`;
   try {
     assert.strictEqual(profileRoot(), root);
     fs.mkdirSync(path.join(root, "chats"), { recursive: true });
     fs.writeFileSync(
       path.join(root, "workspaces.json"),
-      JSON.stringify({ workspaces: [{ id: "p1", name: "Pandahrms" }] }),
+      JSON.stringify({ workspaces: [{ id: "p1", name: "Pandahrms" }, { id: "p2", name: "OctiqFlow" }] }),
     );
     fs.writeFileSync(
       path.join(root, "chats", "index.json"),
@@ -61,6 +66,22 @@ async function main() {
             modelId: "claude:fable",
             createdAt: 1_700_000_000_000,
             updatedAt: 1_700_000_100_000,
+          },
+          {
+            id: RELATED_ID,
+            projectId: "p1",
+            title: "Refresh token migration",
+            latestResponse: "The rotation design is ready.",
+            createdAt: 1_700_000_200_000,
+            updatedAt: 1_700_000_300_000,
+          },
+          {
+            id: OTHER_ID,
+            projectId: "p2",
+            title: "Launch copy review",
+            latestResponse: "The launch wording is approved.",
+            createdAt: 1_700_000_400_000,
+            updatedAt: 1_700_000_500_000,
           },
         ],
       }),
@@ -98,6 +119,52 @@ async function main() {
     fs.writeFileSync(
       path.join(root, "chats", `chat_${ID}.jsonl`),
       `${events.map(JSON.stringify).join("\n")}\nnot-json\n`,
+    );
+    fs.writeFileSync(
+      path.join(root, "chats", `chat_${RELATED_ID}.jsonl`),
+      `${[
+        { type: "assistant", message: { content: [{ type: "text", text: "Rotate refresh tokens after every successful exchange." }] } },
+        { type: "user", message: { content: [{ type: "text", text: "登录页面的刷新策略" }] } },
+      ].map(JSON.stringify).join("\n")}\n`,
+    );
+    fs.writeFileSync(
+      path.join(root, "chats", `chat_${OTHER_ID}.jsonl`),
+      `${JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "Review the launch copy before release." }] } })}\n`,
+    );
+
+    const found = JSON.parse(await conversationSearch({ query: "refresh tokens", project: "pandahrms" }));
+    assert.strictEqual(found.scope, "Pandahrms");
+    assert.strictEqual(found.count, 1);
+    assert.strictEqual(found.matches[0].id, RELATED_ID);
+    assert.match(found.matches[0].matched.excerpt, /refresh tokens/i);
+    assert.match(found.next, /read_conversation/);
+    const searchCache = path.join(root, "chats", "search-index.json");
+    assert.ok(fs.existsSync(searchCache));
+    assert.ok(JSON.parse(fs.readFileSync(searchCache, "utf8")).chats[RELATED_ID]);
+    if (process.platform !== "win32") assert.strictEqual(fs.statSync(searchCache).mode & 0o777, 0o600);
+
+    const inCurrentProject = JSON.parse(await conversationSearch({ query: "refresh tokens" }));
+    assert.strictEqual(inCurrentProject.scope, "Pandahrms");
+    assert.strictEqual(inCurrentProject.matches[0].id, RELATED_ID);
+    const excludesCurrent = JSON.parse(await conversationSearch({ query: "dashboard" }));
+    assert.strictEqual(excludesCurrent.count, 0);
+    const chinese = JSON.parse(await conversationSearch({ query: "登录页面" }));
+    assert.strictEqual(chinese.matches[0].id, RELATED_ID);
+
+    fs.appendFileSync(
+      path.join(root, "chats", `chat_${RELATED_ID}.jsonl`),
+      `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "The rotation checkpoint is now recorded." }] } })}\n`,
+    );
+    const incrementallyUpdated = JSON.parse(await conversationSearch({ query: "rotation checkpoint" }));
+    assert.strictEqual(incrementallyUpdated.matches[0].id, RELATED_ID);
+
+    const crossProject = JSON.parse(await conversationSearch({ query: "launch copy", project: "all" }));
+    assert.strictEqual(crossProject.matches[0].id, OTHER_ID);
+    assert.strictEqual(crossProject.matches[0].project, "OctiqFlow");
+
+    await assert.rejects(
+      conversationSearch({ query: "refresh", project: "missing-project" }),
+      /No project matches/,
     );
 
     const latest = await conversationDetail({ id: ID, limit: 2 });
@@ -147,6 +214,8 @@ async function main() {
   } finally {
     if (oldRoot === undefined) delete process.env.OCTIQ_ROOT;
     else process.env.OCTIQ_ROOT = oldRoot;
+    if (oldChatKey === undefined) delete process.env.OCTIQ_CHAT_KEY;
+    else process.env.OCTIQ_CHAT_KEY = oldChatKey;
     fs.rmSync(root, { recursive: true, force: true });
   }
 }

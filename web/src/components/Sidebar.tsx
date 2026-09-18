@@ -1,757 +1,229 @@
-// Projects as folders, chats inside them.
-//
-// A project is a place you come back to, so it is a folder that holds its past
-// chats rather than just a switch that sets the agent's working directory.
-//
-// Compact conversation rows show a title, last-message snippet, and timestamp.
-// Projects organize the list; trailing status marks highlight active work.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+// Task-first navigation: one global list of chats, with project as context.
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type React from "react";
-import { previewMessages } from "../lib/chatPreview";
-import type { Conversation } from "../lib/store";
-import { moveSiblingGroupAt, moveSiblingGroupBy, siblingGroupIds } from "../lib/projectOrder";
+import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
+import type { Conversation } from "../lib/store";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
-import { RollingNumber } from "./RollingNumber";
 import { SidebarMenu } from "./SidebarMenu";
 import "./MobileSidebar.css";
 
 export type Project = {
   id: string;
   name: string;
-  /** Saved project accent. Empty or absent means a stable color is derived
-   *  from the project name. */
   color?: string;
   primary_path?: string;
   sibling_ids?: string[];
-  /** Set on every terminal and chat started in this project. Absent on an old
-   *  backend, same as an empty object. */
   env?: Record<string, string>;
 };
 
-/** Chats shown before the list folds. Long enough to recognise the work in
- *  progress, short enough that five projects still fit on a phone. */
-const SHOW_AT_FIRST = 5;
-
-/** No row counting down — the default, shared so it is the same object every
- *  render rather than a new empty set each time. */
-const NONE_DELETING: ReadonlySet<string> = new Set();
-
-/** A delete has committed and this row is using its last frames to collapse.
- *  Kept separately from `deleting`: the latter means it can still be taken
- *  back, while this one is already gone for good. */
-const NONE_LEAVING: ReadonlySet<string> = new Set();
+const NONE: ReadonlySet<string> = new Set();
 
 export function Sidebar({
-  projects,
-  shelved,
-  onShowShelved,
-  deletedCount = 0,
-  onShowDeleted,
-  conversations,
-  currentProject,
-  currentConversation,
-  running,
-  busy,
-  deleting = NONE_DELETING,
-  leaving = NONE_LEAVING,
-  deleteMs = 2000,
-  expanded,
-  onToggle,
-  onPickConversation,
-  getPreviewMessages,
-  loadPreview,
-  onNewChat,
-  onDelete,
-  onPin,
-  onRename,
-  onSettings,
-  onNewProject,
-  onReorder,
-  onHide,
-  onResize,
-  foot,
+  projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
+  conversations, currentConversation, running, busy, deleting = NONE,
+  leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
+  loadPreview, onNewChat, onDelete, onPin, onRename, onSettings,
+  onNewProject, onHide, onResize, foot,
 }: {
   projects: Project[];
-  /** Put away, not deleted. Listed behind a fold so they are reachable — the
-   *  control that brings one back lives behind its own gear, so a shelved
-   *  project that renders nowhere can never be unshelved. */
   shelved: Project[];
-  /** Opens the modal that lists them, which is the only way back. */
   onShowShelved: () => void;
-  /** Chats inside their one-day restore window. */
   deletedCount?: number;
-  /** Opens the Trash panel. */
   onShowDeleted?: () => void;
-  conversations: Map<string, Conversation[]>;
-  currentProject: string | null;
+  conversations: Conversation[];
   currentConversation: string | null;
-  /** Conversations with a live agent process behind them. */
   running: Set<string>;
-  /** Of those, the ones mid-answer right now. */
   busy: Set<string>;
-  /** The chats that were just deleted and have not gone yet. Each row stays
-   *  where it is and counts down, so the way back is the button that started it
-   *  rather than a bar somewhere else on screen — and a second delete on the
-   *  row below leaves the first row's ring exactly where it was. */
   deleting?: ReadonlySet<string>;
-  /** How long that countdown runs, in milliseconds. Drives the ring only — the
-   *  clock that actually commits the delete lives with the chat list. */
-  deleteMs?: number;
-  /** Chats whose delete has committed but whose rows are still collapsing out
-   *  of the list. They are no longer undoable or interactive. */
   leaving?: ReadonlySet<string>;
-  expanded: Set<string>;
-  onToggle: (projectId: string) => void;
-  onPickConversation: (c: Conversation) => void;
-  onNewChat: (projectId: string) => void;
-  /** Delete this chat — and, pressed again on a row already counting down,
-   *  take it back. One call for both, because it is one button. */
+  deleteMs?: number;
+  onPickConversation: (chat: Conversation) => void;
+  onNewChat: () => void;
   onDelete: (id: string) => void;
-  /** Pin this chat to the top of its project — or, on one already pinned,
-   *  let it go back to its place by age. */
   onPin: (id: string) => void;
-  /** Replace the inferred chat title with one chosen by the user. */
   onRename: (id: string, title: string) => void;
   onSettings: (projectId: string) => void;
   onNewProject: () => void;
-  /** Persist a complete ordering of the visible project rows. */
-  onReorder: (orderedIds: string[]) => void;
-  /** Put the whole column away, on the screens where it IS a column. Absent
-   *  below 860px, where the sidebar is a drawer that the scrim and the top
-   *  bar's own title already close — a third control there would be a third
-   *  way to do one thing. */
   onHide?: () => void;
-  /** Start a drag of the column's right edge. Present only where the sidebar
-   *  IS a column: as a drawer it is the width of the screen, and there is
-   *  nothing beside it to take the space from. */
-  onResize?: (e: React.PointerEvent<HTMLElement>) => void;
-  /** Live readouts with nowhere else to be on a phone. They are passed in
-   *  rather than rendered twice because the usage meter polls an endpoint
-   *  that rate-limits per account. */
+  onResize?: (event: React.PointerEvent<HTMLElement>) => void;
   foot?: ReactNode;
 } & ChatPreviewSource) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [dragging, setDragging] = useState<string | null>(null);
-  const [dropAt, setDropAt] = useState<{ id: string; edge: "before" | "after" } | null>(
-    null,
-  );
-  const projectRows = useRef(new Map<string, HTMLLIElement>());
-  const priorProjectPositions = useRef(new Map<string, DOMRect>());
-  const projectOrder = projects.map((project) => project.id).join("\u0000");
-  const names = new Map([...projects, ...shelved].map((project) => [project.id, project.name]));
-
-  // Native drag-and-drop updates the order in one DOM commit. Preserve the
-  // previous rectangles, then play each moved row back to its new place so the
-  // result reads as a rearrangement instead of a jump.
-  useLayoutEffect(() => {
-    const current = new Map<string, DOMRect>();
-    for (const [id, row] of projectRows.current) current.set(id, row.getBoundingClientRect());
-
-    if (priorProjectPositions.current.size > 0 && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      for (const [id, row] of projectRows.current) {
-        const before = priorProjectPositions.current.get(id);
-        const after = current.get(id);
-        if (!before || !after) continue;
-
-        const deltaY = before.top - after.top;
-        if (Math.abs(deltaY) > 1) {
-          row.animate(
-            [
-              { transform: `translateY(${deltaY}px)` },
-              { transform: "translateY(0)" },
-            ],
-            { duration: 220, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" },
-          );
-        }
-      }
-    }
-
-    priorProjectPositions.current = current;
-  }, [projectOrder]);
-
-  const reorder = (next: string[]) => {
-    const current = projects.map((project) => project.id);
-    if (next.some((id, index) => id !== current[index])) onReorder(next);
-  };
-
-  const endDrag = () => {
-    setDragging(null);
-    setDropAt(null);
-  };
-
-  return (
-    <nav className="sidebar" aria-label="Projects and chats">
-      <div className="sidebar-toolbar">
-        <div className="sidebar-head">
-          <span className="sidebar-title">Projects</span>
-          <SidebarMenu label="Project list actions" open={menuOpen} onOpenChange={setMenuOpen}
-            items={[
-              { id: "new", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
-              ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
-              ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
-              ...(onHide ? [{ id: "hide", label: "Hide projects", icon: <CollapseIcon />, onSelect: onHide }] : []),
-            ]} />
-        </div>
-      </div>
-
-      <ul className="proj-list">
-        {projects.map((p, index) => {
-          // The group this row belongs to, read once: its neighbours decide
-          // where the connector starts and where it stops.
-          const group = siblingGroupIds(projects, p.id);
-          return (
-          <ProjectNode
-            key={p.id}
-            rowRef={(node) => {
-              if (node) projectRows.current.set(p.id, node);
-              else projectRows.current.delete(p.id);
-            }}
-            project={p}
-            chats={conversations.get(p.id) ?? []}
-            open={expanded.has(p.id)}
-            current={p.id === currentProject}
-            currentConversation={currentConversation}
-            running={running}
-            busy={busy}
-            deleting={deleting}
-            leaving={leaving}
-            deleteMs={deleteMs}
-            onToggle={onToggle}
-            onPickConversation={onPickConversation}
-            getPreviewMessages={getPreviewMessages}
-            loadPreview={loadPreview}
-            onNewChat={onNewChat}
-            onDelete={onDelete}
-            onPin={onPin}
-            onRename={onRename}
-            onSettings={onSettings}
-            siblingNames={(p.sibling_ids ?? []).flatMap((id) =>
-              names.has(id) ? [names.get(id)!] : [],
-            )}
-            siblingAbove={index > 0 && group.has(projects[index - 1].id)}
-            siblingBelow={index < projects.length - 1 && group.has(projects[index + 1].id)}
-            dragging={dragging === p.id}
-            dropEdge={dropAt?.id === p.id ? dropAt.edge : null}
-            onDragStart={(e) => {
-              setDragging(p.id);
-              e.dataTransfer.effectAllowed = "move";
-              e.dataTransfer.setData("text/plain", p.id);
-            }}
-            onDragOver={(e) => {
-              if (!dragging || dragging === p.id) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              const box = e.currentTarget.getBoundingClientRect();
-              setDropAt({
-                id: p.id,
-                edge: e.clientY < box.top + box.height / 2 ? "before" : "after",
-              });
-            }}
-            onDrop={(e) => {
-              e.preventDefault();
-              const moving = dragging || e.dataTransfer.getData("text/plain");
-              if (moving && moving !== p.id) {
-                const box = e.currentTarget.getBoundingClientRect();
-                reorder(
-                  moveSiblingGroupAt(
-                    projects,
-                    moving,
-                    p.id,
-                    e.clientY < box.top + box.height / 2 ? "before" : "after",
-                  ),
-                );
-              }
-              endDrag();
-            }}
-            onDragEnd={endDrag}
-            onMove={(direction) =>
-              reorder(moveSiblingGroupBy(projects, p.id, direction))
-            }
-          />
-          );
-        })}
-      </ul>
-
-      {foot && <div className="sidebar-slot is-foot">{foot}</div>}
-
-      {/* Last, so it draws over the rows it sits beside. It is the dividing
-          line itself, widened either side of it — a 1px target is not a
-          target — and it carries no width of its own, so the list is exactly
-          as wide with it as without. */}
-      {onResize && (
-        <span
-          className="nav-resizer"
-          onPointerDown={onResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize the project column"
-        />
-      )}
-    </nav>
-  );
-}
-
-function ProjectNode({
-  rowRef,
-  project,
-  chats,
-  open,
-  current,
-  currentConversation,
-  running,
-  busy,
-  deleting,
-  leaving,
-  deleteMs,
-  onToggle,
-  onPickConversation,
-  getPreviewMessages,
-  loadPreview,
-  onNewChat,
-  onDelete,
-  onPin,
-  onRename,
-  onSettings,
-  siblingNames,
-  siblingAbove,
-  siblingBelow,
-  dragging,
-  dropEdge,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  onDragEnd,
-  onMove,
-}: {
-  rowRef: (node: HTMLLIElement | null) => void;
-  project: Project;
-  chats: Conversation[];
-  open: boolean;
-  current: boolean;
-  currentConversation: string | null;
-  running: Set<string>;
-  busy: Set<string>;
-  deleting: ReadonlySet<string>;
-  leaving: ReadonlySet<string>;
-  deleteMs: number;
-  onToggle: (id: string) => void;
-  onPickConversation: (c: Conversation) => void;
-  onNewChat: (id: string) => void;
-  onDelete: (id: string) => void;
-  onPin: (id: string) => void;
-  onRename: (id: string, title: string) => void;
-  onSettings: (id: string) => void;
-  siblingNames: string[];
-  /** The row above belongs to the same connected group. */
-  siblingAbove: boolean;
-  /** Continue the visual link to the next row in this connected group. */
-  siblingBelow: boolean;
-  dragging: boolean;
-  dropEdge: "before" | "after" | null;
-  onDragStart: (event: React.DragEvent<HTMLButtonElement>) => void;
-  onDragOver: (event: React.DragEvent<HTMLDivElement>) => void;
-  onDrop: (event: React.DragEvent<HTMLDivElement>) => void;
-  onDragEnd: () => void;
-  onMove: (direction: -1 | 1) => void;
-} & ChatPreviewSource) {
-  const [showAll, setShowAll] = useState(false);
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
   const held = useRef(false);
-  const cancelHold = () => clearTimeout(hold.current);
-  useEffect(() => () => clearTimeout(hold.current), []);
-  useEffect(() => { if (!open) setActionsId(null); }, [open]);
-  // The chats present on this project's first paint are already here — making
-  // all of history slide in every time the sidebar mounts would be noise. A
-  // later id is a new row, and gets the short expand transition below.
-  const seenChatIds = useRef<ReadonlySet<string>>(new Set(chats.map((c) => c.id)));
-  useEffect(() => {
-    seenChatIds.current = new Set(chats.map((c) => c.id));
-  }, [chats]);
-  const showing = open && chats.length > 0;
-  const hidden = showAll ? 0 : Math.max(0, chats.length - SHOW_AT_FIRST);
-  const visible = hidden ? chats.slice(0, SHOW_AT_FIRST) : chats;
+  const seenChatIds = useRef<ReadonlySet<string>>(new Set(conversations.map((chat) => chat.id)));
+  const knownProjects = [...projects, ...shelved];
+  const projectById = new Map(knownProjects.map((project) => [project.id, project]));
 
-  // A closed folder hides everything it holds, its chats' own marks included.
-  // So the count carries that up: whether there is anything inside, and — from
-  // the same pixel, since it is the row's only mark — whether any of it is
-  // still running.
-  const working = chats.some((c) => busy.has(c.id));
-  const live = !working && chats.some((c) => running.has(c.id));
+  useEffect(() => { seenChatIds.current = new Set(conversations.map((chat) => chat.id)); }, [conversations]);
+  useEffect(() => () => clearTimeout(hold.current), []);
+  const cancelHold = () => clearTimeout(hold.current);
 
   return (
-    <li
-      ref={rowRef}
-      className={[
-        "proj-node",
-        siblingAbove || siblingBelow ? "in-sibling-group" : "",
-        siblingBelow ? "has-sibling-below" : "",
-        dragging ? "is-dragging" : "",
-        dropEdge ? `is-drop-${dropEdge}` : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      <div className={`proj ${current ? "is-on" : ""}`} onDragOver={onDragOver} onDrop={onDrop}>
-        <button
-          className="proj-btn"
-          type="button"
-          aria-expanded={showing}
-          draggable
-          onDragStart={onDragStart}
-          onDragEnd={onDragEnd}
-          onClick={() => onToggle(project.id)}
-        >
-          <span
-            className={`proj-icon ${showing ? "is-open" : ""}`}
-            style={{ color: projectColor(project) }}
-            aria-hidden="true"
-          >
-            <FolderIcon />
-          </span>
-          <span className="proj-name">{project.name}</span>
-          {siblingNames.length > 0 && (
-            <span
-              className="proj-siblings"
-              title={`Sibling ${siblingNames.length === 1 ? "project" : "projects"}: ${siblingNames.join(", ")}`}
-            >
-              <LinkIcon />
-            </span>
-          )}
-          {/* Quiet metadata beside the project name; only busy work is accented. */}
-          {chats.length > 0 && (
-            <span
-              className={`proj-count ${working ? "is-busy" : live ? "is-live" : ""}`}
-              title={
-                working
-                  ? `${chats.length} chats · one still working`
-                  : live
-                    ? `${chats.length} chats · a session is up`
-                    : `${chats.length} ${chats.length === 1 ? "chat" : "chats"}`
-              }
-            >
-              <RollingNumber value={chats.length} />
-            </span>
-          )}
-        </button>
-        <SidebarMenu label={`Actions for project ${project.name}`} open={projectMenuOpen}
-          onOpenChange={setProjectMenuOpen} items={[
-            { id: "new", label: "New chat in this project", icon: <PlusIcon />, onSelect: () => onNewChat(project.id) },
-            { id: "settings", label: "Project settings", icon: <GearIcon />, onSelect: () => onSettings(project.id) },
-            { id: "up", label: "Move project up", icon: <MoveIcon />, onSelect: () => onMove(-1) },
-            { id: "down", label: "Move project down", icon: <MoveIcon down />, onSelect: () => onMove(1) },
-          ]} />
+    <nav className="sidebar task-sidebar" aria-label="Chats">
+      <div className="sidebar-toolbar">
+        <div className="sidebar-head">
+          <span className="sidebar-title">Chats</span>
+          <button className="sidebar-new-chat" type="button" onClick={onNewChat}>
+            <PlusIcon /><span>New chat</span>
+          </button>
+          <SidebarMenu
+            label="Chat list actions"
+            open={menuOpen}
+            onOpenChange={setMenuOpen}
+            items={[
+              { id: "new-project", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
+              ...projects.map((project) => ({
+                id: `settings-${project.id}`,
+                label: `Project settings: ${project.name}`,
+                icon: <GearIcon />,
+                onSelect: () => onSettings(project.id),
+              })),
+              ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
+              ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
+              ...(onHide ? [{ id: "hide", label: "Hide chats", icon: <CollapseIcon />, onSelect: onHide }] : []),
+            ]}
+          />
+        </div>
       </div>
 
-      {/* Mounted whenever the project HAS chats, open or shut, because a folder
-          that opens has to have something to open — a list that appears at full
-          height the frame the class lands has nothing to animate from. Shut, it
-          is a grid row of zero height with `visibility: hidden` over it, so it
-          is out of the tab order and out of the screen reader's list exactly as
-          it was when it did not exist. */}
-      {chats.length > 0 && (
-        <div className={`chat-fold ${showing ? "is-open" : ""}`}>
-          <ul className="chat-list">
-            {visible.map((c) => {
-              // Deleted a moment ago and not gone yet. The row is left exactly
-              // where it stood — see the countdown ring below.
-              const going = deleting.has(c.id);
-              const isLeaving = leaving.has(c.id);
-              const isEntering = !seenChatIds.current.has(c.id);
-              const latest = previewMessages(getPreviewMessages?.(c.id) ?? c.messages).at(-1);
-              const snippet = going ? "Deleting…"
-                : busy.has(c.id) ? "Working…"
-                : latest ? `${latest.speaker === "You" ? "You: " : ""}${latest.text.replace(/\s+/g, " ")}`
-                : c.sessionId ? "Open to view messages" : "No messages yet";
-              return (
-                <AnimatedChatRow entering={isEntering} leaving={isLeaving} key={c.id}>
-                  <div
-                    className={[
-                      "chat",
-                      c.id === currentConversation ? "is-on" : "",
-                      running.has(c.id) ? "is-live" : "",
-                      busy.has(c.id) ? "is-busy" : "",
-                      going ? "is-going" : "",
-                      isLeaving ? "is-leaving" : "",
-                      c.pinned ? "is-pinned" : "",
-                      renaming === c.id ? "is-renaming" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                  >
-                    {renaming === c.id ? (
-                      <form
-                        className="chat-rename"
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          const input = event.currentTarget.elements.namedItem("chat-title");
-                          if (input instanceof HTMLInputElement && input.value.trim()) {
-                            onRename(c.id, input.value);
-                          }
+      {conversations.length ? (
+        <ul className="chat-list task-chat-list">
+          {conversations.map((chat) => {
+            const going = deleting.has(chat.id);
+            const isLeaving = leaving.has(chat.id);
+            const project = projectById.get(chat.projectId);
+            const projectName = project?.name ?? "Unknown project";
+            const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
+            const snippet = going ? "Deleting…"
+              : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
+
+            return (
+              <AnimatedChatRow entering={!seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
+                <div className={[
+                  "chat", chat.id === currentConversation ? "is-on" : "",
+                  running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
+                  going ? "is-going" : "", isLeaving ? "is-leaving" : "",
+                  chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
+                ].filter(Boolean).join(" ")}>
+                  {renaming === chat.id ? (
+                    <form className="chat-rename" onSubmit={(event) => {
+                      event.preventDefault();
+                      const input = event.currentTarget.elements.namedItem("chat-title");
+                      if (input instanceof HTMLInputElement && input.value.trim()) onRename(chat.id, input.value);
+                      setRenaming(null);
+                    }}>
+                      <input name="chat-title" className="chat-rename-input" defaultValue={chat.title}
+                        aria-label="Chat title" maxLength={48} autoFocus
+                        onFocus={(event) => event.currentTarget.select()}
+                        onBlur={(event) => {
+                          if (event.currentTarget.value.trim()) onRename(chat.id, event.currentTarget.value);
                           setRenaming(null);
                         }}
-                      >
-                        <input
-                          name="chat-title"
-                          className="chat-rename-input"
-                          defaultValue={c.title}
-                          aria-label="Chat title"
-                          maxLength={48}
-                          autoFocus
-                          onFocus={(event) => event.currentTarget.select()}
-                          onBlur={(event) => {
-                            if (event.currentTarget.value.trim()) {
-                              onRename(c.id, event.currentTarget.value);
-                            }
-                            setRenaming(null);
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== "Escape") return;
-                            event.preventDefault();
-                            setRenaming(null);
-                          }}
-                        />
-                      </form>
-                    ) : (
-                      <ChatPreviewButton
-                        chat={c}
-                        enabled={showing && !going && !isLeaving && !dragging && !actionsId}
-                        busy={busy.has(c.id)}
-                        getPreviewMessages={getPreviewMessages}
-                        loadPreview={loadPreview}
-                        className="chat-btn"
-                        type="button"
-                        aria-label={c.title}
-                        disabled={isLeaving}
-                        aria-current={c.id === currentConversation ? "page" : undefined}
-                        aria-description="Hover to preview. Hold for chat actions."
-                        onPointerDown={(event) => {
-                          cancelHold();
-                          held.current = false;
-                          if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
-                          holdStart.current = { x: event.clientX, y: event.clientY };
-                          hold.current = setTimeout(() => {
-                            held.current = true;
-                            setActionsId(c.id);
-                          }, 500);
-                        }}
-                        onPointerMove={(event) => {
-                          if (Math.hypot(event.clientX - holdStart.current.x, event.clientY - holdStart.current.y) > 10) cancelHold();
-                        }}
-                        onPointerUp={cancelHold}
-                        onPointerCancel={cancelHold}
-                        onContextMenu={(event) => {
-                          if (!window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
-                          event.preventDefault();
-                          cancelHold();
-                          if (!going && !isLeaving) setActionsId(c.id);
-                        }}
-                        onClick={() => {
-                          if (held.current) { held.current = false; return; }
-                          onPickConversation(c);
-                        }}
-                      >
-                        <span className="chat-summary">
-                          <span className="chat-title">{c.title}</span>
-                          <span className="chat-meta">
-                            <span className={`chat-snippet${!latest && !going && !busy.has(c.id) ? " is-placeholder" : ""}`}>{snippet}</span>
-                            <time className="chat-time" dateTime={new Date(c.updatedAt).toISOString()} title={new Date(c.updatedAt).toLocaleString()}>
-                              {chatTime(c.updatedAt)}
-                            </time>
-                          </span>
+                        onKeyDown={(event) => {
+                          if (event.key !== "Escape") return;
+                          event.preventDefault(); setRenaming(null);
+                        }} />
+                    </form>
+                  ) : (
+                    <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
+                      busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
+                      className="chat-btn" type="button" aria-label={`${chat.title}, ${projectName}`}
+                      disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
+                      aria-description="Hover to preview. Hold for chat actions."
+                      onPointerDown={(event) => {
+                        cancelHold(); held.current = false;
+                        if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
+                        holdStart.current = { x: event.clientX, y: event.clientY };
+                        hold.current = setTimeout(() => { held.current = true; setActionsId(chat.id); }, 500);
+                      }}
+                      onPointerMove={(event) => {
+                        if (Math.hypot(event.clientX - holdStart.current.x, event.clientY - holdStart.current.y) > 10) cancelHold();
+                      }}
+                      onPointerUp={cancelHold} onPointerCancel={cancelHold}
+                      onContextMenu={(event) => {
+                        if (!window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
+                        event.preventDefault(); cancelHold();
+                        if (!going && !isLeaving) setActionsId(chat.id);
+                      }}
+                      onClick={() => {
+                        if (held.current) { held.current = false; return; }
+                        onPickConversation(chat);
+                      }}>
+                      <span className="chat-summary">
+                        <span className="chat-heading">
+                          <span className="chat-title">{chat.title}</span>
+                          <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
                         </span>
-                      </ChatPreviewButton>
-                    )}
-                    <span className="chat-indicators">
-                      {c.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
-                      <span className="chat-mark" aria-hidden="true"
-                        title={busy.has(c.id) ? "working" : running.has(c.id) ? "session running" : undefined} />
-                    </span>
-                    {renaming !== c.id && <SidebarMenu
-                      className="chat-actions-trigger"
-                      label={`Actions for ${c.title}`}
-                      open={actionsId === c.id && showing}
-                      onOpenChange={(open) => setActionsId(open ? c.id : null)}
-                      disabled={isLeaving}
-                      icon={going ? <DeleteCountdownIcon ms={deleteMs} /> : undefined}
-                      items={[
-                        { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(c.id) },
-                        { id: "pin", label: c.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(c.id) },
-                        { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(c.id) },
-                      ]} />}
-                  </div>
-                </AnimatedChatRow>
-              );
-            })}
+                        <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
+                        <span className="chat-project">
+                          <span className="chat-project-dot" style={{ background: project ? projectColor(project) : undefined }} aria-hidden="true" />
+                          {projectName}
+                        </span>
+                      </span>
+                    </ChatPreviewButton>
+                  )}
 
-            {chats.length > SHOW_AT_FIRST && (
-              <li>
-                <button className="chat-more" type="button" onClick={() => setShowAll((v) => !v)}>
-                  {hidden ? "Show more" : "Show less"}
-                </button>
-              </li>
-            )}
-          </ul>
-        </div>
+                  <span className="chat-indicators">
+                    {chat.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
+                    <span className="chat-mark" aria-hidden="true" title={busy.has(chat.id) ? "working" : running.has(chat.id) ? "session running" : undefined} />
+                  </span>
+                  {renaming !== chat.id && <SidebarMenu className="chat-actions-trigger"
+                    label={`Actions for ${chat.title}`} open={actionsId === chat.id}
+                    onOpenChange={(open) => setActionsId(open ? chat.id : null)} disabled={isLeaving}
+                    icon={going ? <DeleteCountdownIcon ms={deleteMs} /> : undefined}
+                    items={[
+                      { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(chat.id) },
+                      { id: "pin", label: chat.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(chat.id) },
+                      { id: "project", label: `Project settings: ${projectName}`, icon: <GearIcon />, disabled: going || !project, onSelect: () => onSettings(chat.projectId) },
+                      { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) },
+                    ]} />}
+                </div>
+              </AnimatedChatRow>
+            );
+          })}
+        </ul>
+      ) : (
+        <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
       )}
 
-    </li>
+      {foot && <div className="sidebar-slot is-foot">{foot}</div>}
+      {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
+        aria-orientation="vertical" aria-label="Resize the chat column" />}
+    </nav>
   );
 }
 
 function chatTime(timestamp: number): string {
   const date = new Date(timestamp);
   const today = new Date();
-  if (date.toDateString() === today.toDateString()) {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
+  if (date.toDateString() === today.toDateString()) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   today.setDate(today.getDate() - 1);
   if (date.toDateString() === today.toDateString()) return "Yesterday";
   return date.toLocaleDateString([], { month: "short", day: "numeric", ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" as const } : {}) });
 }
 
-/** A newly added chat gets the inverse of a delete: it starts at zero height,
- *  then opens on the next frame. Existing history skips this entirely; see the
- *  `seenChatIds` ref above. */
-function AnimatedChatRow({
-  entering,
-  leaving,
-  children,
-}: {
-  entering: boolean;
-  leaving: boolean;
-  children: ReactNode;
-}) {
-  const [isEntering, setIsEntering] = useState(
-    () =>
-      entering &&
-      !(
-        typeof window !== "undefined" &&
-        window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
-      ),
-  );
-
+function AnimatedChatRow({ entering, leaving, children }: { entering: boolean; leaving: boolean; children: ReactNode }) {
+  const [isEntering, setIsEntering] = useState(() => entering && !(typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches));
   useEffect(() => {
     if (!isEntering) return;
     const frame = requestAnimationFrame(() => setIsEntering(false));
     return () => cancelAnimationFrame(frame);
   }, [isEntering]);
-
-  return (
-    <li
-      className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""]
-        .filter(Boolean)
-        .join(" ")}
-    >
-      {children}
-    </li>
-  );
-}
-
-/** Both folders, stacked, one fading out as the other fades in.
- *
- *  Swapping which SVG is mounted is instant, and an instant swap sitting next
- *  to a list that takes a quarter of a second to open reads as two separate
- *  events rather than one folder opening. Which is on top is decided in CSS,
- *  off `.proj-icon.is-open` — see the cross-fade there. */
-function FolderIcon() {
-  return (
-    <>
-      <svg className="folder-shut" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 7a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
-      </svg>
-      <svg className="folder-open" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M3 8V6a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H19a2 2 0 0 1 2 2v1" />
-        <path d="M3.5 20h15.3a1.5 1.5 0 0 0 1.45-1.1l1.35-5A1.5 1.5 0 0 0 20.15 12H5.6a1.5 1.5 0 0 0-1.45 1.1l-1.6 5.9" />
-      </svg>
-    </>
-  );
+  return <li className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}>{children}</li>;
 }
 
 function GearIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v0a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
-    </svg>
-  );
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06-.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></svg>;
 }
-
-function MoveIcon({ down = false }: { down?: boolean }) {
-  return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={down ? { transform: "rotate(180deg)" } : undefined}>
-    <path d="M12 19V5m-6 6 6-6 6 6" />
-  </svg>;
-}
-
-function LinkIcon() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1" />
-      <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1" />
-    </svg>
-  );
-}
-
-function CollapseIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M9 3v18" />
-      <path d="m16 15-3-3 3-3" />
-    </svg>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-function ArchiveIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M4 7h16" />
-      <path d="M6 7v12h12V7" />
-      <path d="M3 4h18v3H3z" />
-      <path d="M10 11h4" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3 6h18" />
-      <path d="M8 6V4h8v2" />
-      <path d="m6 6 1 14h10l1-14" />
-      <path d="M10 10v6M14 10v6" />
-    </svg>
-  );
-}
-
-/** A pin, drawn as an outline. The pinned state fills it in from CSS. */
-function PinIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 17v5" />
-      <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
-    </svg>
-  );
-}
-
-function PencilIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" />
-    </svg>
-  );
-}
+function CollapseIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /><path d="m16 15-3-3 3-3" /></svg>; }
+function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>; }
+function ArchiveIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M6 7v12h12V7" /><path d="M3 4h18v3H3z" /><path d="M10 11h4" /></svg>; }
+function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 14h10l1-14" /><path d="M10 10v6M14 10v6" /></svg>; }
+function PinIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 17v5" /><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" /></svg>; }
+function PencilIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>; }

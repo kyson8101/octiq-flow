@@ -23,6 +23,7 @@ const entry = (id: string): IndexEntry => ({
   id,
   projectId: "p1",
   title: "a chat",
+  latestResponse: undefined,
   customTitle: false,
   sessionId: null,
   modelId: null,

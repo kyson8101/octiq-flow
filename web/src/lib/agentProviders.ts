@@ -117,10 +117,22 @@ export const providers = {
     id: "claude",
     name: "Claude",
     models: [
-      { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus", flag: "opus", hint: "for complex work", composerStyle: "opus" },
-      { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet", flag: "sonnet", hint: "the everyday balance", composerStyle: "sonnet" },
-      { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku", flag: "haiku", hint: "fastest, for quick answers", composerStyle: "haiku" },
-      { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable", flag: "fable", hint: "for the toughest problems", composerStyle: "fable" },
+      // Aliases deliberately say "latest": choosing `opus` is permission for
+      // Claude Code to move to a newer Opus. The versioned rows below are the
+      // distinct choice for someone who wants 4.6 to remain 4.6.
+      { id: "claude:opus", agent: "claude", name: "Claude", model: "Opus latest", flag: "opus", hint: "for complex work · moving alias opus", composerStyle: "opus" },
+      { id: "claude:sonnet", agent: "claude", name: "Claude", model: "Sonnet latest", flag: "sonnet", hint: "the everyday balance · moving alias sonnet", composerStyle: "sonnet" },
+      { id: "claude:haiku", agent: "claude", name: "Claude", model: "Haiku latest", flag: "haiku", hint: "fastest for quick answers · moving alias haiku", composerStyle: "haiku" },
+      { id: "claude:fable", agent: "claude", name: "Claude", model: "Fable latest", flag: "fable", hint: "for the toughest problems · moving alias fable", composerStyle: "fable" },
+      { id: "claude:opus-5", agent: "claude", name: "Claude", model: "Opus 5", flag: "claude-opus-5", hint: "claude-opus-5", composerStyle: "opus" },
+      { id: "claude:opus-4-8", agent: "claude", name: "Claude", model: "Opus 4.8", flag: "claude-opus-4-8", hint: "claude-opus-4-8", composerStyle: "opus" },
+      { id: "claude:opus-4-7", agent: "claude", name: "Claude", model: "Opus 4.7", flag: "claude-opus-4-7", hint: "claude-opus-4-7", composerStyle: "opus" },
+      { id: "claude:opus-4-6", agent: "claude", name: "Claude", model: "Opus 4.6", flag: "claude-opus-4-6", hint: "claude-opus-4-6", composerStyle: "opus" },
+      { id: "claude:opus-4-5-20251101", agent: "claude", name: "Claude", model: "Opus 4.5", flag: "claude-opus-4-5-20251101", hint: "claude-opus-4-5-20251101", composerStyle: "opus" },
+      { id: "claude:sonnet-5", agent: "claude", name: "Claude", model: "Sonnet 5", flag: "claude-sonnet-5", hint: "claude-sonnet-5", composerStyle: "sonnet" },
+      { id: "claude:sonnet-4-6", agent: "claude", name: "Claude", model: "Sonnet 4.6", flag: "claude-sonnet-4-6", hint: "claude-sonnet-4-6", composerStyle: "sonnet" },
+      { id: "claude:sonnet-4-5-20250929", agent: "claude", name: "Claude", model: "Sonnet 4.5", flag: "claude-sonnet-4-5-20250929", hint: "claude-sonnet-4-5-20250929", composerStyle: "sonnet" },
+      { id: "claude:haiku-4-5-20251001", agent: "claude", name: "Claude", model: "Haiku 4.5", flag: "claude-haiku-4-5-20251001", hint: "claude-haiku-4-5-20251001", composerStyle: "haiku" },
       { id: "claude:default", agent: "claude", name: "Claude", model: "Default", flag: "", hint: "whatever the CLI picks", composerStyle: "claude" },
     ],
     access: [
@@ -242,12 +254,110 @@ export const EFFORTS = Object.fromEntries(
   PROVIDERS.map((provider) => [provider.id, provider.efforts]),
 ) as Record<Provider, readonly EffortOption[]>;
 
+const DYNAMIC_MODEL_ID = ":model:";
+
+/** Provider model ids are command-line tokens. Match the backend's allowlist
+ * here so an exact-id field can fail before it creates a choice the runtime
+ * will silently discard. */
+export function validModelFlag(flag: string): boolean {
+  return /^[A-Za-z0-9._-]{1,64}$/.test(flag);
+}
+
+function titleWord(word: string): string {
+  if (/^gpt$/i.test(word)) return "GPT";
+  return word ? word[0].toUpperCase() + word.slice(1) : word;
+}
+
+function modelLabel(provider: Provider, flag: string, displayName?: string): string {
+  if (displayName?.trim()) {
+    return displayName.trim().replace(/^Claude\s+/i, "");
+  }
+  if (provider === "claude") {
+    const parts = flag.replace(/^claude-/, "").replace(/-\d{8}$/, "").split("-");
+    const family = titleWord(parts.shift() ?? flag);
+    return parts.length ? `${family} ${parts.join(".")}` : family;
+  }
+  const parts = flag.split("-");
+  if (/^gpt$/i.test(parts[0] ?? "")) {
+    const family = titleWord(parts.shift()!);
+    const version = parts.shift() ?? "";
+    return [family + (version ? `-${version}` : ""), ...parts.map(titleWord)].join(" ");
+  }
+  return flag;
+}
+
+function styleForModel(provider: Provider, flag: string): ComposerStyle {
+  const lower = flag.toLowerCase();
+  if (provider === "claude") {
+    if (lower.includes("opus")) return "opus";
+    if (lower.includes("sonnet")) return "sonnet";
+    if (lower.includes("haiku")) return "haiku";
+    if (lower.includes("fable")) return "fable";
+    return "claude";
+  }
+  if (provider === "codex") {
+    if (lower.includes("astra")) return "astra";
+    if (lower.includes("sol")) return "sol";
+    if (lower.includes("terra")) return "terra";
+    if (lower.includes("luna")) return "luna";
+    return "codex";
+  }
+  if (lower.includes("astra")) return "pi-astra";
+  if (lower.includes("sol")) return "pi-sol";
+  if (lower.includes("terra")) return "pi-terra";
+  if (lower.includes("luna")) return "pi-luna";
+  return "pi";
+}
+
+/** Turn a provider-discovered or manually entered exact id into the same
+ * choice shape as a built-in model. Known flags reuse their authored label and
+ * visual voice; newly released flags remain fully selectable and persistable. */
+export function modelChoiceForFlag(
+  provider: Provider,
+  flag: string,
+  displayName?: string,
+  hint?: string,
+): ModelChoice | undefined {
+  const wanted = flag.trim();
+  if (!validModelFlag(wanted)) return undefined;
+  const known = providerFor(provider).models.find((model) => model.flag === wanted);
+  if (known) return known;
+  return {
+    id: `${provider}${DYNAMIC_MODEL_ID}${encodeURIComponent(wanted)}`,
+    agent: provider,
+    name: providerFor(provider).name,
+    model: modelLabel(provider, wanted, displayName),
+    flag: wanted,
+    hint: hint?.trim() || wanted,
+    composerStyle: styleForModel(provider, wanted),
+  };
+}
+
 export function modelFromId(id: string | null): ModelChoice | undefined {
   if (!id) return undefined;
   const exact = MODELS.find((model) => model.id === id);
   if (exact) return exact;
   const provider = id.split(":")[0] as Provider;
+  const marker = id.indexOf(DYNAMIC_MODEL_ID);
+  if (providers[provider] && marker > 0) {
+    try {
+      return modelChoiceForFlag(provider, decodeURIComponent(id.slice(marker + DYNAMIC_MODEL_ID.length)));
+    } catch {
+      return undefined;
+    }
+  }
   return providers[provider]?.models[0];
+}
+
+/** Resolve the exact model an agent reported. Never substring-match a moving
+ * alias: a newly released `claude-opus-5-1` contains `opus`, but choosing the
+ * alias would erase the version that actually answered. */
+export function modelFromReported(provider: Provider, reported: string): ModelChoice | undefined {
+  const value = reported.trim();
+  if (!value) return providerFor(provider).models.find((model) => !model.flag);
+  const offered = providerFor(provider).models.filter((model) => model.flag);
+  const exact = offered.find((model) => model.flag === value);
+  return exact ?? modelChoiceForFlag(provider, value);
 }
 
 export function accessFor(provider: Provider, wanted: AccessLevel): AccessLevel {

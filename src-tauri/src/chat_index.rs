@@ -36,6 +36,10 @@ pub struct ChatMeta {
     pub project_id: String,
     #[serde(default)]
     pub title: String,
+    /// Short copy for the task list. The complete response stays in the
+    /// transcript; this keeps list rendering independent of opening the chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_response: Option<String>,
     /// True when the user named the chat explicitly. This keeps a deliberately
     /// chosen `New chat` distinct from the inferred placeholder.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -477,6 +481,7 @@ mod tests {
             id: id.into(),
             project_id: "p1".into(),
             title: format!("chat {id}"),
+            latest_response: None,
             custom_title: false,
             session_id: None,
             model_id: None,

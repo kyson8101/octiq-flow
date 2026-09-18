@@ -4,7 +4,9 @@ import {
   accessFor,
   effortFor,
   liveSettingCommand,
+  modelChoiceForFlag,
   modelFromId,
+  modelFromReported,
   parseCommandCache,
   providerCommands,
   providers,
@@ -62,9 +64,22 @@ describe("AgentProvider UI contract", () => {
     const styles = Object.values(providers).flatMap((provider) =>
       provider.models.map((model) => model.composerStyle),
     );
-    // A newly added model must make an intentional visual choice instead of
-    // borrowing another model's identity by accident.
-    expect(new Set(styles).size).toBe(styles.length);
+    // Versioned models intentionally share their family's visual voice.
+    expect(styles.every((style) => /^[a-z][a-z0-9-]*$/.test(style))).toBe(true);
+  });
+
+  it("keeps moving aliases distinct from pinned Claude model ids", () => {
+    expect(modelFromId("claude:opus")?.flag).toBe("opus");
+    expect(modelFromId("claude:opus-4-6")?.flag).toBe("claude-opus-4-6");
+    expect(modelFromReported("claude", "claude-opus-4-6")?.id).toBe("claude:opus-4-6");
+    expect(modelFromReported("claude", "claude-opus-5-1")?.flag).toBe("claude-opus-5-1");
+  });
+
+  it("round-trips a newly discovered exact model through persisted state", () => {
+    const choice = modelChoiceForFlag("codex", "gpt-5.7-new", "GPT-5.7 New");
+    expect(choice?.model).toBe("GPT-5.7 New");
+    expect(choice?.flag).toBe("gpt-5.7-new");
+    expect(modelFromId(choice!.id)).toEqual(choice);
   });
 
   it("scopes a command cache to its provider and migrates the Claude-only legacy shape", () => {

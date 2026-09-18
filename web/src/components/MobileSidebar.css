@@ -131,3 +131,18 @@
     overscroll-behavior: contain;
   }
 }
+
+/* The primary list is task-first now; these more specific rules keep the
+   three-line row intact regardless of the older project-folder overrides
+   above while themes and mobile bundles migrate. */
+.sidebar .task-chat-list { flex: 1 1 auto; overflow-y: auto; padding: 6px 8px 14px; }
+.sidebar .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 34px; }
+.sidebar .task-chat-list .chat-btn { height: 78px; padding: 8px 6px 8px 14px; }
+.sidebar .task-chat-list .chat-rename { height: 78px; padding-left: 12px; }
+.sidebar .task-chat-list .chat-snippet { margin: 1px 0 0; padding: 0; line-height: 18px; }
+
+@media (max-width: 859.98px), (pointer: coarse) {
+  .sidebar .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
+  .sidebar .task-chat-list .chat-btn,
+  .sidebar .task-chat-list .chat-rename { height: 82px; }
+}

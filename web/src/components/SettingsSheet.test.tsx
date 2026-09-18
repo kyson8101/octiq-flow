@@ -75,6 +75,13 @@ describe("SettingsSheet", () => {
     expect(out).toContain("Clean start");
   });
 
+  it("keeps the same user chat when a running conversation changes models", () => {
+    const out = html(true);
+    expect(out).toContain("Switching models keeps this chat");
+    expect(out).toContain("receives the conversation so far");
+    expect(out).not.toContain("starts a new chat");
+  });
+
   /** Every row here takes effect on the tap that chooses it, so there is
    *  nothing left for a Done to do. Effort used to carry its own confirm —
    *  "Change to High" — stacked directly above it, two full-width buttons

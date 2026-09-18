@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(new URL('../web/package.json', import.meta.url));
 const { createServer } = await import(require.resolve('vite'));
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const artifacts = await mkdtemp(join(tmpdir(), 'octiq-projects-screen-'));
+const artifacts = await mkdtemp(join(tmpdir(), 'octiq-chats-screen-'));
 const server = await createServer({ root: new URL('../web', import.meta.url).pathname, server: { host: '127.0.0.1', port: 0, strictPort: false } });
 let browser;
 try {
@@ -53,13 +53,15 @@ await swipe();
 assert.equal(new URL(page.url()).hash,initialHash);
 assert.equal(await page.locator('.sidebar').isVisible(),false);
 
-await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
+await page.getByRole('button',{name:'Back to chats',exact:true}).tap();
 await page.locator('.sidebar').waitFor();
 assert.equal(await page.locator('.main').isVisible(),false);
 assert.equal(await page.locator('textarea').evaluate(el=>el===window.originalComposer),true);
 assert.equal(await page.locator('.sidebar').evaluate(el=>getComputedStyle(el).position),'relative');
 assert.equal(await page.locator('.sidebar').evaluate(el=>getComputedStyle(el).transform),'none');
-await page.screenshot({path:join(artifacts,'mobile-projects.png')});
+assert.equal(await page.locator('.proj-node').count(),0);
+assert.equal(await page.locator('.task-chat-list .chat-project').count(),3);
+await page.screenshot({path:join(artifacts,'mobile-chats.png')});
 await swipe();
 assert.equal(new URL(page.url()).hash,initialHash);
 assert.equal(await page.locator('.sidebar').isVisible(),true);
@@ -67,7 +69,7 @@ await page.getByRole('button',{name:'Return to chat',exact:true}).tap();
 assert.equal(await page.locator('textarea').inputValue(),'Keep my mobile draft');
 assert.equal(await page.locator('.sidebar').isVisible(),false);
 
-await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
+await page.getByRole('button',{name:'Back to chats',exact:true}).tap();
 await page.locator('.chat-title').filter({hasText:'Another chat'}).tap();
 await page.waitForFunction(()=>location.hash.endsWith('/c/c'));
 assert.equal(await page.locator('.main').isVisible(),true);
@@ -77,47 +79,37 @@ await page.waitForFunction(()=>location.hash.endsWith('/c/a'));
 assert.equal(await page.locator('textarea').inputValue(),'Keep my mobile draft');
 await page.screenshot({path:join(artifacts,'mobile-chat.png')});
 
-// File navigation leaves the list, and selecting a chat from Files enters Chat.
-await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
-await page.locator('.sidebar .mode-btn').filter({hasText:'Files'}).tap();
-await page.locator('.ws-host').waitFor();
-assert.equal(await page.locator('.sidebar').isVisible(),false);
-await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
-await page.locator('.chat-title').filter({hasText:'Another chat'}).tap();
-await page.waitForFunction(()=>location.hash.endsWith('/c/c'));
-assert.equal(await page.locator('.main').isVisible(),true);
-assert.equal(await page.locator('.ws-host').isVisible(),false);
-
 // Desktop retains its persistent column, including collapse and restore.
 await page.setViewportSize({width:1280,height:900});
 await page.locator('.sidebar').waitFor();
 assert.equal(await page.locator('.main').isVisible(),true);
-await page.getByRole('button',{name:'Project list actions',exact:true}).click();
-await page.getByRole('menuitem',{name:'Hide projects',exact:true}).click();
+await page.getByRole('button',{name:'Chat list actions',exact:true}).click();
+await page.getByRole('menuitem',{name:'Hide chats',exact:true}).click();
 await page.locator('.sidebar').waitFor({state:'hidden'});
-await page.getByRole('button',{name:'Projects and chats',exact:true}).click();
+await page.getByRole('button',{name:'Chats',exact:true}).click();
 await page.locator('.sidebar').waitFor();
 await page.screenshot({path:join(artifacts,'desktop.png')});
 
 // Tablet and short phone layouts still have explicit navigation controls.
 for (const [width,height] of [[800,900],[390,500],[320,568]]) {
   await page.setViewportSize({width,height});
-  await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
+  await page.getByRole('button',{name:'Back to chats',exact:true}).tap();
   await page.locator('.sidebar').waitFor();
   assert.equal(await page.locator('.main').isVisible(),false);
   const box = await page.getByRole('button',{name:'Return to chat',exact:true}).boundingBox();
   assert.ok(box.x>=0 && box.x+box.width<=width && box.y+box.height<=height);
-  await page.screenshot({path:join(artifacts,`projects-${width}x${height}.png`)});
+  await page.screenshot({path:join(artifacts,`chats-${width}x${height}.png`)});
   await page.getByRole('button',{name:'Return to chat',exact:true}).tap();
 }
-await page.getByRole('button',{name:'Back to projects and chats',exact:true}).tap();
-await page.getByRole('button',{name:'Actions for project Project Alpha',exact:true}).tap();
-await page.getByRole('menuitem',{name:'New chat in this project',exact:true}).tap();
+await page.getByRole('button',{name:'Back to chats',exact:true}).tap();
+await page.getByRole('button',{name:'New chat',exact:true}).tap();
 await page.locator('.main').waitFor();
 assert.equal(await page.locator('.sidebar').isVisible(),false);
 assert.equal(await page.locator('textarea').inputValue(),'');
+assert.equal(await page.getByRole('heading',{name:'Start new chat',exact:true}).isVisible(),true);
+assert.match(await page.locator('textarea').getAttribute('placeholder'),/^@project-name/);
 assert.deepEqual(errors,[]);
 assert.equal(calls.some(c=>['chat_start','chat_send'].includes(c.cmd)),false);
-console.log('PASS: mobile pages, touch gestures, chat selection, draft retention, Files navigation, browser history, desktop collapse, tablet and short phone; no browser errors.');
+console.log('PASS: mobile pages, touch gestures, task selection, draft retention, browser history, desktop collapse, tablet and short phone; no browser errors.');
 console.log('Screenshots:',artifacts);
 } finally { await browser?.close(); await server.close(); }

@@ -22,6 +22,9 @@ export type Conversation = {
   projectId: string;
   /** Taken from the first thing the user said. */
   title: string;
+  /** A short copy of the newest agent response for the global task list.
+   * The full response remains in the transcript. */
+  latestResponse?: string;
   /** A title the user chose explicitly. Unlike an inferred placeholder, it is
    *  never replaced from the transcript — even when it is literally
    *  `New chat`. */
@@ -98,7 +101,7 @@ export function saveConversations(list: Conversation[]): void {
   // Bounded, dropping the LEAST RECENTLY USED first: a long transcript of tool
   // results can be large, and a quota error would otherwise lose the whole
   // store rather than one entry. This is eviction order only — what the sidebar
-  // shows is ordered by byProject, which never moves a row.
+  // shows is ordered by byTask, which never moves a row while work streams.
   const ordered = [...list].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_CONVERSATIONS);
 
   // Each conversation is serialised ONCE, and what fits is joined back into an
@@ -232,6 +235,17 @@ export function byProject(list: Conversation[]): Map<string, Conversation[]> {
   return out;
 }
 
+/** One task-oriented chat list, independent of project folders.
+ *
+ * The order keeps the same deliberate stability the old folders had: a new
+ * task appears at the top and stays put while its answer streams. Pinning is
+ * the only action that moves an existing row. */
+export function byTask(list: Conversation[]): Conversation[] {
+  return [...list].sort(
+    (a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.createdAt - a.createdAt,
+  );
+}
+
 /** Rewrite a saved chat, keeping everything the row already knew.
  *
  *  The debounced save rebuilds a conversation from what is currently on screen —
@@ -273,7 +287,7 @@ export function rewriteConversation(
  *  Compares METADATA ONLY, and ignores order. The messages are not part of the
  *  index — they arrive from each chat's transcript — and the order of the rows
  *  is not either, since the sidebar sorts by pin and `createdAt` itself
- *  (`byProject`). */
+ *  (`byTask`). */
 export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
   if (a.length !== b.length) return false;
   const byId = new Map(a.map((c) => [c.id, c]));
@@ -283,6 +297,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       !!held &&
       held.projectId === c.projectId &&
       held.title === c.title &&
+      held.latestResponse === c.latestResponse &&
       !!held.customTitle === !!c.customTitle &&
       held.sessionId === c.sessionId &&
       held.modelId === c.modelId &&

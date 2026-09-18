@@ -105,6 +105,6 @@ function ChatPreview({ id, chat, anchor, messages, loadPreview, busy, onEnter, o
     {status === "loading" && <p className="chat-preview-note">Loading latest messages…</p>}
     {status === "error" && <p className="chat-preview-note">Preview unavailable. Open the chat to try again.</p>}
     {status === "ready" && !snippets.length && <p className="chat-preview-note">No messages yet.</p>}
-    <div className="chat-preview-foot">Click chat to open · Double-click to rename</div>
+    <div className="chat-preview-foot">Click chat to open · Use ••• for actions</div>
   </div>, document.body);
 }

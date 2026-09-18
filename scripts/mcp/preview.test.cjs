@@ -57,6 +57,8 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.ok(!standalone.result.tools.some(tool => tool.name === "preview_image"));
   const bound = await mcp(root, "chat:one", "tools/list");
   assert.ok(bound.result.tools.some(tool => tool.name === "preview_image"));
+  assert.ok(bound.result.tools.some(tool => tool.name === "search_conversations"));
+  assert.ok(!standalone.result.tools.some(tool => tool.name === "search_conversations"));
   const denied = await mcp(root, "", "tools/call", { name: "preview_image", arguments: { path: source } });
   assert.equal(denied.result.isError, true);
   const results = await Promise.all(Array.from({ length: 8 }, () => mcp(root, "chat:one", "tools/call", { name: "preview_image", arguments: { path: source, slot: "shared" } })));

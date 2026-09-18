@@ -11,7 +11,7 @@
 //
 // Detected from the POINTER, not the screen width: a narrow window on a desktop
 // still has a real keyboard and should still send on Enter.
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { transitionZen } from "../lib/zenMotion";
 import { bridge } from "../lib/bridge";
 import { Thumb } from "./Thumb";
@@ -22,6 +22,7 @@ import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
 import { RoomPanel, RoomSheet } from "./RoomPanel";
 import { completeMention, mentionMatches, mentionPicks, mentionQuery } from "../lib/mention";
+import { projectMentionToken, type MentionableProject } from "../lib/projectMention";
 import { RoundBar, type RoundState } from "./RoundBar";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
@@ -35,6 +36,7 @@ import { commandToken, replaceCommandToken, withCommandTrigger } from "../lib/co
 import {
   AGENT_NAME,
   effortSteps,
+  modelChoiceForFlag,
   PROVIDERS,
   providerFor,
   type AccessLevel,
@@ -44,6 +46,10 @@ import {
   type ModelChoice,
   type Provider,
 } from "../lib/agentProviders";
+import {
+  choicesFromCatalog,
+  type ModelCatalog,
+} from "../lib/modelCatalog";
 
 // Kept as exports while the components that use the picker migrate. Their
 // implementation now comes from the provider registry above.
@@ -90,6 +96,70 @@ const CAN_PASTE =
   typeof navigator !== "undefined" &&
   !!navigator.clipboard &&
   !!(navigator.clipboard.read || navigator.clipboard.readText);
+
+type ModelLoadState = {
+  loading?: boolean;
+  note?: string;
+  error?: string;
+};
+
+/** Load catalogs only when a picker is opened. Claude may answer from its
+ * Models API or the backend's active-model fallback; Codex answers from the
+ * account-aware app-server `model/list`. Existing authored choices paint
+ * immediately, so a cold CLI never turns the picker into a spinner. */
+function useProviderModels(open: boolean, installed?: readonly Provider[]) {
+  const [choices, setChoices] = useState<Partial<Record<Provider, ModelChoice[]>>>({});
+  const [status, setStatus] = useState<Partial<Record<Provider, ModelLoadState>>>({});
+  const loaded = useRef(new Set<Provider>());
+
+  const load = useCallback((provider: Provider, refresh = false) => {
+    if (provider === "pi" || (!refresh && loaded.current.has(provider))) return;
+    loaded.current.add(provider);
+    setStatus((current) => ({
+      ...current,
+      [provider]: { ...current[provider], loading: true, error: undefined },
+    }));
+    bridge
+      .invoke<ModelCatalog>("agent_models", { agent: provider })
+      .then((catalog) => {
+        setChoices((current) => ({
+          ...current,
+          [provider]: choicesFromCatalog(provider, catalog),
+        }));
+        setStatus((current) => ({
+          ...current,
+          [provider]: { loading: false, note: catalog.note ?? undefined },
+        }));
+      })
+      .catch((error) => {
+        setStatus((current) => ({
+          ...current,
+          [provider]: {
+            loading: false,
+            error: String((error as Error)?.message ?? error),
+          },
+        }));
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    for (const provider of ["claude", "codex"] as const) {
+      if (installed && !installed.includes(provider)) continue;
+      load(provider);
+    }
+  }, [open, installed, load]);
+
+  const models = useMemo(
+    () => PROVIDERS.flatMap((provider) => choices[provider.id] ?? provider.models),
+    [choices],
+  );
+  const reload = useCallback((provider: Provider) => {
+    loaded.current.delete(provider);
+    load(provider, true);
+  }, [load]);
+  return { models, status, reload };
+}
 
 /** The access list: modes as rows, and `bypass` as the switch under them.
  *
@@ -278,6 +348,8 @@ export function Composer({
   onLite,
   room,
   seats,
+  projects,
+  projectRequired,
   round,
   onAsk,
   onStopRound,
@@ -383,6 +455,10 @@ export function Composer({
    *  wrong. */
   room?: boolean;
   seats?: Seat[];
+  /** Projects are offered through @ completion before a new task is bound to
+   *  a workspace. The mention becomes the chat's project on first send. */
+  projects?: readonly MentionableProject[];
+  projectRequired?: boolean;
   /** Card 68 — the round in flight, and the two things you can do about it. */
   round?: RoundState | null;
   onAsk?: () => void;
@@ -462,6 +538,7 @@ export function Composer({
   /** Asked, and nothing resolved. Worth saying out loud: every row is then
    *  unpickable, and a menu of dead rows explaining nothing looks like a bug. */
   const noAgents = installed !== undefined && installed.length === 0;
+  const modelCatalog = useProviderModels(menu || sheet, installed);
 
   // What was in the box before Up was first pressed, so Down can put it back
   // rather than leaving you with the last thing you sent.
@@ -521,16 +598,24 @@ export function Composer({
   // Card 85 — the @ menu, on exactly the same terms as the slash menu above:
   // open while the WHOLE box is one `@word`, gone the moment a space is typed.
   // Absent in a chat with nobody else in it, where an `@` is just a character.
-  const atQuery = (seats ?? []).length > 0 ? mentionQuery(text) : undefined;
-  const whoList: { key: string; label: string; seat?: Seat }[] =
+  const atQuery = projectRequired || (seats ?? []).length > 0 ? mentionQuery(text) : undefined;
+  const whoList: { key: string; label: string; insert: string; seat?: Seat; project?: boolean }[] =
     atQuery === undefined
       ? []
-      : ([
-          // Everyone first: it is the one that is always there, and the one
-          // whose name never changes.
-          { key: "all", label: "all", seat: undefined },
-          ...(seats ?? []).map((s) => ({ key: s.id, label: s.name, seat: s })),
-        ] as { key: string; label: string; seat?: Seat }[]).filter((w) =>
+      : (projectRequired
+          ? (projects ?? []).map((project) => ({
+              key: project.id,
+              label: project.name,
+              insert: projectMentionToken(project.name),
+              project: true,
+              seat: undefined,
+            }))
+          : [
+              // Everyone first: it is the one that is always there, and the one
+              // whose name never changes.
+              { key: "all", label: "all", insert: "all", seat: undefined, project: false },
+              ...(seats ?? []).map((seat) => ({ key: seat.id, label: seat.name, insert: seat.name, seat, project: false })),
+            ]).filter((w) =>
           mentionMatches(w.label, w.seat?.id, atQuery),
         );
   // One highlight serves both menus. They can never both be open — a box cannot
@@ -571,8 +656,8 @@ export function Composer({
     });
   }
 
-  function completeWho(label: string) {
-    setText(completeMention(label));
+  function completeWho(choice: (typeof whoList)[number]) {
+    setText(choice.project ? `@${choice.insert} ` : completeMention(choice.insert));
     areaRef.current?.focus();
   }
 
@@ -1011,7 +1096,7 @@ export function Composer({
           slash menu below it, because it is the same gesture: a character that
           opens a list, arrows and Tab to choose, and a space to give up on it. */}
       {atOpen && (
-        <div className="slash" role="listbox" aria-label="Send to">
+        <div className="slash" role="listbox" aria-label={projectRequired ? "Choose project" : "Send to"}>
           <div className="slash-head">
             <RollingText>{`${whoList.length} to choose from · Tab to pick`}</RollingText>
           </div>
@@ -1032,19 +1117,20 @@ export function Composer({
                   aria-selected={i === pick}
                   className={`slash-item ${i === pick ? "is-on" : ""}`}
                   onMouseEnter={() => setPick(i)}
-                  onClick={() => completeWho(w.label)}
+                  onClick={() => completeWho(w)}
                 >
                   {w.seat ? (
                     <AgentLogo agent={w.seat.agent === "claude" ? "claude" : "codex"} size={12} />
                   ) : null}
-                  @{w.label}
+                  @{w.project ? w.insert : w.label}
                   {/* Said here because this is where the choice is made:
                       picking a seat without knowing it cannot see the project
                       is picking blind. */}
                   {w.seat?.context === "room_only" && (
                     <span className="slash-note">room-only</span>
                   )}
-                  {!w.seat && <span className="slash-note">everyone, in turn</span>}
+                  {w.project && <span className="slash-note">{w.label}</span>}
+                  {!w.seat && !w.project && <span className="slash-note">everyone, in turn</span>}
                 </button>
               </li>
             ))}
@@ -1160,7 +1246,7 @@ export function Composer({
             aria-label="Message"
             rows={2}
             value={text}
-            placeholder={disabled ? "Pick a project first" : `Ask ${choice.name} to…`}
+            placeholder={disabled ? "Create a project first" : projectRequired ? "@project-name Describe the task…" : `Ask ${choice.name} to…`}
             disabled={disabled}
             onChange={(e) => {
               // Input events are the reliable signal on a software keyboard;
@@ -1196,7 +1282,7 @@ export function Composer({
                 // has to, and what it cost to learn.
                 if (mentionPicks(e)) {
                   e.preventDefault();
-                  completeWho(whoList[pick].label);
+                  completeWho(whoList[pick]);
                   return;
                 }
                 if (e.key === "Escape") {
@@ -1389,6 +1475,9 @@ export function Composer({
                 <div className="picker-menu is-models" role="dialog" aria-label="Model">
                   <ModelPicker
                     choice={choice}
+                    models={modelCatalog.models}
+                    catalogStatus={modelCatalog.status}
+                    onReloadModels={modelCatalog.reload}
                     onChoice={(m) => {
                       onChoice(m);
                       setMenu(false);
@@ -1642,6 +1731,9 @@ export function Composer({
             <div className="sheet-scrim" onClick={() => setSheet(false)} />
             <SettingsSheet
               choice={choice}
+              models={modelCatalog.models}
+              catalogStatus={modelCatalog.status}
+              onReloadModels={modelCatalog.reload}
               onChoice={onChoice}
               missing={missing}
               noAgents={noAgents}
@@ -1736,6 +1828,9 @@ function RestartIcon() {
  */
 export function SettingsSheet({
   choice,
+  models = PROVIDERS.flatMap((provider) => provider.models),
+  catalogStatus = {},
+  onReloadModels = () => {},
   onChoice,
   missing,
   noAgents,
@@ -1751,6 +1846,9 @@ export function SettingsSheet({
   onDone,
 }: {
   choice: ModelChoice;
+  models?: readonly ModelChoice[];
+  catalogStatus?: Partial<Record<Provider, ModelLoadState>>;
+  onReloadModels?: (provider: Provider) => void;
   onChoice: (m: ModelChoice) => void;
   missing: (p: Provider) => boolean;
   noAgents: boolean;
@@ -1816,6 +1914,9 @@ export function SettingsSheet({
             <ModelPicker
               rows
               choice={choice}
+              models={models}
+              catalogStatus={catalogStatus}
+              onReloadModels={onReloadModels}
               onChoice={onChoice}
               missing={missing}
               noAgents={noAgents}
@@ -1985,11 +2086,14 @@ function ChevronIcon() {
  *  twice instead of seven times, and what is left is the only thing being
  *  chosen: the model, as a grid of tiles you read in one pass.
  *
- *  Picking a TAB changes nothing — it only looks — because switching agent is
- *  the one choice here that can end the chat you are in. Only a tile commits.
+ *  Picking a TAB changes nothing — it only looks. A model tile commits, while
+ *  the application-level conversation stays the same even across providers.
  */
 function ModelPicker({
   choice,
+  models,
+  catalogStatus,
+  onReloadModels,
   onChoice,
   missing,
   noAgents,
@@ -2001,6 +2105,9 @@ function ModelPicker({
   afterList,
 }: {
   choice: ModelChoice;
+  models: readonly ModelChoice[];
+  catalogStatus: Partial<Record<Provider, ModelLoadState>>;
+  onReloadModels: (provider: Provider) => void;
   onChoice: (m: ModelChoice) => void;
   /** True when this machine is known NOT to have that agent. */
   missing: (agent: Provider) => boolean;
@@ -2026,15 +2133,36 @@ function ModelPicker({
   afterList?: ReactNode;
 }) {
   const [tab, setTab] = useState<Provider>(choice.agent);
+  const [exactId, setExactId] = useState("");
+  const [exactError, setExactError] = useState(false);
   // Choosing elsewhere — the Agents page, or restoring a chat — moves the tab
   // to whatever is now in use, so reopening this never shows the wrong shelf.
   useEffect(() => setTab(choice.agent), [choice.agent]);
+  useEffect(() => {
+    setExactId("");
+    setExactError(false);
+  }, [tab]);
 
   const agents = PROVIDERS.map((provider) => provider.id);
   // Keep CLI defaults in the registry for restored sessions and history, but
   // offer only explicit model choices in both the dropdown and phone sheet.
-  const list = providerFor(tab).models.filter((model) => model.flag);
+  const offered = models.filter((model) => model.agent === tab && model.flag);
+  const list = choice.agent === tab && choice.flag && !offered.some((model) => model.flag === choice.flag)
+    ? [choice, ...offered]
+    : offered;
   const gone = missing(tab);
+  const modelStatus = catalogStatus[tab];
+
+  const useExactId = () => {
+    const exact = exactId.trim();
+    const model = modelChoiceForFlag(tab, exact);
+    if (!model) {
+      setExactError(true);
+      return;
+    }
+    setExactError(false);
+    onChoice(model);
+  };
 
   return (
     <div className="mp">
@@ -2070,6 +2198,7 @@ function ModelPicker({
               className={`${rows ? "picker-item has-robot" : "mp-card"} ${on ? "is-on" : ""}`}
               aria-pressed={on}
               disabled={gone}
+              title={`${m.model} · ${m.flag}`}
               onClick={() => onChoice(m)}
             >
               {/* Show the complete cast while choosing the next model. */}
@@ -2085,6 +2214,44 @@ function ModelPicker({
           );
         })}
       </div>
+
+      <form
+        className={`mp-exact ${exactError ? "is-error" : ""}`}
+        onSubmit={(event) => {
+          event.preventDefault();
+          useExactId();
+        }}
+      >
+        <input
+          id={`exact-model-${tab}`}
+          aria-label="Exact model ID"
+          value={exactId}
+          disabled={gone}
+          spellCheck={false}
+          autoCapitalize="none"
+          autoCorrect="off"
+          placeholder={tab === "claude" ? "claude-opus-4-6" : tab === "codex" ? "gpt-5.5" : "model id"}
+          onChange={(event) => {
+            setExactId(event.target.value);
+            setExactError(false);
+          }}
+        />
+        <button type="submit" disabled={gone || !exactId.trim()}>Use exact ID</button>
+      </form>
+      {exactError && (
+        <div className="mp-catalog is-warn">Use 1–64 letters, numbers, dots, dashes, or underscores.</div>
+      )}
+
+      {modelStatus?.loading && <div className="mp-catalog">Refreshing available models…</div>}
+      {!modelStatus?.loading && modelStatus?.error && (
+        <div className="mp-catalog is-warn" title={modelStatus.error}>
+          Could not refresh models. Showing built-in choices.
+          <button type="button" onClick={() => onReloadModels(tab)}>Try again</button>
+        </div>
+      )}
+      {!modelStatus?.loading && !modelStatus?.error && modelStatus?.note && (
+        <div className="mp-catalog">{modelStatus.note}</div>
+      )}
 
       {afterList}
 
@@ -2181,10 +2348,10 @@ function ModelNote({
     return <div className="mp-note">Clean start applies to your next new chat</div>;
   }
   if (!started) return null;
-  return tab === choice.agent ? (
-    <div className="mp-note">Another {AGENT_NAME[tab]} model keeps this chat going</div>
-  ) : (
-    <div className="mp-note">{AGENT_NAME[tab]} is a different program — it starts a new chat</div>
+  return (
+    <div className="mp-note">
+      Switching models keeps this chat — the next model receives the conversation so far
+    </div>
   );
 }
 

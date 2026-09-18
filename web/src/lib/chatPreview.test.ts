@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Message } from "./chat";
-import { previewMessages, readChatPreview } from "./chatPreview";
+import { latestResponse, previewMessages, readChatPreview } from "./chatPreview";
 
 const message = (id: string, text: string, extra: Partial<Message> = {}): Message => ({
   id, role: "user", streaming: false, blocks: [{ kind: "text", text }], ...extra,
@@ -25,6 +25,14 @@ describe("chat preview", () => {
 
   it("bounds long messages without losing the latest turn", () => {
     expect(previewMessages([message("long", "a".repeat(1000))])[0].text).toBe("a".repeat(420) + "…");
+  });
+
+  it("finds the latest agent response beyond the three-message preview window", () => {
+    const messages = [
+      message("answer", "The durable answer", { role: "assistant" }),
+      message("u1", "one"), message("u2", "two"), message("u3", "three"),
+    ];
+    expect(latestResponse(messages)?.text).toBe("The durable answer");
   });
 
   it("replays the recent server page and preserves imported chats with no server events", async () => {

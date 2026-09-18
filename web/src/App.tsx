@@ -5,10 +5,9 @@
 // over the WebSocket (lib/bridge.ts). The machine running OctiqFlow owns the
 // agents; this is a view onto them.
 //
-// A project is a FOLDER of conversations. The conversations are kept in the
-// browser (lib/store.ts) with the agent's session id beside each one, so
-// reopening a chat shows it at once and continuing it resumes the SAME agent
-// session rather than starting a stranger.
+// A chat is one durable task. Its project is execution context rather than the
+// primary navigation hierarchy, and the agent's session id stays beside it so
+// continuing the task resumes the SAME session rather than starting a stranger.
 //
 // A live chat is one agent process on the server (agent_chat.rs), keyed by
 // `chat:<conversationId>`. Its events arrive as `chat-event` and fold into a
@@ -46,7 +45,7 @@ import {
   type Seat,
 } from "./lib/chat";
 import {
-  byProject,
+  byTask,
   chatName,
   loadConversations,
   rewriteConversation,
@@ -108,6 +107,7 @@ import {
   liveSettingCommand,
   MODELS,
   modelFromId,
+  modelFromReported,
   parseCommandCache,
   providerCommands,
   providerFor,
@@ -120,7 +120,7 @@ import {
 import { Connect } from "./components/Connect";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
-import { readChatPreview } from "./lib/chatPreview";
+import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
@@ -151,6 +151,8 @@ import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { RollingNumber } from "./components/RollingNumber";
 import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
 import { projectSlug } from "./lib/projectSlug";
+import { readProjectMention } from "./lib/projectMention";
+import { modelHandoff } from "./lib/modelHandoff";
 import { shouldShowChatStatus } from "./lib/chatStatus";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
 import "./components/FocusMode.css";
@@ -233,7 +235,6 @@ const EMPTY: ChatState = emptyChat();
 
 const CHOICE_KEY = "octiq.v2.model";
 const ACCESS_KEY = "octiq.v2.access";
-const OPEN_KEY = "octiq.v2.openFolders";
 const CMDS_KEY = "octiq.v2.commands";
 const EFFORT_KEY = "octiq.v2.effort";
 /** Whether new chats start clean. Kept here rather than per project: it is a
@@ -333,6 +334,7 @@ export default function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [indexReady, setIndexReady] = useState(false);
   const [unavailableChat, setUnavailableChat] = useState<string | null>(null);
+  const [newChatError, setNewChatError] = useState<string | null>(null);
   /** Which agent the rail has opened, by `task_id`, or null for the whole
    *  conversation. View state, not chat state: it is about what this person is
    *  reading, and it must not survive into another conversation. */
@@ -444,16 +446,6 @@ export default function App() {
   // question belongs to the moment, not to the transcript.
   const { asks, setAsks, safetyBlocks, setSafetyBlocks, questions, setQuestions } =
     useChatRequests(conn, (...args) => announceOnce(...args));
-  // Which folders are open, kept between visits — a tree that forgets is a
-  // tree you re-open every time.
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    try {
-      const raw = JSON.parse(localStorage.getItem(OPEN_KEY) || "[]");
-      return new Set(Array.isArray(raw) ? raw : []);
-    } catch {
-      return new Set();
-    }
-  });
   const [choice, setChoice] = useState<ModelChoice>(
     () => modelFromId(recall(CHOICE_KEY)) ?? MODELS[0],
   );
@@ -516,6 +508,11 @@ export default function App() {
   const meta = useRef<
     Record<string, { projectId: string; modelId: string; access: AccessLevel }>
   >({});
+  // A user chat outlives any one provider session. Selecting another model
+  // ends the native process, then the next send starts the chosen provider
+  // with a provider-neutral handoff of the visible conversation.
+  const pendingModelHandoffs = useRef(new Set<string>());
+  const modelSwitches = useRef(new Map<string, Promise<void>>());
   // A copy of `running` that callbacks can read without being rebuilt whenever
   // it changes.
   const runningRef = useRef(running);
@@ -657,6 +654,8 @@ export default function App() {
       return next;
     });
     delete meta.current[id];
+    pendingModelHandoffs.current.delete(id);
+    modelSwitches.current.delete(id);
     // Where it was left goes with it. The cap in lib/chatPlace would drop it
     // eventually anyway; this is so a deleted chat is not still taking up one
     // of the places a live chat could have.
@@ -787,10 +786,6 @@ export default function App() {
 
   useEffect(() => bridge.onState(setConn), []);
 
-  useEffect(() => {
-    remember(OPEN_KEY, JSON.stringify([...expanded]));
-  }, [expanded]);
-
   /** Read the project list from the backend. Called on load and again after
    *  anything in the settings panel changes one, since the backend owns the
    *  store and this is only a view of it. */
@@ -818,33 +813,14 @@ export default function App() {
             );
             if (hit) return hit.id;
           }
-          return active[0]?.id ?? null;
+          return null;
         });
-        // The project you land in is open; anything else keeps its saved state.
-        if (active[0]) setExpanded((prev) => new Set(prev).add(active[0].id));
       })
       .catch(() => setWorkspaces([]));
   }, []);
 
   useEffect(loadWorkspaces, [loadWorkspaces]);
 
-  /** Reordering is optimistic: the dragged row lands with the pointer, while
-   *  the backend persists that exact visible order. If the write loses the
-   *  connection, reload the server-owned list instead of leaving this tab
-   *  showing an order that will disappear on refresh. */
-  const reorderWorkspaces = useCallback(
-    (orderedIds: string[]) => {
-      setWorkspaces((current) => {
-        const byId = new Map(current.map((workspace) => [workspace.id, workspace]));
-        const ordered = orderedIds.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
-        return ordered.length === current.length ? ordered : current;
-      });
-      void bridge
-        .invoke("reorder_workspaces", { orderedIds })
-        .catch(() => loadWorkspaces());
-    },
-    [loadWorkspaces],
-  );
 
   /** Ask the backend which agent CLIs resolve on this machine.
    *
@@ -1428,13 +1404,14 @@ export default function App() {
             // messages — see `chatName`. Re-deriving it every save renamed a
             // chat after a partial view of itself.
             title: chatName(before?.title, s.messages, before?.customTitle),
+            latestResponse: latestAgentResponse(s.messages)?.text ?? before?.latestResponse,
             customTitle: before?.customTitle,
             sessionId: s.sessionId ?? before?.sessionId,
             messages: s.messages,
             modelId: info.modelId,
             permission: info.access,
             // Set once, on the first save. Its whole job is to stay put — see
-            // byProject in lib/store.ts.
+            // byTask in lib/store.ts.
             createdAt: before?.createdAt ?? Date.now(),
             updatedAt: Date.now(),
             // Only when this page holds the chat from the beginning. For one
@@ -1460,6 +1437,7 @@ export default function App() {
             id: c.id,
             projectId: c.projectId,
             title: c.title,
+            latestResponse: c.latestResponse,
             customTitle: c.customTitle,
             sessionId: c.sessionId ?? null,
             modelId: c.modelId ?? null,
@@ -1551,7 +1529,7 @@ export default function App() {
       })
       .finally(() => codexSkillsPending.current.delete(key));
   }, [choice.agent, project, projectId]);
-  const grouped = useMemo(() => byProject(conversations), [conversations]);
+  const taskList = useMemo(() => byTask(conversations), [conversations]);
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
@@ -1632,9 +1610,10 @@ export default function App() {
   // user choosing something, so it must not open a new chat.
   useEffect(() => {
     if (!chat.model) return;
-    const match = MODELS.find(
-      (m) => m.agent === choice.agent && m.flag && chat.model!.includes(m.flag),
-    );
+    // The old process can report its model while it is being replaced. The
+    // explicit picker choice owns this short handoff window.
+    if (conversationId && pendingModelHandoffs.current.has(conversationId)) return;
+    const match = modelFromReported(choice.agent, chat.model);
     if (match && match.id !== choice.id) {
       setChoice(match);
       if (conversationId && meta.current[conversationId]) {
@@ -1686,41 +1665,23 @@ export default function App() {
     });
   }, []);
 
-  const startBlank = useCallback(
-    (forProject: string, settings?: { model: ModelChoice; access: AccessLevel }) => {
-      const id = crypto.randomUUID();
-      const next = settings ?? { model: choice, access };
-      meta.current[id] = { projectId: forProject, modelId: next.model.id, access: next.access };
-      setProjectId(forProject);
-      setConversationId(id);
-      setProjectsScreen(false);
-    },
-    [choice.id, access],
-  );
-
-  /** A new chat someone ASKED for — the + in the top bar, the + on a project
-   *  row. The same blank chat as `startBlank`, and then the box takes the
-   *  focus, because pressing that button is someone saying they are about to
-   *  write something.
-   *
-   *  The other callers of `startBlank` deliberately do not come through here.
-   *  Landing in a blank chat because the project you opened had none, or
-   *  because changing provider could not be done in the chat you were in, is
-   *  the app arriving somewhere — not a person reaching for the keyboard.
+  /** A new task starts before it belongs to a project. The first @project tag
+   *  binds it to a workspace; the old chat stays intact as a durable record.
    *
    *  A counter rather than a flag: two new chats in a row are two requests,
    *  and a boolean's second `true` is not a change for an effect to see. The
    *  number itself means nothing. */
   const [focusBox, setFocusBox] = useState(0);
-  const newChat = useCallback(
-    (forProject: string) => {
-      setUnavailableChat(null);
-      awaited.current = null;
-      startBlank(forProject);
-      setFocusBox((n) => n + 1);
-    },
-    [startBlank],
-  );
+  const newChat = useCallback(() => {
+    setUnavailableChat(null);
+    setNewChatError(null);
+    awaited.current = null;
+    setProjectId(null);
+    setConversationId(null);
+    remember(LAST_KEY, "");
+    setProjectsScreen(false);
+    setFocusBox((n) => n + 1);
+  }, []);
 
   /** Carry on a session the AGENT remembers — one from ~/.claude or ~/.codex,
    *  found through the search on the empty-chat page (components/SessionSearch).
@@ -1754,7 +1715,7 @@ export default function App() {
       if (!forProject) return;
 
       const model =
-        MODELS.find((m) => m.agent === session.agent && m.flag && session.model?.includes(m.flag)) ??
+        (session.model ? modelFromReported(session.agent, session.model) : undefined) ??
         MODELS.find((m) => m.agent === session.agent && !m.flag) ??
         MODELS[0];
       const kept = effortFor(session.agent, (session.effort as Effort) ?? effort);
@@ -1822,6 +1783,7 @@ export default function App() {
 
   const openConversation = useCallback((c: Conversation) => {
     setUnavailableChat(null);
+    setNewChatError(null);
     awaited.current = null;
     const model = modelFromId(c.modelId ?? meta.current[c.id]?.modelId ?? null) ?? MODELS[0];
     const conversationAccess = accessFor(model.agent, (c.permission as AccessLevel) ?? "read");
@@ -2196,15 +2158,6 @@ export default function App() {
     };
   }, []);
 
-  const toggleFolder = useCallback((id: string) => {
-    setExpanded((s) => {
-      const next = new Set(s);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
   /** The chats deleted a moment ago, and the way back to each of them.
    *
    *  Deleting used to ask first, in a dialog in the middle of the screen. The
@@ -2391,6 +2344,7 @@ export default function App() {
       id: held.id,
       projectId: held.projectId,
       title: held.title,
+      latestResponse: held.latestResponse,
       customTitle: held.customTitle,
       sessionId: held.sessionId ?? null,
       modelId: held.modelId ?? null,
@@ -2420,6 +2374,7 @@ export default function App() {
       id: renamed.id,
       projectId: renamed.projectId,
       title: renamed.title,
+      latestResponse: renamed.latestResponse,
       customTitle: true,
       sessionId: renamed.sessionId ?? null,
       modelId: renamed.modelId ?? null,
@@ -2498,7 +2453,27 @@ export default function App() {
 
   const send = useCallback(
     async (text: string, attachments: Attachment[] = []) => {
-      if (!project) return;
+      let targetProject = project;
+      if (!targetProject) {
+        const routed = readProjectMention(text, workspaces);
+        if (routed.kind === "missing") {
+          setNewChatError("Start the message with a project, for example @octiq-flow.");
+          return;
+        }
+        if (routed.kind === "unknown") {
+          setNewChatError(`No project matches @${routed.tag}. Choose one from the @ list.`);
+          return;
+        }
+        if (!routed.text && attachments.length === 0) {
+          setNewChatError("Add the task after the project name.");
+          return;
+        }
+        targetProject = workspaces.find((workspace) => workspace.id === routed.project.id) ?? null;
+        if (!targetProject) return;
+        text = routed.text;
+        setProjectId(targetProject.id);
+        setNewChatError(null);
+      }
       // Images go to the agent as pictures; anything else is named in the text
       // so the agent opens it with its own Read tool, which is better than
       // pushing a whole file into the prompt sight unseen.
@@ -2551,8 +2526,23 @@ export default function App() {
         });
         return;
       }
+      // A model choice is immediate in the UI, but a provider process may
+      // still be finishing its shutdown. Do not let a fast Send fall through
+      // to that old process.
+      const switchTask = modelSwitches.current.get(id);
+      if (switchTask) {
+        try {
+          await switchTask;
+        } catch {
+          return;
+        }
+      }
+      const switchingModel = pendingModelHandoffs.current.has(id);
+      const handoff = switchingModel
+        ? modelHandoff(chatsRef.current[id]?.messages ?? [])
+        : undefined;
       meta.current[id] = {
-        projectId: project.id,
+        projectId: targetProject.id,
         modelId: choice.id,
         access,
       };
@@ -2603,8 +2593,8 @@ export default function App() {
             key: keyFor(id),
             order: mySeats.map((x) => x.id),
             text: addressed.text,
-            cwd: project.primary_path ?? "",
-            extraDirs: project.paths ?? [],
+            cwd: targetProject.primary_path ?? "",
+            extraDirs: targetProject.paths ?? [],
             access,
             effort,
           });
@@ -2648,10 +2638,11 @@ export default function App() {
         const startedAt = Date.now();
         saveIndexEntry({
           id,
-          projectId: project.id,
+          projectId: targetProject.id,
           // A chat is named after the FIRST thing asked in it, so an existing one
           // keeps the name it already has.
           title: held?.title ?? shortTitle(text),
+          latestResponse: held?.latestResponse,
           customTitle: held?.customTitle,
           sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId ?? null,
           modelId: choice.id,
@@ -2687,9 +2678,9 @@ export default function App() {
               await bridge.invoke("chat_seat_start", {
                 key: keyFor(id),
                 seatId: seat.id,
-                cwd: project.primary_path ?? "",
-                extraDirs: project.paths ?? [],
-                env: project.env ?? {},
+                cwd: targetProject.primary_path ?? "",
+                extraDirs: targetProject.paths ?? [],
+                env: targetProject.env ?? {},
                 access,
                 effort,
                 images,
@@ -2704,7 +2695,7 @@ export default function App() {
         }
 
         // Already running: this is the next turn of a conversation in flight.
-        if (runningRef.current.has(id)) {
+        if (!switchingModel && runningRef.current.has(id)) {
           try {
             await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
             return;
@@ -2721,10 +2712,11 @@ export default function App() {
         // No process yet — a new chat, or one being picked back up. The session
         // id comes from the chat's own state if it has run this visit, and from
         // the stored conversation otherwise.
-        const resume =
-          chatsRef.current[id]?.sessionId ??
-          conversationsRef.current.find((c) => c.id === id)?.sessionId ??
-          null;
+        const resume = switchingModel
+          ? null
+          : chatsRef.current[id]?.sessionId ??
+            conversationsRef.current.find((c) => c.id === id)?.sessionId ??
+            null;
 
         // Speaking into a chat whose record this page does not hold. A brand-new
         // one has no record to hold, so it is simply ours from here. Anything
@@ -2743,12 +2735,12 @@ export default function App() {
         try {
           await bridge.invoke("chat_start", {
             key: keyFor(id),
-            cwd: project.primary_path ?? "",
+            cwd: targetProject.primary_path ?? "",
             // A project can group several folders, and the chat starts in only
             // one of them. The rest are named here so the agent can reach the
             // whole project, the same way a terminal in it can.
-            extraDirs: project.paths ?? [],
-            env: project.env ?? {},
+            extraDirs: targetProject.paths ?? [],
+            env: targetProject.env ?? {},
             agent: choice.agent,
             model: choice.flag || null,
             access,
@@ -2756,16 +2748,18 @@ export default function App() {
             lite,
             images,
             prompt: text,
+            handoff: handoff ?? null,
             turnId,
             // Continuing an earlier conversation: the agent picks its own
             // context back up instead of being handed a transcript to read.
             resume,
           });
+          if (switchingModel) pendingModelHandoffs.current.delete(id);
         } catch (err) {
           // The process is already up — this browser simply did not know about
           // it (another tab, or a session that outlived a crash). Talk to it
           // rather than reporting a collision as a failure.
-          if (String((err as Error).message ?? err).includes("already running")) {
+          if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
             try {
               await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
               return;
@@ -2790,7 +2784,7 @@ export default function App() {
     // above, for one value each, at the moment this runs. Listing them meant a
     // new `send` on every delta of every chat, which `MessageList` takes as
     // `onSetting` and which alone was enough to make memoising it do nothing.
-    [project, choice, access, effort, lite, conversationId, patch, catchUpChat, syncQueue],
+    [project, workspaces, choice, access, effort, lite, conversationId, patch, catchUpChat, syncQueue],
   );
 
   /** Stop the running turn. The session survives, ready for the next one. */
@@ -2848,21 +2842,13 @@ export default function App() {
       );
   }, [conversationId, patch]);
 
-  /** Picking a different model.
-   *
-   *  A running agent cannot change model or provider: both are fixed on its
-   *  command line when the process spawns, and a Claude session cannot become
-   *  a Codex one at all — they are different programs with different session
-   *  stores. So once a conversation has started, choosing something else opens
-   *  a NEW chat on it rather than silently doing nothing, which is what used to
-   *  happen. An untouched chat just takes the new setting. */
-  /** Tell a running Claude session to change a setting, using the very slash
-   *  command you would type yourself (`/model sonnet`, `/effort high`).
+  /** Tell a running Claude session to change effort, using the same slash
+   *  command you would type yourself (`/effort high`).
    *
    *  Both are reported in the session's own `slash_commands` list, so this is
    *  the agent's supported way to change them — and it keeps the conversation:
    *  the alternative is killing the process, which is a heavy price for
-   *  swapping models halfway through a thought. Returns whether it was sent. */
+   *  changing effort halfway through a thought. Returns whether it was sent. */
   const tellSession = useCallback(
     (command: string): boolean => {
       if (!conversationId || !runningRef.current.has(conversationId)) return false;
@@ -2881,7 +2867,7 @@ export default function App() {
   const changeModel = useCallback(
     (c: ModelChoice) => {
       const previous = choice;
-      const changingProvider = c.agent !== previous.agent;
+      if (c.id === previous.id) return;
       const nextAccess = accessFor(c.agent, access);
       setChoice(c);
       remember(CHOICE_KEY, c.id);
@@ -2896,34 +2882,84 @@ export default function App() {
         setEffort(kept);
         remember(EFFORT_KEY, kept);
       }
-      if (conversationId && meta.current[conversationId] && !changingProvider) {
+      if (conversationId && meta.current[conversationId]) {
         meta.current[conversationId].modelId = c.id;
       }
 
       // An untouched chat simply starts with the new choice.
-      if (chat.messages.length === 0) return;
+      if (!conversationId || chat.messages.length === 0) return;
 
-      // Changing PROVIDER cannot be done in place at any price: a Claude
-      // session id means nothing to Codex, and the two are different programs.
-      if (changingProvider) {
-        if (project) startBlank(project.id, { model: c, access: nextAccess });
-        return;
-      }
+      const id = conversationId;
+      const oldSessionId = chatsRef.current[id]?.sessionId ??
+        conversationsRef.current.find((conversation) => conversation.id === id)?.sessionId;
+      pendingModelHandoffs.current.add(id);
 
-      // Same provider, mid-conversation. Its adapter may have a native setting
-      // command that keeps everything said so far. `Default` has no name to
-      // pass, so that one still needs a fresh chat.
-      const liveCommand = liveSettingCommand(c.agent, "model", c.flag);
-      if (liveCommand && tellSession(liveCommand)) return;
+      const setStoredTarget = (model: ModelChoice, sessionId?: string) => {
+        setConversations((current) => {
+          const list = current.map((conversation) => conversation.id === id
+            ? { ...conversation, modelId: model.id, sessionId, updatedAt: Date.now() }
+            : conversation);
+          saveConversations(list);
+          return list;
+        });
+      };
+      const clearNativeSession = () => {
+        const target = modelFromId(meta.current[id]?.modelId ?? null) ?? c;
+        patch(id, (state) => ({
+          ...state,
+          sessionId: undefined,
+          model: target.flag || undefined,
+          modelAsked: false,
+          commands: undefined,
+          contextTokens: undefined,
+          contextWindow: undefined,
+        }));
+      };
 
-      // A model on this provider is supplied on the process command line. Stop
-      // a live process so the next message can resume this same conversation
-      // with the new model, rather than discarding its context in a new chat.
-      if (conversationId && runningRef.current.has(conversationId)) {
-        endSession(conversationId);
-      }
+      // Persist the application-level choice immediately. The provider's old
+      // session id must never be resumed by a different model after a reload.
+      setStoredTarget(c);
+      clearNativeSession();
+
+      // Repeated choices while the same stop is in flight only change the
+      // target model. One provider process needs one stop.
+      if (modelSwitches.current.has(id)) return;
+      const stop = (runningRef.current.has(id)
+        ? bridge.invoke("chat_retarget", { key: keyFor(id) })
+        : Promise.resolve())
+        .then(() => {
+          setRunning((current) => {
+            if (!current.has(id)) return current;
+            const next = new Set(current);
+            next.delete(id);
+            return next;
+          });
+          // Ignore any final init/status line the old process emitted while it
+          // was closing. The explicit picker choice remains authoritative.
+          clearNativeSession();
+        })
+        .catch((error) => {
+          pendingModelHandoffs.current.delete(id);
+          setChoice(previous);
+          remember(CHOICE_KEY, previous.id);
+          setAccess(access);
+          remember(ACCESS_KEY, access);
+          setEffort(effort);
+          remember(EFFORT_KEY, effort);
+          if (meta.current[id]) meta.current[id].modelId = previous.id;
+          setStoredTarget(previous, oldSessionId);
+          patch(id, (state) => ({
+            ...state,
+            sessionId: oldSessionId,
+            model: previous.flag || state.model,
+            notices: [...state.notices, `Could not switch models: ${String((error as Error)?.message ?? error)}`].slice(-8),
+          }));
+          throw error;
+        })
+        .finally(() => modelSwitches.current.delete(id));
+      modelSwitches.current.set(id, stop);
     },
-    [chat.messages.length, effort, access, choice, conversationId, tellSession, endSession],
+    [chat.messages.length, effort, access, choice, conversationId, patch],
   );
 
   /** Effort is fixed on the agent's command line, the same as permission mode.
@@ -3412,13 +3448,12 @@ export default function App() {
         <span className="topbar-action-label">Settings</span>
       </button>
 
-      {project && (
-        <button
+      <button
           className="icon-btn new-chat"
           type="button"
-          aria-label={`New chat in ${project.name}`}
-          title="New chat"
-          onClick={() => newChat(project.id)}
+          aria-label="Start new chat"
+          title="Start new chat"
+          onClick={newChat}
         >
           <svg
             width="18"
@@ -3434,7 +3469,6 @@ export default function App() {
           </svg>
           <span className="topbar-action-label">New chat</span>
         </button>
-      )}
 
       {topbarReadouts && readouts}
     </>
@@ -3460,7 +3494,7 @@ export default function App() {
           <button
             className="topbar-title"
             type="button"
-            aria-label={isMobile && !showingProjects ? "Back to projects and chats" : "Projects and chats"}
+            aria-label={isMobile && !showingProjects ? "Back to chats" : "Chats"}
             aria-expanded={isMobile ? undefined : !navShut}
             onClick={() => {
               if (isMobile) {
@@ -3482,7 +3516,7 @@ export default function App() {
               aria-hidden="true"
             />
             <span className="topbar-identity">
-              <span className="topbar-name">{showingProjects ? "Projects & chats" : project?.name ?? "OctiqFlow"}</span>
+              <span className="topbar-name">{showingProjects ? "Chats" : project?.name ?? "OctiqFlow"}</span>
               <span className="topbar-version">v{__APP_VERSION__}</span>
             </span>
             {!isMobile && <span className="topbar-caret" aria-hidden="true">
@@ -3528,37 +3562,31 @@ export default function App() {
           onShowShelved={() => setShelfOpen(true)}
           deletedCount={deletedChats.length}
           onShowDeleted={() => setTrashOpen(true)}
-          conversations={grouped}
+          conversations={taskList}
           getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
           loadPreview={loadPreview}
-          currentProject={projectId}
           currentConversation={conversationId}
           running={running}
           busy={busySet}
           deleting={deleting}
           leaving={leaving}
           deleteMs={UNDO_MS}
-          expanded={expanded}
-          onToggle={toggleFolder}
           onPickConversation={(conversation) => {
             openConversation(conversation);
           }}
-          onNewChat={(id) => {
-            newChat(id);
-          }}
+          onNewChat={newChat}
           onDelete={deleteConversation}
           onPin={togglePin}
           onRename={renameConversation}
           onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
-          onReorder={reorderWorkspaces}
           onHide={isMobile ? undefined : () => showNav(false)}
           onResize={isMobile ? undefined : nav.startDrag}
           foot={topbarReadouts ? undefined : readouts}
         />
 
         <main className="main" hidden={showingProjects} ref={pane}>
-          {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the project list.</p></div> : <>
+          {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
@@ -3582,10 +3610,14 @@ export default function App() {
               </p>
             </div>
           ) : chat.messages.length === 0 ? (
-            <div className="hero">
-              <h1 className="hero-title">
-                What do you want to do{project ? ` in ${project.name}` : ""}?
-              </h1>
+            <div className={`hero ${project ? "" : "hero-start"}`}>
+              <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "Start new chat"}</h1>
+              {!project && (
+                <>
+                  <p className="hero-sub">Begin with <code>@project-name</code>, then describe the task.</p>
+                  {newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>}
+                </>
+              )}
               {chat.sessionId &&
                 (conversationId && resumed[conversationId] ? (
                   <p className="hero-sub">
@@ -3781,7 +3813,7 @@ export default function App() {
             putBack={(conversationId && reclaimed[conversationId]) || undefined}
             onPutBack={() => conversationId && tookBack(conversationId)}
             busy={chat.busy && !cutOff}
-            disabled={!project}
+            disabled={workspaces.length === 0}
             installed={installed}
             commands={providerCommands(choice.agent, (projectId && commands[projectId]?.[choice.agent]) || [])}
             onCommandOpen={loadCodexSkills}
@@ -3808,6 +3840,8 @@ export default function App() {
             }
             room={room}
             seats={mySeats}
+            projects={workspaces}
+            projectRequired={!project}
             round={myRound}
             onAsk={askRoom}
             onStopRound={stopRound}
@@ -3863,7 +3897,7 @@ export default function App() {
             rather than something laid over it, so the chat gives up width while
             this is open and takes it straight back when it closes. On a phone
             the stylesheet turns it into a sheet that slides in from the right. */}
-        {gitMounted && !previewVisible && (
+        {gitMounted && !previewVisible && project && (
           <GitPanel
             project={project}
             open={gitOpen}

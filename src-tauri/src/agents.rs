@@ -14,7 +14,7 @@
 // it — restore the AGE and the kill on top of `memory.rs` if they are wanted.
 use crate::agent_provider::{provider_for, AgentKind, AgentProvider};
 use crate::proc::no_console;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
@@ -85,6 +85,313 @@ pub fn agent_installs(refresh: Option<bool>) -> Vec<AgentInstall> {
         forget_probe();
     }
     install_rows(&probe_cached())
+}
+
+// ---- Models --------------------------------------------------------------
+
+/// One provider-native model the picker can launch exactly as named.
+///
+/// Keep the provider's id in `model`: it is the value passed to `--model`, and
+/// preserving it is what stops a versioned choice such as `claude-opus-4-6`
+/// from quietly turning back into the moving `opus` alias.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModel {
+    pub model: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub is_default: bool,
+    pub supported_efforts: Vec<String>,
+}
+
+/// Where a catalog came from matters. Codex and API-key Claude sessions can
+/// enumerate the account's current models. Claude Code subscription OAuth does
+/// not expose a machine-readable versioned catalog, so that path receives a
+/// bundled active-model list plus an exact-id field in the client.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelCatalog {
+    pub source: String,
+    pub models: Vec<AgentModel>,
+    pub note: Option<String>,
+}
+
+/// Load the models the selected provider can name today.
+pub fn agent_models(agent: AgentKind) -> Result<AgentModelCatalog, String> {
+    match agent {
+        AgentKind::Claude => Ok(claude_models()),
+        AgentKind::Codex => codex_models(),
+        AgentKind::Pi => Err("pi.dev does not expose a model catalog".into()),
+    }
+}
+
+/// Claude Platform's public Models API is authoritative when the server has an
+/// API key. A Claude Pro/Max login uses Claude Code OAuth instead and does not
+/// hand that credential to OctiqFlow; in that common case use the active
+/// versioned ids bundled below. The exact-id field remains the escape hatch for
+/// a newly released or organization-specific model between app releases.
+fn claude_models() -> AgentModelCatalog {
+    #[cfg(not(test))]
+    {
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !key.trim().is_empty() {
+                let response = ureq::get("https://api.anthropic.com/v1/models?limit=1000")
+                    .set("anthropic-version", "2023-06-01")
+                    .set("x-api-key", key.trim())
+                    .timeout(Duration::from_secs(10))
+                    .call();
+                if let Ok(response) = response {
+                    if let Ok(body) = response.into_json::<ClaudeModelsResponse>() {
+                        let models = parse_claude_models(body);
+                        if !models.is_empty() {
+                            return AgentModelCatalog {
+                                source: "provider".into(),
+                                models,
+                                note: None,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    AgentModelCatalog {
+        source: "bundled".into(),
+        models: bundled_claude_models(),
+        note: Some(
+            "Claude Code subscription login has no model-list API; showing active versioned ids plus exact-id entry."
+                .into(),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct ClaudeModelsResponse {
+    #[serde(default)]
+    data: Vec<ClaudeModel>,
+}
+
+#[derive(Deserialize)]
+struct ClaudeModel {
+    id: String,
+    display_name: String,
+    #[serde(default)]
+    capabilities: Option<Value>,
+}
+
+fn parse_claude_models(body: ClaudeModelsResponse) -> Vec<AgentModel> {
+    body.data
+        .into_iter()
+        .filter(|model| !model.id.trim().is_empty())
+        .map(|model| {
+            let efforts = model
+                .capabilities
+                .as_ref()
+                .and_then(|value| value.get("effort"))
+                .and_then(Value::as_object)
+                .map(|effort| {
+                    ["low", "medium", "high", "xhigh", "max"]
+                        .into_iter()
+                        .filter(|name| {
+                            effort
+                                .get(*name)
+                                .and_then(|value| value.get("supported"))
+                                .and_then(Value::as_bool)
+                                == Some(true)
+                        })
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            AgentModel {
+                description: Some(model.id.clone()),
+                model: model.id,
+                display_name: model.display_name,
+                is_default: false,
+                supported_efforts: efforts,
+            }
+        })
+        .collect()
+}
+
+/// The active versioned models published by Anthropic at this app release.
+/// Aliases stay in the UI registry because they mean "latest", not a pinned
+/// model, and therefore should never be mistaken for one of these rows.
+fn bundled_claude_models() -> Vec<AgentModel> {
+    [
+        ("claude-opus-5", "Claude Opus 5"),
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-4-7", "Claude Opus 4.7"),
+        ("claude-opus-4-6", "Claude Opus 4.6"),
+        ("claude-opus-4-5-20251101", "Claude Opus 4.5"),
+        ("claude-sonnet-5", "Claude Sonnet 5"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+        ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+    ]
+    .into_iter()
+    .map(|(model, display_name)| AgentModel {
+        model: model.into(),
+        display_name: display_name.into(),
+        description: Some(model.into()),
+        is_default: false,
+        supported_efforts: Vec::new(),
+    })
+    .collect()
+}
+
+/// Ask Codex's app-server for the same visible catalog its own model picker
+/// renders. This is account-aware and includes models added after OctiqFlow was
+/// released, so the web client never has to maintain a second GPT allowlist.
+fn codex_models() -> Result<AgentModelCatalog, String> {
+    let executable = probe_cached()
+        .into_iter()
+        .find(|(name, _)| name == AgentKind::Codex.id())
+        .ok_or_else(|| "Codex is not installed on this machine".to_string())?
+        .1;
+    let mut command = Command::new(if executable.is_empty() {
+        provider_for(AgentKind::Codex).bin()
+    } else {
+        &executable
+    });
+    command
+        .args(["app-server", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_console(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not start Codex to load models: {e}"))?;
+
+    let request = [
+        json!({
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "clientInfo": { "name": "octiqflow", "version": env!("CARGO_PKG_VERSION") },
+                "capabilities": {}
+            }
+        }),
+        json!({ "method": "initialized", "params": {} }),
+        json!({
+            "id": 2,
+            "method": "model/list",
+            "params": { "limit": 1000, "includeHidden": false }
+        }),
+    ];
+    let Some(mut stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Codex stdin was unavailable".into());
+    };
+    for message in request {
+        if let Err(error) = writeln!(stdin, "{message}") {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("could not ask Codex for models: {error}"));
+        }
+    }
+
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Codex stdout was unavailable".into());
+    };
+    let (send, receive) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(answer) = parse_models_response(&line) {
+                let _ = send.send(answer);
+                return;
+            }
+        }
+        let _ = send.send(Err("Codex ended without returning a model list".into()));
+    });
+
+    let answer = receive
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| Err("Codex took too long to load its model list".into()));
+    drop(stdin);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+    answer.map(|models| AgentModelCatalog {
+        source: "provider".into(),
+        models,
+        note: None,
+    })
+}
+
+/// A `model/list` response among app-server notifications, or no response on
+/// this line. The parser is pure so catalog behavior is covered without a
+/// logged-in Codex process in the test suite.
+fn parse_models_response(line: &str) -> Option<Result<Vec<AgentModel>, String>> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("id").and_then(Value::as_u64) != Some(2) {
+        return None;
+    }
+    if let Some(error) = value.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Codex could not load its model list");
+        return Some(Err(message.to_string()));
+    }
+    let Some(entries) = value
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(Value::as_array)
+    else {
+        return Some(Err("Codex returned an invalid model list".into()));
+    };
+
+    let mut seen = HashSet::new();
+    let mut models = Vec::new();
+    for entry in entries {
+        if entry.get("hidden").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(model) = entry
+            .get("model")
+            .or_else(|| entry.get("id"))
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+        else {
+            continue;
+        };
+        if !seen.insert(model.to_ascii_lowercase()) {
+            continue;
+        }
+        let display_name = entry
+            .get("displayName")
+            .and_then(Value::as_str)
+            .unwrap_or(model);
+        let description = entry
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or(model);
+        let supported_efforts = entry
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|effort| effort.get("reasoningEffort").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
+        models.push(AgentModel {
+            model: model.to_string(),
+            display_name: display_name.to_string(),
+            description: Some(description.to_string()),
+            is_default: entry.get("isDefault").and_then(Value::as_bool) == Some(true),
+            supported_efforts,
+        });
+    }
+    if models.is_empty() {
+        return Some(Err("Codex returned no visible models".into()));
+    }
+    Some(Ok(models))
 }
 
 // ---- Codex skills ---------------------------------------------------------
@@ -499,6 +806,80 @@ mod tests {
             parse_skills_response(r#"{"method":"remoteControl/status/changed","params":{}}"#)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn codex_model_response_keeps_visible_unique_models_and_efforts() {
+        let line = serde_json::json!({
+            "id": 2,
+            "result": {
+                "data": [
+                    {
+                        "id": "sol",
+                        "model": "gpt-5.6-sol",
+                        "displayName": "GPT-5.6 Sol",
+                        "hidden": false,
+                        "isDefault": true,
+                        "supportedReasoningEfforts": [
+                            { "reasoningEffort": "low" },
+                            { "reasoningEffort": "high" }
+                        ]
+                    },
+                    {
+                        "id": "duplicate",
+                        "model": "gpt-5.6-sol",
+                        "displayName": "Duplicate"
+                    },
+                    {
+                        "id": "internal",
+                        "model": "hidden-model",
+                        "displayName": "Hidden",
+                        "hidden": true
+                    }
+                ],
+                "nextCursor": null
+            }
+        })
+        .to_string();
+
+        let models = parse_models_response(&line).unwrap().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model, "gpt-5.6-sol");
+        assert_eq!(models[0].display_name, "GPT-5.6 Sol");
+        assert!(models[0].is_default);
+        assert_eq!(models[0].supported_efforts, ["low", "high"]);
+    }
+
+    #[test]
+    fn model_parser_ignores_other_app_server_messages() {
+        assert!(parse_models_response(r#"{"id":1,"result":{}}"#).is_none());
+        assert!(parse_models_response(r#"{"method":"model/list/updated","params":{}}"#).is_none());
+    }
+
+    #[test]
+    fn bundled_claude_catalog_keeps_old_active_versions_pinned() {
+        let models = bundled_claude_models();
+        assert!(models.iter().any(|model| model.model == "claude-opus-4-6"));
+        assert!(models.iter().all(|model| model.model != "opus"));
+    }
+
+    #[test]
+    fn claude_api_catalog_keeps_exact_ids_and_supported_efforts() {
+        let models = parse_claude_models(ClaudeModelsResponse {
+            data: vec![ClaudeModel {
+                id: "claude-opus-4-6".into(),
+                display_name: "Claude Opus 4.6".into(),
+                capabilities: Some(json!({
+                    "effort": {
+                        "low": { "supported": true },
+                        "medium": { "supported": false },
+                        "high": { "supported": true }
+                    }
+                })),
+            }],
+        });
+        assert_eq!(models[0].model, "claude-opus-4-6");
+        assert_eq!(models[0].supported_efforts, ["low", "high"]);
     }
 
     /// The probe shell must be INTERACTIVE as well as a login shell. pty.rs

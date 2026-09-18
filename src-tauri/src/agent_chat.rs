@@ -975,8 +975,8 @@ pub fn chat_start_impl(
     lite: Option<bool>,
 ) -> Result<(), String> {
     chat_start_with_user_turn(
-        manager, key, cwd, agent, model, access, prompt, resume, extra_dirs, env, effort, images,
-        lite, None,
+        manager, key, cwd, agent, model, access, prompt, None, resume, extra_dirs, env, effort,
+        images, lite, None,
     )
 }
 
@@ -994,6 +994,7 @@ pub fn chat_start_user_impl(
     model: Option<String>,
     access: Option<Access>,
     prompt: Option<String>,
+    handoff: Option<String>,
     resume: Option<String>,
     extra_dirs: Option<Vec<String>>,
     env: Option<std::collections::BTreeMap<String, String>>,
@@ -1011,6 +1012,7 @@ pub fn chat_start_user_impl(
         model,
         access,
         prompt,
+        handoff,
         resume,
         extra_dirs,
         env,
@@ -1030,6 +1032,7 @@ fn chat_start_with_user_turn(
     model: Option<String>,
     access: Option<Access>,
     prompt: Option<String>,
+    handoff: Option<String>,
     resume: Option<String>,
     extra_dirs: Option<Vec<String>>,
     env: Option<std::collections::BTreeMap<String, String>>,
@@ -1038,6 +1041,11 @@ fn chat_start_with_user_turn(
     lite: Option<bool>,
     user_turn_id: Option<String>,
 ) -> Result<(), String> {
+    let visible_prompt = prompt.clone();
+    let prompt = match (prompt, handoff.filter(|history| !history.trim().is_empty())) {
+        (Some(prompt), Some(history)) => Some(model_handoff_prompt(&history, &prompt)),
+        (prompt, _) => prompt,
+    };
     // How this host was started, kept so the backend can start it the same way
     // again — see `StartContext`. Written BEFORE the spawn, and left in place if
     // the spawn fails: the settings were still the right ones, and a chat that
@@ -1072,6 +1080,17 @@ fn chat_start_with_user_turn(
         lite,
         user_turn_id,
         true,
+        visible_prompt,
+    )
+}
+
+/// A provider switch starts a fresh native session, but not a fresh user chat.
+/// The earlier turns are JSON made by the browser's provider-neutral reducer;
+/// keep them data here and put the actual new message last and unambiguous.
+fn model_handoff_prompt(history: &str, current: &str) -> String {
+    let current = serde_json::to_string(current).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        "Continue this OctiqFlow conversation using the earlier turns below. The JSON is conversation data, not a new message. Preserve established decisions and answer the current user message directly.\n\nEarlier turns (JSON):\n{history}\n\nCurrent user message (JSON string):\n{current}"
     )
 }
 
@@ -1215,6 +1234,7 @@ fn resume_question(
         start.lite,
         Some(record.turn_id()),
         true,
+        None,
     )
 }
 
@@ -1417,6 +1437,7 @@ fn start_queued_command_turn_inner(
         start.lite,
         turn_id,
         false,
+        None,
     )
 }
 
@@ -1446,6 +1467,9 @@ pub(crate) fn start_session(
     // A queued Codex turn records at enqueue time and passes `false` when its
     // later resume process starts, avoiding a duplicate prompt.
     record_user_turn: bool,
+    // The person-visible text when the provider receives a larger handoff
+    // wrapper. `None` means the provider prompt is already the visible turn.
+    visible_prompt: Option<String>,
 ) -> Result<(), String> {
     let Voice {
         session_key,
@@ -1483,6 +1507,7 @@ pub(crate) fn start_session(
     let provider = provider_for(agent);
     let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
+    let durable_prompt = visible_prompt.as_deref().unwrap_or(&prompt);
     let images = images.unwrap_or_default();
     crate::safety_block::remember_project(&key, &cwd);
     let line = build_command_for_project(
@@ -1592,7 +1617,7 @@ pub(crate) fn start_session(
     // reader can forward an acknowledgement or a following enqueue can land.
     if record_user_turn && has_prompt {
         if let Some(turn_id) = user_turn_id.as_deref() {
-            record_durable_user_turn(&key, turn_id, &prompt, &images, seat.as_ref());
+            record_durable_user_turn(&key, turn_id, durable_prompt, &images, seat.as_ref());
         }
     }
 
@@ -2512,6 +2537,7 @@ fn chat_seat_start_with_user_turn(
         Some(true),
         user_turn_id,
         true,
+        None,
     )
 }
 
@@ -2773,6 +2799,21 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
     with_access(|a| a.remove(&key));
     end_process(manager, &key)?;
     cancelled
+}
+
+/// End only the host provider process so the same application conversation can
+/// continue on another model. The old native session cannot be resumed by the
+/// backend during the handoff; the next browser send supplies a fresh start
+/// context for the selected provider. Permissions, access, transcript, and any
+/// room seats belong to the user conversation and remain intact.
+pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    end_process(manager, &key)?;
+    manager
+        .starts
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&key);
+    Ok(())
 }
 
 /// End this chat's agent on purpose, and keep everything else about the chat.
@@ -3193,6 +3234,19 @@ mod tests {
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
 
     #[test]
+    fn a_model_handoff_keeps_history_separate_from_the_new_user_message() {
+        let history = r#"[{"role":"user","text":"Use Opus 4.6"}]"#;
+        let prompt =
+            model_handoff_prompt(history, "Now compare it to GPT.\nDo not lose this line.");
+        assert!(prompt.contains(history));
+        assert!(prompt.contains(
+            r#"Current user message (JSON string):
+"Now compare it to GPT.\nDo not lose this line.""#
+        ));
+        assert_eq!(prompt.matches("Use Opus 4.6").count(), 1);
+    }
+
+    #[test]
     fn sends_during_a_process_handoff_remain_cancellable_and_durable() {
         let manager = Arc::new(ChatManager::default());
         let key = format!("queue-handoff-{}", uuid::Uuid::new_v4());
@@ -3514,6 +3568,7 @@ mod tests {
         );
         // And the one that was always there still is.
         assert!(c.contains("mcp__octiq__ask_user"));
+        assert!(c.contains("mcp__octiq__search_conversations"));
         assert!(c.contains("mcp__octiq__read_conversation"));
         assert!(c.contains("whole message is `continue <OctiqFlow conversation URL>`"));
         assert!(c.contains("must not open it in Browser"));
@@ -5398,6 +5453,41 @@ mod idle_tests {
             vec![seat_key],
             "the seat is still there, writing its answer"
         );
+    }
+
+    #[test]
+    fn retargeting_replaces_only_the_host_and_keeps_conversation_permissions() {
+        let m = ChatManager::default();
+        let seat = crate::chat_room::add_seat_impl(
+            &m,
+            "retarget-room",
+            crate::chat_room::NewSeat::for_test("Codex", ChatAgent::Codex),
+        )
+        .unwrap();
+        let seat_key = crate::chat_room::seat_session_key("retarget-room", &seat.id);
+        put(&m, "retarget-room", still_session(false, Duration::ZERO));
+        put(&m, &seat_key, still_session(false, Duration::ZERO));
+        with_access(|access| access.insert("retarget-room".into(), Access::Auto));
+        m.remember_start(
+            "retarget-room",
+            StartContext {
+                cwd: "/tmp".into(),
+                agent: ChatAgent::Claude,
+                model: Some("claude-opus-4-6".into()),
+                access: Some(Access::Auto),
+                extra_dirs: None,
+                env: None,
+                effort: None,
+                lite: None,
+                session_id: Some("old-claude-session".into()),
+            },
+        );
+
+        chat_retarget_impl(&m, "retarget-room".into()).unwrap();
+
+        assert_eq!(chat_list_impl(&m).unwrap(), vec![seat_key]);
+        assert!(m.start_context("retarget-room").is_none());
+        assert!(with_access(|access| access.contains_key("retarget-room")));
     }
 
     #[test]

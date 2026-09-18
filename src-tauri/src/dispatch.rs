@@ -206,6 +206,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "model")?,
             arg(&args, "access")?,
             arg(&args, "prompt")?,
+            arg(&args, "handoff")?,
             arg(&args, "resume")?,
             arg(&args, "extraDirs")?,
             arg(&args, "env")?,
@@ -272,6 +273,14 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "access")?,
         )),
         "chat_stop" => unit(crate::agent_chat::chat_stop_impl(
+            &svc.chats,
+            arg(&args, "key")?,
+        )),
+        // Replace only the host provider behind one user conversation. Unlike
+        // `chat_stop`, a model switch keeps standing permissions and room
+        // seats; unlike `chat_restart`, the old provider's start context must
+        // not be resumable while the browser prepares its handoff.
+        "chat_retarget" => unit(crate::agent_chat::chat_retarget_impl(
             &svc.chats,
             arg(&args, "key")?,
         )),
@@ -610,6 +619,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // the same reason the desktop menu does: offering an agent that is not
         // installed only produces a chat that dies on its first line.
         "agent_installs" => Ok(json!(crate::agents::agent_installs(arg(&args, "refresh")?))),
+        // Provider-owned model catalogs. Codex answers through app-server;
+        // Claude uses its Models API when an API key is available and an
+        // explicit versioned fallback for subscription OAuth.
+        "agent_models" => to_value(crate::agents::agent_models(arg(&args, "agent")?)),
         // Codex's own cwd-aware catalog, loaded lazily when its composer opens
         // the slash menu. `codex exec --json` has no startup catalog event.
         "codex_skills" => to_value(crate::agents::codex_skills(arg(&args, "cwd")?)),
@@ -709,6 +722,17 @@ mod tests {
         assert!(
             err.contains("absolute directory"),
             "route reached loader: {err}"
+        );
+    }
+
+    #[test]
+    fn a_browser_can_ask_for_versioned_claude_models() {
+        let svc = Services::load();
+        let out = dispatch(&svc, "agent_models", json!({ "agent": "claude" })).expect("routed");
+        let rows = out["models"].as_array().expect("a model catalog");
+        assert!(
+            rows.iter().any(|model| model["model"] == "claude-opus-4-6"),
+            "the pinned model that motivated discovery is selectable"
         );
     }
 

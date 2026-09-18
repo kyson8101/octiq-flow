@@ -1,7 +1,7 @@
 // Pinned chats sit above the rest of their project, whatever their age. Below
 // them the order is still "newest started first", which never moves a row.
 import { describe, expect, it } from "vitest";
-import { byProject, type Conversation } from "./store";
+import { byProject, byTask, type Conversation } from "./store";
 
 const chat = (id: string, createdAt: number, over: Partial<Conversation> = {}): Conversation => ({
   id,
@@ -31,5 +31,18 @@ describe("byProject", () => {
 
   it("treats an unpinned chat and one that was never pinned alike", () => {
     expect(order([chat("a", 1, { pinned: false }), chat("b", 2)])).toEqual(["b", "a"]);
+  });
+});
+
+describe("byTask", () => {
+  it("puts every project in one stable, newest-first task list", () => {
+    const old = chat("old", 1, { projectId: "alpha" });
+    const fresh = chat("fresh", 3, { projectId: "beta" });
+    const pinned = chat("pinned", 2, { projectId: "gamma", pinned: true });
+    expect(byTask([old, fresh, pinned]).map((item) => item.id)).toEqual([
+      "pinned",
+      "fresh",
+      "old",
+    ]);
   });
 });
