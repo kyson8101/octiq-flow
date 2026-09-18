@@ -84,7 +84,6 @@ const insideViewport = async locator => {
  const box=await bounds(locator),size=page.viewportSize();
  assert.ok(box.x>=0 && box.y>=0 && box.x+box.width<=size.width && box.y+box.height<=size.height,JSON.stringify(box));
 };
-assert.equal(await page.locator('.sidebar a[href="/os"]').count(),1);
 assert.equal(await page.locator('.sidebar .proj-add, .sidebar .proj-drag, .sidebar .chat-pin, .sidebar .chat-del, .sidebar .chat-rename-btn, .sidebar .sidebar-add').count(),0);
 assert.equal(await menu.count(),0);
 assert.ok((await bounds(currentRow.locator('.chat-title'))).width>280);

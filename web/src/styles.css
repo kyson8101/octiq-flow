@@ -79,11 +79,7 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
-/* Three deliberate regions: project, primary navigation, and actions. The middle
-   region is a real centre on a desktop, so Git activity changing on the right
-   no longer nudges navigation sideways. */
 .topbar-leading,
-.topbar-center,
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -94,7 +90,6 @@ body {
   flex: 1 1 auto;
 }
 
-.topbar-center,
 .topbar-actions {
   flex: 0 0 auto;
 }
@@ -110,30 +105,6 @@ body {
 
 .topbar-leading .topbar-title {
   max-width: 100%;
-}
-
-.topbar-center:empty {
-  display: none;
-}
-
-@media (min-width: 860px) {
-  .topbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  }
-
-  .topbar-leading {
-    justify-self: start;
-  }
-
-  .topbar-center {
-    justify-self: center;
-  }
-
-  .topbar-actions {
-    justify-self: end;
-    margin-left: 0;
-  }
 }
 
 /* The project name, which is also the way into the drawer. It shrinks before
@@ -451,9 +422,7 @@ body {
   color: var(--danger);
 }
 
-/* Where the view switch and live readouts go when the top bar has no room.
-   The switch leads the drawer on a narrow screen; the figures stay at the
-   bottom at narrow and intermediate widths, with the other quiet readouts. */
+/* Where live readouts go when the top bar has no room. */
 .sidebar-slot {
   flex: 0 0 auto;
   padding: 8px 10px 4px;
@@ -462,25 +431,6 @@ body {
 .sidebar-slot.is-foot {
   padding: 2px 4px calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
-}
-
-.sidebar-slot .mode-switch {
-  width: 100%;
-}
-
-.sidebar-slot .mode-btn {
-  flex: 1 1 0;
-  justify-content: center;
-}
-
-/* In the drawer there is room for words, and the icons alone were only ever a
-   concession to the top bar. */
-.sidebar-slot .mode-label {
-  display: inline;
-}
-
-.sidebar-slot .mode-icon {
-  display: inline;
 }
 
 .sidebar-slot .usage-btn {
@@ -6268,16 +6218,8 @@ body.is-ultra .eff {
    the column layout has the same thumb a phone does, and a phone turned
    sideways still has it. */
 @media (pointer: coarse) {
-  /* The view switch and the usage meter only live in here at all on a small
-     screen — they come down from the top bar, and they came down at their
-     top-bar size. */
-  .sidebar-slot .mode-btn,
   .sidebar-slot .usage-btn {
     min-height: 44px;
-  }
-
-  .sidebar-slot .mode-btn {
-    padding: 0 14px;
   }
 
   /* New project, shelved, put away: three 26px squares in a row is three ways
@@ -10771,56 +10713,9 @@ body.is-ultra .eff {
   padding: 8px 12px;
 }
 
-/* ---- Primary navigation ------------------------------------------------ */
+/* ---- Main views -------------------------------------------------------- */
 .main[hidden] {
   display: none;
-}
-
-.mode-switch {
-  display: flex;
-  gap: var(--space-1);
-  flex: 0 0 auto;
-  padding: var(--space-1);
-  border-radius: 999px;
-  background: var(--bg-sunken);
-  border: 1px solid var(--border);
-}
-
-.mode-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--fg-2);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1.4;
-  cursor: pointer;
-  min-height: 28px;
-}
-
-.mode-btn.is-on {
-  background: var(--bg-1);
-  color: var(--fg-0);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-}
-
-/* Under this the usage pill and the project name both need the room, and each
-   destination already has an icon that works on its own. */
-@media (max-width: 620px) {
-  .mode-label {
-    display: none;
-  }
-}
-
-@media (min-width: 621px) {
-  .mode-icon {
-    display: none;
-  }
 }
 
 /* ---- Editor mode -------------------------------------------------------
@@ -11976,48 +11871,7 @@ body.is-ultra .eff {
   .projects-screen .projects-return > span { display: none; }
   .projects-screen .projects-return-icon { display: block; }
 
-  .sidebar-toolbar.has-navigation {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
-  }
-  .sidebar-toolbar.has-navigation > .sidebar-slot {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 0;
-  }
-  .sidebar-toolbar.has-navigation .mode-switch {
-    gap: 0;
-    padding: 0;
-    border: 0;
-    background: transparent;
-  }
-  .sidebar-toolbar.has-navigation .mode-btn {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0 6px;
-    border-radius: var(--r-sm);
-    font-size: 12px;
-  }
-  .sidebar-toolbar.has-navigation .mode-icon { display: none; }
-  .sidebar-toolbar.has-navigation .sidebar-head {
-    flex: 0 0 auto;
-    gap: 0;
-    padding: 0;
-  }
-  .sidebar-toolbar.has-navigation .sidebar-title { display: none; }
-  .sidebar-toolbar.has-navigation .sidebar-add {
-    width: 44px;
-    height: 44px;
-  }
   .projects-screen .proj-list { padding-top: 4px; }
   .projects-screen .proj-btn { height: 44px; }
   .projects-screen .proj-node { --sib-mid: 22px; }
-}
-
-@media (max-width: 379.98px) {
-  .sidebar-toolbar.has-navigation .mode-os-link > span { display: none; }
-  .sidebar-toolbar.has-navigation .mode-os-link .mode-icon { display: block; }
 }

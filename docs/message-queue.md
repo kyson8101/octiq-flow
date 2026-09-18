@@ -61,7 +61,7 @@ successful reply.
 
 Run `pnpm --dir web test` and `cargo test --lib` in `src-tauri/`. The browser
 regression is `node scripts/test-queued-message.mjs`; set
-`OCTIQOS_PLAYWRIGHT_MODULE` to an installed Playwright module when needed. It
+`OCTIQFLOW_PLAYWRIGHT_MODULE` to an installed Playwright module when needed. It
 uses mock transport responses and real message/composer components at desktop,
 390px, and 320px widths, exercising action locking, pickup, and restoration of
 text and attachments. It starts no real agents and prints screenshot paths.

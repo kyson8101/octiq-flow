@@ -109,12 +109,6 @@
 }
 
 @media (max-width: 859.98px) {
-  .sidebar .sidebar-toolbar.has-navigation { gap: 8px; padding: 2px 8px; }
-  .sidebar .sidebar-toolbar.has-navigation .sidebar-head { flex: 0 0 auto; padding: 0; gap: 0; border: 0; }
-  .sidebar .sidebar-toolbar.has-navigation .mode-btn { flex: 0 0 auto; min-width: 68px; min-height: 44px; padding: 0 12px; }
-  .sidebar .sidebar-toolbar.has-navigation .mode-btn.is-on { background: transparent; box-shadow: none; }
-  .sidebar .sidebar-toolbar.has-navigation .mode-os-link > span { display: inline; }
-  .sidebar .sidebar-toolbar.has-navigation .mode-icon { display: none; }
   .sidebar .proj-list { overscroll-behavior: contain; padding: 2px 8px 8px; }
   .sidebar .proj-btn { height: 40px; }
   .sidebar .proj-node { --sib-mid: 22px; }

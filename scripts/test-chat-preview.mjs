@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 const require = createRequire(new URL("../web/package.json", import.meta.url));
 const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.OCTIQOS_PLAYWRIGHT_MODULE ?? "@playwright/test");
+const { chromium } = await import(process.env.OCTIQFLOW_PLAYWRIGHT_MODULE ?? "@playwright/test");
 const output = await mkdtemp(path.join(tmpdir(), "octiq-chat-preview-"));
 const fixture = `
 import React, { useState } from "react";
@@ -54,7 +54,7 @@ const server = await createServer({
 let browser;
 try {
   await server.listen();
-  browser = await chromium.launch({ headless: true, executablePath: process.env.OCTIQOS_CHROME_EXECUTABLE });
+  browser = await chromium.launch({ headless: true, executablePath: process.env.OCTIQFLOW_CHROME_EXECUTABLE });
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));

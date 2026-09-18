@@ -95,5 +95,5 @@ node scripts/test-image-preview.mjs
 ```
 
 The browser test uses Vite, Playwright and isolated transport/image fixtures;
-it does not connect to real chats. Set `OCTIQOS_PLAYWRIGHT_MODULE` and
-`OCTIQOS_CHROME_EXECUTABLE` when Playwright/Chrome are installed elsewhere.
+it does not connect to real chats. Set `OCTIQFLOW_PLAYWRIGHT_MODULE` and
+`OCTIQFLOW_CHROME_EXECUTABLE` when Playwright/Chrome are installed elsewhere.

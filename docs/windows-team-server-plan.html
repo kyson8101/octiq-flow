@@ -775,7 +775,6 @@
           <div class="risk"><b>Shared provider identity</b><span>Claude/Codex usage and credentials are not isolated between trusted team members. This is an explicit accepted constraint.</span></div>
           <div class="risk"><b>Remote Git conflicts</b><span>Separate clones prevent local interference, but GitHub branch protection is still required to prevent remote overwrite.</span></div>
           <div class="risk"><b>Host administrator trust</b><span>Windows administrators can access user data. Stronger protection requires separate VMs or encryption with a different trust model.</span></div>
-          <div class="risk"><b>OctiqOS database scope</b><span>If the team uses <span class="mono">/os</span>, do not point all instances at one existing non-tenant-aware database. Use separate databases or add tenancy first.</span></div>
           <div class="risk"><b>Single-host failure</b><span>Without snapshots and off-host backup, a server disk failure can destroy uncommitted work that is not present on GitHub.</span></div>
           <div class="risk"><b>Windows proof required</b><span>The Windows PTY, service-account profile, file watcher, and CLI lifecycle must pass the pilot gate before rollout.</span></div>
         </div>

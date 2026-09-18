@@ -3309,31 +3309,6 @@ export default function App() {
 
   if (conn === "unauthorized") return <Connect />;
 
-  /* Workspace navigation. Marked by a filled pill, not an edge stripe: on a 48px-tall
-     bar a thin marker is a thing you squint at. */
-  const primaryNavigation = (
-    <div className="mode-switch" role="group" aria-label="View">
-      <button
-        className="mode-btn is-on"
-        type="button"
-        aria-pressed="true"
-        title="Chat"
-        onClick={() => setProjectsScreen(false)}
-      >
-        <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.9-.9L3 20.5l1.6-4.7A8.4 8.4 0 0 1 3.6 11 8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z" />
-        </svg>
-        <span className="mode-label">Chat</span>
-      </button>
-      <a className="mode-btn mode-os-link" href="/os" target="_blank" rel="noopener noreferrer" title="Open OctiqOS">
-        <svg className="mode-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M4 21V7l8-4 8 4v14M2 21h20M9 21v-5h6v5M8 9h1m6 0h1M8 12h1m6 0h1" />
-        </svg>
-        <span>OctiqOS</span>
-      </a>
-    </div>
-  );
-
   /* The two "where do I stand" numbers: how much of the plan is gone, and how
      much memory this app is holding. Built once and placed once — on a wide
      screen in the top bar, otherwise in the project list footer — because each of
@@ -3527,10 +3502,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* A dedicated middle slot keeps the primary navigation centred instead of
-            letting the changing number of actions on the right push it. */}
-        <div className="topbar-center">{wide && primaryNavigation}</div>
-
         <div className="topbar-actions">
           {showingProjects ? (
             <button className="projects-return" type="button"
@@ -3583,7 +3554,6 @@ export default function App() {
           onReorder={reorderWorkspaces}
           onHide={isMobile ? undefined : () => showNav(false)}
           onResize={isMobile ? undefined : nav.startDrag}
-          head={wide ? undefined : primaryNavigation}
           foot={topbarReadouts ? undefined : readouts}
         />
 

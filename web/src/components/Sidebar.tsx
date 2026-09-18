@@ -15,7 +15,6 @@ import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { RollingNumber } from "./RollingNumber";
 import { SidebarMenu } from "./SidebarMenu";
-import "./PortalLink.css";
 import "./MobileSidebar.css";
 
 export type Project = {
@@ -72,7 +71,6 @@ export function Sidebar({
   onReorder,
   onHide,
   onResize,
-  head,
   foot,
 }: {
   projects: Project[];
@@ -129,12 +127,9 @@ export function Sidebar({
    *  IS a column: as a drawer it is the width of the screen, and there is
    *  nothing beside it to take the space from. */
   onResize?: (e: React.PointerEvent<HTMLElement>) => void;
-  /** Controls with nowhere else to be on a phone. The top bar holds four things
-   *  at 390px, so the view switch (`head`) and the plan-usage meter (`foot`)
-   *  come in here instead — passed in rather than rendered twice, because the
-   *  meter polls an endpoint that rate-limits per account. Both are absent on a
-   *  wide screen, where the bar has room for them. */
-  head?: ReactNode;
+  /** Live readouts with nowhere else to be on a phone. They are passed in
+   *  rather than rendered twice because the usage meter polls an endpoint
+   *  that rate-limits per account. */
   foot?: ReactNode;
 } & ChatPreviewSource) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -188,12 +183,7 @@ export function Sidebar({
 
   return (
     <nav className="sidebar" aria-label="Projects and chats">
-      {!head && <a className="sidebar-os-link" href="/os" target="_blank" rel="noopener noreferrer">
-        <span aria-hidden="true">◈</span> OctiqOS
-      </a>}
-      <div className={`sidebar-toolbar${head ? " has-navigation" : ""}`}>
-        {head && <div className="sidebar-slot">{head}</div>}
-
+      <div className="sidebar-toolbar">
         <div className="sidebar-head">
           <span className="sidebar-title">Projects</span>
           <SidebarMenu label="Project list actions" open={menuOpen} onOpenChange={setMenuOpen}

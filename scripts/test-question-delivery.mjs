@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 const require = createRequire(new URL("../web/package.json", import.meta.url));
 const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.OCTIQOS_PLAYWRIGHT_MODULE ?? "@playwright/test");
+const { chromium } = await import(process.env.OCTIQFLOW_PLAYWRIGHT_MODULE ?? "@playwright/test");
 const artifacts = await mkdtemp(join(tmpdir(), "octiq-question-ui-"));
 const fixture = `
 import React from "react";
@@ -79,7 +79,7 @@ const server = await createServer({
 let browser;
 try {
   await server.listen();
-  browser = await chromium.launch({ headless: true, channel: process.env.OCTIQOS_CHROME_EXECUTABLE ? undefined : "chrome", executablePath: process.env.OCTIQOS_CHROME_EXECUTABLE });
+  browser = await chromium.launch({ headless: true, channel: process.env.OCTIQFLOW_CHROME_EXECUTABLE ? undefined : "chrome", executablePath: process.env.OCTIQFLOW_CHROME_EXECUTABLE });
   for (const width of [1280, 390]) {
     const context = await browser.newContext({ viewport: { width, height: 850 }, reducedMotion: "reduce" });
     const page = await context.newPage();

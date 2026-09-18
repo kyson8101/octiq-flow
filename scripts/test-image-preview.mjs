@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 const require = createRequire(new URL("../web/package.json", import.meta.url));
 const { createServer } = await import(require.resolve("vite"));
-const { chromium } = await import(process.env.OCTIQOS_PLAYWRIGHT_MODULE ?? "@playwright/test");
+const { chromium } = await import(process.env.OCTIQFLOW_PLAYWRIGHT_MODULE ?? "@playwright/test");
 const output = await mkdtemp(path.join(tmpdir(), "octiq-image-preview-"));
 const { previewHtml } = createRequire(import.meta.url)("./mcp/preview.cjs");
 const htmlSource = '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:20px system-ui;padding:32px;background:#eef3f0;color:#263e35}button{font:inherit;padding:12px}</style></head><body><h1>HTML review</h1><button id="counter" onclick="this.textContent=Number(this.textContent)+1">0</button><script>try{localStorage.getItem("octiq.web.token");document.body.dataset.isolated="no";}catch{document.body.dataset.isolated="yes";}</script></body></html>';
@@ -49,7 +49,7 @@ const server = await createServer({
 let browser;
 try {
  await server.listen();
- browser = await chromium.launch({headless:true, executablePath:process.env.OCTIQOS_CHROME_EXECUTABLE});
+ browser = await chromium.launch({headless:true, executablePath:process.env.OCTIQFLOW_CHROME_EXECUTABLE});
  const page = await browser.newPage({viewport:{width:1280,height:800}});
  const errors=[]; page.on("pageerror",error=>errors.push(error.message));
  const context = page.context();
