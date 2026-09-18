@@ -108,19 +108,6 @@ export function swipeEnd(s: Swipe): "open" | "close" | null {
   return swipeProgress(s) > COMMIT ? "open" : "close";
 }
 
-/** Does anything between `el` and `root` scroll sideways? Then the finger is
- *  probably about to scroll it — a wide code block or a diff reaches the left
- *  edge, and its own scroll has to win there. */
-export function scrollsSideways(el: Element | null, root: Element): boolean {
-  for (let n = el; n && n !== root; n = n.parentElement) {
-    if (n.scrollWidth > n.clientWidth + 1) {
-      const ox = getComputedStyle(n).overflowX;
-      if (ox === "auto" || ox === "scroll") return true;
-    }
-  }
-  return false;
-}
-
 /** Wire the gesture to an element — the app shell, which holds both the drawer
  *  and everything the drawer covers.
  *
@@ -164,13 +151,20 @@ export function bindDrawerSwipe(el: HTMLElement, isOpen: () => boolean, onChange
     clear();
     if (e.touches.length !== 1) return;
     suppressClickUntil = 0;
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
-    const target = e.target instanceof Element ? e.target : null;
-    if (!isOpen() && scrollsSideways(target, el)) return;
     const t = e.touches[0];
+    const open = isOpen();
+    // The closed drawer owns its narrow edge strip unconditionally. Checking
+    // selection or a horizontally scrollable descendant first left holes in
+    // that promise: the browser could turn the same drag into Back and land on
+    // a previous chat. Content keeps horizontal swipes everywhere outside the
+    // strip. With the drawer open, selection still wins because closing can
+    // begin anywhere rather than in a reserved target.
+    if (open) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
+    }
     const width = el.querySelector<HTMLElement>(".sidebar")?.offsetWidth || el.clientWidth;
-    s = swipeStart({ x: t.clientX, y: t.clientY, t: e.timeStamp }, { open: isOpen(), width });
+    s = swipeStart({ x: t.clientX, y: t.clientY, t: e.timeStamp }, { open, width });
     // Safari can claim its native back gesture before the first touchmove.
     // That navigates chat history without firing any click. Reserve only the
     // drawer's edge strip at touchstart; interior taps/scrolling stay native.

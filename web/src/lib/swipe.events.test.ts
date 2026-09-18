@@ -109,6 +109,15 @@ describe("drawer touch lifecycle", () => {
     expect(changed).toHaveBeenCalledExactlyOnceWith(true);
   });
 
+  it("keeps the edge reserved when text elsewhere is selected", () => {
+    vi.stubGlobal("window", { getSelection: () => ({ rangeCount: 1, isCollapsed: false }) });
+    const edge = touch(shell, "touchstart", 5, 0);
+    expect(edge.defaultPrevented).toBe(true);
+    touch(shell, "touchmove", 180, 100);
+    touch(shell, "touchend", 180, 110, 0);
+    expect(changed).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   it("registers a non-passive touchstart so the edge can cancel native navigation", () => {
     dispose();
     const listen = vi.spyOn(shell, "addEventListener");

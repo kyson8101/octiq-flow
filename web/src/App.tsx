@@ -113,6 +113,7 @@ import {
   type Provider,
 } from "./lib/agentProviders";
 import { Connect } from "./components/Connect";
+import { ConnectionStatus } from "./components/ConnectionStatus";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
@@ -374,7 +375,10 @@ export default function App() {
   const pane = useRef<HTMLElement | null>(null);
   const showingProjects = isMobile && projectsScreen;
   const projectSwipeRef = useDrawerSwipe({
-    enabled: isMobile && !focusMode,
+    // The edge remains the way back to navigation in focus mode too. Opening
+    // the projects screen makes focus mode unavailable, so the same gesture
+    // cleanly leaves focus and reveals the sidebar.
+    enabled: isMobile,
     open: showingProjects,
     onChange: (open) => {
       if (open) setChatWide(false);
@@ -3220,12 +3224,6 @@ export default function App() {
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
     >
       {focusMode && <FocusModeButton active onClick={exitFocus} />}
-      {conn !== "open" && (
-        <div className="conn-strip">
-          {conn === "connecting" ? "Connecting to OctiqFlow…" : "Reconnecting…"}
-        </div>
-      )}
-
       <header className="topbar">
         <div className="topbar-leading">
           {/* The project name is also the way back to the project list. The
@@ -3274,6 +3272,7 @@ export default function App() {
               </svg>
             </span>}
           </button>
+          <ConnectionStatus state={conn} />
         </div>
 
         <div className="topbar-actions">

@@ -15,6 +15,10 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  /* A rightward drag at the viewport edge belongs to the mobile sidebar, not
+     browser history. The touch listener is the Safari fallback; browsers that
+     implement overscroll containment can reject navigation before JS runs. */
+  overscroll-behavior-x: none;
 }
 
 body {
@@ -45,14 +49,6 @@ body {
 
 .app.chat-wide {
   --chat-column: none;
-}
-
-.conn-strip {
-  padding: 5px 10px;
-  background: var(--warn);
-  color: var(--bg-0);
-  font-size: 12px;
-  text-align: center;
 }
 
 /* ---- Top bar ---------------------------------------------------------- */
@@ -105,6 +101,40 @@ body {
 
 .topbar-leading .topbar-title {
   max-width: 100%;
+}
+
+/* The socket can disappear without stopping the server-side work. Keep that
+   visible, but in the app chrome rather than a full-width warning that moves
+   the whole conversation. The dashed link travels while another connection is
+   being attempted; the nodes stay still so the icon remains legible. */
+.connection-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--warn);
+}
+
+.connection-status-link {
+  stroke-dasharray: 1.75 2.25;
+  animation: connection-link 0.8s linear infinite;
+}
+
+@keyframes connection-link {
+  to {
+    stroke-dashoffset: -4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-status-link {
+    animation: none;
+  }
 }
 
 /* The project name, which is also the way into the drawer. It shrinks before
