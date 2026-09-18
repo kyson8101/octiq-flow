@@ -37,6 +37,33 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+/** Codex reports MCP identity as separate `server` and `tool` fields. The rest
+ *  of the chat uses the callable's qualified name, so join those fields before
+ *  the event reaches the card instead of leaving it labelled `mcp_tool_call`.
+ */
+function mcpName(item: Record<string, unknown>): string {
+  const server = str(item.server).trim();
+  const tool = str(item.tool).trim();
+  if (tool.toLowerCase().startsWith("mcp__")) return tool;
+  if (server && tool) return `mcp__${server}__${tool}`;
+  return tool || (server ? `mcp__${server}` : "mcp_tool_call");
+}
+
+/** Tool results are structured JSON in Codex's MCP event rather than the text
+ *  carried by its command events. Keep the structure inspectable in the open
+ *  card, and prefer the useful error message when the call failed. */
+function mcpResult(item: Record<string, unknown>): string {
+  const error = str(obj(item.error).message).trim();
+  if (error) return error;
+  if (item.result === undefined || item.result === null) return "";
+  if (typeof item.result === "string") return item.result;
+  try {
+    return JSON.stringify(item.result, null, 2);
+  } catch {
+    return String(item.result);
+  }
+}
+
 /** `in_progress` → running, `completed` → done, `failed` → error.
  *
  *  A `web_search` carries no status at all: it is started and then it is
@@ -118,6 +145,18 @@ export function readCodexEvent(raw: unknown): CodexRead | null {
         args: { query: str(item.query) },
         state: runState(status, completed),
       };
+
+    case "mcp_tool_call": {
+      const result = completed ? mcpResult(item) : "";
+      return {
+        kind: "tool",
+        id,
+        name: mcpName(item),
+        args: item.arguments ?? {},
+        state: runState(status, completed),
+        ...(completed && result ? { result } : {}),
+      };
+    }
 
     default:
       return null;

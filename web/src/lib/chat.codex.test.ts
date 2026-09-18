@@ -90,6 +90,43 @@ describe("a Codex seat answering", () => {
     expect(name(web)).toBe("web_search");
   });
 
+  it("shows an MCP call's qualified tool name instead of the generic event type", () => {
+    let state = reduceChat(emptyChat(), {
+      type: "item.started",
+      item: {
+        id: "mcp-1",
+        type: "mcp_tool_call",
+        server: "octiq",
+        tool: "preview_html",
+        arguments: { title: "Tool preview" },
+        status: "inProgress",
+      },
+    });
+    state = reduceChat(state, {
+      type: "item.completed",
+      item: {
+        id: "mcp-1",
+        type: "mcp_tool_call",
+        server: "octiq",
+        tool: "preview_html",
+        arguments: { title: "Tool preview" },
+        status: "completed",
+        result: { content: [{ type: "text", text: "Preview published" }] },
+      },
+    });
+    const tools = state.messages.flatMap((message) =>
+      message.blocks.filter((block) => block.kind === "tool"),
+    );
+
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      name: "mcp__octiq__preview_html",
+      args: { title: "Tool preview" },
+      state: "done",
+    });
+    expect(tools[0]?.result).toContain("Preview published");
+  });
+
   it("marks a command as finished once its result is in", () => {
     const tools = after.messages.flatMap((m) =>
       m.blocks.filter((b): b is Extract<typeof b, { kind: "tool" }> => b.kind === "tool"),
