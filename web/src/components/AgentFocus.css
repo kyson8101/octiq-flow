@@ -9,7 +9,7 @@
   z-index: 2;
   display: flex;
   flex-direction: column;
-  background: var(--bg-0);
+  background: var(--chat-background, var(--bg-0));
 }
 
 .chat-main {
