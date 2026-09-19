@@ -39,15 +39,6 @@ export function presentNotice(raw: string): Omit<PresentedNotice, "count"> {
     };
   }
 
-  if (/could not save some conversation history because its session record was unavailable/i.test(text)) {
-    return {
-      key: "session-history-unavailable",
-      title: "Some conversation history may be incomplete",
-      detail: "The task may still have completed. OctiqFlow kept the technical details in diagnostics.",
-      technical: raw.trim(),
-    };
-  }
-
   const logged = logMessage(raw);
   if (logged) {
     const message = logged.replace(/^[\w.-]+(?:::[\w.-]+)*:\s*/, "");

@@ -172,6 +172,45 @@ body {
   border-radius: 6px;
 }
 
+/* Project identity is deliberately stronger than the old five-pixel dot: an
+   uploaded image when one exists, otherwise a compact letter tile whose tint
+   stays stable for that project. The same component scales across the app. */
+.project-avatar {
+  --project-color: var(--fg-3);
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--project-color) 58%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--project-color) 18%, var(--bg-1));
+  color: color-mix(in srgb, var(--project-color) 78%, var(--fg-0));
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: -0.04em;
+  user-select: none;
+}
+
+.project-avatar.is-tiny { width: 14px; height: 14px; border-radius: 4px; font-size: 7px; }
+.project-avatar.is-small { width: 20px; height: 20px; font-size: 9px; }
+.project-avatar.is-medium { width: 26px; height: 26px; font-size: 11px; }
+.project-avatar.is-large { width: 48px; height: 48px; border-radius: 10px; font-size: 17px; }
+
+.project-avatar.has-icon {
+  border-color: color-mix(in srgb, var(--project-color) 42%, var(--border));
+  background: var(--bg-2);
+}
+
+.project-avatar-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.project-avatar-text { transform: translateX(-0.02em); }
+
 .topbar-identity {
   display: flex;
   flex-direction: column;
@@ -534,7 +573,6 @@ body {
 .task-sidebar .sidebar-head {
   min-height: 52px;
   padding: 9px 8px 8px 14px;
-  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-new-chat {
@@ -555,6 +593,62 @@ body {
 
 .sidebar-new-chat:hover { border-color: var(--accent); color: var(--fg-0); }
 .sidebar-new-chat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.sidebar-search-wrap {
+  padding: 0 8px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-search {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 7px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  color: var(--fg-3);
+}
+
+.sidebar-search:focus-within {
+  border-color: var(--accent);
+  color: var(--fg-2);
+}
+
+.sidebar-search > svg { flex: 0 0 auto; }
+
+.sidebar-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.sidebar-search input::placeholder { color: var(--fg-3); }
+.sidebar-search input::-webkit-search-cancel-button { display: none; }
+
+.sidebar-search button {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+
+.sidebar-search button:hover { background: var(--bg-2); color: var(--fg-0); }
+.sidebar-search button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .task-chat-list {
   flex: 1 1 auto;
@@ -601,24 +695,36 @@ body {
 .task-chat-list .chat:hover .chat-snippet,
 .task-chat-list .chat:focus-within .chat-snippet,
 .task-chat-list .chat.is-pinned .chat-snippet { padding-right: 0; }
-.chat-project {
+.chat-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   height: 17px;
   overflow: hidden;
   color: var(--fg-3);
   font-size: 10.5px;
   line-height: 17px;
   white-space: nowrap;
+}
+.chat-project,
+.chat-model {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.chat-project { flex: 1 1 auto; }
+.chat-project-name,
+.chat-model > span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
-.chat-project-dot {
-  flex: 0 0 auto;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--fg-3);
+.chat-model {
+  flex: 0 1 auto;
+  max-width: 46%;
+  color: var(--fg-2);
 }
 .task-chat-list .chat-indicators {
   position: absolute;
@@ -682,6 +788,8 @@ body {
 
 @media (max-width: 859.98px), (pointer: coarse) {
   .sidebar-new-chat { min-height: 40px; }
+  .sidebar-search { min-height: 40px; }
+  .sidebar-search button { width: 32px; height: 32px; }
   .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
   .task-chat-list .chat-btn { height: 82px; }
   .task-chat-list .chat-rename { height: 82px; }
@@ -790,7 +898,15 @@ body {
   border-color: var(--accent-soft-border, var(--border));
 }
 
+.shelf-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .shelf-card-name {
+  min-width: 0;
   font-weight: 600;
   color: var(--fg-0);
   overflow: hidden;
@@ -1582,7 +1698,7 @@ body {
   color: var(--fg-3);
 }
 
-/* Codex can have several one-shot turns waiting while an earlier answer is
+/* Codex can have several native turns waiting while an earlier answer is
    still being written. When another prompt sits between the one it picked up
    and this answer, name the actual target here so a long reply cannot look like
    it belongs to the newest bubble merely because that bubble is nearest. */
@@ -7567,6 +7683,309 @@ body.is-ultra .eff {
   color: var(--fg-3);
 }
 
+/* ---- App settings ------------------------------------------------------
+   A real settings workspace rather than another long drawer. The navigation
+   owns the categories; the content side only scrolls the page being edited. */
+.panel.settings-page {
+  left: 0;
+  width: 100vw;
+  border-left: 0;
+  background: var(--bg-0);
+}
+
+.settings-page-head {
+  min-height: 58px;
+  padding-right: max(var(--space-5), calc((100vw - 1120px) / 2));
+  padding-left: max(var(--space-5), calc((100vw - 1120px) / 2));
+  background: var(--bg-0);
+}
+
+.settings-page-head .panel-path {
+  direction: ltr;
+  text-align: left;
+}
+
+.settings-layout {
+  width: min(1120px, 100%);
+  min-height: 0;
+  flex: 1 1 auto;
+  align-self: center;
+  display: flex;
+}
+
+.settings-nav {
+  width: 244px;
+  flex: 0 0 244px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-6) var(--space-4);
+  border-right: 1px solid var(--border);
+}
+
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settings-nav-item {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-nav-item:hover {
+  background: var(--bg-1);
+  color: var(--fg-0);
+}
+
+.settings-nav-item.is-on {
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.settings-nav-item > svg {
+  flex: 0 0 auto;
+}
+
+.settings-nav-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-nav-copy > span {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-nav-copy small {
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-nav-foot {
+  margin: auto 10px 0;
+  padding-top: var(--space-6);
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 40px 48px 64px;
+}
+
+.settings-section {
+  width: min(100%, 760px);
+  margin: 0 auto;
+}
+
+.settings-section-head {
+  min-height: 64px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-section-head h2 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: var(--text-title);
+  font-weight: 650;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+.settings-section-head p {
+  max-width: 62ch;
+  margin: 7px 0 0;
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.settings-primary {
+  min-height: var(--control-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-primary:hover {
+  filter: brightness(1.07);
+}
+
+.settings-control-row {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-control-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-control-copy h3 {
+  margin: 0;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-control-copy p,
+.settings-note {
+  margin: 4px 0 0;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.settings-note {
+  max-width: 68ch;
+  margin-top: var(--space-4);
+}
+
+.settings-section > .set-warn {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, var(--border));
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+.settings-empty {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  color: var(--fg-3);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.settings-empty strong {
+  color: var(--fg-1);
+  font-size: 13px;
+}
+
+.settings-appearance .thm-grid {
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 12px;
+}
+
+.settings-appearance .thm-shot {
+  height: 76px;
+}
+
+@media (max-width: 700px) {
+  .settings-page-head {
+    min-height: 54px;
+    padding-right: var(--space-3);
+    padding-left: var(--space-4);
+  }
+
+  .settings-layout {
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: auto;
+    flex: 0 0 auto;
+    display: block;
+    padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .settings-nav-list {
+    width: max-content;
+    flex-direction: row;
+  }
+
+  .settings-nav-item {
+    width: auto;
+    min-height: 40px;
+    padding: 7px 11px;
+  }
+
+  .settings-nav-copy small,
+  .settings-nav-foot {
+    display: none;
+  }
+
+  .settings-content {
+    padding: 26px 16px 48px;
+  }
+
+  .settings-section-head {
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+
+  .settings-section-head h2 {
+    font-size: 21px;
+  }
+
+  .settings-project-path {
+    font-size: 10px;
+  }
+
+  .settings-appearance .thm-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ---- Project settings --------------------------------------------------
    Lives in the same slide-out shell as the file panel (.panel), so the two
    feel like one drawer that shows different things. */
@@ -7597,6 +8016,133 @@ body.is-ultra .eff {
   line-height: 1.45;
   color: var(--fg-2);
 }
+
+.settings-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+
+.settings-project,
+.settings-project-new {
+  width: 100%;
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-1);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-project {
+  min-height: 58px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-project:last-child {
+  border-bottom: 0;
+}
+
+.settings-project:hover,
+.settings-project-new:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-2);
+  color: var(--fg-0);
+}
+
+.settings-project:focus-visible,
+.settings-project-new:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.settings-project-new {
+  justify-content: center;
+  border-style: dashed;
+  color: var(--fg-2);
+}
+
+.settings-project-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-project-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-project-path {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.settings-project-state {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
+.settings-project > svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.settings-project > .project-avatar { flex: 0 0 auto; }
+
+.project-icon-editor {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+}
+
+.project-icon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.project-initial-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
+  align-items: center;
+  gap: 12px;
+  margin-top: 5px;
+  color: var(--fg-2);
+  font-size: 12px;
+}
+
+.project-initial-input {
+  min-width: 0;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.project-icon-note { margin-top: 1px; }
 
 /* An on/off row, built like the effort switch it borrows its shape from
    (.eff-switch) so the two read as the same control in two places. */
@@ -8210,63 +8756,6 @@ body.is-ultra .eff {
 .usage-empty {
   font-size: 12px;
   color: var(--fg-3);
-}
-
-/* ---- Memory held (beside the plan usage) --------------------------------
-   One absolute number — a chip icon and "3.8 GB" — with the breakdown in the
-   popover: which chat, which terminal, and what is left over as the server
-   itself. It reuses the `.usage-*` shell above (button, scrim, popup, and the
-   phone rule that opens the popup upwards out of the drawer footer), so only
-   the contents are its own.
-
-   No bar and no colour ladder here, deliberately. There is no honest ceiling to
-   draw a fill against, and a threshold invented to make one would be a nag
-   rather than a reading. */
-.mem-icon {
-  color: var(--fg-3);
-}
-
-/* Name on the left taking whatever width is spare, number hard right, so the
-   figures line up in a column you can read down. */
-.mem-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 12px;
-}
-
-/* Name and project travel together on the left, against the number on the
-   right — a project name that drifted over to sit beside the figures would
-   read as part of them. */
-.mem-label {
-  display: flex;
-  flex: 1 1 auto;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-}
-
-.mem-name {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--fg-1);
-}
-
-/* Which project it belongs to — only ever needed to tell two rows with the
-   same name apart, so it trails the name rather than taking a column, and it
-   never shrinks: the NAME is the part that gives when the row is too narrow.
-   A project clipped to "octiq-fl…" has lost the only job it had. */
-.mem-where {
-  flex: 0 0 auto;
-  font-size: 11px;
-  color: var(--fg-3);
-}
-
-.mem-row .usage-val {
-  flex: 0 0 auto;
 }
 
 /* ---- Copy a whole reply -------------------------------------------------
@@ -11558,34 +12047,6 @@ body.is-ultra .eff {
   font-size: var(--text-xs);
   font-weight: 500;
   padding-left: 1px;
-}
-
-/* ---- Neo Brutalism ----------------------------------------------------- */
-/* Themes carry colours and corner radii, and nothing else — see the note at
-   the top of `lib/theme.ts`. Neo-brutalism is not a palette though. It is a
-   thick hard outline and an unblurred offset shadow; without those the pink is
-   just pink, which is exactly how it looked. So this ONE theme also gets a
-   style block, keyed off the `data-theme` attribute `applyTheme` already sets.
-   It is small on purpose and it is NOT a pattern to copy — every other theme
-   stays pure colour, and the day a second style block appears is the day this
-   should become a real capability instead of a special case. */
-
-[data-theme="neo-brutalism"] {
-  /* Offset, no blur, full strength. A theme file may not say this; the
-     stylesheet may, for a theme it knows by name. */
-  --shadow: 4px 4px 0 var(--border);
-}
-
-/* Every border that already exists gets thicker — and only those. A
-   `border-width` on an element whose `border-style` is `none` draws nothing,
-   so this thickens the boxes that were already outlined and outlines nothing
-   new. `box-sizing: border-box` is global, so the extra pixel eats into the
-   padding rather than moving the box.
-
-   The terminal is left alone: xterm measures its pane to decide how many
-   columns fit, and a border it did not account for costs a column. */
-[data-theme="neo-brutalism"] *:not(.term, .term *) {
-  border-width: 2px;
 }
 
 /* The clean-start switch, under the model tiles. Built like the bypass row in

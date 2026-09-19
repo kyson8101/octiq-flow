@@ -117,15 +117,15 @@ import { ConnectionStatus } from "./components/ConnectionStatus";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
-import { Sidebar, type Project } from "./components/Sidebar";
+import { Sidebar, type ChatSearchHit, type Project } from "./components/Sidebar";
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { DeletedChats } from "./components/DeletedChats";
 import { ProjectSettings } from "./components/ProjectSettings";
+import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
-import { Memory } from "./components/Memory";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
@@ -1541,6 +1541,10 @@ export default function App() {
       .finally(() => codexSkillsPending.current.delete(key));
   }, [choice.agent, project, projectId]);
   const taskList = useMemo(() => byTask(conversations), [conversations]);
+  const searchChats = useCallback(
+    (query: string) => bridge.invoke<ChatSearchHit[]>("chat_search", { query, limit: 50 }),
+    [],
+  );
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
@@ -3060,8 +3064,8 @@ export default function App() {
    *  Claude takes the change on the same control channel `chat_interrupt` uses,
    *  so the running turn carries on under the new level instead — and the hook
    *  is told separately by the backend, because it decides BEFORE the mode does
-   *  (see agent_chat.rs). Codex needs no channel: its next turn is a new
-   *  process and takes the new sandbox on its command line.
+   *  (see agent_chat.rs). Codex app-server applies the new policy to its next
+   *  native turn on the same process.
    *
    *  Not every change can be made in place — the agent refuses to turn its own
    *  permissions off part-way, and says so — so `restartForAccess` is still
@@ -3113,19 +3117,10 @@ export default function App() {
 
   if (conn === "unauthorized") return <Connect />;
 
-  /* The two "where do I stand" numbers: how much of the plan is gone, and how
-     much memory this app is holding. Built once and placed once — on a wide
-     screen in the top bar, otherwise in the project list footer — because each of
-     them polls, and a second copy would be a second poll saying the same
-     thing. The memory readout is given the names it cannot know: the backend
-     reports a chat by its session key and a terminal by its PTY id, and what
-     those are CALLED lives here. */
-  const readouts = (
-    <>
-      <Usage />
-      <Memory conversations={conversations} projects={workspaces} />
-    </>
-  );
+  /* Built once and placed once — on a wide screen in the top bar, otherwise
+     in the project list footer — because the plan readout polls a rate-limited
+     endpoint, and a second copy would duplicate that traffic. */
+  const readouts = <Usage />;
 
   const topbarActions = (
     <>
@@ -3226,33 +3221,39 @@ export default function App() {
       {focusMode && <FocusModeButton active onClick={exitFocus} />}
       <header className="topbar">
         <div className="topbar-leading">
-          {/* The project name is also the way back to the project list. The
-              same control opens the projects screen on mobile and restores
-              the project column on desktop. */}
+          {/* One consistent doorway for the chat list: it opens the projects
+              screen on mobile and toggles the persistent column on desktop. */}
           <button
             className="topbar-title"
             type="button"
-            aria-label={isMobile && !showingProjects ? "Back to chats" : "Chats"}
+            aria-label={isMobile
+              ? (!showingProjects ? "Back to chats" : "Chats")
+              : (navShut ? "Show chats" : "Hide chats")}
+            title={isMobile ? undefined : (navShut ? "Show chats" : "Hide chats")}
             aria-expanded={isMobile ? undefined : !navShut}
             onClick={() => {
               if (isMobile) {
                 setChatWide(false);
                 setProjectsScreen(true);
-              } else if (!chatExpanded) showNav(true);
+              } else if (!chatExpanded) showNav(navShut);
             }}
-            disabled={isMobile ? showingProjects : chatExpanded || !navShut}
+            disabled={isMobile ? showingProjects : chatExpanded}
           >
             {isMobile && !showingProjects && (
               <svg className="topbar-back" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
                 <path d="m15 18-6-6 6-6" />
               </svg>
             )}
-            <img
-              className="topbar-logo"
-              src={`${import.meta.env.BASE_URL}icon-192.png`}
-              alt=""
-              aria-hidden="true"
-            />
+            {!showingProjects && project ? (
+              <ProjectAvatar project={project} size="medium" className="topbar-project-avatar" />
+            ) : (
+              <img
+                className="topbar-logo"
+                src={`${import.meta.env.BASE_URL}icon-192.png`}
+                alt=""
+                aria-hidden="true"
+              />
+            )}
             <span className="topbar-identity">
               <span className="topbar-name">{showingProjects ? "Chats" : project?.name ?? "OctiqFlow"}</span>
               <span className="topbar-version">v{__APP_VERSION__}</span>
@@ -3317,9 +3318,8 @@ export default function App() {
           onDelete={deleteConversation}
           onPin={togglePin}
           onRename={renameConversation}
-          onSettings={setSettingsFor}
           onNewProject={() => setSettingsFor("new")}
-          onHide={isMobile ? undefined : () => showNav(false)}
+          searchChats={searchChats}
           onResize={isMobile ? undefined : nav.startDrag}
           foot={topbarReadouts ? undefined : readouts}
         />
@@ -3663,7 +3663,7 @@ export default function App() {
         />
       )}
 
-      {appSettings && (
+      {appSettings && !settingsFor && (
         <Settings
           current={themeId}
           onPick={setThemeId}
@@ -3672,6 +3672,8 @@ export default function App() {
             setNotifyOn(on);
             setPushOn(on && viaPush);
           }}
+          projects={[...workspaces, ...shelved]}
+          onProject={setSettingsFor}
           onClose={() => setAppSettings(false)}
         />
       )}
@@ -3679,9 +3681,8 @@ export default function App() {
       {settingsFor && (
         <ProjectSettings
           project={
-            // Shelved ones are looked up too, or the dialog opened from the
-            // shelf would find nothing — and its Bring back button is the only
-            // reason to open it.
+            // Settings lists shelved projects too, so the focused sheet must
+            // resolve against both collections.
             settingsFor === "new"
               ? null
               : [...workspaces, ...shelved].find((w) => w.id === settingsFor) ?? null
@@ -3689,6 +3690,7 @@ export default function App() {
           projects={[...workspaces, ...shelved]}
           onChanged={loadWorkspaces}
           onClose={() => setSettingsFor(null)}
+          backToSettings={appSettings}
           onDeleted={(id) => {
             // Its chats have nowhere to live now, so they go with it.
             setConversations((prev) => {

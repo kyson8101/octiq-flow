@@ -15,10 +15,9 @@ import { bridge } from "../lib/bridge";
 import { moveSiblingGroupBy } from "../lib/projectOrder";
 import { FolderPicker } from "./FolderPicker";
 import { useConfirm } from "./Confirm";
+import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 
-export type ProjectDetail = {
-  id: string;
-  name: string;
+export type ProjectDetail = ProjectAppearance & {
   primary_path?: string;
   paths?: string[];
   description?: string;
@@ -63,6 +62,19 @@ function sameEnv(a: Record<string, string>, b: Record<string, string>): boolean 
 
 /** How long to wait after the last keystroke before saving text. */
 const TYPING_SETTLE_MS = 600;
+const MAX_ICON_BYTES = 512 * 1024;
+const ICON_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === "string"
+      ? resolve(reader.result)
+      : reject(new Error("Could not read that image."));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read that image."));
+    reader.readAsDataURL(file);
+  });
+}
 
 export function ProjectSettings({
   project,
@@ -70,6 +82,7 @@ export function ProjectSettings({
   onChanged,
   onClose,
   onDeleted,
+  backToSettings = false,
 }: {
   /** The project to edit, or null to create a new one. */
   project: ProjectDetail | null;
@@ -79,10 +92,15 @@ export function ProjectSettings({
   onChanged: () => void;
   onClose: () => void;
   onDeleted: (id: string) => void;
+  /** The sheet was opened from Settings, so its close control is navigation
+   *  back to that hub rather than an ambiguous dismissal. */
+  backToSettings?: boolean;
 }) {
   const creating = !project;
   const [name, setName] = useState(project?.name ?? "");
   const [description, setDescription] = useState(project?.description ?? "");
+  const [initial, setInitial] = useState(project?.initial ?? "");
+  const [icon, setIcon] = useState(project?.icon ?? "");
   const [envText, setEnvText] = useState(envToText(project?.env));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -90,6 +108,7 @@ export function ProjectSettings({
   const [picking, setPicking] = useState<"primary" | "extra" | null>(null);
   const [newPath, setNewPath] = useState("");
   const [siblingChoice, setSiblingChoice] = useState("");
+  const iconInput = useRef<HTMLInputElement>(null);
   const confirm = useConfirm();
 
   const primary = project?.primary_path ?? "";
@@ -140,6 +159,9 @@ export function ProjectSettings({
       if (description !== (project.description ?? "")) {
         void run(() => bridge.invoke("set_description", { id: project.id, description }));
       }
+      if (initial !== (project.initial ?? "")) {
+        void run(() => bridge.invoke("set_workspace_initial", { id: project.id, initial }));
+      }
       const nextEnv = textToEnv(envText);
       if (!sameEnv(nextEnv, project.env ?? {})) {
         void run(() => bridge.invoke("set_workspace_env", { id: project.id, env: nextEnv }));
@@ -149,7 +171,38 @@ export function ProjectSettings({
     // `project` is intentionally out: it changes identity on every reload from
     // the backend, which would restart this timer forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, description, envText]);
+  }, [name, description, initial, envText]);
+
+  async function chooseIcon(file: File | undefined) {
+    if (!project || !file) return;
+    if (!ICON_TYPES.has(file.type)) {
+      setError("Choose a PNG, JPEG, or WebP image.");
+      return;
+    }
+    if (file.size > MAX_ICON_BYTES) {
+      setError("Choose an image smaller than 512 KB.");
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      const saved = await run(() => bridge.invoke("set_workspace_icon", {
+        id: project.id,
+        icon: dataUrl,
+      }));
+      if (saved) setIcon(dataUrl);
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    }
+  }
+
+  async function removeIcon() {
+    if (!project) return;
+    const saved = await run(() => bridge.invoke("set_workspace_icon", {
+      id: project.id,
+      icon: "",
+    }));
+    if (saved) setIcon("");
+  }
 
   async function create(path: string) {
     const trimmed = name.trim();
@@ -212,8 +265,15 @@ export function ProjectSettings({
               </div>
             )}
           </div>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
-            ✕
+          <button className="panel-close" type="button" onClick={onClose}
+            aria-label={backToSettings ? "Back to Settings" : "Close"}>
+            {backToSettings ? (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                strokeLinejoin="round" aria-hidden="true">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+            ) : "✕"}
           </button>
         </header>
 
@@ -241,6 +301,66 @@ export function ProjectSettings({
                 onChange={(e) => setDescription(e.target.value)}
               />
             </label>
+          )}
+
+          {!creating && project && (
+            <div className="set-field">
+              <span className="set-label">Project icon</span>
+              <p className="set-hint">
+                Shown wherever OctiqFlow identifies this project.
+              </p>
+              <div className="project-icon-editor">
+                <ProjectAvatar
+                  project={{ ...project, name: name.trim() || project.name, initial, icon }}
+                  size="large"
+                />
+                <div className="project-icon-actions">
+                  <button
+                    className="set-row-btn"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => iconInput.current?.click()}
+                  >
+                    Choose image
+                  </button>
+                  <button
+                    className="set-row-btn is-quiet"
+                    type="button"
+                    disabled={busy || !icon}
+                    onClick={() => void removeIcon()}
+                  >
+                    Remove
+                  </button>
+                  <input
+                    ref={iconInput}
+                    type="file"
+                    hidden
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = "";
+                      void chooseIcon(file);
+                    }}
+                  />
+                </div>
+              </div>
+              <label className="project-initial-field">
+                <span>Fallback letters</span>
+                <input
+                  className="set-input project-initial-input"
+                  value={initial}
+                  maxLength={4}
+                  inputMode="text"
+                  placeholder={(name.trim()[0] || "?").toLocaleUpperCase()}
+                  onChange={(event) => {
+                    setInitial([...event.target.value].slice(0, 2).join(""));
+                  }}
+                />
+              </label>
+              <p className="set-hint project-icon-note">
+                PNG, JPEG, or WebP up to 512 KB. Without an image, OctiqFlow uses these letters.
+              </p>
+            </div>
           )}
 
           {!creating && (

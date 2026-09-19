@@ -1,8 +1,6 @@
-// The app's own settings, as opposed to a project's.
-//
-// Only one thing lives here so far — the theme — but it is deliberately a
-// SETTINGS sheet and not a theme sheet, because the next app-wide switch has
-// to have somewhere to go that is not the top bar.
+// The single way into app-wide and project configuration. Project rows lead to
+// the focused project sheet instead of leaking one shortcut per project into
+// unrelated chat menus.
 //
 // Choosing applies at once and there is no Save. That is the same rule the
 // project sheet follows: on a phone, a Save button you can lose by swiping is
@@ -12,8 +10,12 @@ import { useState } from "react";
 import { askPermission, permissionNow, setOn, supported } from "../lib/notify";
 import * as push from "../lib/push";
 import { applyTheme, preview, THEMES } from "../lib/themeStore";
+import type { ProjectDetail } from "./ProjectSettings";
+import { ProjectAvatar } from "./ProjectAvatar";
 
-export function Settings({ current, onPick, notify, onNotify, onClose }: {
+type SettingsSection = "projects" | "notifications" | "appearance";
+
+export function Settings({ current, onPick, notify, onNotify, projects, onProject, onClose }: {
   /** The chosen theme's id. Held by App so the sheet can close and reopen
    *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
   current: string;
@@ -24,6 +26,10 @@ export function Settings({ current, onPick, notify, onNotify, onClose }: {
   /** `viaPush` says the SERVER is now doing the announcing, which means the
    *  page must stop — otherwise one moment draws two banners. */
   onNotify: (on: boolean, viaPush: boolean) => void;
+  /** Project configuration lives here instead of being repeated throughout
+   *  the chat menus. Shelved projects stay reachable too. */
+  projects: ProjectDetail[];
+  onProject: (id: string | "new") => void;
   onClose: () => void;
 }) {
   const choose = (id: string) => {
@@ -40,6 +46,8 @@ export function Settings({ current, onPick, notify, onNotify, onClose }: {
   // rather than nagging about a browser on the way in.
   const [why, setWhy] = useState<"" | "denied" | "needs-install" | "failed">("");
   const [busy, setBusy] = useState(false);
+  const [section, setSection] = useState<SettingsSection>("projects");
+  const canNotify = supported() || push.supported() || push.isIOS();
 
   /** Turning it ON is the gesture that asks the browser. `requestPermission`
    *  needs a real click, and a prompt on first load is the one people block.
@@ -94,14 +102,16 @@ export function Settings({ current, onPick, notify, onNotify, onClose }: {
   };
 
   const on = notify && permission === "granted";
+  const currentTheme = THEMES.find((theme) => theme.id === current)?.name ?? "Dark";
 
   return (
     <>
       <div className="panel-scrim" onClick={onClose} />
-      <aside className="panel" role="dialog" aria-label="Settings">
-        <header className="panel-head">
+      <aside className="panel settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header className="panel-head settings-page-head">
           <div className="panel-id">
-            <div className="panel-name">Settings</div>
+            <div className="panel-name" id="settings-title">Settings</div>
+            <div className="panel-path">OctiqFlow preferences</div>
           </div>
           <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -110,101 +120,222 @@ export function Settings({ current, onPick, notify, onNotify, onClose }: {
           </button>
         </header>
 
-        <div className="panel-body set-body">
-          {(supported() || push.supported() || push.isIOS()) && (
-            <div className="set-field">
-              <span className="set-label">Notifications</span>
-              <p className="set-hint">
-                A banner when a chat you are not watching finishes its turn,
-                needs permission, or asks you something. Nothing appears for the
-                chat on screen in front of you.
-              </p>
-              <p className="set-hint">
-                On a phone these arrive even with OctiqFlow closed — the
-                permission ask times out in three minutes, so it is worth having
-                somewhere you will see it.
-              </p>
-
-              <button
-                className={`set-switch${on ? " is-on" : ""}`}
-                type="button"
-                role="switch"
-                aria-checked={on}
-                disabled={busy}
-                onClick={toggleNotify}
-              >
-                <span className="set-switch-track" aria-hidden="true" />
-                <span className="set-switch-text">
-                  {busy ? "…" : on ? "On" : "Off"}
-                </span>
-              </button>
-
-              {/* The iOS rule, and the reason this is worth its own sentence:
-                  Safari gives a TAB no push at all, and the same Safari gives
-                  the same site push once it is on the home screen. Nothing
-                  about the switch can fix that, so it says what will. */}
-              {why === "needs-install" && (
-                <p className="set-warn">
-                  iPhone and iPad only allow notifications for an app on the
-                  home screen. Tap Share, then <b>Add to Home Screen</b>, open
-                  OctiqFlow from there, and turn this on again.
-                </p>
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Settings sections">
+            <div className="settings-nav-list">
+              <SettingsNavButton
+                section="projects"
+                label="Projects"
+                detail={`${projects.length} ${projects.length === 1 ? "project" : "projects"}`}
+                active={section === "projects"}
+                onPick={setSection}
+              />
+              {canNotify && (
+                <SettingsNavButton
+                  section="notifications"
+                  label="Notifications"
+                  detail={on ? "On" : "Off"}
+                  active={section === "notifications"}
+                  onPick={setSection}
+                />
               )}
-
-              {(why === "denied" || permission === "denied") && (
-                <p className="set-warn">
-                  This browser is blocking notifications for OctiqFlow. Allow
-                  them in the site settings and come back.
-                </p>
-              )}
-
-              {why === "failed" && (
-                <p className="set-warn">
-                  Could not register for notifications. This needs an https
-                  address — a plain http one will not do, even on your own
-                  network.
-                </p>
-              )}
+              <SettingsNavButton
+                section="appearance"
+                label="Appearance"
+                detail={currentTheme}
+                active={section === "appearance"}
+                onPick={setSection}
+              />
             </div>
-          )}
+            <p className="settings-nav-foot">Changes apply automatically.</p>
+          </nav>
 
-          <div className="set-field">
-            <span className="set-label">Theme</span>
-            <p className="set-hint">
-              Choose One Dark or One Light, or personalize the palette.
-            </p>
-
-            <div className="thm-grid" role="radiogroup" aria-label="Theme">
-              {THEMES.map((theme) => {
-                const p = preview(theme);
-                const on = theme.id === current;
-                return (
-                  <button
-                    key={theme.id}
-                    className={`thm${on ? " is-on" : ""}`}
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    onClick={() => choose(theme.id)}
-                  >
-                    {/* A small picture of the app rather than a row of dots:
-                        which colour is the background and which is the one
-                        button is the thing worth knowing, and a dot cannot
-                        say that. */}
-                    <span className="thm-shot" style={{ background: p.bg }} aria-hidden="true">
-                      <span className="thm-bar" style={{ background: p.sunken }} />
-                      <span className="thm-card" style={{ background: p.card }} />
-                      <span className="thm-line" style={{ background: p.fg }} />
-                      <span className="thm-dot" style={{ background: p.accent }} />
-                    </span>
-                    <span className="thm-name">{theme.name}</span>
+          <main className="settings-content">
+            {section === "projects" && (
+              <section className="settings-section" aria-labelledby="settings-projects-title">
+                <header className="settings-section-head">
+                  <div>
+                    <h2 id="settings-projects-title">Projects</h2>
+                    <p>Manage names, folders, environment, links, and visibility.</p>
+                  </div>
+                  <button className="settings-primary" type="button" onClick={() => onProject("new")}>
+                    <PlusIcon />
+                    <span>New project</span>
                   </button>
-                );
-              })}
-            </div>
-          </div>
+                </header>
+
+                {projects.length ? (
+                  <div className="settings-projects">
+                    {projects.map((project) => (
+                      <button
+                        className="settings-project"
+                        type="button"
+                        key={project.id}
+                        onClick={() => onProject(project.id)}
+                        aria-label={`Configure ${project.name}`}
+                      >
+                        <ProjectAvatar project={project} size="medium" />
+                        <span className="settings-project-copy">
+                          <span className="settings-project-name">{project.name}</span>
+                          {project.primary_path && (
+                            <span className="settings-project-path" title={project.primary_path}>
+                              <bdi>{project.primary_path}</bdi>
+                            </span>
+                          )}
+                        </span>
+                        {project.shelved && <span className="settings-project-state">Shelved</span>}
+                        <ChevronIcon />
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="settings-empty">
+                    <strong>No projects yet</strong>
+                    <span>Create a project to give chats their own workspace.</span>
+                  </div>
+                )}
+              </section>
+            )}
+
+            {section === "notifications" && canNotify && (
+              <section className="settings-section" aria-labelledby="settings-notifications-title">
+                <header className="settings-section-head">
+                  <div>
+                    <h2 id="settings-notifications-title">Notifications</h2>
+                    <p>Choose when OctiqFlow can bring a chat back to your attention.</p>
+                  </div>
+                </header>
+
+                <div className="settings-control-row">
+                  <div className="settings-control-copy">
+                    <h3>Chat activity</h3>
+                    <p>
+                      Get a banner when a chat you are not watching finishes, needs permission,
+                      or asks you a question.
+                    </p>
+                  </div>
+                  <button
+                    className={`set-switch${on ? " is-on" : ""}`}
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    disabled={busy}
+                    onClick={toggleNotify}
+                  >
+                    <span className="set-switch-track" aria-hidden="true" />
+                    <span className="set-switch-text">{busy ? "…" : on ? "On" : "Off"}</span>
+                  </button>
+                </div>
+
+                <p className="settings-note">
+                  On a phone, alerts can arrive even while OctiqFlow is closed. Nothing appears
+                  for the chat currently on screen.
+                </p>
+
+                {why === "needs-install" && (
+                  <p className="set-warn">
+                    iPhone and iPad only allow notifications for an app on the
+                    home screen. Tap Share, then <b>Add to Home Screen</b>, open
+                    OctiqFlow from there, and turn this on again.
+                  </p>
+                )}
+
+                {(why === "denied" || permission === "denied") && (
+                  <p className="set-warn">
+                    This browser is blocking notifications for OctiqFlow. Allow
+                    them in the site settings and come back.
+                  </p>
+                )}
+
+                {why === "failed" && (
+                  <p className="set-warn">
+                    Could not register for notifications. This needs an https
+                    address — a plain http one will not do, even on your own
+                    network.
+                  </p>
+                )}
+              </section>
+            )}
+
+            {section === "appearance" && (
+              <section className="settings-section settings-appearance" aria-labelledby="settings-appearance-title">
+                <header className="settings-section-head">
+                  <div>
+                    <h2 id="settings-appearance-title">Appearance</h2>
+                    <p>Keep it light, stay focused in dark, or add some colour with fun mode.</p>
+                  </div>
+                </header>
+
+                <div className="thm-grid" role="radiogroup" aria-label="Appearance">
+                  {THEMES.map((theme) => {
+                    const p = preview(theme);
+                    const selected = theme.id === current;
+                    return (
+                      <button
+                        key={theme.id}
+                        className={`thm${selected ? " is-on" : ""}`}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        onClick={() => choose(theme.id)}
+                      >
+                        <span className="thm-shot" style={{ background: p.bg }} aria-hidden="true">
+                          <span className="thm-bar" style={{ background: p.sunken }} />
+                          <span className="thm-card" style={{ background: p.card }} />
+                          <span className="thm-line" style={{ background: p.fg }} />
+                          <span className="thm-dot" style={{ background: p.accent }} />
+                        </span>
+                        <span className="thm-name">{theme.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          </main>
         </div>
       </aside>
     </>
   );
+}
+
+function SettingsNavButton({ section, label, detail, active, onPick }: {
+  section: SettingsSection;
+  label: string;
+  detail: string;
+  active: boolean;
+  onPick: (section: SettingsSection) => void;
+}) {
+  return (
+    <button
+      className={`settings-nav-item${active ? " is-on" : ""}`}
+      type="button"
+      aria-current={active ? "page" : undefined}
+      onClick={() => onPick(section)}
+    >
+      <SettingsIcon section={section} />
+      <span className="settings-nav-copy">
+        <span>{label}</span>
+        <small>{detail}</small>
+      </span>
+    </button>
+  );
+}
+
+function SettingsIcon({ section }: { section: SettingsSection }) {
+  if (section === "projects") {
+    return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3z" /><path d="M3 7.5V5h7l2 2h6" /></svg>;
+  }
+  if (section === "notifications") {
+    return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>;
+  }
+  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 0 0 18c2.2-2.2 3.3-5.2 3.3-9S14.2 5.2 12 3Z" /><path d="M3 12h18" /></svg>;
+}
+
+function PlusIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>;
+}
+
+function ChevronIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>;
 }

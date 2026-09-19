@@ -42,9 +42,9 @@ export const WIDE = "(min-width: 701px)";
  *  app columns, but it cannot also hold every chat action across one row. */
 export const TOPBAR_ACTIONS = "(min-width: 1180px)";
 
-/** Enough room for the two account-usage figures and memory readout as well as
- *  the ordinary actions. At intermediate widths the live figures remain in
- *  the sidebar footer, where they do not compete with navigation. */
+/** Enough room for the account-usage figures as well as the ordinary actions.
+ *  At intermediate widths the live figures remain in the sidebar footer,
+ *  where they do not compete with navigation. */
 export const TOPBAR_READOUTS = "(min-width: 1500px)";
 
 /** Below this the project list occupies its own screen; at and above it,

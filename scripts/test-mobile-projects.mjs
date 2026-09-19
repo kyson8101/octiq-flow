@@ -84,9 +84,11 @@ await page.setViewportSize({width:1280,height:900});
 await page.locator('.sidebar').waitFor();
 assert.equal(await page.locator('.main').isVisible(),true);
 await page.getByRole('button',{name:'Chat list actions',exact:true}).click();
-await page.getByRole('menuitem',{name:'Hide chats',exact:true}).click();
+assert.equal(await page.getByRole('menuitem',{name:'Hide chats',exact:true}).count(),0);
+await page.keyboard.press('Escape');
+await page.getByRole('button',{name:'Hide chats',exact:true}).click();
 await page.locator('.sidebar').waitFor({state:'hidden'});
-await page.getByRole('button',{name:'Chats',exact:true}).click();
+await page.getByRole('button',{name:'Show chats',exact:true}).click();
 await page.locator('.sidebar').waitFor();
 await page.screenshot({path:join(artifacts,'desktop.png')});
 

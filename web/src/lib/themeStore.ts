@@ -1,82 +1,26 @@
-// The list of themes, and the one function that puts one on the screen.
+// OctiqFlow has three appearance modes, and one function that puts one on the
+// screen. Keep the public ids as plain words because they are persisted.
 //
 // Split from `theme.ts` on purpose: everything in there is pure and tested in
 // a node runner with no DOM. Everything that touches `document` is here.
 import { MANAGED, mapTokens, parseThemeCss, type Theme } from "./theme";
 
-import oneLight from "./themes/one-light.css?raw";
-
-import candyland from "./themes/candyland.css?raw";
-import bubblegum from "./themes/bubblegum.css?raw";
-import mono from "./themes/mono.css?raw";
-import midnight from "./themes/midnight.css?raw";
-import aurora from "./themes/aurora.css?raw";
-import ember from "./themes/ember.css?raw";
-import orchid from "./themes/orchid.css?raw";
-import moss from "./themes/moss.css?raw";
-import cobalt from "./themes/cobalt.css?raw";
-import rosewood from "./themes/rosewood.css?raw";
-import graphite from "./themes/graphite.css?raw";
-import saffron from "./themes/saffron.css?raw";
-import glacier from "./themes/glacier.css?raw";
-import vineyard from "./themes/vineyard.css?raw";
-import harbour from "./themes/harbour.css?raw";
-import cinder from "./themes/cinder.css?raw";
-import lagoon from "./themes/lagoon.css?raw";
-import lilacAsh from "./themes/lilac-ash.css?raw";
-import copper from "./themes/copper.css?raw";
-import neon from "./themes/neon.css?raw";
-import sage from "./themes/sage.css?raw";
-import ultraviolet from "./themes/ultraviolet.css?raw";
-import clay from "./themes/clay.css?raw";
-import brutalism from "./themes/brutalism.css?raw";
-import neoBrutalism from "./themes/neo-brutalism.css?raw";
-import neumorphism from "./themes/neumorphism.css?raw";
-import liquidGlass from "./themes/liquid-glass.css?raw";
-import metronic from "./themes/metronic.css?raw";
-
-/** Adding a theme is two steps: drop the pasted file in `themes/`, add a line
- *  here. Nothing else in the app needs to know it exists. */
-const PASTED: Array<{ id: string; name: string; css: string }> = [
-  { id: "candyland", name: "Candyland", css: candyland },
-  { id: "bubblegum", name: "Bubblegum", css: bubblegum },
-  { id: "mono", name: "Mono", css: mono },
-  { id: "midnight", name: "Midnight", css: midnight },
-  { id: "aurora", name: "Aurora", css: aurora },
-  { id: "ember", name: "Ember", css: ember },
-  { id: "orchid", name: "Orchid", css: orchid },
-  { id: "moss", name: "Moss", css: moss },
-  { id: "cobalt", name: "Cobalt", css: cobalt },
-  { id: "rosewood", name: "Rosewood", css: rosewood },
-  { id: "graphite", name: "Graphite", css: graphite },
-  { id: "saffron", name: "Saffron", css: saffron },
-  { id: "glacier", name: "Glacier", css: glacier },
-  { id: "vineyard", name: "Vineyard", css: vineyard },
-  { id: "harbour", name: "Harbour", css: harbour },
-  { id: "cinder", name: "Cinder", css: cinder },
-  { id: "lagoon", name: "Lagoon", css: lagoon },
-  { id: "lilac-ash", name: "Lilac Ash", css: lilacAsh },
-  { id: "copper", name: "Copper", css: copper },
-  { id: "neon", name: "Neon", css: neon },
-  { id: "sage", name: "Sage", css: sage },
-  { id: "ultraviolet", name: "Ultraviolet", css: ultraviolet },
-  { id: "clay", name: "Clay", css: clay },
-  { id: "brutalism", name: "Brutalism", css: brutalism },
-  { id: "neo-brutalism", name: "Neo Brutalism", css: neoBrutalism },
-  { id: "neumorphism", name: "Neumorphism", css: neumorphism },
-  { id: "liquid-glass", name: "Liquid Glass", css: liquidGlass },
-  { id: "metronic", name: "Metronic", css: metronic },
-];
+import lightCss from "./themes/light.css?raw";
+import funCss from "./themes/fun.css?raw";
 
 /** The built-in theme has no tokens because it does not need any: it is what
  *  `design-system.css` already says. Choosing it CLEARS the overrides rather than
  *  setting a copy of the defaults, so the stylesheet stays the one truth. */
-export const BUILT_IN = "octiq";
+export const LIGHT_MODE = "light";
+export const DARK_MODE = "dark";
+export const FUN_MODE = "fun";
+/** Kept as an alias for callers that need to clear palette overrides. */
+export const BUILT_IN = DARK_MODE;
 
 export const THEMES: Theme[] = [
-  { id: BUILT_IN, name: "One Dark" },
-  { id: "one-light", name: "One Light", scheme: "light", dark: parseThemeCss(oneLight).light },
-  ...PASTED.map(({ id, name, css }) => ({ id, name, dark: parseThemeCss(css).dark })),
+  { id: LIGHT_MODE, name: "Light", scheme: "light", tokens: parseThemeCss(lightCss).light },
+  { id: DARK_MODE, name: "Dark", scheme: "dark" },
+  { id: FUN_MODE, name: "Fun", scheme: "dark", tokens: parseThemeCss(funCss).dark },
 ];
 
 /** The five colours a tile needs to show what a theme looks like without
@@ -97,8 +41,8 @@ const BUILT_IN_PREVIEW: Preview = {
 };
 
 export function preview(theme: Theme): Preview {
-  if (!theme.dark) return BUILT_IN_PREVIEW;
-  const t = mapTokens(theme.dark);
+  if (!theme.tokens) return BUILT_IN_PREVIEW;
+  const t = mapTokens(theme.tokens);
   return {
     bg: t["--bg-0"],
     sunken: t["--bg-sunken"],
@@ -117,14 +61,19 @@ export const THEME_EVENT = "octiq-theme";
 
 export function savedThemeId(): string {
   try {
-    return localStorage.getItem(KEY) || BUILT_IN;
+    const saved = localStorage.getItem(KEY);
+    if (saved === LIGHT_MODE || saved === "one-light") return LIGHT_MODE;
+    if (saved === FUN_MODE || saved === "candyland") return FUN_MODE;
+    if (saved === DARK_MODE || saved === "octiq") return DARK_MODE;
+    // Retired custom themes return to the calm default.
+    return DARK_MODE;
   } catch {
-    return BUILT_IN;
+    return DARK_MODE;
   }
 }
 
 export function themeById(id: string): Theme {
-  return THEMES.find((t) => t.id === id) ?? THEMES[0];
+  return THEMES.find((t) => t.id === id) ?? THEMES.find((t) => t.id === DARK_MODE)!;
 }
 
 /** Put a theme on the screen and remember it. */
@@ -132,17 +81,17 @@ export function applyTheme(id: string): void {
   const theme = themeById(id);
   const root = document.documentElement;
 
-  if (!theme.dark) {
+  if (!theme.tokens) {
     // Back to the built-in: remove, do not overwrite.
     for (const name of MANAGED) root.style.removeProperty(name);
     root.removeAttribute("data-theme");
   } else {
-    for (const [name, value] of Object.entries(mapTokens(theme.dark))) {
+    for (const [name, value] of Object.entries(mapTokens(theme.tokens))) {
       root.style.setProperty(name, value);
     }
     root.setAttribute("data-theme", theme.id);
   }
-  root.setAttribute("data-color-scheme", theme.scheme ?? "dark");
+  root.setAttribute("data-color-scheme", theme.scheme);
 
   try {
     localStorage.setItem(KEY, theme.id);

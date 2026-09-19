@@ -125,6 +125,7 @@ async function main() {
       `${[
         { type: "assistant", message: { content: [{ type: "text", text: "Rotate refresh tokens after every successful exchange." }] } },
         { type: "user", message: { content: [{ type: "text", text: "登录页面的刷新策略" }] } },
+        { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Pi confirmed the session rotation." }] } },
       ].map(JSON.stringify).join("\n")}\n`,
     );
     fs.writeFileSync(
@@ -150,6 +151,8 @@ async function main() {
     assert.strictEqual(excludesCurrent.count, 0);
     const chinese = JSON.parse(await conversationSearch({ query: "登录页面" }));
     assert.strictEqual(chinese.matches[0].id, RELATED_ID);
+    const piReply = JSON.parse(await conversationSearch({ query: "Pi confirmed" }));
+    assert.strictEqual(piReply.matches[0].id, RELATED_ID);
 
     fs.appendFileSync(
       path.join(root, "chats", `chat_${RELATED_ID}.jsonl`),

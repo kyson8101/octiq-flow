@@ -1,6 +1,6 @@
 import type { Block, ChatState, Message } from "./chat";
 import { latestPins, type Pin } from "./pins";
-import { toolDetail, toolLook } from "./toolKind";
+import { commandTool, toolDetail, toolLook } from "./toolKind";
 
 type Tool = Extract<Block, { kind: "tool" }>;
 export type TaskStatus = "empty" | "waiting" | "running" | "blocked" | "settled" | "stopping" | "stopped" | "interrupted" | "failed" | "unknown";
@@ -29,6 +29,14 @@ function textOf(message: Message): string {
 function brief(value: string, length = 220): string {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > length ? `${flat.slice(0, length).trimEnd()}…` : flat;
+}
+
+function activeStep(tool: Tool): string {
+  const look = toolLook(tool.name, tool.args);
+  const namesFile = (look.kind === "read" || look.kind === "edit") && look.label.includes("(");
+  if (commandTool(tool.name, tool.args) || namesFile) return look.label;
+  const detail = brief(toolDetail(tool.name, tool.args), 120);
+  return detail ? `${look.label}: ${detail}` : look.label;
 }
 function isPrompt(message: Message): boolean {
   return message.role === "user" && !message.parent && !message.speaker && !message.relay
@@ -181,7 +189,7 @@ export function deriveTaskEvidence(chat: ChatState, options: TaskEvidenceOptions
   const activeTool = [...tools].reverse().find((tool) => tool.state === "running");
   const lastTool = tools[tools.length - 1];
   const recentText = [...messages].reverse().map(textOf).find(Boolean);
-  const step = activeTool ? `${toolLook(activeTool.name, activeTool.args).label}: ${brief(toolDetail(activeTool.name, activeTool.args), 120)}`
+  const step = activeTool ? activeStep(activeTool)
     : plan.step ?? (status === "running" ? chat.activity || "Agent is working" : undefined);
   const progress = plan.progress ?? (lastTool ? `${toolLook(lastTool.name, lastTool.args).label} · ${lastTool.state}` : recentText ? brief(recentText) : undefined);
   const pinMessages = messages.map((m) => ({ ...m, blocks: m.blocks.filter((b) => b.kind !== "tool" || toolSucceeded(b)) }));

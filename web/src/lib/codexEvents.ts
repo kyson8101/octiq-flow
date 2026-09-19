@@ -11,9 +11,10 @@
 //
 // So Codex answered nine times in this project's own room and the screen showed
 // nothing, once. Every event fell through the dispatch and was dropped. This
-// module is the missing half: `codex exec --json`'s thread/item protocol,
-// translated into the same handful of things the reducer already knows how to
-// draw.
+// module is the missing half: Codex's thread/item protocol, translated into the
+// same handful of things the reducer already knows how to draw. The backend
+// normalizes app-server's camelCase items to this stable shape, which also keeps
+// old `codex exec --json` transcripts readable.
 //
 // Kept apart from `chat.ts` because it is the part that can be WRONG about a
 // protocol nobody documented — the shapes here were read off a real captured

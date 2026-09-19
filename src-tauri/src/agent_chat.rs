@@ -5,23 +5,23 @@
 //! the wire is cursor moves and repaints, so there is no message to render — you
 //! would be scraping pixels back into text.
 //!
-//! Both agents already offer the stream a chat UI actually wants:
+//! The providers offer structured streams a chat UI can consume. Claude uses
+//! its stream-json protocol, Codex uses app-server JSON-RPC, and Pi emits one
+//! JSON stream per command-line turn. For example, Claude starts as:
 //!
 //! ```text
 //! claude -p --output-format stream-json --input-format stream-json \
 //!        --include-partial-messages --verbose
 //! ```
 //!
-//! stdout is then one JSON object per line — `assistant` messages (text,
-//! thinking and tool_use blocks), `user` messages carrying tool results,
-//! `stream_event` deltas while a reply is still being written, and a final
-//! `result` with cost and duration. stdin takes user messages in the same
-//! shape, so one process serves a whole conversation.
+//! stdout is one JSON object per line. Persistent providers also take
+//! structured user turns and control requests on stdin, so one process can
+//! serve a whole conversation.
 //!
-//! This module owns those processes: spawn one per chat, read its stdout line
-//! by line, and re-emit each line as a `chat-event`. Nothing here interprets
-//! the JSON — the shapes are the agent's, and a UI that knows them should not
-//! have to wait for a Rust change to see a new field.
+//! This module owns those processes: spawn one per chat, read stdout line by
+//! line, and emit `chat-event`s. Provider adapters extract lifecycle metadata;
+//! the Codex adapter also normalizes app-server items to the stable transcript
+//! vocabulary understood by existing chats and the web reducer.
 //!
 //! No PTY: this is a plain piped child. It is launched through a LOGIN SHELL
 //! all the same, for the reason pty.rs does it — a GUI app does not inherit the
@@ -30,13 +30,13 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::agent_provider::{
     ask_mcp_config, provider_for, AgentCommand, OutputDisposition, OutputState,
@@ -56,7 +56,8 @@ fn routed_prompt(agent: ChatAgent, prompt: &str) -> Cow<'_, str> {
     // Claude receives the same rule as a system prompt at process start. Do
     // not alter its user payload: `--replay-user-messages` would echo these
     // private routing words into the visible transcript. Codex does not echo
-    // its command-line prompt, so its canonical transcript entry stays exact.
+    // its app-server or command-line prompt, so its canonical transcript entry
+    // stays exact.
     if agent != ChatAgent::Codex {
         return Cow::Borrowed(prompt);
     }
@@ -127,11 +128,12 @@ struct ChatEvent {
     event: Value,
 }
 
-/// One typed turn that a command-line provider cannot echo back to us.
+/// One typed turn that a provider does not echo back in the transcript shape.
 ///
 /// Claude's stream already contains a `user` event for each accepted prompt.
-/// Codex's command-line protocol does not, so the transcript needs this small
-/// canonical envelope in order to rebuild the conversation after a refresh.
+/// Codex's app-server and command-line protocols do not, so the transcript
+/// needs this small canonical envelope to rebuild the conversation after a
+/// refresh.
 fn durable_user_event(turn_id: &str, text: &str, images: &[String]) -> Value {
     let mut event = json!({
         "type": "user",
@@ -272,18 +274,6 @@ fn emit_unstructured_output(
             crate::diagnostics::record(agent, key, "stderr", &text);
             crate::safety_block::observe(agent, key, &text);
         }
-        OutputDisposition::SessionHistoryWarning => {
-            crate::diagnostics::record(agent, key, "stderr", &text);
-            emit_status(
-                agent,
-                ChatStatus {
-                    key: key.to_string(),
-                    kind: "stderr".into(),
-                    text: "Codex could not save some conversation history because its session record was unavailable. This does not by itself mean the task failed. History may be incomplete; details are in diagnostics. Repeated messages are grouped for this turn.".into(),
-                    code: None,
-                },
-            );
-        }
         OutputDisposition::Visible => emit_status(
             agent,
             ChatStatus {
@@ -302,8 +292,13 @@ struct ChatSession {
     user_turn_id: Option<String>,
     child: Child,
     stdin: Option<ChildStdin>,
-    /// Which program this is. Only Claude has a control channel, so a setting
-    /// changed part-way through a chat has to know before it writes one.
+    /// Native Codex state. Present only when this process is `codex
+    /// app-server`; Claude owns its own stream framing and the exec fallback is
+    /// one-shot.
+    codex: Option<CodexAppSession>,
+    /// Which program this is. Persistent providers have different control
+    /// protocols, so a setting changed part-way through a chat has to know
+    /// which one it is writing.
     agent: ChatAgent,
     /// A turn is in flight: this process was given something and has not
     /// reached its own full stop yet.
@@ -313,12 +308,33 @@ struct ChatSession {
     /// running a twenty-minute build says NOTHING while it waits — no partial
     /// message, no tool event, nothing — so a sweeper reading silence would
     /// kill the one turn nobody could afford to lose. A turn is also still in
-    /// flight while a permission card or an `ask_user` question sits on
-    /// screen, and both of those are minutes of quiet by design.
+    /// flight while a permission card or a native/MCP question sits on screen,
+    /// and both of those are minutes of quiet by design.
     busy: bool,
     /// When this last started or finished a turn. Only read while `busy` is
     /// false, so it means "still since".
     last_active: Instant,
+}
+
+#[derive(Debug)]
+struct CodexAppSession {
+    thread_id: String,
+    active_turn_id: Option<String>,
+    interrupt_when_started: bool,
+    next_request: u64,
+    model: Option<String>,
+    effort: Option<String>,
+    access: Option<Access>,
+    cwd: String,
+    workspace_roots: Vec<String>,
+    has_octiq_mcp: bool,
+}
+
+impl CodexAppSession {
+    fn request_id(&mut self, purpose: &str) -> String {
+        self.next_request += 1;
+        format!("octiq-{purpose}-{}", self.next_request)
+    }
 }
 
 impl ChatSession {
@@ -373,15 +389,12 @@ fn idle_timeout() -> Option<Duration> {
     }
 }
 
-/// How an agent process was last started, so one-shot providers can resume it.
+/// How an agent process was last started, so it can be resumed after exit.
 ///
 /// Every one of these fields belongs to the client: the model came from the
 /// picker, the folders from the project, the level from the access control. The
 /// backend has never needed them, because the client has always been the thing
 /// that starts a chat.
-///
-/// Each Codex turn is a new `resume` process, so a quick follow-up waits for the
-/// prior one to exit and starts again with this context.
 ///
 /// Kept in memory only. A backend restart loses it, and an agent whose process
 /// has not been started since is simply not resumed — the words are all in the
@@ -420,7 +433,7 @@ pub(crate) struct QuestionOrigin {
 /// A command-line provider is deliberately one-shot, so a follow-up waits here
 /// while its previous process finishes exiting and then rides the next resume
 /// command rather than disappearing with the old process. A persistent provider
-/// would take the bytes on stdin at any moment, and used to: the message went
+/// can take bytes on stdin at any moment, and used to: the message went
 /// straight through into the agent's OWN internal queue, where nothing on this
 /// side could reach it again. Holding it here until the running turn reaches
 /// its full stop is what makes a queued message something the person can still
@@ -447,8 +460,8 @@ pub struct ChatManager {
     /// What each agent has been sent but not yet given — see `QueuedTurn`.
     /// Keyed by process key, so chats queue independently.
     queued_turns: Mutex<HashMap<String, VecDeque<QueuedTurn>>>,
-    /// A one-shot process is being replaced. Sends still join its queue, and
-    /// another browser must not start a competing process in this gap.
+    /// A one-shot process is being replaced. Sends still join its queue, and a
+    /// second client must not start a competing process in this gap.
     handoffs: Mutex<std::collections::HashSet<String>>,
 }
 
@@ -728,6 +741,7 @@ fn build_command(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn build_command_for_project(
     agent: ChatAgent,
     model: Option<&str>,
@@ -786,6 +800,7 @@ fn build_command_with_mcp(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn build_command_with_context(
     agent: ChatAgent,
     model: Option<&str>,
@@ -1231,6 +1246,74 @@ fn start_queued_command_turn_inner(
     )
 }
 
+fn write_json_line(stdin: &mut ChildStdin, value: &Value) -> Result<(), String> {
+    writeln!(stdin, "{value}").map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
+/// Wait for one startup response while retaining any notifications which raced
+/// it. app-server normally answers before notifying, but the protocol does not
+/// require that ordering and losing `thread/started` would lose UI/session
+/// state on a future CLI version.
+fn wait_for_codex_response(
+    reader: &mut BufReader<ChildStdout>,
+    id: &str,
+    prelude: &mut Vec<Value>,
+) -> Result<Value, String> {
+    loop {
+        let mut line = String::new();
+        let read = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        if read == 0 {
+            return Err(format!("Codex app-server exited before answering {id}"));
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let message: Value = serde_json::from_str(trimmed)
+            .map_err(|e| format!("Codex app-server returned invalid JSON: {e}"))?;
+        if let Some(result) = crate::codex_app_server::response_result(&message, id) {
+            return result.cloned();
+        }
+        prelude.push(message);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn initialize_codex_app_server(
+    stdin: &mut ChildStdin,
+    reader: &mut BufReader<ChildStdout>,
+    cwd: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    access: Option<Access>,
+    resume: Option<&str>,
+    workspace_roots: &[String],
+    developer_instructions: &str,
+) -> Result<(String, Vec<Value>), String> {
+    let mut prelude = Vec::new();
+    write_json_line(stdin, &crate::codex_app_server::initialize_request())?;
+    wait_for_codex_response(reader, crate::codex_app_server::INITIALIZE_ID, &mut prelude)?;
+    write_json_line(stdin, &crate::codex_app_server::initialized_notification())?;
+    write_json_line(
+        stdin,
+        &crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+            cwd,
+            model,
+            effort,
+            access,
+            resume,
+            workspace_roots,
+            developer_instructions,
+        }),
+    )?;
+    let result = wait_for_codex_response(reader, crate::codex_app_server::THREAD_ID, &mut prelude)?;
+    let thread_id = crate::codex_app_server::thread_id_from_result(&result)
+        .ok_or("Codex app-server did not return a thread id")?
+        .to_string();
+    Ok((thread_id, prelude))
+}
+
 /// Start one agent process.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn start_session(
@@ -1249,8 +1332,8 @@ pub(crate) fn start_session(
     lite: Option<bool>,
     user_turn_id: Option<String>,
     // Whether this launch still owes the transcript its canonical user event.
-    // A queued Codex turn records at enqueue time and passes `false` when its
-    // later resume process starts, avoiding a duplicate prompt.
+    // A queued command-line turn records at enqueue time and passes `false`
+    // when its later resume process starts, avoiding a duplicate prompt.
     record_user_turn: bool,
     // The person-visible text when the provider receives a larger handoff
     // wrapper. `None` means the provider prompt is already the visible turn.
@@ -1285,34 +1368,76 @@ pub(crate) fn start_session(
         .collect();
 
     let provider = provider_for(agent);
+    let transport = provider.capabilities().input;
     let has_prompt = prompt.is_some();
     let prompt = prompt.unwrap_or_default();
     let durable_prompt = visible_prompt.as_deref().unwrap_or(&prompt);
     let images = images.unwrap_or_default();
     crate::safety_block::remember_project(&key, &cwd);
-    let line = build_command_for_project(
-        agent,
-        model.as_deref(),
+    let mcp = provider
+        .capabilities()
+        .uses_octiq_mcp
+        .then(ask_mcp_config)
+        .flatten();
+    let authorizations = (agent == ChatAgent::Codex)
+        .then(|| crate::safety_block::project_authorizations(&cwd))
+        .flatten();
+    let wire_prompt = if mcp.is_some() {
+        routed_prompt(agent, &prompt)
+    } else {
+        Cow::Borrowed(prompt.as_str())
+    };
+    let line = provider.build_command(&AgentCommand {
+        model: model.as_deref(),
         access,
-        &prompt,
-        resume.as_deref(),
-        &extras,
-        effort.as_deref(),
-        &images,
-        lite.unwrap_or(false),
-        Some(&cwd),
-    );
+        prompt: &wire_prompt,
+        resume: resume.as_deref(),
+        extra_dirs: &extras,
+        effort: effort.as_deref(),
+        images: &images,
+        lite: lite.unwrap_or(false),
+        mcp_config: mcp.as_deref(),
+        persistent_authorizations: authorizations.as_deref(),
+    });
+    let process_cwd = if cwd.trim().is_empty() {
+        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+    } else {
+        cwd.clone()
+    };
+    let mut workspace_roots = vec![process_cwd.clone()];
+    for extra in &extras {
+        let path = std::path::Path::new(extra);
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::path::Path::new(&process_cwd).join(path)
+        };
+        let absolute = absolute.to_string_lossy().to_string();
+        if !workspace_roots.contains(&absolute) {
+            workspace_roots.push(absolute);
+        }
+    }
+    let selected_model = model.as_deref().and_then(safe_model);
+    let selected_effort = effort
+        .as_deref()
+        .and_then(|requested| provider.effort(requested))
+        .map(str::to_string);
+    let codex_instructions = transport.is_app_server().then(|| {
+        crate::agent_provider::codex_developer_instructions(
+            selected_model.as_deref(),
+            selected_effort.as_deref(),
+            access,
+            authorizations.as_deref(),
+            true,
+        )
+    });
 
     // Login shell, for PATH — see the module docs.
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let launch_id = uuid::Uuid::new_v4().to_string();
     let mut child = Command::new(&shell)
         .args(["-lc", &format!("exec {line}")])
-        .current_dir(if cwd.trim().is_empty() {
-            std::env::var("HOME").unwrap_or_else(|_| "/".into())
-        } else {
-            cwd.clone()
-        })
+        .current_dir(&process_cwd)
         // The project's own environment, so a chat agent picks up the same
         // variables a terminal in this project would (e.g. `starfall`'s
         // `CLAUDE_CONFIG_DIR`). Applied first so every var this backend sets
@@ -1352,9 +1477,9 @@ pub(crate) fn start_session(
         // CLI keeps the tool hidden and this var changes nothing. `disableArtifact`
         // in the user's settings still wins, which is how they turn it back off.
         //
-        // Harmless for Codex, which shares this spawn and has never read it.
+        // Harmless for Codex, whose app-server ignores this Claude-only value.
         .env("CLAUDE_CODE_ARTIFACT", "1")
-        .stdin(if provider.capabilities().input.accepts_stdin() {
+        .stdin(if transport.accepts_stdin() {
             Stdio::piped()
         } else {
             Stdio::null()
@@ -1372,20 +1497,67 @@ pub(crate) fn start_session(
         .stderr
         .take()
         .ok_or("no stderr on the agent process")?;
-    let stdin = child.stdin.take();
+    let mut stdin = child.stdin.take();
+    let mut stdout = BufReader::new(stdout);
+    let mut app_server_prelude = Vec::new();
+    let codex = if transport.is_app_server() {
+        let Some(app_stdin) = stdin.as_mut() else {
+            let _ = child.kill();
+            return Err("Codex app-server has no stdin".into());
+        };
+        let instructions = codex_instructions
+            .as_deref()
+            .ok_or("Codex app-server has no host instructions")?;
+        let resume = resume.as_deref().and_then(safe_session_id);
+        let initialized = initialize_codex_app_server(
+            app_stdin,
+            &mut stdout,
+            &process_cwd,
+            selected_model.as_deref(),
+            selected_effort.as_deref(),
+            access,
+            resume.as_deref(),
+            &workspace_roots,
+            instructions,
+        );
+        let (thread_id, prelude) = match initialized {
+            Ok(value) => value,
+            Err(why) => {
+                let _ = child.kill();
+                return Err(format!("could not initialize Codex app-server: {why}"));
+            }
+        };
+        manager.remember_session(&session_key, &thread_id);
+        app_server_prelude = prelude;
+        Some(CodexAppSession {
+            thread_id,
+            active_turn_id: None,
+            interrupt_when_started: false,
+            next_request: 0,
+            model: selected_model,
+            effort: selected_effort,
+            access,
+            cwd: process_cwd.clone(),
+            workspace_roots: workspace_roots.clone(),
+            has_octiq_mcp: mcp.is_some(),
+        })
+    } else {
+        None
+    };
 
     let session = Arc::new(Mutex::new(ChatSession {
         launch_id: launch_id.clone(),
         user_turn_id: user_turn_id.clone(),
         child,
         stdin,
+        codex,
         agent,
         // Working from the first breath, because a chat is nearly always
         // started WITH its first message: Claude is handed it on stdin a few
-        // lines below, and Codex already has it on its command line. Started
-        // with nothing to do — which only the API can ask for — it is still
+        // lines below; command-line providers already have it in their launch
+        // command. Started with nothing to do — which only the API can ask for — it is still
         // from birth, and the sweeper is right to treat it that way.
-        busy: !prompt.trim().is_empty(),
+        busy: has_prompt && (!prompt.trim().is_empty() || !images.is_empty()),
         last_active: Instant::now(),
     }));
     sessions.insert(session_key.clone(), session.clone());
@@ -1436,20 +1608,129 @@ pub(crate) fn start_session(
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
         thread::spawn(move || {
-            let reader = BufReader::new(stdout);
             let mut output_state = OutputState::default();
             // The last thing a Codex turn said, kept until the turn stops and
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
             let mut carried = String::new();
-            for line in reader.lines() {
+            let prelude = app_server_prelude
+                .into_iter()
+                .map(|message| Ok(message.to_string()));
+            for line in prelude.chain(stdout.lines()) {
                 let Ok(line) = line else { break };
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
                 match serde_json::from_str::<Value>(trimmed) {
-                    Ok(event) => {
+                    Ok(mut event) => {
+                        if transport.is_app_server() {
+                            if crate::codex_app_server::is_server_request(&event) {
+                                answer_codex_server_request(
+                                    &reading,
+                                    &asking,
+                                    &key,
+                                    rt.as_ref(),
+                                    event,
+                                );
+                                continue;
+                            }
+                            let native_thread = if let Ok(session) = asking.lock() {
+                                session.codex.as_ref().map(|codex| codex.thread_id.clone())
+                            } else {
+                                None
+                            };
+                            if crate::codex_app_server::notification_thread_id(&event)
+                                .zip(native_thread.as_deref())
+                                .is_some_and(|(event_thread, root_thread)| {
+                                    event_thread != root_thread
+                                })
+                            {
+                                continue;
+                            }
+                            if let Some(turn_id) =
+                                crate::codex_app_server::turn_id_from_response(&event)
+                            {
+                                let mut interrupt_error = None;
+                                if let Ok(mut session) = asking.lock() {
+                                    let should_interrupt =
+                                        if let Some(codex) = session.codex.as_mut() {
+                                            codex.active_turn_id = Some(turn_id.to_string());
+                                            codex.interrupt_when_started
+                                        } else {
+                                            false
+                                        };
+                                    if should_interrupt {
+                                        interrupt_error =
+                                            write_codex_interrupt_locked(&mut session).err();
+                                    }
+                                }
+                                if let Some(why) = interrupt_error {
+                                    emit_status(
+                                        ChatAgent::Codex,
+                                        ChatStatus {
+                                            key: key.clone(),
+                                            kind: "error".into(),
+                                            text: format!("could not interrupt Codex: {why}"),
+                                            code: None,
+                                        },
+                                    );
+                                }
+                                continue;
+                            }
+                            if event.get("id").is_some() {
+                                if let Some(error) = event
+                                    .get("error")
+                                    .and_then(|error| error.get("message"))
+                                    .and_then(Value::as_str)
+                                {
+                                    event = json!({
+                                        "type": "turn.failed",
+                                        "error": { "message": error },
+                                    });
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                let Some(normalized) =
+                                    crate::codex_app_server::normalize_notification(&event)
+                                else {
+                                    continue;
+                                };
+                                event = normalized;
+                            }
+                        }
+                        if transport.is_app_server()
+                            && event.get("type").and_then(Value::as_str) == Some("turn.started")
+                        {
+                            if let Some(turn_id) = event.get("turn_id").and_then(Value::as_str) {
+                                let mut interrupt_error = None;
+                                if let Ok(mut session) = asking.lock() {
+                                    let should_interrupt =
+                                        if let Some(codex) = session.codex.as_mut() {
+                                            codex.active_turn_id = Some(turn_id.to_string());
+                                            codex.interrupt_when_started
+                                        } else {
+                                            false
+                                        };
+                                    if should_interrupt {
+                                        interrupt_error =
+                                            write_codex_interrupt_locked(&mut session).err();
+                                    }
+                                }
+                                if let Some(why) = interrupt_error {
+                                    emit_status(
+                                        ChatAgent::Codex,
+                                        ChatStatus {
+                                            key: key.clone(),
+                                            kind: "error".into(),
+                                            text: format!("could not interrupt Codex: {why}"),
+                                            code: None,
+                                        },
+                                    );
+                                }
+                            }
+                        }
                         let observed = stream_provider.observe_event(&event);
                         // Anything the agent asks US, named in the log first.
                         //
@@ -1553,6 +1834,9 @@ pub(crate) fn start_session(
                             let mut refused = None;
                             if let Ok(mut s) = asking.lock() {
                                 reading.questions.detach_launch(&s.launch_id);
+                                if let Some(codex) = s.codex.as_mut() {
+                                    codex.active_turn_id = None;
+                                }
                                 s.turn_ended();
                                 if stream_provider.capabilities().input.accepts_stdin() {
                                     if let Some(turn) = reading.take_queued_turn(&session_key) {
@@ -1770,8 +2054,17 @@ pub(crate) fn start_session(
 
     // Persistent-stream providers receive the first user turn after startup;
     // command-line providers received it in `build_command` already.
-    if provider.capabilities().input.accepts_stdin() && !prompt.trim().is_empty() {
-        write_user_message(&session, &prompt, &images, &key, user_turn_id.as_deref())?;
+    if transport.accepts_stdin()
+        && has_prompt
+        && (!wire_prompt.trim().is_empty() || !images.is_empty())
+    {
+        write_user_message(
+            &session,
+            &wire_prompt,
+            &images,
+            &key,
+            user_turn_id.as_deref(),
+        )?;
     }
 
     Ok(())
@@ -1790,9 +2083,36 @@ fn write_user_message_locked(
     images: &[String],
     turn_id: Option<&str>,
 ) -> Result<(), String> {
-    let payload = provider_for(session.agent)
-        .user_message_payload(text, images)
-        .ok_or("this chat does not take more input")?;
+    let payload = if let Some(codex) = session.codex.as_mut() {
+        let id = codex.request_id("turn");
+        let text = if codex.has_octiq_mcp {
+            routed_prompt(ChatAgent::Codex, text)
+        } else {
+            Cow::Borrowed(text)
+        };
+        let runtime = crate::agent_provider::codex_runtime_context(
+            codex.model.as_deref(),
+            codex.effort.as_deref(),
+            codex.access,
+        );
+        crate::codex_app_server::turn_request(crate::codex_app_server::TurnRequest {
+            id: &id,
+            thread_id: &codex.thread_id,
+            text: &text,
+            images,
+            client_user_message_id: turn_id,
+            cwd: &codex.cwd,
+            workspace_roots: &codex.workspace_roots,
+            model: codex.model.as_deref(),
+            effort: codex.effort.as_deref(),
+            access: codex.access,
+            runtime_context: &runtime,
+        })
+    } else {
+        provider_for(session.agent)
+            .user_message_payload(text, images)
+            .ok_or("this chat does not take more input")?
+    };
     let stdin = session
         .stdin
         .as_mut()
@@ -1895,8 +2215,8 @@ fn chat_send_with_user_turn(
         //
         // A command-line provider's stdin is deliberately `null` — an open pipe
         // can make a one-shot command wait for more prompt text forever — so it
-        // is never ready. A persistent provider IS ready, but only between turns: write
-        // to it mid-answer and the message lands in the agent's own internal
+        // is never ready. A persistent provider is ready, but only between
+        // turns: write to it mid-answer and the message lands in the agent's own internal
         // queue, out of this backend's reach and past taking back. And a queue
         // with anything in it is reason enough on its own — see
         // `has_queued_turns`, which is what a Stop leaves behind.
@@ -1954,8 +2274,8 @@ fn chat_send_with_user_turn(
 /// it is too late — so this reports whether there was anything to cancel rather
 /// than pretending either way.
 ///
-/// A one-shot provider's queued turn was written into the transcript at the
-/// moment it was sent (see `QueuedTurn::recorded`), so cancelling it has to
+/// A queued turn was written into the transcript at the moment it was sent
+/// (see `QueuedTurn::recorded`), so cancelling it has to
 /// take it back out. The record is append-only, so "out" is one more line
 /// saying so, which every reader — live, another tab, or a replay next week —
 /// folds the same way.
@@ -2067,8 +2387,33 @@ pub fn chat_start_queued_impl(
     Ok(true)
 }
 
+fn write_codex_interrupt_locked(session: &mut ChatSession) -> Result<bool, String> {
+    let Some(codex) = session.codex.as_mut() else {
+        return Ok(false);
+    };
+    let Some(turn_id) = codex.active_turn_id.clone() else {
+        codex.interrupt_when_started = true;
+        return Ok(false);
+    };
+    let request_id = codex.request_id("interrupt");
+    let payload =
+        crate::codex_app_server::interrupt_request(&request_id, &codex.thread_id, &turn_id);
+    let stdin = session
+        .stdin
+        .as_mut()
+        .ok_or("this chat does not take more input")?;
+    write_json_line(stdin, &payload)?;
+    codex.interrupt_when_started = false;
+    Ok(true)
+}
+
 /// Send the interrupt understood by a provider with a persistent stdin.
 fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
+    if session.codex.is_some() {
+        write_codex_interrupt_locked(session)?;
+        session.turn_ended();
+        return Ok(());
+    }
     let payload = provider_for(session.agent)
         .interrupt_payload()
         .ok_or("this chat does not take more input")?;
@@ -2088,12 +2433,10 @@ fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
 
 /// Ask the agent to stop what it is doing, WITHOUT ending the conversation.
 ///
-/// Claude's init event advertises `interrupt_receipt_v1`, so the running turn
-/// can be cancelled over the same stdin the prompts go down and the session
-/// stays alive with its context. Codex runs each turn as a one-shot command
-/// with stdin intentionally closed, so its equivalent is ending only that
-/// process. `end_process` retains the transcript and remembered thread id, and
-/// the next message resumes the same Codex conversation.
+/// Claude and Codex both cancel a running turn over their persistent control
+/// channel and keep the native conversation alive. Command-line fallback
+/// providers end only the current process; the next process resumes from the
+/// remembered conversation id.
 ///
 /// **The queue behind the stopped turn SURVIVES, and its first message starts
 /// straight away.** Stop is how a person says "not that — do the thing I have
@@ -2107,8 +2450,8 @@ fn interrupt_persistent_turn(session: &mut ChatSession) -> Result<(), String> {
 /// Nothing here writes the next message: a persistent provider's is handed
 /// over by the reader thread when the cut-off turn's own `result` lands (see
 /// `turn_finished`), under the lock that ends the turn, so it cannot jump
-/// ahead of anything. A one-shot provider has no reader to do it — its process
-/// is being killed — so this carries the queue across the kill by hand.
+/// ahead of anything. A one-shot provider has no reader to do it, so this
+/// carries the queue across the process replacement by hand.
 fn interrupt_session(
     manager: &Arc<ChatManager>,
     session_key: &str,
@@ -2167,6 +2510,237 @@ pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<()
     let cancelled = cancel_question_work(manager, &key);
     interrupt_session(manager, &key, &key)?;
     cancelled
+}
+
+fn write_codex_response(session: &Arc<Mutex<ChatSession>>, id: &Value, result: Value) {
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(stdin) = guard.stdin.as_mut() else {
+        return;
+    };
+    let _ = write_json_line(stdin, &crate::codex_app_server::response(id, result));
+}
+
+fn write_codex_error(session: &Arc<Mutex<ChatSession>>, id: &Value, message: &str) {
+    let Ok(mut guard) = session.lock() else {
+        return;
+    };
+    let Some(stdin) = guard.stdin.as_mut() else {
+        return;
+    };
+    let _ = write_json_line(stdin, &crate::codex_app_server::error_response(id, message));
+}
+
+fn answer_codex_server_request(
+    manager: &Arc<ChatManager>,
+    session: &Arc<Mutex<ChatSession>>,
+    key: &str,
+    rt: Option<&tokio::runtime::Handle>,
+    request: Value,
+) {
+    let Some(id) = request.get("id").cloned() else {
+        return;
+    };
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+    match method {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            answer_codex_approval(session, key, rt, id, method, params)
+        }
+        "item/tool/requestUserInput" => {
+            answer_codex_user_input(manager, session, key, rt, id, params)
+        }
+        "currentTime/read" => {
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            write_codex_response(session, &id, json!({ "currentTimeAt": seconds }));
+        }
+        _ => write_codex_error(
+            session,
+            &id,
+            &format!("OctiqFlow does not implement the Codex request '{method}'"),
+        ),
+    }
+}
+
+fn answer_codex_approval(
+    session: &Arc<Mutex<ChatSession>>,
+    key: &str,
+    rt: Option<&tokio::runtime::Handle>,
+    request_id: Value,
+    method: &str,
+    params: Value,
+) {
+    let command = params.get("command").and_then(Value::as_str);
+    let grant_root = params.get("grantRoot").and_then(Value::as_str);
+    let reason = params.get("reason").and_then(Value::as_str);
+    let tool_name = if method == "item/commandExecution/requestApproval" {
+        "Bash"
+    } else {
+        "Edit"
+    };
+    let mut input = Map::new();
+    if let Some(command) = command {
+        input.insert("command".into(), json!(command));
+    }
+    if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
+        input.insert("cwd".into(), json!(cwd));
+    }
+    if let Some(root) = grant_root {
+        input.insert("file_path".into(), json!(root));
+    }
+    if let Some(reason) = reason {
+        input.insert("reason".into(), json!(reason));
+    }
+    let ask = crate::permission::Request {
+        chat_key: Some(key.to_string()),
+        session_id: params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tool_name: Some(tool_name.into()),
+        tool_input: Some(Value::Object(input)),
+        tool_use_id: params
+            .get("itemId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        cwd: params
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        access: None,
+    };
+    let Some(rt) = rt else {
+        write_codex_response(session, &request_id, json!({ "decision": "decline" }));
+        return;
+    };
+    let session = session.clone();
+    rt.spawn(async move {
+        let answer = crate::permission::ask(ask).await;
+        let decision = if answer.decision == "allow" {
+            "accept"
+        } else {
+            "decline"
+        };
+        write_codex_response(&session, &request_id, json!({ "decision": decision }));
+    });
+}
+
+fn answer_codex_user_input(
+    manager: &Arc<ChatManager>,
+    session: &Arc<Mutex<ChatSession>>,
+    key: &str,
+    rt: Option<&tokio::runtime::Handle>,
+    request_id: Value,
+    params: Value,
+) {
+    let native = params
+        .get("questions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if native.is_empty() {
+        write_codex_response(session, &request_id, json!({ "answers": {} }));
+        return;
+    }
+    let mut native_ids = Vec::with_capacity(native.len());
+    let questions = native
+        .iter()
+        .map(|question| {
+            native_ids.push(
+                question
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+            let options = question
+                .get("options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|option| {
+                    let label = option.get("label")?.as_str()?.to_string();
+                    (!label.trim().is_empty()).then(|| crate::question::Choice {
+                        label,
+                        description: option
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.trim().is_empty())
+                            .map(str::to_string),
+                    })
+                })
+                .collect();
+            crate::question::Question {
+                chat_key: None,
+                question: question
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Codex needs your input")
+                    .to_string(),
+                options,
+                recommended: None,
+                multiple: false,
+            }
+        })
+        .collect::<Vec<_>>();
+    let Some(rt) = rt else {
+        write_codex_response(session, &request_id, json!({ "answers": {} }));
+        return;
+    };
+
+    let origin = {
+        let _delivery = match manager.questions.delivery_lock.lock() {
+            Ok(lock) => lock,
+            Err(_) => {
+                write_codex_response(session, &request_id, json!({ "answers": {} }));
+                return;
+            }
+        };
+        let origin = match manager.question_origin(key, Some(key), None) {
+            Ok(origin) => origin,
+            Err(why) => {
+                write_codex_error(session, &request_id, &why);
+                return;
+            }
+        };
+        let inserted = manager.questions.insert(origin.clone(), questions);
+        match inserted {
+            Ok((id, rx)) => (origin, id, rx),
+            Err(why) => {
+                write_codex_error(session, &request_id, &why);
+                return;
+            }
+        }
+    };
+    let (origin, card_id, answered) = origin;
+    crate::push::notify_chat(
+        Some(&origin.chat_key),
+        "question",
+        "Codex is waiting for your answer",
+    );
+    let manager = manager.clone();
+    let session = session.clone();
+    rt.spawn(async move {
+        let _ = tokio::time::timeout(crate::question::ANSWER_TIMEOUT, answered).await;
+        let answers = manager.questions.take_native(&card_id).ok().flatten();
+        if answers.is_none() {
+            manager.questions.detach(&card_id);
+        }
+        let mapped = native_ids
+            .into_iter()
+            .zip(answers.unwrap_or_default())
+            .filter(|(id, _)| !id.is_empty())
+            .map(|(id, answer)| (id, json!({ "answers": [answer] })))
+            .collect::<Map<String, Value>>();
+        write_codex_response(&session, &request_id, json!({ "answers": mapped }));
+    });
 }
 
 /// Put the question to the person, then write the answer back to the agent.
@@ -2291,6 +2865,19 @@ pub fn chat_set_access_impl(
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
     let provider = provider_for(guard.agent);
+    if let Some(codex) = guard.codex.as_mut() {
+        // app-server accepts policy overrides on every `turn/start`. Do not
+        // disturb a turn already running; the next queued/direct turn picks up
+        // the newly selected level on this same native thread.
+        codex.access = Some(access);
+        if let Ok(mut starts) = manager.starts.lock() {
+            if let Some(start) = starts.get_mut(&key) {
+                start.access = Some(access);
+            }
+        }
+        record_access_for(&key, Some(access));
+        return Ok(());
+    }
     if !provider.capabilities().supports_live_access_change {
         return Ok(());
     }
@@ -2361,8 +2948,8 @@ pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, St
 ///
 /// Unlike stopping a chat, this intentionally retains standing permissions and
 /// access settings so the next message can resume the same work. Any queued
-/// one-shot-provider follow-up is discarded: the person explicitly ended the
-/// process it was waiting to resume.
+/// queued follow-up is discarded: the person explicitly ended the process it
+/// was waiting on.
 fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
     let session = {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -2809,20 +3396,22 @@ mod tests {
         assert!(routed.contains(CONVERSATION_URL));
         assert!(routed.contains("Do not open this URL in Browser"));
 
-        let command = build_command_with_mcp(
-            ChatAgent::Codex,
-            None,
-            Some(Access::Auto),
-            &original,
-            None,
-            &[],
-            None,
-            &[],
-            false,
-            Some(std::path::Path::new("octiq-ask.json")),
-        );
-        assert!(command.contains("mcp__octiq__read_conversation"));
-        assert!(command.contains("Do not open this URL in Browser"));
+        let turn = crate::codex_app_server::turn_request(crate::codex_app_server::TurnRequest {
+            id: "request-1",
+            thread_id: "thread-1",
+            text: &routed,
+            images: &[],
+            client_user_message_id: Some("user-1"),
+            cwd: "/work",
+            workspace_roots: &["/work".into()],
+            model: None,
+            effort: None,
+            access: Some(Access::Auto),
+            runtime_context: "runtime",
+        });
+        let sent = turn["params"]["input"][0]["text"].as_str().unwrap();
+        assert!(sent.contains("mcp__octiq__read_conversation"));
+        assert!(sent.contains("Do not open this URL in Browser"));
     }
 
     #[test]
@@ -3141,21 +3730,18 @@ mod tests {
 
     #[test]
     fn a_codex_resume_puts_the_folder_in_the_config_key_safely() {
-        let line = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "hello",
-            Some("abc-123"),
-            &[r#"/tmp/a", evil = "yes"#.to_string()],
-            None,
-            &[],
-            false,
-        );
-        assert!(
-            line.contains(r#"["/tmp/a\", evil = \"yes"]"#),
-            "the folder must arrive escaped: {line}"
-        );
+        let roots = vec![r#"/tmp/a", evil = "yes"#.to_string()];
+        let request =
+            crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                cwd: "/tmp",
+                model: None,
+                effort: None,
+                access: None,
+                resume: Some("abc-123"),
+                workspace_roots: &roots,
+                developer_instructions: "host",
+            });
+        assert_eq!(request["params"]["runtimeWorkspaceRoots"], json!(roots));
     }
 
     #[test]
@@ -3250,64 +3836,49 @@ mod tests {
                 "claude must not get a sandbox flag"
             );
 
-            let x = build_command(
-                ChatAgent::Codex,
-                None,
-                Some(level),
-                "hi",
-                None,
-                &[],
-                None,
-                &[],
-                false,
-            );
-            assert!(
-                x.contains(&format!("--sandbox {sandbox}")),
-                "codex {level:?}"
-            );
-            assert!(
-                x.contains(&format!("-c approval_policy='{approval}'")),
+            let roots = vec!["/work".into()];
+            let request =
+                crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                    cwd: "/work",
+                    model: None,
+                    effort: None,
+                    access: Some(level),
+                    resume: None,
+                    workspace_roots: &roots,
+                    developer_instructions: "host",
+                });
+            assert_eq!(request["params"]["sandbox"], sandbox, "codex {level:?}");
+            assert_eq!(
+                request["params"]["approvalPolicy"], approval,
                 "codex approval {level:?}"
-            );
-            assert!(
-                !x.contains("--ask-for-approval"),
-                "codex exec dropped the flag form; it only takes the config key"
-            );
-            assert!(
-                !x.contains("--permission-mode"),
-                "codex must not get a permission mode"
             );
         }
     }
 
     #[test]
     fn codex_resume_spells_both_halves_as_config_keys() {
-        // `codex exec resume` accepts neither --sandbox nor --ask-for-approval,
-        // so the same two settings have to travel as -c keys or a resumed chat
-        // silently falls back to whatever the user's own config says.
+        // app-server resumes the native thread and applies the selected policy
+        // in the same typed request, independent of the user's config file.
         let id = "a2c8ca18-dcd4-41bc-a49d-b078f2a8e056";
-        let x = build_command(
-            ChatAgent::Codex,
-            None,
-            Some(Access::Auto),
-            "hi",
-            Some(id),
-            &[],
-            None,
-            &[],
-            false,
-        );
-        assert!(x.contains("-c sandbox_mode='workspace-write'"));
-        assert!(x.contains("-c approval_policy='on-request'"));
-        assert!(!x.contains("--sandbox"), "resume does not take --sandbox");
-        assert!(
-            !x.contains("--ask-for-approval"),
-            "resume does not take the flag form"
-        );
+        let roots = vec!["/work".into()];
+        let request =
+            crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                cwd: "/work",
+                model: None,
+                effort: None,
+                access: Some(Access::Auto),
+                resume: Some(id),
+                workspace_roots: &roots,
+                developer_instructions: "host",
+            });
+        assert_eq!(request["method"], "thread/resume");
+        assert_eq!(request["params"]["threadId"], id);
+        assert_eq!(request["params"]["sandbox"], "workspace-write");
+        assert_eq!(request["params"]["approvalPolicy"], "on-request");
     }
 
     #[test]
-    fn claude_gets_a_two_way_stream_and_codex_gets_the_prompt() {
+    fn claude_and_codex_both_get_a_two_way_stream() {
         // A prompt that cannot appear by accident inside another word. The
         // first version of this test used "hi", which is a substring of
         // "which" — so it passed until an unrelated flag happened to contain
@@ -3342,8 +3913,12 @@ mod tests {
             &[],
             false,
         );
-        assert!(x.contains("codex exec --json"));
-        assert!(x.ends_with("'hi there'"));
+        assert!(x.starts_with("codex app-server --enable default_mode_request_user_input"));
+        assert!(!x.contains("hi there"));
+        assert_eq!(
+            provider_for(ChatAgent::Codex).capabilities().input,
+            crate::agent_provider::InputTransport::AppServer
+        );
     }
 
     #[test]
@@ -3360,20 +3935,11 @@ mod tests {
             false,
         );
         assert!(c.contains("--effort xhigh"));
-        // Codex supports it too, but only as a config override.
-        let x = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "hi",
-            None,
-            &[],
-            Some("xhigh"),
-            &[],
-            false,
+        // Codex carries the validated value in its typed turn request.
+        assert_eq!(
+            provider_for(ChatAgent::Codex).effort("xhigh"),
+            Some("xhigh")
         );
-        assert!(x.contains("-c model_reasoning_effort='xhigh'"));
-        assert!(!x.contains("--effort"));
 
         // Anything outside the set is dropped rather than forwarded.
         let bad = build_command(
@@ -3405,33 +3971,11 @@ mod tests {
             false,
         );
         assert!(claude_max.contains("--effort max"));
-        let codex_max = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "hi",
-            None,
-            &[],
-            Some("max"),
-            &[],
-            false,
-        );
-        assert!(codex_max.contains("model_reasoning_effort='max'"));
+        assert_eq!(provider_for(ChatAgent::Codex).effort("max"), Some("max"));
 
         // `minimal` is nobody's any more. The same model list dropped it from
         // every GPT-5.6 model, and Claude never had it.
-        let codex_min = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "hi",
-            None,
-            &[],
-            Some("minimal"),
-            &[],
-            false,
-        );
-        assert!(!codex_min.contains("model_reasoning_effort"));
+        assert_eq!(provider_for(ChatAgent::Codex).effort("minimal"), None);
         let claude_min = build_command(
             ChatAgent::Claude,
             None,
@@ -3460,18 +4004,7 @@ mod tests {
             false,
         );
         assert!(ultra.contains("--effort ultracode"));
-        let codex_ultra = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "hi",
-            None,
-            &[],
-            Some("ultracode"),
-            &[],
-            false,
-        );
-        assert!(!codex_ultra.contains("model_reasoning_effort"));
+        assert_eq!(provider_for(ChatAgent::Codex).effort("ultracode"), None);
 
         // `auto` deliberately reaches the command line as nothing at all: the
         // flag rejects it, and no flag IS "the agent picks". The UI then sends
@@ -3493,91 +4026,74 @@ mod tests {
     #[test]
     fn codex_continues_a_conversation_by_resuming_its_thread() {
         let id = "01a0142d-552d-7a93-9152-47530c33e501";
-        let c = build_command(
-            ChatAgent::Codex,
-            None,
-            Some(Access::Read),
-            "next question",
-            Some(id),
-            &["/tmp/api".to_string()],
-            Some("high"),
-            &[],
-            false,
+        let roots = vec!["/tmp".into(), "/tmp/api".into()];
+        let resumed =
+            crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                cwd: "/tmp",
+                model: None,
+                effort: Some("high"),
+                access: Some(Access::Read),
+                resume: Some(id),
+                workspace_roots: &roots,
+                developer_instructions: "host",
+            });
+        assert_eq!(resumed["method"], "thread/resume");
+        assert_eq!(resumed["params"]["threadId"], id);
+        assert_eq!(resumed["params"]["sandbox"], "read-only");
+        assert_eq!(
+            resumed["params"]["config"]["model_reasoning_effort"],
+            "high"
         );
-        // The subcommand, with the id BEFORE the prompt — that is the order
-        // `codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]` expects.
-        assert!(c.starts_with(&format!("codex exec resume --json '{id}'")));
-        assert!(c.ends_with("'next question'"));
-        // resume takes neither --sandbox nor --add-dir, so both settings have
-        // to travel as config overrides instead.
-        assert!(!c.contains("--sandbox"));
-        assert!(!c.contains("--add-dir"));
-        assert!(c.contains("-c sandbox_mode='read-only'"));
-        assert!(c.contains("-c model_reasoning_effort='high'"));
-        assert!(c.contains("developer_instructions=\"You are running inside OctiqFlow"));
-        assert!(c.contains("effort: high"));
-        assert!(c.contains("OctiqFlow label: Read-only"));
-        assert!(c.contains("OctiqFlow did not select an explicit model"));
-        assert!(c.contains("writable_roots"));
+        assert_eq!(resumed["params"]["runtimeWorkspaceRoots"], json!(roots));
 
-        // A FIRST turn has no thread yet, so it is a plain exec with the flags.
-        let first = build_command(
-            ChatAgent::Codex,
-            None,
-            Some(Access::Read),
-            "hello",
-            None,
-            &["/tmp/api".to_string()],
-            None,
-            &[],
-            false,
-        );
-        assert!(first.starts_with("codex exec --json"));
-        assert!(!first.starts_with("codex exec resume"));
-        assert!(first.contains("--sandbox read-only"));
-        assert!(first.contains("--add-dir '/tmp/api'"));
+        let turn = crate::codex_app_server::turn_request(crate::codex_app_server::TurnRequest {
+            id: "request-1",
+            thread_id: id,
+            text: "next question",
+            images: &[],
+            client_user_message_id: Some("user-1"),
+            cwd: "/tmp",
+            workspace_roots: &roots,
+            model: None,
+            effort: Some("high"),
+            access: Some(Access::Read),
+            runtime_context: "runtime",
+        });
+        assert_eq!(turn["params"]["input"][0]["text"], "next question");
+        assert_eq!(turn["params"]["threadId"], id);
+
+        let first =
+            crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                cwd: "/tmp",
+                model: None,
+                effort: None,
+                access: Some(Access::Read),
+                resume: None,
+                workspace_roots: &roots,
+                developer_instructions: "host",
+            });
+        assert_eq!(first["method"], "thread/start");
+        assert_eq!(first["params"]["ephemeral"], false);
     }
 
     #[test]
     fn codex_is_allowed_to_run_where_there_is_no_git_repo() {
-        // A chat can be started in an empty scratch folder that is neither a
-        // git repo nor a trusted project. Codex 0.147 refuses to start there —
-        // "Not inside a trusted directory and --skip-git-repo-check was not
-        // specified." — before it reads a word of the prompt.
-        let first = build_command(
-            ChatAgent::Codex,
-            None,
-            Some(Access::Read),
-            "hello",
-            None,
-            &[],
-            None,
-            &[],
-            false,
-        );
-        assert!(
-            first.contains("--skip-git-repo-check"),
-            "a first turn cannot start outside a repo: {first}"
-        );
-
-        // The resume form takes the same flag, and needs it for the same
-        // reason: every turn after the first is a fresh process in that same
-        // folder.
-        let again = build_command(
-            ChatAgent::Codex,
-            None,
-            Some(Access::Read),
-            "and again",
-            Some("01a0142d-552d-7a93-9152-47530c33e501"),
-            &[],
-            None,
-            &[],
-            false,
-        );
-        assert!(
-            again.contains("--skip-git-repo-check"),
-            "a resumed turn cannot start outside a repo: {again}"
-        );
+        // app-server receives the cwd as protocol data and does not impose the
+        // `codex exec` git trust gate on either a new or resumed thread.
+        let roots = vec!["/tmp/scratch".into()];
+        for resume in [None, Some("01a0142d-552d-7a93-9152-47530c33e501")] {
+            let request =
+                crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                    cwd: "/tmp/scratch",
+                    model: None,
+                    effort: None,
+                    access: Some(Access::Read),
+                    resume,
+                    workspace_roots: &roots,
+                    developer_instructions: "host",
+                });
+            assert_eq!(request["params"]["cwd"], "/tmp/scratch");
+        }
 
         // Claude has no such check and no such flag; handing it one would be
         // an unknown argument.
@@ -3596,13 +4112,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_missing_rollout_thread_warns_once_without_hiding_other_failures() {
+    fn codex_missing_rollout_thread_stays_in_diagnostics_without_hiding_other_failures() {
         let codex = provider_for(ChatAgent::Codex);
         let mut state = OutputState::default();
         let line = "2026-09-08T07:41:49.205220Z ERROR codex_core::session: failed to record rollout items: thread 01a07ff6-0e48-79b1-ae44-e34950e03069 not found";
         assert_eq!(
             codex.classify_output(line, &mut state),
-            OutputDisposition::SessionHistoryWarning
+            OutputDisposition::DiagnosticsOnly
         );
         assert_eq!(
             codex.classify_output(line, &mut state),
@@ -3618,7 +4134,7 @@ mod tests {
         }
         assert_eq!(
             codex.classify_output(line, &mut OutputState::default()),
-            OutputDisposition::SessionHistoryWarning
+            OutputDisposition::DiagnosticsOnly
         );
         assert_eq!(
             provider_for(ChatAgent::Claude).classify_output(line, &mut state),
@@ -3801,54 +4317,39 @@ mod tests {
     #[test]
     fn codex_takes_images_as_files_and_claude_does_not() {
         let shots = vec!["/tmp/a shot.png".to_string(), "/tmp/b.webp".to_string()];
-        let x = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "look",
-            None,
-            &[],
-            None,
-            &shots,
-            false,
-        );
-        // Quoted, so a space in the name stays one argument.
-        assert!(x.contains("-i '/tmp/a shot.png'"));
-        assert!(x.contains("-i '/tmp/b.webp'"));
-        // `-i` is variadic, so `--` must keep the positional prompt from
-        // becoming a third image and falling back to stdin.
-        assert!(x.ends_with("-- 'look'"));
+        let roots = vec!["/tmp".into()];
+        let turn = |text: &str| {
+            crate::codex_app_server::turn_request(crate::codex_app_server::TurnRequest {
+                id: "request-1",
+                thread_id: "thread-1",
+                text,
+                images: &shots,
+                client_user_message_id: None,
+                cwd: "/tmp",
+                workspace_roots: &roots,
+                model: None,
+                effort: None,
+                access: None,
+                runtime_context: "runtime",
+            })
+        };
+        let x = turn("look");
+        assert_eq!(x["params"]["input"][0]["text"], "look");
+        assert_eq!(x["params"]["input"][1]["path"], "/tmp/a shot.png");
+        assert_eq!(x["params"]["input"][2]["path"], "/tmp/b.webp");
 
         // An image by itself is a valid composer message. Codex treats an
         // empty positional argument as no prompt and otherwise reads stdin,
         // which command-line chats intentionally close.
-        let image_only = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "",
-            None,
-            &[],
-            None,
-            &shots,
-            false,
+        let image_only = turn("");
+        assert_eq!(
+            image_only["params"]["input"][0]["text"],
+            "Please inspect the attached image."
         );
-        assert!(image_only.ends_with("-- 'Please inspect the attached image.'"));
-        assert!(!image_only.ends_with("''"));
 
         // The delimiter also preserves a user prompt that starts with a dash.
-        let dash_prompt = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "--describe",
-            None,
-            &[],
-            None,
-            &shots,
-            false,
-        );
-        assert!(dash_prompt.ends_with("-- '--describe'"));
+        let dash_prompt = turn("--describe");
+        assert_eq!(dash_prompt["params"]["input"][0]["text"], "--describe");
 
         // Claude's images ride on stdin instead — see write_user_message.
         let c = build_command(
@@ -3885,6 +4386,7 @@ mod tests {
                 user_turn_id: None,
                 child,
                 stdin: None,
+                codex: None,
                 agent: ChatAgent::Claude,
                 busy: false,
                 last_active: Instant::now(),
@@ -3916,6 +4418,7 @@ mod tests {
                 user_turn_id: None,
                 child,
                 stdin: None,
+                codex: None,
                 agent: ChatAgent::Codex,
                 busy: true,
                 last_active: Instant::now(),
@@ -3970,6 +4473,7 @@ mod tests {
             user_turn_id: None,
             child,
             stdin,
+            codex: None,
             agent: ChatAgent::Claude,
             busy,
             last_active: Instant::now(),
@@ -4190,28 +4694,32 @@ mod tests {
     }
 
     #[test]
-    fn stopping_codex_carries_its_queue_across_the_kill() {
-        // A one-shot provider's turn is stopped by killing its process, and
-        // `end_process` discards whatever was waiting on the process it ends —
-        // right for a chat somebody stopped, wrong for a turn. So the queue is
-        // lifted clear first and carried into the resume by hand.
-        //
-        // Nothing here can start a real `codex exec`, so the resume is made to
-        // fail by leaving no `StartContext`. Reaching that failure at all is
-        // the proof that the queued turn was taken out before the kill: had it
-        // gone with the process, there would have been nothing to resume and
-        // this would have returned `Ok`.
+    fn stopping_codex_keeps_its_queue_on_the_native_thread() {
         let manager = Arc::new(ChatManager::default());
         let key = "codex-stop-queue";
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a Codex app-server stand-in");
+        let stdin = child.stdin.take();
         let session = Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
             user_turn_id: None,
-            child: Command::new("sleep")
-                .arg("30")
-                .stdin(Stdio::null())
-                .spawn()
-                .expect("a Codex stand-in"),
-            stdin: None,
+            child,
+            stdin,
+            codex: Some(CodexAppSession {
+                thread_id: "thread-1".into(),
+                active_turn_id: Some("turn-1".into()),
+                interrupt_when_started: false,
+                next_request: 0,
+                model: None,
+                effort: None,
+                access: Some(Access::Read),
+                cwd: "/tmp".into(),
+                workspace_roots: vec!["/tmp".into()],
+                has_octiq_mcp: false,
+            }),
             agent: ChatAgent::Codex,
             busy: true,
             last_active: Instant::now(),
@@ -4233,12 +4741,13 @@ mod tests {
             )
             .expect("a message behind the running turn");
 
-        let why = chat_interrupt_impl(&manager, key.into()).expect_err("nothing to resume from");
-        assert!(why.contains("could not resume queued message"), "{why}");
+        chat_interrupt_impl(&manager, key.into()).expect("native Codex can be interrupted");
+        assert!(chat_list_impl(&manager).unwrap().contains(&key.to_string()));
         assert!(
-            manager.take_queued_turn(key).is_none(),
-            "words held for a process that never started must not surface later",
+            manager.has_queued_turns(key),
+            "the queued turn waits for Codex's turn/completed notification",
         );
+        end_process(&manager, key).unwrap();
         let _ = session.lock().unwrap().child.wait();
     }
 
@@ -4299,6 +4808,7 @@ mod tests {
                 user_turn_id: None,
                 child,
                 stdin: None,
+                codex: None,
                 agent: ChatAgent::Codex,
                 busy: true,
                 last_active: Instant::now(),
@@ -4370,10 +4880,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupting_codex_ends_its_one_shot_process_but_keeps_its_thread() {
-        // Codex has no stdin control channel: stopping its current turn means
-        // killing this one process. Its remembered thread is the context the
-        // next `codex exec resume` needs, so an interrupt must not erase it.
+    fn interrupting_codex_keeps_its_app_server_and_native_thread() {
         let manager = Arc::new(ChatManager::default());
         let key = "codex-interrupt";
         let thread = "01a0142d-552d-7a93-9152-47530c33e501";
@@ -4391,15 +4898,29 @@ mod tests {
                 session_id: Some(thread.into()),
             },
         );
+        let mut child = Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a Codex app-server stand-in");
+        let stdin = child.stdin.take();
         let session = Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
             user_turn_id: None,
-            child: Command::new("sleep")
-                .arg("30")
-                .stdin(Stdio::null())
-                .spawn()
-                .expect("a Codex stand-in"),
-            stdin: None,
+            child,
+            stdin,
+            codex: Some(CodexAppSession {
+                thread_id: thread.into(),
+                active_turn_id: Some("turn-1".into()),
+                interrupt_when_started: false,
+                next_request: 0,
+                model: None,
+                effort: None,
+                access: Some(Access::Read),
+                cwd: "/tmp".into(),
+                workspace_roots: vec!["/tmp".into()],
+                has_octiq_mcp: false,
+            }),
             agent: ChatAgent::Codex,
             busy: true,
             last_active: Instant::now(),
@@ -4412,7 +4933,7 @@ mod tests {
 
         chat_interrupt_impl(&manager, key.into()).expect("Codex can be stopped");
 
-        assert!(chat_list_impl(&manager).unwrap().is_empty());
+        assert_eq!(chat_list_impl(&manager).unwrap(), [key]);
         assert_eq!(
             manager
                 .start_context(key)
@@ -4420,10 +4941,9 @@ mod tests {
             Some(thread.into()),
             "the next message resumes the interrupted Codex conversation"
         );
-        assert!(
-            !session.lock().unwrap().child.wait().unwrap().success(),
-            "the one-shot process was killed"
-        );
+        assert!(session.lock().unwrap().child.try_wait().unwrap().is_none());
+        end_process(&manager, key).unwrap();
+        let _ = session.lock().unwrap().child.wait();
     }
 
     #[test]
@@ -4454,20 +4974,20 @@ mod tests {
         // A space in a folder name stays one argument.
         assert!(c.contains("--add-dir '/Users/me/my docs'"));
 
-        // Codex takes extra folders too — it was a mistake to think otherwise.
-        let x = build_command(
-            ChatAgent::Codex,
-            None,
-            None,
-            "hi",
-            None,
-            &dirs,
-            None,
-            &[],
-            false,
-        );
-        assert!(x.contains("--add-dir '/Users/me/api'"));
-        assert!(x.contains("--add-dir '/Users/me/my docs'"));
+        // Codex app-server receives the same folders as typed workspace roots.
+        let mut roots = vec!["/Users/me/project".into()];
+        roots.extend(dirs.clone());
+        let request =
+            crate::codex_app_server::thread_request(crate::codex_app_server::ThreadRequest {
+                cwd: "/Users/me/project",
+                model: None,
+                effort: None,
+                access: None,
+                resume: None,
+                workspace_roots: &roots,
+                developer_instructions: "host",
+            });
+        assert_eq!(request["params"]["runtimeWorkspaceRoots"], json!(roots));
     }
 }
 
@@ -4566,6 +5086,7 @@ mod idle_tests {
             user_turn_id: None,
             child,
             stdin: None,
+            codex: None,
             agent: ChatAgent::Claude,
             busy,
             last_active: Instant::now()
@@ -4921,6 +5442,7 @@ mod question_delivery_tests {
                 user_turn_id: None,
                 child,
                 stdin: None,
+                codex: None,
                 agent: ChatAgent::Codex,
                 busy: true,
                 last_active: Instant::now(),
@@ -5111,6 +5633,7 @@ mod question_delivery_tests {
                 user_turn_id: None,
                 child,
                 stdin,
+                codex: None,
                 agent: ChatAgent::Claude,
                 busy: false,
                 last_active: Instant::now(),

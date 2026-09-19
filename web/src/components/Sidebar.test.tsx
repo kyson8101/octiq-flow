@@ -5,7 +5,7 @@ import type { Conversation } from "../lib/store";
 import { Sidebar, type Project } from "./Sidebar";
 
 const projects: Project[] = [
-  { id: "p1", name: "octiq-flow" },
+  { id: "p1", name: "octiq-flow", initial: "OF" },
   { id: "p2", name: "starfall-social" },
 ];
 
@@ -22,7 +22,8 @@ function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     projects={projects} shelved={[]} onShowShelved={() => {}}
     conversations={[]} currentConversation={null} running={new Set()} busy={new Set()}
     onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}}
-    onPin={() => {}} onRename={() => {}} onSettings={() => {}} onNewProject={() => {}}
+    onPin={() => {}} onRename={() => {}} onNewProject={() => {}}
+    searchChats={async () => []}
     {...over}
   />);
 }
@@ -36,16 +37,21 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("proj-btn");
   });
 
-  it("renders title, latest agent response, and project as three rows", () => {
+  it("renders title, latest agent response, project, and active model in three rows", () => {
     const messages = [
       message("u1", "user", "Can you investigate?"),
       message("a1", "assistant", "I found the routing issue."),
       message("u2", "user", "Please fix it."),
     ];
-    const out = html({ conversations: [chat("a", "p1", messages)] });
+    const out = html({ conversations: [{ ...chat("a", "p1", messages), modelId: "codex:sol" }] });
     expect(out).toContain('class="chat-title">Task a</span>');
     expect(out).toContain('class="chat-snippet">I found the routing issue.</span>');
+    expect(out).toContain("project-avatar-text\">OF</span>");
     expect(out).toContain("octiq-flow</span>");
+    expect(out).toContain('class="chat-model" title="Active model: Codex · Sol"');
+    expect(out).toContain("Sol</span>");
+    expect(out).toContain('aria-label="Task a, octiq-flow, Codex Sol"');
+    expect(out).not.toContain("chat-project-dot");
     expect(out).not.toContain("You: Please fix it");
   });
 
@@ -56,11 +62,13 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('class="chat-snippet">Saved on the other device.</span>');
   });
 
-  it("offers a global new-chat action and keeps project settings reachable", () => {
+  it("offers global chat and list actions without duplicating project settings", () => {
     const out = html();
     expect(out).toContain('class="sidebar-new-chat"');
     expect(out).toContain("New chat</span>");
     expect(out).toContain('aria-label="Chat list actions"');
+    expect(out).toContain('aria-label="Search chats"');
+    expect(out).not.toContain("Project settings:");
   });
 
   it("shows working state in the response row", () => {

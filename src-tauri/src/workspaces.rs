@@ -642,6 +642,62 @@ pub fn set_description_impl(
     state.save(&data)
 }
 
+/// Set or clear the short fallback drawn inside a project's avatar. The UI
+/// limits this to two visible characters; the backend repeats that boundary so
+/// a direct WebSocket call cannot persist a label that breaks every avatar.
+pub fn set_workspace_initial_impl(
+    state: &WorkspaceState,
+    id: String,
+    initial: String,
+) -> Result<(), String> {
+    let initial = initial.trim().to_string();
+    if initial.chars().count() > 2 || initial.chars().any(char::is_control) {
+        return Err("project initials must be at most 2 characters".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.initial = initial;
+    state.save(&data)
+}
+
+/// Base64 for a 512 KiB source image needs just under 700 KiB of text. Keep a
+/// little room for the data-URL header while still preventing workspaces.json
+/// from becoming an unbounded image store.
+const MAX_PROJECT_ICON_DATA_URL_CHARS: usize = 700 * 1024;
+
+/// Set or clear a project's uploaded avatar. Only the three still-image types
+/// offered by the browser picker are accepted; SVG and animated formats are
+/// deliberately excluded from this small identity mark.
+pub fn set_workspace_icon_impl(
+    state: &WorkspaceState,
+    id: String,
+    icon: String,
+) -> Result<(), String> {
+    let icon = icon.trim().to_string();
+    let allowed = icon.is_empty()
+        || icon.starts_with("data:image/png;base64,")
+        || icon.starts_with("data:image/jpeg;base64,")
+        || icon.starts_with("data:image/webp;base64,");
+    if !allowed {
+        return Err("project icon must be a PNG, JPEG, or WebP data URL".into());
+    }
+    if icon.len() > MAX_PROJECT_ICON_DATA_URL_CHARS {
+        return Err("project icon must be smaller than 512 KB".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.icon = icon;
+    state.save(&data)
+}
+
 /// Whether a string is a valid POSIX-style environment variable name:
 /// `[A-Za-z_][A-Za-z0-9_]*`.
 fn is_valid_env_key(key: &str) -> bool {
@@ -754,8 +810,9 @@ mod tests {
     use super::{
         add_workspace_impl, add_workspace_path_impl, delete_workspace_impl, list_workspaces_impl,
         name_slug, rename_workspace_impl, reorder_workspaces_impl, resolve_env_with_home,
-        set_primary_path_impl, set_workspace_env_impl, set_workspace_shelved_impl,
-        set_workspace_sibling_impl, WorkspaceData, WorkspaceState,
+        set_primary_path_impl, set_workspace_env_impl, set_workspace_icon_impl,
+        set_workspace_initial_impl, set_workspace_shelved_impl, set_workspace_sibling_impl,
+        WorkspaceData, WorkspaceState,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -1041,6 +1098,43 @@ mod tests {
         let error = set_workspace_sibling_impl(&state, project.id.clone(), project.id, true)
             .expect_err("self-links must be refused");
         assert!(error.contains("own sibling"));
+    }
+
+    #[test]
+    fn project_initials_are_trimmed_capped_and_clearable() {
+        let (state, _missing) = scratch("initial");
+        let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
+
+        set_workspace_initial_impl(&state, ws.id.clone(), " of ".into()).unwrap();
+        assert_eq!(list_workspaces_impl(&state).unwrap()[0].initial, "of");
+
+        let error = set_workspace_initial_impl(&state, ws.id.clone(), "too".into())
+            .expect_err("three characters must not fit the avatar");
+        assert!(error.contains("at most 2"), "{error}");
+
+        set_workspace_initial_impl(&state, ws.id, String::new()).unwrap();
+        assert!(list_workspaces_impl(&state).unwrap()[0].initial.is_empty());
+    }
+
+    #[test]
+    fn project_icons_accept_supported_inline_images_and_can_be_cleared() {
+        let (state, _missing) = scratch("icon");
+        let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
+        let icon = "data:image/png;base64,aWNvbg==".to_string();
+
+        set_workspace_icon_impl(&state, ws.id.clone(), icon.clone()).unwrap();
+        assert_eq!(list_workspaces_impl(&state).unwrap()[0].icon, icon);
+
+        let error = set_workspace_icon_impl(
+            &state,
+            ws.id.clone(),
+            "data:image/svg+xml;base64,PHN2Zz4=".into(),
+        )
+        .expect_err("SVG is not offered by the project icon picker");
+        assert!(error.contains("PNG, JPEG, or WebP"), "{error}");
+
+        set_workspace_icon_impl(&state, ws.id, String::new()).unwrap();
+        assert!(list_workspaces_impl(&state).unwrap()[0].icon.is_empty());
     }
 
     #[test]

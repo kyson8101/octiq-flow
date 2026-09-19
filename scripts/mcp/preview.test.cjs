@@ -9,9 +9,9 @@ const { previewImage } = require("./preview.cjs");
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==", "base64");
 const setup = () => { const root = fs.mkdtempSync(path.join(os.tmpdir(), "octiq-image-test-")); const source = path.join(root, "source.png"); fs.writeFileSync(source, PNG); return { root, source }; };
 
-function mcp(root, key, method, params) {
+function mcp(root, key, method, params, scriptArgs = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs")], { env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: key }, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, [path.join(__dirname, "octiq-ask.cjs"), ...scriptArgs], { env: { ...process.env, OCTIQ_ROOT: root, OCTIQ_CHAT_KEY: key }, stdio: ["pipe", "pipe", "pipe"] });
     let out = ""; let errors = "";
     child.stdout.on("data", chunk => { out += chunk; if (out.includes("\n")) { resolve(JSON.parse(out.split("\n")[0])); child.stdin.end(); } });
     child.stderr.on("data", chunk => errors += chunk);
@@ -56,9 +56,18 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   const standalone = await mcp(root, "", "tools/list");
   assert.ok(!standalone.result.tools.some(tool => tool.name === "preview_image"));
   const bound = await mcp(root, "chat:one", "tools/list");
+  assert.ok(bound.result.tools.some(tool => tool.name === "ask_user"));
   assert.ok(bound.result.tools.some(tool => tool.name === "preview_image"));
   assert.ok(bound.result.tools.some(tool => tool.name === "search_conversations"));
   assert.ok(!standalone.result.tools.some(tool => tool.name === "search_conversations"));
+  const codex = await mcp(root, "chat:one", "tools/list", undefined, ["--disable-ask-user"]);
+  assert.ok(!codex.result.tools.some(tool => tool.name === "ask_user"));
+  assert.ok(codex.result.tools.some(tool => tool.name === "search_conversations"));
+  const codexInit = await mcp(root, "chat:one", "initialize", {}, ["--disable-ask-user"]);
+  assert.doesNotMatch(codexInit.result.instructions, /ask_user/);
+  const codexDenied = await mcp(root, "chat:one", "tools/call", { name: "ask_user", arguments: { question: "Choose?" } }, ["--disable-ask-user"]);
+  assert.equal(codexDenied.result.isError, true);
+  assert.match(codexDenied.result.content[0].text, /No tool called ask_user/);
   const denied = await mcp(root, "", "tools/call", { name: "preview_image", arguments: { path: source } });
   assert.equal(denied.result.isError, true);
   const results = await Promise.all(Array.from({ length: 8 }, () => mcp(root, "chat:one", "tools/call", { name: "preview_image", arguments: { path: source, slot: "shared" } })));

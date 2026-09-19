@@ -52,7 +52,7 @@ const errors = [];
 
 async function mockBackend(context) {
   await context.addInitScript(({ chats, snippets }) => {
-    localStorage.setItem('octiq.theme', 'sage');
+    localStorage.setItem('octiq.theme', 'fun');
     localStorage.setItem('octiq.v2.conversations', JSON.stringify(chats.map((chat, index) => ({
       ...chat,
       messages: [{ id: `m-${chat.id}`, role: 'assistant', streaming: false, blocks: [{ kind: 'text', text: snippets[index] }] }],
@@ -69,6 +69,10 @@ async function mockBackend(context) {
     if (data.cmd === 'chat_index_list') result = chats;
     if (data.cmd === 'chat_index_deleted') result = [{ ...chats[0], id: 'deleted-1', title: 'Earlier conversation', deletedAt: Date.now() }];
     if (data.cmd === 'chat_page') result = { events: [], context: [], before: null };
+    if (data.cmd === 'chat_search' && data.args.query === 'rotation') result = [{
+      id: 'g', speaker: 'Assistant', role: 'assistant',
+      excerpt: 'The retry rotation lives deep in the transcript.',
+    }];
     if (data.cmd === 'chat_queue_state') result = { live: false, queuedTurnIds: [] };
     if (data.cmd === 'memory_usage') result = { totalMb: 25, procs: 1, rows: [] };
     if (data.cmd === 'usage_summary') result = { claude: { available: true, fiveHour: { percent: 100 } }, codex: { available: true, weekly: { percent: 23 } } };
@@ -107,10 +111,18 @@ try {
   assert.equal(await sidebar.locator('.chat-row').first().locator('.chat-title').textContent(), titles[3], 'Pinned task stays first');
   await page.screenshot({ path: join(artifacts, 'mobile-task-list.png') });
 
+  const search = sidebar.getByRole('searchbox', { name: 'Search chats', exact: true });
+  await search.fill('rotation');
+  await sidebar.locator('.task-chat-list .chat').waitFor();
+  assert.equal(await sidebar.locator('.task-chat-list .chat').count(), 1);
+  assert.match(await sidebar.locator('.chat-snippet').textContent(), /deep in the transcript/);
+  await sidebar.getByRole('button', { name: 'Clear chat search', exact: true }).tap();
+  await page.waitForFunction(count => document.querySelectorAll('.task-chat-list .chat').length === count, chats.length);
+
   const listTrigger = page.getByRole('button', { name: 'Chat list actions', exact: true });
   const menu = page.getByRole('menu');
   await listTrigger.tap();
-  await menu.getByRole('menuitem', { name: 'Project settings: General', exact: true }).waitFor();
+  assert.equal(await menu.getByRole('menuitem', { name: /^Project settings:/ }).count(), 0);
   await menu.getByRole('menuitem', { name: 'Shelved projects (2)', exact: true }).waitFor();
   await menu.getByRole('menuitem', { name: 'Deleted chats (1)', exact: true }).waitFor();
   await page.keyboard.press('Escape');
@@ -141,9 +153,11 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await sidebar.waitFor();
   await listTrigger.click();
-  await menu.getByRole('menuitem', { name: 'Hide chats', exact: true }).click();
+  assert.equal(await menu.getByRole('menuitem', { name: 'Hide chats', exact: true }).count(), 0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Hide chats', exact: true }).click();
   await sidebar.waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: 'Chats', exact: true }).click();
+  await page.getByRole('button', { name: 'Show chats', exact: true }).click();
   await sidebar.waitFor();
   await page.screenshot({ path: join(artifacts, 'desktop-task-list.png') });
 

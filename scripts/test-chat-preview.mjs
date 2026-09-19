@@ -28,7 +28,7 @@ function App() {
   const [live, setLive] = useState([message("a", "Can I preview the latest conversation?"), message("b", "Hover over a chat to see a quick peek of the latest messages, without leaving your current conversation.", "assistant"), message("c", "Great, keep it small and readable.")]);
   window.updateLive = () => setLive(v => [...v, message("d", "Streaming update just arrived.", "assistant")]);
   return React.createElement("div", { style: { display: "flex", height: "100vh" } },
-    React.createElement(Sidebar, { projects: [{id: "p", name: "OctiqFlow"}], shelved: [], onShowShelved() {}, conversations: chats, currentConversation: "0", running: new Set(["0"]), busy: new Set(["0"]), onPickConversation: c => window.picked.push(c.id), onNewChat() {}, onDelete() {}, onPin() {}, onRename: (id, title) => window.renamed.push({id,title}), onSettings() {}, onNewProject() {}, getPreviewMessages: id => id === "0" ? live : undefined, loadPreview }),
+    React.createElement(Sidebar, { projects: [{id: "p", name: "OctiqFlow"}], shelved: [], onShowShelved() {}, conversations: chats, currentConversation: "0", running: new Set(["0"]), busy: new Set(["0"]), onPickConversation: c => window.picked.push(c.id), onNewChat() {}, onDelete() {}, onPin() {}, onRename: (id, title) => window.renamed.push({id,title}), onNewProject() {}, searchChats: async () => [], getPreviewMessages: id => id === "0" ? live : undefined, loadPreview }),
     React.createElement("main", { style: { padding: "60px", flex: 1 } }, "Current conversation stays open"));
 }
 createRoot(document.getElementById("root")).render(React.createElement(App));

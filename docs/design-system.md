@@ -7,7 +7,7 @@ are authored for this application; they are not an official Figma token export.
 
 ## Foundations
 
-`web/src/design-system.css` owns the default One Dark palette, spacing, type,
+`web/src/design-system.css` owns the default Dark palette, spacing, type,
 control sizes, shadows, focus and syntax colors. Use semantic variables rather
 than literal UI colors. `--bg-0` is the workspace, `--bg-sunken` the navigation,
 `--bg-1` a panel and `--bg-2` a hover or raised surface. `--fg-0` is a heading,
@@ -30,7 +30,7 @@ Use the existing shared control classes: `.icon-btn`, `.panel-btn`, `.set-input`
 Default controls are 36 px, compact controls 32 px, and touch targets 44 px.
 Use 8 px corners for small controls, 12 px for grouped controls, and 16 px for
 panels and dialogs; pill corners are reserved for segmented tabs and primary
-actions. Existing custom palettes may supply their own corner geometry.
+actions. Light and Fun may supply their own corner geometry.
 
 Layout spacing uses `--space-1` through `--space-12` (4–48 px, with selected
 steps). One-pixel borders, icon strokes, optical alignment and interaction
@@ -44,12 +44,14 @@ buildings, office and avatar artwork keep their own material colors.
 
 ## Appearance
 
-One Dark is the built-in default (the persisted `octiq` id remains compatible).
-One Light is available in Settings, alongside the existing custom palettes.
-Both OS headers have an appearance toggle. The choice persists across routes
-and reloads. `data-color-scheme` controls native widgets and syntax colors;
-switching back clears all palette overrides. Arbitrary user-authored HTML and
-PDF/image contents retain their own presentation inside the Preview surface.
+The product has exactly three appearance modes: Light, Dark, and Fun. Dark is
+the built-in default; Light is the neutral bright workspace; Fun keeps a dark
+reading surface and adds a playful multi-colour palette. Both OS headers retain
+a quick Light/Dark toggle, while Settings exposes all three. The choice
+persists across routes and reloads. Retired palette ids safely migrate to one
+of the supported modes. `data-color-scheme` controls native widgets and syntax
+colors; switching to Dark clears all palette overrides. Arbitrary user-authored
+HTML and PDF/image contents retain their own presentation inside Preview.
 
 ## Validation
 

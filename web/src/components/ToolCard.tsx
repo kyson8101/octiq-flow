@@ -21,7 +21,7 @@ import type { Block } from "../lib/chat";
 import { fileDiff } from "../lib/diff";
 import { parseSkillBrief } from "../lib/skillRun";
 import { askAnswer } from "../lib/askAnswer";
-import { toolDetail, toolLook } from "../lib/toolKind";
+import { commandTool, toolDetail, toolLook } from "../lib/toolKind";
 import { DiffStat, DiffView } from "./DiffView";
 import { baseOf, dirOf } from "../lib/folderHead";
 import { ToolIcon, ToolState } from "./ToolIcon";
@@ -110,7 +110,11 @@ export function ToolCard({
   const isAgent = !!agent || AGENT_TOOLS.has(tool.name.toLowerCase());
   const opensAgent = isAgent && !!onOpenAgent;
   const look = toolLook(tool.name, tool.args);
+  // `/bin/zsh -lc "gh …"` is only the launcher. Name the CLI it called on the
+  // folded row; the complete command remains available under `arguments`.
+  const calledTool = commandTool(tool.name, tool.args);
   const isSkill = look.kind === "skill";
+  const isMcp = look.kind === "mcp";
   // Edit, Write and MultiEdit are the calls a reader actually wants to SEE, and
   // the only ones whose arguments are unreadable as arguments: two long
   // strings, one of which is the other with something changed. The card draws
@@ -139,19 +143,20 @@ export function ToolCard({
   // block); once it has, the row says what the skill is FOR in its own words,
   // and what it was called with moves into a chip beside the name.
   const brief = isSkill && tool.brief ? parseSkillBrief(tool.brief) : null;
-  // Card 79 — one or several questions put to the person, and what they
-  // decided. The live card that asked is long gone by the time anyone reads
-  // this, so the decision has to live on the call that made it. An agent can
-  // ask several things in one call now; the list is still one thing to check
-  // truthiness of.
+  // Card 79 — one or several questions put to the person. The live card that
+  // asked is long gone by the time anyone reads this, so the question stays on
+  // the call that made it. The MCP return does not: it is provider transport
+  // data, and the agent's next message carries the useful conversational
+  // outcome.
   const ask = askAnswer(tool.name, tool.args, tool.result);
   const hasAsk = !!ask && ask.length > 0;
   const called = toolDetail(tool.name, tool.args, isAgent);
+  const namesFile = (look.kind === "read" || look.kind === "edit") && look.label.includes("(");
   // A question takes no share of the row. `tool-detail` ellipsises from the
   // LEFT so a long path keeps its useful end — and a question's useful end is
   // its start, so half a question would be the half nobody needs. It gets a line
   // of its own below instead.
-  const full = isSkill ? (brief?.summary ?? "") : hasAsk ? "" : called;
+  const full = isSkill ? (brief?.summary ?? "") : hasAsk || calledTool || namesFile ? "" : called;
   // A header above this card has already named the folder, so the card names
   // the file. `dirOf` on both sides rather than a prefix test: it is exact —
   // a file in a SUBFOLDER of the named one keeps its path, which is what a
@@ -185,8 +190,8 @@ export function ToolCard({
         className="tool-head"
         onClick={() => (opensAgent ? onOpenAgent!() : setOpen((v) => !v))}
         type="button"
-        // The row keeps the exact name the provider reported. Keep it in the
-        // title too so a long name truncated by layout is still inspectable.
+        // The provider's raw name remains in the title when the visible label
+        // names the underlying CLI, and a long name stays inspectable here.
         title={opensAgent ? "Open read-only agent chat" : tool.name}
         aria-label={opensAgent ? "Open read-only agent chat" : undefined}
       >
@@ -255,8 +260,8 @@ export function ToolCard({
       </div>
 
       {/* Outside the fold, on purpose. Everything else on a card is detail you
-          go looking for; this is a decision that was made, and a decision you
-          have to open a card to find is one you will not find. */}
+          go looking for; the question explains why the agent stopped here and
+          remains useful after the live question control has gone away. */}
       {ask && ask.length > 0 && (
         <div className="tool-answer">
           {ask.map((item, index) => (
@@ -266,7 +271,11 @@ export function ToolCard({
                     question does not need to say "1." of itself. */}
                 {ask.length > 1 ? `${index + 1}. ${item.question}` : item.question}
               </div>
-              {(item.answer || item.unanswered) && (
+              {/* MCP return envelopes are transport data, not conversation
+                  content. Keep the question in the transcript, but leave its
+                  successful return off the card; the agent's next message is
+                  where the useful outcome belongs. */}
+              {!isMcp && (item.answer || item.unanswered) && (
                 <div className="tool-answer-row">
                   <span className="tool-answer-mark" aria-hidden="true">
                     &#8627;
@@ -344,7 +353,7 @@ export function ToolCard({
               failed is the only thing on the card worth reading. A skill's
               "Launching skill: x" is the same noise, and kept the same way:
               only when the launch failed. */}
-            {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && !hasAsk && (
+            {tool.result !== undefined && (!diff || tool.state === "error") && (!isSkill || tool.state === "error") && (!isMcp || tool.state === "error") && (!hasAsk || tool.state === "error") && (
               <>
                 <div className="tool-label">{isAgent ? "report" : "result"}</div>
                 <pre className="tool-pre">{tool.result}</pre>

@@ -17,12 +17,6 @@ describe("chat notice presentation", () => {
       title: "The Codex connection timed out",
     });
 
-    expect(presentNotice(
-      "Codex could not save some conversation history because its session record was unavailable.",
-    )).toMatchObject({
-      key: "session-history-unavailable",
-      title: "Some conversation history may be incomplete",
-    });
   });
 
   it("groups repeated diagnostics while retaining the latest technical record", () => {

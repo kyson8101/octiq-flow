@@ -16,6 +16,8 @@ mod agents;
 mod bus;
 mod canvas;
 mod chat_index;
+mod chat_search;
+mod codex_app_server;
 mod diagnostics;
 mod dispatch;
 mod file_watch;

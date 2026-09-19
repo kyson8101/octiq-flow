@@ -1,4 +1,5 @@
-// Card 79 — the card of an `ask_user` call carries the decision it made.
+// Card 79 — the card of an `ask_user` call keeps the question without exposing
+// the MCP transport envelope returned underneath it.
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -21,25 +22,39 @@ const ask = (over: Partial<Tool> = {}): Tool =>
 describe("an answered question, on the call that asked it", () => {
   it("shows the question without being opened", () => {
     // The live card is gone by now. Folded shut, the row said `ask_user` and
-    // nothing else — neither what was asked nor what was decided.
+    // nothing else, including what was asked.
     const html = renderToStaticMarkup(<ToolCard tool={ask({ result: "Wait" })} />);
 
     expect(html).toContain(QUESTION);
   });
 
-  it("shows the answer without being opened", () => {
-    const html = renderToStaticMarkup(<ToolCard tool={ask({ result: "Wait" })} />);
+  it("does not show the MCP return beneath the question", () => {
+    const result = JSON.stringify({
+      content: [{ type: "text", text: "Wait" }],
+      structured_content: null,
+    });
+    const html = renderToStaticMarkup(<ToolCard tool={ask({ result })} />);
 
-    expect(html).toContain("Wait");
+    expect(html).not.toContain("Wait");
+    expect(html).not.toContain("structured_content");
   });
 
-  it("does not print the machine's excuse as something you chose", () => {
+  it("does not print the machine's excuse beneath the question", () => {
     const html = renderToStaticMarkup(
       <ToolCard tool={ask({ result: "The question timed out." })} />,
     );
 
-    expect(html).toContain("not answered in time");
+    expect(html).not.toContain("not answered in time");
     expect(html).not.toContain("The question timed out.");
+  });
+
+  it("keeps an actual MCP failure available for diagnosis", () => {
+    const html = renderToStaticMarkup(
+      <ToolCard tool={ask({ state: "error", result: "Question service unavailable" })} open />,
+    );
+
+    expect(html).toContain("Question service unavailable");
+    expect(html).toContain(">result<");
   });
 
   it("shows the question whole, not cut off at the width of a row", () => {
@@ -62,12 +77,11 @@ describe("an answered question, on the call that asked it", () => {
     expect(html).not.toContain("tool-answer-none");
   });
 
-  it("does not say the answer twice when the card is opened", () => {
-    // The generic `result` block would repeat it verbatim under a label that
-    // calls a person's decision the tool's output.
+  it("does not show the MCP return when the card is opened", () => {
     const html = renderToStaticMarkup(<ToolCard tool={ask({ result: "Wait" })} open />);
 
     expect(html).not.toContain(">result<");
+    expect(html).not.toContain('class="tool-answer-row"');
   });
 
   it("still opens onto the options it offered", () => {
@@ -109,7 +123,7 @@ describe("a batch of several questions, on the one call that asked them all", ()
       state: "done",
     }) as Tool;
 
-  it("shows all three questions and all three answers without being opened", () => {
+  it("shows all three questions without the MCP return beneath them", () => {
     const said = [
       `Q1: ${Q1}`,
       "A1: Ship it now",
@@ -126,12 +140,12 @@ describe("a batch of several questions, on the one call that asked them all", ()
     expect(html).toContain(Q1);
     expect(html).toContain(Q2);
     expect(html).toContain(Q3);
-    expect(html).toContain("Ship it now");
-    expect(html).toContain("staging");
-    expect(html).toContain("No, that&#x27;s everything");
+    expect(html).not.toContain('class="tool-answer-row"');
+    expect(html).not.toContain("staging");
+    expect(html).not.toContain("No, that&#x27;s everything");
   });
 
-  it("shows the app's words for an excuse on one answer, never the machine sentence", () => {
+  it("does not show answer or excuse text from a mixed MCP return", () => {
     const said = [
       `Q1: ${Q1}`,
       "A1: Ship it now",
@@ -146,10 +160,9 @@ describe("a batch of several questions, on the one call that asked them all", ()
 
     const html = renderToStaticMarkup(<ToolCard tool={batch(said)} />);
 
-    expect(html).toContain("not answered in time");
+    expect(html).not.toContain("not answered in time");
     expect(html).not.toContain("The user did not answer in time");
-    // The other two answers are real and must not be swallowed by the excuse.
-    expect(html).toContain("Ship it now");
-    expect(html).toContain("No, that&#x27;s everything");
+    expect(html).not.toContain('class="tool-answer-row"');
+    expect(html).not.toContain("No, that&#x27;s everything");
   });
 });

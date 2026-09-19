@@ -140,6 +140,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "id")?,
             arg(&args, "description")?,
         )),
+        "set_workspace_initial" => unit(crate::workspaces::set_workspace_initial_impl(
+            &svc.workspaces,
+            arg(&args, "id")?,
+            arg(&args, "initial")?,
+        )),
+        "set_workspace_icon" => unit(crate::workspaces::set_workspace_icon_impl(
+            &svc.workspaces,
+            arg(&args, "id")?,
+            arg(&args, "icon")?,
+        )),
         "set_workspace_env" => unit(crate::workspaces::set_workspace_env_impl(
             &svc.workspaces,
             arg(&args, "id")?,
@@ -279,6 +289,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
         "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
         "chat_index_deleted" => Ok(json!(crate::agent_chat::chat_index_deleted())),
+        "chat_search" => to_value(crate::chat_search::search(
+            &svc.workspaces,
+            arg(&args, "query")?,
+            arg(&args, "limit")?,
+        )),
         // The agents' OWN past sessions, for the search that resumes one.
         "agent_history_list" => Ok(json!(crate::agent_history::agent_history_list(arg(
             &args, "limit"

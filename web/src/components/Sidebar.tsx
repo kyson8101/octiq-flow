@@ -1,21 +1,27 @@
 // Task-first navigation: one global list of chats, with project as context.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type React from "react";
+import { modelFromId } from "../lib/agentProviders";
 import { latestResponse } from "../lib/chatPreview";
-import { projectColor } from "../lib/projectColor";
 import type { Conversation } from "../lib/store";
+import { AgentLogo } from "./AgentLogo";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
+import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
 import "./MobileSidebar.css";
 
-export type Project = {
-  id: string;
-  name: string;
-  color?: string;
+export type Project = ProjectAppearance & {
   primary_path?: string;
   sibling_ids?: string[];
   env?: Record<string, string>;
+};
+
+export type ChatSearchHit = {
+  id: string;
+  excerpt: string;
+  speaker: string;
+  role: string;
 };
 
 const NONE: ReadonlySet<string> = new Set();
@@ -24,8 +30,8 @@ export function Sidebar({
   projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
-  loadPreview, onNewChat, onDelete, onPin, onRename, onSettings,
-  onNewProject, onHide, onResize, foot,
+  loadPreview, onNewChat, onDelete, onPin, onRename,
+  onNewProject, searchChats, onResize, foot,
 }: {
   projects: Project[];
   shelved: Project[];
@@ -44,24 +50,63 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
   onRename: (id: string, title: string) => void;
-  onSettings: (projectId: string) => void;
   onNewProject: () => void;
-  onHide?: () => void;
+  searchChats: (query: string) => Promise<ChatSearchHit[]>;
   onResize?: (event: React.PointerEvent<HTMLElement>) => void;
   foot?: ReactNode;
 } & ChatPreviewSource) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<ChatSearchHit[]>([]);
+  const [searchState, setSearchState] = useState<"idle" | "searching" | "ready" | "error">("idle");
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
   const held = useRef(false);
   const seenChatIds = useRef<ReadonlySet<string>>(new Set(conversations.map((chat) => chat.id)));
   const knownProjects = [...projects, ...shelved];
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
+  const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+  const trimmedQuery = query.trim();
+  const searchActive = [...trimmedQuery].length >= 2;
+  const hitById = new Map(searchHits.map((hit) => [hit.id, hit]));
+  const visibleConversations = searchActive && searchState === "ready"
+    ? searchHits.flatMap((hit) => {
+      const conversation = conversationById.get(hit.id);
+      return conversation ? [conversation] : [];
+    })
+    : searchActive ? [] : conversations;
 
   useEffect(() => { seenChatIds.current = new Set(conversations.map((chat) => chat.id)); }, [conversations]);
   useEffect(() => () => clearTimeout(hold.current), []);
+  useEffect(() => {
+    if (!searchActive) {
+      setSearchHits([]);
+      setSearchState("idle");
+      return;
+    }
+    let current = true;
+    setSearchHits([]);
+    setSearchState("searching");
+    const timer = setTimeout(() => {
+      void searchChats(trimmedQuery)
+        .then((hits) => {
+          if (!current) return;
+          setSearchHits(hits);
+          setSearchState("ready");
+        })
+        .catch(() => {
+          if (!current) return;
+          setSearchHits([]);
+          setSearchState("error");
+        });
+    }, 180);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [searchActive, searchChats, trimmedQuery]);
   const cancelHold = () => clearTimeout(hold.current);
 
   return (
@@ -78,29 +123,56 @@ export function Sidebar({
             onOpenChange={setMenuOpen}
             items={[
               { id: "new-project", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
-              ...projects.map((project) => ({
-                id: `settings-${project.id}`,
-                label: `Project settings: ${project.name}`,
-                icon: <GearIcon />,
-                onSelect: () => onSettings(project.id),
-              })),
               ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
               ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
-              ...(onHide ? [{ id: "hide", label: "Hide chats", icon: <CollapseIcon />, onSelect: onHide }] : []),
             ]}
           />
         </div>
+        <div className="sidebar-search-wrap">
+          <label className="sidebar-search">
+            <SearchIcon />
+            <input
+              type="search"
+              value={query}
+              placeholder="Search chats"
+              aria-label="Search chats"
+              autoComplete="off"
+              spellCheck={false}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Escape" || !query) return;
+                event.preventDefault();
+                setQuery("");
+              }}
+            />
+            {query && (
+              <button type="button" aria-label="Clear chat search" onClick={() => setQuery("")}>
+                <ClearIcon />
+              </button>
+            )}
+          </label>
+        </div>
       </div>
 
-      {conversations.length ? (
+      {!conversations.length ? (
+        <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
+      ) : searchActive && searchState !== "ready" ? (
+        <div className="sidebar-empty" role="status" aria-live="polite">
+          <span>{searchState === "error" ? "Chat search is unavailable." : "Searching chats…"}</span>
+          {searchState === "error" && <button type="button" onClick={() => setQuery("")}>Clear search</button>}
+        </div>
+      ) : visibleConversations.length ? (
         <ul className="chat-list task-chat-list">
-          {conversations.map((chat) => {
+          {visibleConversations.map((chat) => {
             const going = deleting.has(chat.id);
             const isLeaving = leaving.has(chat.id);
             const project = projectById.get(chat.projectId);
             const projectName = project?.name ?? "Unknown project";
+            const model = modelFromId(chat.modelId ?? null);
+            const searchHit = searchActive ? hitById.get(chat.id) : undefined;
             const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
             const snippet = going ? "Deleting…"
+              : searchHit ? `${searchHit.speaker}: ${searchHit.excerpt}`
               : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
 
             return (
@@ -133,7 +205,8 @@ export function Sidebar({
                   ) : (
                     <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
                       busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
-                      className="chat-btn" type="button" aria-label={`${chat.title}, ${projectName}`}
+                      className="chat-btn" type="button"
+                      aria-label={`${chat.title}, ${projectName}${model ? `, ${model.name} ${model.model}` : ""}`}
                       disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
                       aria-description="Hover to preview. Hold for chat actions."
                       onPointerDown={(event) => {
@@ -161,9 +234,19 @@ export function Sidebar({
                           <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
                         </span>
                         <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
-                        <span className="chat-project">
-                          <span className="chat-project-dot" style={{ background: project ? projectColor(project) : undefined }} aria-hidden="true" />
-                          {projectName}
+                        <span className="chat-meta">
+                          <span className="chat-project">
+                            {project
+                              ? <ProjectAvatar project={project} size="tiny" />
+                              : <span className="project-avatar is-tiny" aria-hidden="true">?</span>}
+                            <span className="chat-project-name">{projectName}</span>
+                          </span>
+                          {model && (
+                            <span className="chat-model" title={`Active model: ${model.name} · ${model.model}`}>
+                              <AgentLogo agent={model.agent} size={10} />
+                              <span>{model.model}</span>
+                            </span>
+                          )}
                         </span>
                       </span>
                     </ChatPreviewButton>
@@ -180,7 +263,6 @@ export function Sidebar({
                     items={[
                       { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(chat.id) },
                       { id: "pin", label: chat.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(chat.id) },
-                      { id: "project", label: `Project settings: ${projectName}`, icon: <GearIcon />, disabled: going || !project, onSelect: () => onSettings(chat.projectId) },
                       { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) },
                     ]} />}
                 </div>
@@ -189,7 +271,10 @@ export function Sidebar({
           })}
         </ul>
       ) : (
-        <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
+        <div className="sidebar-empty" role="status" aria-live="polite">
+          <span>No chats found for “{trimmedQuery}”.</span>
+          <button type="button" onClick={() => setQuery("")}>Clear search</button>
+        </div>
       )}
 
       {foot && <div className="sidebar-slot is-foot">{foot}</div>}
@@ -218,10 +303,8 @@ function AnimatedChatRow({ entering, leaving, children }: { entering: boolean; l
   return <li className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}>{children}</li>;
 }
 
-function GearIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06-.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></svg>;
-}
-function CollapseIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18" /><path d="m16 15-3-3 3-3" /></svg>; }
+function SearchIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }
+function ClearIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>; }
 function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>; }
 function ArchiveIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M6 7v12h12V7" /><path d="M3 4h18v3H3z" /><path d="M10 11h4" /></svg>; }
 function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 14h10l1-14" /><path d="M10 10v6M14 10v6" /></svg>; }

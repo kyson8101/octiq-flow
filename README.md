@@ -45,6 +45,9 @@ back out through `bus.rs` to every attached browser.
 - **Agents.** Launch Claude, Codex, or pi.dev in one click. pi.dev can use the
   same OpenAI Codex models through a ChatGPT Plus/Pro login. Agents run as a
   JSON stream rather than a TUI, so the chat view can render tool calls as cards.
+  Codex chats use one long-lived `codex app-server` process and its native
+  JSON-RPC controls; set `OCTIQ_CODEX_TRANSPORT=exec` only as a compatibility
+  fallback for an older Codex installation.
 - **Chat transcripts.** Conversations are saved and can be reopened or resumed.
 - **Attention alerts.** A terminal that needs you raises an alert. Agents that
   emit no escape codes can call the bundled `octiq-notify` CLI (see
@@ -52,7 +55,7 @@ back out through `bus.rs` to every attached browser.
 - **Git.** Live per-project change counts, a changed-file list, a diff viewer,
   and branch switching.
 - **Files.** A file browser with preview and edit.
-- **Themes.** A theme chooser in the client, dark only by decision.
+- **Appearance.** Three focused client modes: Light, Dark, and Fun.
 
 ## Stack
 

@@ -68,7 +68,7 @@ fn test_dir() -> Option<PathBuf> {
 /// Where a chat's record lives. `None` when the key is not a safe file name —
 /// keys come from a browser, so a key with a slash in it must never become a
 /// path somewhere else.
-fn path_for(key: &str) -> Option<PathBuf> {
+pub(crate) fn path_for(key: &str) -> Option<PathBuf> {
     let safe = !key.is_empty()
         && key.len() <= 128
         && key

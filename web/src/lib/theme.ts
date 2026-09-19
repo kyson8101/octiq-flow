@@ -1,14 +1,9 @@
-// The theme chooser's engine.
+// The appearance chooser's palette engine.
 //
-// Themes are authored elsewhere — tweakcn, shadcn — and pasted in VERBATIM as
-// `themes/<id>.css`. That format is not ours: it names `--primary`, `--card`,
-// `--muted-foreground`, and it assumes Tailwind is reading them. OctiqFlow has
-// no Tailwind. It has one stylesheet and its own token names (`--bg-0`,
-// `--fg-1`, `--accent`, …) used in 800-odd places.
-//
-// So this file is a TRANSLATOR, and that is the whole trick: keep the pasted
-// file untouched so re-pasting an updated theme is a straight overwrite, and
-// do the renaming here, once, where it can be tested.
+// Dark is the design-system default. Light and Fun are small palette files in
+// the shadcn token shape, while the application itself reads semantic names
+// such as `--bg-0`, `--fg-1` and `--accent`. This file translates between the
+// two vocabularies once, where the colour relationships can be tested.
 //
 // What a theme is NOT allowed to change:
 //   * the fonts. A theme naming Poppins and Fira Code would need those font
@@ -17,29 +12,27 @@
 //   * the drop shadow. The pasted shadows are built for small light cards
 //     (`3px 3px 0px`); on a full-height dark popover they read as a mistake.
 
-/** A theme's tokens, under the names the pasted file uses. */
+/** A mode's palette tokens, under the names the palette files use. */
 export type Tokens = Record<string, string>;
 
 export type Theme = {
   id: string;
   name: string;
-  scheme?: "light" | "dark";
-  /** Active palette tokens. The historical field name remains `dark`; a
-   *  light theme supplies its `:root` block and declares scheme: "light".
-   *  Missing for the built-in theme, which is defined in the stylesheet. */
-  dark?: Tokens;
+  scheme: "light" | "dark";
+  /** Missing for Dark, whose palette is the design-system default. */
+  tokens?: Tokens;
 };
 
-/* ---- Reading the pasted file ------------------------------------------ */
+/* ---- Reading a palette file ------------------------------------------- */
 
 /** Pull one `<selector> { … }` block's custom properties out of pasted CSS.
  *
- *  Deliberately not a real CSS parser. The pasted files are machine-generated
- *  and always the same shape, and a regex that only ever sees `--x: y;` lines
+ *  Deliberately not a real CSS parser. The palette files have a controlled
+ *  shape, and a regex that only ever sees `--x: y;` lines
  *  cannot be tripped by the Tailwind directives around them — which is why
  *  those directives can stay in the file. */
 function block(css: string, selector: string): Tokens {
-  // Comments go first. A pasted file can say the word `:root` in its header —
+  // Comments go first. A palette file can say the word `:root` in its header —
   // this file's own headers do — and a plain `indexOf` would happily parse the
   // sentence about the block instead of the block.
   const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -60,8 +53,7 @@ function block(css: string, selector: string): Tokens {
   return out;
 }
 
-/** Parse both palette blocks. Custom themes use `.dark`; One Light uses
- *  `:root`. The store chooses the active block and native color scheme. */
+/** Parse the light and dark palette blocks used by the two alternate modes. */
 export function parseThemeCss(css: string): { light: Tokens; dark: Tokens } {
   return { light: block(css, ":root"), dark: block(css, ".dark") };
 }
@@ -72,7 +64,7 @@ export type Oklch = { l: number; c: number; h: number };
 
 /** `oklch(0.62 0.18 348.14)` → its three numbers. Anything else → null.
  *
- *  Only oklch is understood, and only because that is what every pasted theme
+ *  Only oklch is understood, and only because that is what the Fun palette
  *  uses for the colours this file has to REASON about (hue, lightness). Colours
  *  it only has to pass through — hsl, hex — never come here. */
 export function parseOklch(value: string): Oklch | null {
@@ -95,9 +87,8 @@ function hueGap(a: number, b: number): number {
  *  the theme's own chart colours for one already at the right hue, and only
  *  invents one when the theme has nothing close.
  *
- *  Bubblegum is exactly why: its five chart colours are pinks and blues, no
- *  green anywhere. Taking "the greenest of them" would put a blue where the
- *  user is being told something is fine. */
+ *  A playful palette may contain only pinks and blues. Taking "the greenest"
+ *  of those would put blue where the user is being told something is fine. */
 export function semanticColor(t: Tokens, hue: number, tolerance = 35): string {
   let best: { key: string; gap: number } | null = null;
   for (const key of ["chart-1", "chart-2", "chart-3", "chart-4", "chart-5"]) {
@@ -154,7 +145,7 @@ export function mapTokens(t: Tokens): Record<string, string> {
     "--bg-0": bg,
     "--bg-1": card,
     // One step further from the background than the card is, always — the
-    // pasted `muted` is sometimes DARKER than the card (Bubblegum), which
+    // supplied `muted` can be darker than the card, which
     // would fold the three-step ladder flat.
     "--bg-2": t["surface-raised"] ?? mix(card, 84, fg),
     // Ours is the top bar and the sidebar, which is what theirs names too.

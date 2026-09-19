@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MANAGED } from "./theme";
-import { applyTheme, BUILT_IN, savedThemeId, THEME_EVENT } from "./themeStore";
+import { applyTheme, BUILT_IN, DARK_MODE, FUN_MODE, LIGHT_MODE, savedThemeId, THEME_EVENT, THEMES } from "./themeStore";
 
 describe("appearance switching", () => {
   let properties: Map<string, string>;
@@ -30,9 +30,9 @@ describe("appearance switching", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("restores dark appearance without leaking the previous light palette", () => {
-    applyTheme("one-light");
+    applyTheme(LIGHT_MODE);
     expect(attributes.get("data-color-scheme")).toBe("light");
-    expect(savedThemeId()).toBe("one-light");
+    expect(savedThemeId()).toBe(LIGHT_MODE);
     expect(properties.get("--bg-0")).toBe("#f7f7f7");
     applyTheme(BUILT_IN);
     expect(attributes.get("data-color-scheme")).toBe("dark");
@@ -42,12 +42,25 @@ describe("appearance switching", () => {
     expect(dispatch.mock.calls.at(-1)?.[0].type).toBe(THEME_EVENT);
   });
 
-  it("returns native controls to dark when choosing an existing custom palette", () => {
-    applyTheme("one-light");
-    applyTheme("sage");
+  it("returns native controls to dark when choosing fun mode", () => {
+    applyTheme(LIGHT_MODE);
+    applyTheme(FUN_MODE);
     expect(attributes.get("data-color-scheme")).toBe("dark");
-    expect(attributes.get("data-theme")).toBe("sage");
+    expect(attributes.get("data-theme")).toBe(FUN_MODE);
     expect(properties.get("--bg-0")).not.toBe("#f7f7f7");
-    expect(savedThemeId()).toBe("sage");
+    expect(savedThemeId()).toBe(FUN_MODE);
+  });
+
+  it("only exposes light, dark and fun", () => {
+    expect(THEMES.map(({ id }) => id)).toEqual([LIGHT_MODE, DARK_MODE, FUN_MODE]);
+  });
+
+  it("migrates retired theme ids to a supported mode", () => {
+    storage.set("octiq.theme", "one-light");
+    expect(savedThemeId()).toBe(LIGHT_MODE);
+    storage.set("octiq.theme", "candyland");
+    expect(savedThemeId()).toBe(FUN_MODE);
+    storage.set("octiq.theme", "sage");
+    expect(savedThemeId()).toBe(DARK_MODE);
   });
 });

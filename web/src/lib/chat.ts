@@ -210,8 +210,8 @@ export type Speaker = {
 
 /** The user message a non-adjacent Codex answer belongs to.
  *
- * Codex accepts queued prompts one process at a time. When another queued
- * prompt sits between the one being handled and its eventual answer, this
+ * Codex accepts queued prompts one turn at a time. When another queued prompt
+ * sits between the one being handled and its eventual answer, this
  * keeps the pair visibly connected without changing transcript order. */
 export type ReplyTarget = { id: string; preview: string };
 
@@ -227,9 +227,9 @@ export type Message = {
   /** User-visible progress Codex emitted before its answer.
    *
    * Codex names these `commentary` when the provider exposes message phases.
-   * `codex exec --json` currently omits that field, so the reducer also keeps
-   * every superseded answer candidate here. The transcript can then fold the
-   * working log away without throwing it away. */
+   * Older Codex transcripts omit that field, so the reducer also keeps every
+   * superseded answer candidate here. The transcript can then fold the working
+   * log away without throwing it away. */
   progress?: string[];
   /** The newest unphased Codex message while its turn is still open.
    *
@@ -1031,9 +1031,9 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
-  // Codex speaks its own event language. `thread.started` carries the id that
-  // `codex exec resume` takes, which is the same job Claude's `session_id`
-  // does — so it lands in the same field and the resume path needs no branch.
+  // Codex speaks its own event language. `thread.started` carries its durable
+  // native thread id, which does the same job as Claude's `session_id` — so it
+  // lands in the same field and the resume path needs no branch.
   if (type === "thread.started") {
     const id = asStr(e.thread_id);
     return id ? { ...state, sessionId: id } : state;
@@ -1978,7 +1978,7 @@ function finishCodexMessage(message: Message): Message {
   };
 }
 
-/** Codex's one-shot turn has accepted its prompt.
+/** Codex's native turn has accepted its prompt.
  *
  * Claude proves this by replaying the user message and stamps its uuid in
  * `echo`. Codex deliberately sends no such item, so leave that identity field
@@ -1996,7 +1996,7 @@ function codexTurnStarted(
 
   // New backends stamp the exact browser-generated id onto `turn.started`.
   // Older transcripts have no stamp, so fall back to the provider's real queue
-  // contract: command-line turns are popped FIFO. The previous newest-first
+  // contract: turns are dispatched FIFO. The previous newest-first
   // guess inverted two queued messages on screen — it marked the later one as
   // active while Codex was actually answering the earlier one.
   const turnId = asStr(event.octiq_user_turn_id);
@@ -2013,12 +2013,12 @@ function codexTurnStarted(
         (m) => m.role === "user" && !m.echo && !m.takenUp && !m.queueLost && !m.to,
       );
 
-  // Starting a new turn seals whatever the previous Codex process left open.
+  // Starting a new turn seals whatever the previous Codex turn left open.
   // Remove the accepted prompt from the waiting tail, then place it after all
   // settled conversation entries and before every message still queued. The
   // next Codex item is inserted at that same boundary by `withCodexCurrent`.
   const closed = state.messages.map((m) => {
-    // A later one-shot turn cannot own an earlier unacknowledged dispatch.
+    // A later native turn cannot own an earlier unacknowledged dispatch.
     // This also repairs old transcripts whose stopped launches had no receipt.
     if (turnId && m.turnId !== turnId && m.role === "user" && !m.to
       && !m.echo && !m.takenUp && m.delivery === "dispatched") {

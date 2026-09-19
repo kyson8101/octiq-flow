@@ -1,6 +1,5 @@
-/* Pasted verbatim from tweakcn. Do not hand-edit; re-paste to update.
-   Only the two blocks below are read; the Tailwind directives are
-   ignored, and are kept so a diff against the source is a straight compare. */
+/* OctiqFlow Fun palette. Bright accents sit on a calm dark foundation so
+   long chats remain readable while the interface still feels playful. */
 :root {
   --background: oklch(0.9809 0.0025 228.7836);
   --foreground: oklch(0.3211 0 0);
@@ -34,11 +33,7 @@
   --sidebar-accent-foreground: oklch(0 0 0);
   --sidebar-border: oklch(0.8699 0 0);
   --sidebar-ring: oklch(0.8677 0.0735 7.0855);
-  --font-sans: Poppins, sans-serif;
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: Roboto Mono, monospace;
   --radius: 0.5rem;
-  --shadow-color: oklch(0 0 0);
 }
 
 .dark {
@@ -74,9 +69,5 @@
   --sidebar-accent-foreground: oklch(0 0 0);
   --sidebar-border: oklch(0.3867 0 0);
   --sidebar-ring: oklch(0.8027 0.1355 349.2347);
-  --font-sans: Poppins, sans-serif;
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: Roboto Mono, monospace;
   --radius: 0.5rem;
-  --shadow-color: oklch(0 0 0);
 }

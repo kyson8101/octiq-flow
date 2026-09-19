@@ -52,7 +52,7 @@ describe("current task evidence", () => {
     expect(deriveTaskEvidence(state)).toMatchObject({ objective: "Review the save flow", status: "waiting", files: [] });
     state.messages.push(assistant([tool("Read", { file_path: "save.ts" }, { state: "running" })], { id: "a2", streaming: true, speaker: { id: "reviewer", name: "Reviewer", agent: "codex" } }));
     state.messages.push(assistant([tool("Write", { file_path: "other.ts" })], { id: "a3", speaker: { id: "other", name: "Other", agent: "claude" } }));
-    expect(deriveTaskEvidence(state)).toMatchObject({ objective: "Review the save flow", status: "running", files: [], step: "Read: save.ts" });
+    expect(deriveTaskEvidence(state)).toMatchObject({ objective: "Review the save flow", status: "running", files: [], step: "read(save.ts)" });
   });
   it("keeps the user's objective across synthetic relay and carry-on prompts", () => {
     const state = chat([tool("Edit", { file_path: "saved.ts" })]);

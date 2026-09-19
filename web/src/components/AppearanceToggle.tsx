@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { applyTheme, BUILT_IN, savedThemeId, THEME_EVENT, themeById } from "../lib/themeStore";
+import { applyTheme, DARK_MODE, LIGHT_MODE, savedThemeId, THEME_EVENT, themeById } from "../lib/themeStore";
 
 /** The same appearance control is available from either OS portal. */
 export function AppearanceToggle() {
@@ -10,10 +10,10 @@ export function AppearanceToggle() {
     return () => window.removeEventListener(THEME_EVENT, changed);
   }, []);
   const light = themeById(id).scheme === "light";
-  const label = `Switch to ${light ? "dark" : "light"} appearance`;
+  const label = `Switch to ${light ? "dark" : "light"} mode`;
   return (
     <button className="appearance-toggle" type="button" title={label} aria-label={label}
-      onClick={() => applyTheme(light ? BUILT_IN : "one-light")}>
+      onClick={() => applyTheme(light ? DARK_MODE : LIGHT_MODE)}>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         {light ? <path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z" /> : <>

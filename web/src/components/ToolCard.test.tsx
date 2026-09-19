@@ -38,16 +38,25 @@ describe("the reported tool name", () => {
     expect(html).not.toContain('<span class="tool-name">/slice</span>');
   });
 
-  it("shows an MCP tool's exact qualified name", () => {
+  it("shows an MCP tool's server and callable in a compact label", () => {
     const html = render(called("mcp__docspace__save_decision", {}));
 
-    expect(html).toContain('<span class="tool-name">mcp__docspace__save_decision</span>');
+    expect(html).toContain('<span class="tool-name">mcp(docspace:save_decision)</span>');
+    expect(html).toContain('title="mcp__docspace__save_decision"');
+  });
+
+  it("shows a file_change event as edit while retaining its raw name", () => {
+    const html = render(called("file_change", { file_path: "src/chat.ts" }));
+
+    expect(html).toContain('<span class="tool-name">edit(src/chat.ts)</span>');
+    expect(html).toContain('title="file_change"');
+    expect(html).not.toContain('<span class="tool-detail"');
   });
 
   it("puts the full tool identity above its command detail", () => {
     const html = render(
       called("command_execution", {
-        command: "/bin/zsh -lc 'find bible/seasons/01 -maxdepth 1 -type f -print | sort'",
+        command: "find bible/seasons/01 -maxdepth 1 -type f -print | sort",
       }),
     );
 
@@ -55,6 +64,98 @@ describe("the reported tool name", () => {
       /class="tool-copy"><span class="tool-identity"><span class="tool-name">command_execution<\/span><\/span><span class="tool-detail"/,
     );
     expect(html).toContain("find bible/seasons/01");
+  });
+
+  it("shows the CLI called through zsh instead of its long launcher command", () => {
+    const command = "/bin/zsh -lc \"ssh build-host 'pnpm install --frozen-lockfile; ./install.sh'\"";
+    const tool = { ...called("command_execution", { command }), state: "running" as const };
+    const folded = render(tool);
+
+    expect(folded).toContain('<span class="tool-name">zsh(ssh)</span>');
+    expect(folded).toContain('class="tool-state is-running"');
+    expect(folded).not.toContain("pnpm install --frozen-lockfile");
+
+    const expanded = renderToStaticMarkup(<ToolCard tool={tool} open />);
+    expect(expanded).toContain("pnpm install --frozen-lockfile");
+  });
+
+  it("skips shell setup before the CLI", () => {
+    const command = "/bin/zsh -lc 'set -e; cd repo && GH_HOST=github.com gh pr view 42'";
+    const html = render(called("command_execution", { command }));
+
+    expect(html).toContain('<span class="tool-name">gh(pr view)</span>');
+    expect(html).not.toContain("GH_HOST=github.com");
+  });
+
+  it("shows search and read intent for known zsh commands", () => {
+    const search = render(called("command_execution", { command: "/bin/zsh -lc 'rg -n needle src'" }));
+    const read = render(called("command_execution", { command: "/bin/zsh -lc 'sed -n 1,80p README.md'" }));
+
+    expect(search).toContain('<span class="tool-name">search(rg)</span>');
+    expect(search).toContain('data-kind="search"');
+    expect(read).toContain('<span class="tool-name">read(README.md)</span>');
+    expect(read).toContain('data-kind="read"');
+  });
+
+  it("shows the git operation instead of the shell launcher", () => {
+    const log = render(called("command_execution", { command: "/bin/zsh -lc 'git --no-pager log --oneline'" }));
+    const commit = render(called("command_execution", { command: "/bin/zsh -lc 'git commit -m message'" }));
+    const push = render(called("command_execution", { command: "/bin/zsh -lc 'git push origin main'" }));
+
+    expect(log).toContain('<span class="tool-name">git(log)</span>');
+    expect(commit).toContain('<span class="tool-name">git(commit)</span>');
+    expect(push).toContain('<span class="tool-name">git(push)</span>');
+  });
+
+  it("shows the gh operations instead of command_execution", () => {
+    const command = "/bin/bash -c 'set -euo pipefail\ncurrent=\"$(gh pr view 162)\"\ngh pr review 162 --approve\ngh pr merge 162'";
+    const html = render(called("command_execution", { command }));
+
+    expect(html).toContain('<span class="tool-name">gh(pr view, pr review, pr merge)</span>');
+    expect(html).not.toContain("gh pr review 162");
+  });
+
+  it("shows the gh operation in a chained shell command", () => {
+    const command = "/bin/zsh -lc 'git remote -v && gh pr list --state open --author pyong'";
+    const html = render(called("command_execution", { command }));
+
+    expect(html).toContain('<span class="tool-name">gh(pr list)</span>');
+  });
+
+  it("keeps a direct command as the useful row detail", () => {
+    const html = render(called("command_execution", { command: "pnpm test" }));
+
+    expect(html).toContain('<span class="tool-name">command_execution</span>');
+    expect(html).toContain("pnpm test");
+  });
+});
+
+describe("an MCP call's return", () => {
+  const mcp = (over: Partial<Tool> = {}): Tool => ({
+    kind: "tool",
+    id: "mcp-1",
+    name: "mcp__octiq__read_conversation",
+    argsJson: "{}",
+    args: { url: "https://example.test/chat" },
+    result: '{"content":[{"type":"text","text":"transport payload"}],"structured_content":null}',
+    state: "done",
+    ...over,
+  });
+
+  it("does not render a successful return in the expanded card", () => {
+    const html = renderToStaticMarkup(<ToolCard tool={mcp()} open />);
+
+    expect(html).not.toContain("transport payload");
+    expect(html).not.toContain(">result<");
+  });
+
+  it("keeps a failed return available for diagnosis", () => {
+    const html = renderToStaticMarkup(
+      <ToolCard tool={mcp({ state: "error", result: "Conversation could not be read" })} open />,
+    );
+
+    expect(html).toContain("Conversation could not be read");
+    expect(html).toContain(">result<");
   });
 });
 

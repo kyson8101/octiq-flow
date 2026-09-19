@@ -9,11 +9,10 @@
 // here to do, so it does not hide behind a menu.
 import { useState } from "react";
 import { bridge } from "../lib/bridge";
+import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { RollingText } from "./RollingNumber";
 
-export type ShelvedProject = {
-  id: string;
-  name: string;
+export type ShelvedProject = ProjectAppearance & {
   primary_path?: string;
   description?: string;
   paths?: string[];
@@ -90,7 +89,10 @@ export function ShelvedProjects({
                 disabled={!!busy || restored}
                 onClick={() => void restore(p)}
               >
-                <span className="shelf-card-name">{p.name}</span>
+                <span className="shelf-card-head">
+                  <ProjectAvatar project={p} size="medium" />
+                  <span className="shelf-card-name">{p.name}</span>
+                </span>
                 {p.primary_path && (
                   // RTL + <bdi>: a path is identified by its end, and the box
                   // truncates from the left so the end survives. Without <bdi>

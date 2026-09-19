@@ -296,6 +296,33 @@ impl QuestionStore {
         Ok(Some(answer))
     }
 
+    /// Commit a completed card to a live native provider request.
+    ///
+    /// Unlike the MCP tool path, app-server needs each answer separately so it
+    /// can map them back to Codex's question ids. An empty vector means the
+    /// person cancelled the card; `None` means it was not answered while this
+    /// live request still owned it.
+    pub fn take_native(&self, id: &str) -> Result<Option<Vec<String>>, String> {
+        let mut state = self.state.lock().map_err(|e| e.to_string())?;
+        Self::check(&state)?;
+        let record = state.records.get(id).ok_or("Unknown question")?;
+        if record.delivery == Delivery::Cancelled {
+            state.waiters.remove(id);
+            return Ok(Some(Vec::new()));
+        }
+        if !state.waiters.contains_key(id) || record.delivery != Delivery::Ready {
+            return Ok(None);
+        }
+        let answers = record.answers.iter().flatten().cloned().collect::<Vec<_>>();
+        let mut next = state.records.clone();
+        next.get_mut(id).unwrap().delivery = Delivery::Delivered;
+        self.persist(&next)?;
+        state.records = next;
+        state.waiters.remove(id);
+        publish(&state.records[id]);
+        Ok(Some(answers))
+    }
+
     pub fn detach(&self, id: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.waiters.remove(id);
@@ -506,6 +533,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_answers_keep_question_order_and_return_only_once() {
+        let store = QuestionStore::load(path());
+        let (id, rx) = store
+            .insert(test_origin("chat:native"), questions())
+            .unwrap();
+        let submitted = answers(&store);
+        store.answer(&submitted).unwrap();
+        rx.await.unwrap();
+        assert_eq!(
+            store.take_native(&id).unwrap().unwrap(),
+            vec!["SQLite".to_string(), "Asia".to_string()]
+        );
+        assert!(store.take_native(&id).unwrap().is_none());
+        assert!(store.outbox().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn partial_answers_never_resume_a_half_answered_batch() {
         let store = QuestionStore::default();
         let (id, _rx) = store
@@ -560,6 +604,17 @@ mod tests {
         assert!(restored.answer(&answers).is_err());
         assert!(restored.pending().unwrap().is_empty());
         assert!(restored.outbox().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn native_cancellation_returns_an_empty_answer_set() {
+        let store = QuestionStore::load(path());
+        let (id, rx) = store
+            .insert(test_origin("chat:native-cancelled"), questions())
+            .unwrap();
+        store.cancel_chat("chat:native-cancelled").unwrap();
+        assert!(rx.await.is_err());
+        assert_eq!(store.take_native(&id).unwrap(), Some(Vec::new()));
     }
 
     #[test]
