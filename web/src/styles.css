@@ -663,9 +663,34 @@ body {
 
 .task-chat-list .chat-row + .chat-row { margin-top: 2px; }
 .task-chat-list .chat {
+  --chat-project-color: var(--fg-3);
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
   align-items: center;
+  background: linear-gradient(
+    108deg,
+    color-mix(in srgb, var(--chat-project-color) 16%, var(--bg-sunken)) 0%,
+    color-mix(in srgb, var(--chat-project-color) 6%, var(--bg-sunken)) 58%,
+    var(--bg-sunken) 100%
+  );
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+.task-chat-list .chat:hover {
+  background: linear-gradient(
+    108deg,
+    color-mix(in srgb, var(--chat-project-color) 21%, var(--bg-1)) 0%,
+    color-mix(in srgb, var(--chat-project-color) 8%, var(--bg-1)) 62%,
+    var(--bg-1) 100%
+  );
+}
+.task-chat-list .chat.is-on {
+  background: linear-gradient(
+    108deg,
+    color-mix(in srgb, var(--chat-project-color) 26%, var(--bg-1)) 0%,
+    color-mix(in srgb, var(--chat-project-color) 11%, var(--bg-1)) 66%,
+    var(--bg-1) 100%
+  );
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-project-color) 30%, var(--border));
 }
 .task-chat-list .chat::after { left: 14px; right: 14px; }
 .task-chat-list .chat-btn {
@@ -1097,34 +1122,11 @@ body {
 }
 
 .main {
-  /* The canvas carries the project's identity without recolouring any of the
-     surfaces people read or work in. Agent focus inherits this same paint via
-     `--chat-background`, so opening a sub-agent does not lose the project. */
-  --chat-background: var(--bg-0);
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
-  background: var(--chat-background);
-}
-
-.main.has-project-color {
-  /* Two broad pools of the SAME project colour, not a decorative rainbow.
-     Their low opacity keeps long transcripts quiet in every appearance mode,
-     while the unequal positions make projects recognizable at a glance. */
-  --chat-background:
-    radial-gradient(
-      ellipse 82% 68% at 4% 0%,
-      color-mix(in srgb, var(--chat-project-color) 12%, transparent),
-      transparent 70%
-    ),
-    radial-gradient(
-      ellipse 72% 62% at 96% 100%,
-      color-mix(in srgb, var(--chat-project-color) 7%, transparent),
-      transparent 72%
-    ),
-    var(--bg-0);
 }
 
 /* ---- Empty state ------------------------------------------------------ */

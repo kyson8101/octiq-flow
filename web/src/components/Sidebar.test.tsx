@@ -5,7 +5,7 @@ import type { Conversation } from "../lib/store";
 import { Sidebar, type Project } from "./Sidebar";
 
 const projects: Project[] = [
-  { id: "p1", name: "octiq-flow", initial: "OF" },
+  { id: "p1", name: "octiq-flow", initial: "OF", color: "#12ab34" },
   { id: "p2", name: "starfall-social" },
 ];
 
@@ -53,6 +53,11 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('aria-label="Task a, octiq-flow, Codex Sol"');
     expect(out).not.toContain("chat-project-dot");
     expect(out).not.toContain("You: Please fix it");
+  });
+
+  it("puts the owning project's colour on each chat row", () => {
+    const out = html({ conversations: [chat("a")] });
+    expect(out).toContain('class="chat" style="--chat-project-color:#12ab34"');
   });
 
   it("uses the indexed latest response before a remote transcript is opened", () => {

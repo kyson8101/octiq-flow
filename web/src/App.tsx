@@ -17,7 +17,6 @@
 // leave — its answer arrives, folds into its own transcript, and is saved,
 // whether or not it is the chat on screen.
 import {
-  type CSSProperties,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -151,7 +150,6 @@ import { inferProjectFromText, readProjectMention } from "./lib/projectMention";
 import { ensureGeneralProject } from "./lib/generalProject";
 import { modelHandoff } from "./lib/modelHandoff";
 import { shouldShowChatStatus } from "./lib/chatStatus";
-import { projectColor } from "./lib/projectColor";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
 import "./components/FocusMode.css";
 
@@ -1507,12 +1505,6 @@ export default function App() {
   const project = useMemo(
     () => workspaces.find((w) => w.id === projectId) ?? null,
     [workspaces, projectId],
-  );
-  const chatCanvasStyle = useMemo(
-    () => project
-      ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
-      : undefined,
-    [project],
   );
   const loadCodexSkills = useCallback((force = false) => {
     if (choice.agent !== "codex" || !projectId || !project?.primary_path) return;
@@ -3332,12 +3324,7 @@ export default function App() {
           foot={topbarReadouts ? undefined : readouts}
         />
 
-        <main
-          className={`main ${project ? "has-project-color" : ""}`}
-          hidden={showingProjects}
-          ref={pane}
-          style={chatCanvasStyle}
-        >
+        <main className="main" hidden={showingProjects} ref={pane}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>

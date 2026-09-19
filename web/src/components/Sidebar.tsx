@@ -1,8 +1,9 @@
 // Task-first navigation: one global list of chats, with project as context.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
 import { latestResponse } from "../lib/chatPreview";
+import { projectColor } from "../lib/projectColor";
 import type { Conversation } from "../lib/store";
 import { AgentLogo } from "./AgentLogo";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
@@ -167,6 +168,9 @@ export function Sidebar({
             const going = deleting.has(chat.id);
             const isLeaving = leaving.has(chat.id);
             const project = projectById.get(chat.projectId);
+            const chatTintStyle = project
+              ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
+              : undefined;
             const projectName = project?.name ?? "Unknown project";
             const model = modelFromId(chat.modelId ?? null);
             const searchHit = searchActive ? hitById.get(chat.id) : undefined;
@@ -182,7 +186,7 @@ export function Sidebar({
                   running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
                   going ? "is-going" : "", isLeaving ? "is-leaving" : "",
                   chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
-                ].filter(Boolean).join(" ")}>
+                ].filter(Boolean).join(" ")} style={chatTintStyle}>
                   {renaming === chat.id ? (
                     <form className="chat-rename" onSubmit={(event) => {
                       event.preventDefault();
