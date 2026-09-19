@@ -136,8 +136,12 @@ function argumentFile(args: unknown): string {
 
 /** A recognized shell command wrapper and the script passed to it. */
 function shellEnvelope(name: string, args: unknown): ShellEnvelope | null {
-  if (name.toLowerCase() !== "command_execution") return null;
+  const lower = name.toLowerCase();
   const command = argString(args, "command");
+  // Claude's Bash tool already gives us the shell body directly, while Codex
+  // reports the explicit `/bin/zsh -lc …` or `/bin/bash -c …` launcher.
+  if (lower === "bash") return command ? { shell: "bash", body: command } : null;
+  if (lower !== "command_execution") return null;
   const launcher = command.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))\s+((?:-[A-Za-z]+\s+)+)([\s\S]+)$/);
   if (!launcher || !launcher[4].split(/\s+/).some((option) => option.slice(1).includes("c"))) return null;
 
@@ -318,7 +322,7 @@ export function toolLook(name: string, args: unknown): ToolLook {
     return { kind: "edit", label: file ? `edit(${file})` : "edit" };
   }
 
-  if (lower === "command_execution") {
+  if (lower === "command_execution" || lower === "bash") {
     const envelope = shellEnvelope(name, args);
     const gh = ghOperations(name, args);
     if (envelope && gh.length > 0) {

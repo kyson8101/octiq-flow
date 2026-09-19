@@ -190,6 +190,8 @@ body {
   line-height: 1;
   letter-spacing: -0.04em;
   user-select: none;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 .project-avatar.is-tiny { width: 14px; height: 14px; border-radius: 4px; font-size: 7px; }
@@ -207,6 +209,7 @@ body {
   height: 100%;
   display: block;
   object-fit: cover;
+  border-radius: inherit;
 }
 
 .project-avatar-text { transform: translateX(-0.02em); }

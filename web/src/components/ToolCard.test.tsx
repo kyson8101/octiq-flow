@@ -122,6 +122,16 @@ describe("the reported tool name", () => {
     expect(html).toContain('<span class="tool-name">gh(pr list)</span>');
   });
 
+  it("classifies a direct Bash grep without showing its long command", () => {
+    const command = 'grep -n "ProjectAvatar\\|project-avatar\\|is-tiny" /Users/kyson/project/web/src/components/Sidebar.tsx';
+    const html = render(called("Bash", { command, description: "Find avatar size usage in Sidebar" }));
+
+    expect(html).toContain('<span class="tool-name">search(grep)</span>');
+    expect(html).toContain('data-kind="search"');
+    expect(html).toContain('title="Bash"');
+    expect(html).not.toContain("ProjectAvatar");
+  });
+
   it("keeps a direct command as the useful row detail", () => {
     const html = render(called("command_execution", { command: "pnpm test" }));
 

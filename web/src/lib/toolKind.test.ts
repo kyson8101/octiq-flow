@@ -15,9 +15,14 @@ describe("commandTool", () => {
     expect(commandTool("command_execution", { command: "/bin/bash -c 'gh pr view 42'" })).toBe("gh");
   });
 
-  it("leaves direct commands and other tools alone", () => {
+  it("reads the direct command from a Bash tool", () => {
+    expect(commandTool("Bash", { command: "grep -n needle src" })).toBe("grep");
+    expect(commandTool("Bash", { command: "pnpm test" })).toBe("pnpm");
+  });
+
+  it("leaves an unwrapped command_execution and other tools alone", () => {
     expect(commandTool("command_execution", { command: "pnpm test" })).toBe("");
-    expect(commandTool("Bash", { command: "/bin/zsh -lc 'pnpm test'" })).toBe("");
+    expect(commandTool("Read", { command: "grep -n needle src" })).toBe("");
   });
 });
 
@@ -116,6 +121,21 @@ describe("toolLook", () => {
     expect(toolLook("command_execution", { command: "/bin/zsh -lc 'gh pr view 42'" })).toMatchObject({
       kind: "run",
       label: "gh(pr view)",
+    });
+  });
+
+  it("classifies commands sent directly to Bash by their intent", () => {
+    expect(toolLook("Bash", { command: "grep -n ProjectAvatar src/components/Sidebar.tsx" })).toMatchObject({
+      kind: "search",
+      label: "search(grep)",
+    });
+    expect(toolLook("Bash", { command: "cat src/components/Sidebar.tsx" })).toMatchObject({
+      kind: "read",
+      label: "read(...components/Sidebar.tsx)",
+    });
+    expect(toolLook("Bash", { command: "gh pr list --state open" })).toMatchObject({
+      kind: "run",
+      label: "gh(pr list)",
     });
   });
 
