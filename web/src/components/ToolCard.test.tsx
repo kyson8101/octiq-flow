@@ -91,7 +91,7 @@ describe("the reported tool name", () => {
     const search = render(called("command_execution", { command: "/bin/zsh -lc 'rg -n needle src'" }));
     const read = render(called("command_execution", { command: "/bin/zsh -lc 'sed -n 1,80p README.md'" }));
 
-    expect(search).toContain('<span class="tool-name">search(rg)</span>');
+    expect(search).toContain('<span class="tool-name">search(rg: needle)</span>');
     expect(search).toContain('data-kind="search"');
     expect(read).toContain('<span class="tool-name">read(README.md)</span>');
     expect(read).toContain('data-kind="read"');
@@ -126,10 +126,10 @@ describe("the reported tool name", () => {
     const command = 'grep -n "ProjectAvatar\\|project-avatar\\|is-tiny" /Users/kyson/project/web/src/components/Sidebar.tsx';
     const html = render(called("Bash", { command, description: "Find avatar size usage in Sidebar" }));
 
-    expect(html).toContain('<span class="tool-name">search(grep)</span>');
+    expect(html).toContain('<span class="tool-name">search(grep: ProjectAvatar\\|project-avatar\\|is-tiny)</span>');
     expect(html).toContain('data-kind="search"');
     expect(html).toContain('title="Bash"');
-    expect(html).not.toContain("ProjectAvatar");
+    expect(html).not.toContain("/Users/kyson/project/web/src/components/Sidebar.tsx");
   });
 
   it("keeps a direct command as the useful row detail", () => {

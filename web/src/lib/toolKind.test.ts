@@ -5,7 +5,16 @@
 // that actually ran, and a picture of what kind of thing it was.
 import { describe, expect, it } from "vitest";
 
-import { commandFile, commandTool, ghOperations, gitSubcommand, mcpLabel, shellCommandCount, toolLook } from "./toolKind";
+import {
+  commandFile,
+  commandSearchTerm,
+  commandTool,
+  ghOperations,
+  gitSubcommand,
+  mcpLabel,
+  shellCommandCount,
+  toolLook,
+} from "./toolKind";
 
 describe("commandTool", () => {
   it("finds the CLI launched through zsh", () => {
@@ -30,6 +39,21 @@ describe("shellCommandCount", () => {
   it("counts nested and top-level CLI calls in a shell script", () => {
     const command = "/bin/bash -c 'current=\"$(gh pr view 162)\"\ngh pr review 162 --approve\ngh pr merge 162'";
     expect(shellCommandCount("command_execution", { command }, "gh")).toBe(3);
+  });
+});
+
+describe("commandSearchTerm", () => {
+  it("extracts patterns while skipping options and search paths", () => {
+    expect(commandSearchTerm("command_execution", { command: "/bin/zsh -lc 'rg -n needle src'" })).toBe("needle");
+    expect(commandSearchTerm("Bash", { command: 'grep -n "ProjectAvatar\\|project-avatar" src/Sidebar.tsx' })).toBe(
+      "ProjectAvatar\\|project-avatar",
+    );
+    expect(commandSearchTerm("Bash", { command: "rg -g '*.tsx' 'avatar size' src" })).toBe("avatar size");
+    expect(commandSearchTerm("Bash", { command: "find src -name '*.tsx'" })).toBe("*.tsx");
+  });
+
+  it("leaves searches without a literal pattern generic", () => {
+    expect(commandSearchTerm("Bash", { command: "rg --files src" })).toBe("");
   });
 });
 
@@ -112,7 +136,7 @@ describe("toolLook", () => {
   it("classifies CLIs launched through zsh by their intent", () => {
     expect(toolLook("command_execution", { command: "/bin/zsh -lc 'rg -n needle src'" })).toMatchObject({
       kind: "search",
-      label: "search(rg)",
+      label: "search(rg: needle)",
     });
     expect(toolLook("command_execution", { command: "/bin/zsh -lc 'sed -n 1,80p README.md'" })).toMatchObject({
       kind: "read",
@@ -127,7 +151,7 @@ describe("toolLook", () => {
   it("classifies commands sent directly to Bash by their intent", () => {
     expect(toolLook("Bash", { command: "grep -n ProjectAvatar src/components/Sidebar.tsx" })).toMatchObject({
       kind: "search",
-      label: "search(grep)",
+      label: "search(grep: ProjectAvatar)",
     });
     expect(toolLook("Bash", { command: "cat src/components/Sidebar.tsx" })).toMatchObject({
       kind: "read",

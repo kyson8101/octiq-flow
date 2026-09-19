@@ -81,6 +81,68 @@ function argString(args: unknown, key: string): string {
 const SHELL_SETUP = new Set([".", "cd", "export", "readonly", "set", "source", "unset"]);
 const SEARCH_COMMANDS = new Set(["fd", "find", "grep", "rg"]);
 const READ_COMMANDS = new Set(["cat", "head", "sed", "tail"]);
+const SEARCH_PATTERN_OPTIONS = new Set(["-e", "--regexp"]);
+const SEARCH_OPTIONS_WITH_VALUE = new Set([
+  "-A",
+  "-B",
+  "-C",
+  "-D",
+  "-E",
+  "-F",
+  "-M",
+  "-T",
+  "-d",
+  "-f",
+  "-g",
+  "-j",
+  "-m",
+  "-p",
+  "-r",
+  "-t",
+  "-x",
+  "--after-context",
+  "--before-context",
+  "--color",
+  "--colors",
+  "--context",
+  "--context-separator",
+  "--encoding",
+  "--engine",
+  "--exclude",
+  "--exclude-dir",
+  "--field-context-separator",
+  "--field-match-separator",
+  "--file",
+  "--glob",
+  "--iglob",
+  "--ignore-file",
+  "--include",
+  "--max-columns",
+  "--max-count",
+  "--max-depth",
+  "--path-separator",
+  "--pre",
+  "--pre-glob",
+  "--replace",
+  "--sort",
+  "--sortr",
+  "--threads",
+  "--type",
+  "--type-add",
+  "--type-clear",
+]);
+const FIND_PATTERN_OPTIONS = new Set([
+  "-ilname",
+  "-iname",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-lname",
+  "-name",
+  "-path",
+  "-regex",
+  "-wholename",
+]);
 const GIT_OPTIONS_WITH_VALUE = new Set([
   "-C",
   "-c",
@@ -117,6 +179,45 @@ const GH_COMMAND_GROUPS = new Set([
 
 type ShellEnvelope = { shell: "bash" | "zsh"; body: string };
 type ShellCall = ShellEnvelope & { tool: string; args: string[] };
+
+/** Split one shell clause without losing spaces inside a quoted search term. */
+function shellWords(clause: string): string[] {
+  const words: string[] = [];
+  let word = "";
+  let quote = "";
+  let started = false;
+
+  for (let i = 0; i < clause.length; i++) {
+    const char = clause[i];
+    if (quote) {
+      if (char === quote) {
+        quote = "";
+      } else if (char === "\\" && quote === '"' && i + 1 < clause.length) {
+        // Keep regex escapes visible; only consume a backslash used to quote
+        // the surrounding double quote itself.
+        if (clause[i + 1] === '"') word += clause[++i];
+        else word += char;
+      } else {
+        word += char;
+      }
+      started = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+    } else {
+      word += char;
+      started = true;
+    }
+  }
+  if (started) words.push(word);
+  return words;
+}
 
 function compactFilePath(path: string): string {
   const parts = path.replace(/\\/g, "/").split("/").filter((part) => part && part !== ".");
@@ -167,16 +268,16 @@ function shellCall(name: string, args: unknown): ShellCall | null {
   if (!envelope) return null;
 
   for (const clause of envelope.body.split(/\s*(?:&&|\|\||;|\n)\s*/)) {
-    const words = clause.trim().split(/\s+/).filter(Boolean);
+    const words = shellWords(clause.trim());
     let i = 0;
     while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++;
-    const called = (words[i] ?? "").replace(/^["']|["']$/g, "");
+    const called = words[i] ?? "";
     const tool = called.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? "";
     if (!tool || SHELL_SETUP.has(tool)) continue;
     return {
       ...envelope,
       tool,
-      args: words.slice(i + 1).map((word) => word.replace(/^["']|["']$/g, "")),
+      args: words.slice(i + 1),
     };
   }
   return null;
@@ -184,6 +285,41 @@ function shellCall(name: string, args: unknown): ShellCall | null {
 
 export function commandTool(name: string, args: unknown): string {
   return shellCall(name, args)?.tool ?? "";
+}
+
+/** The literal pattern used by a common search CLI, excluding its flags and
+ * search paths. Commands such as `rg --files` intentionally have no term. */
+export function commandSearchTerm(name: string, args: unknown): string {
+  const call = shellCall(name, args);
+  if (!call || !SEARCH_COMMANDS.has(call.tool)) return "";
+
+  // File-list mode has paths and filters, but no pattern to search for.
+  if (call.tool === "rg" && call.args.includes("--files")) return "";
+
+  if (call.tool === "find") {
+    for (let i = 0; i < call.args.length - 1; i++) {
+      if (FIND_PATTERN_OPTIONS.has(call.args[i])) return call.args[i + 1];
+    }
+    return "";
+  }
+
+  for (let i = 0; i < call.args.length; i++) {
+    const word = call.args[i];
+    if (word === "--") return call.args[i + 1] ?? "";
+    if (SEARCH_PATTERN_OPTIONS.has(word)) return call.args[i + 1] ?? "";
+    if (word.startsWith("--regexp=")) return word.slice("--regexp=".length);
+    if (word.startsWith("-e") && word.length > 2) return word.slice(2);
+    if (SEARCH_OPTIONS_WITH_VALUE.has(word)) {
+      i++;
+      continue;
+    }
+    if ([...SEARCH_OPTIONS_WITH_VALUE].some((option) => option.length === 2 && word.startsWith(option) && word.length > 2)) {
+      continue;
+    }
+    if (word.startsWith("-")) continue;
+    return word;
+  }
+  return "";
 }
 
 /** How often a CLI appears in the wrapped shell script, including `$()` calls. */
@@ -329,7 +465,10 @@ export function toolLook(name: string, args: unknown): ToolLook {
       return { kind: "run", label: `gh(${summarizeOperations(gh)})` };
     }
     const command = commandTool(name, args);
-    if (SEARCH_COMMANDS.has(command)) return { kind: "search", label: `search(${command})` };
+    if (SEARCH_COMMANDS.has(command)) {
+      const term = commandSearchTerm(name, args);
+      return { kind: "search", label: `search(${command}${term ? `: ${term}` : ""})` };
+    }
     if (READ_COMMANDS.has(command)) {
       const file = commandFile(name, args);
       return { kind: "read", label: `read(${file || command})` };
