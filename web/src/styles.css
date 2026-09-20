@@ -2021,17 +2021,21 @@ body {
    often read in Chinese. It shares the UI's CJK face (see `--prose-font`)
    with more air between the lines — 1.5 is set for a Latin x-height, and a column of full-width
    characters at that leading is a wall. 1.8 is what the same files are read at
-   in the editor next door.
-
-   The SIZE stays 14px on purpose. The headings here are 15px, so raising the
-   body to match would leave a heading told apart by weight alone — and CJK
-   already fills more of its em than Latin does, so 14px Chinese does not read
-   small the way 14px English can. It was the leading that was wrong. */
+   in the editor next door. */
 .prose {
   font-family: var(--prose-font);
   line-height: 1.8;
   /* Long URLs and unbroken text must fit within the message column. */
   overflow-wrap: anywhere;
+}
+
+/* Conversation copy gets one more pixel than the surrounding 14px UI. Scope
+   this to top-level message prose so progress readouts, tool briefs and file
+   previews keep their deliberately denser type. A clipped user message wraps
+   its prose in `.clip`, hence the second selector. */
+.msg-body > .prose,
+.msg-body > .clip > .prose {
+  font-size: 15px;
 }
 
 .prose > :first-child {
@@ -2054,6 +2058,11 @@ body {
   margin: 16px 0 8px;
   font-size: 15px;
   color: var(--fg-0);
+}
+
+.msg-body > .prose > :is(h1, h2, h3),
+.msg-body > .clip > .prose > :is(h1, h2, h3) {
+  font-size: 16px;
 }
 
 .prose code {
