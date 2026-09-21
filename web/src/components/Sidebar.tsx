@@ -32,7 +32,7 @@ export function Sidebar({
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, onDelete, onPin, onRename,
-  onNewProject, searchChats, onResize, foot,
+  onNewProject, searchChats, branches = {}, onResize, foot,
 }: {
   projects: Project[];
   shelved: Project[];
@@ -53,6 +53,7 @@ export function Sidebar({
   onRename: (id: string, title: string) => void;
   onNewProject: () => void;
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
+  branches?: Readonly<Record<string, string>>;
   onResize?: (event: React.PointerEvent<HTMLElement>) => void;
   foot?: ReactNode;
 } & ChatPreviewSource) {
@@ -172,6 +173,8 @@ export function Sidebar({
               ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
               : undefined;
             const projectName = project?.name ?? "Unknown project";
+            const branch = branches[chat.projectId];
+            const projectContext = branch ? `${projectName} | ${branch}` : projectName;
             const model = modelFromId(chat.modelId ?? null);
             const searchHit = searchActive ? hitById.get(chat.id) : undefined;
             const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
@@ -210,7 +213,7 @@ export function Sidebar({
                     <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
                       busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
                       className="chat-btn" type="button"
-                      aria-label={`${chat.title}, ${projectName}${model ? `, ${model.name} ${model.model}` : ""}`}
+                      aria-label={`${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}`}
                       disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
                       aria-description="Hover to preview. Hold for chat actions."
                       onPointerDown={(event) => {
@@ -243,7 +246,7 @@ export function Sidebar({
                             {project
                               ? <ProjectAvatar project={project} size="tiny" />
                               : <span className="project-avatar is-tiny" aria-hidden="true">?</span>}
-                            <span className="chat-project-name">{projectName}</span>
+                            <span className="chat-project-name" title={projectContext}>{projectContext}</span>
                           </span>
                           {model && (
                             <span className="chat-model" title={`Active model: ${model.name} · ${model.model}`}>

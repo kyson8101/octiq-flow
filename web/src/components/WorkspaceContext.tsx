@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
+import { PROJECT_GIT_CHANGED_EVENT } from "../lib/projectGit";
 import {
   createWorkspaceLookup,
   observedDirectory,
@@ -32,12 +33,12 @@ export function WorkspaceContext(props: WorkspaceContextProps) {
     refresh();
     const off = bridge.on("git-status-changed", refresh);
     window.addEventListener("focus", refresh);
-    window.addEventListener("octiq-git-changed", refresh);
+    window.addEventListener(PROJECT_GIT_CHANGED_EVENT, refresh);
     return () => {
       lookup.dispose();
       off();
       window.removeEventListener("focus", refresh);
-      window.removeEventListener("octiq-git-changed", refresh);
+      window.removeEventListener(PROJECT_GIT_CHANGED_EVENT, refresh);
     };
   }, [path, props.connected]);
   const identity: WorkspaceIdentity = !props.connected || !path
