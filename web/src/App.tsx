@@ -76,6 +76,7 @@ import {
 } from "./lib/deletions";
 import {
   focusNow,
+  isWatching,
   isOn as notifyIsOn,
   lastSaid,
   noticeFor,
@@ -141,7 +142,16 @@ import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { useChatRequests } from "./lib/useChatRequests";
 import { CarryOn } from "./components/CarryOn";
-import { provesLiveTurn, queuedMessageCount, type ChatQueueState } from "./lib/recovery";
+import {
+  INITIAL_RECONNECT_STATE,
+  observeConnection,
+  provesLiveTurn,
+  queuedMessageCount,
+  reconnectCandidates,
+  shouldAutoContinue,
+  type ChatQueueState,
+  type RecoveryEvidence,
+} from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
@@ -149,7 +159,7 @@ import { projectSlug } from "./lib/projectSlug";
 import { inferProjectFromText, readProjectMention } from "./lib/projectMention";
 import { ensureGeneralProject } from "./lib/generalProject";
 import { modelHandoff } from "./lib/modelHandoff";
-import { shouldShowChatStatus } from "./lib/chatStatus";
+import { filterVisibleChatNotices, shouldShowChatStatus } from "./lib/chatStatus";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
 import "./components/FocusMode.css";
 
@@ -296,6 +306,7 @@ const RAIL_KEY = "octiq.v2.railShut";
 const GIT_SLIDE_MS = 220;
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
+  const [reconnect, setReconnect] = useState(INITIAL_RECONNECT_STATE);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [shelved, setShelved] = useState<Workspace[]>([]);
@@ -533,6 +544,16 @@ export default function App() {
   // are the ones that must not wait.
   const visibleRef = useRef(conversationId);
   visibleRef.current = conversationId;
+  /** Chats the authoritative roster found missing in one reconnect. The epoch
+   *  keeps a later provider failure from borrowing an old reconnect and
+   *  starting itself. */
+  const autoRecovery = useRef({
+    epoch: 0,
+    liveBeforeLoss: new Set<string>(),
+    candidates: new Set<string>(),
+    attempted: new Set<string>(),
+    inFlight: new Set<string>(),
+  });
   const soon = useRef<number | null>(null);
   const later = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -778,6 +799,16 @@ export default function App() {
   );
 
   useEffect(() => bridge.onState(setConn), []);
+  const previousConnection = useRef<ConnectionState>("connecting");
+  useEffect(() => {
+    if (previousConnection.current === "open" && conn !== "open") {
+      autoRecovery.current.liveBeforeLoss = liveKnown
+        ? new Set(runningRef.current)
+        : new Set();
+    }
+    previousConnection.current = conn;
+    setReconnect((previous) => observeConnection(previous, conn === "open"));
+  }, [conn, liveKnown]);
 
   /** Read the project list from the backend. Called on load and again after
    *  anything in the settings panel changes one, since the backend owns the
@@ -1552,7 +1583,7 @@ export default function App() {
   // Filter at render time as well as at arrival so it disappears immediately,
   // while the rest of the notices keep their original order and dismiss action.
   const visibleNotices = useMemo(
-    () => chat.notices.filter((notice) => shouldShowChatStatus("stderr", notice)),
+    () => filterVisibleChatNotices(chat.notices),
     [chat.notices],
   );
   const sendingTurns = useRef(new Set<string>());
@@ -2493,7 +2524,11 @@ export default function App() {
   );
 
   const send = useCallback(
-    async (text: string, attachments: Attachment[] = []) => {
+    async (
+      text: string,
+      attachments: Attachment[] = [],
+      options: { skipIfRunning?: boolean } = {},
+    ) => {
       let targetProject = project;
       if (!targetProject) {
         const routed = readProjectMention(text, workspaces);
@@ -2616,6 +2651,10 @@ export default function App() {
           turnId,
         ),
       );
+      const discardOptimisticTurn = () => patch(id, (s) => ({
+        ...s,
+        messages: s.messages.filter((message) => message.turnId !== turnId),
+      }));
 
       sendingTurns.current.add(turnId);
       try {
@@ -2682,6 +2721,13 @@ export default function App() {
 
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
+          // An automatic recovery can race another focused client after both
+          // saw the same empty post-restart roster. The first client owns the
+          // restart; the other must not queue an identical Carry on behind it.
+          if (options.skipIfRunning) {
+            discardOptimisticTurn();
+            return;
+          }
           try {
             await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
             return;
@@ -2746,6 +2792,10 @@ export default function App() {
           // it (another tab, or a session that outlived a crash). Talk to it
           // rather than reporting a collision as a failure.
           if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
+            if (options.skipIfRunning) {
+              discardOptimisticTurn();
+              return;
+            }
             try {
               await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
               return;
@@ -3086,6 +3136,89 @@ export default function App() {
   });
 
   const cutOff = !!conversationId && interruptedIds.has(conversationId);
+
+  const recoveryEvidence: RecoveryEvidence = {
+    connected: conn === "open",
+    rosterKnown: liveKnown,
+    busy: chat.busy && (!stalled || cutOff),
+    live: !!conversationId && someoneWorking({ id: conversationId, running }),
+    exited: stalled && !cutOff ? undefined : chat.exited,
+    checkpointSeq: conversationId
+      ? catchUp.current.mark(keyFor(conversationId)) || undefined
+      : undefined,
+    queuedCount: queuedMessageCount(chat),
+  };
+
+  /** Manual recovery is still available after an automatic start fails. The
+   *  short in-flight guard only stops the click generated by the same focus
+   *  gesture that just triggered automatic recovery. */
+  const carryOn = useCallback(() => {
+    const id = conversationId;
+    if (!id || autoRecovery.current.inFlight.has(id)) return;
+    void send(CARRY_ON);
+  }, [conversationId, send]);
+
+  useEffect(() => {
+    if (conn !== "open" || !liveKnown || reconnect.epoch === 0) return;
+
+    if (autoRecovery.current.epoch !== reconnect.epoch) {
+      const candidates = reconnectCandidates(
+        chatsRef.current,
+        autoRecovery.current.liveBeforeLoss,
+        runningRef.current,
+      );
+      autoRecovery.current = {
+        epoch: reconnect.epoch,
+        liveBeforeLoss: new Set(),
+        candidates,
+        attempted: new Set(),
+        inFlight: new Set(),
+      };
+    }
+
+    const attempt = () => {
+      const id = conversationId;
+      if (!id) return;
+      const recovery = autoRecovery.current;
+      if (!shouldAutoContinue({
+        epoch: reconnect.epoch,
+        attemptedEpoch: recovery.attempted.has(id) ? reconnect.epoch : undefined,
+        eligible: recovery.candidates.has(id),
+        watching: isWatching(focusNow(id), id),
+        evidence: recoveryEvidence,
+      })) return;
+
+      recovery.attempted.add(id);
+      const inFlight = recovery.inFlight;
+      inFlight.add(id);
+      void send(CARRY_ON, [], { skipIfRunning: true }).finally(() => inFlight.delete(id));
+    };
+
+    attempt();
+    window.addEventListener("focus", attempt);
+    window.addEventListener("pageshow", attempt);
+    document.addEventListener("visibilitychange", attempt);
+    return () => {
+      window.removeEventListener("focus", attempt);
+      window.removeEventListener("pageshow", attempt);
+      document.removeEventListener("visibilitychange", attempt);
+    };
+  }, [
+    chat.busy,
+    chat.exited,
+    chat.stopping,
+    conn,
+    conversationId,
+    cutOff,
+    liveKnown,
+    reconnect.epoch,
+    recoveryEvidence.busy,
+    recoveryEvidence.exited,
+    recoveryEvidence.live,
+    running,
+    send,
+    stalled,
+  ]);
 
   const changeAccess = useCallback(
     (p: AccessLevel) => {
@@ -3522,16 +3655,8 @@ export default function App() {
 
           {conversationId && !chat.stopping && !chat.stoppedAt && (
             <CarryOn
-              onCarryOn={() => void send(CARRY_ON)}
-              evidence={{
-                connected: conn === "open",
-                rosterKnown: liveKnown,
-                busy: chat.busy && (!stalled || cutOff),
-                live: someoneWorking({ id: conversationId, running }),
-                exited: stalled && !cutOff ? undefined : chat.exited,
-                checkpointSeq: catchUp.current.mark(keyFor(conversationId)) || undefined,
-                queuedCount: queuedMessageCount(chat),
-              }}
+              onCarryOn={carryOn}
+              evidence={recoveryEvidence}
             />
           )}
 

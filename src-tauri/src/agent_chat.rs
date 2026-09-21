@@ -4193,24 +4193,27 @@ mod tests {
     }
 
     #[test]
-    fn codex_duplicate_agent_path_is_diagnostic_but_other_errors_stay_visible() {
+    fn all_codex_router_failures_are_diagnostics_but_other_errors_stay_visible() {
         let codex = provider_for(ChatAgent::Codex);
         let mut state = OutputState::default();
         let duplicate = "2026-09-08T06:26:14.629158Z ERROR codex_core::tools::router: error=agent path `/root/onboarding_backend` already exists";
-        assert_eq!(
-            codex.classify_output(duplicate, &mut state),
-            OutputDisposition::DiagnosticsOnly,
-        );
         for line in [
+            duplicate,
             "2026-09-08T06:26:15Z ERROR codex_core::tools::router: error=agent path `/root/onboarding_backend` failed to start",
-            "2026-09-08T06:26:16Z ERROR codex_core::auth: token expired",
             "2026-09-08T06:26:17Z ERROR codex_core::tools::router: error=file already exists",
         ] {
             assert_eq!(
                 codex.classify_output(line, &mut state),
-                OutputDisposition::Visible,
+                OutputDisposition::DiagnosticsOnly,
             );
         }
+        assert_eq!(
+            codex.classify_output(
+                "2026-09-08T06:26:16Z ERROR codex_core::auth: token expired",
+                &mut state,
+            ),
+            OutputDisposition::Visible,
+        );
         assert_eq!(
             provider_for(ChatAgent::Claude).output_disposition(duplicate),
             OutputDisposition::Visible,
@@ -4292,6 +4295,25 @@ mod tests {
                  error=exec_command failed: CreateProcess { message: \
                  Rejected(\"This action was rejected due to unacceptable risk.\") }"
             ),
+            OutputDisposition::DiagnosticsOnly,
+        );
+    }
+
+    #[test]
+    fn codex_colored_exec_failure_is_diagnostics_only() {
+        // Newer Codex tracing output adds SGR colour codes around every field.
+        // Classification must read through those codes while diagnostics keep
+        // the original record intact.
+        let line = "\x1b[2m2026-09-19T23:56:22.037052Z\x1b[0m \x1b[31mERROR\x1b[0m \
+                    \x1b[2mcodex_core::tools::router\x1b[0m\x1b[2m:\x1b[0m \
+                    \x1b[3merror\x1b[0m\x1b[2m=\x1b[0mexec_command failed: \
+                    CreateProcess { message: \"Rejected(\\\"Failed to create unified exec process: \
+                    No such file or directory (os error 2)\\\")\" }";
+        let codex = provider_for(ChatAgent::Codex);
+        let mut state = OutputState::default();
+
+        assert_eq!(
+            codex.classify_output(line, &mut state),
             OutputDisposition::DiagnosticsOnly,
         );
     }

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { deriveRecovery, provesLiveTurn, queuedMessageCount, reconcileUnsentMessages, type RecoveryEvidence } from "./recovery";
+import {
+  INITIAL_RECONNECT_STATE,
+  deriveRecovery,
+  observeConnection,
+  provesLiveTurn,
+  queuedMessageCount,
+  reconcileUnsentMessages,
+  reconnectCandidates,
+  shouldAutoContinue,
+  type RecoveryEvidence,
+} from "./recovery";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
 import { CARRY_ON, someoneWorking } from "./carryOn";
 
@@ -28,6 +38,61 @@ describe("recovery evidence", () => {
     expect(CARRY_ON).toContain("cause of the interruption is unknown");
     expect(CARRY_ON).not.toContain("backend restart");
     expect(CARRY_ON).not.toContain("Everything you had already done is in");
+  });
+});
+
+describe("focused recovery after a reconnect", () => {
+  it("arms only after a connection that was open has been lost and restored", () => {
+    const firstOpen = observeConnection(INITIAL_RECONNECT_STATE, true);
+    expect(firstOpen).toEqual({ seenOpen: true, reconnectPending: false, epoch: 0 });
+
+    const offline = observeConnection(firstOpen, false);
+    expect(observeConnection(offline, false)).toBe(offline);
+    expect(observeConnection(offline, true)).toEqual({
+      seenOpen: true,
+      reconnectPending: false,
+      epoch: 1,
+    });
+  });
+
+  it("continues a confirmed missing worker only while that chat is being watched", () => {
+    expect(shouldAutoContinue({ epoch: 1, eligible: true, watching: true, evidence: missing })).toBe(true);
+    expect(shouldAutoContinue({ epoch: 1, eligible: true, watching: false, evidence: missing })).toBe(false);
+    expect(shouldAutoContinue({ epoch: 1, eligible: false, watching: true, evidence: missing })).toBe(false);
+    expect(shouldAutoContinue({ epoch: 0, eligible: true, watching: true, evidence: missing })).toBe(false);
+    expect(shouldAutoContinue({
+      epoch: 1,
+      attemptedEpoch: 1,
+      eligible: true,
+      watching: true,
+      evidence: missing,
+    })).toBe(false);
+    expect(shouldAutoContinue({
+      epoch: 1,
+      eligible: true,
+      watching: true,
+      evidence: { ...missing, live: true },
+    })).toBe(false);
+    expect(shouldAutoContinue({
+      epoch: 1,
+      eligible: true,
+      watching: true,
+      evidence: { ...missing, busy: false, exited: { code: 1 } },
+    })).toBe(false);
+  });
+
+  it("includes only workers that were live before the reconnect and are missing after it", () => {
+    const chats = {
+      cut: { ...emptyChat(), busy: true },
+      old: { ...emptyChat(), busy: true },
+      survived: { ...emptyChat(), busy: true },
+      stopping: { ...emptyChat(), busy: true, stopping: true },
+    };
+    expect(reconnectCandidates(
+      chats,
+      new Set(["cut", "survived", "stopping"]),
+      new Set(["survived"]),
+    )).toEqual(new Set(["cut"]));
   });
 });
 
