@@ -353,7 +353,7 @@ export function Composer({
   onBranch,
   newWorktree,
   onNewWorktree,
-  locationLocked,
+  showWorkLocation,
   cwd,
   onTerminal,
   terminalOpen,
@@ -453,8 +453,8 @@ export function Composer({
   onBranch?: (branch: string) => void;
   newWorktree?: boolean;
   onNewWorktree?: (enabled: boolean) => void;
-  /** Once a conversation exists, its cwd is part of its identity. */
-  locationLocked?: boolean;
+  /** The execution-location shelf belongs only to the unsaved new-chat page. */
+  showWorkLocation?: boolean;
   /** The project folder, so the file picker opens where the work is. */
   cwd?: string;
   /** Show the shell drawer. Absent when there is no project to open one in. */
@@ -1541,17 +1541,18 @@ export function Composer({
           </>
         )}
       </div>
-      <WorkLocation
-        projects={projects ?? []}
-        projectId={projectId ?? null}
-        onProject={onProject ?? (() => undefined)}
-        branch={branch ?? ""}
-        branches={branches}
-        onBranch={onBranch ?? (() => undefined)}
-        newWorktree={!!newWorktree}
-        onNewWorktree={onNewWorktree ?? (() => undefined)}
-        locked={!!locationLocked}
-      />
+      {showWorkLocation && (
+        <WorkLocation
+          projects={projects ?? []}
+          projectId={projectId ?? null}
+          onProject={onProject ?? (() => undefined)}
+          branch={branch ?? ""}
+          branches={branches}
+          onBranch={onBranch ?? (() => undefined)}
+          newWorktree={!!newWorktree}
+          onNewWorktree={onNewWorktree ?? (() => undefined)}
+        />
+      )}
     </div>
   );
 }

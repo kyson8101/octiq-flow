@@ -21,8 +21,7 @@ const EMPTY: WorkLocationBranches = {
   isWorktree: false,
 };
 
-/** The execution context chosen before a chat starts. Once the first message
- * is sent the same strip becomes a receipt: visible, but no longer mutable. */
+/** The execution context chosen before a new chat starts. */
 export function WorkLocation({
   projects,
   projectId,
@@ -32,7 +31,6 @@ export function WorkLocation({
   onBranch,
   newWorktree,
   onNewWorktree,
-  locked,
 }: {
   projects: readonly WorkLocationProject[];
   projectId: string | null;
@@ -42,7 +40,6 @@ export function WorkLocation({
   onBranch: (branch: string) => void;
   newWorktree: boolean;
   onNewWorktree: (enabled: boolean) => void;
-  locked: boolean;
 }) {
   const offeredProjects = projects.filter((project) => projectSlug(project.name) !== "general");
   const branchOptions = branch && !branches.branches.includes(branch)
@@ -57,14 +54,13 @@ export function WorkLocation({
         : branch || branches.current || "No branch";
 
   return (
-    <div className={`work-location ${locked ? "is-locked" : ""}`} aria-label="Work location">
+    <div className="work-location" aria-label="Work location">
       <label className="work-location-field" title="Project">
         <FolderIcon />
         <span className="sr-only">Project</span>
         <select
           aria-label="Project"
           value={projectId ?? ""}
-          disabled={locked}
           onChange={(event) => onProject(event.target.value || null)}
         >
           <option value="">General</option>
@@ -85,7 +81,7 @@ export function WorkLocation({
         <select
           aria-label={newWorktree ? "Base branch" : "Branch"}
           value={branch}
-          disabled={locked || branches.loading || !branches.isRepo}
+          disabled={branches.loading || !branches.isRepo}
           onChange={(event) => onBranch(event.target.value)}
         >
           {!branchOptions.length && <option value="">{branchText}</option>}
@@ -101,16 +97,15 @@ export function WorkLocation({
       >
         <input
           type="checkbox"
-          checked={locked ? branches.isWorktree : newWorktree}
-          disabled={locked || !branches.isRepo}
+          checked={newWorktree}
+          disabled={!branches.isRepo}
           onChange={(event) => onNewWorktree(event.target.checked)}
         />
         <WorktreeIcon />
-        <span>{locked && branches.isWorktree ? "Worktree" : "New worktree"}</span>
+        <span>New worktree</span>
       </label>
 
       {branches.error && <span className="work-location-error" role="status">{branches.error}</span>}
-      {locked && <LockIcon />}
     </div>
   );
 }
@@ -125,8 +120,4 @@ function BranchIcon() {
 
 function WorktreeIcon() {
   return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="12" cy="18" r="2" /><path d="M6 8v2a4 4 0 0 0 4 4h2M18 8v2a4 4 0 0 1-4 4h-2v2" /></svg>;
-}
-
-function LockIcon() {
-  return <svg className="work-location-lock" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-label="Work location locked"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>;
 }
