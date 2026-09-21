@@ -14,7 +14,7 @@
 //! agent means implementing this contract and registering it there, without
 //! teaching the chat lifecycle its command syntax or stream vocabulary.
 
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -685,7 +685,8 @@ impl AgentProvider for CodexProvider {
     }
 
     fn output_disposition(&self, line: &str) -> OutputDisposition {
-        let line = line.trim();
+        let clean = without_ansi_sgr(line.trim());
+        let line = clean.as_ref();
         if line.starts_with("Reading additional input from stdin")
             // Codex can continue normally using its cached model catalogue
             // when this background cache-TTL renewal fails. It is an internal
@@ -696,11 +697,11 @@ impl AgentProvider for CodexProvider {
             return OutputDisposition::Ignore;
         }
 
-        // Codex receives tool failures through its structured tool result and
-        // can normally recover by re-reading or choosing a safer command. Its
-        // tracing layer writes the same failure to stderr; showing that copy
-        // makes a healthy turn look broken. Keep it queryable in diagnostics.
-        if is_recoverable_codex_router_diagnostic(line) {
+        // Codex receives every router failure through its structured tool
+        // result and can recover or explain the failure itself. Its tracing
+        // layer writes a duplicate to stderr; keep that copy queryable without
+        // making a healthy turn look broken to the person using the chat.
+        if is_codex_router_diagnostic(line) {
             return OutputDisposition::DiagnosticsOnly;
         }
 
@@ -708,7 +709,8 @@ impl AgentProvider for CodexProvider {
     }
 
     fn classify_output(&self, line: &str, state: &mut OutputState) -> OutputDisposition {
-        let line = line.trim();
+        let clean = without_ansi_sgr(line.trim());
+        let line = clean.as_ref();
 
         // Router diagnostics can contain a multi-line patch or shell command.
         // Those continuation lines are source/command text, not fresh
@@ -725,11 +727,48 @@ impl AgentProvider for CodexProvider {
         if is_codex_missing_rollout_thread(line) {
             return OutputDisposition::DiagnosticsOnly;
         }
-        if is_recoverable_codex_router_diagnostic(line) {
+        if is_codex_router_diagnostic(line) {
             state.multiline_diagnostic = true;
         }
         disposition
     }
+}
+
+/// Strip terminal SGR colour codes only for classification. The raw record is
+/// still written to the diagnostics journal, but styling bytes must not change
+/// whether a known internal failure reaches the person's chat.
+fn without_ansi_sgr(line: &str) -> Cow<'_, str> {
+    let bytes = line.as_bytes();
+    if !bytes.contains(&0x1b) {
+        return Cow::Borrowed(line);
+    }
+
+    let mut clean = String::with_capacity(line.len());
+    let mut copied_through = 0;
+    let mut cursor = 0;
+    let mut found = false;
+    while cursor + 2 < bytes.len() {
+        if bytes[cursor] == 0x1b && bytes[cursor + 1] == b'[' {
+            let mut end = cursor + 2;
+            while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b';') {
+                end += 1;
+            }
+            if end < bytes.len() && bytes[end] == b'm' {
+                clean.push_str(&line[copied_through..cursor]);
+                cursor = end + 1;
+                copied_through = cursor;
+                found = true;
+                continue;
+            }
+        }
+        cursor += 1;
+    }
+
+    if !found {
+        return Cow::Borrowed(line);
+    }
+    clean.push_str(&line[copied_through..]);
+    Cow::Owned(clean)
 }
 
 impl AgentProvider for PiProvider {
@@ -848,33 +887,8 @@ impl AgentProvider for PiProvider {
 /// router's stderr trace is therefore duplicate recovery detail, not a chat
 /// failure. A genuine process/turn failure is emitted separately and remains
 /// visible.
-fn is_recoverable_codex_router_diagnostic(line: &str) -> bool {
+fn is_codex_router_diagnostic(line: &str) -> bool {
     line.contains("codex_core::tools::router:")
-        && (line.contains("apply_patch verification failed")
-            || line.contains("error=exec_command failed")
-            // Safety-review refusals from `apply_patch` use a different
-            // header, followed by `Reason:` and policy guidance on their own
-            // physical lines. Keep that record out of the raw notice stack;
-            // `safety_block` turns it into one structured card instead.
-            || line.contains("This action was rejected due to unacceptable risk")
-            // The unified exec process may finish between a yielded command
-            // and Codex's next poll/write. Codex receives `Unknown process id`
-            // as the tool result and continues normally; the router's stderr
-            // copy is no more actionable than the other tool failures above.
-            || (line.contains("error=write_stdin failed")
-                && line.contains("Unknown process id"))
-            // A failed collaboration spawn is returned to Codex as the tool
-            // result, where it can reuse a worker or continue alone. The
-            // tracing copy gives the person no additional action.
-            || line.contains("error=collab spawn failed")
-            // A repeated sub-agent name is returned to Codex so it can reuse
-            // that agent or choose another name. Preserve the duplicate trace
-            // in diagnostics without presenting it as a failed chat turn.
-            || line
-                .split_once("error=agent path `")
-                .is_some_and(|(_, detail)| {
-                    detail.starts_with("/root/") && detail.ends_with("` already exists")
-                }))
 }
 
 // Codex can emit this internal persistence race even though the turn succeeds
