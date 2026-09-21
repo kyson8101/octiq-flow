@@ -55,6 +55,17 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("You: Please fix it");
   });
 
+  it("shows the checked-out branch beside the project name", () => {
+    const out = html({
+      conversations: [chat("a"), chat("b", "p2")],
+      branches: { p1: "feature/chat-list-branch", p2: "" },
+    });
+    expect(out).toContain('title="octiq-flow | feature/chat-list-branch">octiq-flow | feature/chat-list-branch</span>');
+    expect(out).toContain('aria-label="Task a, octiq-flow, branch feature/chat-list-branch"');
+    expect(out).toContain('title="starfall-social">starfall-social</span>');
+    expect(out).not.toContain("starfall-social | ");
+  });
+
   it("puts the owning project's colour on each chat row", () => {
     const out = html({ conversations: [chat("a")] });
     expect(out).toContain('class="chat" style="--chat-project-color:#12ab34"');

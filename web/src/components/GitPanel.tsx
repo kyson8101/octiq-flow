@@ -29,8 +29,8 @@
 //     arguments going the other way are camelCase (`oldPath`), because
 //     dispatch.rs names those itself. Mixed, and checked against the running
 //     server rather than guessed.
-//   * **Git state is now pushed at us.** `git_watch_paths` points the backend's
-//     fs watcher (git_watch.rs) at the project's folders, and its debounced
+//   * **Git state is now pushed at us.** App points `git_watch_paths` at the
+//     union of every project's folders, and the backend's debounced
 //     `git-status-changed` event comes back over the same socket the chat uses.
 //     Anything that moves `git status` — an agent switching branch mid-turn, a
 //     commit in a terminal, an edit from another machine — repaints the toolbar
@@ -40,6 +40,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { baseName } from "../lib/files";
 import { useDockWidth, type Sizes } from "../lib/dockWidth";
+import { PROJECT_GIT_CHANGED_EVENT } from "../lib/projectGit";
 import { remember } from "../lib/remember";
 import { RollingNumber, RollingText } from "./RollingNumber";
 
@@ -93,8 +94,6 @@ export type GitProject = { id: string; name: string; primary_path?: string; path
 /** Fired on `window` after any git write succeeds. The toolbar button's badge is
  *  rendered somewhere else entirely, and this is how it learns to re-count
  *  without the two halves having to share a store. */
-const CHANGED_EVENT = "octiq-git-changed";
-
 /** What the file list says at a glance, and the tint it says it in. */
 const STATUS_MARK: Record<string, { letter: string; cls: string }> = {
   added: { letter: "A", cls: "is-add" },
@@ -210,30 +209,21 @@ export function GitButton({
     // The usual reason a count is wrong is that the work happened somewhere this
     // tab cannot see — a terminal, another machine, or the agent's own shell.
     window.addEventListener("focus", read);
-    window.addEventListener(CHANGED_EVENT, read);
+    window.addEventListener(PROJECT_GIT_CHANGED_EVENT, read);
 
-    // Live updates. The watcher lives in the SERVER's memory, so it is installed
-    // per connection rather than once: a reconnect or a restarted service has
-    // no watcher at all, and a read on every fresh socket also catches whatever
-    // changed while we were away.
+    // App owns the one server watcher shared by every project. This component
+    // still reads on every fresh socket so it catches whatever changed while
+    // the browser was away.
     const offState = bridge.onState((state) => {
       if (state !== "open") return;
-      bridge.invoke("git_watch_paths", { paths: folders }).catch(() => {});
       read();
-    });
-    // One refresh path, not two: the backend event is turned into the same
-    // window event a write already fires, so the button and the open panel both
-    // refresh from it and neither has to know where it came from.
-    const offWatch = bridge.on("git-status-changed", () => {
-      window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
     });
 
     return () => {
       live = false;
       window.removeEventListener("focus", read);
-      window.removeEventListener(CHANGED_EVENT, read);
+      window.removeEventListener(PROJECT_GIT_CHANGED_EVENT, read);
       offState();
-      offWatch();
     };
   }, [folders, primaryPath]);
 
@@ -454,8 +444,8 @@ export function GitPanel({
       if (busyRef.current) return;
       void load();
     };
-    window.addEventListener(CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(CHANGED_EVENT, onChanged);
+    window.addEventListener(PROJECT_GIT_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(PROJECT_GIT_CHANGED_EVENT, onChanged);
   }, [load]);
 
   /** Run one git write with the whole panel locked, then reload. The reload is
@@ -484,7 +474,7 @@ export function GitPanel({
         setBusy(false);
       }
       await load();
-      if (ok) window.dispatchEvent(new CustomEvent(CHANGED_EVENT));
+      if (ok) window.dispatchEvent(new CustomEvent(PROJECT_GIT_CHANGED_EVENT));
     },
     [load],
   );
