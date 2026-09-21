@@ -31,6 +31,7 @@ export type IndexEntry = {
   latestResponse?: string;
   customTitle?: boolean;
   sessionId: string | null;
+  cwd?: string | null;
   modelId: string | null;
   access: string | null;
   createdAt: number;
@@ -53,6 +54,7 @@ function entryFromConversation(chat: Conversation): IndexEntry {
     latestResponse: chat.latestResponse,
     customTitle: chat.customTitle,
     sessionId: chat.sessionId ?? null,
+    cwd: chat.cwd ?? null,
     modelId: chat.modelId ?? null,
     access: chat.permission ?? null,
     createdAt: chat.createdAt,

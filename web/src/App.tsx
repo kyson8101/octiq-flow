@@ -146,8 +146,8 @@ import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from ".
 import { useInterruptedChats } from "./lib/useInterruptedChats";
 import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
 import { projectSlug } from "./lib/projectSlug";
-import { inferProjectFromText, readProjectMention } from "./lib/projectMention";
 import { ensureGeneralProject } from "./lib/generalProject";
+import type { WorkLocationBranches } from "./components/WorkLocation";
 import { modelHandoff } from "./lib/modelHandoff";
 import { shouldShowChatStatus } from "./lib/chatStatus";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
@@ -160,6 +160,27 @@ type Workspace = Project & {
   /** The project's saved commands, straight from the store. Read through
    *  `parseCommands` where they are drawn — see the terminal drawer. */
   actions?: unknown;
+};
+
+type BranchList = {
+  is_repo: boolean;
+  current: string;
+  branches: string[];
+  is_worktree: boolean;
+};
+
+type PreparedWorkspace = {
+  cwd: string;
+  branch: string;
+  is_repo: boolean;
+  is_worktree: boolean;
+};
+
+const NO_BRANCHES: WorkLocationBranches = {
+  isRepo: false,
+  current: "",
+  branches: [],
+  isWorktree: false,
 };
 
 /** The process key for a conversation. Derived from the conversation id rather
@@ -328,6 +349,12 @@ export default function App() {
     loadConversations().filter((c) => !isDeleted(c.id)),
   );
   const [conversationId, setConversationId] = useState<string | null>(null);
+  /** The host-side execution location for the next new chat. These choices
+   *  are applied before `chat_start`, so the agent never has to ask how its
+   *  branch or worktree should be prepared. */
+  const [branch, setBranch] = useState("");
+  const [branches, setBranches] = useState<WorkLocationBranches>(NO_BRANCHES);
+  const [newWorktree, setNewWorktree] = useState(false);
   const [indexReady, setIndexReady] = useState(false);
   const [unavailableChat, setUnavailableChat] = useState<string | null>(null);
   const [newChatError, setNewChatError] = useState<string | null>(null);
@@ -997,6 +1024,7 @@ export default function App() {
             return {
               ...r,
               permission: r.access ?? cached?.permission,
+              cwd: r.cwd ?? cached?.cwd,
               // Keep the cached messages so the chat opens instantly; the
               // transcript tops it up on open. A chat this device has never
               // seen has none, and replays in full.
@@ -1415,6 +1443,7 @@ export default function App() {
             latestResponse: latestAgentResponse(s.messages)?.text ?? before?.latestResponse,
             customTitle: before?.customTitle,
             sessionId: s.sessionId ?? before?.sessionId,
+            cwd: s.cwd ?? before?.cwd,
             messages: s.messages,
             modelId: info.modelId,
             permission: info.access,
@@ -1451,6 +1480,7 @@ export default function App() {
             latestResponse: c.latestResponse,
             customTitle: c.customTitle,
             sessionId: c.sessionId ?? null,
+            cwd: c.cwd ?? null,
             modelId: c.modelId ?? null,
             access: c.permission ?? null,
             createdAt: c.createdAt,
@@ -1548,6 +1578,70 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+  const openRecord = useMemo(
+    () => conversations.find((conversation) => conversation.id === conversationId),
+    [conversations, conversationId],
+  );
+  /** A worktree chat belongs to its parent project but runs from its own cwd.
+   *  Every local surface follows that exact directory: agent, Git panel,
+   *  terminal, file pins and path rendering. */
+  const effectiveCwd = chat.cwd ?? openRecord?.cwd ?? project?.primary_path ?? "";
+  const sessionProject = useMemo<Workspace | null>(() => {
+    if (!project) return null;
+    return {
+      ...project,
+      // Terminals are keyed by project id. A worktree chat needs its own set;
+      // reusing the parent's ids would reattach shells already running in the
+      // primary checkout.
+      id: conversationId ? `${project.id}:${conversationId}` : project.id,
+      primary_path: effectiveCwd || project.primary_path,
+    };
+  }, [project, conversationId, effectiveCwd]);
+
+  useEffect(() => {
+    if (!project || !effectiveCwd) {
+      setBranches(NO_BRANCHES);
+      setBranch("");
+      setNewWorktree(false);
+      return;
+    }
+
+    let current = true;
+    setBranches((previous) => ({ ...previous, loading: true, error: undefined }));
+    bridge
+      .invoke<BranchList>("git_local_branches", { path: effectiveCwd })
+      .then((answer) => {
+        if (!current) return;
+        const next: WorkLocationBranches = {
+          isRepo: !!answer?.is_repo,
+          current: answer?.current ?? "",
+          branches: answer?.branches ?? [],
+          isWorktree: !!answer?.is_worktree,
+        };
+        setBranches(next);
+        setBranch(next.current || next.branches[0] || "");
+        if (!next.isRepo) setNewWorktree(false);
+      })
+      .catch((error) => {
+        if (!current) return;
+        setBranches({
+          ...NO_BRANCHES,
+          error: String((error as Error).message ?? error),
+        });
+        setBranch("");
+        setNewWorktree(false);
+      });
+    return () => { current = false; };
+  }, [project, effectiveCwd]);
+
+  const chooseProject = useCallback((id: string | null) => {
+    if (conversationId) return;
+    setProjectId(id);
+    setBranch("");
+    setBranches(id ? { ...NO_BRANCHES, loading: true } : NO_BRANCHES);
+    setNewWorktree(false);
+    setNewChatError(null);
+  }, [conversationId]);
   // A page can hot-reload while an old internal record is already in state.
   // Filter at render time as well as at arrival so it disappears immediately,
   // while the rest of the notices keep their original order and dismiss action.
@@ -1600,7 +1694,7 @@ export default function App() {
    *  same work twice. */
   const sessionFiles = useSessionPins(
     chat.messages,
-    project?.primary_path ?? "",
+    effectiveCwd,
     filesOpen,
     chat.busy,
   );
@@ -1686,6 +1780,7 @@ export default function App() {
           latestResponse: completed.latestResponse,
           customTitle: completed.customTitle,
           sessionId: completed.sessionId ?? null,
+          cwd: completed.cwd ?? null,
           modelId: completed.modelId ?? null,
           access: completed.permission ?? null,
           createdAt: completed.createdAt,
@@ -1710,8 +1805,8 @@ export default function App() {
     });
   }, []);
 
-  /** A new task starts before it belongs to a project. An explicit @project
-   *  binds it; otherwise the first send infers one or falls back to General.
+  /** A new task starts in General. The location strip can bind it to a project
+   *  before the first send; prompt text is never inspected for routing.
    *  The old chat stays intact as a durable record.
    *
    *  A counter rather than a flag: two new chats in a row are two requests,
@@ -1724,6 +1819,9 @@ export default function App() {
     awaited.current = null;
     setProjectId(null);
     setConversationId(null);
+    setBranch("");
+    setBranches(NO_BRANCHES);
+    setNewWorktree(false);
     remember(LAST_KEY, "");
     setProjectsScreen(false);
     setFocusBox((n) => n + 1);
@@ -1780,7 +1878,7 @@ export default function App() {
       setAccess(sessionAccess);
       remember(EFFORT_KEY, kept);
       setResumed((prev) => ({ ...prev, [id]: session }));
-      patch(id, (s) => ({ ...s, sessionId: session.sessionId }));
+      patch(id, (s) => ({ ...s, sessionId: session.sessionId, cwd: session.cwd }));
 
       // ...and READ it, so the history can be looked at rather than merely
       // pointed at. Picking a session used to leave a blank page with one line
@@ -1867,6 +1965,7 @@ export default function App() {
             ...emptyChat(),
             messages: c.messages,
             sessionId: held[c.id]?.sessionId ?? c.sessionId,
+            cwd: held[c.id]?.cwd ?? c.cwd,
           },
         },
         true,
@@ -2292,6 +2391,7 @@ export default function App() {
             title: held.title,
             customTitle: held.customTitle,
             sessionId: held.sessionId ?? null,
+            cwd: held.cwd ?? null,
             modelId: held.modelId ?? null,
             access: held.permission ?? null,
             createdAt: held.createdAt,
@@ -2388,6 +2488,7 @@ export default function App() {
       latestResponse: held.latestResponse,
       customTitle: held.customTitle,
       sessionId: held.sessionId ?? null,
+      cwd: held.cwd ?? null,
       modelId: held.modelId ?? null,
       access: held.permission ?? null,
       createdAt: held.createdAt,
@@ -2418,6 +2519,7 @@ export default function App() {
       latestResponse: renamed.latestResponse,
       customTitle: true,
       sessionId: renamed.sessionId ?? null,
+      cwd: renamed.cwd ?? null,
       modelId: renamed.modelId ?? null,
       access: renamed.permission ?? null,
       createdAt: renamed.createdAt,
@@ -2451,6 +2553,7 @@ export default function App() {
       const conversation: Conversation = {
         ...restored,
         sessionId: restored.sessionId ?? undefined,
+        cwd: restored.cwd ?? cached?.cwd,
         modelId: restored.modelId ?? undefined,
         permission: restored.access ?? cached?.permission,
         messages: cached?.messages ?? [],
@@ -2496,36 +2599,16 @@ export default function App() {
     async (text: string, attachments: Attachment[] = []) => {
       let targetProject = project;
       if (!targetProject) {
-        const routed = readProjectMention(text, workspaces);
-        if (routed.kind === "unknown") {
-          setNewChatError(`No project matches @${routed.tag}. Choose one from the @ list.`);
+        // General is a visible, deliberate default. The prompt is content for
+        // the agent, never a hidden routing surface: `@octiqflow` stays in the
+        // message exactly as typed.
+        try {
+          targetProject = await ensureGeneralWorkspace();
+        } catch (error) {
+          setNewChatError(
+            `Could not open General: ${String((error as Error).message ?? error)}`,
+          );
           return;
-        }
-        if (routed.kind === "project") {
-          if (!routed.text && attachments.length === 0) {
-            setNewChatError("Add the task after the project name.");
-            return;
-          }
-          targetProject = workspaces.find((workspace) => workspace.id === routed.project.id) ?? null;
-          text = routed.text;
-        } else {
-          // No routing tag: choose only when the words contain a unique,
-          // high-confidence project name/path clue. Ambiguous and unrelated
-          // tasks go to General instead of silently landing in the wrong repo.
-          const inferred = inferProjectFromText(text, workspaces);
-          targetProject = inferred
-            ? workspaces.find((workspace) => workspace.id === inferred.id) ?? null
-            : null;
-          if (!targetProject) {
-            try {
-              targetProject = await ensureGeneralWorkspace();
-            } catch (error) {
-              setNewChatError(
-                `Could not open General: ${String((error as Error).message ?? error)}`,
-              );
-              return;
-            }
-          }
         }
         if (!targetProject) return;
         setProjectId(targetProject.id);
@@ -2618,7 +2701,54 @@ export default function App() {
       );
 
       sendingTurns.current.add(turnId);
+      const fail = (err: unknown) =>
+        patch(id, (s) => ({
+          ...s,
+          busy: runningRef.current.has(id) ? s.busy : false,
+          messages: s.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
+            ? { ...m, delivery: "unknown", queueError: String((err as Error).message ?? err) } : m),
+        }));
       try {
+        const held = conversationsRef.current.find((c) => c.id === id);
+        const recordedCwd = held?.cwd ?? chatsRef.current[id]?.cwd;
+        let launchCwd = recordedCwd ?? targetProject.primary_path ?? "";
+        let preparationError: unknown;
+
+        // A selected project is prepared by OctiqFlow before the provider sees
+        // the first turn. Branch switching and worktree creation are therefore
+        // host setup, not a question delegated to the agent.
+        // A failed preparation has no recorded cwd, so retrying the message
+        // comes through here again instead of silently starting in the parent
+        // checkout. Once preparation succeeds its exact cwd makes this a
+        // one-time operation, including when provider startup later fails.
+        if (!recordedCwd && project && projectSlug(project.name) !== "general") {
+          try {
+            const prepared = await bridge.invoke<PreparedWorkspace>(
+              "git_prepare_chat_workspace",
+              {
+                path: project.primary_path ?? "",
+                branch,
+                newWorktree,
+                prompt: text,
+                chatId: id,
+              },
+            );
+            launchCwd = prepared.cwd;
+            setBranch(prepared.branch);
+            setBranches((previous) => ({
+              isRepo: prepared.is_repo,
+              current: prepared.branch,
+              branches: prepared.branch && !previous.branches.includes(prepared.branch)
+                ? [prepared.branch, ...previous.branches]
+                : previous.branches,
+              isWorktree: prepared.is_worktree,
+            }));
+            patch(id, (state) => ({ ...state, cwd: launchCwd }));
+          } catch (error) {
+            preparationError = error;
+          }
+        }
+
         // Put the chat in the index NOW, before the agent is even started —
         // rather than leaving it to the debounced save 700ms later.
         //
@@ -2629,7 +2759,6 @@ export default function App() {
         // restart destroys the conversation. Writing the entry first closes it:
         // an entry with no transcript is the harmless direction, and reconcile
         // keeps it on purpose.
-        const held = conversationsRef.current.find((c) => c.id === id);
         const startedAt = Date.now();
         const activity: Conversation = rewriteConversation(held, {
           ...(held ?? ({} as Conversation)),
@@ -2641,6 +2770,7 @@ export default function App() {
           latestResponse: held?.latestResponse,
           customTitle: held?.customTitle,
           sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId,
+          cwd: preparationError ? held?.cwd : launchCwd,
           messages: chatsRef.current[id]?.messages ?? held?.messages ?? [],
           modelId: choice.id,
           permission: access,
@@ -2664,6 +2794,7 @@ export default function App() {
           latestResponse: activity.latestResponse,
           customTitle: activity.customTitle,
           sessionId: activity.sessionId ?? null,
+          cwd: activity.cwd ?? null,
           modelId: activity.modelId ?? null,
           access: activity.permission ?? null,
           createdAt: activity.createdAt,
@@ -2672,13 +2803,10 @@ export default function App() {
           generation: activity.generation,
         });
 
-        const fail = (err: unknown) =>
-          patch(id, (s) => ({
-            ...s,
-            busy: runningRef.current.has(id) ? s.busy : false,
-            messages: s.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
-              ? { ...m, delivery: "unknown", queueError: String((err as Error).message ?? err) } : m),
-          }));
+        if (preparationError) {
+          fail(preparationError);
+          return;
+        }
 
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
@@ -2721,7 +2849,7 @@ export default function App() {
         try {
           await bridge.invoke("chat_start", {
             key: keyFor(id),
-            cwd: targetProject.primary_path ?? "",
+            cwd: launchCwd,
             // A project can group several folders, and the chat starts in only
             // one of them. The rest are named here so the agent can reach the
             // whole project, the same way a terminal in it can.
@@ -2772,8 +2900,9 @@ export default function App() {
     // `onSetting` and which alone was enough to make memoising it do nothing.
     [
       project,
-      workspaces,
       ensureGeneralWorkspace,
+      branch,
+      newWorktree,
       choice,
       access,
       effort,
@@ -3138,7 +3267,7 @@ export default function App() {
       />
 
       {/* The way in and out of the changes column at every width. */}
-      <GitButton project={project} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
+      <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
 
       {project && !unavailableChat && (
         <FocusModeButton onClick={enterFocus} />
@@ -3350,12 +3479,9 @@ export default function App() {
             </div>
           ) : chat.messages.length === 0 ? (
             <div className={`hero ${project ? "" : "hero-start"}`}>
-              <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "Start new chat"}</h1>
+              <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
               {!project && (
-                <>
-                  <p className="hero-sub">Describe the task, or use <code>@project-name</code> to choose explicitly.</p>
-                  {newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>}
-                </>
+                newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>
               )}
               {chat.sessionId &&
                 (conversationId && resumed[conversationId] ? (
@@ -3376,7 +3502,7 @@ export default function App() {
                 ) : (
                   <p className="hero-sub">continuing an earlier session</p>
                 ))}
-              {project && <SessionSearch projectPath={project.primary_path} onResume={resumeHistory} />}
+              {project && <SessionSearch projectPath={effectiveCwd} onResume={resumeHistory} />}
             </div>
           ) : (
             // The transcript and the agent rail sit side by side. The rail
@@ -3390,7 +3516,7 @@ export default function App() {
                   end of the conversation instead of where they left. */}
               {/* A path written into a reply is relative to the PROJECT, and
                   only this knows which one is open — see components/ProsePath. */}
-              <PathCwdProvider value={project?.primary_path ?? ""}>
+              <PathCwdProvider value={effectiveCwd}>
                 {/* Which cards are still waiting on work they started. Read
                     four levels down, past a grouping pass that rebuilds its
                     rows — see components/Background. */}
@@ -3508,10 +3634,10 @@ export default function App() {
           {/* Keyed by project: switching project gets that project's own
               terminals, and coming back reattaches to them rather than
               starting a second set. */}
-          {termOpen && project && (
+          {termOpen && sessionProject && (
             <TerminalDrawer
-              key={project.id}
-              project={project}
+              key={sessionProject.id}
+              project={sessionProject}
               onCommandsChanged={loadWorkspaces}
               onHide={() => {
                 setTermOpen(false);
@@ -3577,8 +3703,15 @@ export default function App() {
               conversationId && running.has(conversationId) ? restartAgent : undefined
             }
             projects={workspaces}
-            projectRequired={!project}
-            cwd={project?.primary_path ?? ""}
+            projectId={project && projectSlug(project.name) !== "general" ? project.id : null}
+            onProject={chooseProject}
+            branch={branch}
+            branches={branches}
+            onBranch={setBranch}
+            newWorktree={newWorktree}
+            onNewWorktree={setNewWorktree}
+            locationLocked={!!conversationId}
+            cwd={effectiveCwd}
             /* The last turn's receipt. It had a row of its own under the box
                until now; it rides on the composer's own eyebrow instead. */
             model={chat.model}
@@ -3626,9 +3759,9 @@ export default function App() {
             rather than something laid over it, so the chat gives up width while
             this is open and takes it straight back when it closes. On a phone
             the stylesheet turns it into a sheet that slides in from the right. */}
-        {gitMounted && !previewVisible && project && (
+        {gitMounted && !previewVisible && sessionProject && (
           <GitPanel
-            project={project}
+            project={sessionProject}
             open={gitOpen}
             persistent={desktopGit}
             onClose={() => showGit(false)}

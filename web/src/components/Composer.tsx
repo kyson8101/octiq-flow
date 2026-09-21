@@ -21,12 +21,10 @@ import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
 import {
-  mentionMatches,
-  mentionPicks,
-  mentionQuery,
-  projectMentionToken,
-  type MentionableProject,
-} from "../lib/projectMention";
+  WorkLocation,
+  type WorkLocationBranches,
+  type WorkLocationProject,
+} from "./WorkLocation";
 import { pasteRefusal, readClipboard, reason } from "../lib/paste";
 import { formatQuote, onQuote } from "../lib/quote";
 import { Drafts, type Draft } from "../lib/drafts";
@@ -348,7 +346,14 @@ export function Composer({
   lite,
   onLite,
   projects,
-  projectRequired,
+  projectId,
+  onProject,
+  branch,
+  branches,
+  onBranch,
+  newWorktree,
+  onNewWorktree,
+  locationLocked,
   cwd,
   onTerminal,
   terminalOpen,
@@ -438,10 +443,18 @@ export function Composer({
    *  the NEXT chat. */
   lite: boolean;
   onLite: (on: boolean) => void;
-  /** Projects are offered through @ completion before a new task is bound to
-   *  a workspace. The mention becomes the chat's project on first send. */
-  projects?: readonly MentionableProject[];
-  projectRequired?: boolean;
+  /** The visible execution location for a new chat. OctiqFlow prepares it
+   *  before the agent starts; the prompt is never parsed for routing clues. */
+  projects?: readonly WorkLocationProject[];
+  projectId?: string | null;
+  onProject?: (id: string | null) => void;
+  branch?: string;
+  branches?: WorkLocationBranches;
+  onBranch?: (branch: string) => void;
+  newWorktree?: boolean;
+  onNewWorktree?: (enabled: boolean) => void;
+  /** Once a conversation exists, its cwd is part of its identity. */
+  locationLocked?: boolean;
   /** The project folder, so the file picker opens where the work is. */
   cwd?: string;
   /** Show the shell drawer. Absent when there is no project to open one in. */
@@ -467,7 +480,6 @@ export function Composer({
   const [sheet, setSheet] = useState(false);
   const [permMenu, setPermMenu] = useState(false);
   const [pick, setPick] = useState(0);
-  const [dismissedCommand, setDismissedCommand] = useState<string | null>(null);
   // Every option list depends on which provider is chosen: the agents do
   // not offer the same access wording or the same effort levels.
   const provider = providerFor(choice.agent);
@@ -537,9 +549,6 @@ export function Composer({
   const commandInput = commandToken(text, choice.agent, caret);
   const commandQuery = commandInput?.query;
   const commandIntent = commandInput !== undefined;
-  const commandKey = commandInput
-    ? `${commandInput.start}:${commandInput.end}:${text}`
-    : null;
   useEffect(() => {
     if (commandIntent) onCommandOpen?.();
   }, [commandIntent, onCommandOpen]);
@@ -558,24 +567,7 @@ export function Composer({
               Number(a.id.toLowerCase() === commandQuery.toLowerCase()),
           )
           .slice(0, 40);
-  const slashOpen = commandIntent && (matches.length > 0 || !!onReloadSkills) && commandKey !== dismissedCommand;
-
-  // The @ menu chooses a project before a new task is bound to one. It is open
-  // while the whole box is one `@word`, and closes once message text begins.
-  const atQuery = projectRequired ? mentionQuery(text) : undefined;
-  const whoList: { key: string; label: string; insert: string }[] =
-    atQuery === undefined
-      ? []
-      : (projects ?? [])
-          .map((project) => ({
-            key: project.id,
-            label: project.name,
-            insert: projectMentionToken(project.name),
-          }))
-          .filter((project) => mentionMatches(project.label, project.key, atQuery));
-  // One highlight serves both menus. They can never both be open — a box cannot
-  // start with a `/` and an `@` at once — which is what makes that safe.
-  const atOpen = whoList.length > 0;
+  const slashOpen = commandIntent && (matches.length > 0 || !!onReloadSkills);
 
   /** The highlighted command is exactly what is typed: there is nothing left to
    *  complete, so Enter should send it. Arrowing to a different one puts
@@ -588,12 +580,6 @@ export function Composer({
   useEffect(() => {
     setPick((i) => (i < matches.length ? i : 0));
   }, [matches.length]);
-
-  // The same, for the @ menu. One highlight serves both, and only one is ever
-  // open — a box cannot start with both a `/` and an `@`.
-  useEffect(() => {
-    setPick((i) => (i < whoList.length ? i : 0));
-  }, [whoList.length]);
 
   function complete(command: AgentCommand) {
     const token = commandInput ?? commandToken(text, choice.agent, areaRef.current?.selectionStart);
@@ -609,11 +595,6 @@ export function Composer({
       areaRef.current?.focus();
       areaRef.current?.setSelectionRange(next.caret, next.caret);
     });
-  }
-
-  function completeWho(choice: (typeof whoList)[number]) {
-    setText(`@${choice.insert} `);
-    areaRef.current?.focus();
   }
 
   // Grow with the text, up to a few lines, then scroll inside.
@@ -1047,41 +1028,6 @@ export function Composer({
         </div>
       </div>
 
-      {/* Project selection uses the same keyboard shape as the command menu:
-          arrows and Tab to choose, and a space to continue writing. */}
-      {atOpen && (
-        <div className="slash" role="listbox" aria-label={projectRequired ? "Choose project" : "Send to"}>
-          <div className="slash-head">
-            <RollingText>{`${whoList.length} to choose from · Tab to pick`}</RollingText>
-          </div>
-          {onReloadSkills && (
-            <div className="skill-reload">
-              <button type="button" disabled={skillsStatus === "loading"} onClick={onReloadSkills}>
-                {skillsStatus === "loading" ? "Reloading…" : "Reload skills"}
-              </button>
-              {skillsStatus && skillsStatus !== "loading" && <span role="alert">{skillsStatus}</span>}
-            </div>
-          )}
-          <ul className="slash-list" role="listbox">
-            {whoList.map((w, i) => (
-              <li key={w.key}>
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={i === pick}
-                  className={`slash-item ${i === pick ? "is-on" : ""}`}
-                  onMouseEnter={() => setPick(i)}
-                  onClick={() => completeWho(w)}
-                >
-                  @{w.insert}
-                  <span className="slash-note">{w.label}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
       {slashOpen && (
         <div className="slash">
           <div className="slash-head">
@@ -1165,7 +1111,7 @@ export function Composer({
             aria-label="Message"
             rows={2}
             value={text}
-            placeholder={disabled ? "Chat unavailable" : projectRequired ? "Describe the task, or start with @project-name…" : `Ask ${choice.name} to…`}
+            placeholder={disabled ? "Chat unavailable" : `Ask ${choice.name} to…`}
             disabled={disabled}
             onChange={(e) => {
               // Input events are the reliable signal on a software keyboard;
@@ -1184,32 +1130,6 @@ export function Composer({
               void attachFiles(files);
             }}
             onKeyDown={(e) => {
-              // Card 85 — the @ menu takes the same keys the command list does,
-              // and gives them back the moment it closes.
-              if (atOpen) {
-                if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setPick((i) => (i + 1) % whoList.length);
-                  return;
-                }
-                if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setPick((i) => (i - 1 + whoList.length) % whoList.length);
-                  return;
-                }
-                // Enter and Tab both pick — see `mentionPicks` for why Enter
-                // has to, and what it cost to learn.
-                if (mentionPicks(e)) {
-                  e.preventDefault();
-                  completeWho(whoList[pick]);
-                  return;
-                }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setDismissedCommand(commandKey);
-                  return;
-                }
-              }
               // While the command list is up it owns the arrows, Tab and Enter —
               // the same keys a shell completion takes.
               if (slashOpen && matches.length > 0) {
@@ -1621,6 +1541,17 @@ export function Composer({
           </>
         )}
       </div>
+      <WorkLocation
+        projects={projects ?? []}
+        projectId={projectId ?? null}
+        onProject={onProject ?? (() => undefined)}
+        branch={branch ?? ""}
+        branches={branches}
+        onBranch={onBranch ?? (() => undefined)}
+        newWorktree={!!newWorktree}
+        onNewWorktree={onNewWorktree ?? (() => undefined)}
+        locked={!!locationLocked}
+      />
     </div>
   );
 }

@@ -3800,6 +3800,178 @@ body {
   box-shadow: var(--focus-ring);
 }
 
+/* The agent's execution context, chosen before the first send. It tucks under
+   the prompt instead of becoming another toolbar inside it: message controls
+   answer "what am I sending?", while this strip answers "where will it run?".
+   The inset exposes the prompt's lower corners and keeps the prompt primary. */
+.work-location {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 28px);
+  max-width: calc(var(--chat-column) - 28px);
+  min-height: 42px;
+  margin: -1px auto 0;
+  padding: 7px 10px 6px;
+  border: 1px solid var(--border);
+  border-top-color: color-mix(in srgb, var(--border) 58%, transparent);
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
+  background: var(--bg-sunken);
+  color: var(--fg-2);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.09);
+}
+
+.work-location-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--fg-2);
+}
+
+.work-location .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.work-location-field > svg,
+.worktree-choice > svg {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+.work-location-field select {
+  min-width: 0;
+  max-width: 190px;
+  padding: 3px 18px 3px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.work-location-field.is-branch select {
+  max-width: 230px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 450;
+}
+
+.work-location-field select:focus-visible,
+.worktree-choice:has(input:focus-visible) {
+  outline: 1px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+.work-location-field select:disabled {
+  cursor: default;
+  opacity: 1;
+  -webkit-text-fill-color: var(--fg-2);
+}
+
+.work-location-field.is-muted {
+  color: var(--fg-3);
+}
+
+.work-location-divider {
+  align-self: stretch;
+  width: 1px;
+  background: var(--border);
+}
+
+.work-location-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
+
+.worktree-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.worktree-choice input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--composer-accent);
+}
+
+.worktree-choice:has(input:disabled) {
+  cursor: default;
+  color: var(--fg-3);
+}
+
+.worktree-choice.is-active,
+.worktree-choice.is-active > svg {
+  color: color-mix(in srgb, var(--composer-accent) 80%, var(--fg-1));
+}
+
+.work-location-error {
+  max-width: 22ch;
+  overflow: hidden;
+  color: var(--warn);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.work-location-lock {
+  flex: 0 0 auto;
+  color: var(--fg-3);
+}
+
+@media (max-width: 560px) {
+  .work-location {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    width: calc(100% - 20px);
+    max-width: calc(var(--chat-column) - 20px);
+    padding-inline: 9px;
+  }
+
+  .work-location-field {
+    flex: 0 0 auto;
+  }
+
+  .work-location-field select {
+    max-width: 132px;
+  }
+
+  .work-location-field.is-branch select {
+    max-width: 150px;
+  }
+
+  .work-location-spacer {
+    display: none;
+  }
+
+  .worktree-choice {
+    flex: 0 0 calc(100% - 21px);
+    margin-left: 21px;
+  }
+}
+
 .composer-input-wrap {
   position: relative;
 }

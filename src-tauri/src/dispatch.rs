@@ -500,6 +500,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "root")?,
             arg(&args, "branch")?,
         )),
+        "git_prepare_chat_workspace" => to_value(crate::git_ops::git_prepare_chat_workspace(
+            arg(&args, "path")?,
+            arg(&args, "branch")?,
+            arg(&args, "newWorktree")?,
+            arg(&args, "prompt")?,
+            arg(&args, "chatId")?,
+        )),
 
         // ---- finding files ------------------------------------------------
         "search_files" => to_value(crate::fsbrowse::search_files(
