@@ -545,6 +545,9 @@ pub struct BranchList {
     pub current: String,
     /// Local branch names, most-recently-committed first.
     pub branches: Vec<String>,
+    /// True when the requested path belongs to a linked worktree rather than
+    /// the repository's primary checkout.
+    pub is_worktree: bool,
 }
 
 /// List a repo's local branches for the Git tab's switch dropdown. Read-only.
@@ -556,6 +559,7 @@ pub fn git_local_branches(path: String) -> Result<BranchList, String> {
             is_repo: false,
             current: String::new(),
             branches: Vec::new(),
+            is_worktree: false,
         });
     };
     let current = run_git(&root, &["branch", "--show-current"])
@@ -578,7 +582,24 @@ pub fn git_local_branches(path: String) -> Result<BranchList, String> {
         is_repo: true,
         current,
         branches: parse_branch_lines(&raw),
+        is_worktree: git_dir_differs_from_common(&root),
     })
+}
+
+/// A linked worktree has its own git dir under the common repository's
+/// `.git/worktrees/` directory. The primary checkout uses the common dir
+/// directly. Asking git for both paths avoids guessing from `.git` being a
+/// directory versus a file, and works when either path was relocated.
+fn git_dir_differs_from_common(root: &str) -> bool {
+    let git_dir = run_git(root, &["rev-parse", "--path-format=absolute", "--git-dir"]);
+    let common = run_git(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    match (git_dir, common) {
+        (Some(git_dir), Some(common)) => git_dir.trim() != common.trim(),
+        _ => false,
+    }
 }
 
 /// Split `git for-each-ref` output into a clean branch-name list (one per line,

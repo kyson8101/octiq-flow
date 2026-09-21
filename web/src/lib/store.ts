@@ -31,6 +31,9 @@ export type Conversation = {
   customTitle?: boolean;
   /** The agent's session id, for --resume. Absent until the agent reports it. */
   sessionId?: string;
+  /** The exact directory the agent runs in. Worktree chats must resume here,
+   *  not in the parent project's primary checkout. */
+  cwd?: string;
   messages: Message[];
   /** The model and permission the conversation was held under, so reopening it
    *  does not silently change either. */
@@ -298,6 +301,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       held.latestResponse === c.latestResponse &&
       !!held.customTitle === !!c.customTitle &&
       held.sessionId === c.sessionId &&
+      held.cwd === c.cwd &&
       held.modelId === c.modelId &&
       held.permission === c.permission &&
       held.createdAt === c.createdAt &&

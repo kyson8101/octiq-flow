@@ -25,7 +25,7 @@
 // stays responsive (Tauri runs commands off the UI thread) and the panel shows
 // the button as busy meanwhile.
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
@@ -39,6 +39,101 @@ pub struct GitOpResult {
     pub summary: String,
     /// git's own combined stdout + stderr, shown under the summary.
     pub output: String,
+}
+
+/// The exact directory and branch an agent chat should start in after the
+/// host has applied the location choices made in the composer.
+#[derive(Debug, Clone, Serialize)]
+pub struct PreparedWorkspace {
+    pub cwd: String,
+    pub branch: String,
+    pub is_repo: bool,
+    pub is_worktree: bool,
+}
+
+/// Prepare the selected project before its agent starts.
+///
+/// With `new_worktree = false`, an explicitly selected local branch is
+/// switched in the project's existing checkout. With it enabled, `branch` is
+/// the base and a fresh `octiq/<task>-<chat>` branch is created in the same
+/// `.worktrees/<repo>/...` layout used by OctiqFlow's own development flow.
+/// The prompt only supplies a readable branch hint; it is never interpreted as
+/// a project or branch instruction.
+pub fn git_prepare_chat_workspace(
+    path: String,
+    branch: String,
+    new_worktree: bool,
+    prompt: String,
+    chat_id: String,
+) -> Result<PreparedWorkspace, String> {
+    let Some(root) = run_git(&path, &["rev-parse", "--show-toplevel"])
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(PreparedWorkspace {
+            cwd: path,
+            branch: String::new(),
+            is_repo: false,
+            is_worktree: false,
+        });
+    };
+
+    let selected = if branch.trim().is_empty() {
+        current_branch(&root)?
+    } else {
+        branch.trim().to_string()
+    };
+    ensure_local_branch(&root, &selected)?;
+
+    if !new_worktree {
+        git_switch_branch(root.clone(), selected.clone())?;
+        return Ok(PreparedWorkspace {
+            cwd: path,
+            branch: selected,
+            is_repo: true,
+            is_worktree: is_linked_worktree(&root),
+        });
+    }
+
+    let primary = primary_checkout_root(&root)?;
+    let repo_name = primary
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or("Could not name this repository for its worktree folder.")?;
+    let repo_parent = primary
+        .parent()
+        .ok_or("Could not find a parent folder for this repository.")?;
+    let worktree_root = repo_parent.join(".worktrees").join(repo_name);
+    let branch_stem = generated_branch_stem(&prompt, &chat_id);
+    let (created_branch, target) = available_worktree_target(&root, &worktree_root, &branch_stem);
+    let parent = target
+        .parent()
+        .ok_or("Could not prepare the worktree folder.")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create the worktree folder: {error}"))?;
+
+    let target_text = target.to_string_lossy().into_owned();
+    run_git_mut(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            created_branch.as_str(),
+            target_text.as_str(),
+            selected.as_str(),
+        ],
+        false,
+    )?;
+
+    let cwd = worktree_cwd(&path, &root, &target);
+    Ok(PreparedWorkspace {
+        cwd,
+        branch: created_branch,
+        is_repo: true,
+        is_worktree: true,
+    })
 }
 
 /// Commit the ticked files of ONE repo.
@@ -206,6 +301,130 @@ fn combine_output(stdout: &[u8], stderr: &[u8]) -> String {
 
 // --- Repo lookups -----------------------------------------------------------
 
+fn ensure_local_branch(root: &str, branch: &str) -> Result<(), String> {
+    let reference = format!("refs/heads/{branch}");
+    if run_git(
+        root,
+        &["show-ref", "--verify", "--quiet", reference.as_str()],
+    )
+    .is_some()
+    {
+        Ok(())
+    } else {
+        Err(format!("Local branch '{branch}' does not exist."))
+    }
+}
+
+/// The primary checkout owns the common `.git` directory even when `root` is
+/// itself a linked worktree. Its parent is therefore the stable place from
+/// which all OctiqFlow worktrees can be grouped.
+fn primary_checkout_root(root: &str) -> Result<PathBuf, String> {
+    let common = run_git(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok_or("Could not find this repository's common Git directory.")?;
+    let common = PathBuf::from(common.trim());
+    common
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "Could not find this repository's primary checkout.".into())
+}
+
+fn is_linked_worktree(root: &str) -> bool {
+    let git_dir = run_git(root, &["rev-parse", "--path-format=absolute", "--git-dir"]);
+    let common = run_git(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    match (git_dir, common) {
+        (Some(git_dir), Some(common)) => git_dir.trim() != common.trim(),
+        _ => false,
+    }
+}
+
+fn generated_branch_stem(prompt: &str, chat_id: &str) -> String {
+    let mut task = slug_part(prompt, 36);
+    if task.is_empty() {
+        task.push_str("task");
+    }
+    let mut identity = slug_part(chat_id, 8);
+    if identity.is_empty() {
+        identity.push_str("chat");
+    }
+    format!("octiq/{task}-{identity}")
+}
+
+/// ASCII branch hints stay readable in terminals and portable across Git
+/// hosts. Non-ASCII prompts simply fall back to `task-<chat>` rather than
+/// transliterating a person's words incorrectly.
+fn slug_part(value: &str, limit: usize) -> String {
+    let mut slug = String::new();
+    let mut separated = false;
+    for character in value.chars() {
+        if character.is_ascii_alphanumeric() {
+            if separated && !slug.is_empty() && slug.len() < limit {
+                slug.push('-');
+            }
+            separated = false;
+            if slug.len() < limit {
+                slug.push(character.to_ascii_lowercase());
+            }
+        } else {
+            separated = true;
+        }
+        if slug.len() >= limit {
+            break;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn available_worktree_target(
+    root: &str,
+    worktree_root: &Path,
+    branch_stem: &str,
+) -> (String, PathBuf) {
+    for suffix in 1.. {
+        let branch = if suffix == 1 {
+            branch_stem.to_string()
+        } else {
+            format!("{branch_stem}-{suffix}")
+        };
+        let reference = format!("refs/heads/{branch}");
+        let target = worktree_root.join(&branch);
+        if run_git(
+            root,
+            &["show-ref", "--verify", "--quiet", reference.as_str()],
+        )
+        .is_none()
+            && !target.exists()
+        {
+            return (branch, target);
+        }
+    }
+    unreachable!("an unbounded numeric suffix always has a candidate")
+}
+
+/// Preserve a project's selected subfolder inside the linked worktree. Most
+/// projects point at the repo root; monorepo projects often point one level in.
+fn worktree_cwd(requested: &str, root: &str, target: &Path) -> String {
+    let relative = std::fs::canonicalize(requested)
+        .ok()
+        .and_then(|path| {
+            std::fs::canonicalize(root)
+                .ok()
+                .and_then(|repo| path.strip_prefix(repo).ok().map(Path::to_path_buf))
+        })
+        .unwrap_or_default();
+    let candidate = target.join(relative);
+    if candidate.is_dir() {
+        candidate.to_string_lossy().into_owned()
+    } else {
+        target.to_string_lossy().into_owned()
+    }
+}
+
 /// The checked-out branch name. A detached HEAD has none, and committing to it
 /// is a foot-gun the panel should not offer, so it is an error here.
 fn current_branch(root: &str) -> Result<String, String> {
@@ -354,6 +573,18 @@ mod tests {
     fn count_label_singular_and_plural() {
         assert_eq!(count_label(1), "1 file");
         assert_eq!(count_label(3), "3 files");
+    }
+
+    #[test]
+    fn generated_worktree_branch_is_readable_and_bounded() {
+        assert_eq!(
+            generated_branch_stem("Show branch name in the chat list", "ABC-1234-REST"),
+            "octiq/show-branch-name-in-the-chat-list-abc-1234"
+        );
+        assert_eq!(
+            generated_branch_stem("修复聊天列表", "chat-9000"),
+            "octiq/task-chat-900"
+        );
     }
 
     #[test]
@@ -598,6 +829,74 @@ mod tests {
         // git's own words, not ours — the panel shows this line verbatim.
         assert!(err.contains("no-such-branch"), "{err}");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prepare_switches_the_selected_checkout_before_chat_start() {
+        let Some(dir) = temp_repo("prepare-switch") else {
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["branch", "feature/selected"])
+            .output()
+            .unwrap();
+
+        let prepared = git_prepare_chat_workspace(
+            root.clone(),
+            "feature/selected".into(),
+            false,
+            "ignored prompt".into(),
+            "chat-a".into(),
+        )
+        .expect("checkout is prepared");
+
+        assert_eq!(prepared.cwd, root);
+        assert_eq!(prepared.branch, "feature/selected");
+        assert!(!prepared.is_worktree);
+        assert_eq!(current_branch(&prepared.cwd).unwrap(), "feature/selected");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prepare_creates_a_task_branch_in_a_linked_worktree() {
+        let Some(dir) = temp_repo("prepare-worktree") else {
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let base = current_branch(&root).unwrap();
+
+        let prepared = git_prepare_chat_workspace(
+            root.clone(),
+            base.clone(),
+            true,
+            "Build the project picker".into(),
+            "chat-12345678".into(),
+        )
+        .expect("worktree is prepared");
+
+        assert!(prepared.is_worktree);
+        assert_eq!(prepared.branch, "octiq/build-the-project-picker-chat-123");
+        assert_eq!(current_branch(&prepared.cwd).unwrap(), prepared.branch);
+        assert_eq!(
+            current_branch(&root).unwrap(),
+            base,
+            "primary checkout stays put"
+        );
+
+        let worktree = prepared.cwd.clone();
+        let _ = run_git_mut(
+            &root,
+            &["worktree", "remove", "--force", worktree.as_str()],
+            false,
+        );
+        if let Some(group) = Path::new(&worktree).ancestors().nth(2) {
+            let _ = std::fs::remove_dir_all(group);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

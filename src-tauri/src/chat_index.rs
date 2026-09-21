@@ -47,6 +47,10 @@ pub struct ChatMeta {
     /// The agent's own session id, for resuming the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The exact directory this chat runs in. It can be a linked worktree and
+    /// therefore must not be reconstructed from the project's default path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// What it was held under, so reopening does not silently change either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
@@ -485,6 +489,7 @@ mod tests {
             latest_response: None,
             custom_title: false,
             session_id: None,
+            cwd: None,
             model_id: None,
             access: None,
             created_at: created,
