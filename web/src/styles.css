@@ -3938,23 +3938,28 @@ body {
 
 @media (max-width: 560px) {
   .work-location {
-    justify-content: flex-start;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1.35fr);
+    align-items: center;
+    column-gap: 8px;
+    row-gap: 5px;
     width: calc(100% - 20px);
     max-width: calc(var(--chat-column) - 20px);
     padding-inline: 9px;
   }
 
   .work-location-field {
-    flex: 0 0 auto;
+    width: 100%;
   }
 
-  .work-location-field select {
-    max-width: 132px;
+  .work-location-field.is-branch {
+    grid-column: 3;
   }
 
+  .work-location-field select,
   .work-location-field.is-branch select {
-    max-width: 150px;
+    width: 100%;
+    max-width: none;
   }
 
   .work-location-spacer {
@@ -3962,8 +3967,19 @@ body {
   }
 
   .worktree-choice {
-    flex: 0 0 calc(100% - 21px);
+    grid-column: 1 / -1;
     margin-left: 21px;
+  }
+
+  /* On a phone the branch already explains why this action is unavailable.
+     Keeping a disabled checkbox beneath it turned the compact location strip
+     into a three-row card whenever General was selected. */
+  .worktree-choice:has(input:disabled) {
+    display: none;
+  }
+
+  .work-location-error {
+    grid-column: 1 / -1;
   }
 }
 
