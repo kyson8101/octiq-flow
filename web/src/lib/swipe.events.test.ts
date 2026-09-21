@@ -109,6 +109,13 @@ describe("drawer touch lifecycle", () => {
     expect(changed).toHaveBeenCalledExactlyOnceWith(true);
   });
 
+  it("does not open the drawer for a short fast edge twitch", () => {
+    touch(shell, "touchstart", 5, 0);
+    touch(shell, "touchmove", 35, 20);
+    touch(shell, "touchend", 35, 21, 0);
+    expect(changed).not.toHaveBeenCalled();
+  });
+
   it("keeps the edge reserved when text elsewhere is selected", () => {
     vi.stubGlobal("window", { getSelection: () => ({ rangeCount: 1, isCollapsed: false }) });
     const edge = touch(shell, "touchstart", 5, 0);

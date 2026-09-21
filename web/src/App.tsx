@@ -144,7 +144,7 @@ import { CarryOn } from "./components/CarryOn";
 import { provesLiveTurn, queuedMessageCount, type ChatQueueState } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
-import { readChatRoute, chatRouteHash, type ChatRoute } from "./lib/chatRoute";
+import { readChatRoute, replaceChatRoute, type ChatRoute } from "./lib/chatRoute";
 import { projectSlug } from "./lib/projectSlug";
 import { inferProjectFromText, readProjectMention } from "./lib/projectMention";
 import { ensureGeneralProject } from "./lib/generalProject";
@@ -253,11 +253,7 @@ const TERM_KEY = "octiq.v2.terminalOpen";
 function readLocation(): ChatRoute { return readChatRoute(location.hash); }
 
 function writeLocation(project: string | null, chat: string | null): void {
-  const next = chatRouteHash({ project: project ?? undefined, chat: chat ?? undefined });
-  if (next === location.hash) return;
-  const previous = readLocation();
-  const method = previous.chat && previous.chat !== chat ? "pushState" : "replaceState";
-  history[method](null, "", `${location.pathname}${location.search}${next}`);
+  replaceChatRoute(location, history, { project: project ?? undefined, chat: chat ?? undefined });
 }
 
 /** The chat that was on screen when the page was last left. */
