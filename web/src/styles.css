@@ -3002,63 +3002,15 @@ body {
 }
 
 /* ---- Skills ----------------------------------------------------------- */
-.tool-skill .tool-head {
-  gap: 10px;
-  padding: 11px 14px 11px var(--tool-pad);
-  border-radius: var(--r-lg);
-}
-
-.tool-skill .tool-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--tint) 15%, transparent);
-}
-
-.tool-skill .tool-body {
-  padding: 8px 10px 10px;
-}
-
-.tool-skill .tool-expand {
-  --tool-expand-border: color-mix(in srgb, #bf5af3 54%, var(--border));
-  --tool-expand-glow: color-mix(in srgb, #bf5af3 18%, transparent);
-  margin: 0 14px 12px;
-}
+/* A skill call is the same flat row as every other tool call. The purple icon
+   (`.tool-icon[data-kind="skill"]`) is what marks it — it used to be a bordered,
+   gradient-filled card with its own icon tile and a bold name, which made one
+   call louder than the transcript around it. */
 
 /* A description is prose, and prose is read from its start. Only the shared
    rule's path-truncation wants the other end. */
 .tool-skill .tool-detail {
   direction: ltr;
-}
-
-/* A skill call is not one action — it is a set of instructions the agent has
-   just taken on, and everything after it reads differently because of it. So
-   it is marked in its own colour. */
-.tool-skill {
-  border: 1px solid color-mix(in srgb, #bf5af3 32%, var(--border));
-  border-radius: var(--r-lg);
-  background: linear-gradient(
-    to right,
-    color-mix(in srgb, #bf5af3 7%, var(--bg-sunken)),
-    var(--bg-sunken) 60%
-  );
-  overflow: hidden;
-}
-
-/* The skill's own name is the point of the row, so it is the one tool name
-   that is not left at the weight of everything else. */
-.tool-skill .tool-name {
-  color: var(--fg-0);
-  font-weight: 600;
-}
-
-/* A skill's row says what the skill is for, in its own first sentence — prose,
-   not a path, so it is set in the reading face rather than the mono one the
-   other rows use for their file or command. */
-.tool-skill .tool-detail {
-  font-family: inherit;
-  font-size: 12px;
-  color: var(--fg-2);
 }
 
 /* What the skill was called with (`--fast`), as a chip by its name. */
