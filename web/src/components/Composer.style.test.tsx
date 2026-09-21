@@ -7,7 +7,7 @@ vi.mock("../lib/bridge", () => ({ bridge: { invoke: async () => [] } }));
 
 import { ACCESS, Composer, MODELS, providerFor, type ModelChoice } from "./Composer";
 
-function renderComposer(choice: ModelChoice): string {
+function renderComposer(choice: ModelChoice, showWorkLocation = false): string {
   const provider = providerFor(choice.agent);
   return renderToStaticMarkup(
     <Composer
@@ -22,6 +22,7 @@ function renderComposer(choice: ModelChoice): string {
       onEffort={() => {}}
       lite={false}
       onLite={() => {}}
+      showWorkLocation={showWorkLocation}
     />,
   );
 }
@@ -44,5 +45,10 @@ describe("the model-driven composer style", () => {
     expect(html.indexOf('aria-label="Sent message history"')).toBeLessThan(
       html.indexOf('class="composer-box"'),
     );
+  });
+
+  it("shows work location only on the new-chat composer", () => {
+    expect(renderComposer(MODELS[0])).not.toContain('aria-label="Work location"');
+    expect(renderComposer(MODELS[0], true)).toContain('aria-label="Work location"');
   });
 });

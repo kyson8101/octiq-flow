@@ -13,7 +13,6 @@ describe("WorkLocation", () => {
         onBranch={() => undefined}
         newWorktree={false}
         onNewWorktree={() => undefined}
-        locked={false}
       />,
     );
 
@@ -22,7 +21,7 @@ describe("WorkLocation", () => {
     expect(html).toContain("New worktree");
   });
 
-  it("shows the selected branch and locks a prepared worktree receipt", () => {
+  it("shows the selected base branch and new-worktree choice", () => {
     const html = renderToStaticMarkup(
       <WorkLocation
         projects={[{ id: "p1", name: "OctiqFlow" }]}
@@ -36,14 +35,14 @@ describe("WorkLocation", () => {
           isWorktree: true,
         }}
         onBranch={() => undefined}
-        newWorktree={false}
+        newWorktree
         onNewWorktree={() => undefined}
-        locked
       />,
     );
 
     expect(html).toContain("octiq/project-picker-chat-123");
-    expect(html).toContain("Worktree");
-    expect(html).toContain("Work location locked");
+    expect(html).toContain('aria-label="Base branch"');
+    expect(html).toContain('type="checkbox" checked=""');
+    expect(html).not.toContain("Work location locked");
   });
 });

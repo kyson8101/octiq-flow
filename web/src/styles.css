@@ -3936,11 +3936,6 @@ body {
   text-overflow: ellipsis;
 }
 
-.work-location-lock {
-  flex: 0 0 auto;
-  color: var(--fg-3);
-}
-
 @media (max-width: 560px) {
   .work-location {
     justify-content: flex-start;

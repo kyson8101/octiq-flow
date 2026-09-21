@@ -3884,7 +3884,7 @@ export default function App() {
             onBranch={setBranch}
             newWorktree={newWorktree}
             onNewWorktree={setNewWorktree}
-            locationLocked={!!conversationId}
+            showWorkLocation={!conversationId}
             cwd={effectiveCwd}
             /* The last turn's receipt. It had a row of its own under the box
                until now; it rides on the composer's own eyebrow instead. */
