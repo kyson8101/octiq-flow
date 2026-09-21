@@ -15,11 +15,15 @@ vi.mock("../lib/pathStore", () => ({
 }));
 
 import { addUserTurn, emptyChat, type Message } from "../lib/chat";
-import { CARRY_ON, CARRY_ON_HEAD } from "../lib/carryOn";
+import {
+  CHAT_SERVICE_RESUMED,
+  CHAT_SERVICE_RESUMED_HEAD,
+  CHAT_SERVICE_RESUMED_REPLY,
+} from "../lib/carryOn";
 import { CarryOn } from "./CarryOn";
 import { MessageList } from "./MessageList";
 
-const LINE = "asked it to carry on after an interruption";
+const LINE = CHAT_SERVICE_RESUMED_REPLY;
 
 const message = (text: string, relay?: string): Message => ({
   id: "m0",
@@ -29,9 +33,9 @@ const message = (text: string, relay?: string): Message => ({
   ...(relay ? { relay } : {}),
 });
 
-describe("the carry-on prompt", () => {
+describe("the service-resumed notice", () => {
   it("is marked as one line when it is sent", () => {
-    const state = addUserTurn(emptyChat(), CARRY_ON);
+    const state = addUserTurn(emptyChat(), CHAT_SERVICE_RESUMED);
     const sent = state.messages[state.messages.length - 1];
 
     expect(sent.relay).toBe(LINE);
@@ -41,10 +45,10 @@ describe("the carry-on prompt", () => {
     // The agent replays what it was given, and that echo claims this bubble.
     // Trimming it down to its label would leave the echo matching nothing, and
     // the whole instruction would arrive as a second message nobody sent.
-    const state = addUserTurn(emptyChat(), CARRY_ON);
+    const state = addUserTurn(emptyChat(), CHAT_SERVICE_RESUMED);
     const sent = state.messages[state.messages.length - 1];
 
-    expect(sent.blocks).toEqual([{ kind: "text", text: CARRY_ON }]);
+    expect(sent.blocks).toEqual([{ kind: "text", text: CHAT_SERVICE_RESUMED }]);
   });
 
   it("leaves a message somebody typed alone", () => {
@@ -56,12 +60,12 @@ describe("the carry-on prompt", () => {
 
   it("is drawn as the line, not as the instruction", () => {
     const html = renderToStaticMarkup(
-      <MessageList messages={[message(CARRY_ON, LINE)]} busy={false} />,
+      <MessageList messages={[message(CHAT_SERVICE_RESUMED, LINE)]} busy={false} />,
     );
 
     expect(html).toContain(LINE);
-    expect(html).not.toContain(CARRY_ON_HEAD);
-    expect(html).not.toContain("Carry on from where you stopped");
+    expect(html).not.toContain(CHAT_SERVICE_RESUMED_HEAD);
+    expect(html).not.toContain("Reply only with");
   });
 });
 
@@ -72,5 +76,18 @@ describe("the strip above the prompt box", () => {
     expect(html).not.toContain("Nothing was lost");
     expect(html).toContain("Checking whether");
     expect(html).not.toContain("<button");
+  });
+
+  it("offers a neutral resume action instead of carry-on instructions", () => {
+    const html = renderToStaticMarkup(
+      <CarryOn
+        onCarryOn={() => {}}
+        evidence={{ connected: true, rosterKnown: true, busy: true, live: false }}
+      />,
+    );
+
+    expect(html).toContain("Resume chat");
+    expect(html).not.toContain(">Carry on<");
+    expect(html).not.toContain("check completed actions");
   });
 });

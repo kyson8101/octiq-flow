@@ -11,7 +11,7 @@ import {
   type RecoveryEvidence,
 } from "./recovery";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
-import { CARRY_ON, someoneWorking } from "./carryOn";
+import { CHAT_SERVICE_RESUMED, someoneWorking } from "./carryOn";
 
 const missing: RecoveryEvidence = { connected: true, rosterKnown: true, busy: true, live: false };
 
@@ -33,11 +33,12 @@ describe("recovery evidence", () => {
     const live = someoneWorking({ id: "room", running: new Set(["room"]) });
     expect(deriveRecovery({ ...missing, live, exited: { code: 1 } }).canContinue).toBe(false);
   });
-  it("asks to inspect previous actions without inventing a restart or intact history", () => {
-    expect(CARRY_ON).toContain("Check what is already done");
-    expect(CARRY_ON).toContain("cause of the interruption is unknown");
-    expect(CARRY_ON).not.toContain("backend restart");
-    expect(CARRY_ON).not.toContain("Everything you had already done is in");
+  it("reports only that the chat service resumed", () => {
+    expect(CHAT_SERVICE_RESUMED).toBe(
+      "=== chat service resumed ===\n\nReply only with: Chat service resumed.",
+    );
+    expect(CHAT_SERVICE_RESUMED.toLowerCase()).not.toContain("carry on");
+    expect(CHAT_SERVICE_RESUMED.toLowerCase()).not.toContain("continue");
   });
 });
 

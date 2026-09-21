@@ -1,7 +1,14 @@
 // A turn that was cut off, and the one thing to do about it.
 import { describe, expect, it } from "vitest";
 
-import { CARRY_ON, CARRY_ON_HEAD, readCarryOn, someoneWorking, wasCutOff } from "./carryOn";
+import {
+  CHAT_SERVICE_RESUMED,
+  CHAT_SERVICE_RESUMED_HEAD,
+  CHAT_SERVICE_RESUMED_REPLY,
+  readChatServiceResumed,
+  someoneWorking,
+  wasCutOff,
+} from "./carryOn";
 
 describe("wasCutOff", () => {
   it("is a chat that says it is working while nothing is running it", () => {
@@ -23,26 +30,29 @@ describe("wasCutOff", () => {
   });
 });
 
-describe("readCarryOn", () => {
-  it("draws the prompt the button sends as one line", () => {
-    expect(readCarryOn(CARRY_ON)).toBeTruthy();
+describe("readChatServiceResumed", () => {
+  it("draws the notice the button sends as one line", () => {
+    expect(readChatServiceResumed(CHAT_SERVICE_RESUMED)).toBeTruthy();
   });
 
   it("says nothing about a message somebody typed", () => {
-    expect(readCarryOn("carry on")).toBeUndefined();
-    expect(readCarryOn("Can you carry on where you stopped?")).toBeUndefined();
+    expect(readChatServiceResumed("chat service resumed")).toBeUndefined();
+    expect(readChatServiceResumed("The chat service has resumed.")).toBeUndefined();
   });
 
   it("recognises the prompt in a transcript read back later", () => {
     // The words are what a rebuilt conversation has; there is no flag in the
     // record to find it by.
-    expect(readCarryOn(`${CARRY_ON_HEAD}\n\nolder wording of the rest`)).toBeTruthy();
+    expect(readChatServiceResumed(`${CHAT_SERVICE_RESUMED_HEAD}\n\nolder wording of the rest`)).toBeTruthy();
   });
 
-  it("says what happened rather than what was sent", () => {
-    // The reader gets a line about the restart, not the instruction the agent
-    // was given.
-    expect(readCarryOn(CARRY_ON)).toBe("asked it to carry on after an interruption");
+  it("shows only the service status", () => {
+    expect(readChatServiceResumed(CHAT_SERVICE_RESUMED)).toBe(CHAT_SERVICE_RESUMED_REPLY);
+  });
+
+  it("keeps old carry-on notices readable without sending that instruction again", () => {
+    expect(readChatServiceResumed("=== carry on where you stopped ===\n\nlegacy prompt"))
+      .toBe(CHAT_SERVICE_RESUMED_REPLY);
   });
 });
 

@@ -29,7 +29,7 @@ import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { loadChat, loadEarlierChat } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
-import { CARRY_ON, someoneWorking, wasCutOff } from "./lib/carryOn";
+import { CHAT_SERVICE_RESUMED, someoneWorking, wasCutOff } from "./lib/carryOn";
 import {
   addUserTurn,
   emptyChat,
@@ -3332,7 +3332,7 @@ export default function App() {
   const carryOn = useCallback(() => {
     const id = conversationId;
     if (!id || autoRecovery.current.inFlight.has(id)) return;
-    void send(CARRY_ON);
+    void send(CHAT_SERVICE_RESUMED);
   }, [conversationId, send]);
 
   useEffect(() => {
@@ -3368,7 +3368,7 @@ export default function App() {
       recovery.attempted.add(id);
       const inFlight = recovery.inFlight;
       inFlight.add(id);
-      void send(CARRY_ON, [], { skipIfRunning: true }).finally(() => inFlight.delete(id));
+      void send(CHAT_SERVICE_RESUMED, [], { skipIfRunning: true }).finally(() => inFlight.delete(id));
     };
 
     attempt();

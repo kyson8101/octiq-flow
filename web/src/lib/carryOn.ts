@@ -1,31 +1,32 @@
 // Recovery uses observed connection, process roster and transcript evidence.
 
-/** The first line of the prompt the Carry on button sends.
+/** The first line of the notice sent when the chat service is available again.
  *
  *  Recognised from the TEXT, not from a flag, for the same reason a relay brief
  *  is (see lib/relay): the transcript keeps only words, so a conversation
  *  rebuilt tomorrow has to be able to tell this apart from something a person
  *  typed. Anyone can type these words — nobody does. */
-export const CARRY_ON_HEAD = "=== carry on where you stopped ===";
+export const CHAT_SERVICE_RESUMED_HEAD = "=== chat service resumed ===";
+export const CHAT_SERVICE_RESUMED_REPLY = "Chat service resumed.";
 
-/** Ask the agent to inspect completed actions before resuming. The process
- * roster establishes that work is missing, but cannot establish its cause
- * or guarantee that earlier actions were persisted. */
-export const CARRY_ON = `${CARRY_ON_HEAD}
+/** Restart the chat process without asking it to infer or continue prior work. */
+export const CHAT_SERVICE_RESUMED = `${CHAT_SERVICE_RESUMED_HEAD}
 
-The app found an unfinished conversation with no active worker after checking the connected server. The cause of the interruption is unknown; some actions may already have completed.
+Reply only with: ${CHAT_SERVICE_RESUMED_REPLY}`;
 
-Carry on from where you stopped. Check what is already done before doing anything again, and do not repeat a step whose result you can already see.`;
+const LEGACY_CARRY_ON_HEAD = "=== carry on where you stopped ===";
 
 /** The one line to draw instead of this prompt's words, or `undefined` for an
  *  ordinary message.
  *
- *  The prompt itself is several sentences of machinery aimed at the agent, and
- *  printing it in the conversation would say nothing the reader wants: what
- *  they need to know is that an interrupted conversation was picked back up. */
-export function readCarryOn(text: string): string | undefined {
-  if (!text.startsWith(CARRY_ON_HEAD)) return undefined;
-  return "asked it to carry on after an interruption";
+ *  The marker and reply constraint are machinery aimed at the agent. The
+ *  reader only needs the resulting service status. */
+export function readChatServiceResumed(text: string): string | undefined {
+  if (
+    !text.startsWith(CHAT_SERVICE_RESUMED_HEAD)
+    && !text.startsWith(LEGACY_CARRY_ON_HEAD)
+  ) return undefined;
+  return CHAT_SERVICE_RESUMED_REPLY;
 }
 
 /** Was this chat's turn cut off — is it saying it is working while nothing is
