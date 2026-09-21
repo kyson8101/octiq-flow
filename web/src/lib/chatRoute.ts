@@ -19,3 +19,17 @@ export function chatRouteHash(route: ChatRoute): string {
   if (route.project) return `#/p/${encodeURIComponent(route.project)}${route.chat ? `/c/${encodeURIComponent(route.chat)}` : ""}`;
   return route.chat ? `#/c/${encodeURIComponent(route.chat)}` : "";
 }
+
+/** Keep the address bar linkable without turning chat selections into browser
+ *  history. In particular, a system edge gesture must never walk through old
+ *  conversations when it escapes the app's drawer gesture. */
+export function replaceChatRoute(
+  location: Pick<Location, "hash" | "pathname" | "search">,
+  history: Pick<History, "replaceState">,
+  route: ChatRoute,
+): boolean {
+  const next = chatRouteHash(route);
+  if (next === location.hash) return false;
+  history.replaceState(null, "", `${location.pathname}${location.search}${next}`);
+  return true;
+}

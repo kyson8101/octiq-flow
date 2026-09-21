@@ -6,6 +6,8 @@ import {
   swipeEnd,
   EDGE_PX,
   SLOP_PX,
+  DRAWER_CLAIM_PX,
+  DRAWER_FLICK_MIN_PX,
   HOLD_MS,
   type Swipe,
 } from "./swipe";
@@ -23,7 +25,7 @@ function run(open: boolean, first: { x: number; y: number; t: number }, ...rest:
 
 describe("swipeStart", () => {
   it("ignores a touch that begins away from the edge while the drawer is closed", () => {
-    expect(swipeStart(at(120, 300, 0), { open: false, width: W })).toBeNull();
+    expect(swipeStart(at(EDGE_PX + 1, 300, 0), { open: false, width: W })).toBeNull();
   });
 
   it("watches a touch that begins inside the edge strip", () => {
@@ -45,9 +47,19 @@ describe("swipeMove", () => {
     expect(s?.phase).toBe("dropped");
   });
 
-  it("commits to the swipe once the finger passes the slop sideways", () => {
-    const s = run(false, at(10, 300, 0), at(10 + SLOP_PX + 1, 302, 60));
+  it("commits to the swipe once the finger reaches the drawer claim distance", () => {
+    const s = run(false, at(10, 300, 0), at(10 + DRAWER_CLAIM_PX, 302, 60));
     expect(s?.phase).toBe("swiping");
+  });
+
+  it("keeps a short horizontal thumb drift below the drawer claim threshold", () => {
+    const s = run(false, at(5, 300, 0), at(5 + SLOP_PX + 2, 302, 30));
+    expect(s?.phase).toBe("watching");
+  });
+
+  it("drops a near-diagonal edge drag instead of stealing a scroll", () => {
+    const s = run(false, at(5, 300, 0), at(5 + DRAWER_CLAIM_PX + 2, 319, 60));
+    expect(s?.phase).toBe("dropped");
   });
 
   it("drops a finger that sat still first — that is a selection, not a swipe", () => {
@@ -56,25 +68,25 @@ describe("swipeMove", () => {
   });
 
   it("drops a leftward drag from the closed edge", () => {
-    const s = run(false, at(20, 300, 0), at(20 - SLOP_PX - 1, 300, 60));
+    const s = run(false, at(10, 300, 0), at(10 - DRAWER_CLAIM_PX, 300, 60));
     expect(s?.phase).toBe("dropped");
   });
 
   it("drops a rightward drag while the drawer is already open", () => {
-    const s = run(true, at(200, 300, 0), at(200 + SLOP_PX + 1, 300, 60));
+    const s = run(true, at(200, 300, 0), at(200 + DRAWER_CLAIM_PX, 300, 60));
     expect(s?.phase).toBe("dropped");
   });
 });
 
 describe("swipeProgress", () => {
   it("follows the finger while opening and clamps at both ends", () => {
-    const s = run(false, at(0, 300, 0), at(SLOP_PX + 1, 300, 40), at(150, 300, 80)) as Swipe;
+    const s = run(false, at(0, 300, 0), at(DRAWER_CLAIM_PX, 300, 40), at(150, 300, 80)) as Swipe;
     expect(swipeProgress(s)).toBeCloseTo(0.5, 2);
     expect(swipeProgress(swipeMove(s, at(900, 300, 120)))).toBe(1);
   });
 
   it("counts down from one while closing", () => {
-    const s = run(true, at(200, 300, 0), at(200 - SLOP_PX - 1, 300, 40), at(50, 300, 80)) as Swipe;
+    const s = run(true, at(200, 300, 0), at(200 - DRAWER_CLAIM_PX, 300, 40), at(50, 300, 80)) as Swipe;
     expect(swipeProgress(s)).toBeCloseTo(0.5, 2);
   });
 });
@@ -95,9 +107,19 @@ describe("swipeEnd", () => {
     expect(swipeEnd(s)).toBe("close");
   });
 
-  it("opens on a flick, however short", () => {
-    const s = run(false, at(0, 300, 0), at(60, 300, 40)) as Swipe;
+  it("opens on a deliberate flick", () => {
+    const s = run(false, at(0, 300, 0), at(DRAWER_FLICK_MIN_PX + 8, 300, 80)) as Swipe;
     expect(swipeEnd(s)).toBe("open");
+  });
+
+  it("does not open on a tiny fast twitch", () => {
+    const s = run(false, at(0, 300, 0), at(DRAWER_CLAIM_PX + 6, 300, 20)) as Swipe;
+    expect(swipeEnd(s)).toBe("close");
+  });
+
+  it("uses the whole gesture instead of release jitter as flick velocity", () => {
+    const s = run(false, at(0, 300, 0), at(50, 300, 300), at(55, 300, 301)) as Swipe;
+    expect(swipeEnd(s)).toBe("close");
   });
 
   it("closes when the finger took most of the drawer back", () => {

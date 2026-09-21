@@ -9,7 +9,7 @@
 // finger does over the same pixels: scrolling the chat, scrolling something
 // sideways inside it, and HIGHLIGHTING text. So the decision is made in one
 // place, as a small state machine over the points a touch reports, and it is
-// deliberately slow to commit:
+// deliberately hard to claim and slow to commit:
 //
 //   - the edge strip is reserved at touchstart to stop native back navigation,
 //   - it only ever starts in a narrow strip at the very edge (or anywhere, once
@@ -25,11 +25,22 @@ import { useCallback, useRef } from "react";
 /** How far in from the left edge a drag has to begin to mean "the drawer".
  *  Narrow on purpose: it is the one strip where a sideways drag can be nothing
  *  else. */
-export const EDGE_PX = 28;
+export const EDGE_PX = 18;
 
 /** How far the finger has to travel before the gesture is anybody's. Under
  *  this, the touch is still just a touch — a tap, or the start of a press. */
 export const SLOP_PX = 10;
+
+/** A drawer drag needs substantially more travel than ordinary touch slop.
+ *  The smaller shared slop still lets vertical scrolling win early, while
+ *  this larger threshold keeps an edge tap with a little thumb drift from
+ *  becoming navigation. */
+export const DRAWER_CLAIM_PX = 24;
+
+/** Horizontal movement has to win decisively over vertical movement. Treating
+ *  a 12px-by-11px diagonal as a drawer swipe is what made ordinary scrolling
+ *  feel random near the edge. */
+export const DRAWER_AXIS_RATIO = 1.5;
 
 /** A finger that has not gone anywhere in this long is not swiping. It is
  *  pressing, and a press over text is the start of a highlight. */
@@ -39,9 +50,14 @@ export const HOLD_MS = 350;
  *  commit rather than snap back. */
 export const COMMIT = 0.4;
 
-/** px per ms. Past this the release is a flick, and a flick means it however
- *  short it was. */
+/** px per ms. Past this the release is a flick once it has also travelled the
+ *  drawer-specific minimum distance below. */
 export const FLICK = 0.5;
+
+/** A fast sample is not enough on its own: the finger must also have made a
+ *  deliberate trip across the screen. This rejects tiny high-velocity twitches
+ *  caused by sparse touch events. */
+export const DRAWER_FLICK_MIN_PX = 72;
 
 export type Pt = { x: number; y: number; t: number };
 
@@ -53,8 +69,6 @@ export type Swipe = {
   /** Which way this gesture can only go: in from the edge, or back out. */
   opening: boolean;
   from: Pt;
-  /** The point before the last one, so a release can be read as a flick. */
-  prev: Pt;
   at: Pt;
   /** The drawer's width, which is what the distance is measured against. */
   width: number;
@@ -66,13 +80,13 @@ export function swipeStart(p: Pt, o: { open: boolean; width: number }): Swipe | 
   // start anywhere: everything on screen is either the drawer or the scrim over
   // the chat, and both mean the same thing under a leftward drag.
   if (!o.open && p.x > EDGE_PX) return null;
-  return { phase: "watching", opening: !o.open, from: p, prev: p, at: p, width: o.width };
+  return { phase: "watching", opening: !o.open, from: p, at: p, width: o.width };
 }
 
 /** Feed the next point in. */
 export function swipeMove(s: Swipe, p: Pt): Swipe {
   if (s.phase === "dropped") return s;
-  const next = { ...s, prev: s.at, at: p };
+  const next = { ...s, at: p };
   if (s.phase === "swiping") return next;
 
   const dx = p.x - s.from.x;
@@ -81,13 +95,18 @@ export function swipeMove(s: Swipe, p: Pt): Swipe {
   // Held first, then moved: a press, so the phone is highlighting text and this
   // finger is not ours.
   if (p.t - s.from.t > HOLD_MS) return { ...next, phase: "dropped" };
-  // Going more up than across: the chat is scrolling.
-  if (Math.abs(dy) > SLOP_PX && Math.abs(dy) > Math.abs(dx)) return { ...next, phase: "dropped" };
-  if (Math.abs(dx) <= SLOP_PX) return next;
+  const ax = Math.abs(dx);
+  const ay = Math.abs(dy);
+  // Let scrolling win as soon as the finger has moved enough to reveal a
+  // direction. A near-diagonal is scrolling too; drawer navigation must be
+  // unmistakably horizontal.
+  if (ay > SLOP_PX && ax < ay * DRAWER_AXIS_RATIO) return { ...next, phase: "dropped" };
+  if (ax < DRAWER_CLAIM_PX) return next;
   // Far enough across to be claimed — but only in the one direction this
   // gesture can mean anything. Dragging left off the closed edge, or right with
   // the drawer already open, is somebody else's.
   if (s.opening ? dx < 0 : dx > 0) return { ...next, phase: "dropped" };
+  if (ax < ay * DRAWER_AXIS_RATIO) return { ...next, phase: "dropped" };
   return { ...next, phase: "swiping" };
 }
 
@@ -101,10 +120,16 @@ export function swipeProgress(s: Swipe): number {
 /** What the release means: `null` when the gesture never became ours. */
 export function swipeEnd(s: Swipe): "open" | "close" | null {
   if (s.phase !== "swiping") return null;
-  const dt = s.at.t - s.prev.t;
-  const v = dt > 0 ? (s.at.x - s.prev.x) / dt : 0;
-  if (v > FLICK) return "open";
-  if (v < -FLICK) return "close";
+  const dx = s.at.x - s.from.x;
+  const dt = s.at.t - s.from.t;
+  // Read the whole gesture, not only the final pair of browser samples. A
+  // one-pixel release jitter can be arbitrarily fast and used to reverse or
+  // commit an otherwise unambiguous drag.
+  const v = dt > 0 ? dx / dt : 0;
+  if (Math.abs(dx) >= DRAWER_FLICK_MIN_PX) {
+    if (v > FLICK) return "open";
+    if (v < -FLICK) return "close";
+  }
   return swipeProgress(s) > COMMIT ? "open" : "close";
 }
 
@@ -195,7 +220,7 @@ export function bindDrawerSwipe(el: HTMLElement, isOpen: () => boolean, onChange
       if (e.cancelable) e.preventDefault();
     }
     clear();
-    if (verdict) onChange(verdict === "open");
+    if (verdict && (verdict === "open") !== isOpen()) onChange(verdict === "open");
   };
 
   const click = (e: MouseEvent) => {

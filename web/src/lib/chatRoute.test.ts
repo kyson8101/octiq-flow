@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { chatRouteHash, readChatRoute } from "./chatRoute";
+import { describe, expect, it, vi } from "vitest";
+import { chatRouteHash, readChatRoute, replaceChatRoute } from "./chatRoute";
 
 describe("single chat navigation", () => {
   it("keeps project-slug and UUID links readable", () => {
@@ -22,5 +22,24 @@ describe("single chat navigation", () => {
     expect(readChatRoute("#/split?right=b")).toEqual({ chat: "b" });
     expect(readChatRoute("#/split?")).toEqual({});
     expect(readChatRoute("#/p/%ZZ/c/x")).toEqual({});
+  });
+  it("replaces the current URL instead of stacking chat selections in browser history", () => {
+    const replaceState = vi.fn();
+    const changed = replaceChatRoute(
+      { hash: "#/p/octiq-flow/c/chat-1", pathname: "/", search: "?token=kept" },
+      { replaceState },
+      { project: "octiq-flow", chat: "chat-2" },
+    );
+    expect(changed).toBe(true);
+    expect(replaceState).toHaveBeenCalledExactlyOnceWith(null, "", "/?token=kept#/p/octiq-flow/c/chat-2");
+  });
+  it("does not touch history when the route is already current", () => {
+    const replaceState = vi.fn();
+    expect(replaceChatRoute(
+      { hash: "#/c/chat-1", pathname: "/", search: "" },
+      { replaceState },
+      { chat: "chat-1" },
+    )).toBe(false);
+    expect(replaceState).not.toHaveBeenCalled();
   });
 });
