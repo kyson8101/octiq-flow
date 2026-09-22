@@ -116,4 +116,33 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain("Deleting…");
     expect(out).toContain("4200ms");
   });
+
+  describe("the unread mark", () => {
+    it("flags a chat with activity since it was last read", () => {
+      const out = html({
+        conversations: [{ ...chat("a"), createdAt: 1, updatedAt: 200, readAt: 100 }],
+      });
+      expect(out).toContain('class="chat is-unread"');
+      expect(out).toContain('class="chat-unread-dot"');
+      expect(out).toContain('aria-label="Unread, Task a, octiq-flow"');
+    });
+
+    it("says nothing about a chat already caught up", () => {
+      const out = html({
+        conversations: [{ ...chat("a"), createdAt: 1, updatedAt: 200, readAt: 200 }],
+      });
+      expect(out).not.toContain("is-unread");
+      expect(out).not.toContain("chat-unread-dot");
+      expect(out).toContain('aria-label="Task a, octiq-flow"');
+    });
+
+    it("never flags the chat currently open, however stale its own read mark", () => {
+      const out = html({
+        conversations: [{ ...chat("a"), createdAt: 1, updatedAt: 200 }],
+        currentConversation: "a",
+      });
+      expect(out).not.toContain("is-unread");
+      expect(out).not.toContain("chat-unread-dot");
+    });
+  });
 });

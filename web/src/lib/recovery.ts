@@ -1,65 +1,5 @@
 import type { ChatState } from "./chat";
 
-export type RecoveryEvidence = {
-  connected: boolean;
-  /** A roster received on the current connection, not one from before disconnect. */
-  rosterKnown: boolean;
-  busy: boolean;
-  /** Whether this conversation owns a live provider process. */
-  live: boolean;
-  /** An exit recorded for this conversation's latest turn. */
-  exited?: { code: number | null };
-  /** Last recorded transcript sequence; this is not a file-save checkpoint. */
-  checkpointSeq?: number;
-  /** Messages observed queued for this conversation. */
-  queuedCount?: number;
-};
-
-export type ReconnectState = Readonly<{
-  /** Whether this page has ever had a usable socket. The initial connection is
-   *  not a reconnect and must never start work by itself. */
-  seenOpen: boolean;
-  /** A usable socket was lost and has not yet come back. */
-  reconnectPending: boolean;
-  /** Increments once for each lost connection that later comes back. */
-  epoch: number;
-}>;
-
-export const INITIAL_RECONNECT_STATE: ReconnectState = Object.freeze({
-  seenOpen: false,
-  reconnectPending: false,
-  epoch: 0,
-});
-
-/** Remember actual reconnects without treating the page's first connection as
- * one. Several closed/connecting updates belong to the same outage. */
-export function observeConnection(previous: ReconnectState, connected: boolean): ReconnectState {
-  if (connected) {
-    if (previous.reconnectPending) {
-      return { seenOpen: true, reconnectPending: false, epoch: previous.epoch + 1 };
-    }
-    return previous.seenOpen ? previous : { ...previous, seenOpen: true };
-  }
-  if (!previous.seenOpen || previous.reconnectPending) return previous;
-  return { ...previous, reconnectPending: true };
-}
-
-/** Busy chats whose provider was present before a connection loss and absent
- * from the first authoritative roster after it. This is the evidence specific
- * to a server restart; an older missing worker must remain a manual choice. */
-export function reconnectCandidates(
-  chats: Readonly<Record<string, Pick<ChatState, "busy" | "stopping">>>,
-  before: ReadonlySet<string>,
-  after: ReadonlySet<string>,
-): Set<string> {
-  const candidates = new Set<string>();
-  for (const id of before) {
-    const chat = chats[id];
-    if (chat?.busy && !chat.stopping && !after.has(id)) candidates.add(id);
-  }
-  return candidates;
-}
-
 /** A live provider event that proves a turn has started on this connection.
  *
  * Backend-initiated continuations (notably an answered saved question) do not
@@ -74,46 +14,6 @@ export function provesLiveTurn(raw: unknown): boolean {
   if (event.type === "turn.started") return true;
   if (event.type !== "stream_event" || !event.event || typeof event.event !== "object") return false;
   return (event.event as { type?: unknown }).type === "message_start";
-}
-
-export function deriveRecovery(evidence: RecoveryEvidence) {
-  const { connected, rosterKnown, busy, live, exited } = evidence;
-  const interrupted = busy || (exited !== undefined && exited.code !== 0);
-  if (!interrupted) return { kind: "hidden", canContinue: false } as const;
-  if (!connected) return { kind: "offline", canContinue: false } as const;
-  if (!rosterKnown) return { kind: "checking", canContinue: false } as const;
-  if (live) return { kind: "hidden", canContinue: false } as const;
-  return { kind: exited ? "exited" : "missing", canContinue: true } as const;
-}
-
-/** Whether a chat may resume without asking for a click.
- *
- * This is deliberately narrower than the Carry on button. A recorded provider
- * exit may be old or intentional and still deserves an explicit decision. The
- * automatic path is only for a turn left busy when a live worker disappeared
- * across a connection loss, and only while the person is watching that chat. */
-export function shouldAutoContinue({
-  epoch,
-  attemptedEpoch,
-  eligible,
-  watching,
-  evidence,
-}: {
-  epoch: number;
-  attemptedEpoch?: number;
-  /** The authoritative roster found this busy chat missing when this reconnect
-   *  completed. Keeps later, unrelated failures out of an old reconnect. */
-  eligible: boolean;
-  watching: boolean;
-  evidence: RecoveryEvidence;
-}): boolean {
-  return epoch > 0
-    && attemptedEpoch !== epoch
-    && eligible
-    && watching
-    && evidence.busy
-    && evidence.exited === undefined
-    && deriveRecovery(evidence).canContinue;
 }
 
 /** Count only the current trailing host queue with canonical prompt identities.

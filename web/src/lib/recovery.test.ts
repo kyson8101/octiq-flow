@@ -1,101 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  INITIAL_RECONNECT_STATE,
-  deriveRecovery,
-  observeConnection,
   provesLiveTurn,
   queuedMessageCount,
   reconcileUnsentMessages,
-  reconnectCandidates,
-  shouldAutoContinue,
-  type RecoveryEvidence,
 } from "./recovery";
 import { addUserTurn, emptyChat, reduceChat } from "./chat";
-import { CHAT_SERVICE_RESUMED, someoneWorking } from "./carryOn";
-
-const missing: RecoveryEvidence = { connected: true, rosterKnown: true, busy: true, live: false };
-
-describe("recovery evidence", () => {
-  it("never treats a disconnected browser or an old roster as a missing process", () => {
-    expect(deriveRecovery({ ...missing, connected: false })).toEqual({ kind: "offline", canContinue: false });
-    expect(deriveRecovery({ ...missing, rosterKnown: false })).toEqual({ kind: "checking", canContinue: false });
-  });
-  it("offers recovery only after confirming the unfinished worker is missing", () => {
-    expect(deriveRecovery(missing)).toEqual({ kind: "missing", canContinue: true });
-    expect(deriveRecovery({ ...missing, busy: false })).toEqual({ kind: "hidden", canContinue: false });
-  });
-  it("distinguishes an actual recorded exit, including a failure that cleared busy", () => {
-    expect(deriveRecovery({ ...missing, busy: false, exited: { code: 1 } })).toEqual({ kind: "exited", canContinue: true });
-    expect(deriveRecovery({ ...missing, busy: false, exited: { code: 0 } }).kind).toBe("hidden");
-    expect(deriveRecovery({ ...missing, busy: false, exited: { code: null } }).kind).toBe("exited");
-  });
-  it("does not resurrect a stopped turn while its worker is alive", () => {
-    const live = someoneWorking({ id: "room", running: new Set(["room"]) });
-    expect(deriveRecovery({ ...missing, live, exited: { code: 1 } }).canContinue).toBe(false);
-  });
-  it("reports only that the chat service resumed", () => {
-    expect(CHAT_SERVICE_RESUMED).toBe(
-      "=== chat service resumed ===\n\nReply only with: Chat service resumed.",
-    );
-    expect(CHAT_SERVICE_RESUMED.toLowerCase()).not.toContain("carry on");
-    expect(CHAT_SERVICE_RESUMED.toLowerCase()).not.toContain("continue");
-  });
-});
-
-describe("focused recovery after a reconnect", () => {
-  it("arms only after a connection that was open has been lost and restored", () => {
-    const firstOpen = observeConnection(INITIAL_RECONNECT_STATE, true);
-    expect(firstOpen).toEqual({ seenOpen: true, reconnectPending: false, epoch: 0 });
-
-    const offline = observeConnection(firstOpen, false);
-    expect(observeConnection(offline, false)).toBe(offline);
-    expect(observeConnection(offline, true)).toEqual({
-      seenOpen: true,
-      reconnectPending: false,
-      epoch: 1,
-    });
-  });
-
-  it("continues a confirmed missing worker only while that chat is being watched", () => {
-    expect(shouldAutoContinue({ epoch: 1, eligible: true, watching: true, evidence: missing })).toBe(true);
-    expect(shouldAutoContinue({ epoch: 1, eligible: true, watching: false, evidence: missing })).toBe(false);
-    expect(shouldAutoContinue({ epoch: 1, eligible: false, watching: true, evidence: missing })).toBe(false);
-    expect(shouldAutoContinue({ epoch: 0, eligible: true, watching: true, evidence: missing })).toBe(false);
-    expect(shouldAutoContinue({
-      epoch: 1,
-      attemptedEpoch: 1,
-      eligible: true,
-      watching: true,
-      evidence: missing,
-    })).toBe(false);
-    expect(shouldAutoContinue({
-      epoch: 1,
-      eligible: true,
-      watching: true,
-      evidence: { ...missing, live: true },
-    })).toBe(false);
-    expect(shouldAutoContinue({
-      epoch: 1,
-      eligible: true,
-      watching: true,
-      evidence: { ...missing, busy: false, exited: { code: 1 } },
-    })).toBe(false);
-  });
-
-  it("includes only workers that were live before the reconnect and are missing after it", () => {
-    const chats = {
-      cut: { ...emptyChat(), busy: true },
-      old: { ...emptyChat(), busy: true },
-      survived: { ...emptyChat(), busy: true },
-      stopping: { ...emptyChat(), busy: true, stopping: true },
-    };
-    expect(reconnectCandidates(
-      chats,
-      new Set(["cut", "survived", "stopping"]),
-      new Set(["survived"]),
-    )).toEqual(new Set(["cut"]));
-  });
-});
 
 describe("live turn evidence", () => {
   it("recognises backend-started Codex and Claude turns", () => {

@@ -2,37 +2,19 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CHAT_SERVICE_RESUMED,
   CHAT_SERVICE_RESUMED_HEAD,
   CHAT_SERVICE_RESUMED_REPLY,
   readChatServiceResumed,
   someoneWorking,
-  wasCutOff,
 } from "./carryOn";
 
-describe("wasCutOff", () => {
-  it("is a chat that says it is working while nothing is running it", () => {
-    expect(wasCutOff({ busy: true, live: false, known: true })).toBe(true);
-  });
+const HISTORICAL_SERVICE_RESUMED = `${CHAT_SERVICE_RESUMED_HEAD}
 
-  it("says nothing while the server has not yet said what is running", () => {
-    // The page knows it is working before it knows what the server holds. Read
-    // that gap as a cut turn and every reload flashes the notice.
-    expect(wasCutOff({ busy: true, live: false, known: false })).toBe(false);
-  });
-
-  it("leaves a working chat alone", () => {
-    expect(wasCutOff({ busy: true, live: true, known: true })).toBe(false);
-  });
-
-  it("leaves a chat that has finished its turn alone", () => {
-    expect(wasCutOff({ busy: false, live: false, known: true })).toBe(false);
-  });
-});
+Reply only with: ${CHAT_SERVICE_RESUMED_REPLY}`;
 
 describe("readChatServiceResumed", () => {
   it("draws the notice the button sends as one line", () => {
-    expect(readChatServiceResumed(CHAT_SERVICE_RESUMED)).toBeTruthy();
+    expect(readChatServiceResumed(HISTORICAL_SERVICE_RESUMED)).toBeTruthy();
   });
 
   it("says nothing about a message somebody typed", () => {
@@ -47,7 +29,7 @@ describe("readChatServiceResumed", () => {
   });
 
   it("shows only the service status", () => {
-    expect(readChatServiceResumed(CHAT_SERVICE_RESUMED)).toBe(CHAT_SERVICE_RESUMED_REPLY);
+    expect(readChatServiceResumed(HISTORICAL_SERVICE_RESUMED)).toBe(CHAT_SERVICE_RESUMED_REPLY);
   });
 
   it("keeps old carry-on notices readable without sending that instruction again", () => {

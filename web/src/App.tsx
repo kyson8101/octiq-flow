@@ -29,7 +29,6 @@ import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { loadChat, loadEarlierChat } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
-import { CHAT_SERVICE_RESUMED, someoneWorking, wasCutOff } from "./lib/carryOn";
 import {
   addUserTurn,
   emptyChat,
@@ -54,12 +53,14 @@ import {
 import {
   cancelIndexRemoval,
   indexBackfill,
+  markChatRead,
   removeIndexEntry,
   saveIndexEntry,
   saveIndexEntries,
   type DeletedIndexEntry,
   type IndexEntry,
 } from "./lib/chatIndex";
+import { isUnread } from "./lib/unread";
 import { recall, remember } from "./lib/remember";
 import { forgetChatPlace } from "./lib/chatPlace";
 import {
@@ -76,7 +77,6 @@ import {
 } from "./lib/deletions";
 import {
   focusNow,
-  isWatching,
   isOn as notifyIsOn,
   lastSaid,
   noticeFor,
@@ -142,16 +142,9 @@ import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
 import { useChatRequests } from "./lib/useChatRequests";
-import { CarryOn } from "./components/CarryOn";
 import {
-  INITIAL_RECONNECT_STATE,
-  observeConnection,
   provesLiveTurn,
-  queuedMessageCount,
-  reconnectCandidates,
-  shouldAutoContinue,
   type ChatQueueState,
-  type RecoveryEvidence,
 } from "./lib/recovery";
 import { MessageQueueActions, reconcileQueueSnapshot, reclaimedMessage } from "./lib/messageQueue";
 import { useInterruptedChats } from "./lib/useInterruptedChats";
@@ -331,7 +324,6 @@ const RAIL_KEY = "octiq.v2.railShut";
 const GIT_SLIDE_MS = 220;
 export default function App() {
   const [conn, setConn] = useState<ConnectionState>("connecting");
-  const [reconnect, setReconnect] = useState(INITIAL_RECONNECT_STATE);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [projectBranches, setProjectBranches] = useState<Record<string, string>>({});
   const [projectId, setProjectId] = useState<string | null>(null);
@@ -352,9 +344,8 @@ export default function App() {
   // The conversations with a live agent process behind them.
   const [running, setRunning] = useState<Set<string>>(() => new Set());
   /** Whether the server has said what is running yet. Until it has, an empty
-   *  `running` means "not asked", not "nothing is". Telling the two apart is
-   *  what keeps a cut-turn notice off a chat that is perfectly alive — see
-   *  lib/carryOn. */
+   *  `running` means "not asked", not "nothing is". The interruption detector
+   *  waits for this before letting a stale busy record behave as idle. */
   const [liveKnown, setLiveKnown] = useState(false);
   const [projectsScreen, setProjectsScreen] = useState(false);
   // The stored list, minus everything this browser has deleted. The two are
@@ -577,16 +568,6 @@ export default function App() {
   // are the ones that must not wait.
   const visibleRef = useRef(conversationId);
   visibleRef.current = conversationId;
-  /** Chats the authoritative roster found missing in one reconnect. The epoch
-   *  keeps a later provider failure from borrowing an old reconnect and
-   *  starting itself. */
-  const autoRecovery = useRef({
-    epoch: 0,
-    liveBeforeLoss: new Set<string>(),
-    candidates: new Set<string>(),
-    attempted: new Set<string>(),
-    inFlight: new Set<string>(),
-  });
   const soon = useRef<number | null>(null);
   const later = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -832,17 +813,6 @@ export default function App() {
   );
 
   useEffect(() => bridge.onState(setConn), []);
-  const previousConnection = useRef<ConnectionState>("connecting");
-  useEffect(() => {
-    if (previousConnection.current === "open" && conn !== "open") {
-      autoRecovery.current.liveBeforeLoss = liveKnown
-        ? new Set(runningRef.current)
-        : new Set();
-    }
-    previousConnection.current = conn;
-    setReconnect((previous) => observeConnection(previous, conn === "open"));
-  }, [conn, liveKnown]);
-
   /** Read the project list from the backend. Called on load and again after
    *  anything in the settings panel changes one, since the backend owns the
    *  store and this is only a view of it. */
@@ -1369,9 +1339,8 @@ export default function App() {
         // A saved question resumes from the backend, not through `send`, so no
         // browser gets the usual optimistic running mark. `turn.started` (or
         // Claude's `message_start`) is direct proof that the worker exists.
-        // Record it before folding the event that sets `busy`, otherwise the
-        // recovery banner briefly and incorrectly offers Carry on while the
-        // resumed agent is already working.
+        // Record it before folding the event that sets `busy`, so the process
+        // roster and transcript state cannot briefly disagree.
         if (provesLiveTurn(payload.event)) {
           setRunning((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         }
@@ -1663,6 +1632,29 @@ export default function App() {
     () => conversations.find((conversation) => conversation.id === conversationId),
     [conversations, conversationId],
   );
+  // The chat on screen counts as read, and stays that way for as long as it
+  // is the one on screen — this covers both opening it (its own `updatedAt`
+  // is already older than `now`) and it picking up NEW activity while being
+  // watched (an agent finishing a turn, a second device's send landing).
+  //
+  // The second half matters most: without it, a chat you watched finish would
+  // flash unread the moment you switched away, because `readAt` was only ever
+  // set once, at open. That is exactly backwards for an indicator whose whole
+  // point is "activity you did NOT see" — so it re-marks on every activity
+  // change while open rather than once. Scalar dependencies, not `openRecord`
+  // itself, so this reacts to only ITS OWN chat's activity, not every other
+  // row's.
+  useEffect(() => {
+    if (!openRecord || !isUnread(openRecord, null)) return;
+    const id = openRecord.id;
+    const at = Date.now();
+    markChatRead(id, at);
+    setConversations((prev) => {
+      const list = prev.map((conv) => (conv.id === id ? { ...conv, readAt: at } : conv));
+      saveConversations(list);
+      return list;
+    });
+  }, [openRecord?.id, openRecord?.updatedAt, openRecord?.readAt]);
   /** A worktree chat belongs to its parent project but runs from its own cwd.
    *  Every local surface follows that exact directory: agent, Git panel,
    *  terminal, file pins and path rendering. */
@@ -2681,7 +2673,6 @@ export default function App() {
     async (
       text: string,
       attachments: Attachment[] = [],
-      options: { skipIfRunning?: boolean } = {},
     ) => {
       let targetProject = project;
       if (!targetProject) {
@@ -2785,11 +2776,6 @@ export default function App() {
           turnId,
         ),
       );
-      const discardOptimisticTurn = () => patch(id, (s) => ({
-        ...s,
-        messages: s.messages.filter((message) => message.turnId !== turnId),
-      }));
-
       sendingTurns.current.add(turnId);
       const fail = (err: unknown) =>
         patch(id, (s) => ({
@@ -2900,13 +2886,6 @@ export default function App() {
 
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
-          // An automatic recovery can race another focused client after both
-          // saw the same empty post-restart roster. The first client owns the
-          // restart; the other must not queue an identical Carry on behind it.
-          if (options.skipIfRunning) {
-            discardOptimisticTurn();
-            return;
-          }
           try {
             await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
             return;
@@ -2971,10 +2950,6 @@ export default function App() {
           // it (another tab, or a session that outlived a crash). Talk to it
           // rather than reporting a collision as a failure.
           if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
-            if (options.skipIfRunning) {
-              discardOptimisticTurn();
-              return;
-            }
             try {
               await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
               return;
@@ -3305,100 +3280,10 @@ export default function App() {
     chats, running, known: liveKnown && conn === "open",
   });
 
-  /** The chat on screen says it is working, and nobody is working on it.
-   *
-   *  The roster confirms the process is absent; it cannot tell us why. A
-   *  browser disconnect alone is not evidence of an interrupted process. */
-  const stalled = wasCutOff({
-    busy: chat.busy,
-    live: !!conversationId && someoneWorking({ id: conversationId, running }),
-    known: liveKnown && conn === "open",
-  });
-
+  // A missing worker is an implementation detail, not a state the person has
+  // to repair. Treat the composer as idle; its normal send path starts a new
+  // process with this conversation's saved session id.
   const cutOff = !!conversationId && interruptedIds.has(conversationId);
-
-  const recoveryEvidence: RecoveryEvidence = {
-    connected: conn === "open",
-    rosterKnown: liveKnown,
-    busy: chat.busy && (!stalled || cutOff),
-    live: !!conversationId && someoneWorking({ id: conversationId, running }),
-    exited: stalled && !cutOff ? undefined : chat.exited,
-    checkpointSeq: conversationId
-      ? catchUp.current.mark(keyFor(conversationId)) || undefined
-      : undefined,
-    queuedCount: queuedMessageCount(chat),
-  };
-
-  /** Manual recovery is still available after an automatic start fails. The
-   *  short in-flight guard only stops the click generated by the same focus
-   *  gesture that just triggered automatic recovery. */
-  const carryOn = useCallback(() => {
-    const id = conversationId;
-    if (!id || autoRecovery.current.inFlight.has(id)) return;
-    void send(CHAT_SERVICE_RESUMED);
-  }, [conversationId, send]);
-
-  useEffect(() => {
-    if (conn !== "open" || !liveKnown || reconnect.epoch === 0) return;
-
-    if (autoRecovery.current.epoch !== reconnect.epoch) {
-      const candidates = reconnectCandidates(
-        chatsRef.current,
-        autoRecovery.current.liveBeforeLoss,
-        runningRef.current,
-      );
-      autoRecovery.current = {
-        epoch: reconnect.epoch,
-        liveBeforeLoss: new Set(),
-        candidates,
-        attempted: new Set(),
-        inFlight: new Set(),
-      };
-    }
-
-    const attempt = () => {
-      const id = conversationId;
-      if (!id) return;
-      const recovery = autoRecovery.current;
-      if (!shouldAutoContinue({
-        epoch: reconnect.epoch,
-        attemptedEpoch: recovery.attempted.has(id) ? reconnect.epoch : undefined,
-        eligible: recovery.candidates.has(id),
-        watching: isWatching(focusNow(id), id),
-        evidence: recoveryEvidence,
-      })) return;
-
-      recovery.attempted.add(id);
-      const inFlight = recovery.inFlight;
-      inFlight.add(id);
-      void send(CHAT_SERVICE_RESUMED, [], { skipIfRunning: true }).finally(() => inFlight.delete(id));
-    };
-
-    attempt();
-    window.addEventListener("focus", attempt);
-    window.addEventListener("pageshow", attempt);
-    document.addEventListener("visibilitychange", attempt);
-    return () => {
-      window.removeEventListener("focus", attempt);
-      window.removeEventListener("pageshow", attempt);
-      document.removeEventListener("visibilitychange", attempt);
-    };
-  }, [
-    chat.busy,
-    chat.exited,
-    chat.stopping,
-    conn,
-    conversationId,
-    cutOff,
-    liveKnown,
-    reconnect.epoch,
-    recoveryEvidence.busy,
-    recoveryEvidence.exited,
-    recoveryEvidence.live,
-    running,
-    send,
-    stalled,
-  ]);
 
   const changeAccess = useCallback(
     (p: AccessLevel) => {
@@ -3865,13 +3750,6 @@ export default function App() {
                 setTermOpen(false);
                 remember(TERM_KEY, "0");
               }}
-            />
-          )}
-
-          {conversationId && !chat.stopping && !chat.stoppedAt && (
-            <CarryOn
-              onCarryOn={carryOn}
-              evidence={recoveryEvidence}
             />
           )}
 

@@ -5,6 +5,7 @@ import { modelFromId } from "../lib/agentProviders";
 import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
 import type { Conversation } from "../lib/store";
+import { isUnread } from "../lib/unread";
 import { AgentLogo } from "./AgentLogo";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
@@ -168,6 +169,7 @@ export function Sidebar({
           {visibleConversations.map((chat) => {
             const going = deleting.has(chat.id);
             const isLeaving = leaving.has(chat.id);
+            const unread = isUnread(chat, currentConversation);
             const project = projectById.get(chat.projectId);
             const chatTintStyle = project
               ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
@@ -189,6 +191,7 @@ export function Sidebar({
                   running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
                   going ? "is-going" : "", isLeaving ? "is-leaving" : "",
                   chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
+                  unread ? "is-unread" : "",
                 ].filter(Boolean).join(" ")} style={chatTintStyle}>
                   {renaming === chat.id ? (
                     <form className="chat-rename" onSubmit={(event) => {
@@ -213,7 +216,7 @@ export function Sidebar({
                     <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
                       busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
                       className="chat-btn" type="button"
-                      aria-label={`${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}`}
+                      aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}`}
                       disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
                       aria-description="Hover to preview. Hold for chat actions."
                       onPointerDown={(event) => {
@@ -237,6 +240,7 @@ export function Sidebar({
                       }}>
                       <span className="chat-summary">
                         <span className="chat-heading">
+                          {unread && <span className="chat-unread-dot" aria-hidden="true" />}
                           <span className="chat-title">{chat.title}</span>
                           <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
                         </span>

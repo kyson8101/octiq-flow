@@ -63,6 +63,15 @@ pub struct ChatMeta {
     /// Streaming deltas deliberately keep the previous value.
     #[serde(default)]
     pub updated_at: i64,
+    /// When a viewer last opened this chat, shared across every device — a chat
+    /// read on the phone must not still show unread on the laptop. Absent means
+    /// never opened since this field shipped; the client treats that the same
+    /// as "as old as the chat itself" rather than forcing every pre-existing
+    /// chat to read as unread the day this landed. Moved forward only, by
+    /// `mark_read`; an ordinary save (rename, pin) carries whatever the caller
+    /// already knows, same as every other field here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_at: Option<i64>,
     /// Kept at the top of its project, above every newer chat. Left out of the
     /// file when false, so an index written before pins existed reads back
     /// exactly as it was written.
@@ -205,6 +214,16 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             let created = existing.created_at;
             let deleted_at = existing.deleted_at;
             let generation = existing.generation;
+            // A save carries whatever `read_at` its sender's local copy held
+            // at the moment it was QUEUED, which can predate a `mark_read`
+            // that reaches the disk first — the two travel independently and
+            // are not ordered against each other. Take the later of the two
+            // rather than letting whichever lands last win outright, the same
+            // rule `mark_read` itself applies.
+            let read_at = match (existing.read_at, meta.read_at) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
             *existing = meta;
             existing.created_at = created;
             // Only the lifecycle commands below may change these. In
@@ -212,6 +231,7 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             // must not resurrect the chat.
             existing.deleted_at = deleted_at;
             existing.generation = generation;
+            existing.read_at = read_at;
         }
         None => {
             // A normal save cannot manufacture a deleted entry or choose its
@@ -221,6 +241,34 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             index.chats.push(meta);
         }
     }
+    write(&index)
+}
+
+/// Record that a chat was opened, moving `read_at` forward. Narrower than
+/// `upsert` on purpose: this fires on every chat OPEN, far more often than the
+/// deliberate edits (rename, pin) that go through the full save, and a client
+/// mid-catch-up does not necessarily hold every other field fresh. Touching
+/// only this one avoids a stale local copy clobbering a title or pin another
+/// device just changed.
+///
+/// Only ever moves forward — two tabs opening the same chat a second apart
+/// must not let the earlier timestamp win — and a chat the index does not
+/// know about (deleted, or a stale id) is not an error: the mark simply has
+/// nothing to attach to.
+pub fn mark_read(id: &str, at: i64) -> Result<(), String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = match read_checked() {
+        Ok(index) => index,
+        Err(_) => return Ok(()),
+    };
+    let Some(existing) = index.chats.iter_mut().find(|c| c.id == id) else {
+        return Ok(());
+    };
+    let next = existing.read_at.map_or(at, |prev| prev.max(at));
+    if existing.read_at == Some(next) {
+        return Ok(());
+    }
+    existing.read_at = Some(next);
     write(&index)
 }
 
@@ -494,6 +542,7 @@ mod tests {
             access: None,
             created_at: created,
             updated_at: created,
+            read_at: None,
             pinned: false,
             deleted_at: None,
             generation: 0,
@@ -533,6 +582,75 @@ mod tests {
         assert_eq!(found.title, "renamed", "the update should apply");
         assert_eq!(found.created_at, 100, "but not to when it started");
         cleanup(&[id]);
+    }
+
+    #[test]
+    fn marking_read_sets_only_that_field() {
+        let id = "test-index-read-basic";
+        cleanup(&[id]);
+        let mut original = meta(id, 100);
+        original.title = "keep me".into();
+        original.pinned = true;
+        upsert(original).unwrap();
+
+        mark_read(id, 500).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.read_at, Some(500));
+        assert_eq!(
+            found.title, "keep me",
+            "a narrow mark must not touch other fields"
+        );
+        assert!(found.pinned, "a narrow mark must not touch other fields");
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn marking_read_never_moves_backwards() {
+        let id = "test-index-read-monotonic";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+
+        mark_read(id, 500).unwrap();
+        // An older mark racing in behind a newer one — two tabs opening the
+        // same chat a second apart — must not rewind it.
+        mark_read(id, 200).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.read_at, Some(500));
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_rewind_a_read_mark_that_already_landed() {
+        let id = "test-index-read-save-race";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        mark_read(id, 500).unwrap();
+
+        // A rename queued BEFORE the read mark, delivered after it — its local
+        // snapshot of `read_at` is still None, the shape `entryFromConversation`
+        // sends before this device knows about its own read.
+        let mut stale_rename = meta(id, 100);
+        stale_rename.title = "renamed".into();
+        assert_eq!(stale_rename.read_at, None);
+        upsert(stale_rename).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.title, "renamed", "the rename itself still applies");
+        assert_eq!(
+            found.read_at,
+            Some(500),
+            "but not at the cost of the read mark"
+        );
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn marking_an_unknown_chat_read_is_not_an_error() {
+        // No row to attach to — the chat was deleted, or the id is stale.
+        // Nothing to assert beyond "this does not fail".
+        mark_read("test-index-read-missing", 500).unwrap();
     }
 
     #[test]

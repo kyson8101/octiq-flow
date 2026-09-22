@@ -734,6 +734,7 @@ impl OrchestrationStore {
             access: Some(access_id(launch.access).into()),
             created_at: now,
             updated_at: now,
+            read_at: None,
             pinned: false,
             deleted_at: None,
             generation: 0,

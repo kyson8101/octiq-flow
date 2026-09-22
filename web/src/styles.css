@@ -3427,56 +3427,13 @@ body {
   --composer-on-accent: #0d191e;
 }
 
-/* A compact recovery control for a turn the backend stopped mid-answer. It
-   keeps the decision and action visible without parking a diagnostic card
-   above the composer. */
-.carry-on {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: calc(100% - 24px);
-  max-width: var(--chat-column);
-  margin: 0 auto;
-  padding: 5px 7px 5px 9px;
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border));
-  border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--warn) 7%, transparent);
-  color: var(--fg-1);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.carry-on-btn {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 3px 11px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-fg);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.carry-on-btn:hover {
-  filter: brightness(1.08);
-}
-
-.carry-on-btn:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
 /* Work the turn left running behind it — see components/Background.
    It has no row of its own: the pieces below sit ON the status line above the
    prompt box (`.composer-hint`), in front of that line's clock and after its
    words. A row of its own is a line of chrome parked in the chat for as long as
    the build takes, and it said in words what one dot says.
 
-   Quiet on purpose — no border and no fill. This is a thing to KNOW, unlike the
-   carry-on notice below it, which is a thing to do. */
+   Quiet on purpose — no border and no fill. */
 
 /* The one moving thing on the line, and the whole of what it says: a still dot
    reads as punctuation. Warn-coloured to match the card's own `in background`
@@ -6297,6 +6254,29 @@ body.is-ultra .eff {
 .chat-summary { flex: 1; min-width: 0; }
 .chat-heading { display: flex; align-items: baseline; gap: 8px; }
 .chat-time { flex: 0 0 auto; font-size: 10px; font-weight: 400; color: var(--fg-2); white-space: nowrap; }
+
+/* Activity nobody has acknowledged, on any device (see lib/unread.ts). A
+   static dot plus a heavier, full-strength title — the same weight bump
+   `.chat.is-on .chat-btn` already gives the row you are looking at, so
+   "worth a look" and "the one you are looking at" read as the same kind of
+   emphasis. No animation: that is reserved for the busy dot in the rail,
+   which says something is happening right now rather than already sitting
+   there unread. The two never coincide in one tab — the chat on screen is
+   never counted as unread — so they never have to compete on the same row.
+   Extra specificity (three classes) on purpose: it has to outrank both the
+   task list's and the mobile sidebar's own `.chat-title` weight. */
+.chat.is-unread .chat-title {
+  color: var(--fg-0);
+  font-weight: 800;
+}
+
+.chat-unread-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 .chat-snippet {
   display: block;
   overflow: hidden;

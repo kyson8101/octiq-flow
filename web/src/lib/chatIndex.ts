@@ -36,6 +36,9 @@ export type IndexEntry = {
   access: string | null;
   createdAt: number;
   updatedAt: number;
+  /** When a viewer last opened this chat, shared across every device. Absent
+   *  means never opened since this field shipped. */
+  readAt?: number;
   /** Sits above every newer chat in its project. */
   pinned: boolean;
   /** Server-owned lifecycle generation. It changes only when Trash restores a
@@ -59,6 +62,7 @@ function entryFromConversation(chat: Conversation): IndexEntry {
     access: chat.permission ?? null,
     createdAt: chat.createdAt,
     updatedAt: chat.updatedAt,
+    readAt: chat.readAt,
     pinned: chat.pinned ?? false,
     generation: chat.generation,
   };
@@ -171,6 +175,62 @@ export function cancelIndexRemoval(id: string): void {
   if (unconfirmed.get(id)?.kind === "remove") unconfirmed.delete(id);
 }
 
+const unconfirmedReads = new Map<string, number>();
+let readRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let readRetryDelay = 0;
+
+/** Record that THIS device opened a chat, and keep trying until the server has
+ *  it — the same reliability contract as `saveIndexEntry`, but its own tiny
+ *  queue: it fires on every chat OPEN, far more often than a deliberate edit,
+ *  and a full entry can be stale by the time it lands (title, pin, whatever
+ *  else changed on another device meanwhile). Kept apart from `unconfirmed`
+ *  on purpose, so a mark-read never has to contend for the one pending slot a
+ *  queued rename or pin for the same chat already holds — the server merges
+ *  `readAt` forward no matter which of the two arrives first (see
+ *  `chat_index::upsert` and `::mark_read`).
+ *
+ *  Moves forward only: a call for a chat reopened a moment later must not be
+ *  overtaken, in this queue, by a slower retry of an earlier one. */
+export function markChatRead(id: string, at: number): void {
+  const known = unconfirmedReads.get(id);
+  if (known !== undefined && known >= at) return;
+  unconfirmedReads.set(id, at);
+  watchConnection();
+  flushReads();
+}
+
+function flushReads(): void {
+  for (const [id, at] of unconfirmedReads) sendRead(id, at);
+}
+
+function sendRead(id: string, at: number): void {
+  let settled = false;
+  const deadline = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      if (!settled) reject(new Error("chat_mark_read was not acknowledged"));
+    }, ACK_MS);
+  });
+  Promise.race([bridge.invoke("chat_mark_read", { id, at }), deadline])
+    .then(() => {
+      settled = true;
+      if (unconfirmedReads.get(id) === at) unconfirmedReads.delete(id);
+      readRetryDelay = 0;
+    })
+    .catch(() => {
+      settled = true;
+      scheduleReadRetry();
+    });
+}
+
+function scheduleReadRetry(): void {
+  if (readRetryTimer || unconfirmedReads.size === 0) return;
+  readRetryDelay = readRetryDelay === 0 ? FIRST_RETRY_MS : Math.min(readRetryDelay * 2, MAX_RETRY_MS);
+  readRetryTimer = setTimeout(() => {
+    readRetryTimer = null;
+    flushReads();
+  }, readRetryDelay);
+}
+
 /** Forget what is queued for a chat. Used by tests; the app either saves or
  *  removes, and both of those are answers rather than silence. */
 export function resetIndexQueue(): void {
@@ -178,12 +238,16 @@ export function resetIndexQueue(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   retryDelay = 0;
+  unconfirmedReads.clear();
+  if (readRetryTimer) clearTimeout(readRetryTimer);
+  readRetryTimer = null;
+  readRetryDelay = 0;
 }
 
 /** True while at least one entry is still unacknowledged. Exposed for tests
  *  and for anything that wants to know the index is behind. */
 export function indexBacklog(): number {
-  return unconfirmed.size;
+  return unconfirmed.size + unconfirmedReads.size;
 }
 
 /** A reconnection is the one moment worth retrying immediately: whatever was
@@ -196,6 +260,8 @@ function watchConnection(): void {
     if (s !== "open") return;
     retryDelay = 0;
     flush();
+    readRetryDelay = 0;
+    flushReads();
   });
 }
 

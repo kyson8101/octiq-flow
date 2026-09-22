@@ -7,6 +7,7 @@ import {
   cancelIndexRemoval,
   indexBackfill,
   indexBacklog,
+  markChatRead,
   removeIndexEntry,
   resetIndexQueue,
   saveIndexEntry,
@@ -138,6 +139,75 @@ describe("removing a chat from the index", () => {
 
     expect(indexBacklog()).toBe(0);
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("marking a chat read", () => {
+  it("sends the mark, and stops once the server has answered", async () => {
+    invoke.mockResolvedValue(undefined);
+    markChatRead("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invoke).toHaveBeenCalledWith("chat_mark_read", { id: "c1", at: 500 });
+    expect(indexBacklog()).toBe(0);
+  });
+
+  it("keeps trying when the call is never answered", async () => {
+    invoke.mockReturnValue(unanswered());
+    markChatRead("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(invoke.mock.calls.length).toBeGreaterThan(1);
+    expect(indexBacklog()).toBe(1);
+  });
+
+  it("does not resend a call for a timestamp it already holds queued", async () => {
+    invoke.mockReturnValue(unanswered());
+    markChatRead("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+    invoke.mockClear();
+
+    // A second open of the same chat a moment later — no fresher than what is
+    // already on its way.
+    markChatRead("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(indexBacklog()).toBe(1);
+  });
+
+  it("never lets an earlier call overtake a fresher one already queued", async () => {
+    invoke.mockReturnValue(unanswered());
+    markChatRead("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+    invoke.mockClear();
+
+    // A slow retry of an EARLIER open landing after a fresher one queued —
+    // must not rewind what is on its way to the server.
+    markChatRead("c1", 100);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    for (const call of invoke.mock.calls) expect(call[1]).toEqual({ id: "c1", at: 500 });
+  });
+
+  it("does not contend with a save of the same chat for the one pending slot", async () => {
+    invoke.mockReturnValue(unanswered());
+    saveIndexEntry(entry("c1"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    markChatRead("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Both are still owed — a mark-read is its own small queue, and does not
+    // replace or wait behind whatever `unconfirmed` holds for the same id.
+    expect(indexBacklog()).toBe(2);
+    invoke.mockClear();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(invoke).toHaveBeenCalledWith("chat_index_save", { meta: entry("c1") });
+    expect(invoke).toHaveBeenCalledWith("chat_mark_read", { id: "c1", at: 500 });
   });
 });
 
