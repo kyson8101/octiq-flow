@@ -14,6 +14,15 @@ const PROJECT_COLORS = [
   "#94a3b8",
 ] as const;
 
+/** Turn a person-entered color code into the backend's canonical form. Empty
+ * means "automatic"; null means the draft is not a complete six-digit hex. */
+export function normalizeProjectColor(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const digits = trimmed.startsWith("#") ? trimmed.slice(1) : trimmed;
+  return /^[0-9a-f]{6}$/i.test(digits) ? `#${digits.toLowerCase()}` : null;
+}
+
 export function projectColor(project: { id: string; name: string; color?: string }): string {
   const saved = project.color?.trim();
   if (saved && /^#[0-9a-f]{6}$/i.test(saved)) return saved;

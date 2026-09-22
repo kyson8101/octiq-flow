@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { projectColor } from "./projectColor";
+import { normalizeProjectColor, projectColor } from "./projectColor";
+
+describe("normalizeProjectColor", () => {
+  it("accepts pasted hex with or without the hash", () => {
+    expect(normalizeProjectColor(" #12AB34 ")).toBe("#12ab34");
+    expect(normalizeProjectColor("60A5FA")).toBe("#60a5fa");
+  });
+
+  it("separates automatic from an incomplete draft", () => {
+    expect(normalizeProjectColor("  ")).toBe("");
+    expect(normalizeProjectColor("#123")).toBeNull();
+    expect(normalizeProjectColor("blue")).toBeNull();
+  });
+});
 
 describe("projectColor", () => {
   it("uses the project's saved color", () => {

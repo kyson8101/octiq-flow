@@ -21,6 +21,8 @@ describe("Settings", () => {
         projects={[
           { id: "p1", name: "octiq-flow", primary_path: "/work/octiq-flow" },
           { id: "p2", name: "archive", primary_path: "/work/archive", shelved: true },
+          { id: "p3", name: "Project 10", primary_path: "/work/project-10" },
+          { id: "p4", name: "project 2", primary_path: "/work/project-2" },
         ]}
         onProject={() => {}}
         onClose={() => {}}
@@ -35,6 +37,12 @@ describe("Settings", () => {
     expect(out).toContain('aria-label="Configure octiq-flow"');
     expect(out).toContain('aria-label="Configure archive"');
     expect(out).toContain("Shelved</span>");
+    expect(out.indexOf('aria-label="Configure archive"')).toBeLessThan(
+      out.indexOf('aria-label="Configure octiq-flow"'),
+    );
+    expect(out.indexOf('aria-label="Configure project 2"')).toBeLessThan(
+      out.indexOf('aria-label="Configure Project 10"'),
+    );
     expect(out).toContain("Appearance</span>");
     expect(out).toContain("<small>Dark</small>");
     // A section owns its content instead of mounting every setting in one scroller.
