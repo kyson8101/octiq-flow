@@ -36,6 +36,8 @@ use std::time::SystemTime;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::agent_provider::AgentKind;
+
 /// One limit window as the footer needs it: a percent used (0–100) and the unix
 /// epoch second the window resets. `resets_at` is normalised to unix seconds for
 /// BOTH providers so the frontend formats one shape (Claude's source is ISO-8601,
@@ -534,6 +536,64 @@ pub fn usage_summary() -> UsageSummary {
     }
 }
 
+/// The latest future reset among windows which are actually exhausted.
+///
+/// A quota error proves that some account window is blocking the turn, but not
+/// every provider includes its timestamp in the error. These are the same
+/// provider-owned readings shown in the footer. Waiting for the latest of all
+/// exhausted windows matters when (for example) both a five-hour and a weekly
+/// cap are at 100%; the account is usable only after both have rolled over.
+pub(crate) fn blocking_reset_at(
+    agent: AgentKind,
+    selected_model: Option<&str>,
+    now: i64,
+) -> Option<i64> {
+    let usage = match agent {
+        AgentKind::Claude => claude_usage_cached(),
+        AgentKind::Codex => read_codex_usage(),
+        AgentKind::Pi => return None,
+    };
+    if !usage.available {
+        return None;
+    }
+    blocking_reset_from_usage(&usage, selected_model, now)
+}
+
+fn blocking_reset_from_usage(
+    usage: &ProviderUsage,
+    selected_model: Option<&str>,
+    now: i64,
+) -> Option<i64> {
+    let mut resets: Vec<i64> = usage
+        .five_hour
+        .iter()
+        .chain(usage.weekly.iter())
+        // Values are rounded to one decimal place at ingestion. Treat 99.9 as
+        // exhausted without mistaking an ordinary near-limit warning for a
+        // hard stop.
+        .filter(|window| window.percent >= 99.9)
+        .filter_map(|window| window.resets_at)
+        .filter(|reset| *reset > now)
+        .collect();
+    // A model-scoped weekly cap is relevant only when it names the selected
+    // model. Waiting for an exhausted Opus window while a Sonnet chat merely
+    // hit its five-hour cap would delay the task by days. With no explicit
+    // model selection, ambiguity means no model-scoped fallback at all.
+    if let Some(selected) = selected_model.map(str::to_ascii_lowercase) {
+        resets.extend(
+            usage
+                .models
+                .iter()
+                .filter(|model| selected.contains(&model.name.to_ascii_lowercase()))
+                .map(|model| &model.window)
+                .filter(|window| window.percent >= 99.9)
+                .filter_map(|window| window.resets_at)
+                .filter(|reset| *reset > now),
+        );
+    }
+    resets.into_iter().max()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,6 +616,47 @@ mod tests {
         assert_eq!(iso_utc_to_unix("not-a-date"), None);
         assert_eq!(iso_utc_to_unix("2026-13-01T00:00:00Z"), None); // bad month
         assert_eq!(iso_utc_to_unix(""), None);
+    }
+
+    #[test]
+    fn blocking_reset_uses_only_exhausted_windows_for_the_selected_model() {
+        let usage = ProviderUsage {
+            available: true,
+            five_hour: Some(UsageWindow {
+                percent: 100.0,
+                resets_at: Some(200),
+            }),
+            weekly: Some(UsageWindow {
+                percent: 40.0,
+                resets_at: Some(900),
+            }),
+            models: vec![
+                ModelWindow {
+                    name: "opus".into(),
+                    window: UsageWindow {
+                        percent: 100.0,
+                        resets_at: Some(800),
+                    },
+                },
+                ModelWindow {
+                    name: "sonnet".into(),
+                    window: UsageWindow {
+                        percent: 50.0,
+                        resets_at: Some(700),
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            blocking_reset_from_usage(&usage, Some("sonnet"), 100),
+            Some(200)
+        );
+        assert_eq!(
+            blocking_reset_from_usage(&usage, Some("opus"), 100),
+            Some(800)
+        );
+        assert_eq!(blocking_reset_from_usage(&usage, None, 100), Some(200));
     }
 
     #[test]

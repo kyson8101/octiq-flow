@@ -15,6 +15,17 @@ import { ProjectAvatar } from "./ProjectAvatar";
 
 type SettingsSection = "projects" | "notifications" | "appearance";
 
+const projectNameCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function compareProjectNames(left: ProjectDetail, right: ProjectDetail): number {
+  return projectNameCollator.compare(left.name, right.name)
+    || left.name.localeCompare(right.name)
+    || left.id.localeCompare(right.id);
+}
+
 export function Settings({ current, onPick, notify, onNotify, projects, onProject, onClose }: {
   /** The chosen theme's id. Held by App so the sheet can close and reopen
    *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
@@ -103,6 +114,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
 
   const on = notify && permission === "granted";
   const currentTheme = THEMES.find((theme) => theme.id === current)?.name ?? "Dark";
+  const orderedProjects = [...projects].sort(compareProjectNames);
 
   return (
     <>
@@ -166,7 +178,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
 
                 {projects.length ? (
                   <div className="settings-projects">
-                    {projects.map((project) => (
+                    {orderedProjects.map((project) => (
                       <button
                         className="settings-project"
                         type="button"

@@ -179,6 +179,21 @@ fn record_durable_user_turn(key: &str, turn_id: &str, text: &str, images: &[Stri
     );
 }
 
+/// Persist and fan out an OctiqFlow-owned lifecycle event. Auto-resume uses
+/// the same transcript-before-bus ordering as provider output, so a reconnect
+/// cannot miss a schedule, cancellation, or dispatch result.
+pub(crate) fn record_chat_event(key: &str, event: Value) {
+    let seq = crate::transcript::append(key, &event);
+    crate::bus::emit(
+        "chat-event",
+        ChatEvent {
+            key: key.to_string(),
+            seq,
+            event,
+        },
+    );
+}
+
 fn fresh_turn_id(turn_id: Option<String>) -> String {
     turn_id
         .filter(|id| !id.trim().is_empty())
@@ -415,6 +430,37 @@ pub(crate) struct StartContext {
     session_id: Option<String>,
 }
 
+impl StartContext {
+    pub(crate) fn agent(&self) -> ChatAgent {
+        self.agent
+    }
+
+    pub(crate) fn model(&self) -> Option<&str> {
+        self.model.as_deref()
+    }
+
+    pub(crate) fn resumable(&self) -> bool {
+        self.session_id
+            .as_deref()
+            .is_some_and(|id| safe_session_id(id).is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(agent: ChatAgent, session_id: Option<&str>) -> Self {
+        Self {
+            cwd: "/tmp/project".into(),
+            agent,
+            model: None,
+            access: Some(Access::Read),
+            extra_dirs: None,
+            env: None,
+            effort: None,
+            lite: None,
+            session_id: session_id.map(str::to_string),
+        }
+    }
+}
+
 /// Saved with the question, including its exact process and provider memory.
 /// These settings stay in the private profile and never go to the browser.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -453,6 +499,7 @@ struct QueuedTurn {
 #[derive(Default)]
 pub struct ChatManager {
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
+    pub(crate) auto_resumes: crate::auto_resume::Store,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
     /// How each running agent was last started — see `StartContext`. Keyed by
     /// process key, so each chat resumes independently.
@@ -467,8 +514,10 @@ pub struct ChatManager {
 
 impl ChatManager {
     pub(crate) fn with_saved_questions(path: std::path::PathBuf) -> Self {
+        let auto_resume_path = path.with_file_name("auto-resumes.json");
         Self {
             questions: Arc::new(crate::question_store::QuestionStore::load(path)),
+            auto_resumes: crate::auto_resume::Store::load(auto_resume_path),
             ..Self::default()
         }
     }
@@ -654,6 +703,57 @@ impl ChatManager {
             .map(Vec::from)
             .unwrap_or_default()
     }
+}
+
+/// Arm a durable continuation only when both halves are reliable: a native
+/// session to resume and an exact future reset timestamp. A quota error without
+/// either remains the ordinary actionable failure banner rather than guessing.
+fn schedule_quota_resume(
+    manager: &Arc<ChatManager>,
+    chat_key: &str,
+    session_key: &str,
+    agent: ChatAgent,
+    reset_hint: Option<i64>,
+) {
+    let now = crate::auto_resume::unix_now();
+    let Some(start) = manager.start_context(session_key) else {
+        return;
+    };
+    if start.agent() != agent || !start.resumable() {
+        return;
+    }
+    let reset_at = reset_hint
+        .filter(|reset| *reset > now)
+        .or_else(|| crate::usage_limits::blocking_reset_at(agent, start.model(), now));
+    let Some(reset_at) = reset_at else {
+        return;
+    };
+    match manager
+        .auto_resumes
+        .schedule(chat_key, reset_at, start, now)
+    {
+        Ok(Some(entry)) => crate::auto_resume::announce_scheduled(&entry),
+        Ok(None) => {}
+        Err(why) => eprintln!("[chat] could not schedule quota resume for {chat_key}: {why}"),
+    }
+}
+
+fn cancel_auto_resume(manager: &ChatManager, key: &str, reason: &str) -> Result<bool, String> {
+    let Some(entry) = manager.auto_resumes.cancel(key)? else {
+        return Ok(false);
+    };
+    crate::auto_resume::announce_cancelled(&entry, reason);
+    if let Err(why) = manager.auto_resumes.finish(&entry) {
+        // `Cancelled` is already durable and the scheduler ignores it. Leaving
+        // the tombstone for startup cleanup is safer than blocking the user.
+        eprintln!("[chat] could not finish auto-resume cancellation for {key}: {why}");
+    }
+    Ok(true)
+}
+
+/// Explicit browser action from the quota banner.
+pub fn chat_cancel_auto_resume_impl(manager: &ChatManager, key: String) -> Result<bool, String> {
+    cancel_auto_resume(manager, &key, "cancelled by user")
 }
 
 /// Say that a queued message is not going to be sent after all.
@@ -879,6 +979,7 @@ pub fn chat_start_user_impl(
     lite: Option<bool>,
     turn_id: Option<String>,
 ) -> Result<(), String> {
+    cancel_auto_resume(&manager, &key, "superseded by a user message")?;
     crate::safety_block::forget_chat(&key);
     chat_start_with_user_turn(
         manager,
@@ -1616,6 +1717,10 @@ pub(crate) fn start_session(
         let reading = manager.clone();
         thread::spawn(move || {
             let mut output_state = OutputState::default();
+            // Kept only when the provider explicitly says a limit is blocking.
+            // Allowed/warning snapshots are ordinary usage telemetry and must
+            // not arm a retry for an unrelated error later in the turn.
+            let mut blocked_quota_reset = None;
             // The last thing a Codex turn said, kept until the turn stops and
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
@@ -1738,6 +1843,15 @@ pub(crate) fn start_session(
                                 }
                             }
                         }
+                        if let Some(reset) = crate::auto_resume::blocked_reset_from_event(&event) {
+                            blocked_quota_reset = Some(reset);
+                        }
+                        let quota_failure =
+                            crate::auto_resume::is_quota_failure(stream_provider.kind(), &event);
+                        let quota_reset_hint = quota_failure
+                            .then(|| crate::auto_resume::reset_at_in(&event))
+                            .flatten()
+                            .or(blocked_quota_reset);
                         let observed = stream_provider.observe_event(&event);
                         // Anything the agent asks US, named in the log first.
                         //
@@ -1904,7 +2018,16 @@ pub(crate) fn start_session(
                                 seq,
                                 event,
                             },
-                        )
+                        );
+                        if quota_failure {
+                            schedule_quota_resume(
+                                &reading,
+                                &key,
+                                &session_key,
+                                stream_provider.kind(),
+                                quota_reset_hint,
+                            );
+                        }
                     }
                     // A non-JSON line means the agent printed something we did
                     // not ask for (a login prompt, an update notice). Surface it
@@ -2164,6 +2287,7 @@ pub fn chat_send_user_impl(
     turn_id: Option<String>,
     record_user: Option<bool>,
 ) -> Result<(), String> {
+    cancel_auto_resume(&manager, &key, "superseded by a user message")?;
     // A safety block is a choice about the NEXT user turn, not a tool call
     // OctiqFlow can resume. Any words the person sends supersede that card —
     // including the two explicit continuations the card itself offers.
@@ -2560,6 +2684,7 @@ fn interrupt_session(
 }
 
 pub fn chat_interrupt_impl(manager: &Arc<ChatManager>, key: String) -> Result<(), String> {
+    cancel_auto_resume(manager, &key, "cancelled when the user stopped the chat")?;
     let _delivery = manager
         .questions
         .delivery_lock
@@ -2917,6 +3042,7 @@ pub fn chat_set_access_impl(
     key: String,
     access: Access,
 ) -> Result<(), String> {
+    cancel_auto_resume(manager, &key, "cancelled when access changed")?;
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
         sessions.get(&key).cloned().ok_or("no such chat")?
@@ -2956,6 +3082,7 @@ pub fn chat_set_access_impl(
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
 /// UI can close a chat twice without caring.
 pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    cancel_auto_resume(manager, &key, "cancelled when the chat stopped")?;
     let _delivery = manager
         .questions
         .delivery_lock
@@ -2977,6 +3104,7 @@ pub fn chat_stop_impl(manager: &ChatManager, key: String) -> Result<(), String> 
 /// context for the selected provider. Permissions, access, and the transcript
 /// belong to the user conversation and remain intact.
 pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), String> {
+    cancel_auto_resume(manager, &key, "cancelled when the agent changed")?;
     end_process(manager, &key)?;
     manager
         .starts
@@ -3068,6 +3196,157 @@ pub fn start_idle_reaper(manager: Arc<ChatManager>) {
         thread::sleep(IDLE_SWEEP);
         for key in sweep_still_chats(&manager, timeout) {
             println!("[chat] {key} ended after {}m still", timeout.as_secs() / 60);
+        }
+    });
+}
+
+const AUTO_RESUME_SWEEP: Duration = Duration::from_secs(15);
+const AUTO_RESUME_PROMPT: &str = "[OctiqFlow automatic resume after usage reset]\n\
+Continue the task that the usage limit interrupted. Inspect the conversation and current workspace state first, then continue from the latest unfinished step without repeating completed work.";
+
+/// Deliver one scheduler-owned turn through the same paths as a browser send.
+/// An idle-reaped process is recreated with its exact saved launch settings;
+/// a still-live persistent process receives an ordinary next turn.
+fn run_scheduled_resume(
+    manager: Arc<ChatManager>,
+    entry: &crate::auto_resume::ScheduledResume,
+) -> Result<(), String> {
+    let key = entry.chat_key.clone();
+    let turn_id = Some(format!("octiq-auto-resume-{}", entry.id));
+    let send = |manager: Arc<ChatManager>| {
+        chat_send_with_user_turn(
+            manager,
+            key.clone(),
+            AUTO_RESUME_PROMPT.into(),
+            None,
+            None,
+            turn_id.clone(),
+        )
+    };
+    let start = |manager: Arc<ChatManager>| {
+        let saved = entry.start.clone();
+        let result = start_session(
+            manager.clone(),
+            Voice::host(key.clone()),
+            saved.cwd.clone(),
+            saved.agent,
+            saved.model.clone(),
+            saved.access,
+            Some(AUTO_RESUME_PROMPT.into()),
+            saved.session_id.clone(),
+            saved.extra_dirs.clone(),
+            saved.env.clone(),
+            saved.effort.clone(),
+            None,
+            saved.lite,
+            turn_id.clone(),
+            true,
+            None,
+        );
+        if result.is_ok() {
+            manager.remember_start(&key, saved);
+        }
+        result
+    };
+
+    let live = manager
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(&key);
+    if live {
+        match send(manager.clone()) {
+            Err(why) if why.contains("no such chat") => start(manager),
+            result => result,
+        }
+    } else {
+        match start(manager.clone()) {
+            Err(why) if why.contains("already running") => send(manager),
+            result => result,
+        }
+    }
+}
+
+/// Start the profile-local scheduler. It runs once immediately so an overdue
+/// reset resumes after a service restart, then checks cheaply every few
+/// seconds. No browser needs to be open.
+pub fn start_auto_resume_scheduler(manager: Arc<ChatManager>) {
+    thread::spawn(move || {
+        // Reconcile the transcript with the authoritative schedule after a
+        // crash between its JSON write and its lifecycle event. Repeating an
+        // event with the same id is reducer-idempotent.
+        match manager.auto_resumes.cancelled() {
+            Ok(entries) => {
+                for entry in entries {
+                    crate::auto_resume::announce_cancelled(
+                        &entry,
+                        "cancelled before the service restarted",
+                    );
+                    if let Err(why) = manager.auto_resumes.finish(&entry) {
+                        eprintln!(
+                            "[chat] could not clear cancelled auto-resume {}: {why}",
+                            entry.id
+                        );
+                    }
+                }
+            }
+            Err(why) => {
+                eprintln!("[chat] auto-resume scheduler unavailable: {why}");
+                return;
+            }
+        }
+        match manager.auto_resumes.scheduled() {
+            Ok(entries) => {
+                for entry in entries {
+                    crate::auto_resume::announce_scheduled(&entry);
+                }
+            }
+            Err(why) => {
+                eprintln!("[chat] auto-resume scheduler unavailable: {why}");
+                return;
+            }
+        }
+        match manager.auto_resumes.take_uncertain() {
+            Ok(entries) => {
+                for entry in entries {
+                    crate::auto_resume::announce_failed(
+                        &entry,
+                        "The service restarted while auto-resume was dispatching, so it was not repeated. Resume manually after checking the chat.",
+                    );
+                }
+            }
+            Err(why) => {
+                eprintln!("[chat] auto-resume scheduler unavailable: {why}");
+                return;
+            }
+        }
+
+        loop {
+            let due = match manager
+                .auto_resumes
+                .claim_due(crate::auto_resume::unix_now())
+            {
+                Ok(entries) => entries,
+                Err(why) => {
+                    eprintln!("[chat] could not read due auto-resumes: {why}");
+                    thread::sleep(AUTO_RESUME_SWEEP);
+                    continue;
+                }
+            };
+            for entry in due {
+                crate::auto_resume::announce_started(&entry);
+                let result = run_scheduled_resume(manager.clone(), &entry);
+                if let Err(why) = &result {
+                    crate::auto_resume::announce_failed(&entry, why);
+                }
+                if let Err(why) = manager.auto_resumes.finish(&entry) {
+                    eprintln!(
+                        "[chat] could not finish auto-resume {} for {}: {why}",
+                        entry.id, entry.chat_key
+                    );
+                }
+            }
+            thread::sleep(AUTO_RESUME_SWEEP);
         }
     });
 }

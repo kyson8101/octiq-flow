@@ -13,6 +13,7 @@ mod agent_chat;
 mod agent_history;
 mod agent_provider;
 mod agents;
+mod auto_resume;
 mod bus;
 mod canvas;
 mod chat_index;
