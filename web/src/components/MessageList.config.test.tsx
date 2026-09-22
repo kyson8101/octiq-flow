@@ -34,6 +34,13 @@ const render = (...messages: Message[]) =>
   renderToStaticMarkup(<MessageList messages={messages} busy={false} />);
 
 describe("the answer to a bare /config", () => {
+  it("disables setting changes when the transcript has no instruction channel", () => {
+    const readOnly = render(said(USAGE));
+    expect(readOnly).toContain("Read-only · change settings through the main chat");
+    expect(readOnly).toMatch(/<button[^>]*disabled=""[^>]*class="cfg-opt/);
+    const writable = renderToStaticMarkup(<MessageList messages={[said(USAGE)]} busy={false} onSetting={() => {}} />);
+    expect(writable).not.toMatch(/<button[^>]*disabled=""[^>]*class="cfg-opt/);
+  });
   it("is drawn as rows of settings, not as the text it arrived as", () => {
     const html = render(said(USAGE));
 

@@ -393,6 +393,92 @@ impl OrchestrationStore {
         })
     }
 
+    /// Worker ownership outlives an attempt. A completed, stopped, or deleted
+    /// master's worker must never become an ordinary writable chat on reload.
+    pub fn worker_coordinator(&self, chat_key: &str) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .find(|attempt| attempt.worker_chat_key == chat_key)
+            .map(|attempt| {
+                inner
+                    .data
+                    .runs
+                    .get(&attempt.run_id)
+                    .map(|run| run.coordinator_chat_key.clone())
+                    .unwrap_or_default()
+            }))
+    }
+
+    pub fn require_user_chat(&self, chat_key: &str) -> Result<(), String> {
+        if chat_key.starts_with("chat:orch-") || self.worker_coordinator(chat_key)?.is_some() {
+            return Err(
+                "This agent chat is read-only. Send instructions and requests in its main chat."
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Native and legacy question tools use the same coordinator gate as the
+    /// orchestration tool, so they cannot create a second user-input channel.
+    pub fn route_worker_questions(
+        &self,
+        chat_key: &str,
+        questions: &[crate::question::Question],
+    ) -> Result<Option<Gate>, String> {
+        if self.worker_coordinator(chat_key)?.is_none() {
+            return Ok(None);
+        }
+        let task = {
+            let inner = self.inner.lock().map_err(|error| error.to_string())?;
+            active_task_for_actor(&inner.data, chat_key)
+                .ok_or("This worker attempt has settled. Continue in the main chat.")?
+        };
+        let question = questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                let options = question
+                    .options
+                    .iter()
+                    .map(|choice| match &choice.description {
+                        Some(description) => format!("- {}: {}", choice.label, description),
+                        None => format!("- {}", choice.label),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "{}. {}{}",
+                    index + 1,
+                    question.question,
+                    if options.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\n{options}")
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let options = if questions.len() == 1 && !questions[0].multiple {
+            questions[0]
+                .options
+                .iter()
+                .map(|choice| choice.label.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.create_gate(chat_key, task.run_id, Some(task.id), question, options)
+            .map(Some)
+    }
+
     pub fn create_run(
         &self,
         actor_chat_key: String,
@@ -423,6 +509,16 @@ impl OrchestrationStore {
         };
         let created = run.clone();
         self.mutate(|data| {
+            if run.coordinator_chat_key.starts_with("chat:orch-")
+                || data
+                    .attempts
+                    .values()
+                    .any(|attempt| attempt.worker_chat_key == run.coordinator_chat_key)
+            {
+                return Err(
+                    "A worker cannot become a coordinator. Continue in the main chat.".into(),
+                );
+            }
             data.runs.insert(run.id.clone(), run);
             Ok(created)
         })
@@ -1047,6 +1143,9 @@ impl OrchestrationStore {
             let target = if to == "coordinator" {
                 run.coordinator_chat_key
             } else {
+                if actor_chat_key != run.coordinator_chat_key {
+                    return Err("Workers may send messages only to their coordinator.".into());
+                }
                 let attempt = data
                     .attempts
                     .get(&to)
@@ -1287,7 +1386,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
 
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     format!(
-        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Do not coordinate unrelated work. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
+        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
         run.id,
         task.id,
         attempt.id,
@@ -1441,6 +1540,267 @@ mod tests {
                 None,
             )
             .unwrap()
+    }
+
+    fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
+        let task = task(store, run, Vec::new());
+        let (_, _, attempt) = store
+            .reserve_attempt(
+                "chat:master",
+                &WorkerLaunch {
+                    task_id: task.id,
+                    agent: ChatAgent::Codex,
+                    model: None,
+                    effort: None,
+                    access: Access::Auto,
+                    new_worktree: true,
+                    base_branch: String::new(),
+                },
+            )
+            .unwrap();
+        store
+            .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+            .unwrap()
+    }
+
+    fn question() -> crate::question::Question {
+        serde_json::from_value(serde_json::json!({
+            "question": "Which approach?", "options": [
+                { "label": "Keep", "description": "Keep the existing behavior" }, "Change"
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn worker_chat_mutations_are_rejected_before_any_side_effect() {
+        let store = Arc::new(OrchestrationStore::default());
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        let mut manager = ChatManager::default();
+        manager.orchestrations = store.clone();
+        let svc = crate::dispatch::Services {
+            workspaces: Arc::new(crate::workspaces::WorkspaceState::load()),
+            chats: Arc::new(manager),
+            watch: Arc::new(crate::file_watch::FileWatchState::default()),
+            git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
+            orchestrations: store.clone(),
+            ptys: Arc::new(crate::pty::PtyManager::default()),
+        };
+        let commands = [
+            "chat_start",
+            "chat_send",
+            "chat_cancel_auto_resume",
+            "chat_cancel_queued",
+            "chat_dismiss_unsent",
+            "chat_start_queued",
+            "chat_interrupt",
+            "chat_set_access",
+            "chat_stop",
+            "chat_retarget",
+            "chat_restart",
+            "chat_forget",
+            "chat_index_remove",
+        ];
+        for key in [&worker.worker_chat_key, "chat:orch-not-yet-loaded"] {
+            for command in commands {
+                let error = crate::dispatch::dispatch(
+                    &svc,
+                    command,
+                    serde_json::json!({
+                        "key": key, "id": key.trim_start_matches("chat:"), "recordUser": false,
+                        "text": "bypass", "prompt": null,
+                    }),
+                )
+                .unwrap_err();
+                assert!(error.contains("read-only"), "{command}: {error}");
+            }
+        }
+        assert!(
+            crate::dispatch::dispatch(&svc, "orchestration_snapshot", serde_json::json!({}))
+                .is_ok()
+        );
+        assert!(store.require_user_chat("chat:master").is_ok());
+        assert!(store.require_user_chat("chat:ordinary").is_ok());
+
+        let (_, _receiver) = svc
+            .chats
+            .questions
+            .insert(
+                crate::question_store::test_origin(&worker.worker_chat_key),
+                vec![question()],
+            )
+            .unwrap();
+        let id = svc.chats.questions.pending().unwrap()[0].id.clone();
+        for command in [
+            "question_answer",
+            "question_answer_batch",
+            "question_retry",
+            "question_cancel",
+        ] {
+            let result = crate::dispatch::dispatch(
+                &svc,
+                command,
+                serde_json::json!({
+                    "id": id, "ids": [id], "answer": "bypass", "answers": [{"id": id, "answer": "bypass"}]
+                }),
+            );
+            assert!(result.unwrap_err().contains("read-only"), "{command}");
+        }
+        assert_eq!(svc.chats.questions.pending().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn finished_and_old_workers_remain_read_only() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "done".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap();
+        // Legacy keys have no reserved prefix, but still belong to the ledger.
+        store
+            .inner
+            .lock()
+            .unwrap()
+            .data
+            .attempts
+            .get_mut(&worker.id)
+            .unwrap()
+            .worker_chat_key = "chat:legacy-worker".into();
+        assert_eq!(
+            store
+                .worker_coordinator("chat:legacy-worker")
+                .unwrap()
+                .as_deref(),
+            Some("chat:master")
+        );
+        assert!(store
+            .require_user_chat("chat:legacy-worker")
+            .unwrap_err()
+            .contains("read-only"));
+        assert!(store
+            .route_worker_questions("chat:legacy-worker", &[question()])
+            .unwrap_err()
+            .contains("settled"));
+        assert!(store
+            .create_run(
+                "chat:legacy-worker".into(),
+                "Nested run".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                None
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn only_coordinators_can_send_to_workers() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        let peer = running_worker(&store, &run);
+        let send = |actor: &str, to: &str| {
+            store.record_message(
+                actor,
+                run.id.clone(),
+                to.into(),
+                "update".into(),
+                "Progress".into(),
+                "Ready".into(),
+            )
+        };
+        assert_eq!(
+            send(&worker.worker_chat_key, "coordinator")
+                .unwrap()
+                .to_chat_key,
+            "chat:master"
+        );
+        assert_eq!(
+            send("chat:master", &worker.id).unwrap().to_chat_key,
+            worker.worker_chat_key
+        );
+        assert!(send(&worker.worker_chat_key, &peer.id)
+            .unwrap_err()
+            .contains("only to their coordinator"));
+        assert!(store
+            .create_run(
+                worker.worker_chat_key,
+                "Nested".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                None
+            )
+            .is_err());
+        assert_eq!(store.snapshot(None).unwrap().messages.len(), 2);
+    }
+
+    #[test]
+    fn worker_questions_become_coordinator_gates_without_an_implied_answer() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        assert!(store
+            .route_worker_questions("chat:master", &[question()])
+            .unwrap()
+            .is_none());
+        let gate = store
+            .route_worker_questions(&worker.worker_chat_key, &[question()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(gate.target_chat_key, "chat:master");
+        assert_eq!(gate.task_id.as_deref(), Some(worker.task_id.as_str()));
+        assert_eq!(gate.options, vec!["Keep", "Change"]);
+        assert!(gate.question.contains("Keep the existing behavior"));
+        assert_eq!(gate.status, GateStatus::Open);
+        assert!(gate.resolution.is_none());
+        assert_eq!(
+            store.snapshot(None).unwrap().attempts[0].status,
+            AttemptStatus::Blocked
+        );
+        assert!(store
+            .resolve_gate(&worker.worker_chat_key, gate.id.clone(), "Keep".into())
+            .is_err());
+        assert_eq!(
+            store
+                .resolve_gate("chat:master", gate.id, "Keep".into())
+                .unwrap()
+                .status,
+            GateStatus::Resolved
+        );
+        assert_eq!(
+            store.snapshot(None).unwrap().attempts[0].status,
+            AttemptStatus::Running
+        );
+    }
+
+    #[test]
+    fn stale_native_question_cannot_create_a_gate() {
+        let store = Arc::new(OrchestrationStore::default());
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        let mut manager = ChatManager::default();
+        manager.orchestrations = store.clone();
+        let manager = Arc::new(manager);
+        assert!(crate::agent_chat::route_worker_questions(
+            &manager,
+            &worker.worker_chat_key,
+            Some(&worker.worker_chat_key),
+            Some("expired-launch"),
+            &[question()]
+        )
+        .unwrap_err()
+        .contains("no longer running"));
+        assert!(store.snapshot(None).unwrap().gates.is_empty());
+        assert!(manager.questions.pending().unwrap().is_empty());
     }
 
     #[test]

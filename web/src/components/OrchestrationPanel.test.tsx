@@ -66,6 +66,19 @@ const snapshot: OrchestrationSnapshot = {
 };
 
 describe("OrchestrationPanel", () => {
+  it("keeps the ledger visible without decision inputs or run controls in worker chats", () => {
+    const html = renderToStaticMarkup(<OrchestrationPanel
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey={null} readOnly
+      initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}}
+    />);
+    expect(html).toContain("This agent chat is read-only");
+    expect(html).toContain("Build the host ledger");
+    expect(html).toContain("Use the durable schema?");
+    expect(html).not.toContain("<input");
+    expect(html).not.toContain("<textarea");
+    expect(html).not.toContain(">Stop run<");
+    expect(html).not.toContain(">Yes<");
+  });
   it("starts a master from the current chat", () => {
     const html = renderToStaticMarkup(
       <OrchestrationPanel

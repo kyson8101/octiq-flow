@@ -6,6 +6,7 @@ import { buildChatTree, type ChatNode } from "../lib/chatTree";
 import { recall, remember } from "../lib/remember";
 import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
+import { isWorkerChat } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
 import { AgentLogo } from "./AgentLogo";
@@ -260,7 +261,7 @@ export function Sidebar({
             items={[
               { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(chat.id) },
               { id: "pin", label: chat.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(chat.id) },
-              { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) },
+              ...(!isWorkerChat(chat.id, chatParents) ? [{ id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) }] : []),
             ]} />}
           {children.length > 0 && (
             <button className="chat-children-toggle" type="button"

@@ -99,3 +99,20 @@ export function workerChatParents(snapshot: OrchestrationSnapshot): ReadonlyMap<
   }
   return parents;
 }
+
+/** Reserved worker IDs stay read-only while the ledger loads or is unavailable. */
+export function isWorkerChat(id: string | null, parents: ReadonlyMap<string, string>): boolean {
+  return !!id && (id.startsWith("orch-") || parents.has(id));
+}
+
+export function mainChatId(id: string | null, parents: ReadonlyMap<string, string>): string | null {
+  if (!id || !parents.has(id)) return null;
+  const seen = new Set([id]);
+  let parent = parents.get(id)!;
+  while (parents.has(parent)) {
+    if (seen.has(parent)) return null;
+    seen.add(parent);
+    parent = parents.get(parent)!;
+  }
+  return seen.has(parent) ? null : parent;
+}

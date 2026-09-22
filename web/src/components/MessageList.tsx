@@ -1662,7 +1662,7 @@ const MessageListBody = function MessageList({
   return (
     <div className="msgs" ref={scrollerRef}>
       <ConversationMap turns={mapTurns} scrollerRef={scrollerRef} innerRef={innerRef} onJump={mapJumped} />
-      <ConfigWorldProvider say={world.say} said={world.said}>
+      <ConfigWorldProvider say={world.say} said={world.said} readOnly={!onSetting}>
       <div className="msgs-inner" ref={innerRef}>
         {hasMore && (
           <div className="history-more">
