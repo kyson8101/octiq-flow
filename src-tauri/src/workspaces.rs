@@ -642,6 +642,32 @@ pub fn set_description_impl(
     state.save(&data)
 }
 
+/// Set or clear the accent shared by a project's avatar and chat chrome. Empty
+/// returns the project to its stable name-derived color; custom values are
+/// stored in one canonical form so every client sees the same code.
+pub fn set_workspace_color_impl(
+    state: &WorkspaceState,
+    id: String,
+    color: String,
+) -> Result<(), String> {
+    let color = color.trim().to_ascii_lowercase();
+    if !color.is_empty()
+        && (color.len() != 7
+            || !color.starts_with('#')
+            || !color[1..].bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err("project color must be a 6-digit hex color such as #60a5fa".into());
+    }
+    let mut data = state.data.lock().map_err(|e| e.to_string())?;
+    let ws = data
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .ok_or("workspace not found")?;
+    ws.color = color;
+    state.save(&data)
+}
+
 /// Set or clear the short fallback drawn inside a project's avatar. The UI
 /// limits this to two visible characters; the backend repeats that boundary so
 /// a direct WebSocket call cannot persist a label that breaks every avatar.
@@ -810,9 +836,9 @@ mod tests {
     use super::{
         add_workspace_impl, add_workspace_path_impl, delete_workspace_impl, list_workspaces_impl,
         name_slug, rename_workspace_impl, reorder_workspaces_impl, resolve_env_with_home,
-        set_primary_path_impl, set_workspace_env_impl, set_workspace_icon_impl,
-        set_workspace_initial_impl, set_workspace_shelved_impl, set_workspace_sibling_impl,
-        WorkspaceData, WorkspaceState,
+        set_primary_path_impl, set_workspace_color_impl, set_workspace_env_impl,
+        set_workspace_icon_impl, set_workspace_initial_impl, set_workspace_shelved_impl,
+        set_workspace_sibling_impl, WorkspaceData, WorkspaceState,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
@@ -1114,6 +1140,23 @@ mod tests {
 
         set_workspace_initial_impl(&state, ws.id, String::new()).unwrap();
         assert!(list_workspaces_impl(&state).unwrap()[0].initial.is_empty());
+    }
+
+    #[test]
+    fn project_colors_are_normalized_validated_and_clearable() {
+        let (state, _missing) = scratch("color");
+        let ws = add_workspace_impl(&state, "project".into(), String::new()).unwrap();
+
+        set_workspace_color_impl(&state, ws.id.clone(), " #12AB34 ".into()).unwrap();
+        assert_eq!(list_workspaces_impl(&state).unwrap()[0].color, "#12ab34");
+
+        let error = set_workspace_color_impl(&state, ws.id.clone(), "blue".into())
+            .expect_err("named colors must not enter the persisted hex field");
+        assert!(error.contains("6-digit hex"), "{error}");
+        assert_eq!(list_workspaces_impl(&state).unwrap()[0].color, "#12ab34");
+
+        set_workspace_color_impl(&state, ws.id, String::new()).unwrap();
+        assert!(list_workspaces_impl(&state).unwrap()[0].color.is_empty());
     }
 
     #[test]

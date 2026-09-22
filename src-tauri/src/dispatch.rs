@@ -145,6 +145,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "id")?,
             arg(&args, "description")?,
         )),
+        "set_workspace_color" => unit(crate::workspaces::set_workspace_color_impl(
+            &svc.workspaces,
+            arg(&args, "id")?,
+            arg(&args, "color")?,
+        )),
         "set_workspace_initial" => unit(crate::workspaces::set_workspace_initial_impl(
             &svc.workspaces,
             arg(&args, "id")?,
@@ -815,6 +820,18 @@ mod tests {
             rows.iter().any(|model| model["model"] == "claude-opus-4-6"),
             "the pinned model that motivated discovery is selectable"
         );
+    }
+
+    #[test]
+    fn a_browser_can_set_a_project_color() {
+        let svc = Services::load();
+        let err = dispatch(
+            &svc,
+            "set_workspace_color",
+            json!({ "id": "not-a-workspace", "color": "#12ab34" }),
+        )
+        .expect_err("the route should reach the store even when the id is unknown");
+        assert_eq!(err, "workspace not found");
     }
 
     /// Same failure mode as the row above, and the one the search on the empty

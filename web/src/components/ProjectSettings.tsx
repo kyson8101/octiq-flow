@@ -13,6 +13,7 @@
 import { useEffect, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import { moveSiblingGroupBy } from "../lib/projectOrder";
+import { normalizeProjectColor, projectColor } from "../lib/projectColor";
 import { FolderPicker } from "./FolderPicker";
 import { useConfirm } from "./Confirm";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
@@ -101,6 +102,7 @@ export function ProjectSettings({
   const [description, setDescription] = useState(project?.description ?? "");
   const [initial, setInitial] = useState(project?.initial ?? "");
   const [icon, setIcon] = useState(project?.icon ?? "");
+  const [color, setColor] = useState(project?.color ?? "");
   const [envText, setEnvText] = useState(envToText(project?.env));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -122,6 +124,13 @@ export function ProjectSettings({
     ? projects.filter((candidate) => Boolean(candidate.shelved) === Boolean(project.shelved))
     : [];
   const position = project ? orderedPeers.findIndex((candidate) => candidate.id === project.id) : -1;
+  const normalizedColor = normalizeProjectColor(color);
+  const colorInvalid = normalizedColor === null;
+  const previewColor = projectColor({
+    id: project?.id ?? "new",
+    name: name.trim() || project?.name || "project",
+    color: colorInvalid ? project?.color : normalizedColor,
+  });
 
   // Returns whether it succeeded, so a caller that closes the panel on
   // completion (create, below) can choose not to — closing on a rejected
@@ -162,6 +171,13 @@ export function ProjectSettings({
       if (initial !== (project.initial ?? "")) {
         void run(() => bridge.invoke("set_workspace_initial", { id: project.id, initial }));
       }
+      const savedColor = normalizeProjectColor(project.color ?? "") ?? "";
+      if (normalizedColor !== null && normalizedColor !== savedColor) {
+        void run(() => bridge.invoke("set_workspace_color", {
+          id: project.id,
+          color: normalizedColor,
+        }));
+      }
       const nextEnv = textToEnv(envText);
       if (!sameEnv(nextEnv, project.env ?? {})) {
         void run(() => bridge.invoke("set_workspace_env", { id: project.id, env: nextEnv }));
@@ -171,7 +187,7 @@ export function ProjectSettings({
     // `project` is intentionally out: it changes identity on every reload from
     // the backend, which would restart this timer forever.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, description, initial, envText]);
+  }, [name, description, initial, color, envText]);
 
   async function chooseIcon(file: File | undefined) {
     if (!project || !file) return;
@@ -305,13 +321,19 @@ export function ProjectSettings({
 
           {!creating && project && (
             <div className="set-field">
-              <span className="set-label">Project icon</span>
+              <span className="set-label">Project identity</span>
               <p className="set-hint">
-                Shown wherever OctiqFlow identifies this project.
+                Icon, letters, and color identify this project throughout OctiqFlow.
               </p>
               <div className="project-icon-editor">
                 <ProjectAvatar
-                  project={{ ...project, name: name.trim() || project.name, initial, icon }}
+                  project={{
+                    ...project,
+                    name: name.trim() || project.name,
+                    initial,
+                    icon,
+                    color: colorInvalid ? project.color : normalizedColor,
+                  }}
                   size="large"
                 />
                 <div className="project-icon-actions">
@@ -357,8 +379,53 @@ export function ProjectSettings({
                   }}
                 />
               </label>
+              <div className="project-color-field" role="group" aria-label="Project color">
+                <span>Project color</span>
+                <input
+                  className="project-color-picker"
+                  type="color"
+                  value={previewColor}
+                  aria-label="Choose project color"
+                  disabled={busy}
+                  onChange={(event) => setColor(event.target.value)}
+                />
+                <input
+                  className="set-input project-color-code"
+                  value={color}
+                  maxLength={7}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  autoComplete="off"
+                  placeholder="#60a5fa"
+                  aria-label="Project color hex code"
+                  aria-invalid={colorInvalid || undefined}
+                  onChange={(event) => setColor(event.target.value)}
+                  onBlur={() => {
+                    if (normalizedColor !== null && color !== normalizedColor) {
+                      setColor(normalizedColor);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                />
+                <button
+                  className="set-row-btn project-color-auto"
+                  type="button"
+                  disabled={busy || !color.trim()}
+                  onClick={() => setColor("")}
+                >
+                  Automatic
+                </button>
+                {colorInvalid && (
+                  <span className="project-color-error" role="alert">
+                    Use six hex digits, for example #60a5fa.
+                  </span>
+                )}
+              </div>
               <p className="set-hint project-icon-note">
-                PNG, JPEG, or WebP up to 512 KB. Without an image, OctiqFlow uses these letters.
+                PNG, JPEG, or WebP up to 512 KB. Automatic color follows the project name.
               </p>
             </div>
           )}
