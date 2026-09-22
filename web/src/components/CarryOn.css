@@ -1,6 +1,27 @@
-.carry-on-detail {
-  display: block;
-  margin-top: 3px;
+.carry-on-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+.carry-on-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  min-width: 0;
+  column-gap: 8px;
+  row-gap: 1px;
+}
+
+.carry-on-message {
+  font-weight: 550;
+}
+
+.carry-on-meta {
+  min-width: 0;
   color: var(--fg-2);
   font-size: 11px;
 }
