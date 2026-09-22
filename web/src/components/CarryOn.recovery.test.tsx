@@ -14,7 +14,7 @@ describe("recovery strip", () => {
     expect(html).toContain("2 messages queued");
     expect(html).toContain("File saves unverified");
     expect(html).toContain("<button");
-    expect(html).toContain('aria-label="Carry on. Check completed actions before resuming."');
+    expect(html).toContain('aria-label="Resume chat. Check completed actions before resuming."');
     expect(html).not.toContain("Nothing was lost");
   });
   it("keeps the checkpoint but omits zero-value queue noise", () => {

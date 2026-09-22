@@ -52,10 +52,10 @@ export function CarryOn({
         <button
           className="carry-on-btn"
           type="button"
-          aria-label="Carry on. Check completed actions before resuming."
+          aria-label="Resume chat. Check completed actions before resuming."
           onClick={onCarryOn}
         >
-          Carry on
+          Resume chat
         </button>
       )}
     </div>

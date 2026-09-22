@@ -1,0 +1,147 @@
+name: Publish npm runtime packages
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish after building every platform
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: ${{ matrix.platform }} runtime
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin-arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            binary: src-tauri/target/aarch64-apple-darwin/release/octiq-server
+          - platform: darwin-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: src-tauri/target/x86_64-apple-darwin/release/octiq-server
+          - platform: linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: src-tauri/target/x86_64-unknown-linux-gnu/release/octiq-server
+          - platform: win32-x64
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: src-tauri/target/x86_64-pc-windows-msvc/release/octiq-server.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Verify tag matches Cargo version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          VERSION="$(node scripts/package-npm.mjs --print-version)"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+
+      - name: Build browser client
+        shell: bash
+        run: |
+          pnpm --dir web install --frozen-lockfile
+          pnpm --dir web build
+
+      - name: Build native server
+        shell: bash
+        run: cargo build --manifest-path src-tauri/Cargo.toml --release --bin octiq-server --target "${{ matrix.target }}"
+
+      - name: Stage platform package
+        shell: bash
+        run: >-
+          node scripts/package-npm.mjs
+          --kind runtime
+          --platform "${{ matrix.platform }}"
+          --binary "${{ matrix.binary }}"
+          --client web/dist
+          --out "npm-dist/runtime-${{ matrix.platform }}"
+
+      - name: Verify npm package contents
+        shell: bash
+        run: npm pack "./npm-dist/runtime-${{ matrix.platform }}" --dry-run
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-${{ matrix.platform }}
+          path: npm-dist/runtime-${{ matrix.platform }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish npm packages
+    needs: runtime
+    if: github.ref_type == 'tag' || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: npm-dist/runtimes
+
+      - name: Stage and verify CLI package
+        shell: bash
+        run: |
+          node scripts/package-npm.mjs --kind cli --out npm-dist/cli
+          npm pack ./npm-dist/cli --dry-run
+
+      - name: Publish native runtimes first
+        shell: bash
+        run: |
+          for package in npm-dist/runtimes/runtime-*; do
+            NAME="$(node -p "require('./${package}/package.json').name")"
+            VERSION="$(node -p "require('./${package}/package.json').version")"
+            if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+              echo "${NAME}@${VERSION} already exists; keeping the published package."
+            else
+              npm publish "${package}" --access public --provenance
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish octiqflow CLI
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./npm-dist/cli/package.json').version")"
+          if npm view "octiqflow@${VERSION}" version >/dev/null 2>&1; then
+            echo "octiqflow@${VERSION} already exists; keeping the published package."
+          else
+            npm publish ./npm-dist/cli --access public --provenance
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

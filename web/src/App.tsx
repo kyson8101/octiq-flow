@@ -29,7 +29,7 @@ import { CatchUp, type Frame } from "./lib/catchUp";
 import { saveChatCheckpoint, forgetChatCheckpoint } from "./lib/chatCache";
 import { loadChat, loadEarlierChat } from "./lib/loadChat";
 import { ChatHistory, type ChatPage } from "./lib/chatHistory";
-import { CARRY_ON, someoneWorking, wasCutOff } from "./lib/carryOn";
+import { CHAT_SERVICE_RESUMED, someoneWorking, wasCutOff } from "./lib/carryOn";
 import {
   addUserTurn,
   emptyChat,
@@ -128,6 +128,7 @@ import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
+import { OrchestrationButton, OrchestrationPanel } from "./components/OrchestrationPanel";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
@@ -447,6 +448,7 @@ export default function App() {
   // `main.tsx` has already applied this one; the state is here only so the
   // tick in the sheet has something to read.
   const [appSettings, setAppSettings] = useState(false);
+  const [orchestrationOpen, setOrchestrationOpen] = useState(false);
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
@@ -3332,7 +3334,7 @@ export default function App() {
   const carryOn = useCallback(() => {
     const id = conversationId;
     if (!id || autoRecovery.current.inFlight.has(id)) return;
-    void send(CARRY_ON);
+    void send(CHAT_SERVICE_RESUMED);
   }, [conversationId, send]);
 
   useEffect(() => {
@@ -3368,7 +3370,7 @@ export default function App() {
       recovery.attempted.add(id);
       const inFlight = recovery.inFlight;
       inFlight.add(id);
-      void send(CARRY_ON, [], { skipIfRunning: true }).finally(() => inFlight.delete(id));
+      void send(CHAT_SERVICE_RESUMED, [], { skipIfRunning: true }).finally(() => inFlight.delete(id));
     };
 
     attempt();
@@ -3449,6 +3451,11 @@ export default function App() {
 
       {/* The way in and out of the changes column at every width. */}
       <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
+
+      <OrchestrationButton
+        open={orchestrationOpen}
+        onToggle={() => setOrchestrationOpen((open) => !open)}
+      />
 
       {project && !unavailableChat && (
         <FocusModeButton onClick={enterFocus} />
@@ -3982,6 +3989,22 @@ export default function App() {
           projects={[...workspaces, ...shelved]}
           onProject={setSettingsFor}
           onClose={() => setAppSettings(false)}
+        />
+      )}
+
+      {orchestrationOpen && (
+        <OrchestrationPanel
+          project={project}
+          coordinatorKey={conversationId ? keyFor(conversationId) : null}
+          currentCwd={effectiveCwd}
+          onOpenChat={(chatKey) => {
+            const id = chatKey.replace(/^chat:/, "");
+            const conversation = conversationsRef.current.find((item) => item.id === id);
+            if (!conversation) return;
+            openConversation(conversation);
+            setOrchestrationOpen(false);
+          }}
+          onClose={() => setOrchestrationOpen(false)}
         />
       )}
 
