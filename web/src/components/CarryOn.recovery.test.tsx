@@ -7,18 +7,21 @@ const evidence: RecoveryEvidence = { connected: true, rosterKnown: true, busy: t
 const render = (overrides: Partial<RecoveryEvidence> = {}) => renderToStaticMarkup(<CarryOn onCarryOn={() => {}} evidence={{ ...evidence, ...overrides }} />);
 
 describe("recovery strip", () => {
-  it("shows recorded checkpoint and queue without a save guarantee", () => {
-    const html = render({ checkpointSeq: 42, queuedCount: 2 });
-    expect(html).toContain("#42");
-    expect(html).toContain("2 queued messages recorded");
-    expect(html).toContain("does not confirm file saves");
+  it("compacts checkpoint, queue, and save uncertainty into metadata", () => {
+    const html = render({ exited: { code: null }, checkpointSeq: 42, queuedCount: 2 });
+    expect(html).toContain("Agent is no longer running");
+    expect(html).toContain("Last event #42");
+    expect(html).toContain("2 messages queued");
+    expect(html).toContain("File saves unverified");
     expect(html).toContain("<button");
+    expect(html).toContain('aria-label="Resume chat. Check completed actions before resuming."');
     expect(html).not.toContain("Nothing was lost");
   });
-  it("does not invent checkpoints or pending counts when unknown", () => {
-    const html = render();
-    expect(html).not.toContain("transcript event");
-    expect(html).not.toContain("queued messages");
+  it("keeps the checkpoint but omits zero-value queue noise", () => {
+    const html = render({ exited: { code: null }, checkpointSeq: 1479, queuedCount: 0 });
+    expect(html).toContain("Last event #1479");
+    expect(html).not.toContain("message queued");
+    expect(html).not.toContain("messages queued");
   });
   it("shows disconnected state without a recovery action", () => {
     const html = render({ connected: false });
@@ -27,7 +30,7 @@ describe("recovery strip", () => {
     expect(html).not.toContain("server reports no active");
   });
   it("shows an observed exit code and suppresses itself for a live chat", () => {
-    expect(render({ exited: { code: 137 } })).toContain("exited with code 137");
+    expect(render({ exited: { code: 137 } })).toContain("Exit code 137");
     expect(render({ live: true })).toBe("");
   });
 });
