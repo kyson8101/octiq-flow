@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use crate::agent_chat::ChatManager;
 use crate::file_watch::FileWatchState;
 use crate::git_watch::GitWatchState;
+use crate::orchestration::OrchestrationStore;
 use crate::pty::PtyManager;
 use crate::workspaces::WorkspaceState;
 
@@ -40,6 +41,8 @@ pub struct Services {
     pub watch: Arc<FileWatchState>,
     /// The fs watcher behind the live git counts and branch chips.
     pub git_watch: Arc<GitWatchState>,
+    /// Durable runs, task DAGs, authoritative worker attempts and gates.
+    pub orchestrations: Arc<OrchestrationStore>,
     pub ptys: Arc<PtyManager>,
 }
 
@@ -60,6 +63,7 @@ impl Services {
             chats,
             watch: Arc::new(FileWatchState::default()),
             git_watch: Arc::new(GitWatchState::default()),
+            orchestrations: Arc::new(OrchestrationStore::load_profile()),
             ptys: Arc::new(PtyManager::default()),
         }
     }
@@ -460,6 +464,169 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 .questions
                 .retry(&arg::<Vec<String>>(&args, "ids")?)?;
             Ok(json!({ "saved": true }))
+        }
+
+        // ---- orchestration -----------------------------------------------
+        // The backend, not an agent transcript, owns run and task state. MCP
+        // calls arrive through the same commands with actorChatKey injected by
+        // the authenticated local hook; the browser supplies the coordinator
+        // key when it resolves a visible gate or starts a run explicitly.
+        "orchestration_snapshot" => {
+            let run_id: Option<String> = arg(&args, "runId")?;
+            to_value(svc.orchestrations.snapshot(run_id.as_deref()))
+        }
+        "orchestration_run_create" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let start_master = arg::<Option<bool>>(&args, "startMaster")?.unwrap_or(false);
+            if start_master && !crate::agent_chat::chat_can_continue_internal(&svc.chats, &actor)? {
+                return Err("This chat has not run since OctiqFlow restarted. Send one message in it, then start the master run.".into());
+            }
+            let (workspace_id, root_path) = crate::orchestration::infer_context(
+                &svc.workspaces,
+                &actor,
+                arg(&args, "workspaceId")?,
+                arg(&args, "rootPath")?,
+            )?;
+            let run = svc.orchestrations.create_run(
+                actor.clone(),
+                arg(&args, "objective")?,
+                workspace_id,
+                root_path,
+                arg(&args, "maxConcurrent")?,
+            )?;
+            if start_master {
+                crate::agent_chat::chat_continue_internal_impl(
+                    svc.chats.clone(),
+                    actor,
+                    crate::orchestration::master_prompt(&run),
+                )?;
+            }
+            to_value(Ok(run))
+        }
+        "orchestration_task_create" => to_value(svc.orchestrations.create_task(
+            &arg::<String>(&args, "actorChatKey")?,
+            arg(&args, "runId")?,
+            arg(&args, "title")?,
+            arg(&args, "spec")?,
+            arg(&args, "dependsOn")?,
+            arg(&args, "parentTaskId")?,
+        )),
+        "orchestration_worker_start" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let launch = crate::orchestration::WorkerLaunch {
+                task_id: arg(&args, "taskId")?,
+                agent: arg(&args, "agent")?,
+                model: arg(&args, "model")?,
+                effort: arg(&args, "effort")?,
+                access: arg(&args, "access")?,
+                new_worktree: arg::<Option<bool>>(&args, "newWorktree")?.unwrap_or(true),
+                base_branch: arg::<Option<String>>(&args, "baseBranch")?.unwrap_or_default(),
+            };
+            to_value(svc.orchestrations.start_worker(
+                svc.chats.clone(),
+                &svc.workspaces,
+                &actor,
+                launch,
+            ))
+        }
+        "orchestration_worker_report" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let task = svc.orchestrations.report_worker(
+                &actor,
+                crate::orchestration::WorkerReport {
+                    attempt_id: arg(&args, "attemptId")?,
+                    outcome: arg(&args, "outcome")?,
+                    summary: arg(&args, "summary")?,
+                    files_modified: arg(&args, "filesModified")?,
+                },
+            )?;
+            let snapshot = svc.orchestrations.snapshot(Some(&task.run_id))?;
+            if let Some(run) = snapshot.runs.first() {
+                let continuation = format!(
+                    "OctiqFlow worker state changed for task {} ({}): {:?}.\n\n{}\n\nRead orchestration_snapshot for run {} and continue coordination from the authoritative state. Dispatch every newly ready task before waiting.",
+                    task.id, task.title, task.status, task.result.as_deref().unwrap_or_default(), run.id
+                );
+                if let Err(error) = crate::agent_chat::chat_continue_internal_impl(
+                    svc.chats.clone(),
+                    run.coordinator_chat_key.clone(),
+                    continuation,
+                ) {
+                    eprintln!(
+                        "orchestration: could not notify coordinator {} after worker report: {error}",
+                        run.coordinator_chat_key
+                    );
+                }
+            }
+            to_value(Ok(task))
+        }
+        "orchestration_gate_create" => to_value(svc.orchestrations.create_gate(
+            &arg::<String>(&args, "actorChatKey")?,
+            arg(&args, "runId")?,
+            arg(&args, "taskId")?,
+            arg(&args, "question")?,
+            arg(&args, "options")?,
+        )),
+        "orchestration_gate_resolve" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let resolution: String = arg(&args, "resolution")?;
+            let resume_target = arg::<Option<bool>>(&args, "resumeTarget")?.unwrap_or(false);
+            let gate = svc.orchestrations.resolve_gate(
+                &actor,
+                arg(&args, "gateId")?,
+                resolution.clone(),
+            )?;
+            if resume_target || gate.created_by_chat_key != actor {
+                let continuation = format!(
+                    "OctiqFlow gate {} was resolved by the coordinator.\n\nQuestion: {}\nResolution: {}\n\nContinue the assigned task using this decision. When it settles, report through orchestration_worker_report.",
+                    gate.id, gate.question, resolution
+                );
+                if let Err(error) = crate::agent_chat::chat_continue_internal_impl(
+                    svc.chats.clone(),
+                    gate.created_by_chat_key.clone(),
+                    continuation,
+                ) {
+                    eprintln!(
+                        "orchestration: could not resume {} after gate resolution: {error}",
+                        gate.created_by_chat_key
+                    );
+                }
+            }
+            to_value(Ok(gate))
+        }
+        "orchestration_message_send" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let message = svc.orchestrations.record_message(
+                &actor,
+                arg(&args, "runId")?,
+                arg(&args, "to")?,
+                arg(&args, "kind")?,
+                arg(&args, "subject")?,
+                arg(&args, "body")?,
+            )?;
+            if message.to_chat_key != actor {
+                let continuation = format!(
+                    "OctiqFlow orchestration message [{}]\nSubject: {}\nFrom: {}\n\n{}\n\nContinue the run using this message; use orchestration tools for any authoritative state change.",
+                    message.kind, message.subject, message.from_chat_key, message.body
+                );
+                if let Err(error) = crate::agent_chat::chat_continue_internal_impl(
+                    svc.chats.clone(),
+                    message.to_chat_key.clone(),
+                    continuation,
+                ) {
+                    eprintln!("orchestration: could not deliver {}: {error}", message.id);
+                }
+            }
+            to_value(Ok(message))
+        }
+        "orchestration_run_stop" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let workers =
+                svc.orchestrations
+                    .stop_run(&actor, arg(&args, "runId")?, arg(&args, "reason")?)?;
+            for worker in workers {
+                let _ = crate::agent_chat::chat_stop_impl(&svc.chats, worker);
+            }
+            Ok(Value::Null)
         }
 
         // ---- git ----------------------------------------------------------

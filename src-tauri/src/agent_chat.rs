@@ -830,6 +830,7 @@ fn build_command_with_context(
         lite,
         mcp_config,
         persistent_authorizations,
+        orchestration_worker: false,
     })
 }
 
@@ -1382,6 +1383,10 @@ pub(crate) fn start_session(
     let authorizations = (agent == ChatAgent::Codex)
         .then(|| crate::safety_block::project_authorizations(&cwd))
         .flatten();
+    let orchestration_worker = env.as_ref().is_some_and(|env| {
+        env.get("OCTIQ_ORCHESTRATION_ATTEMPT")
+            .is_some_and(|attempt| !attempt.trim().is_empty())
+    });
     let wire_prompt = if mcp.is_some() {
         routed_prompt(agent, &prompt)
     } else {
@@ -1398,6 +1403,7 @@ pub(crate) fn start_session(
         lite: lite.unwrap_or(false),
         mcp_config: mcp.as_deref(),
         persistent_authorizations: authorizations.as_deref(),
+        orchestration_worker,
     });
     let process_cwd = if cwd.trim().is_empty() {
         std::env::var("HOME").unwrap_or_else(|_| "/".into())
@@ -1429,6 +1435,7 @@ pub(crate) fn start_session(
             access,
             authorizations.as_deref(),
             true,
+            orchestration_worker,
         )
     });
 
@@ -2163,6 +2170,57 @@ pub fn chat_send_user_impl(
     crate::safety_block::forget_chat(&key);
     let user_turn_id = (record_user != Some(false)).then(|| fresh_turn_id(turn_id));
     chat_send_with_user_turn(manager, key, text, images, to, user_turn_id)
+}
+
+/// Deliver a host-owned continuation without pretending that the person typed
+/// it. Orchestration uses this for gate resolutions and coordinator messages:
+/// a live provider receives the continuation immediately, while an idle
+/// one-shot chat is resumed with the same saved session and permissions.
+pub(crate) fn chat_continue_internal_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    text: String,
+) -> Result<(), String> {
+    match chat_send_with_user_turn(manager.clone(), key.clone(), text.clone(), None, None, None) {
+        Ok(()) => return Ok(()),
+        Err(why) if why == "no such chat" || why.ends_with("is not running") => {}
+        Err(why) => return Err(why),
+    }
+
+    let start = manager
+        .start_context(&key)
+        .ok_or_else(|| format!("chat '{key}' has no resumable start context"))?;
+    manager.remember_start(&key, start.clone());
+    start_session(
+        manager,
+        Voice::host(key),
+        start.cwd,
+        start.agent,
+        start.model,
+        start.access,
+        Some(text),
+        start.session_id,
+        start.extra_dirs,
+        start.env,
+        start.effort,
+        None,
+        start.lite,
+        None,
+        false,
+        None,
+    )
+}
+
+pub(crate) fn chat_can_continue_internal(manager: &ChatManager, key: &str) -> Result<bool, String> {
+    if manager
+        .sessions
+        .lock()
+        .map_err(|error| error.to_string())?
+        .contains_key(key)
+    {
+        return Ok(true);
+    }
+    Ok(manager.start_context(key).is_some())
 }
 
 fn chat_send_with_user_turn(

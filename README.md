@@ -9,6 +9,11 @@ through the bundled [`read_conversation` MCP tool](docs/conversation-mcp.md).
 Agents can also create [standalone HTML artifacts](docs/artifacts.md) for reading,
 per-item decisions and comments, and copying feedback back as JSON.
 
+For supervised multi-agent work, a chat can become a
+[master orchestrator](docs/orchestration.md): it creates a durable task DAG,
+dispatches Claude or Codex workers into isolated Git worktrees, receives
+structured completion reports, and pauses on visible decision gates.
+
 Because the server is headless, it can run on a machine that stays on — a Mac
 mini, a home server — while you drive it from a laptop, a phone or anything else
 with a browser. The agents run where the server runs.
@@ -48,6 +53,9 @@ back out through `bus.rs` to every attached browser.
   Codex chats use one long-lived `codex app-server` process and its native
   JSON-RPC controls; set `OCTIQ_CODEX_TRANSPORT=exec` only as a compatibility
   fallback for an older Codex installation.
+- **Master orchestration.** Turn one chat into the coordinator for a durable run.
+  The host—not agent prose—owns task, attempt, dependency, gate, and message
+  state. Ready tasks can run concurrently in separate worktrees.
 - **Chat transcripts.** Conversations are saved and can be reopened or resumed.
 - **Attention alerts.** A terminal that needs you raises an alert. Agents that
   emit no escape codes can call the bundled `octiq-notify` CLI (see
@@ -129,6 +137,10 @@ outside the machine.
 
 ## Roadmap
 
+- One-command installation, with an npm entry point where the platform binary
+  can be installed and verified safely.
+- Complete the worktree lifecycle after orchestration: review, commit, push,
+  PR creation, checks, and cleanup as explicit host-owned transitions.
 - Re-expose the feature backends the desktop UI used to own — the canvas
   document store, profile switching, workspace appearance — through
   `dispatch.rs` so the browser client can reach them.
