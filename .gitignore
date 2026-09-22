@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+/npm-dist/
+/*.tgz
 
 # Python (brand-asset generator script cache)
 __pycache__/

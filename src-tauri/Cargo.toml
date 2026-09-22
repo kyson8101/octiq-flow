@@ -1,6 +1,6 @@
 [package]
 name = "octiq-flow"
-version = "0.1.50"
+version = "0.1.51"
 description = "Agent workflow orchestrator: run agents in real terminals, driven from a browser"
 authors = ["kyson"]
 edition = "2021"
@@ -36,6 +36,10 @@ ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 # Web push (push.rs): a notification that arrives with nothing open. `p256`
 # signs the VAPID claim that identifies this server to the push service.
 web-push = { version = "0.11.0", default-features = false }
+# `web-push`'s ECE implementation has only an OpenSSL backend. Force that
+# transitive dependency to build from source so release binaries do not depend
+# on a Homebrew/Linux libssl that may not exist on an npm user's machine.
+openssl = { version = "0.10", features = ["vendored"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 # The server ships as one stripped binary, so the only things that matter here
 # are size and speed — not incremental rebuild time (card 20).
