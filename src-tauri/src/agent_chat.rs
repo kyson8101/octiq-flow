@@ -498,6 +498,7 @@ struct QueuedTurn {
 
 #[derive(Default)]
 pub struct ChatManager {
+    pub(crate) orchestrations: Arc<crate::orchestration::OrchestrationStore>,
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
     sessions: Mutex<HashMap<String, Arc<Mutex<ChatSession>>>>,
@@ -572,6 +573,32 @@ impl ChatManager {
 
     fn start_context(&self, session_key: &str) -> Option<StartContext> {
         self.starts.lock().ok()?.get(session_key).cloned()
+    }
+
+    /// Session history must not turn a worker into a new ordinary chat by
+    /// resuming its provider session under a different browser chat key.
+    pub(crate) fn require_user_resume(&self, resume: &str) -> Result<(), String> {
+        let owners = self
+            .starts
+            .lock()
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter(|(_, start)| start.session_id.as_deref() == Some(resume))
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in owners {
+            self.orchestrations.require_user_chat(&key)?;
+        }
+        for chat in crate::chat_index::list()
+            .into_iter()
+            .chain(crate::chat_index::deleted())
+        {
+            if chat.session_id.as_deref() == Some(resume) {
+                self.orchestrations
+                    .require_user_chat(&format!("chat:{}", chat.id))?;
+            }
+        }
+        Ok(())
     }
 
     /// Each running chat's process pid -> its session key, for `memory.rs`.
@@ -2878,6 +2905,18 @@ fn answer_codex_user_input(
         return;
     };
 
+    match route_worker_questions(manager, key, Some(key), None, &questions) {
+        Ok(Some(message)) => {
+            write_codex_error(session, &request_id, &message);
+            return;
+        }
+        Err(why) => {
+            write_codex_error(session, &request_id, &why);
+            return;
+        }
+        Ok(None) => {}
+    }
+
     let origin = {
         let _delivery = match manager.questions.delivery_lock.lock() {
             Ok(lock) => lock,
@@ -2924,6 +2963,57 @@ fn answer_codex_user_input(
             .collect::<Map<String, Value>>();
         write_codex_response(&session, &request_id, json!({ "answers": mapped }));
     });
+}
+
+pub(crate) fn route_worker_questions(
+    manager: &Arc<ChatManager>,
+    key: &str,
+    session_key: Option<&str>,
+    launch_id: Option<&str>,
+    questions: &[crate::question::Question],
+) -> Result<Option<String>, String> {
+    if manager.orchestrations.worker_coordinator(key)?.is_none() {
+        manager.orchestrations.require_user_chat(key)?;
+        return Ok(None);
+    }
+    let gate = {
+        let _delivery = manager
+            .questions
+            .delivery_lock
+            .lock()
+            .map_err(|e| e.to_string())?;
+        manager.question_origin(key, session_key, launch_id)?;
+        manager
+            .orchestrations
+            .route_worker_questions(key, questions)?
+    };
+    let Some(gate) = gate else {
+        return Ok(None);
+    };
+    notify_worker_gate(manager, &gate);
+    Ok(Some(format!(
+        "Your questions were routed to main-chat gate {}. No answer has been given. End this turn and wait for the coordinator to resolve the gate; do not ask the user directly.",
+        gate.id
+    )))
+}
+
+pub(crate) fn notify_worker_gate(manager: &Arc<ChatManager>, gate: &crate::orchestration::Gate) {
+    if gate.created_by_chat_key == gate.target_chat_key {
+        return;
+    }
+    let notice = format!(
+        "Worker input was routed to your orchestration gate {} for run {}.\n\n{}\n\nRead orchestration_snapshot and resolve this through orchestration_gate_resolve. The worker has not received an answer.",
+        gate.id, gate.run_id, gate.question
+    );
+    // The durable gate remains available even if the coordinator is offline.
+    if let Err(error) =
+        chat_continue_internal_impl(manager.clone(), gate.target_chat_key.clone(), notice)
+    {
+        eprintln!(
+            "orchestration: could not notify coordinator about gate {}: {error}",
+            gate.id
+        );
+    }
 }
 
 /// Put the question to the person, then write the answer back to the agent.
@@ -5762,6 +5852,27 @@ mod idle_tests {
 mod question_delivery_tests {
     use super::*;
     use crate::question_store::{test_origin, Answer, Delivery, Record};
+
+    #[test]
+    fn a_worker_session_cannot_be_resumed_as_an_ordinary_chat() {
+        let manager = ChatManager::default();
+        let worker_session = format!("worker-session-{}", uuid::Uuid::new_v4());
+        let main_session = format!("main-session-{}", uuid::Uuid::new_v4());
+        manager.remember_start(
+            "chat:orch-worker",
+            StartContext::for_test(ChatAgent::Codex, Some(&worker_session)),
+        );
+        manager.remember_start(
+            "chat:master",
+            StartContext::for_test(ChatAgent::Codex, Some(&main_session)),
+        );
+        assert!(manager
+            .require_user_resume(&worker_session)
+            .unwrap_err()
+            .contains("read-only"));
+        assert!(manager.require_user_resume(&main_session).is_ok());
+        assert!(manager.require_user_resume("unknown-session").is_ok());
+    }
 
     fn setup() -> (Arc<ChatManager>, String, String, Vec<Answer>) {
         let key = format!("question-{}", uuid::Uuid::new_v4());

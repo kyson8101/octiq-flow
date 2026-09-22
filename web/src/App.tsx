@@ -129,7 +129,7 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationButton, OrchestrationPanel } from "./components/OrchestrationPanel";
-import { workerChatParents } from "./lib/orchestration";
+import { isWorkerChat, mainChatId, workerChatParents } from "./lib/orchestration";
 import { useOrchestrationSnapshot } from "./lib/useOrchestrationSnapshot";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
@@ -143,6 +143,7 @@ import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
 import { ChatRequests } from "./components/ChatRequests";
+import { WorkerChatNotice } from "./components/WorkerChatNotice";
 import { useChatRequests } from "./lib/useChatRequests";
 import {
   provesLiveTurn,
@@ -444,6 +445,13 @@ export default function App() {
   const [orchestrationOpen, setOrchestrationOpen] = useState(false);
   const orchestration = useOrchestrationSnapshot();
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
+  const workerChat = isWorkerChat(conversationId, chatParents);
+  const [pendingGateDecision, setPendingGateDecision] = useState<{ id: string; text: string } | null>(null);
+  const coordinatorId = mainChatId(conversationId, chatParents);
+  const coordinatorConversation = conversations.find((chat) => chat.id === coordinatorId);
+  const workerRequestIds = useMemo(() => conversationId && !workerChat
+    ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
+    : [], [conversationId, workerChat, chatParents]);
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
@@ -2522,6 +2530,7 @@ export default function App() {
 
   const deleteConversation = useCallback(
     (id: string) => {
+      if (isWorkerChat(id, chatParents)) return;
       // Pressed again on the row already counting down: that is the way back.
       // The ring the second press lands on is the same × that started it, so
       // this is the whole of Undo.
@@ -2546,7 +2555,7 @@ export default function App() {
       );
       setDeleting((prev) => new Set(prev).add(id));
     },
-    [cancelDelete, commitDelete, conversations],
+    [cancelDelete, commitDelete, conversations, chatParents],
   );
 
   /** Pin a chat to the top of its project, or take the pin off again.
@@ -2678,6 +2687,7 @@ export default function App() {
       text: string,
       attachments: Attachment[] = [],
     ) => {
+      if (workerChat) return;
       let targetProject = project;
       if (!targetProject) {
         // General is a visible, deliberate default. The prompt is content for
@@ -2991,8 +3001,17 @@ export default function App() {
       patch,
       catchUpChat,
       syncQueue,
+      workerChat,
     ],
   );
+
+  // Use the ordinary send/resume path after switching to the coordinator;
+  // a gate answer must also reach an idle main chat and appear in its history.
+  useEffect(() => {
+    if (!pendingGateDecision || pendingGateDecision.id !== conversationId || workerChat) return;
+    setPendingGateDecision(null);
+    void send(pendingGateDecision.text);
+  }, [pendingGateDecision, conversationId, workerChat, send]);
 
   /** Stop the running turn. The session survives, ready for the next one. */
   const stop = useCallback(() => {
@@ -3359,12 +3378,12 @@ export default function App() {
       {conversationId && (
         <>
           <CopyChatIdButton chatId={conversationId} />
-          <ChatDeleteButton
+          {!workerChat && <ChatDeleteButton
             deleting={deleting.has(conversationId)}
             disabled={leaving.has(conversationId)}
             deleteMs={UNDO_MS}
             onDelete={() => deleteConversation(conversationId)}
-          />
+          />}
         </>
       )}
 
@@ -3558,6 +3577,8 @@ export default function App() {
                 ”…
               </p>
             </div>
+          ) : chat.messages.length === 0 && workerChat ? (
+            <div className="hero"><h1 className="hero-title">Agent conversation</h1><p className="hero-sub">The agent's progress will appear here. Send instructions in the main chat.</p></div>
           ) : chat.messages.length === 0 ? (
             <div className={`hero ${project ? "" : "hero-start"}`}>
               <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
@@ -3583,7 +3604,7 @@ export default function App() {
                 ) : (
                   <p className="hero-sub">continuing an earlier session</p>
                 ))}
-              {project && <SessionSearch projectPath={effectiveCwd} onResume={resumeHistory} />}
+              {project && !workerChat && <SessionSearch projectPath={effectiveCwd} onResume={resumeHistory} />}
             </div>
           ) : (
             // The transcript and the agent rail sit side by side. The rail
@@ -3622,10 +3643,10 @@ export default function App() {
                       // sets it from the session, and changing provider cannot
                       // happen in place — it opens a new chat.
                       hostName={providerFor(choice.agent).name}
-                      onCancelQueued={conn === "open" ? cancelQueued : undefined}
-                      onStartQueued={conn === "open" ? startQueued : undefined}
-                      onRestoreUnsent={restoreUnsent}
-                      onDismissUnsent={dismissUnsent}
+                      onCancelQueued={!workerChat && conn === "open" ? cancelQueued : undefined}
+                      onStartQueued={!workerChat && conn === "open" ? startQueued : undefined}
+                      onRestoreUnsent={workerChat ? undefined : restoreUnsent}
+                      onDismissUnsent={workerChat ? undefined : dismissUnsent}
                       // How the `/config` panel changes a setting: the very
                       // line you would have typed, sent the way you would have
                       // sent it — so the CLI's own answer lands under it and
@@ -3636,7 +3657,7 @@ export default function App() {
                       // `tellSession` would quietly do nothing. `send` picks
                       // the session back up first, which is what a tap on a
                       // setting has every right to expect.
-                      onSetting={send}
+                      onSetting={workerChat ? undefined : send}
                       agentByTool={agentByTool}
                       onOpenAgent={setFocusedAgent}
                     />
@@ -3685,7 +3706,7 @@ export default function App() {
                       timeStyle: "short",
                     })}.
                   </span>
-                  <button
+                  {!workerChat && <button
                     className="auto-resume-cancel"
                     type="button"
                     onClick={() => {
@@ -3703,7 +3724,7 @@ export default function App() {
                     }}
                   >
                     Cancel auto-resume
-                  </button>
+                  </button>}
                 </div>
               )}
               {failure?.link && (
@@ -3726,7 +3747,7 @@ export default function App() {
             />
           )}
 
-          {conversationId && (
+          {conversationId && !workerChat && (
             <ChatRequests
               asks={asks[conversationId] ?? []}
               safetyBlocks={safetyBlocks[conversationId] ?? []}
@@ -3759,7 +3780,21 @@ export default function App() {
             />
           )}
 
-          <Composer
+          {workerRequestIds.map((id) => ((asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0)) > 0 && (
+            <section key={id} aria-label="Agent safety approvals">
+              <p className="worker-approval-context">Approval for {conversations.find((chat) => chat.id === id)?.title ?? "agent"}. Follow-up instructions go through this main chat.</p>
+              <ChatRequests asks={asks[id] ?? []} safetyBlocks={safetyBlocks[id] ?? []} questions={[]}
+                onPermissionAnswered={(requestId) => setAsks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
+                onSafetyAnswered={(requestId) => setSafetyBlocks((prev) => ({ ...prev, [id]: (prev[id] ?? []).filter((item) => item.id !== requestId) }))}
+                onQuestionsAnswered={() => {}}
+                onContinue={(message) => send(`For your worker chat ${id}:\n\n${message}\n\nCoordinate any follow-up through the orchestration tools.`)} />
+            </section>
+          ))}
+
+          {workerChat ? <WorkerChatNotice
+            busy={chat.busy && !cutOff}
+            onOpenMain={coordinatorConversation ? () => openConversation(coordinatorConversation) : undefined}
+          /> : <Composer
             focusMode={focusMode}
             session={conversationId ?? undefined}
             focusOn={focusBox}
@@ -3825,7 +3860,7 @@ export default function App() {
                     })
                 : undefined
             }
-          />
+          />}
 
           </>}
         </main>
@@ -3912,12 +3947,21 @@ export default function App() {
       {orchestrationOpen && (
         <OrchestrationPanel
           project={project}
-          coordinatorKey={conversationId ? keyFor(conversationId) : null}
+          coordinatorKey={conversationId && !workerChat ? keyFor(conversationId) : null}
+          readOnly={workerChat}
+          initialSnapshot={orchestration}
           currentCwd={effectiveCwd}
-          onOpenChat={(chatKey) => {
+          onOpenChat={(chatKey, message) => {
             const id = chatKey.replace(/^chat:/, "");
             const conversation = conversationsRef.current.find((item) => item.id === id);
-            if (!conversation) return;
+            if (!conversation) {
+              if (message) throw new Error("The main chat is unavailable.");
+              return;
+            }
+            if (message) {
+              if (isWorkerChat(id, chatParents)) throw new Error("Send this decision in the main chat.");
+              setPendingGateDecision({ id, text: message });
+            }
             openConversation(conversation);
             setOrchestrationOpen(false);
           }}

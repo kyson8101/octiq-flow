@@ -44,17 +44,19 @@ export function OrchestrationPanel({
   onOpenChat,
   onClose,
   initialSnapshot = EMPTY,
+  readOnly = false,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
   currentCwd?: string;
-  onOpenChat: (chatKey: string) => void;
+  onOpenChat: (chatKey: string, message?: string) => void;
   onClose: () => void;
   initialSnapshot?: OrchestrationSnapshot;
+  readOnly?: boolean;
 }) {
   const [snapshot, setSnapshot] = useState(initialSnapshot);
   const [selectedId, setSelectedId] = useState<string | null>(initialSnapshot.runs[0]?.id ?? null);
-  const [creating, setCreating] = useState(initialSnapshot.runs.length === 0);
+  const [creating, setCreating] = useState(initialSnapshot.runs.length === 0 && !readOnly);
   const [objective, setObjective] = useState("");
   const [maxConcurrent, setMaxConcurrent] = useState(4);
   const [busy, setBusy] = useState(false);
@@ -88,12 +90,12 @@ export function OrchestrationPanel({
   );
 
   useEffect(() => {
-    if (creating) return;
+    if (creating && !readOnly) return;
     if (selectedId && runs.some((run) => run.id === selectedId)) return;
     const next = runs.find((run) => ACTIVE_RUNS.has(run.status)) ?? runs[0];
     setSelectedId(next?.id ?? null);
     if (!next && runs.length === 0) setCreating(true);
-  }, [runs, selectedId, creating]);
+  }, [runs, selectedId, creating, readOnly]);
 
   const selected = runs.find((run) => run.id === selectedId) ?? null;
   const tasks = snapshot.tasks.filter((task) => task.runId === selected?.id);
@@ -102,7 +104,7 @@ export function OrchestrationPanel({
   const messages = snapshot.messages.filter((message) => message.runId === selected?.id);
 
   const startRun = async () => {
-    if (!project || !coordinatorKey || !objective.trim()) return;
+    if (readOnly || !project || !coordinatorKey || !objective.trim()) return;
     setBusy(true);
     setError(null);
     try {
@@ -126,18 +128,14 @@ export function OrchestrationPanel({
   };
 
   const resolveGate = async (gate: OrchestrationGate, resolution: string) => {
-    if (!selected || !resolution.trim()) return;
+    if (readOnly || !selected || !resolution.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      await bridge.invoke("orchestration_gate_resolve", {
-        actorChatKey: selected.coordinatorChatKey,
-        gateId: gate.id,
-        resolution: resolution.trim(),
-        resumeTarget: true,
-      });
+      onOpenChat(selected.coordinatorChatKey,
+        `For orchestration gate ${gate.id}:\n\n${gate.question}\n\nMy answer: ${resolution.trim()}\n\nReview this answer and coordinate the next step through orchestration_gate_resolve.`);
       setAnswers((current) => ({ ...current, [gate.id]: "" }));
-      await read();
+      onClose();
     } catch (problem) {
       setError(messageOf(problem));
     } finally {
@@ -146,7 +144,7 @@ export function OrchestrationPanel({
   };
 
   const stopRun = async () => {
-    if (!selected) return;
+    if (readOnly || !selected) return;
     setBusy(true);
     setError(null);
     try {
@@ -183,6 +181,7 @@ export function OrchestrationPanel({
             <button
               className={`orch-new${creating ? " is-on" : ""}`}
               type="button"
+              disabled={readOnly}
               onClick={() => { setCreating(true); setConfirmStop(false); }}
             >
               <PlusIcon />
@@ -217,7 +216,8 @@ export function OrchestrationPanel({
 
           <main className="orch-content">
             {error && <div className="orch-error" role="alert">{error}</div>}
-            {creating ? (
+            {readOnly && <p className="orch-empty">This agent chat is read-only. Send instructions and decisions in the main chat.</p>}
+            {creating && !readOnly ? (
               <NewRun
                 project={project}
                 hasCoordinator={!!coordinatorKey}
@@ -237,6 +237,7 @@ export function OrchestrationPanel({
                 messages={messages}
                 answers={answers}
                 busy={busy}
+                readOnly={readOnly}
                 confirmStop={confirmStop}
                 onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
                 onResolve={(gate, answer) => void resolveGate(gate, answer)}
@@ -321,6 +322,7 @@ function RunDetail({
   messages,
   answers,
   busy,
+  readOnly,
   confirmStop,
   onAnswer,
   onResolve,
@@ -336,6 +338,7 @@ function RunDetail({
   messages: OrchestrationMessage[];
   answers: Record<string, string>;
   busy: boolean;
+  readOnly: boolean;
   confirmStop: boolean;
   onAnswer: (gateId: string, answer: string) => void;
   onResolve: (gate: OrchestrationGate, answer: string) => void;
@@ -362,7 +365,7 @@ function RunDetail({
           <h2 id="orch-run-title">{run.objective}</h2>
           <p>{run.rootPath}</p>
         </div>
-        {ACTIVE_RUNS.has(run.status) && (
+        {!readOnly && ACTIVE_RUNS.has(run.status) && (
           confirmStop ? (
             <div className="orch-stop-confirm">
               <span>Stop workers and cancel open tasks?</span>
@@ -388,22 +391,22 @@ function RunDetail({
           {openGates.map((gate) => (
             <article className="orch-gate" key={gate.id}>
               <p>{gate.question}</p>
-              {gate.options.length > 0 && (
+              {!readOnly && gate.options.length > 0 && (
                 <div className="orch-gate-options">
                   {gate.options.map((option) => (
                     <button type="button" key={option} disabled={busy} onClick={() => onResolve(gate, option)}>{option}</button>
                   ))}
                 </div>
               )}
-              <div className="orch-gate-write">
+              {!readOnly && <div className="orch-gate-write">
                 <input
                   value={answers[gate.id] ?? ""}
                   placeholder="Write a decision"
                   aria-label={`Decision for ${gate.question}`}
                   onChange={(event) => onAnswer(gate.id, event.target.value)}
                 />
-                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>Send</button>
-              </div>
+                <button type="button" disabled={busy || !(answers[gate.id] ?? "").trim()} onClick={() => onResolve(gate, answers[gate.id] ?? "")}>Send to main chat</button>
+              </div>}
             </article>
           ))}
         </section>

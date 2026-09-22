@@ -52,7 +52,10 @@ impl Services {
         let question_path = crate::transcript::chats_dir()
             .unwrap_or_else(|| crate::profile::profile_dir().join("chats"))
             .join("questions.json");
-        let chats = Arc::new(ChatManager::with_saved_questions(question_path));
+        let orchestrations = Arc::new(OrchestrationStore::load_profile());
+        let mut chats = ChatManager::with_saved_questions(question_path);
+        chats.orchestrations = orchestrations.clone();
+        let chats = Arc::new(chats);
         // A chat nobody has touched for a quarter of an hour is ended and
         // resumed on its next message. This is where it matters most: the
         // service runs for days, and every chat left open holds an agent and
@@ -64,7 +67,7 @@ impl Services {
             chats,
             watch: Arc::new(FileWatchState::default()),
             git_watch: Arc::new(GitWatchState::default()),
-            orchestrations: Arc::new(OrchestrationStore::load_profile()),
+            orchestrations,
             ptys: Arc::new(PtyManager::default()),
         }
     }
@@ -108,6 +111,57 @@ fn to_value<T: serde::Serialize>(r: Result<T, String>) -> Result<Value, String> 
 /// Run one command. `Err` is the message the client shows, so it is written for
 /// a person rather than a log.
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
+    // Browser-facing mutation routes never drive an orchestration worker.
+    // The coordinator's internal launch/message/report paths call their
+    // implementations directly, without a client-controlled bypass flag.
+    match cmd {
+        "chat_start"
+        | "chat_send"
+        | "chat_cancel_auto_resume"
+        | "chat_cancel_queued"
+        | "chat_dismiss_unsent"
+        | "chat_start_queued"
+        | "chat_interrupt"
+        | "chat_set_access"
+        | "chat_stop"
+        | "chat_retarget"
+        | "chat_restart"
+        | "chat_forget" => {
+            svc.orchestrations
+                .require_user_chat(&arg::<String>(&args, "key")?)?;
+            if cmd == "chat_start" {
+                if let Some(resume) = arg::<Option<String>>(&args, "resume")? {
+                    svc.chats.require_user_resume(&resume)?;
+                }
+            }
+        }
+        "chat_index_remove" => {
+            svc.orchestrations
+                .require_user_chat(&format!("chat:{}", arg::<String>(&args, "id")?))?;
+            svc.orchestrations
+                .require_user_chat(&arg::<String>(&args, "key")?)?;
+        }
+        "question_answer" | "question_answer_batch" | "question_retry" | "question_cancel" => {
+            let ids: Vec<String> = match cmd {
+                "question_answer" => vec![arg(&args, "id")?],
+                "question_answer_batch" => {
+                    arg::<Vec<crate::question_store::Answer>>(&args, "answers")?
+                        .into_iter()
+                        .map(|answer| answer.id)
+                        .collect()
+                }
+                _ => arg(&args, "ids")?,
+            };
+            for question in svc.chats.questions.pending()? {
+                if ids.contains(&question.id) {
+                    if let Some(key) = &question.question.chat_key {
+                        svc.orchestrations.require_user_chat(key)?;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
     match cmd {
         // ---- projects -----------------------------------------------------
         "list_workspaces" => to_value(crate::workspaces::list_workspaces_impl(&svc.workspaces)),
@@ -573,13 +627,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             }
             to_value(Ok(task))
         }
-        "orchestration_gate_create" => to_value(svc.orchestrations.create_gate(
-            &arg::<String>(&args, "actorChatKey")?,
-            arg(&args, "runId")?,
-            arg(&args, "taskId")?,
-            arg(&args, "question")?,
-            arg(&args, "options")?,
-        )),
+        "orchestration_gate_create" => {
+            let gate = svc.orchestrations.create_gate(
+                &arg::<String>(&args, "actorChatKey")?,
+                arg(&args, "runId")?,
+                arg(&args, "taskId")?,
+                arg(&args, "question")?,
+                arg(&args, "options")?,
+            )?;
+            crate::agent_chat::notify_worker_gate(&svc.chats, &gate);
+            to_value(Ok(gate))
+        }
         "orchestration_gate_resolve" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let resolution: String = arg(&args, "resolution")?;

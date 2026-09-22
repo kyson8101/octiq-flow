@@ -41,6 +41,7 @@ type ConfigWorld = {
    *  them — `Set Verbose output to true` — and they are the only true word on
    *  what a setting holds, so the panel reads them rather than guessing. */
   said: string[];
+  readOnly?: boolean;
 };
 
 const ConfigContext = createContext<ConfigWorld>({ say: () => {}, said: [] });
@@ -51,9 +52,10 @@ const ConfigContext = createContext<ConfigWorld>({ say: () => {}, said: [] });
 export function ConfigWorldProvider({
   say,
   said,
+  readOnly = false,
   children,
 }: ConfigWorld & { children: React.ReactNode }) {
-  const world = useMemo(() => ({ say, said }), [say, said]);
+  const world = useMemo(() => ({ say, said, readOnly }), [say, said, readOnly]);
   return <ConfigContext.Provider value={world}>{children}</ConfigContext.Provider>;
 }
 
@@ -66,7 +68,7 @@ export function isConfigUsage(text: string): boolean {
 export function ConfigPanel({ text }: { text: string }) {
   const settings = useMemo(() => parseConfigUsage(text), [text]);
   const groups = useMemo(() => (settings ? groupSettings(settings) : []), [settings]);
-  const { say, said } = useContext(ConfigContext);
+  const { say, said, readOnly } = useContext(ConfigContext);
   // Matched against THIS panel's keys, not against a list gathered elsewhere:
   // an older `/config` may have offered keys this build of the CLI no longer
   // has, and each panel should answer for the list it is showing.
@@ -88,14 +90,14 @@ export function ConfigPanel({ text }: { text: string }) {
       <div className="cfg-head">
         <span className="cfg-title">Settings</span>
         <span className="cfg-note">
-          <RollingText>{`${settings.length} this agent takes · picking a value sends it`}</RollingText>
+          <RollingText>{readOnly ? "Read-only · change settings through the main chat" : `${settings.length} this agent takes · picking a value sends it`}</RollingText>
         </span>
       </div>
       {groups.map((group) => (
         <section className="cfg-group" key={group.title}>
           <h4 className="cfg-group-head">{group.title}</h4>
           {group.rows.map((row) => (
-            <Row key={row.key} row={row} value={known.get(row.key)} onPick={say} />
+            <Row key={row.key} row={row} value={known.get(row.key)} onPick={say} readOnly={readOnly} />
           ))}
         </section>
       ))}
@@ -107,10 +109,12 @@ function Row({
   row,
   value,
   onPick,
+  readOnly,
 }: {
   row: Setting;
   value?: string;
   onPick: (line: string) => void;
+  readOnly?: boolean;
 }) {
   return (
     <div className="cfg-row">
@@ -125,6 +129,7 @@ function Row({
           {row.options.map((option) => (
             <button
               type="button"
+              disabled={readOnly}
               key={option}
               className={`cfg-opt ${value === option ? "is-on" : ""}`}
               aria-pressed={value === option}

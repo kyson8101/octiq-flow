@@ -206,6 +206,15 @@ pub(crate) async fn ask_request_with_timeout(
     }
     let outcome = async {
         let chat_key = chat_key.ok_or("The question has no conversation")?;
+        if let Some(message) = crate::agent_chat::route_worker_questions(
+            &manager,
+            &chat_key,
+            session_key.as_deref(),
+            launch_id.as_deref(),
+            &questions,
+        )? {
+            return Ok(message);
+        }
         // The same gate as Stop: a late request from a stopped process cannot
         // register a new question after cancellation has already run.
         let (origin, id, rx) = {

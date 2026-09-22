@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildChatTree, type ChatNode } from "./chatTree";
-import { EMPTY_ORCHESTRATION, workerChatParents } from "./orchestration";
+import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents } from "./orchestration";
 import { byTask, type Conversation } from "./store";
 
 const chat = (id: string, updatedAt = 1, pinned = false): Conversation => ({
@@ -9,6 +9,18 @@ const chat = (id: string, updatedAt = 1, pinned = false): Conversation => ({
 const ids = (nodes: ChatNode[]): string[] => nodes.flatMap((node) => [node.chat.id, ...ids(node.children)]);
 
 describe("orchestrated chat hierarchy", () => {
+  it("keeps workers read-only before metadata loads and handles orphaned or cyclic parents", () => {
+    expect(isWorkerChat("orch-loading", new Map())).toBe(true);
+    expect(isWorkerChat("ordinary", new Map())).toBe(false);
+    expect(isWorkerChat(null, new Map())).toBe(false);
+    const parents = new Map([["worker", "main"], ["leaf", "worker"]]);
+    expect(isWorkerChat("worker", parents)).toBe(true);
+    expect(mainChatId("leaf", parents)).toBe("main");
+    expect(mainChatId("main", parents)).toBeNull();
+    expect(mainChatId("orch-loading", new Map())).toBeNull();
+    expect(mainChatId("worker", new Map([["worker", "worker"]]))).toBeNull();
+    expect(mainChatId("a", new Map([["a", "b"], ["b", "a"]]))).toBeNull();
+  });
   it("keeps workers under their master and moves the group with its latest activity", () => {
     const tree = buildChatTree(byTask([chat("master"), chat("worker", 9), chat("other", 5)]),
       new Map([["worker", "master"]]));

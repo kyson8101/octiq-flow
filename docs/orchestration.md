@@ -10,6 +10,22 @@ limit, and start the run. The current chat becomes its master. The panel shows
 the task ledger, current attempts, worktree branches, open decisions, and the
 latest structured messages.
 
+## Communication
+
+The main chat is the person's instruction channel. Worker chats are nested
+under it for inspection and stay read-only, including after completion or a
+retry. Their composer and direct restart, queue, settings, and delete controls
+are unavailable. The backend also rejects those commands for worker chat keys;
+the orchestrator keeps its internal dispatch and continuation paths.
+Resuming a known worker session under a new ordinary chat key is rejected too.
+
+Workers send messages only to their coordinator, never to another worker, and
+cannot create their own runs. Blocking questions open a coordinator gate and
+notify the main agent. Native and legacy question tools follow that same route.
+The person's answer in the Orchestrator panel is sent to the main chat; the
+main agent reviews it and resolves the gate. Pending tool safety approvals are
+shown in the main chat and still require the person's explicit decision.
+
 ## State model
 
 The profile stores `orchestrations.json` atomically. A snapshot contains:
