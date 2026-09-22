@@ -129,6 +129,8 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationButton, OrchestrationPanel } from "./components/OrchestrationPanel";
+import { workerChatParents } from "./lib/orchestration";
+import { useOrchestrationSnapshot } from "./lib/useOrchestrationSnapshot";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
@@ -440,6 +442,8 @@ export default function App() {
   // tick in the sheet has something to read.
   const [appSettings, setAppSettings] = useState(false);
   const [orchestrationOpen, setOrchestrationOpen] = useState(false);
+  const orchestration = useOrchestrationSnapshot();
+  const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const [themeId, setThemeId] = useState(savedThemeId);
 
   const [termOpen, setTermOpen] = useState(() => localStorage.getItem(TERM_KEY) === "1");
@@ -3339,6 +3343,7 @@ export default function App() {
       <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
 
       <OrchestrationButton
+        snapshot={orchestration}
         open={orchestrationOpen}
         onToggle={() => setOrchestrationOpen((open) => !open)}
       />
@@ -3506,6 +3511,7 @@ export default function App() {
           deletedCount={deletedChats.length}
           onShowDeleted={() => setTrashOpen(true)}
           conversations={taskList}
+          chatParents={chatParents}
           getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
           loadPreview={loadPreview}
           currentConversation={conversationId}

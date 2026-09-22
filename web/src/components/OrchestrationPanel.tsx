@@ -2,123 +2,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 
-type RunStatus = "planning" | "running" | "waiting" | "completed" | "failed" | "stopped";
-type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
-type AttemptStatus = "preparing" | "running" | "blocked" | "completed" | "failed" | "cancelled";
-
-export type OrchestrationRun = {
-  id: string;
-  objective: string;
-  coordinatorChatKey: string;
-  workspaceId: string;
-  rootPath: string;
-  status: RunStatus;
-  maxConcurrent: number;
-  createdAt: number;
-  updatedAt: number;
-  stoppedReason?: string;
-};
-
-export type OrchestrationTask = {
-  id: string;
-  runId: string;
-  title: string;
-  spec: string;
-  dependsOn: string[];
-  parentTaskId?: string;
-  status: TaskStatus;
-  activeAttemptId?: string;
-  result?: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export type OrchestrationAttempt = {
-  id: string;
-  runId: string;
-  taskId: string;
-  number: number;
-  workerChatKey: string;
-  agent: "claude" | "codex" | "pi";
-  model?: string;
-  effort?: string;
-  access: string;
-  status: AttemptStatus;
-  cwd: string;
-  branch: string;
-  isWorktree: boolean;
-  summary?: string;
-  filesModified: string[];
-  createdAt: number;
-  updatedAt: number;
-};
-
-export type OrchestrationGate = {
-  id: string;
-  runId: string;
-  taskId?: string;
-  createdByChatKey: string;
-  targetChatKey: string;
-  question: string;
-  options: string[];
-  status: "open" | "resolved" | "cancelled";
-  resolution?: string;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export type OrchestrationMessage = {
-  id: string;
-  runId: string;
-  fromChatKey: string;
-  toChatKey: string;
-  kind: string;
-  subject: string;
-  body: string;
-  createdAt: number;
-};
-
-export type OrchestrationSnapshot = {
-  runs: OrchestrationRun[];
-  tasks: OrchestrationTask[];
-  attempts: OrchestrationAttempt[];
-  gates: OrchestrationGate[];
-  messages: OrchestrationMessage[];
-};
+import {
+  EMPTY_ORCHESTRATION as EMPTY,
+  type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
+  type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage,
+} from "../lib/orchestration";
+export type { OrchestrationSnapshot } from "../lib/orchestration";
 
 type ProjectRef = { id: string; name: string; primary_path?: string };
 
-const EMPTY: OrchestrationSnapshot = {
-  runs: [],
-  tasks: [],
-  attempts: [],
-  gates: [],
-  messages: [],
-};
-
 const ACTIVE_RUNS = new Set<RunStatus>(["planning", "running", "waiting"]);
 
-export function OrchestrationButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
-  const [snapshot, setSnapshot] = useState(EMPTY);
-
-  useEffect(() => {
-    let live = true;
-    const read = () => {
-      bridge
-        .invoke<OrchestrationSnapshot>("orchestration_snapshot")
-        .then((next) => live && setSnapshot(next ?? EMPTY))
-        .catch(() => {});
-    };
-    read();
-    const offEvent = bridge.on("orchestration-changed", read);
-    const offState = bridge.onState((state) => state === "open" && read());
-    return () => {
-      live = false;
-      offEvent();
-      offState();
-    };
-  }, []);
-
+export function OrchestrationButton({ open, onToggle, snapshot }: {
+  open: boolean;
+  onToggle: () => void;
+  snapshot: OrchestrationSnapshot;
+}) {
   const active = snapshot.runs.filter((run) => ACTIVE_RUNS.has(run.status)).length;
   const gates = snapshot.gates.filter((gate) => gate.status === "open").length;
   const count = gates || active;
