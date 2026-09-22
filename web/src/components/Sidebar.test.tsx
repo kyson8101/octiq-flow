@@ -117,6 +117,28 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain("4200ms");
   });
 
+  it("nests agents once under their master with activity and unread counts", () => {
+    const out = html({
+      conversations: [{ ...chat("worker"), updatedAt: 3 }, chat("master"), chat("other")],
+      chatParents: new Map([["worker", "master"]]),
+      busy: new Set(["worker"]),
+    });
+    expect(out).toContain('aria-label="Collapse agent chats for Task master" aria-expanded="true"');
+    expect(out).toContain('aria-label="Agent chats for Task master"');
+    expect(out).toContain('aria-description="Agent chat under Task master.');
+    expect(out).toContain('class="chat-children-working">1 working</span>');
+    expect(out).toContain('class="chat-children-unread">1 unread</span>');
+    expect(out.match(/class="chat-title">Task worker</g)).toHaveLength(1);
+    expect(out.indexOf('class="chat-title">Task master<')).toBeLessThan(out.indexOf('class="chat-title">Task worker<'));
+    expect(out.indexOf('class="chat-title">Task worker<')).toBeLessThan(out.indexOf('class="chat-title">Task other<'));
+  });
+
+  it("keeps an orphaned worker visible without an empty disclosure", () => {
+    const out = html({ conversations: [chat("worker")], chatParents: new Map([["worker", "deleted"]]) });
+    expect(out).toContain('class="chat-title">Task worker</span>');
+    expect(out).not.toContain('class="chat-children-toggle"');
+  });
+
   describe("the unread mark", () => {
     it("flags a chat with activity since it was last read", () => {
       const out = html({

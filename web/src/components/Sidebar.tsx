@@ -1,7 +1,9 @@
 // Task-first navigation: one global list of chats, with project as context.
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
+import { buildChatTree, type ChatNode } from "../lib/chatTree";
+import { recall, remember } from "../lib/remember";
 import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
 import type { Conversation } from "../lib/store";
@@ -27,13 +29,24 @@ export type ChatSearchHit = {
 };
 
 const NONE: ReadonlySet<string> = new Set();
+const NO_PARENTS: ReadonlyMap<string, string> = new Map();
+const COLLAPSED_KEY = "octiq.chat.collapsed-agents";
+
+function savedCollapsed(): Set<string> {
+  try {
+    const value: unknown = JSON.parse(recall(COLLAPSED_KEY) ?? "[]");
+    return new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 
 export function Sidebar({
   projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, onDelete, onPin, onRename,
-  onNewProject, searchChats, branches = {}, onResize, foot,
+  onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
 }: {
   projects: Project[];
   shelved: Project[];
@@ -55,9 +68,11 @@ export function Sidebar({
   onNewProject: () => void;
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
   branches?: Readonly<Record<string, string>>;
+  chatParents?: ReadonlyMap<string, string>;
   onResize?: (event: React.PointerEvent<HTMLElement>) => void;
   foot?: ReactNode;
 } & ChatPreviewSource) {
+  const [collapsed, setCollapsed] = useState(savedCollapsed);
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
@@ -80,6 +95,26 @@ export function Sidebar({
       return conversation ? [conversation] : [];
     })
     : searchActive ? [] : conversations;
+
+  const tree = useMemo(() => buildChatTree(conversations, chatParents), [conversations, chatParents]);
+  const visibleNodes = searchActive
+    ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
+    : tree;
+  const ancestors = new Set<string>();
+  let ancestor = currentConversation ? chatParents.get(currentConversation) : undefined;
+  while (ancestor && !ancestors.has(ancestor)) {
+    ancestors.add(ancestor);
+    ancestor = chatParents.get(ancestor);
+  }
+  const ancestorKey = JSON.stringify([...ancestors]);
+  useEffect(() => {
+    const ids = JSON.parse(ancestorKey) as string[];
+    setCollapsed((before) => {
+      if (!ids.some((id) => before.has(id))) return before;
+      return new Set([...before].filter((id) => !ids.includes(id)));
+    });
+  }, [currentConversation, ancestorKey]);
+  useEffect(() => { remember(COLLAPSED_KEY, JSON.stringify([...collapsed])); }, [collapsed]);
 
   useEffect(() => { seenChatIds.current = new Set(conversations.map((chat) => chat.id)); }, [conversations]);
   useEffect(() => () => clearTimeout(hold.current), []);
@@ -111,6 +146,148 @@ export function Sidebar({
     };
   }, [searchActive, searchChats, trimmedQuery]);
   const cancelHold = () => clearTimeout(hold.current);
+
+  const renderChat = ({ chat, children, descendants }: ChatNode): ReactNode => {
+    const expanded = !collapsed.has(chat.id);
+    const workingCount = descendants.filter((child) => busy.has(child.id)).length;
+    const unreadCount = descendants.filter((child) => isUnread(child, currentConversation)).length;
+    const childListId = `chat-agents-${chat.id}`;
+    const parent = conversationById.get(chatParents.get(chat.id) ?? "");
+    const going = deleting.has(chat.id);
+    const isLeaving = leaving.has(chat.id);
+    const unread = isUnread(chat, currentConversation);
+    const project = projectById.get(chat.projectId);
+    const chatTintStyle = project
+      ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
+      : undefined;
+    const projectName = project?.name ?? "Unknown project";
+    const branch = branches[chat.projectId];
+    const projectContext = branch ? `${projectName} | ${branch}` : projectName;
+    const model = modelFromId(chat.modelId ?? null);
+    const searchHit = searchActive ? hitById.get(chat.id) : undefined;
+    const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
+    const snippet = going ? "Deleting…"
+      : searchHit ? `${searchHit.speaker}: ${searchHit.excerpt}`
+      : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
+
+    return (
+      <AnimatedChatRow entering={!seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
+        <div className={[
+          "chat", chat.id === currentConversation ? "is-on" : "",
+          running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
+          going ? "is-going" : "", isLeaving ? "is-leaving" : "",
+          chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
+          unread ? "is-unread" : "",
+        ].filter(Boolean).join(" ")} style={chatTintStyle}>
+          {renaming === chat.id ? (
+            <form className="chat-rename" onSubmit={(event) => {
+              event.preventDefault();
+              const input = event.currentTarget.elements.namedItem("chat-title");
+              if (input instanceof HTMLInputElement && input.value.trim()) onRename(chat.id, input.value);
+              setRenaming(null);
+            }}>
+              <input name="chat-title" className="chat-rename-input" defaultValue={chat.title}
+                aria-label="Chat title" maxLength={48} autoFocus
+                onFocus={(event) => event.currentTarget.select()}
+                onBlur={(event) => {
+                  if (event.currentTarget.value.trim()) onRename(chat.id, event.currentTarget.value);
+                  setRenaming(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault(); setRenaming(null);
+                }} />
+            </form>
+          ) : (
+            <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
+              busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
+              className="chat-btn" type="button"
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}`}
+              disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
+              aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
+              onPointerDown={(event) => {
+                cancelHold(); held.current = false;
+                if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
+                holdStart.current = { x: event.clientX, y: event.clientY };
+                hold.current = setTimeout(() => { held.current = true; setActionsId(chat.id); }, 500);
+              }}
+              onPointerMove={(event) => {
+                if (Math.hypot(event.clientX - holdStart.current.x, event.clientY - holdStart.current.y) > 10) cancelHold();
+              }}
+              onPointerUp={cancelHold} onPointerCancel={cancelHold}
+              onContextMenu={(event) => {
+                if (!window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
+                event.preventDefault(); cancelHold();
+                if (!going && !isLeaving) setActionsId(chat.id);
+              }}
+              onClick={() => {
+                if (held.current) { held.current = false; return; }
+                onPickConversation(chat);
+              }}>
+              <span className="chat-summary">
+                <span className="chat-heading">
+                  {unread && <span className="chat-unread-dot" aria-hidden="true" />}
+                  <span className="chat-title">{chat.title}</span>
+                  <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
+                </span>
+                <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
+                <span className="chat-meta">
+                  <span className="chat-project">
+                    {project
+                      ? <ProjectAvatar project={project} size="tiny" />
+                      : <span className="project-avatar is-tiny" aria-hidden="true">?</span>}
+                    <span className="chat-project-name" title={projectContext}>{projectContext}</span>
+                  </span>
+                  {model && (
+                    <span className="chat-model" title={`Active model: ${model.name} · ${model.model}`}>
+                      <AgentLogo agent={model.agent} size={10} />
+                      <span>{model.model}</span>
+                    </span>
+                  )}
+                </span>
+              </span>
+            </ChatPreviewButton>
+          )}
+
+          <span className="chat-indicators">
+            {chat.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
+            <span className="chat-mark" aria-hidden="true" title={busy.has(chat.id) ? "working" : running.has(chat.id) ? "session running" : undefined} />
+          </span>
+          {renaming !== chat.id && <SidebarMenu className="chat-actions-trigger"
+            label={`Actions for ${chat.title}`} open={actionsId === chat.id}
+            onOpenChange={(open) => setActionsId(open ? chat.id : null)} disabled={isLeaving}
+            icon={going ? <DeleteCountdownIcon ms={deleteMs} /> : undefined}
+            items={[
+              { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(chat.id) },
+              { id: "pin", label: chat.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(chat.id) },
+              { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) },
+            ]} />}
+          {children.length > 0 && (
+            <button className="chat-children-toggle" type="button"
+              aria-label={`${expanded ? "Collapse" : "Expand"} agent chats for ${chat.title}`}
+              aria-expanded={expanded} aria-controls={childListId}
+              disabled={isLeaving}
+              onClick={() => setCollapsed((before) => {
+                const next = new Set(before);
+                if (next.has(chat.id)) next.delete(chat.id);
+                else next.add(chat.id);
+                return next;
+              })}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+              <span>{descendants.length} {descendants.length === 1 ? "agent" : "agents"}</span>
+              {workingCount > 0 && <span className="chat-children-working">{workingCount} working</span>}
+              {unreadCount > 0 && <span className="chat-children-unread">{unreadCount} unread</span>}
+            </button>
+          )}
+        </div>
+        {children.length > 0 && (
+          <ul className="chat-children" id={childListId} aria-label={`Agent chats for ${chat.title}`} hidden={!expanded}>
+            {expanded && children.map(renderChat)}
+          </ul>
+        )}
+      </AnimatedChatRow>
+    );
+  };
 
   return (
     <nav className="sidebar task-sidebar" aria-label="Chats">
@@ -166,120 +343,7 @@ export function Sidebar({
         </div>
       ) : visibleConversations.length ? (
         <ul className="chat-list task-chat-list">
-          {visibleConversations.map((chat) => {
-            const going = deleting.has(chat.id);
-            const isLeaving = leaving.has(chat.id);
-            const unread = isUnread(chat, currentConversation);
-            const project = projectById.get(chat.projectId);
-            const chatTintStyle = project
-              ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
-              : undefined;
-            const projectName = project?.name ?? "Unknown project";
-            const branch = branches[chat.projectId];
-            const projectContext = branch ? `${projectName} | ${branch}` : projectName;
-            const model = modelFromId(chat.modelId ?? null);
-            const searchHit = searchActive ? hitById.get(chat.id) : undefined;
-            const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
-            const snippet = going ? "Deleting…"
-              : searchHit ? `${searchHit.speaker}: ${searchHit.excerpt}`
-              : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
-
-            return (
-              <AnimatedChatRow entering={!seenChatIds.current.has(chat.id)} leaving={isLeaving} key={chat.id}>
-                <div className={[
-                  "chat", chat.id === currentConversation ? "is-on" : "",
-                  running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
-                  going ? "is-going" : "", isLeaving ? "is-leaving" : "",
-                  chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
-                  unread ? "is-unread" : "",
-                ].filter(Boolean).join(" ")} style={chatTintStyle}>
-                  {renaming === chat.id ? (
-                    <form className="chat-rename" onSubmit={(event) => {
-                      event.preventDefault();
-                      const input = event.currentTarget.elements.namedItem("chat-title");
-                      if (input instanceof HTMLInputElement && input.value.trim()) onRename(chat.id, input.value);
-                      setRenaming(null);
-                    }}>
-                      <input name="chat-title" className="chat-rename-input" defaultValue={chat.title}
-                        aria-label="Chat title" maxLength={48} autoFocus
-                        onFocus={(event) => event.currentTarget.select()}
-                        onBlur={(event) => {
-                          if (event.currentTarget.value.trim()) onRename(chat.id, event.currentTarget.value);
-                          setRenaming(null);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key !== "Escape") return;
-                          event.preventDefault(); setRenaming(null);
-                        }} />
-                    </form>
-                  ) : (
-                    <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
-                      busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
-                      className="chat-btn" type="button"
-                      aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}`}
-                      disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
-                      aria-description="Hover to preview. Hold for chat actions."
-                      onPointerDown={(event) => {
-                        cancelHold(); held.current = false;
-                        if (event.pointerType === "mouse" || going || isLeaving || !window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
-                        holdStart.current = { x: event.clientX, y: event.clientY };
-                        hold.current = setTimeout(() => { held.current = true; setActionsId(chat.id); }, 500);
-                      }}
-                      onPointerMove={(event) => {
-                        if (Math.hypot(event.clientX - holdStart.current.x, event.clientY - holdStart.current.y) > 10) cancelHold();
-                      }}
-                      onPointerUp={cancelHold} onPointerCancel={cancelHold}
-                      onContextMenu={(event) => {
-                        if (!window.matchMedia("(max-width: 859.98px), (pointer: coarse)").matches) return;
-                        event.preventDefault(); cancelHold();
-                        if (!going && !isLeaving) setActionsId(chat.id);
-                      }}
-                      onClick={() => {
-                        if (held.current) { held.current = false; return; }
-                        onPickConversation(chat);
-                      }}>
-                      <span className="chat-summary">
-                        <span className="chat-heading">
-                          {unread && <span className="chat-unread-dot" aria-hidden="true" />}
-                          <span className="chat-title">{chat.title}</span>
-                          <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
-                        </span>
-                        <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
-                        <span className="chat-meta">
-                          <span className="chat-project">
-                            {project
-                              ? <ProjectAvatar project={project} size="tiny" />
-                              : <span className="project-avatar is-tiny" aria-hidden="true">?</span>}
-                            <span className="chat-project-name" title={projectContext}>{projectContext}</span>
-                          </span>
-                          {model && (
-                            <span className="chat-model" title={`Active model: ${model.name} · ${model.model}`}>
-                              <AgentLogo agent={model.agent} size={10} />
-                              <span>{model.model}</span>
-                            </span>
-                          )}
-                        </span>
-                      </span>
-                    </ChatPreviewButton>
-                  )}
-
-                  <span className="chat-indicators">
-                    {chat.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
-                    <span className="chat-mark" aria-hidden="true" title={busy.has(chat.id) ? "working" : running.has(chat.id) ? "session running" : undefined} />
-                  </span>
-                  {renaming !== chat.id && <SidebarMenu className="chat-actions-trigger"
-                    label={`Actions for ${chat.title}`} open={actionsId === chat.id}
-                    onOpenChange={(open) => setActionsId(open ? chat.id : null)} disabled={isLeaving}
-                    icon={going ? <DeleteCountdownIcon ms={deleteMs} /> : undefined}
-                    items={[
-                      { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(chat.id) },
-                      { id: "pin", label: chat.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(chat.id) },
-                      { id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) },
-                    ]} />}
-                </div>
-              </AnimatedChatRow>
-            );
-          })}
+          {visibleNodes.map(renderChat)}
         </ul>
       ) : (
         <div className="sidebar-empty" role="status" aria-live="polite">
@@ -311,7 +375,7 @@ function AnimatedChatRow({ entering, leaving, children }: { entering: boolean; l
     const frame = requestAnimationFrame(() => setIsEntering(false));
     return () => cancelAnimationFrame(frame);
   }, [isEntering]);
-  return <li className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}>{children}</li>;
+  return <li className={["chat-row", isEntering ? "is-entering" : "", leaving ? "is-leaving" : ""].filter(Boolean).join(" ")}><div className="chat-row-content">{children}</div></li>;
 }
 
 function SearchIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }
