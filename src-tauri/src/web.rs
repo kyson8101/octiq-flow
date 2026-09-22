@@ -318,6 +318,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/file", get(file_handler).post(file_post_handler))
             .route("/hook/permission", post(permission_handler))
             .route("/hook/ask", post(ask_handler))
+            .route("/hook/orchestration", post(orchestration_handler))
             .fallback(get(asset_handler))
             .with_state(ctx.clone());
 
@@ -930,6 +931,67 @@ async fn ask_handler(
     }
     let answer = crate::question::ask_request(ctx.services.chats.clone(), request).await;
     axum::Json(json!({ "answer": answer })).into_response()
+}
+
+/// A chat-bound MCP call into the orchestration kernel.
+///
+/// This is intentionally a whitelist rather than a generic HTTP-to-dispatch
+/// bridge. The token can already open the command socket, but an agent gets a
+/// far narrower contract: coordination state, never arbitrary browser commands.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrchestrationHook {
+    chat_key: String,
+    action: String,
+    #[serde(default)]
+    args: Value,
+}
+
+async fn orchestration_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<TokenQuery>,
+    Json(request): Json<OrchestrationHook>,
+) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let command = match request.action.as_str() {
+        "run_create" => "orchestration_run_create",
+        "task_create" => "orchestration_task_create",
+        "snapshot" => "orchestration_snapshot",
+        "worker_start" => "orchestration_worker_start",
+        "worker_report" => "orchestration_worker_report",
+        "gate_create" => "orchestration_gate_create",
+        "gate_resolve" => "orchestration_gate_resolve",
+        "message_send" => "orchestration_message_send",
+        "run_stop" => "orchestration_run_stop",
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": "Unknown orchestration action." })),
+            )
+                .into_response()
+        }
+    };
+    let mut args = match request.args {
+        Value::Object(args) => args,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": "Orchestration arguments must be an object." })),
+            )
+                .into_response()
+        }
+    };
+    args.insert("actorChatKey".into(), Value::String(request.chat_key));
+    match run_command(&ctx, command.into(), Value::Object(args)).await {
+        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
 }
 
 /// One connected browser: forward its invokes, stream events back.

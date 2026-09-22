@@ -1,0 +1,35 @@
+{
+  "name": "octiqflow",
+  "version": "0.0.0-development",
+  "description": "Agent workflow orchestrator with real browser terminals",
+  "bin": {
+    "octiqflow": "bin/octiqflow.cjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs"
+  },
+  "optionalDependencies": {
+    "octiqflow-darwin-arm64": "0.0.0-development",
+    "octiqflow-darwin-x64": "0.0.0-development",
+    "octiqflow-linux-x64": "0.0.0-development",
+    "octiqflow-win32-x64": "0.0.0-development"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kyson8101/octiq-flow.git"
+  },
+  "homepage": "https://github.com/kyson8101/octiq-flow#readme",
+  "bugs": "https://github.com/kyson8101/octiq-flow/issues",
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "public"
+  }
+}

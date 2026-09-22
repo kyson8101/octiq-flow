@@ -59,10 +59,26 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.ok(bound.result.tools.some(tool => tool.name === "ask_user"));
   assert.ok(bound.result.tools.some(tool => tool.name === "preview_image"));
   assert.ok(bound.result.tools.some(tool => tool.name === "search_conversations"));
+  const orchestration = bound.result.tools
+    .filter(tool => tool.name.startsWith("orchestration_"))
+    .map(tool => tool.name);
+  assert.deepEqual(orchestration, [
+    "orchestration_run_create",
+    "orchestration_task_create",
+    "orchestration_snapshot",
+    "orchestration_worker_start",
+    "orchestration_worker_report",
+    "orchestration_gate_create",
+    "orchestration_gate_resolve",
+    "orchestration_message_send",
+    "orchestration_run_stop",
+  ]);
   assert.ok(!standalone.result.tools.some(tool => tool.name === "search_conversations"));
+  assert.ok(!standalone.result.tools.some(tool => tool.name.startsWith("orchestration_")));
   const codex = await mcp(root, "chat:one", "tools/list", undefined, ["--disable-ask-user"]);
   assert.ok(!codex.result.tools.some(tool => tool.name === "ask_user"));
   assert.ok(codex.result.tools.some(tool => tool.name === "search_conversations"));
+  assert.ok(codex.result.tools.some(tool => tool.name === "orchestration_worker_report"));
   const codexInit = await mcp(root, "chat:one", "initialize", {}, ["--disable-ask-user"]);
   assert.doesNotMatch(codexInit.result.instructions, /ask_user/);
   const codexDenied = await mcp(root, "chat:one", "tools/call", { name: "ask_user", arguments: { question: "Choose?" } }, ["--disable-ask-user"]);
