@@ -32,11 +32,11 @@ export function CarryOn({
           <span className="carry-on-detail">{queued} queued {queued === 1 ? "message" : "messages"} recorded.</span>
         )}
         {recovery.canContinue && (
-          <span className="carry-on-detail">Carry on sends a request to check completed actions before resuming.</span>
+          <span className="carry-on-detail">Resume chat only tells the agent that the chat service resumed.</span>
         )}
       </div>
       {recovery.canContinue && (
-        <button className="carry-on-btn" type="button" onClick={onCarryOn}>Carry on</button>
+        <button className="carry-on-btn" type="button" onClick={onCarryOn}>Resume chat</button>
       )}
     </div>
   );

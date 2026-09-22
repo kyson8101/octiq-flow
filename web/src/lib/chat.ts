@@ -45,17 +45,17 @@ import { readCodexEvent } from "./codexEvents";
 import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
-import { readCarryOn } from "./carryOn";
+import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { taskLabel, type BackgroundTask } from "./background";
 
 /** The one line a turn the CLIENT sent is drawn as, or `undefined` for one a
  *  person typed.
  *
- *  Historical multi-agent follow-up briefs and current carry-on messages are
+ *  Historical multi-agent follow-up briefs and service-resumed notices are
  *  recognised by their own words because replay has no separate flag. */
 function asOneLine(text: string): string | undefined {
-  return readRelay(text) ?? readCarryOn(text);
+  return readRelay(text) ?? readChatServiceResumed(text);
 }
 
 /** `stopped` is a call that was still in flight when the user stopped the turn.
