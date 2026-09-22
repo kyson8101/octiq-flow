@@ -28,6 +28,7 @@ mod git_watch;
 mod image_preview;
 mod memory;
 mod notify_hook;
+mod orchestration;
 mod paths;
 mod permission;
 mod proc;
