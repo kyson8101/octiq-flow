@@ -75,7 +75,28 @@ back out through `bus.rs` to every attached browser.
 There is **no desktop app and no Tauri**. Both were removed once the browser
 client became the product; the `src-tauri/` folder name is historical.
 
-## Run it
+## Install
+
+Node.js 18+ is enough to run a prebuilt OctiqFlow release:
+
+```bash
+npx octiqflow
+```
+
+On macOS, install it as a background service that starts at login:
+
+```bash
+npm install -g octiqflow
+octiqflow install
+```
+
+The matching native server and browser client are selected automatically; Rust
+and pnpm are not required. See [npm installation](docs/npm-installation.md) for
+supported platforms, service commands, and package details. Agent CLIs remain
+separate—install Claude Code, Codex, or pi.dev according to which agents you
+want OctiqFlow to drive.
+
+## Build from source
 
 You need **Rust** and **Node + pnpm**. No webview, no system GUI libraries, no
 platform SDK — the server is plain Rust and the client is a static bundle.
