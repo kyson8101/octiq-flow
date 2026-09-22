@@ -557,6 +557,10 @@
 .orch-attempt code { max-width: min(100%, 340px); overflow: hidden; color: var(--fg-2); font-family: var(--mono); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .orch-attempt > span { padding: 2px 6px; border-radius: 999px; background: var(--bg-2); color: var(--fg-3); font-size: 9.5px; }
 .orch-attempt > p { width: 100%; margin: 1px 0 0; color: var(--fg-2); font-size: 11.5px; line-height: 1.45; }
+.orch-attempt-retry { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 12px; margin-top: 4px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border)); border-radius: var(--radius); background: color-mix(in srgb, var(--warn) 7%, transparent); }
+.orch-attempt-retry small { color: var(--fg-2); font-size: 10.5px; line-height: 1.4; }
+.orch-attempt-retry button { flex: none; padding: 5px 9px; border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border)); border-radius: var(--radius); background: var(--bg-1); font-weight: 650; }
+.orch-attempt-retry button:disabled { opacity: .45; cursor: default; }
 
 .orch-messages { margin-top: 38px; }
 .orch-messages article { padding: 12px 0; border-top: 1px solid var(--border); }

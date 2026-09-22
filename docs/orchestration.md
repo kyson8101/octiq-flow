@@ -38,7 +38,22 @@ file cannot be read, the store refuses to overwrite it.
 5. The worker must call `orchestration_worker_report` with its exact attempt ID.
    Only that chat and the active attempt may settle the task.
 6. Completed dependencies unlock pending tasks. A reported block can be
-   retried; a gate-blocked attempt waits for its decision instead.
+   retried; a gate-blocked attempt waits for its decision instead. Retrying
+   with `newWorktree: false` reuses the previous attempt's assigned workspace
+   and preserves its changes while replacing `activeAttemptId` with the new
+   attempt.
+
+A worker report settles its attempt exactly once. Directed messages are
+delivered only to active attempts: a message to a completed, failed, cancelled,
+or reported-blocked attempt is rejected with guidance to create a retry. A
+blocked attempt with an open gate must be resumed by resolving that gate.
+
+A Codex safety rejection that raises OctiqFlow's approval card is still a
+pending host decision, not a blocked worker outcome. The worker ends its turn
+without opening a duplicate gate or settling the attempt, so the person's
+choice can resume that same attempt. If an older worker has already reported
+blocked, the coordinator must start a new attempt before sending further
+instructions.
 
 Late reports from replaced attempts are rejected. Stopping a run cancels open
 tasks and gates and stops its active worker chats. Worker chats stay in the

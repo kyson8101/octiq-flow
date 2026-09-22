@@ -557,7 +557,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             let snapshot = svc.orchestrations.snapshot(Some(&task.run_id))?;
             if let Some(run) = snapshot.runs.first() {
                 let continuation = format!(
-                    "OctiqFlow worker state changed for task {} ({}): {:?}.\n\n{}\n\nRead orchestration_snapshot for run {} and continue coordination from the authoritative state. Dispatch every newly ready task before waiting.",
+                    "OctiqFlow worker state changed for task {} ({}): {:?}.\n\n{}\n\nRead orchestration_snapshot for run {} and continue coordination from the authoritative state. Dispatch every newly ready task before waiting. Do not message a settled attempt; if a blocked or failed task needs more work, start a new attempt with orchestration_worker_start (newWorktree=false reuses its previous workspace).",
                     task.id, task.title, task.status, task.result.as_deref().unwrap_or_default(), run.id
                 );
                 if let Err(error) = crate::agent_chat::chat_continue_internal_impl(

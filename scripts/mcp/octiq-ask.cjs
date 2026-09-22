@@ -1132,7 +1132,7 @@ const ORCHESTRATION_WORKER_START = {
       model: { type: "string", description: "Optional provider-native model flag. Omit for its default." },
       effort: { type: "string", description: "Optional provider-native effort id." },
       access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"], description: "Worker permission level. Use auto unless the task needs a different boundary." },
-      newWorktree: { type: "boolean", description: "Create an isolated task worktree. Defaults to true." },
+      newWorktree: { type: "boolean", description: "Create an isolated task worktree. Defaults to true. On a retry, false reuses the previous attempt's assigned workspace and preserves its changes." },
       baseBranch: { type: "string", description: "Optional local base branch. Empty means the run checkout's current branch." },
     },
     required: ["taskId", "agent", "access"],
@@ -1191,7 +1191,8 @@ const ORCHESTRATION_MESSAGE_SEND = {
   name: "orchestration_message_send",
   description:
     "Send a durable, structured message within one run. Use to: coordinator for the master, " +
-    "or an attempt ID for a worker. This is coordination, not task completion.",
+    "or an active attempt ID for a worker. Settled attempts cannot resume: start a retry first. " +
+    "This is coordination, not task completion.",
   inputSchema: {
     type: "object",
     properties: {

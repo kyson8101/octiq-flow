@@ -503,7 +503,7 @@ impl OrchestrationStore {
         &self,
         actor_chat_key: &str,
         launch: &WorkerLaunch,
-    ) -> Result<(Run, Task, Attempt), String> {
+    ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
         self.mutate(|data| {
             let task = data
                 .tasks
@@ -525,21 +525,21 @@ impl OrchestrationStore {
             }) {
                 return Err("This task is waiting for its dependencies.".into());
             }
-            if let Some(active_id) = task.active_attempt_id.as_deref() {
-                let active_status = data.attempts.get(active_id).map(|attempt| attempt.status);
-                let has_open_gate = data.gates.values().any(|gate| {
-                    gate.task_id.as_deref() == Some(task.id.as_str())
-                        && gate.status == GateStatus::Open
-                });
-                match active_status {
-                    Some(AttemptStatus::Preparing | AttemptStatus::Running) => {
+            let previous = task
+                .active_attempt_id
+                .as_deref()
+                .and_then(|id| data.attempts.get(id))
+                .cloned();
+            if let Some(active) = previous.as_ref() {
+                match active.status {
+                    AttemptStatus::Preparing | AttemptStatus::Running => {
                         return Err("This task already has an active worker.".into())
                     }
-                    Some(AttemptStatus::Blocked) if has_open_gate => {
+                    AttemptStatus::Blocked if attempt_has_open_gate(data, active) => {
                         return Err("This task is waiting for its open decision gate.".into())
                     }
-                    Some(AttemptStatus::Blocked) => {
-                        if let Some(previous) = data.attempts.get_mut(active_id) {
+                    AttemptStatus::Blocked => {
+                        if let Some(previous) = data.attempts.get_mut(&active.id) {
                             previous.status = AttemptStatus::Cancelled;
                             previous.updated_at = now_ms();
                         }
@@ -550,15 +550,7 @@ impl OrchestrationStore {
             let active = data
                 .attempts
                 .values()
-                .filter(|attempt| {
-                    attempt.run_id == run.id
-                        && matches!(
-                            attempt.status,
-                            AttemptStatus::Preparing
-                                | AttemptStatus::Running
-                                | AttemptStatus::Blocked
-                        )
-                })
+                .filter(|attempt| attempt.run_id == run.id && attempt_is_unsettled(data, attempt))
                 .count();
             if active >= usize::from(run.max_concurrent) {
                 return Err(format!(
@@ -606,7 +598,7 @@ impl OrchestrationStore {
             let active_run = data.runs.get_mut(&run.id).expect("the run was read above");
             active_run.status = RunStatus::Running;
             active_run.updated_at = now;
-            Ok((run, reserved_task.clone(), attempt))
+            Ok((run, reserved_task.clone(), attempt, previous))
         })
     }
 
@@ -682,7 +674,7 @@ impl OrchestrationStore {
                     .into(),
             );
         }
-        let (run, task, reserved) = self.reserve_attempt(actor_chat_key, &launch)?;
+        let (run, task, reserved, previous) = self.reserve_attempt(actor_chat_key, &launch)?;
         announce(&run.id, "worker_preparing");
         let workspace = workspace(workspaces, &run.workspace_id)?;
         let prepared = if launch.new_worktree {
@@ -694,12 +686,7 @@ impl OrchestrationStore {
                 reserved.id.clone(),
             )
         } else {
-            Ok(crate::git_ops::PreparedWorkspace {
-                cwd: run.root_path.clone(),
-                branch: launch.base_branch.clone(),
-                is_repo: Path::new(&run.root_path).join(".git").exists(),
-                is_worktree: false,
-            })
+            existing_worker_workspace(&run, previous.as_ref(), &launch.base_branch)
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
@@ -715,6 +702,12 @@ impl OrchestrationStore {
                 return Err(error);
             }
         };
+        if let Some(previous) = previous.as_ref() {
+            // A settled chat must not wake after a replacement becomes
+            // authoritative. This is essential when the retry reuses its
+            // checkout, where two processes could otherwise mutate one tree.
+            let _ = crate::agent_chat::chat_stop_impl(&chats, previous.worker_chat_key.clone());
+        }
 
         let chat_id = reserved
             .worker_chat_key
@@ -834,8 +827,12 @@ impl OrchestrationStore {
             }
             if !matches!(
                 attempt.status,
-                AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
+                AttemptStatus::Preparing | AttemptStatus::Running
             ) {
+                if attempt.status == AttemptStatus::Blocked && attempt_has_open_gate(data, &attempt)
+                {
+                    return Err("This worker attempt is waiting for its open decision gate.".into());
+                }
                 return Err("This worker attempt has already settled.".into());
             }
             let summary = required_text("worker summary", report.summary, 20_000)?;
@@ -1054,6 +1051,28 @@ impl OrchestrationStore {
                 if attempt.run_id != run_id {
                     return Err("The target attempt belongs to another run.".into());
                 }
+                let task = data
+                    .tasks
+                    .get(&attempt.task_id)
+                    .ok_or("The target attempt's task does not exist.")?;
+                if task.active_attempt_id.as_deref() != Some(attempt.id.as_str()) {
+                    return Err("The target attempt is stale; a newer attempt owns the task.".into());
+                }
+                match attempt.status {
+                    AttemptStatus::Preparing | AttemptStatus::Running => {}
+                    AttemptStatus::Blocked if attempt_has_open_gate(data, attempt) => {
+                        return Err("The target attempt is waiting for an open decision gate. Resolve that gate instead of sending a continuation message.".into());
+                    }
+                    AttemptStatus::Completed => {
+                        return Err("The target attempt completed and cannot be resumed. Create a new task if more work is required.".into());
+                    }
+                    AttemptStatus::Blocked | AttemptStatus::Failed => {
+                        return Err("The target attempt has settled. Start a retry with orchestration_worker_start before sending more instructions.".into());
+                    }
+                    AttemptStatus::Cancelled => {
+                        return Err("The target attempt was cancelled and cannot be resumed.".into());
+                    }
+                }
                 attempt.worker_chat_key.clone()
             };
             let message = OrchestrationMessage {
@@ -1130,6 +1149,40 @@ fn workspace(state: &WorkspaceState, id: &str) -> Result<Workspace, String> {
         .ok_or_else(|| "The run's project no longer exists.".into())
 }
 
+fn existing_worker_workspace(
+    run: &Run,
+    previous: Option<&Attempt>,
+    base_branch: &str,
+) -> Result<crate::git_ops::PreparedWorkspace, String> {
+    let (cwd, branch, is_worktree) = previous
+        .filter(|attempt| !attempt.cwd.trim().is_empty())
+        .map_or_else(
+            || (run.root_path.clone(), base_branch.to_string(), false),
+            |attempt| {
+                (
+                    attempt.cwd.clone(),
+                    attempt.branch.clone(),
+                    attempt.is_worktree,
+                )
+            },
+        );
+    if !Path::new(&cwd).is_dir() {
+        let guidance = previous.map_or(
+            "Choose an existing run root or start with newWorktree=true.",
+            |_| "Start the retry with newWorktree=true to create a replacement.",
+        );
+        return Err(format!(
+            "The worker workspace no longer exists at '{cwd}'. {guidance}"
+        ));
+    }
+    Ok(crate::git_ops::PreparedWorkspace {
+        is_repo: Path::new(&cwd).join(".git").exists(),
+        cwd,
+        branch,
+        is_worktree,
+    })
+}
+
 pub fn infer_context(
     workspaces: &WorkspaceState,
     actor_chat_key: &str,
@@ -1175,13 +1228,29 @@ fn active_task_for_actor(data: &Stored, actor_chat_key: &str) -> Option<Task> {
         .values()
         .find(|attempt| {
             attempt.worker_chat_key == actor_chat_key
-                && matches!(
-                    attempt.status,
-                    AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
-                )
+                && attempt_is_unsettled(data, attempt)
+                && data.tasks.get(&attempt.task_id).is_some_and(|task| {
+                    task.active_attempt_id.as_deref() == Some(attempt.id.as_str())
+                })
         })
         .and_then(|attempt| data.tasks.get(&attempt.task_id))
         .cloned()
+}
+
+/// `Blocked` has two meanings in the persisted schema: a live worker waiting
+/// on an open decision gate, or a terminal worker report with a blocked
+/// outcome. The gate is the authoritative discriminator between them.
+fn attempt_has_open_gate(data: &Stored, attempt: &Attempt) -> bool {
+    data.gates.values().any(|gate| {
+        gate.task_id.as_deref() == Some(attempt.task_id.as_str()) && gate.status == GateStatus::Open
+    })
+}
+
+fn attempt_is_unsettled(data: &Stored, attempt: &Attempt) -> bool {
+    matches!(
+        attempt.status,
+        AttemptStatus::Preparing | AttemptStatus::Running
+    ) || (attempt.status == AttemptStatus::Blocked && attempt_has_open_gate(data, attempt))
 }
 
 fn make_ready(data: &mut Stored, run_id: &str) {
@@ -1244,12 +1313,20 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
 /// than "ghost" workers that hold a task and concurrency slot forever.
 fn recover_interrupted_workers(data: &mut Stored) -> bool {
     let now = now_ms();
+    let gate_blocked_tasks = data
+        .gates
+        .values()
+        .filter(|gate| gate.status == GateStatus::Open)
+        .filter_map(|gate| gate.task_id.clone())
+        .collect::<BTreeSet<_>>();
     let mut recovered = BTreeMap::new();
     for attempt in data.attempts.values_mut() {
-        if !matches!(
+        let interrupted = matches!(
             attempt.status,
-            AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
-        ) {
+            AttemptStatus::Preparing | AttemptStatus::Running
+        ) || (attempt.status == AttemptStatus::Blocked
+            && gate_blocked_tasks.contains(&attempt.task_id));
+        if !interrupted {
             continue;
         }
         attempt.status = AttemptStatus::Failed;
@@ -1287,7 +1364,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
 
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     format!(
-        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Do not coordinate unrelated work. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
+        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Do not coordinate unrelated work. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection with a pending OctiqFlow approval card is not a settled task and the card is already its decision path: report the rejected action in prose, do not call orchestration_gate_create or orchestration_worker_report, and end the turn so the card can resume this same attempt. When the task genuinely settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
         run.id,
         task.id,
         attempt.id,
@@ -1300,7 +1377,7 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
 
 pub fn master_prompt(run: &Run) -> String {
     format!(
-        "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Dispatch the full ready wave up to the run's concurrency limit ({}) before waiting, using a new worktree for each code task by default. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send for directed coordination and orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
+        "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Dispatch the full ready wave up to the run's concurrency limit ({}) before waiting, using a new worktree for each code task by default. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send only for an active attempt; a settled attempt cannot resume. If a blocked or failed task needs more work, start a new authoritative attempt with orchestration_worker_start, using newWorktree=false to reuse its previous worker workspace. Use orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
         run.id, run.objective, run.max_concurrent
     )
 }
@@ -1461,7 +1538,7 @@ mod tests {
             new_worktree: true,
             base_branch: String::new(),
         };
-        let (_, _, attempt) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
             .unwrap();
@@ -1502,7 +1579,7 @@ mod tests {
             new_worktree: true,
             base_branch: String::new(),
         };
-        let (_, _, first) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .fail_preparation(
                 &first.id,
@@ -1512,7 +1589,7 @@ mod tests {
                 false,
             )
             .unwrap();
-        let (_, _, second) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, second, _) = store.reserve_attempt("chat:master", &launch).unwrap();
 
         let error = store
             .report_worker(
@@ -1548,7 +1625,7 @@ mod tests {
             new_worktree: true,
             base_branch: String::new(),
         };
-        let (_, _, attempt) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         let error = store
             .report_worker(
                 "chat:impostor",
@@ -1577,7 +1654,7 @@ mod tests {
             new_worktree: true,
             base_branch: String::new(),
         };
-        let (_, _, first) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .activate_attempt(&first.id, "/tmp".into(), "first".into(), true)
             .unwrap();
@@ -1592,8 +1669,39 @@ mod tests {
                 },
             )
             .unwrap();
-        let (_, _, second) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let second_report = store
+            .report_worker(
+                &first.worker_chat_key,
+                WorkerReport {
+                    attempt_id: first.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "late completion".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(second_report.contains("already settled"), "{second_report}");
+
+        let message_error = store
+            .record_message(
+                "chat:master",
+                run.id.clone(),
+                first.id.clone(),
+                "instruction".into(),
+                "Continue".into(),
+                "Continue the run.".into(),
+            )
+            .unwrap_err();
+        assert!(message_error.contains("Start a retry"), "{message_error}");
+        assert!(store.snapshot(Some(&run.id)).unwrap().messages.is_empty());
+
+        let (_, _, second, previous) = store.reserve_attempt("chat:master", &launch).unwrap();
         assert_ne!(first.id, second.id);
+        let previous = previous.expect("the retry keeps its predecessor context");
+        let reused = existing_worker_workspace(&run, Some(&previous), "").unwrap();
+        assert_eq!(reused.cwd, "/tmp");
+        assert_eq!(reused.branch, "first");
+        assert!(reused.is_worktree);
         assert_eq!(
             store
                 .snapshot(Some(&run.id))
@@ -1612,7 +1720,7 @@ mod tests {
         store
             .create_gate(
                 &second.worker_chat_key,
-                run.id,
+                run.id.clone(),
                 Some(task.id),
                 "Which API?".into(),
                 vec!["A".into(), "B".into()],
@@ -1622,6 +1730,63 @@ mod tests {
             .reserve_attempt("chat:master", &launch)
             .unwrap_err()
             .contains("decision gate"));
+        let gate_message_error = store
+            .record_message(
+                "chat:master",
+                run.id,
+                second.id,
+                "instruction".into(),
+                "Continue".into(),
+                "Continue the run.".into(),
+            )
+            .unwrap_err();
+        assert!(
+            gate_message_error.contains("Resolve that gate"),
+            "{gate_message_error}"
+        );
+    }
+
+    #[test]
+    fn a_settled_block_does_not_consume_a_concurrency_slot() {
+        let store = OrchestrationStore::default();
+        let run = store
+            .create_run(
+                "chat:master".into(),
+                "Ship the feature".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(1),
+            )
+            .unwrap();
+        let first_task = task(&store, &run, Vec::new());
+        let second_task = task(&store, &run, Vec::new());
+        let mut launch = WorkerLaunch {
+            task_id: first_task.id,
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: true,
+            base_branch: String::new(),
+        };
+        let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store
+            .activate_attempt(&first.id, "/tmp".into(), "first".into(), true)
+            .unwrap();
+        store
+            .report_worker(
+                &first.worker_chat_key,
+                WorkerReport {
+                    attempt_id: first.id,
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "blocked".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        launch.task_id = second_task.id;
+        store.reserve_attempt("chat:master", &launch).unwrap();
     }
 
     #[test]
@@ -1661,7 +1826,7 @@ mod tests {
             new_worktree: true,
             base_branch: String::new(),
         };
-        let (_, _, attempt) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
             .unwrap();
@@ -1673,6 +1838,48 @@ mod tests {
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Failed);
         assert_eq!(snapshot.runs[0].status, RunStatus::Failed);
         restored.reserve_attempt("chat:master", &launch).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_reported_block_stays_settled_after_a_server_restart() {
+        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(file.clone());
+        let run = run(&store);
+        let task = task(&store, &run, Vec::new());
+        let launch = WorkerLaunch {
+            task_id: task.id,
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: true,
+            base_branch: String::new(),
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store
+            .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
+            .unwrap();
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id,
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "blocked".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        let restored = OrchestrationStore::load(file);
+        let snapshot = restored.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(snapshot.attempts[0].status, AttemptStatus::Blocked);
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Blocked);
+        assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
         let _ = fs::remove_dir_all(root);
     }
 }

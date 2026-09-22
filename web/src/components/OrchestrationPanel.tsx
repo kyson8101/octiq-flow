@@ -145,6 +145,23 @@ export function OrchestrationPanel({
     }
   };
 
+  const retryTask = async (task: OrchestrationTask, attempt: OrchestrationAttempt) => {
+    if (!selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await bridge.invoke("orchestration_worker_start", {
+        actorChatKey: selected.coordinatorChatKey,
+        ...retryLaunchArgs(task, attempt),
+      });
+      await read();
+    } catch (problem) {
+      setError(messageOf(problem));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const stopRun = async () => {
     if (!selected) return;
     setBusy(true);
@@ -240,6 +257,7 @@ export function OrchestrationPanel({
                 confirmStop={confirmStop}
                 onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
                 onResolve={(gate, answer) => void resolveGate(gate, answer)}
+                onRetry={(task, attempt) => void retryTask(task, attempt)}
                 onOpenChat={onOpenChat}
                 onAskStop={() => setConfirmStop(true)}
                 onCancelStop={() => setConfirmStop(false)}
@@ -324,6 +342,7 @@ function RunDetail({
   confirmStop,
   onAnswer,
   onResolve,
+  onRetry,
   onOpenChat,
   onAskStop,
   onCancelStop,
@@ -339,14 +358,19 @@ function RunDetail({
   confirmStop: boolean;
   onAnswer: (gateId: string, answer: string) => void;
   onResolve: (gate: OrchestrationGate, answer: string) => void;
+  onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
   onOpenChat: (chatKey: string) => void;
   onAskStop: () => void;
   onCancelStop: () => void;
   onStop: () => void;
 }) {
   const openGates = gates.filter((gate) => gate.status === "open");
+  const gateBlockedTasks = new Set(openGates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
   const completed = tasks.filter((task) => task.status === "completed").length;
-  const active = attempts.filter((attempt) => ["preparing", "running", "blocked"].includes(attempt.status)).length;
+  const active = attempts.filter((attempt) =>
+    ["preparing", "running"].includes(attempt.status)
+      || (attempt.status === "blocked" && gateBlockedTasks.has(attempt.taskId)),
+  ).length;
   const taskNames = new Map(tasks.map((task) => [task.id, task.title]));
   const byTask = new Map<string, OrchestrationAttempt>();
   for (const attempt of attempts) {
@@ -418,6 +442,10 @@ function RunDetail({
           <div className="orch-planning"><span className="orch-pulse" />The master is turning the outcome into tasks.</div>
         ) : tasks.map((task) => {
           const attempt = byTask.get(task.id);
+          const retryable = !!attempt
+            && ["blocked", "failed"].includes(task.status)
+            && ["blocked", "failed"].includes(attempt.status)
+            && !gateBlockedTasks.has(task.id);
           return (
             <article className={`orch-task is-${task.status}`} key={task.id}>
               <div className="orch-task-rail"><StatusMark status={task.status} /></div>
@@ -438,6 +466,14 @@ function RunDetail({
                     {attempt.branch && <code>{attempt.branch}</code>}
                     {attempt.isWorktree && <span>worktree</span>}
                     {attempt.summary && <p>{attempt.summary}</p>}
+                    {retryable && (
+                      <div className="orch-attempt-retry">
+                        <small>{attempt.cwd
+                          ? "This attempt settled. Continue in the same workspace with a new authoritative attempt."
+                          : "This attempt settled before a workspace was assigned. Start a fresh authoritative attempt."}</small>
+                        <button type="button" disabled={busy} onClick={() => onRetry(task, attempt)}>Start retry</button>
+                      </div>
+                    )}
                   </div>
                 )}
                 {!attempt && task.result && <p className="orch-task-result">{task.result}</p>}
@@ -476,6 +512,19 @@ function timeLabel(timestamp: number): string {
 
 function messageOf(problem: unknown): string {
   return String((problem as Error)?.message ?? problem);
+}
+
+export function retryLaunchArgs(task: OrchestrationTask, attempt: OrchestrationAttempt) {
+  return {
+    taskId: task.id,
+    agent: attempt.agent,
+    model: attempt.model,
+    effort: attempt.effort,
+    access: attempt.access,
+    // A prepared retry keeps the exact assigned checkout and its uncommitted
+    // work. A preparation failure has no checkout to reuse, so isolate it anew.
+    newWorktree: !attempt.cwd.trim(),
+  };
 }
 
 function OrchestratorIcon() {

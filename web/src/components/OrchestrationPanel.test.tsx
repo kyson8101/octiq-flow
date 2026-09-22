@@ -9,7 +9,7 @@ vi.mock("../lib/bridge", () => ({
   },
 }));
 
-import { OrchestrationPanel, type OrchestrationSnapshot } from "./OrchestrationPanel";
+import { OrchestrationPanel, retryLaunchArgs, type OrchestrationSnapshot } from "./OrchestrationPanel";
 
 const snapshot: OrchestrationSnapshot = {
   runs: [{
@@ -97,5 +97,27 @@ describe("OrchestrationPanel", () => {
     expect(html).toContain("Use the durable schema?");
     expect(html).toContain("codex worker #1");
     expect(html).toContain("feature/worker");
+    expect(html).not.toContain("Start retry");
+  });
+
+  it("offers a new authoritative attempt for a settled block", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationPanel
+        project={{ id: "project", name: "OctiqFlow", primary_path: "/repo" }}
+        coordinatorKey="chat:master"
+        initialSnapshot={{ ...snapshot, gates: [] }}
+        onOpenChat={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(html).toContain("This attempt settled.");
+    expect(html).toContain("Start retry");
+    expect(retryLaunchArgs(snapshot.tasks[0], snapshot.attempts[0])).toMatchObject({
+      taskId: "task_1",
+      agent: "codex",
+      access: "auto",
+      newWorktree: false,
+    });
   });
 });

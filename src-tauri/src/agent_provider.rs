@@ -1066,7 +1066,7 @@ const HISTORY_PROMPT: &str = "`search_conversations` finds relevant past OctiqFl
 
 const ORCHESTRATION_PROMPT: &str = "OctiqFlow's orchestration tools are a host-owned control plane for explicitly requested supervised multi-agent work. The master creates one durable run and a shallow task DAG, dispatches the full ready wave before waiting, and treats `orchestration_snapshot` rather than chat prose as authoritative. A worker must settle its exact attempt through `orchestration_worker_report`; a normal reply does not complete the task.";
 
-const ORCHESTRATION_WORKER_PROMPT: &str = "This chat is an OctiqFlow orchestration worker. Do not use `request_user_input`, `ask_user`, or ordinary prose to ask the person a blocking question. Record it with `orchestration_gate_create` for this attempt and end the turn; OctiqFlow will resume this chat with the decision. Settle the assigned attempt exactly once with `orchestration_worker_report`.";
+const ORCHESTRATION_WORKER_PROMPT: &str = "This chat is an OctiqFlow orchestration worker. Do not use `request_user_input`, `ask_user`, or ordinary prose to ask the person a blocking question. Record it with `orchestration_gate_create` for this attempt and end the turn; OctiqFlow will resume this chat with the decision. A Codex safety rejection that raised an OctiqFlow approval card is still awaiting that host decision, and the card is already its decision path: explain the rejection once, end the turn, and do not call `orchestration_gate_create` or `orchestration_worker_report` merely because the action was rejected. The card resumes this same attempt. Settle the assigned attempt exactly once with `orchestration_worker_report` only when the task genuinely completes, fails, or cannot be resumed by an open gate or safety decision.";
 
 /// Docspace preferences are useful context, but loading all private preference
 /// files into every new model session would cross the vault's privacy boundary.
@@ -1256,6 +1256,9 @@ mod tests {
         assert!(instructions.contains("Do not use `request_user_input`"));
         assert!(instructions.contains("`orchestration_gate_create`"));
         assert!(instructions.contains("`orchestration_worker_report`"));
+        assert!(instructions.contains("safety rejection"));
+        assert!(instructions
+            .contains("do not call `orchestration_gate_create` or `orchestration_worker_report`"));
 
         let claude = provider_for(AgentKind::Claude).build_command(&AgentCommand {
             model: None,
