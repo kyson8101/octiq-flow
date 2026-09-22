@@ -61,6 +61,11 @@ export type Conversation = {
    *  when the server does not list it; one that WAS confirmed and has since
    *  disappeared is taken as deleted, and goes here too. */
   synced?: boolean;
+  /** When a viewer last opened this chat. Held on the server's index, so a
+   *  chat read on the phone is not still flagged unread on the laptop. Absent
+   *  means never opened since this field shipped — treated the same as "as
+   *  old as the chat itself" (see `lib/unread`), not "unread forever". */
+  readAt?: number;
   /** Kept at the top of its project, above every newer chat. Absent means not
    *  pinned. Held on the server's index as well, so a pin made on the laptop
    *  is a pin on the phone. */

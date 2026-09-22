@@ -319,6 +319,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "sessionId")?,
         )?)),
         "chat_index_save" => unit(crate::agent_chat::chat_index_save(arg(&args, "meta")?)),
+        "chat_mark_read" => unit(crate::agent_chat::chat_mark_read(
+            arg(&args, "id")?,
+            arg(&args, "at")?,
+        )),
         "chat_index_remove" => {
             let id: String = arg(&args, "id")?;
             crate::agent_chat::chat_index_remove(

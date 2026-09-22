@@ -6254,6 +6254,29 @@ body.is-ultra .eff {
 .chat-summary { flex: 1; min-width: 0; }
 .chat-heading { display: flex; align-items: baseline; gap: 8px; }
 .chat-time { flex: 0 0 auto; font-size: 10px; font-weight: 400; color: var(--fg-2); white-space: nowrap; }
+
+/* Activity nobody has acknowledged, on any device (see lib/unread.ts). A
+   static dot plus a heavier, full-strength title — the same weight bump
+   `.chat.is-on .chat-btn` already gives the row you are looking at, so
+   "worth a look" and "the one you are looking at" read as the same kind of
+   emphasis. No animation: that is reserved for the busy dot in the rail,
+   which says something is happening right now rather than already sitting
+   there unread. The two never coincide in one tab — the chat on screen is
+   never counted as unread — so they never have to compete on the same row.
+   Extra specificity (three classes) on purpose: it has to outrank both the
+   task list's and the mobile sidebar's own `.chat-title` weight. */
+.chat.is-unread .chat-title {
+  color: var(--fg-0);
+  font-weight: 800;
+}
+
+.chat-unread-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 .chat-snippet {
   display: block;
   overflow: hidden;

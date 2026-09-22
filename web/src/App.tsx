@@ -53,12 +53,14 @@ import {
 import {
   cancelIndexRemoval,
   indexBackfill,
+  markChatRead,
   removeIndexEntry,
   saveIndexEntry,
   saveIndexEntries,
   type DeletedIndexEntry,
   type IndexEntry,
 } from "./lib/chatIndex";
+import { isUnread } from "./lib/unread";
 import { recall, remember } from "./lib/remember";
 import { forgetChatPlace } from "./lib/chatPlace";
 import {
@@ -1630,6 +1632,29 @@ export default function App() {
     () => conversations.find((conversation) => conversation.id === conversationId),
     [conversations, conversationId],
   );
+  // The chat on screen counts as read, and stays that way for as long as it
+  // is the one on screen — this covers both opening it (its own `updatedAt`
+  // is already older than `now`) and it picking up NEW activity while being
+  // watched (an agent finishing a turn, a second device's send landing).
+  //
+  // The second half matters most: without it, a chat you watched finish would
+  // flash unread the moment you switched away, because `readAt` was only ever
+  // set once, at open. That is exactly backwards for an indicator whose whole
+  // point is "activity you did NOT see" — so it re-marks on every activity
+  // change while open rather than once. Scalar dependencies, not `openRecord`
+  // itself, so this reacts to only ITS OWN chat's activity, not every other
+  // row's.
+  useEffect(() => {
+    if (!openRecord || !isUnread(openRecord, null)) return;
+    const id = openRecord.id;
+    const at = Date.now();
+    markChatRead(id, at);
+    setConversations((prev) => {
+      const list = prev.map((conv) => (conv.id === id ? { ...conv, readAt: at } : conv));
+      saveConversations(list);
+      return list;
+    });
+  }, [openRecord?.id, openRecord?.updatedAt, openRecord?.readAt]);
   /** A worktree chat belongs to its parent project but runs from its own cwd.
    *  Every local surface follows that exact directory: agent, Git panel,
    *  terminal, file pins and path rendering. */

@@ -3513,6 +3513,17 @@ pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> 
     Ok(())
 }
 
+/// A chat was opened; move its shared "last read" mark forward and tell every
+/// other browser so an unread dot there clears too. Its own command rather
+/// than a `chat_index_save` — this fires on every open, and a save carries a
+/// FULL entry that can be stale by the time it lands (see
+/// `chat_index::mark_read`).
+pub fn chat_mark_read(id: String, at: i64) -> Result<(), String> {
+    crate::chat_index::mark_read(&id, at)?;
+    announce_index_change(&id, false);
+    Ok(())
+}
+
 /// Move a chat into the one-day trash. The old command name is kept so an
 /// already-open browser gets the safer behaviour as soon as the backend is
 /// updated. `expected_generation` makes a delayed retry from before a restore
