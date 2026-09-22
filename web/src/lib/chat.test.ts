@@ -1502,6 +1502,73 @@ describe("a turn that failed", () => {
     expect(f.outOfCredit).toBeUndefined();
     expect(f.title).toBe("The agent stopped with an error");
   });
+
+  it("keeps a durable auto-resume schedule until it starts or is cancelled", () => {
+    let state = reduceChat(emptyChat(), { type: "error", message: "out of credits" });
+    state = reduceChat(state, {
+      type: "octiq_auto_resume_scheduled",
+      id: "resume-1",
+      agent: "codex",
+      reset_at: 2_000,
+      run_at: 2_060,
+    });
+    expect(state.autoResume).toEqual({
+      id: "resume-1",
+      agent: "codex",
+      resetAt: 2_000,
+      runAt: 2_060,
+    });
+    expect(state.failure?.outOfCredit).toBe(true);
+
+    // Optimistic UI cannot claim cancellation; the durable backend event is
+    // the authority when persistence fails or another client wins the race.
+    const sending = addUserTurn(state, "I will continue manually", [], 10, "manual");
+    expect(sending.autoResume?.id).toBe("resume-1");
+
+    state = reduceChat(state, { type: "octiq_auto_resume_cancelled", id: "other" });
+    expect(state.autoResume?.id).toBe("resume-1");
+    state = reduceChat(state, { type: "octiq_auto_resume_cancelled", id: "resume-1" });
+    expect(state.autoResume).toBeUndefined();
+  });
+
+  it("clears the quota failure when auto-resume dispatches and reports a dispatch failure", () => {
+    let state = reduceChat(emptyChat(), { type: "error", message: "out of credits" });
+    state = reduceChat(state, {
+      type: "octiq_auto_resume_scheduled",
+      id: "resume-1",
+      agent: "codex",
+      reset_at: 2_000,
+      run_at: 2_060,
+    });
+    state = reduceChat(state, { type: "octiq_auto_resume_started", id: "resume-1" }, 9_000);
+    expect(state.autoResume).toBeUndefined();
+    expect(state.failure).toBeUndefined();
+    expect(state.busy).toBe(true);
+    expect(state.turnStartedAt).toBe(9_000);
+
+    state = reduceChat(state, {
+      type: "octiq_auto_resume_failed",
+      id: "resume-1",
+      message: "native session disappeared",
+    });
+    expect(state.busy).toBe(false);
+    expect(state.failure).toEqual({
+      title: "Auto-resume could not start",
+      detail: "native session disappeared",
+    });
+  });
+
+  it("draws the scheduler-owned continuation as a compact lifecycle line", () => {
+    const prompt =
+      "[OctiqFlow automatic resume after usage reset]\nContinue the task that the usage limit interrupted.";
+    const state = reduceChat(emptyChat(), {
+      type: "user",
+      uuid: "automatic-turn",
+      octiq_user_turn: true,
+      message: { role: "user", content: [{ type: "text", text: prompt }] },
+    });
+    expect(state.messages[0]?.relay).toBe("automatically resumed after the usage limit reset");
+  });
 });
 
 describe("a message taken back before the agent was given it", () => {

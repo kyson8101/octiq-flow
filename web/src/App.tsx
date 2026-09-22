@@ -1767,6 +1767,7 @@ export default function App() {
     chat.failure && !chat.failure.inline && conversationId && !failureDismissed(conversationId, chat.failure)
       ? chat.failure
       : undefined;
+  const autoResume = chat.autoResume;
   const previews = useImagePreviews(conversationId ? keyFor(conversationId) : "", chat.busy);
   const previewVisible = previews.open;
   /** The files this chat says are worth opening — see lib/pins. Read once up
@@ -3761,28 +3762,60 @@ export default function App() {
             </div>
           )}
 
-          {failure && conversationId && (
-            <div className={`failure ${failure.outOfCredit ? "is-quota" : ""}`} role="alert">
+          {(failure || autoResume) && conversationId && (
+            <div className={`failure ${failure?.outOfCredit || autoResume ? "is-quota" : ""}`} role="alert">
               {/* Read, and now done with. Speaking again clears it too, but the
                   failure people actually sit with is a quota one — where the
                   answer is to WAIT, and asking again just puts the same banner
                   back. Without this the only way past it was to leave the
                   chat. Written down as well as cleared, because a reload
                   replays the transcript that produced it. */}
-              <button
-                className="failure-close"
-                type="button"
-                aria-label="Dismiss"
-                onClick={() => {
-                  dismissFailure(conversationId, failure);
-                  patch(conversationId, (s) => ({ ...s, failure: undefined }));
-                }}
-              >
-                ×
-              </button>
-              <div className="failure-title">{failure.title}</div>
-              {failure.detail && <div className="failure-detail">{failure.detail}</div>}
-              {failure.link && (
+              {failure && !autoResume && (
+                <button
+                  className="failure-close"
+                  type="button"
+                  aria-label="Dismiss"
+                  onClick={() => {
+                    dismissFailure(conversationId, failure);
+                    patch(conversationId, (s) => ({ ...s, failure: undefined }));
+                  }}
+                >
+                  ×
+                </button>
+              )}
+              <div className="failure-title">{failure?.title ?? "Auto-resume scheduled"}</div>
+              {failure?.detail && <div className="failure-detail">{failure.detail}</div>}
+              {autoResume && (
+                <div className="auto-resume-row">
+                  <span>
+                    OctiqFlow will resume this {autoResume.agent === "claude" ? "Claude" : autoResume.agent === "codex" ? "Codex" : "Pi"} session around{" "}
+                    {new Date(autoResume.runAt * 1000).toLocaleString([], {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}.
+                  </span>
+                  <button
+                    className="auto-resume-cancel"
+                    type="button"
+                    onClick={() => {
+                      void bridge
+                        .invoke("chat_cancel_auto_resume", { key: keyFor(conversationId) })
+                        .catch((error) => {
+                          patch(conversationId, (state) => ({
+                            ...state,
+                            notices: [
+                              ...state.notices,
+                              `Could not cancel auto-resume: ${String((error as Error).message ?? error)}`,
+                            ],
+                          }));
+                        });
+                    }}
+                  >
+                    Cancel auto-resume
+                  </button>
+                </div>
+              )}
+              {failure?.link && (
                 <a
                   className="failure-link"
                   href={failure.link}

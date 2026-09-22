@@ -9409,6 +9409,40 @@ body.is-ultra .eff {
   overflow-wrap: anywhere;
 }
 
+.auto-resume-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fg-1);
+}
+
+.auto-resume-cancel {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  border-radius: var(--r-sm);
+  padding: 5px 8px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--fg-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.auto-resume-cancel:hover {
+  border-color: var(--warn);
+  color: var(--fg-0);
+}
+
+@media (max-width: 600px) {
+  .auto-resume-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 /* ---- Terminal drawer ---------------------------------------------------
    A shell under the chat, in the project's own folder. It sits between the
    transcript and the composer so the thing you type into is always the bottom

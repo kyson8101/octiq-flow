@@ -55,6 +55,8 @@ import { taskLabel, type BackgroundTask } from "./background";
  *  Historical multi-agent follow-up briefs and service-resumed notices are
  *  recognised by their own words because replay has no separate flag. */
 function asOneLine(text: string): string | undefined {
+  if (text.startsWith("[OctiqFlow automatic resume after usage reset]"))
+    return "automatically resumed after the usage limit reset";
   return readRelay(text) ?? readChatServiceResumed(text);
 }
 
@@ -380,6 +382,17 @@ export type ChatState = {
   /** The turn ended badly, in a way worth putting in front of the user rather
    *  than leaving as a line in `notices`. Cleared when they say anything else. */
   failure?: Failure;
+  /** A server-owned continuation waiting for the provider account to reset.
+   *  Durable in the transcript and backend, so closing every browser does not
+   *  cancel it. */
+  autoResume?: AutoResume;
+};
+
+export type AutoResume = {
+  id: string;
+  agent: "claude" | "codex" | "pi";
+  resetAt: number;
+  runAt: number;
 };
 
 /** A turn that failed, said in words the user can act on. */
@@ -919,6 +932,53 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
       messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
         ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
         : m),
+    };
+  }
+
+  if (type === "octiq_auto_resume_scheduled") {
+    const id = asStr(e.id);
+    const agent = asStr(e.agent);
+    const resetAt = typeof e.reset_at === "number" ? e.reset_at : 0;
+    const runAt = typeof e.run_at === "number" ? e.run_at : 0;
+    if (!id || !["claude", "codex", "pi"].includes(agent) || !resetAt || !runAt)
+      return state;
+    return {
+      ...state,
+      autoResume: { id, agent: agent as AutoResume["agent"], resetAt, runAt },
+    };
+  }
+
+  if (type === "octiq_auto_resume_cancelled") {
+    const id = asStr(e.id);
+    if (!state.autoResume || (id && state.autoResume.id !== id)) return state;
+    return { ...state, autoResume: undefined };
+  }
+
+  if (type === "octiq_auto_resume_started") {
+    const id = asStr(e.id);
+    if (state.autoResume && id && state.autoResume.id !== id) return state;
+    return {
+      ...state,
+      autoResume: undefined,
+      failure: undefined,
+      busy: true,
+      stopping: false,
+      exited: undefined,
+      turnStartedAt: now,
+      turnTokens: 0,
+      turnDraft: 0,
+    };
+  }
+
+  if (type === "octiq_auto_resume_failed") {
+    return {
+      ...state,
+      autoResume: undefined,
+      busy: false,
+      failure: {
+        title: "Auto-resume could not start",
+        detail: asStr(e.message) || "Resume this chat manually.",
+      },
     };
   }
 

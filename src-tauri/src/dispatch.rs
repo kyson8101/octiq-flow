@@ -58,6 +58,7 @@ impl Services {
         // service runs for days, and every chat left open holds an agent and
         // its whole MCP fleet.
         crate::agent_chat::start_idle_reaper(chats.clone());
+        crate::agent_chat::start_auto_resume_scheduler(chats.clone());
         Self {
             workspaces: Arc::new(WorkspaceState::load()),
             chats,
@@ -226,6 +227,10 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "to")?,
             arg(&args, "turnId")?,
             arg(&args, "recordUser")?,
+        )),
+        "chat_cancel_auto_resume" => to_value(crate::agent_chat::chat_cancel_auto_resume_impl(
+            &svc.chats,
+            arg(&args, "key")?,
         )),
         // Take back a message the agent has not been given yet. Answers
         // `false` when it was already handed over, which the page needs: the
