@@ -38,6 +38,11 @@ export function ChatTaskBar({
 }: { chatId: string; connected: boolean } & Live) {
   const [status, setStatus] = useState<TaskStatus>();
   const [open, setOpen] = useState(false);
+  /** True once the backend has said it does not know this command. The two
+   *  halves of this app deploy separately, and a client built ahead of the
+   *  server would otherwise leave a permanent "Unverified" chip in the bar
+   *  with nothing behind it. Better absent than dead. */
+  const [unsupported, setUnsupported] = useState(false);
   const shown = status?.chatId === chatId ? status : undefined;
 
   const load = useCallback(
@@ -46,10 +51,12 @@ export function ChatTaskBar({
       bridge
         .invoke<TaskStatus>("chat_task", { chatId, refresh })
         .then(setStatus)
-        // An older backend does not have the command, and a chat that has
-        // never been verified has nothing to show. Neither is worth a message
-        // over the conversation.
-        .catch(() => {});
+        // A chat that has never been verified has nothing to show, and an
+        // older backend has no such command. Neither is worth a message over
+        // the conversation; the second one takes the bar away with it.
+        .catch((error: unknown) => {
+          if (String(error).includes("not available on this backend")) setUnsupported(true);
+        });
     },
     [chatId, connected],
   );
@@ -109,7 +116,7 @@ export function ChatTaskBar({
     [shown?.projectId, load],
   );
 
-  if (!chatId) return null;
+  if (!chatId || unsupported) return null;
   return (
     <ChatTaskBarView
       status={shown}
