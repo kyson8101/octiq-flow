@@ -3619,7 +3619,6 @@ export default function App() {
           opens a file is anywhere near them in the tree. */}
       <div className="body" id="dock">
         <Sidebar
-          showTaskBoard={!roomToSplit}
           projects={workspaces}
           shelved={shelved}
           onShowShelved={() => setShelfOpen(true)}

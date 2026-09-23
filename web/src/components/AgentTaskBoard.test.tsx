@@ -41,18 +41,18 @@ describe("compact agent task board", () => {
     expect(out).toContain("Document the access rules");
     expect(out).toContain("4 tasks");
   });
-  it("leaves the chat list a chat list once the run has its own column", () => {
+  it("keeps compact subagent status in the chat list beside the run column", () => {
     const snapshot = taskBoardFixture();
-    const out = renderToStaticMarkup(<Sidebar showTaskBoard={false} orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
+    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onRename={() => {}}
       onNewProject={() => {}} searchChats={async () => []} />);
-    // One row, no task board, and no worker chats spilling out in its place —
-    // just the line that says where the run is.
+    // Worker transcripts stay folded away, while their status rows remain a
+    // useful navigation index beside the detailed run dashboard.
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
-    expect(out).not.toContain('class="agent-task');
-    expect(out).not.toContain("Document the access rules");
-    expect(out).toContain("Needs decision · 1/4");
+    expect(out.match(/class="agent-task"/g)).toHaveLength(4);
+    expect(out).toContain("Document the access rules");
+    expect(out).toContain("Run focused tests");
   });
   it("keeps an undispatched task from becoming a dead navigation button", () => {
     const out = renderToStaticMarkup(<AgentTaskBoard snapshot={taskBoardFixture()} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />);

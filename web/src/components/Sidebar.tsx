@@ -53,7 +53,7 @@ export function Sidebar({
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, onDelete, onPin, onRename, onArchiveWorker,
-  onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot, showTaskBoard = true,
+  onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
 }: {
   orchestration?: OrchestrationSnapshot;
   projects: Project[];
@@ -75,9 +75,6 @@ export function Sidebar({
   onRename: (id: string, title: string) => void;
   onArchiveWorker?: (attemptId: string, archived: boolean) => Promise<void>;
   onNewProject: () => void;
-  /** False once the run's own column is on screen beside the conversation: the
-   *  chat list then stays a chat list rather than repeating the task board. */
-  showTaskBoard?: boolean;
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
   branches?: Readonly<Record<string, string>>;
   chatParents?: ReadonlyMap<string, string>;
@@ -194,9 +191,11 @@ export function Sidebar({
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
     const run = workflow.runs[0];
     const ownsRun = !searchActive && !showArchived && workflow.runs.length > 0;
-    // Worker chats are always folded away under their parent; whether their
-    // TASKS are listed here as well depends on there being no run column.
-    const hasTaskBoard = ownsRun && showTaskBoard;
+    // Worker chats stay folded into this compact status board even when the
+    // full run dashboard is visible beside the conversation. The two answer
+    // different questions: this is navigation and at-a-glance status; the
+    // dashboard owns checklists, briefs and workspace detail.
+    const hasTaskBoard = ownsRun;
     const boardChatKeys = new Set(workflow.attempts.map((item) => item.workerChatKey));
     const otherChildren = ownsRun ? children.filter((child) => !boardChatKeys.has(`chat:${child.chat.id}`)) : children;
     const hasChildren = otherChildren.length > 0 || hasTaskBoard;
