@@ -124,6 +124,8 @@ jobs:
         shell: bash
         run: |
           for package in npm-dist/runtimes/runtime-*; do
+            # Artifact downloads strip executable bits before npm packs the runtime.
+            chmod +x "${package}"/bin/octiq-server*
             NAME="$(node -p "require('./${package}/package.json').name")"
             VERSION="$(node -p "require('./${package}/package.json').version")"
             if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
