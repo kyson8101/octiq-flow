@@ -749,12 +749,12 @@ function askOctiq(questions) {
   });
 }
 
-/** Call the host-owned orchestration kernel as this exact chat.
+/** Call one of the host's chat-bound hooks as this exact chat.
  *
- * The MCP never edits orchestration files directly. Going through the running
- * server gives ownership checks, one serialised store, and the same event the
- * browser panel listens to. */
-function callOrchestration(action, args = {}) {
+ * The MCP never edits the host's files directly. Going through the running
+ * server gives ownership checks, one serialised store, and the same events the
+ * browser panels listen to. */
+function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = "call") {
   return new Promise((resolve, reject) => {
     if (!CHAT_KEY) return reject(new Error("This tool requires an OctiqFlow chat."));
     let cfg;
@@ -768,7 +768,7 @@ function callOrchestration(action, args = {}) {
       {
         host: "127.0.0.1",
         port: cfg.port,
-        path: `/hook/orchestration?token=${encodeURIComponent(cfg.token)}`,
+        path: `/hook/${route}?token=${encodeURIComponent(cfg.token)}`,
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -787,19 +787,54 @@ function callOrchestration(action, args = {}) {
               resolve(answer.result);
             }
           } catch {
-            reject(new Error("OctiqFlow gave no orchestration answer."));
+            reject(new Error(`OctiqFlow gave no ${label} answer.`));
           }
         });
       },
     );
     req.on("error", () => reject(new Error("OctiqFlow could not be reached.")));
-    req.setTimeout(30 * 60 * 1000, () => {
+    req.setTimeout(timeoutMs, () => {
       req.destroy();
-      reject(new Error("The orchestration call timed out."));
+      reject(new Error(`The ${label} timed out.`));
     });
     req.write(body);
     req.end();
   });
+}
+
+function callOrchestration(action, args = {}) {
+  return callHook("orchestration", action, args, 30 * 60 * 1000, "orchestration call");
+}
+
+/** Hand the host this chat's own account of its task.
+ *
+ * Only the half no verification can supply — the objective and the plan. The
+ * branch, the commits, the merge and the release are the host's to check, and
+ * it does, whatever an agent claims here. A target branch is the one crossover:
+ * it says which branch those merge questions are asked ABOUT. */
+async function reportTask(args = {}) {
+  const steps = Array.isArray(args.steps)
+    ? args.steps
+        .map((step) => ({
+          title: oneLine(step?.title),
+          state: ["done", "active", "pending"].includes(step?.state) ? step.state : "pending",
+        }))
+        .filter((step) => step.title)
+    : [];
+  const target = oneLine(args.targetBranch);
+  if (target) await callHook("task", "target", { branch: target }, 60 * 1000, "task update");
+  return callHook(
+    "task",
+    "report",
+    {
+      objective: oneLine(args.objective),
+      nextStep: oneLine(args.nextStep),
+      steps,
+      reportedBy: process.env.OCTIQ_CHAT_AGENT || "",
+    },
+    60 * 1000,
+    "task update",
+  );
 }
 
 /** One question's shape. Described once and used twice: inside `questions`,
@@ -958,6 +993,66 @@ const PIN_TOOL = {
       },
     },
     required: ["files"],
+  },
+};
+
+const TASK_STATUS = {
+  name: "task_status",
+  description:
+    "Say what this task IS and how far it has got, for the status line above " +
+    "the chat. Call it when you start a task, when the plan changes, and when " +
+    "a step finishes — the person reads this instead of scrolling back. " +
+    "OctiqFlow verifies the rest itself: branch, worktree, commits, merge and " +
+    "release are checked with git and are NOT yours to report. Saying " +
+    "\"merged\" here changes nothing; only the merge does. Every call REPLACES " +
+    "the previous one, so send the whole plan each time. The report is stamped " +
+    "with the time it was made and shown as of then, so an old one looks old " +
+    "rather than wrong.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      objective: {
+        type: "string",
+        description:
+          "The task as a whole, in one line, as the person would say it — " +
+          "\"keep the chat's task and branch visible\". This is the line that " +
+          "has to survive being asked six follow-up questions: do not replace " +
+          "it with whatever was asked last.",
+      },
+      nextStep: {
+        type: "string",
+        description:
+          "What is happening right now, or what is being waited for: " +
+          "\"wiring the panel into the top bar\", \"waiting for an answer " +
+          "about the release check\".",
+      },
+      steps: {
+        type: "array",
+        description:
+          "The plan, in order, few enough to read at a glance. Send all of " +
+          "them every time with their current state.",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "The step, in a few words." },
+            state: {
+              type: "string",
+              enum: ["done", "active", "pending"],
+              description: "Where this step is. One step is active at a time.",
+            },
+          },
+          required: ["title"],
+        },
+      },
+      targetBranch: {
+        type: "string",
+        description:
+          "The branch this work is going back to, when you know it and it is " +
+          "not the repository's default. Everything the status says about " +
+          "merging is asked against this branch.",
+      },
+    },
+    required: ["objective"],
   },
 };
 
@@ -1246,7 +1341,13 @@ const BASE_SERVER_INSTRUCTIONS =
   "Use orchestration tools only when the person explicitly asks for supervised multi-agent " +
   "work or a task DAG. The master creates one run, creates a shallow dependency graph, " +
   "starts the full ready wave before waiting, and reads orchestration_snapshot as truth. " +
-  "Workers must settle their exact attempt with orchestration_worker_report.";
+  "Workers must settle their exact attempt with orchestration_worker_report. " +
+  "Use task_status when you take on a task of more than a couple of steps, and " +
+  "again whenever the plan or the active step changes: it fills the status line " +
+  "above the chat, which is how the person sees what this chat is doing without " +
+  "scrolling back. Report the objective and the plan only — OctiqFlow checks the " +
+  "branch, the worktree, the commits, the merge and the release itself, and your " +
+  "word does not move them.";
 
 const SERVER_INSTRUCTIONS = ASK_USER_ENABLED
   ? BASE_SERVER_INSTRUCTIONS +
@@ -1289,6 +1390,7 @@ async function handle(msg) {
               SEARCH_CONVERSATIONS,
               READ_CONVERSATION,
               CREATE_ARTIFACT,
+              TASK_STATUS,
               ...ORCHESTRATION_TOOLS,
             ]
           : [READ_CONVERSATION, CREATE_ARTIFACT],
@@ -1313,6 +1415,18 @@ async function handle(msg) {
           return reply(msg.id, {
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The orchestration call failed." }],
+          });
+        }
+      }
+
+      if (msg.params?.name === "task_status") {
+        try {
+          const status = await reportTask(msg.params.arguments || {});
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] });
+        } catch (error) {
+          return reply(msg.id, {
+            isError: true,
+            content: [{ type: "text", text: error instanceof Error ? error.message : "The task status could not be saved." }],
           });
         }
       }

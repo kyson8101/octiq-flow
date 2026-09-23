@@ -142,6 +142,8 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   repo top-level and de-dups so one repo shows once. `git_ops.rs` holds
   everything that MUTATES a repo, so "can this touch my repo?" is answered by
   the module name alone.
+- `chat_task.rs` — where a chat is and what became of its work. See **A chat's
+  status is half reported, half verified** below.
 - `fsbrowse.rs` — file browser listing and reads.
 - `memory.rs` — what this app holds in RAM, and which chat or terminal holds it.
   One `ps` sweep, then a walk DOWN from the server's own pid, carrying the
@@ -164,10 +166,56 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
 | server config (port, bind, token, Access) | `<profile dir>/web.json` | `web.rs` |
 | chat transcripts | profile dir | `chat_index.rs`, `transcript.rs` |
 | agent diagnostics | `~/.octiqflow/logs/agent-diagnostics.jsonl` (one rotated predecessor) | `diagnostics.rs` |
+| chat task status | `<chats dir>/task-status.json` | `chat_task.rs` |
 
 `profile.rs` decides the profile dir; `profile_lock.rs` makes sure only one
 process owns a profile at a time (a second one refuses to start rather than
 overwrite the first's project list).
+
+### A chat's status is half reported, half verified
+
+The line above the chat (`ChatTaskBar`) answers three questions a chat picked
+up an hour later cannot answer for itself: is anything happening, what is this
+chat FOR, and which branch is it doing it on. The panel behind it answers the
+fourth — did that work ever land.
+
+The split in `chat_task.rs` is the whole design, and it exists because an LLM
+forgets:
+
+- **The agent REPORTS** the objective, the plan and the active step, through
+  the `task_status` MCP tool (`scripts/mcp/octiq-ask.cjs` → `POST /hook/task`).
+  Nothing infers it: a chat whose agent never reported says *not reported*
+  rather than guessing from the transcript. Every report is stamped with the
+  time and the agent, so a stale one looks stale.
+- **The host VERIFIES** everything else with git, on request: branch, primary
+  checkout vs linked worktree, changed files, commits ahead of the target,
+  pushed, merged locally, merged on the remote, released. An agent saying
+  "merged" changes nothing — only the merge does.
+
+Three rules hold:
+
+- **`released: null` is "unverified", never "no".** A project says how a
+  release is recognised in the Release row itself, or with
+  `chat_task_set_release_check`: a git ref only a release advances, or a
+  command whose output names the running commit — the first 7–40 character hex
+  string in its output is taken as that commit. Most projects have neither, and
+  the release row says so. The check is not run at all until git says the
+  commit is in the target branch, so an unmerged branch never shells out.
+- **What is running is recorded at install, by `install-service.sh`.** It
+  writes `~/.octiqflow/live-build.json` (`commit`, `branch`, `shippedAt`) next
+  to the `cp` that makes a binary live, because nothing else knows: the binary
+  carries no version of its source and mtimes only say "newer than".
+  `octiq-check.sh` prints that commit on its `live build` line, and it is what
+  this repo's own release check reads.
+- **The record outlives the worktree.** Every verification stores its snapshot
+  plus the repository's PRIMARY checkout and the head commit, so a chat whose
+  directory has been deleted is re-verified from the primary checkout against
+  the commit it remembers, marked `stale`. "Was that ever merged?" is asked
+  precisely when the worktree is gone.
+- **Nothing polls.** The bar refreshes when the chat opens, when a turn ends,
+  on `git-status-changed`, and when the panel opens; verification is cached for
+  four seconds so several open tabs cost one `git status`. The accent is for a
+  turn in flight only — states the work is merely *owed* stay quiet.
 
 ### Both agents' full stops carry their closing words
 
