@@ -10,7 +10,7 @@ test('maps every shipped platform to its optional runtime package', () => {
   assert.equal(packageFor('darwin', 'arm64'), 'octiqflow-darwin-arm64');
   assert.equal(packageFor('darwin', 'x64'), 'octiqflow-darwin-x64');
   assert.equal(packageFor('linux', 'x64'), 'octiqflow-linux-x64');
-  assert.equal(packageFor('win32', 'x64'), 'octiqflow-win32-x64');
+  assert.equal(packageFor('win32', 'x64'), '@kyson8101/octiqflow-win32-x64');
   assert.throws(() => packageFor('linux', 'arm64'), /unsupported platform linux-arm64/);
 });
 
