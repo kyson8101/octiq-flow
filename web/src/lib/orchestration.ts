@@ -1,7 +1,9 @@
 import type { TaskReport } from "./chatTask";
 
 export type WorkspaceMode = "auto" | "worktree" | "direct";
-export type WorkerDefaults = { agent: "codex" | "claude"; access: string; model?: string; effort?: string };
+export type WorkerSettings = { agent: "codex" | "claude"; access: string; model?: string; effort?: string };
+/** Omitting agent lets the main agent select workers individually. */
+export type WorkerDefaults = Omit<WorkerSettings, "agent"> & { agent?: WorkerSettings["agent"] };
 export type TaskWorkspace = {
   plan: {
     mode: WorkspaceMode; cwd: string; checkoutRoot: string; repositoryRoot: string;
@@ -78,6 +80,7 @@ export type OrchestrationTask = {
   runId: string;
   title: string;
   spec: string;
+  worker?: WorkerSettings;
   workspace?: TaskWorkspace;
   dependsOn: string[];
   parentTaskId?: string;
