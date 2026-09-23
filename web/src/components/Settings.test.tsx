@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 
+vi.mock("../lib/bridge", () => ({ bridge: { invoke: vi.fn() } }));
+
 vi.mock("../lib/push", () => ({
   disable: vi.fn(),
   enable: vi.fn(),
@@ -44,6 +46,8 @@ describe("Settings", () => {
       out.indexOf('aria-label="Configure Project 10"'),
     );
     expect(out).toContain("Appearance</span>");
+    expect(out).toContain("Memory Vault</span>");
+    expect(out).toContain("Shared agent knowledge");
     expect(out).toContain("<small>Dark</small>");
     // A section owns its content instead of mounting every setting in one scroller.
     expect(out).not.toContain("Candyland");

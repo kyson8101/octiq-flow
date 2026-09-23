@@ -29,6 +29,7 @@ mod git_ops;
 mod git_watch;
 mod image_preview;
 mod memory;
+mod memory_vault;
 mod notify_hook;
 mod orchestration;
 mod paths;

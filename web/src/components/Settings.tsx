@@ -12,8 +12,9 @@ import * as push from "../lib/push";
 import { applyTheme, preview, THEMES } from "../lib/themeStore";
 import type { ProjectDetail } from "./ProjectSettings";
 import { ProjectAvatar } from "./ProjectAvatar";
+import { MemoryVaultSettings } from "./MemoryVaultSettings";
 
-type SettingsSection = "projects" | "notifications" | "appearance";
+type SettingsSection = "projects" | "notifications" | "appearance" | "memory";
 
 const projectNameCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -151,6 +152,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                   onPick={setSection}
                 />
               )}
+              <SettingsNavButton section="memory" label="Memory Vault" detail="Shared agent knowledge" active={section === "memory"} onPick={setSection} />
               <SettingsNavButton
                 section="appearance"
                 label="Appearance"
@@ -159,10 +161,11 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 onPick={setSection}
               />
             </div>
-            <p className="settings-nav-foot">Changes apply automatically.</p>
+            <p className="settings-nav-foot">Switches apply automatically.</p>
           </nav>
 
           <main className="settings-content">
+            {section === "memory" && <MemoryVaultSettings />}
             {section === "projects" && (
               <section className="settings-section" aria-labelledby="settings-projects-title">
                 <header className="settings-section-head">
@@ -335,6 +338,9 @@ function SettingsNavButton({ section, label, detail, active, onPick }: {
 }
 
 function SettingsIcon({ section }: { section: SettingsSection }) {
+  if (section === "memory") {
+    return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Z" /><path d="M12 5v15" /></svg>;
+  }
   if (section === "projects") {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5H3z" /><path d="M3 7.5V5h7l2 2h6" /></svg>;
   }

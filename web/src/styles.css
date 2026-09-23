@@ -8002,6 +8002,33 @@ body.is-ultra .eff {
   filter: brightness(1.07);
 }
 
+.memory-vault { display: grid; gap: 24px; }
+.memory-vault label { display: block; color: var(--fg-1); font-size: 13px; }
+.memory-vault input:not([type="checkbox"]) { width: 100%; min-width: 0; padding: 9px 11px; background: var(--bg-0); color: var(--fg-1); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+.vault-connect, .vault-search { display: grid; gap: 9px; }
+.vault-input-row { display: flex; gap: 8px; align-items: center; }
+.vault-input-row input { flex: 1; }
+.vault-button { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; color: var(--fg-1); background: var(--bg-1); font: inherit; cursor: pointer; }
+.vault-button:hover { background: var(--bg-2); }
+.memory-vault button:disabled { opacity: .5; cursor: default; }
+.memory-vault :is(button, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vault-help { margin: 0; font-size: 12px; line-height: 1.6; color: var(--fg-2); }
+.vault-access { display: grid; gap: 10px; padding: 18px 0; border-block: 1px solid var(--border); }
+.vault-access > button { justify-self: start; }
+.memory-vault .vault-write-toggle { display: flex; align-items: center; gap: 10px; }
+.vault-write-toggle input { accent-color: var(--accent); }
+.vault-search h3, .vault-note h3 { margin: 0 0 6px; color: var(--fg-1); font-size: 14px; overflow-wrap: anywhere; }
+.vault-results { display: grid; gap: 8px; }
+.vault-result { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 12px 0; text-align: left; border: 0; border-bottom: 1px solid var(--border); color: var(--fg-1); background: transparent; cursor: pointer; }
+.vault-result strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.vault-result small { color: var(--fg-2); }
+.vault-result span { grid-column: 1 / -1; color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
+.vault-note pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow: auto; padding: 14px; color: var(--fg-1); background: var(--bg-0); border-radius: 6px; font-size: 12px; line-height: 1.7; }
+@media (max-width: 520px) {
+  .vault-input-row { flex-wrap: wrap; }
+  .vault-input-row input { flex-basis: 100%; }
+}
+
 .settings-control-row {
   min-height: 76px;
   display: flex;

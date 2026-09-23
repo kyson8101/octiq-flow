@@ -184,6 +184,30 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     }
     match cmd {
         // ---- projects -----------------------------------------------------
+        "memory_vault_settings" => to_value(crate::memory_vault::Vault::profile().settings()),
+        "memory_vault_configure" => {
+            to_value(crate::memory_vault::Vault::profile().configure(arg(&args, "config")?))
+        }
+        "memory_vault_call" => crate::memory_vault::Vault::profile().call(
+            "browser",
+            &arg::<String>(&args, "action")?,
+            &arg::<Value>(&args, "args")?,
+        ),
+        "memory_vault_agent" => {
+            let key: String = arg(&args, "chatKey")?;
+            let id = key.strip_prefix("chat:").unwrap_or(&key);
+            if !crate::chat_index::list()
+                .iter()
+                .any(|chat| chat.id == id && chat.deleted_at.is_none())
+            {
+                return Err("This chat is not in the active chat index.".into());
+            }
+            crate::memory_vault::Vault::profile().call(
+                &format!("chat:{id}"),
+                &arg::<String>(&args, "action")?,
+                &arg::<Value>(&args, "args")?,
+            )
+        }
         "list_workspaces" => to_value(crate::workspaces::list_workspaces_impl(&svc.workspaces)),
         "add_workspace" => to_value(crate::workspaces::add_workspace_impl(
             &svc.workspaces,
