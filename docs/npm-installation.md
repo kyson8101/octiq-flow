@@ -19,7 +19,7 @@ is one of the runtime locations already understood by `web.rs`.
 | `octiqflow-darwin-arm64` | Apple silicon macOS runtime |
 | `octiqflow-darwin-x64` | Intel macOS runtime |
 | `octiqflow-linux-x64` | x64 Linux runtime |
-| `octiqflow-win32-x64` | x64 Windows runtime |
+| `@kyson8101/octiqflow-win32-x64` | x64 Windows runtime |
 
 The source manifests use `0.0.0-development`. `src-tauri/Cargo.toml` remains the
 single version source: `scripts/package-npm.mjs` reads it and stamps all staged

@@ -6,7 +6,7 @@ const PLATFORM_PACKAGES = Object.freeze({
   'darwin-arm64': 'octiqflow-darwin-arm64',
   'darwin-x64': 'octiqflow-darwin-x64',
   'linux-x64': 'octiqflow-linux-x64',
-  'win32-x64': 'octiqflow-win32-x64',
+  'win32-x64': '@kyson8101/octiqflow-win32-x64',
 });
 
 function packageFor(platform = process.platform, arch = process.arch) {

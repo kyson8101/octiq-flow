@@ -9,7 +9,7 @@ export const RUNTIMES = Object.freeze({
   'darwin-arm64': { name: 'octiqflow-darwin-arm64', os: 'darwin', cpu: 'arm64', binary: 'octiq-server' },
   'darwin-x64': { name: 'octiqflow-darwin-x64', os: 'darwin', cpu: 'x64', binary: 'octiq-server' },
   'linux-x64': { name: 'octiqflow-linux-x64', os: 'linux', cpu: 'x64', binary: 'octiq-server' },
-  'win32-x64': { name: 'octiqflow-win32-x64', os: 'win32', cpu: 'x64', binary: 'octiq-server.exe' },
+  'win32-x64': { name: '@kyson8101/octiqflow-win32-x64', os: 'win32', cpu: 'x64', binary: 'octiq-server.exe' },
 });
 
 export function cargoVersion(root) {

@@ -20,7 +20,7 @@
     "octiqflow-darwin-arm64": "0.0.0-development",
     "octiqflow-darwin-x64": "0.0.0-development",
     "octiqflow-linux-x64": "0.0.0-development",
-    "octiqflow-win32-x64": "0.0.0-development"
+    "@kyson8101/octiqflow-win32-x64": "0.0.0-development"
   },
   "repository": {
     "type": "git",
