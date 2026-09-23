@@ -129,8 +129,10 @@ import { Settings } from "./components/Settings";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
-import { OrchestrationButton, OrchestrationPanel } from "./components/OrchestrationPanel";
-import { isWorkerChat, mainChatId, workerChatParents } from "./lib/orchestration";
+import { OrchestrationPanel } from "./components/OrchestrationPanel";
+import { isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
+import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
+import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
 import { useOrchestrationSnapshot } from "./lib/useOrchestrationSnapshot";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
@@ -443,10 +445,16 @@ export default function App() {
   // `main.tsx` has already applied this one; the state is here only so the
   // tick in the sheet has something to read.
   const [appSettings, setAppSettings] = useState(false);
-  const [orchestrationOpen, setOrchestrationOpen] = useState(false);
   const orchestration = useOrchestrationSnapshot();
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
+  const [workflowModes, setWorkflowModes] = useState<Record<string, boolean>>({});
+  const [workflowViews, setWorkflowViews] = useState<Record<string, "chat" | "run">>({});
+  const workflowKey = conversationId ?? "new";
+  const currentWorkflow = useMemo(() => chatSnapshot(orchestration, conversationId ? keyFor(conversationId) : null), [orchestration, conversationId]);
+  const orchestrated = currentWorkflow.runs.some(isActiveRun) || !!workflowModes[workflowKey];
+  const workflowView = workerChat ? "chat" : workflowViews[workflowKey] ?? "chat";
+  const showWorkflowView = (view: "chat" | "run") => setWorkflowViews((before) => ({ ...before, [workflowKey]: view }));
   const [pendingGateDecision, setPendingGateDecision] = useState<{ id: string; text: string } | null>(null);
   const coordinatorId = mainChatId(conversationId, chatParents);
   const coordinatorConversation = conversations.find((chat) => chat.id === coordinatorId);
@@ -1909,6 +1917,8 @@ export default function App() {
     setBranch("");
     setBranches(NO_BRANCHES);
     setNewWorktree(false);
+    setWorkflowModes((before) => ({ ...before, new: false }));
+    setWorkflowViews((before) => ({ ...before, new: "chat" }));
     remember(LAST_KEY, "");
     setProjectsScreen(false);
     setFocusBox((n) => n + 1);
@@ -3337,6 +3347,67 @@ export default function App() {
     [conversationId, restartForAccess],
   );
 
+  const ensureCoordinator = async (objective: string): Promise<string> => {
+    if (!project) throw new Error("Choose a project before starting a run.");
+    if (workerChat) throw new Error("Start runs from the main chat.");
+    if (choice.agent === "pi") throw new Error("Choose Codex or Claude as the main agent.");
+    const id = conversationId ?? crypto.randomUUID();
+    const switching = modelSwitches.current.get(id);
+    if (switching) await switching;
+    if (chatsRef.current[id]?.busy) throw new Error("Wait for the main agent's turn to finish before starting a run.");
+    const held = conversationsRef.current.find((item) => item.id === id);
+    const now = Date.now();
+    const activity: Conversation = {
+      ...(held ?? {}), id, projectId: project.id, title: held?.title ?? shortTitle(objective),
+      cwd: held?.cwd ?? chatsRef.current[id]?.cwd ?? project.primary_path,
+      sessionId: pendingModelHandoffs.current.has(id) ? undefined : chatsRef.current[id]?.sessionId ?? held?.sessionId,
+      messages: chatsRef.current[id]?.messages ?? held?.messages ?? [], modelId: choice.id, permission: access,
+      createdAt: held?.createdAt ?? now, updatedAt: now,
+    };
+    // Await the durable index: the host must be able to recover this chat even
+    // if provider startup fails or the browser disconnects immediately.
+    await bridge.invoke("chat_index_save", { meta: {
+      ...activity, messages: undefined, sessionId: activity.sessionId ?? null,
+      access, pinned: activity.pinned ?? false, generation: activity.generation ?? 0,
+    } });
+    meta.current[id] = { projectId: project.id, modelId: choice.id, access };
+    const next = [activity, ...conversationsRef.current.filter((item) => item.id !== id)];
+    conversationsRef.current = next;
+    setConversations(next); saveConversations(next);
+    if (!held) catchUp.current.own(keyFor(id));
+    patch(id, (state) => ({ ...state, cwd: activity.cwd }));
+    setWorkflowModes((before) => ({ ...before, [id]: true }));
+    setWorkflowViews((before) => ({ ...before, [id]: "run" }));
+    setConversationId(id);
+    return keyFor(id);
+  };
+
+  const startWorkflowMaster = async (run: OrchestrationRun): Promise<void> => {
+    const id = run.coordinatorChatKey.replace(/^chat:/, "");
+    const switching = modelSwitches.current.get(id);
+    if (switching) await switching;
+    const switchingProvider = pendingModelHandoffs.current.has(id);
+    const handoff = switchingProvider ? modelHandoff(chatsRef.current[id]?.messages ?? []) ?? "[]" : undefined;
+    await bridge.invoke("orchestration_master_start", {
+      actorChatKey: run.coordinatorChatKey, runId: run.id,
+      agent: choice.agent, model: choice.flag || null, access, effort, lite, handoff: handoff ?? null,
+    });
+    if (switchingProvider) pendingModelHandoffs.current.delete(id);
+    setRunning((previous) => new Set(previous).add(id));
+  };
+
+  const openWorkflowChat = (chatKey: string, message?: string) => {
+    const id = chatKey.replace(/^chat:/, "");
+    const conversation = conversationsRef.current.find((item) => item.id === id);
+    if (!conversation) throw new Error("This chat is not available yet. Wait for the chat list to sync and try again.");
+    if (message) {
+      if (isWorkerChat(id, chatParents)) throw new Error("Send this decision in the main chat.");
+      setPendingGateDecision({ id, text: message });
+    }
+    setWorkflowViews((before) => ({ ...before, [id]: "chat" }));
+    openConversation(conversation);
+  };
+
   if (conn === "unauthorized") return <Connect />;
 
   /* Built once and placed once — on a wide screen in the top bar, otherwise
@@ -3362,11 +3433,10 @@ export default function App() {
       {/* The way in and out of the changes column at every width. */}
       <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
 
-      <OrchestrationButton
-        snapshot={orchestration}
-        open={orchestrationOpen}
-        onToggle={() => setOrchestrationOpen((open) => !open)}
-      />
+      {!workerChat && <button className={`orch-toggle${workflowView === "run" ? " is-on" : ""}`} type="button" title="Run" aria-label="Open this chat's run" onClick={() => {
+        setWorkflowModes((before) => ({ ...before, [workflowKey]: true }));
+        showWorkflowView("run");
+      }}>Run</button>}
 
       {project && !unavailableChat && (
         <FocusModeButton onClick={enterFocus} />
@@ -3547,6 +3617,7 @@ export default function App() {
           onShowDeleted={() => setTrashOpen(true)}
           conversations={taskList}
           chatParents={chatParents}
+          orchestration={orchestration}
           getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
           loadPreview={loadPreview}
           currentConversation={conversationId}
@@ -3571,6 +3642,32 @@ export default function App() {
 
         <main className="main" hidden={showingProjects} ref={pane}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
+          {!workerChat && <ChatWorkflowBar snapshot={currentWorkflow} orchestrated={orchestrated} view={workflowView}
+            pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
+            onView={showWorkflowView} onMode={(enabled) => {
+              setWorkflowModes((before) => ({ ...before, [workflowKey]: enabled }));
+              showWorkflowView(enabled ? "run" : "chat");
+            }} />}
+          {!workerChat && (orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={workflowView !== "run"}>
+            <OrchestrationPanel embedded project={project} coordinatorKey={conversationId ? keyFor(conversationId) : null}
+              initialSnapshot={orchestration} currentCwd={effectiveCwd}
+              onEnsureCoordinator={ensureCoordinator} onStartMaster={startWorkflowMaster}
+              onOpenChat={openWorkflowChat} onClose={() => showWorkflowView("chat")}
+              setupContext={<div className="workflow-setup-context">
+                <label>Project<select aria-label="Run project" value={project?.id ?? ""} disabled={!!conversationId} onChange={(event) => chooseProject(event.target.value || null)}>
+                  <option value="">Choose a project</option>
+                  {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select></label>
+                <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
+                  const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
+                }}>
+                  {choice.agent === "pi" && <option value={choice.id} disabled>Choose Codex or Claude</option>}
+                  {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
+                </select></label>
+                <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
+              </div>} />
+          </div>}
+          <div className="workflow-chat-surface" hidden={workflowView === "run"}>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
@@ -3595,6 +3692,8 @@ export default function App() {
             </div>
           ) : chat.messages.length === 0 && workerChat ? (
             <div className="hero"><h1 className="hero-title">Agent conversation</h1><p className="hero-sub">The agent's progress will appear here. Send instructions in the main chat.</p></div>
+          ) : chat.messages.length === 0 && currentWorkflow.runs.length > 0 ? (
+            <div className="hero"><h1 className="hero-title">{currentWorkflow.runs[0].objective}</h1><p className="hero-sub">Talk with the main agent here. Open Run for tasks, workers, and delivery status.</p></div>
           ) : chat.messages.length === 0 ? (
             <div className={`hero ${project ? "" : "hero-start"}`}>
               <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
@@ -3809,7 +3908,7 @@ export default function App() {
 
           {workerChat ? <WorkerChatNotice
             busy={chat.busy && !cutOff}
-            onOpenMain={coordinatorConversation ? () => openConversation(coordinatorConversation) : undefined}
+            onOpenMain={coordinatorConversation ? () => openWorkflowChat(keyFor(coordinatorConversation.id)) : undefined}
           /> : <Composer
             focusMode={focusMode}
             session={conversationId ?? undefined}
@@ -3878,6 +3977,7 @@ export default function App() {
             }
           />}
 
+          </div>
           </>}
         </main>
 
@@ -3957,31 +4057,6 @@ export default function App() {
           projects={[...workspaces, ...shelved]}
           onProject={setSettingsFor}
           onClose={() => setAppSettings(false)}
-        />
-      )}
-
-      {orchestrationOpen && (
-        <OrchestrationPanel
-          project={project}
-          coordinatorKey={conversationId && !workerChat ? keyFor(conversationId) : null}
-          readOnly={workerChat}
-          initialSnapshot={orchestration}
-          currentCwd={effectiveCwd}
-          onOpenChat={(chatKey, message) => {
-            const id = chatKey.replace(/^chat:/, "");
-            const conversation = conversationsRef.current.find((item) => item.id === id);
-            if (!conversation) {
-              if (message) throw new Error("The main chat is unavailable.");
-              return;
-            }
-            if (message) {
-              if (isWorkerChat(id, chatParents)) throw new Error("Send this decision in the main chat.");
-              setPendingGateDecision({ id, text: message });
-            }
-            openConversation(conversation);
-            setOrchestrationOpen(false);
-          }}
-          onClose={() => setOrchestrationOpen(false)}
         />
       )}
 

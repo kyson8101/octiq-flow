@@ -336,6 +336,15 @@ other retired palette back to Dark.
 - `vite.config.ts` keeps `test: { css: true }`; otherwise Vitest stubs raw CSS
   imports to an empty string and alternate modes silently use fallback colours.
 
+## Orchestrated task workspaces
+
+See [the task workspace lifecycle](docs/subagent-worktree-lifecycle.md) for the
+host-owned policy. A worker settling, code being pushed, a PR being merged, and
+a workspace being eligible for cleanup are separate states. Retry and review
+fixes reuse the task's persisted workspace with a new attempt ID. Current
+checkout mode never deletes a directory. The main chat coordinates while a
+worker owns the write lease; it must not also edit that checkout.
+
 ## Conventions & gotchas
 
 - **End a finished task with `Task Completed`.** When the work asked for in THIS

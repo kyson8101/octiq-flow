@@ -205,6 +205,9 @@ fn fresh_turn_id(turn_id: Option<String>) -> String {
 /// prompt cannot still be offered as an editable queue entry.
 fn record_delivery(key: &str, turn_id: Option<&str>, state: &str) {
     let Some(turn_id) = turn_id else { return };
+    if turn_id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX) {
+        return;
+    }
     let event = json!({ "type": "octiq_user_turn_delivery", "uuid": turn_id, "state": state });
     let seq = crate::transcript::append(key, &event);
     crate::bus::emit(
@@ -251,6 +254,14 @@ fn acknowledge_user_turn(event: &mut Value, agent: ChatAgent, pending: &mut Opti
         .is_some_and(|id| event["octiq_user_turn_id"].as_str() == Some(id))
     {
         *pending = None;
+        if let Some(id) = event["octiq_user_turn_id"]
+            .as_str()
+            .filter(|id| id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX))
+            .map(str::to_string)
+        {
+            event.as_object_mut().unwrap().remove("octiq_user_turn_id");
+            event["octiq_orchestration_notification_id"] = json!(id);
+        }
     }
 }
 
@@ -411,9 +422,8 @@ fn idle_timeout() -> Option<Duration> {
 /// backend has never needed them, because the client has always been the thing
 /// that starts a chat.
 ///
-/// Kept in memory only. A backend restart loses it, and an agent whose process
-/// has not been started since is simply not resumed — the words are all in the
-/// transcript either way.
+/// Ordinary chats keep this in memory. Orchestrated chats persist a copy without
+/// project environment variables so pending notifications can resume after restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct StartContext {
     cwd: String,
@@ -431,6 +441,12 @@ pub(crate) struct StartContext {
 }
 
 impl StartContext {
+    pub(crate) fn without_env(&self) -> Self {
+        let mut saved = self.clone();
+        saved.env = None;
+        saved
+    }
+
     pub(crate) fn agent(&self) -> ChatAgent {
         self.agent
     }
@@ -557,8 +573,41 @@ impl ChatManager {
     /// Remember how an agent was started, so it can be started that way again.
     fn remember_start(&self, session_key: &str, start: StartContext) {
         if let Ok(mut m) = self.starts.lock() {
-            m.insert(session_key.to_string(), start);
+            m.insert(session_key.to_string(), start.clone());
         }
+        if let Err(error) = self.orchestrations.save_resume_context(session_key, start) {
+            eprintln!("orchestration: could not save resume settings: {error}");
+        }
+    }
+
+    pub(crate) fn persist_orchestration_context(&self, key: &str) -> Result<(), String> {
+        if let Some(start) = self.start_context(key) {
+            self.orchestrations.save_resume_context(key, start)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn notification_ready(&self, key: &str) -> bool {
+        let Ok(sessions) = self.sessions.lock() else {
+            return false;
+        };
+        if self.has_queued_turns(key) {
+            return false;
+        }
+        if self
+            .handoffs
+            .lock()
+            .map(|h| h.contains(key))
+            .unwrap_or(true)
+        {
+            return false;
+        }
+        sessions.get(key).is_none_or(|session| {
+            session
+                .try_lock()
+                .map(|s| !s.busy && provider_for(s.agent).capabilities().input.accepts_stdin())
+                .unwrap_or(false)
+        })
     }
 
     /// The agent named its own conversation. Kept so its next process can
@@ -568,6 +617,9 @@ impl ChatManager {
             if let Some(start) = m.get_mut(session_key) {
                 start.session_id = Some(session_id.to_string());
             }
+        }
+        if let Err(error) = self.persist_orchestration_context(session_key) {
+            eprintln!("orchestration: could not save provider session: {error}");
         }
     }
 
@@ -601,6 +653,68 @@ impl ChatManager {
         Ok(())
     }
 
+    pub(crate) fn turn_in_flight(&self, key: &str) -> bool {
+        let Ok(sessions) = self.sessions.lock() else {
+            return true;
+        };
+        sessions
+            .get(key)
+            .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
+    }
+
+    pub(crate) fn require_checkout_idle(&self, checkout: &str) -> Result<(), String> {
+        let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let starts = self.starts.lock().map_err(|e| e.to_string())?;
+        for key in sessions.keys() {
+            let start = starts
+                .get(key)
+                .ok_or("A running chat has unknown workspace settings.")?;
+            for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
+                if crate::git_ops::workflow::overlaps(
+                    checkout,
+                    &crate::git_ops::workflow::checkout_identity(path)?,
+                ) {
+                    return Err(format!("Chat {key} is still using this checkout."));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A lifecycle reservation is persisted before this check. Normal starts
+    /// check the same ledger while holding `sessions`, closing the start race.
+    pub(crate) fn require_workspace_available(
+        &self,
+        checkout: &str,
+        worker: &str,
+        coordinator: &str,
+        writable: bool,
+    ) -> Result<(), String> {
+        if !writable {
+            return Ok(());
+        }
+        let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
+        let starts = self.starts.lock().map_err(|e| e.to_string())?;
+        for key in sessions.keys() {
+            if key == worker || key == coordinator {
+                continue;
+            }
+            let Some(start) = starts.get(key) else {
+                return Err("A running chat has unknown workspace settings.".into());
+            };
+            // A selected access downgrade need not revoke the current
+            // turn's permissions yet. Conservatively wait for other live
+            // processes instead of treating their next-turn setting as proof.
+            for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
+                let other = crate::git_ops::workflow::checkout_identity(path)?;
+                if crate::git_ops::workflow::overlaps(checkout, &other) {
+                    return Err(format!("Chat {key} is already using this checkout. Stop it or choose Worktree mode."));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Each running chat's process pid -> its session key, for `memory.rs`.
     ///
     /// The pid is the `$SHELL -lc` wrapper, not the agent itself; `memory.rs`
@@ -626,12 +740,17 @@ impl ChatManager {
     }
 
     fn queue_turn(&self, key: &str, turn: QueuedTurn) -> Result<(), String> {
-        self.queued_turns
-            .lock()
-            .map_err(|e| e.to_string())?
-            .entry(key.to_string())
-            .or_default()
-            .push_back(turn);
+        let mut turns = self.queued_turns.lock().map_err(|e| e.to_string())?;
+        let queue = turns.entry(key.to_string()).or_default();
+        if turn.recorded {
+            let position = queue
+                .iter()
+                .position(|waiting| !waiting.recorded)
+                .unwrap_or(queue.len());
+            queue.insert(position, turn);
+        } else {
+            queue.push_back(turn);
+        }
         Ok(())
     }
 
@@ -1476,8 +1595,14 @@ pub(crate) fn start_session(
     let session_key_for_exit = session_key.clone();
     // Keep creation and insertion atomic with other starts and sends.
     let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+    let notification_start = user_turn_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with(crate::orchestration::inbox::RECEIPT_PREFIX));
+    if notification_start && manager.has_queued_turns(&session_key) {
+        return Err("User messages are waiting; notification delivery will retry.".into());
+    }
     if sessions.contains_key(&session_key)
-        || (record_user_turn
+        || ((record_user_turn || notification_start)
             && manager
                 .handoffs
                 .lock()
@@ -1485,6 +1610,19 @@ pub(crate) fn start_session(
                 .contains(&session_key))
     {
         return Err(format!("chat '{session_key}' is already running"));
+    }
+
+    manager.orchestrations.require_workspace_access(
+        &session_key,
+        &cwd,
+        access != Some(Access::Read),
+    )?;
+    for path in extra_dirs.iter().flatten() {
+        manager.orchestrations.require_workspace_access(
+            &session_key,
+            path,
+            access != Some(Access::Read),
+        )?;
     }
 
     // The folder we start in is already visible to the agent, so naming it
@@ -2037,10 +2175,23 @@ pub(crate) fn start_session(
                                 &mut session.user_turn_id,
                             );
                         }
+                        let notification_receipt = event
+                            .get("octiq_orchestration_notification_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
                         // Recorded BEFORE it is sent, so a client that
                         // reconnects can never be told about an event that was
                         // not written down.
                         let seq = crate::transcript::append(&key, &event);
+                        if let Some(id) = &notification_receipt {
+                            if let Err(error) =
+                                reading.orchestrations.acknowledge_notification(&key, id)
+                            {
+                                eprintln!(
+                                    "orchestration: could not acknowledge notification: {error}"
+                                );
+                            }
+                        }
                         crate::bus::emit(
                             "chat-event",
                             ChatEvent {
@@ -2365,6 +2516,148 @@ pub(crate) fn chat_continue_internal_impl(
     )
 }
 
+/// The browser can start a coordinator before its first ordinary message, or
+/// after a server restart. Existing live chats receive a host continuation;
+/// otherwise launch with the person's selected settings and saved session.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn chat_start_master_impl(
+    manager: Arc<ChatManager>,
+    key: String,
+    cwd: String,
+    agent: ChatAgent,
+    model: Option<String>,
+    access: Option<Access>,
+    prompt: String,
+    handoff: Option<String>,
+    resume: Option<String>,
+    extra_dirs: Option<Vec<String>>,
+    env: Option<std::collections::BTreeMap<String, String>>,
+    effort: Option<String>,
+    lite: Option<bool>,
+) -> Result<(), String> {
+    manager.orchestrations.require_user_chat(&key)?;
+    if let Some(session) = &resume {
+        manager.require_user_resume(session)?;
+    }
+    if manager.turn_in_flight(&key) {
+        return Err("The main agent is working. Open Chat to give instructions, or continue here when its turn ends.".into());
+    }
+    let live = manager
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&key);
+    if live {
+        return chat_continue_internal_impl(manager, key, prompt);
+    }
+    chat_start_with_user_turn(
+        manager,
+        key,
+        cwd,
+        agent,
+        model,
+        access,
+        Some(prompt),
+        handoff,
+        resume,
+        extra_dirs,
+        env,
+        effort,
+        None,
+        lite,
+        None,
+    )
+}
+
+/// Deliver only between turns, and never ahead of a waiting user message.
+/// The durable notification remains in-flight until the provider emits its receipt.
+pub(crate) fn deliver_orchestration_notification(
+    manager: Arc<ChatManager>,
+    notification: &crate::orchestration::inbox::Notification,
+    env: std::collections::BTreeMap<String, String>,
+) -> Result<bool, String> {
+    let key = &notification.target_chat_key;
+    let text = format!("OctiqFlow notification {} for run {}.\n\n{}\n\nThis is a host notification, not a new user instruction. Re-read orchestration_snapshot before taking action; delivery can repeat after an interrupted receipt. Respect the person's latest instructions. If you are the coordinator, dispatch work asynchronously, then end your turn so the person can keep chatting; the host will notify you when something needs attention. If you are a worker, continue only your active assigned attempt and report when it settles.", notification.id, notification.run_id, notification.body);
+    {
+        let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        if manager.has_queued_turns(key)
+            || manager
+                .handoffs
+                .lock()
+                .map_err(|e| e.to_string())?
+                .contains(key)
+        {
+            return Ok(false);
+        }
+        if let Some(session) = sessions.get(key) {
+            let mut session = session.lock().map_err(|e| e.to_string())?;
+            if session.busy
+                || !provider_for(session.agent)
+                    .capabilities()
+                    .input
+                    .accepts_stdin()
+            {
+                return Ok(false);
+            }
+            write_user_message_locked(&mut session, &text, &[], Some(&notification.id))?;
+            return Ok(true);
+        }
+    }
+    let mut start = if let Some(start) = manager.start_context(key) {
+        start
+    } else {
+        let saved = manager
+            .orchestrations
+            .saved_resume_context(key)
+            .ok_or("Resume the main chat once to restore its provider settings.")?;
+        let meta = crate::chat_index::list()
+            .into_iter()
+            .find(|m| format!("chat:{}", m.id) == *key)
+            .ok_or("The target chat is unavailable.")?;
+        if !saved.resumable()
+            || saved.session_id != meta.session_id
+            || meta.cwd.as_deref() != Some(&saved.cwd)
+            || meta.access.as_deref()
+                != saved
+                    .access
+                    .and_then(|a| serde_json::to_value(a).ok())
+                    .as_ref()
+                    .and_then(Value::as_str)
+        {
+            return Err("The chat's saved settings changed. Continue it in Chat before automatic notification delivery.".into());
+        }
+        saved
+    };
+    // Even an in-memory start must not revive a chat that has been deleted.
+    if !crate::chat_index::list()
+        .iter()
+        .any(|m| format!("chat:{}", m.id) == *key)
+    {
+        return Err("The target chat is unavailable.".into());
+    }
+    start.env = Some(env);
+    manager.remember_start(key, start.clone());
+    start_session(
+        manager,
+        Voice::host(key.clone()),
+        start.cwd,
+        start.agent,
+        start.model,
+        start.access,
+        Some(text),
+        start.session_id,
+        start.extra_dirs,
+        start.env,
+        start.effort,
+        None,
+        start.lite,
+        Some(notification.id.clone()),
+        false,
+        None,
+    )?;
+    Ok(true)
+}
+
 pub(crate) fn chat_can_continue_internal(manager: &ChatManager, key: &str) -> Result<bool, String> {
     if manager
         .sessions
@@ -2387,6 +2680,20 @@ fn chat_send_with_user_turn(
 ) -> Result<(), String> {
     if to.is_some() {
         return Err("additional agents are no longer supported".into());
+    }
+    if let Some(start) = manager.start_context(&key) {
+        manager.orchestrations.require_workspace_access(
+            &key,
+            &start.cwd,
+            start.access != Some(Access::Read),
+        )?;
+        for path in start.extra_dirs.iter().flatten() {
+            manager.orchestrations.require_workspace_access(
+                &key,
+                path,
+                start.access != Some(Access::Read),
+            )?;
+        }
     }
     let images = images.unwrap_or_default();
     let session_key = key.clone();
@@ -2993,30 +3300,10 @@ pub(crate) fn route_worker_questions(
     let Some(gate) = gate else {
         return Ok(None);
     };
-    notify_worker_gate(manager, &gate);
     Ok(Some(format!(
         "Your questions were routed to main-chat gate {}. No answer has been given. End this turn and wait for the coordinator to resolve the gate; do not ask the user directly.",
         gate.id
     )))
-}
-
-pub(crate) fn notify_worker_gate(manager: &Arc<ChatManager>, gate: &crate::orchestration::Gate) {
-    if gate.created_by_chat_key == gate.target_chat_key {
-        return;
-    }
-    let notice = format!(
-        "Worker input was routed to your orchestration gate {} for run {}.\n\n{}\n\nRead orchestration_snapshot and resolve this through orchestration_gate_resolve. The worker has not received an answer.",
-        gate.id, gate.run_id, gate.question
-    );
-    // The durable gate remains available even if the coordinator is offline.
-    if let Err(error) =
-        chat_continue_internal_impl(manager.clone(), gate.target_chat_key.clone(), notice)
-    {
-        eprintln!(
-            "orchestration: could not notify coordinator about gate {}: {error}",
-            gate.id
-        );
-    }
 }
 
 /// Put the question to the person, then write the answer back to the agent.
@@ -3135,6 +3422,13 @@ pub fn chat_set_access_impl(
     key: String,
     access: Access,
 ) -> Result<(), String> {
+    if let Some(start) = manager.start_context(&key) {
+        for path in std::iter::once(&start.cwd).chain(start.extra_dirs.iter().flatten()) {
+            manager
+                .orchestrations
+                .require_workspace_access(&key, path, access != Access::Read)?;
+        }
+    }
     cancel_auto_resume(manager, &key, "cancelled when access changed")?;
     let session = {
         let sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
@@ -3153,10 +3447,15 @@ pub fn chat_set_access_impl(
             }
         }
         record_access_for(&key, Some(access));
+        manager.persist_orchestration_context(&key)?;
         return Ok(());
     }
     if !provider.capabilities().supports_live_access_change {
-        return Ok(());
+        if let Some(mut start) = manager.start_context(&key) {
+            start.access = Some(access);
+            manager.remember_start(&key, start);
+        }
+        return manager.persist_orchestration_context(&key);
     }
     if matches!(access, Access::Full) {
         return Err("Full access needs a fresh agent".into());
@@ -3169,7 +3468,12 @@ pub fn chat_set_access_impl(
         .as_mut()
         .ok_or("this chat does not take more input")?;
     writeln!(stdin, "{payload}").map_err(|e| e.to_string())?;
-    stdin.flush().map_err(|e| e.to_string())
+    stdin.flush().map_err(|e| e.to_string())?;
+    if let Some(mut start) = manager.start_context(&key) {
+        start.access = Some(access);
+        manager.remember_start(&key, start);
+    }
+    manager.persist_orchestration_context(&key)
 }
 
 /// Stop a chat and drop it. Killing an unknown key is a no-op success, so the
@@ -3204,6 +3508,7 @@ pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), Stri
         .lock()
         .map_err(|e| e.to_string())?
         .remove(&key);
+    manager.orchestrations.forget_resume_context(&key)?;
     Ok(())
 }
 
@@ -3900,6 +4205,54 @@ mod tests {
         assert_eq!(event["octiq_user_turn"], true);
         assert_eq!(event["message"]["content"][0]["text"], "look at this");
         assert_eq!(event["octiq_attachments"][0]["path"], "/tmp/screenshot.png");
+    }
+
+    #[test]
+    fn notifications_use_internal_receipts_for_both_providers() {
+        for (agent, mut event) in [
+            (ChatAgent::Codex, json!({"type":"turn.started"})),
+            (
+                ChatAgent::Claude,
+                json!({"type":"user","message":{"content":"host ping"}}),
+            ),
+        ] {
+            let mut pending = Some("octiq-notification-test".into());
+            acknowledge_user_turn(&mut event, agent, &mut pending);
+            assert!(pending.is_none());
+            assert!(event.get("octiq_user_turn_id").is_none());
+            assert_eq!(
+                event["octiq_orchestration_notification_id"],
+                "octiq-notification-test"
+            );
+        }
+    }
+
+    #[test]
+    fn user_queue_precedes_internal_turns_and_preserves_each_fifo() {
+        let manager = ChatManager::default();
+        for (id, recorded) in [
+            ("host1", false),
+            ("user1", true),
+            ("host2", false),
+            ("user2", true),
+        ] {
+            manager
+                .queue_turn(
+                    "priority",
+                    QueuedTurn {
+                        text: id.into(),
+                        images: vec![],
+                        turn_id: Some(id.into()),
+                        recorded,
+                    },
+                )
+                .unwrap();
+        }
+        let queues = manager.queued_turns.lock().unwrap();
+        let ids: Vec<_> = queues["priority"].iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(ids, ["user1", "user2", "host1", "host2"]);
+        drop(queues);
+        assert!(!manager.notification_ready("priority"));
     }
 
     #[test]

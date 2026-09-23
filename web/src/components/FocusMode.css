@@ -10,7 +10,7 @@
 
 .app.focus-mode > .topbar,
 .app.focus-mode > .body > :not(.main),
-.app.focus-mode .main > .drawer,
+.app.focus-mode .main .drawer,
 .app.focus-mode .chat-main > .focus,
 .app.focus-mode .conversation-map {
   display: none !important;
@@ -152,7 +152,7 @@
 /* Capture the viewport-sized conversation and the input separately. Only the
    snapshots travel; the mounted transcript never changes scroll containers. */
 html[data-zen-transition] .app .chat-body,
-html[data-zen-transition] .app .main > .hero { view-transition-name: zen-chat; }
+html[data-zen-transition] .app .main .hero { view-transition-name: zen-chat; }
 html[data-zen-transition] .app .composer-box { view-transition-name: zen-composer; }
 html[data-zen-transition] .app > .topbar { view-transition-name: zen-header; }
 html[data-zen-transition] .app .sidebar { view-transition-name: zen-sidebar; }

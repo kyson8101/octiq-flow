@@ -1619,3 +1619,9 @@ describe("a lost queued message dismissed by the user", () => {
     expect(state.messages.map((m) => m.turnId)).toEqual(["u-1"]);
   });
 });
+
+it("does not render orchestration receipts as messages from the person", () => {
+  const before = emptyChat();
+  const after = reduceChat(before, { type: "user", octiq_orchestration_notification_id: "octiq-notification-test", message: { content: "host ping" } });
+  expect(after.messages).toEqual(before.messages);
+});
