@@ -217,6 +217,15 @@ pub struct TaskStatus {
     pub workspace: Option<Workspace>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delivery: Option<Delivery>,
+    /// The project's release check, when it has one. Sent so the panel can
+    /// show WHAT "released" was decided against, and offer to set it when the
+    /// answer is unverified for want of one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_check: Option<ReleaseCheck>,
+    /// Which project this chat belongs to, so the panel can change that check
+    /// without asking a second command where the chat lives.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
 }
 
 /// What is kept on disk for one chat: the agent's report, the chosen target,
@@ -233,6 +242,10 @@ struct Stored {
     workspace: Option<Workspace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delivery: Option<Delivery>,
+    /// The project this chat belongs to, copied from the chat index so the
+    /// record can still name its release check after the chat is gone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    project_id: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -395,40 +408,45 @@ pub fn chat_task_set_release_check_impl(
 
 /// This chat's status, verified unless it was verified moments ago.
 pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, String> {
-    let stored = read().chats.get(&chat_id).cloned().unwrap_or_default();
+    let store = read();
+    let mut stored = store.chats.get(&chat_id).cloned().unwrap_or_default();
     let fresh = verified_at()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&chat_id)
         .is_some_and(|at| at.elapsed() < FRESH_FOR);
     if fresh && !refresh {
-        return Ok(TaskStatus {
-            chat_id,
-            report: stored.report,
-            target: stored.target,
-            workspace: stored.workspace,
-            delivery: stored.delivery,
-        });
+        return Ok(assemble(chat_id, stored, &store));
     }
 
+    // Which project a chat belongs to is the chat index's to answer, and the
+    // stored copy is what answers it for a chat the index no longer lists.
     let chat = crate::chat_index::list()
         .into_iter()
         .find(|meta| meta.id == chat_id);
     let cwd = chat.as_ref().and_then(|meta| meta.cwd.clone());
-    let project_id = chat.as_ref().map(|meta| meta.project_id.clone());
-    let release = project_id
-        .and_then(|id| read().projects.get(&id).cloned())
+    if let Some(meta) = chat.as_ref() {
+        stored.project_id = meta.project_id.clone();
+    }
+    let release = store
+        .projects
+        .get(&stored.project_id)
+        .cloned()
         .unwrap_or_default();
 
     let (workspace, delivery) = verify(&stored, cwd.as_deref(), &release);
 
     let changed = stored.workspace != workspace || stored.delivery != delivery;
-    if changed {
+    if changed
+        || store.chats.get(&chat_id).map(|old| old.project_id.clone())
+            != Some(stored.project_id.clone())
+    {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut store = read();
         let entry = store.chats.entry(chat_id.clone()).or_default();
         entry.workspace = workspace.clone();
         entry.delivery = delivery.clone();
+        entry.project_id = stored.project_id.clone();
         write(&store)?;
     }
     verified_at()
@@ -436,19 +454,35 @@ pub fn chat_task_impl(chat_id: String, refresh: bool) -> Result<TaskStatus, Stri
         .unwrap_or_else(|e| e.into_inner())
         .insert(chat_id.clone(), Instant::now());
 
-    let status = TaskStatus {
-        chat_id,
-        report: stored.report,
-        target: stored.target,
-        workspace,
-        delivery,
-    };
+    stored.workspace = workspace;
+    stored.delivery = delivery;
+    let status = assemble(chat_id, stored, &store);
     // Only when something actually moved: the panel is open in several tabs,
     // and an event per poll would be an event per second saying nothing.
     if changed {
         crate::bus::emit("chat-task", &status);
     }
     Ok(status)
+}
+
+/// One chat's record as the client reads it, with the project's release check
+/// alongside — so the panel can say what "released" was decided against, and
+/// offer to answer it when nothing has.
+fn assemble(chat_id: String, stored: Stored, store: &Store) -> TaskStatus {
+    let release_check = store
+        .projects
+        .get(&stored.project_id)
+        .filter(|check| check.configured())
+        .cloned();
+    TaskStatus {
+        chat_id,
+        report: stored.report,
+        target: stored.target,
+        workspace: stored.workspace,
+        delivery: stored.delivery,
+        release_check,
+        project_id: stored.project_id,
+    }
 }
 
 /// Forget one chat's record, for a chat that is being deleted.

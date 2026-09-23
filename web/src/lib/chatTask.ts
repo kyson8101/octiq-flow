@@ -62,13 +62,27 @@ export type TaskDelivery = {
   checkedAt: number;
 };
 
+/** How a project decides a commit is released. A ref a release advances, or a
+ *  command whose output names the running commit. Absent means the release row
+ *  is unverified — which is most projects, and is the honest answer. */
+export type ReleaseCheck = { reference?: string; command?: string };
+
 export type TaskStatus = {
   chatId: string;
   report?: TaskReport;
   target?: TaskTarget;
   workspace?: TaskWorkspace;
   delivery?: TaskDelivery;
+  releaseCheck?: ReleaseCheck;
+  projectId?: string;
 };
+
+/** What "released" is being decided against, for the row that says it. */
+export function releaseBasis(check?: ReleaseCheck): string {
+  if (check?.reference) return `Against ${check.reference}`;
+  if (check?.command) return `From ${check.command}`;
+  return "";
+}
 
 /** What is owed next, in the order the work actually goes. */
 export type DeliveryStage =

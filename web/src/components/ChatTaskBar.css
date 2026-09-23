@@ -57,6 +57,14 @@
 .chat-task-target-form input { flex: 1; min-width: 0; padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-0); color: var(--fg-0); font: inherit; font-size: 11px; }
 .chat-task-target-form button { padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-2); color: var(--fg-1); font: inherit; font-size: 11px; cursor: pointer; }
 
+.chat-task-setup { display: block; margin-top: 4px; padding: 0; border: 0; background: transparent; color: var(--link); font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
+.chat-task-setup:hover { text-decoration: underline; }
+.chat-task-release-form { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.chat-task-release-form select, .chat-task-release-form input, .chat-task-release-form button { padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--bg-0); color: var(--fg-0); font: inherit; font-size: 11px; }
+.chat-task-release-form input { flex: 1 1 120px; min-width: 0; }
+.chat-task-release-form button { background: var(--bg-2); color: var(--fg-1); cursor: pointer; }
+.chat-task-release-form .chat-task-note { flex: 1 0 100%; }
+
 @media (max-width: 600px) {
   .chat-task-phase { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-task-branch { max-width: 10ch; }

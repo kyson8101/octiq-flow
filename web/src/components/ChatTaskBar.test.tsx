@@ -118,6 +118,29 @@ describe("the status line above the chat", () => {
     expect(html).toContain("read from the primary checkout");
   });
 
+  it("offers to teach the project what a release is, where the answer is missing", () => {
+    const html = bar({
+      status: { ...status(), projectId: "p1" },
+      open: true,
+      now: NOW,
+      onToggle: () => {},
+      onReleaseCheck: () => {},
+    });
+    expect(html).toContain("Set up a release check");
+  });
+
+  it("says what a configured release answer was decided against", () => {
+    const html = bar({
+      status: { ...status(), projectId: "p1", releaseCheck: { reference: "origin/release" } },
+      open: true,
+      now: NOW,
+      onToggle: () => {},
+      onReleaseCheck: () => {},
+    });
+    expect(html).toContain("Against origin/release");
+    expect(html).not.toContain("Set up a release check");
+  });
+
   it("shows nothing verified as unverified rather than as a state", () => {
     const html = bar({ status: { chatId: "c1" }, open: true, now: NOW, onToggle: () => {} });
     expect(html).toContain("Unverified");

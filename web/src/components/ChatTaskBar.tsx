@@ -20,8 +20,10 @@ import {
   locationOf,
   mergeLine,
   phaseOf,
+  releaseBasis,
   releaseLine,
   stepProgress,
+  type ReleaseCheck,
   type TaskStatus,
 } from "../lib/chatTask";
 import "./ChatTaskBar.css";
@@ -91,6 +93,22 @@ export function ChatTaskBar({
     [chatId],
   );
 
+  const setReleaseCheck = useCallback(
+    (check: ReleaseCheck) => {
+      const projectId = shown?.projectId;
+      if (!projectId) return;
+      bridge
+        .invoke("chat_task_set_release_check", {
+          projectId,
+          reference: check.reference ?? null,
+          command: check.command ?? null,
+        })
+        .then(() => load(true))
+        .catch(() => {});
+    },
+    [shown?.projectId, load],
+  );
+
   if (!chatId) return null;
   return (
     <ChatTaskBarView
@@ -105,6 +123,7 @@ export function ChatTaskBar({
         if (next) load(true);
       }}
       onTarget={setTarget}
+      onReleaseCheck={setReleaseCheck}
     />
   );
 }
@@ -119,12 +138,14 @@ export function ChatTaskBarView({
   now,
   onToggle,
   onTarget,
+  onReleaseCheck,
 }: {
   status?: TaskStatus;
   open: boolean;
   now: number;
   onToggle: () => void;
   onTarget?: (branch: string) => void;
+  onReleaseCheck?: (check: ReleaseCheck) => void;
 } & Live) {
   const phase = phaseOf(status, { busy, waiting });
   const progress = stepProgress(status?.report);
@@ -152,7 +173,15 @@ export function ChatTaskBarView({
           <path d="m6 9 6 6 6-6" />
         </svg>
       </button>
-      {open && <ChatTaskPanel status={status} now={now} onClose={onToggle} onTarget={onTarget} />}
+      {open && (
+        <ChatTaskPanel
+          status={status}
+          now={now}
+          onClose={onToggle}
+          onTarget={onTarget}
+          onReleaseCheck={onReleaseCheck}
+        />
+      )}
     </div>
   );
 }
@@ -162,7 +191,14 @@ function ChatTaskPanel({
   now,
   onClose,
   onTarget,
-}: { status?: TaskStatus; now: number; onClose: () => void; onTarget?: (branch: string) => void }) {
+  onReleaseCheck,
+}: {
+  status?: TaskStatus;
+  now: number;
+  onClose: () => void;
+  onTarget?: (branch: string) => void;
+  onReleaseCheck?: (check: ReleaseCheck) => void;
+}) {
   const report = status?.report;
   const delivery = status?.delivery;
   const workspace = status?.workspace;
@@ -219,6 +255,11 @@ function ChatTaskPanel({
         <dd>
           {releaseLine(delivery)}
           {delivery?.releaseNote && <span className="chat-task-note">{delivery.releaseNote}</span>}
+          {status?.releaseCheck ? (
+            <span className="chat-task-note">{releaseBasis(status.releaseCheck)}</span>
+          ) : (
+            onReleaseCheck && status?.projectId && <ReleaseCheckField onSave={onReleaseCheck} />
+          )}
         </dd>
       </dl>
       {delivery && (
@@ -246,6 +287,54 @@ function ChatTaskPanel({
         )}
       </dl>
     </div>
+  );
+}
+
+/** Teaching a project what "released" means.
+ *
+ *  Without this the release row is unverified for ever, which is honest and
+ *  useless. It is asked here, in the row that is unverified, rather than in a
+ *  settings screen nobody visits with the question in mind. */
+function ReleaseCheckField({ onSave }: { onSave: (check: ReleaseCheck) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [kind, setKind] = useState<"reference" | "command">("reference");
+  const [value, setValue] = useState("");
+  if (!editing) {
+    return (
+      <button type="button" className="chat-task-setup" onClick={() => setEditing(true)}>
+        Set up a release check
+      </button>
+    );
+  }
+  return (
+    <form
+      className="chat-task-release-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const text = value.trim();
+        setEditing(false);
+        if (text) onSave(kind === "reference" ? { reference: text } : { command: text });
+      }}
+    >
+      <select aria-label="How a release is recognised" value={kind} onChange={(event) => setKind(event.target.value as "reference" | "command")}>
+        <option value="reference">Git ref</option>
+        <option value="command">Command</option>
+      </select>
+      <input
+        aria-label={kind === "reference" ? "Release ref" : "Release check command"}
+        placeholder={kind === "reference" ? "origin/release" : "./scripts/octiq-check.sh"}
+        value={value}
+        autoFocus
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); }}
+      />
+      <button type="submit">Save</button>
+      <span className="chat-task-note">
+        {kind === "reference"
+          ? "Released means the commit is an ancestor of this ref."
+          : "The first commit hash this prints is taken as what is running."}
+      </span>
+    </form>
   );
 }
 
