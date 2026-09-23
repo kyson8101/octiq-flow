@@ -69,7 +69,7 @@ jobs:
           pnpm --dir web build
 
       - name: Build native server
-        shell: bash
+        # Keep the native default shell on Windows so OpenSSL uses a complete Perl.
         run: cargo build --manifest-path src-tauri/Cargo.toml --release --bin octiq-server --target "${{ matrix.target }}"
 
       - name: Stage platform package
