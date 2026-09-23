@@ -44,6 +44,10 @@ pub struct ChatMeta {
     /// chosen `New chat` distinct from the inferred placeholder.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub custom_title: bool,
+    /// Server-owned: an agent has replaced the inferred title. Ordinary
+    /// browser saves must carry this title forward even before they hear it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_title: bool,
     /// The agent's own session id, for resuming the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -211,6 +215,14 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
         // `created_at` is historical identity, not activity. A later save may
         // move `updated_at`, but can never rewrite when the chat began.
         Some(existing) => {
+            // A browser may still hold the first-message title when an agent
+            // renames the chat. Only an explicit user rename can replace a
+            // managed title; ordinary transcript/pin saves cannot rewind it.
+            if !meta.custom_title && (existing.agent_title || existing.custom_title) {
+                meta.title = existing.title.clone();
+                meta.custom_title = existing.custom_title;
+            }
+            meta.agent_title = existing.agent_title && !meta.custom_title;
             let created = existing.created_at;
             let deleted_at = existing.deleted_at;
             let generation = existing.generation;
@@ -238,10 +250,60 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             // lifecycle generation. Those are server-owned facts.
             meta.deleted_at = None;
             meta.generation = 0;
+            meta.agent_title = false;
             index.chats.push(meta);
         }
     }
     write(&index)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTitleUpdate {
+    pub title: String,
+    pub updated: bool,
+    pub reason: &'static str,
+}
+
+/// Update only this chat's title under the same lock as browser saves. User
+/// names take precedence, and metadata edits do not count as new activity.
+pub fn set_agent_title(id: &str, title: &str) -> Result<ChatTitleUpdate, String> {
+    if title.chars().any(|c| c.is_control() && !c.is_whitespace()) {
+        return Err("Chat titles cannot contain control characters.".into());
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() || title.chars().count() > 80 {
+        return Err("Choose a chat title between 1 and 80 characters.".into());
+    }
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = read_checked().map_err(|_| "The chat index could not be read.".to_string())?;
+    let chat = index
+        .chats
+        .iter_mut()
+        .find(|chat| chat.id == id && chat.deleted_at.is_none())
+        .ok_or("This chat is not in the active chat index.")?;
+    if chat.custom_title {
+        return Ok(ChatTitleUpdate {
+            title: chat.title.clone(),
+            updated: false,
+            reason: "The user chose this title; it has been kept.",
+        });
+    }
+    let updated = chat.title != title || !chat.agent_title;
+    chat.title = title.clone();
+    chat.agent_title = true;
+    if updated {
+        write(&index)?;
+    }
+    Ok(ChatTitleUpdate {
+        title,
+        updated,
+        reason: if updated {
+            "Title updated."
+        } else {
+            "Title already matches."
+        },
+    })
 }
 
 /// Record that a chat was opened, moving `read_at` forward. Narrower than
@@ -536,6 +598,7 @@ mod tests {
             title: format!("chat {id}"),
             latest_response: None,
             custom_title: false,
+            agent_title: false,
             session_id: None,
             cwd: None,
             model_id: None,
@@ -581,6 +644,91 @@ mod tests {
         let found = list().into_iter().find(|c| c.id == id).unwrap();
         assert_eq!(found.title, "renamed", "the update should apply");
         assert_eq!(found.created_at, 100, "but not to when it started");
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn agent_titles_persist_across_stale_browser_saves_and_can_evolve() {
+        let id = "test-index-agent-title";
+        cleanup(&[id]);
+        let mut original = meta(id, 100);
+        original.pinned = true;
+        original.read_at = Some(150);
+        upsert(original.clone()).unwrap();
+
+        let result = set_agent_title(id, "  Fix\n chat\t titles  ").unwrap();
+        assert!(result.updated);
+        assert_eq!(result.title, "Fix chat titles");
+        assert!(!set_agent_title(id, "Fix chat titles").unwrap().updated);
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert!(found.agent_title);
+        assert!(!found.custom_title);
+        assert!(found.pinned);
+        assert_eq!(found.created_at, 100);
+        assert_eq!(found.updated_at, 100);
+        assert_eq!(found.read_at, Some(150));
+
+        // Both the first-message title and an earlier agent title can arrive
+        // late with useful transcript metadata. Keep only that metadata.
+        original.latest_response = Some("Tests passed".into());
+        original.updated_at = 200;
+        upsert(original).unwrap();
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.title, "Fix chat titles");
+        assert_eq!(found.latest_response.as_deref(), Some("Tests passed"));
+        assert_eq!(found.updated_at, 200);
+        assert!(set_agent_title(id, "Improve title sync").unwrap().updated);
+        upsert(found).unwrap();
+        assert_eq!(
+            list().into_iter().find(|c| c.id == id).unwrap().title,
+            "Improve title sync"
+        );
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn manual_titles_take_precedence_over_agents_and_stale_automatic_saves() {
+        let id = "test-index-user-title";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        set_agent_title(id, "Agent title").unwrap();
+        let stale = list().into_iter().find(|c| c.id == id).unwrap();
+        let mut manual = stale.clone();
+        manual.title = "My chosen title".into();
+        manual.custom_title = true;
+        upsert(manual).unwrap();
+        upsert(stale).unwrap();
+
+        let result = set_agent_title(id, "Another agent title").unwrap();
+        assert!(!result.updated);
+        assert_eq!(result.title, "My chosen title");
+        assert!(result.reason.contains("user chose"));
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert!(found.custom_title);
+        assert!(!found.agent_title);
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn agent_titles_reject_invalid_input_and_missing_or_deleted_chats() {
+        let _serial = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let id = "test-index-agent-title-invalid";
+        cleanup(&[id]);
+        assert!(set_agent_title(id, "Missing chat").is_err());
+        upsert(meta(id, 100)).unwrap();
+        for title in [" \n\t ", "has\0control", &"a".repeat(81)] {
+            assert!(set_agent_title(id, title).is_err());
+        }
+        assert_eq!(
+            list().into_iter().find(|c| c.id == id).unwrap().title,
+            meta(id, 100).title
+        );
+        let title = "题".repeat(80);
+        assert_eq!(set_agent_title(id, &title).unwrap().title, title);
+        trash(id, None, None).unwrap();
+        assert!(set_agent_title(id, "Deleted chat").is_err());
         cleanup(&[id]);
     }
 
@@ -696,11 +844,13 @@ mod tests {
                 .unwrap();
         assert!(!meta.pinned);
         assert!(!meta.custom_title);
+        assert!(!meta.agent_title);
         // And an unpinned one is written without the field, so the file stays
         // exactly what it was before pins or custom titles existed.
         let written = serde_json::to_string(&meta).unwrap();
         assert!(!written.contains("pinned"));
         assert!(!written.contains("customTitle"));
+        assert!(!written.contains("agentTitle"));
         assert!(meta.deleted_at.is_none());
         assert_eq!(meta.generation, 0);
     }

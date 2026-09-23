@@ -997,9 +997,9 @@ async fn orchestration_handler(
 
 /// What an agent may say about its own task, and nothing else.
 ///
-/// The chat key comes from the process OctiqFlow started, not from the body,
-/// so an agent can only ever describe the chat it is running in. As with the
-/// orchestration hook this is a whitelist: three actions, no generic bridge to
+/// The MCP supplies the chat key from its process environment, not its tool
+/// arguments; this handler replaces any supplied chatId with that key. As with the
+/// orchestration hook this is a whitelist, not a generic bridge to
 /// the command table.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1022,6 +1022,7 @@ async fn task_handler(
         "report" => "chat_task_report",
         "target" => "chat_task_set_target",
         "read" => "chat_task",
+        "title" => "chat_set_agent_title",
         _ => {
             return (
                 StatusCode::BAD_REQUEST,

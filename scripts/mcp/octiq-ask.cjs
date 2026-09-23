@@ -996,6 +996,28 @@ const PIN_TOOL = {
   },
 };
 
+const SET_CHAT_TITLE = {
+  name: "set_chat_title",
+  description:
+    "Set this conversation's title to a short description of the work. Use it " +
+    "once the task is clear, and update it when the focus meaningfully changes, " +
+    "not for each step or progress update. Only the current chat can be renamed. " +
+    "Titles chosen by the user are kept; the result tells you when that applies.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: {
+        type: "string",
+        minLength: 1,
+        maxLength: 80,
+        description: "A concise, specific title in the user's language, ideally 3–8 words.",
+      },
+    },
+    required: ["title"],
+    additionalProperties: false,
+  },
+};
+
 const TASK_STATUS = {
   name: "task_status",
   description:
@@ -1325,6 +1347,7 @@ const ORCHESTRATION_TOOLS = [
 ];
 
 const BASE_SERVER_INSTRUCTIONS =
+  "Use set_chat_title once the work is clear, and again when the focus meaningfully changes. Keep it concise and specific; user-chosen titles are preserved. " +
   "Use preview_html to publish a self-contained HTML document (path or inline html) to the Preview panel for the person to click and view. " +
   "Use preview_image to show local images beside this chat. Reuse slot for image revisions; earlier snapshots remain available. " +
   "Use create_artifact for standalone HTML reading documents or item-by-item review with decisions and comments. Link the returned filePath to the person. Feedback is returned manually as JSON; pending/null is not approval. " +
@@ -1370,7 +1393,7 @@ async function handle(msg) {
       return reply(msg.id, {
         protocolVersion: msg.params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "octiq", version: "1.5.0" },
+        serverInfo: { name: "octiq", version: "1.6.0" },
         instructions: SERVER_INSTRUCTIONS,
       });
 
@@ -1391,6 +1414,7 @@ async function handle(msg) {
               READ_CONVERSATION,
               CREATE_ARTIFACT,
               TASK_STATUS,
+              SET_CHAT_TITLE,
               ...ORCHESTRATION_TOOLS,
             ]
           : [READ_CONVERSATION, CREATE_ARTIFACT],
@@ -1415,6 +1439,24 @@ async function handle(msg) {
           return reply(msg.id, {
             isError: true,
             content: [{ type: "text", text: error instanceof Error ? error.message : "The orchestration call failed." }],
+          });
+        }
+      }
+
+      if (msg.params?.name === "set_chat_title") {
+        try {
+          const title = msg.params.arguments?.title;
+          if (typeof title !== "string" || !title.trim()) {
+            throw new Error("Choose a non-empty chat title.");
+          }
+          // Deliberately forward only the title. The hook gets the chat key
+          // from this process, never an agent-supplied conversation ID.
+          const result = await callHook("task", "title", { title }, 10 * 1000, "title update");
+          return reply(msg.id, { content: [{ type: "text", text: JSON.stringify(result) }] });
+        } catch (error) {
+          return reply(msg.id, {
+            isError: true,
+            content: [{ type: "text", text: error instanceof Error ? error.message : "The chat title could not be saved." }],
           });
         }
       }

@@ -414,7 +414,7 @@ impl AgentProvider for ClaudeProvider {
                 " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(
-                    "mcp__octiq__ask_user mcp__octiq__search_conversations mcp__octiq__read_conversation \\
+                    "mcp__octiq__ask_user mcp__octiq__set_chat_title mcp__octiq__search_conversations mcp__octiq__read_conversation \\
                      mcp__octiq__preview_image mcp__octiq__preview_html \\
                      mcp__octiq__orchestration_run_create mcp__octiq__orchestration_task_create \\
                      mcp__octiq__orchestration_snapshot mcp__octiq__orchestration_worker_start \\
@@ -423,7 +423,7 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__orchestration_run_stop",
                 ),
                 sh_quote(&format!(
-                    "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{worker_prompt}"
+                    "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{worker_prompt}"
                 )),
             ));
         }
@@ -1032,7 +1032,7 @@ pub(crate) fn codex_developer_instructions(
     };
     let runtime = codex_runtime_context(model.as_deref(), effort, access);
     let mut prompt = format!(
-        "{CODEX_COMMON_HOST_PROMPT}\n\n{question_prompt}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{runtime}"
+        "{CODEX_COMMON_HOST_PROMPT}\n\n{question_prompt}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{runtime}"
     );
     if let Some(authorizations) = persistent_authorizations {
         prompt.push_str("\n\n");
@@ -1067,6 +1067,8 @@ const HISTORY_PROMPT: &str = "`search_conversations` finds relevant past OctiqFl
 const ORCHESTRATION_PROMPT: &str = "OctiqFlow's orchestration tools are a host-owned control plane for explicitly requested supervised multi-agent work. The master creates one durable run and a shallow task DAG, dispatches the full ready wave before waiting, and treats `orchestration_snapshot` rather than chat prose as authoritative. A worker must settle its exact attempt through `orchestration_worker_report`; a normal reply does not complete the task.";
 
 const ORCHESTRATION_WORKER_PROMPT: &str = "This chat is an OctiqFlow orchestration worker. Do not use `request_user_input`, `ask_user`, or ordinary prose to ask the person a blocking question. Record it with `orchestration_gate_create` for this attempt and end the turn; OctiqFlow will resume this chat with the decision. Settle the assigned attempt exactly once with `orchestration_worker_report`.";
+
+const CHAT_TITLE_PROMPT: &str = "When the work in this chat becomes clear, use `set_chat_title` if available to give it a concise, specific title in the person's language. Update it when the focus meaningfully changes, not for each step or progress update. This tool affects only the current chat and preserves titles chosen by the person; if it reports a user-chosen title, leave it in place.";
 
 /// Docspace preferences are useful context, but loading all private preference
 /// files into every new model session would cross the vault's privacy boundary.
@@ -1197,6 +1199,8 @@ mod tests {
         assert!(instructions.contains("Do not ask again in prose for that same blocked action"));
         assert!(!instructions.contains("mcp__octiq__ask_user"));
         assert!(instructions.contains("search_conversations"));
+        assert!(instructions.contains("use `set_chat_title` if available"));
+        assert!(claude.contains("mcp__octiq__set_chat_title"));
         assert!(instructions.contains("Docspace may contain shared preferences"));
         assert!(instructions.contains("model: model-x"));
         assert!(instructions.contains("effort: high"));

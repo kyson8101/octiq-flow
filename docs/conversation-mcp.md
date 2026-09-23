@@ -22,6 +22,29 @@ shape. OctiqFlow routes Codex to `read_conversation` before it can mistake the
 URL for a browser task, and gives Claude the same mandatory rule in its system
 prompt. The user-visible transcript keeps the original short message.
 
+## Chat titles
+
+Claude and Codex chats also receive `set_chat_title`, scoped to the conversation
+the agent is running in:
+
+```text
+set_chat_title({ "title": "Fix chat title updates" })
+```
+
+Agents are instructed to choose a concise title once the work is clear and to
+revise it when the focus meaningfully changes. Titles accept 1–80 characters
+after whitespace is collapsed. The host saves the title and tells connected
+browsers to refresh the existing chat list immediately.
+
+Manual renames take precedence: if the person has named the chat, the tool
+returns the current title with `updated: false` and explains why. Browser saves
+carrying inferred or older agent titles cannot revert it. Missing or deleted
+chats are rejected. This tool is hidden outside an OctiqFlow chat.
+
+The tool reaches the host through the authenticated `/hook/task` title action;
+it never edits the index file directly or accepts a target chat ID. As with the
+reader, agents pick it up when their process starts after a release.
+
 ## Paging
 
 The first call returns the latest 40 conversational entries in chronological
@@ -84,5 +107,5 @@ If `OCTIQ_ROOT` is not provided, the reader follows
 ## Check
 
 ```bash
-node scripts/mcp/octiq-ask.test.cjs
+node --test scripts/mcp/octiq-ask.test.cjs scripts/mcp/chat-title.test.cjs
 ```

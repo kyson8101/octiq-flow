@@ -3606,6 +3606,17 @@ pub fn chat_index_save(meta: crate::chat_index::ChatMeta) -> Result<(), String> 
     Ok(())
 }
 
+pub fn chat_set_agent_title(
+    chat_id: String,
+    title: String,
+) -> Result<crate::chat_index::ChatTitleUpdate, String> {
+    let result = crate::chat_index::set_agent_title(&chat_id, &title)?;
+    if result.updated {
+        announce_index_change(&chat_id, false);
+    }
+    Ok(result)
+}
+
 /// A chat was opened; move its shared "last read" mark forward and tell every
 /// other browser so an unread dot there clears too. Its own command rather
 /// than a `chat_index_save` — this fires on every open, and a save carries a

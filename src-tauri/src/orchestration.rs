@@ -824,6 +824,7 @@ impl OrchestrationStore {
             title: format!("Worker: {}", task.title),
             latest_response: None,
             custom_title: true,
+            agent_title: false,
             session_id: None,
             cwd: Some(prepared.cwd.clone()),
             model_id: Some(model_id(launch.agent, launch.model.as_deref())),
