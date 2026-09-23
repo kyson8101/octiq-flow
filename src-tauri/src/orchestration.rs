@@ -23,7 +23,13 @@ use uuid::Uuid;
 use crate::agent_chat::{Access, ChatAgent, ChatManager};
 use crate::workspaces::{Workspace, WorkspaceState};
 
-const STORE_VERSION: u32 = 1;
+pub mod automation;
+pub mod inbox;
+mod workspaces;
+use crate::git_ops::workflow::WorkspaceMode;
+use workspaces::TaskWorkspace;
+
+const STORE_VERSION: u32 = 3;
 const DEFAULT_MAX_CONCURRENT: u16 = 4;
 const MAX_CONCURRENT: u16 = 32;
 
@@ -87,6 +93,10 @@ pub struct Run {
     pub root_path: String,
     pub status: RunStatus,
     pub max_concurrent: u16,
+    #[serde(default)]
+    pub workspace_mode: WorkspaceMode,
+    #[serde(default)]
+    pub worker_defaults: Option<automation::WorkerDefaults>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +110,8 @@ pub struct Task {
     pub run_id: String,
     pub title: String,
     pub spec: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<TaskWorkspace>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -182,6 +194,7 @@ pub struct Snapshot {
     pub attempts: Vec<Attempt>,
     pub gates: Vec<Gate>,
     pub messages: Vec<OrchestrationMessage>,
+    pub notifications: Vec<inbox::Notification>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -198,6 +211,10 @@ struct Stored {
     gates: BTreeMap<String, Gate>,
     #[serde(default)]
     messages: BTreeMap<String, OrchestrationMessage>,
+    #[serde(default)]
+    notifications: BTreeMap<String, inbox::Notification>,
+    #[serde(default)]
+    resume_contexts: BTreeMap<String, crate::agent_chat::StartContext>,
 }
 
 fn store_version() -> u32 {
@@ -213,6 +230,8 @@ impl Default for Stored {
             attempts: BTreeMap::new(),
             gates: BTreeMap::new(),
             messages: BTreeMap::new(),
+            notifications: BTreeMap::new(),
+            resume_contexts: BTreeMap::new(),
         }
     }
 }
@@ -226,6 +245,7 @@ struct Inner {
 pub struct OrchestrationStore {
     path: Option<PathBuf>,
     inner: Mutex<Inner>,
+    workspace_ops: Mutex<()>,
 }
 
 #[derive(Clone, Debug)]
@@ -235,7 +255,7 @@ pub struct WorkerLaunch {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub access: Access,
-    pub new_worktree: bool,
+    pub new_worktree: Option<bool>,
     pub base_branch: String,
 }
 
@@ -254,6 +274,7 @@ impl Default for OrchestrationStore {
         Self {
             path: None,
             inner: Mutex::new(Inner::default()),
+            workspace_ops: Mutex::new(()),
         }
     }
 }
@@ -264,8 +285,11 @@ impl OrchestrationStore {
         let mut recovered = false;
         match fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Stored>(&bytes) {
-                Ok(mut data) if data.version == STORE_VERSION => {
-                    recovered = recover_interrupted_workers(&mut data);
+                Ok(mut data) if (1..=STORE_VERSION).contains(&data.version) => {
+                    recovered = data.version != STORE_VERSION;
+                    data.version = STORE_VERSION;
+                    recovered |= recover_interrupted_workers(&mut data);
+                    recovered |= workspaces::recover_workspaces(&mut data);
                     inner.data = data;
                 }
                 Ok(data) => {
@@ -287,6 +311,7 @@ impl OrchestrationStore {
         let store = Self {
             path: Some(path),
             inner: Mutex::new(inner),
+            workspace_ops: Mutex::new(()),
         };
         if recovered {
             let result = store
@@ -350,7 +375,7 @@ impl OrchestrationStore {
             .cloned()
             .collect();
         runs.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
-        let visible: BTreeSet<_> = runs.iter().map(|run| run.id.as_str()).collect();
+        let visible: BTreeSet<_> = runs.iter().map(|run| run.id.clone()).collect();
 
         let mut tasks: Vec<_> = inner
             .data
@@ -390,6 +415,13 @@ impl OrchestrationStore {
             attempts,
             gates,
             messages,
+            notifications: inner
+                .data
+                .notifications
+                .values()
+                .filter(|n| visible.contains(n.run_id.as_str()))
+                .cloned()
+                .collect(),
         })
     }
 
@@ -479,6 +511,34 @@ impl OrchestrationStore {
             .map(Some)
     }
 
+    pub(crate) fn guard_master_start(
+        &self,
+        actor: &str,
+        id: &str,
+    ) -> Result<(std::sync::MutexGuard<'_, ()>, Run), String> {
+        let guard = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        let run = self.resumable_run(actor, id)?;
+        Ok((guard, run))
+    }
+
+    /// Browser launch/recovery checks the durable owner and run state before
+    /// touching a provider. The caller holds workspace_ops through launch.
+    pub(crate) fn resumable_run(&self, actor: &str, id: &str) -> Result<Run, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if let Some(error) = &inner.load_error {
+            return Err(error.clone());
+        }
+        let run = coordinator(&inner.data, id, actor)?;
+        if !matches!(
+            run.status,
+            RunStatus::Planning | RunStatus::Running | RunStatus::Waiting
+        ) {
+            return Err("This run has settled. Start a new run in this chat.".into());
+        }
+        Ok(run.clone())
+    }
+
+    #[cfg(test)]
     pub fn create_run(
         &self,
         actor_chat_key: String,
@@ -487,6 +547,25 @@ impl OrchestrationStore {
         root_path: String,
         max_concurrent: Option<u16>,
     ) -> Result<Run, String> {
+        self.create_run_with_mode(
+            actor_chat_key,
+            objective,
+            workspace_id,
+            root_path,
+            max_concurrent,
+            WorkspaceMode::Auto,
+        )
+    }
+
+    pub fn create_run_with_mode(
+        &self,
+        actor_chat_key: String,
+        objective: String,
+        workspace_id: String,
+        root_path: String,
+        max_concurrent: Option<u16>,
+        workspace_mode: WorkspaceMode,
+    ) -> Result<Run, String> {
         validate_chat_key(&actor_chat_key)?;
         let objective = required_text("objective", objective, 40_000)?;
         let workspace_id = required_text("workspace", workspace_id, 256)?;
@@ -494,6 +573,11 @@ impl OrchestrationStore {
         let max_concurrent = max_concurrent
             .unwrap_or(DEFAULT_MAX_CONCURRENT)
             .clamp(1, MAX_CONCURRENT);
+        let max_concurrent = if workspace_mode == WorkspaceMode::Direct {
+            1
+        } else {
+            max_concurrent
+        };
         let now = now_ms();
         let run = Run {
             id: format!("run_{}", compact_id()),
@@ -503,6 +587,8 @@ impl OrchestrationStore {
             root_path,
             status: RunStatus::Planning,
             max_concurrent,
+            workspace_mode,
+            worker_defaults: None,
             created_at: now,
             updated_at: now,
             stopped_reason: None,
@@ -572,6 +658,7 @@ impl OrchestrationStore {
                 run_id: run_id.clone(),
                 title,
                 spec,
+                workspace: None,
                 depends_on,
                 parent_task_id,
                 status: if ready {
@@ -599,7 +686,7 @@ impl OrchestrationStore {
         &self,
         actor_chat_key: &str,
         launch: &WorkerLaunch,
-    ) -> Result<(Run, Task, Attempt), String> {
+    ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
         self.mutate(|data| {
             let task = data
                 .tasks
@@ -621,21 +708,21 @@ impl OrchestrationStore {
             }) {
                 return Err("This task is waiting for its dependencies.".into());
             }
-            if let Some(active_id) = task.active_attempt_id.as_deref() {
-                let active_status = data.attempts.get(active_id).map(|attempt| attempt.status);
-                let has_open_gate = data.gates.values().any(|gate| {
-                    gate.task_id.as_deref() == Some(task.id.as_str())
-                        && gate.status == GateStatus::Open
-                });
-                match active_status {
-                    Some(AttemptStatus::Preparing | AttemptStatus::Running) => {
+            let previous = task
+                .active_attempt_id
+                .as_deref()
+                .and_then(|id| data.attempts.get(id))
+                .cloned();
+            if let Some(active) = previous.as_ref() {
+                match active.status {
+                    AttemptStatus::Preparing | AttemptStatus::Running => {
                         return Err("This task already has an active worker.".into())
                     }
-                    Some(AttemptStatus::Blocked) if has_open_gate => {
+                    AttemptStatus::Blocked if attempt_has_open_gate(data, active) => {
                         return Err("This task is waiting for its open decision gate.".into())
                     }
-                    Some(AttemptStatus::Blocked) => {
-                        if let Some(previous) = data.attempts.get_mut(active_id) {
+                    AttemptStatus::Blocked => {
+                        if let Some(previous) = data.attempts.get_mut(&active.id) {
                             previous.status = AttemptStatus::Cancelled;
                             previous.updated_at = now_ms();
                         }
@@ -646,15 +733,7 @@ impl OrchestrationStore {
             let active = data
                 .attempts
                 .values()
-                .filter(|attempt| {
-                    attempt.run_id == run.id
-                        && matches!(
-                            attempt.status,
-                            AttemptStatus::Preparing
-                                | AttemptStatus::Running
-                                | AttemptStatus::Blocked
-                        )
-                })
+                .filter(|attempt| attempt.run_id == run.id && attempt_is_unsettled(data, attempt))
                 .count();
             if active >= usize::from(run.max_concurrent) {
                 return Err(format!(
@@ -702,7 +781,7 @@ impl OrchestrationStore {
             let active_run = data.runs.get_mut(&run.id).expect("the run was read above");
             active_run.status = RunStatus::Running;
             active_run.updated_at = now;
-            Ok((run, reserved_task.clone(), attempt))
+            Ok((run, reserved_task.clone(), attempt, previous))
         })
     }
 
@@ -747,9 +826,11 @@ impl OrchestrationStore {
                     .ok_or("The reserved worker attempt disappeared.")?;
                 attempt.status = AttemptStatus::Failed;
                 attempt.summary = Some(reason.clone());
-                attempt.cwd = cwd;
-                attempt.branch = branch;
-                attempt.is_worktree = is_worktree;
+                if !cwd.is_empty() {
+                    attempt.cwd = cwd;
+                    attempt.branch = branch;
+                    attempt.is_worktree = is_worktree;
+                }
                 attempt.updated_at = now;
                 (attempt.task_id.clone(), attempt.run_id.clone())
             };
@@ -778,35 +859,29 @@ impl OrchestrationStore {
                     .into(),
             );
         }
-        let (run, task, reserved) = self.reserve_attempt(actor_chat_key, &launch)?;
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
+        // Validate project before reserving a concurrency slot.
+        let (owning_run, _) = self.owned_task(actor_chat_key, &launch.task_id)?;
+        let workspace = workspace(workspaces, &owning_run.workspace_id)?;
+        let (run, task, reserved, previous) = self.reserve_attempt(actor_chat_key, &launch)?;
         announce(&run.id, "worker_preparing");
-        let workspace = workspace(workspaces, &run.workspace_id)?;
-        let prepared = if launch.new_worktree {
-            crate::git_ops::git_prepare_chat_workspace(
-                run.root_path.clone(),
-                launch.base_branch.clone(),
-                true,
-                task.title.clone(),
-                reserved.id.clone(),
-            )
-        } else {
-            Ok(crate::git_ops::PreparedWorkspace {
-                cwd: run.root_path.clone(),
-                branch: launch.base_branch.clone(),
-                is_repo: Path::new(&run.root_path).join(".git").exists(),
-                is_worktree: false,
-            })
-        };
-        let prepared = match prepared {
+        let prepared = match self.prepare_task_workspace(
+            &chats,
+            &run,
+            &task,
+            &reserved,
+            previous.as_ref(),
+            &launch,
+        ) {
             Ok(prepared) => prepared,
             Err(error) => {
-                let _ = self.fail_preparation(
+                self.fail_preparation(
                     &reserved.id,
                     error.clone(),
                     String::new(),
                     String::new(),
                     false,
-                );
+                )?;
                 announce(&run.id, "worker_failed");
                 return Err(error);
             }
@@ -846,7 +921,15 @@ impl OrchestrationStore {
             return Err(error);
         }
 
-        let prompt = worker_prompt(&run, &task, &reserved);
+        let (_, task) = self.owned_task(actor_chat_key, &task.id)?;
+        // Activate before spawning: a fast worker can report immediately.
+        let active = self.activate_attempt(
+            &reserved.id,
+            prepared.cwd.clone(),
+            prepared.branch.clone(),
+            prepared.is_worktree,
+        )?;
+        let prompt = worker_prompt(&run, &task, &active);
         let mut worker_env = workspace.env.clone();
         worker_env.insert("OCTIQ_ORCHESTRATION_ATTEMPT".into(), reserved.id.clone());
         let start = crate::agent_chat::chat_start_user_impl(
@@ -889,21 +972,8 @@ impl OrchestrationStore {
             return Err(error);
         }
 
-        match self.activate_attempt(
-            &reserved.id,
-            prepared.cwd,
-            prepared.branch,
-            prepared.is_worktree,
-        ) {
-            Ok(attempt) => {
-                announce(&run.id, "worker_started");
-                Ok(attempt)
-            }
-            Err(error) => {
-                let _ = crate::agent_chat::chat_stop_impl(&chats, reserved.worker_chat_key);
-                Err(error)
-            }
-        }
+        announce(&run.id, "worker_started");
+        Ok(active)
     }
 
     pub fn report_worker(
@@ -930,8 +1000,12 @@ impl OrchestrationStore {
             }
             if !matches!(
                 attempt.status,
-                AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
+                AttemptStatus::Preparing | AttemptStatus::Running
             ) {
+                if attempt.status == AttemptStatus::Blocked && attempt_has_open_gate(data, &attempt)
+                {
+                    return Err("This worker attempt is waiting for its open decision gate.".into());
+                }
                 return Err("This worker attempt has already settled.".into());
             }
             let summary = required_text("worker summary", report.summary, 20_000)?;
@@ -958,12 +1032,18 @@ impl OrchestrationStore {
                 WorkerOutcome::Failed => TaskStatus::Failed,
                 WorkerOutcome::Blocked => TaskStatus::Blocked,
             };
+            if let Some(ws) = task_mut.workspace.as_mut() {
+                ws.state = workspaces::WorkspaceState::Retained;
+            }
             task_mut.result = Some(summary);
             task_mut.updated_at = now;
             let settled = task_mut.clone();
             event_run_id = task_mut.run_id.clone();
             make_ready(data, &attempt.run_id);
             recompute_run(data, &attempt.run_id);
+            let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
+            inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("report:{}", attempt.id), "report",
+                format!("Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
             Ok(settled)
         });
         if result.is_ok() {
@@ -1010,6 +1090,14 @@ impl OrchestrationStore {
                 if task.run_id != run_id {
                     return Err("The gate's task belongs to another run.".into());
                 }
+                if let Some(attempt) = task.active_attempt_id.as_ref().and_then(|id| data.attempts.get(id)) {
+                    if !attempt_is_unsettled(data, attempt) {
+                        return Err("This attempt has settled. Retry or reopen the task instead of creating a gate.".into());
+                    }
+                }
+                if data.gates.values().any(|gate| gate.task_id.as_deref() == Some(requested) && gate.status == GateStatus::Open) {
+                    return Err("This task already has an open decision gate. Resolve it first.".into());
+                }
                 if actor_chat_key != run.coordinator_chat_key
                     && owned_task.as_ref().map(|task| task.id.as_str()) != Some(requested)
                 {
@@ -1049,16 +1137,31 @@ impl OrchestrationStore {
                 run.updated_at = now;
             }
             data.gates.insert(gate.id.clone(), gate.clone());
+            if gate.created_by_chat_key != gate.target_chat_key {
+                inbox::enqueue(data, &gate.run_id, &gate.created_by_chat_key, &gate.target_chat_key,
+                    format!("gate:{}", gate.id), "decision", format!("Worker needs a decision for gate {}.\n\n{}\n\nRead orchestration_snapshot and resolve through orchestration_gate_resolve. Only ask the person if their decision is needed.", gate.id, gate.question));
+            }
             Ok(gate)
         })
         .inspect(|_| announce(&run_id_for_event, "gate_created"))
     }
 
+    #[cfg(test)]
     pub fn resolve_gate(
+        &self,
+        actor: &str,
+        gate_id: String,
+        resolution: String,
+    ) -> Result<Gate, String> {
+        self.resolve_gate_and_resume(actor, gate_id, resolution, false)
+    }
+
+    pub fn resolve_gate_and_resume(
         &self,
         actor_chat_key: &str,
         gate_id: String,
         resolution: String,
+        resume_target: bool,
     ) -> Result<Gate, String> {
         let resolution = required_text("gate resolution", resolution, 10_000)?;
         let mut event_run_id = String::new();
@@ -1107,6 +1210,10 @@ impl OrchestrationStore {
             }
             event_run_id = run_id.clone();
             recompute_run(data, &run_id);
+            if resume_target || resolved.created_by_chat_key != actor_chat_key {
+                inbox::enqueue(data, &run_id, actor_chat_key, &resolved.created_by_chat_key, format!("resolved:{}", resolved.id), "resolution",
+                    format!("Gate {} was resolved.\n\nQuestion: {}\nDecision: {}\n\nContinue the assigned task using this decision. Report the exact attempt when it settles.", resolved.id, resolved.question, resolved.resolution.as_deref().unwrap_or_default()));
+            }
             Ok(resolved)
         });
         if resolved.is_ok() {
@@ -1153,6 +1260,28 @@ impl OrchestrationStore {
                 if attempt.run_id != run_id {
                     return Err("The target attempt belongs to another run.".into());
                 }
+                let task = data
+                    .tasks
+                    .get(&attempt.task_id)
+                    .ok_or("The target attempt's task does not exist.")?;
+                if task.active_attempt_id.as_deref() != Some(attempt.id.as_str()) {
+                    return Err("The target attempt is stale; a newer attempt owns the task.".into());
+                }
+                match attempt.status {
+                    AttemptStatus::Preparing | AttemptStatus::Running => {}
+                    AttemptStatus::Blocked if attempt_has_open_gate(data, attempt) => {
+                        return Err("The target attempt is waiting for an open decision gate. Resolve that gate instead of sending a continuation message.".into());
+                    }
+                    AttemptStatus::Completed => {
+                        return Err("The target attempt completed and cannot be resumed. Create a new task if more work is required.".into());
+                    }
+                    AttemptStatus::Blocked | AttemptStatus::Failed => {
+                        return Err("The target attempt has settled. Start a retry with orchestration_worker_start before sending more instructions.".into());
+                    }
+                    AttemptStatus::Cancelled => {
+                        return Err("The target attempt was cancelled and cannot be resumed.".into());
+                    }
+                }
                 attempt.worker_chat_key.clone()
             };
             let message = OrchestrationMessage {
@@ -1166,6 +1295,10 @@ impl OrchestrationStore {
                 created_at: now_ms(),
             };
             data.messages.insert(message.id.clone(), message.clone());
+            if message.to_chat_key != message.from_chat_key {
+                inbox::enqueue(data, &run_id, actor_chat_key, &message.to_chat_key, format!("message:{}", message.id), if message.kind == "progress" { "progress" } else { "message" },
+                    format!("Orchestration message [{}]\nSubject: {}\nFrom: {}\n\n{}", message.kind, message.subject, message.from_chat_key, message.body));
+            }
             Ok(message)
         })
         .inspect(|_| announce(&run_id_for_event, "message_sent"))
@@ -1177,11 +1310,22 @@ impl OrchestrationStore {
         run_id: String,
         reason: String,
     ) -> Result<Vec<String>, String> {
+        let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         let reason = required_text("stop reason", reason, 2_000)?;
         let run_id_for_event = run_id.clone();
         self.mutate(|data| {
             coordinator(data, &run_id, actor_chat_key)?;
             let now = now_ms();
+            for n in data.notifications.values_mut().filter(|n| {
+                n.run_id == run_id
+                    && matches!(
+                        n.state,
+                        inbox::DeliveryState::Pending | inbox::DeliveryState::Delivering
+                    )
+            }) {
+                n.state = inbox::DeliveryState::Cancelled;
+                n.updated_at = now;
+            }
             let mut workers = Vec::new();
             for task in data.tasks.values_mut().filter(|task| task.run_id == run_id) {
                 if !matches!(task.status, TaskStatus::Completed | TaskStatus::Failed) {
@@ -1274,13 +1418,29 @@ fn active_task_for_actor(data: &Stored, actor_chat_key: &str) -> Option<Task> {
         .values()
         .find(|attempt| {
             attempt.worker_chat_key == actor_chat_key
-                && matches!(
-                    attempt.status,
-                    AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
-                )
+                && attempt_is_unsettled(data, attempt)
+                && data.tasks.get(&attempt.task_id).is_some_and(|task| {
+                    task.active_attempt_id.as_deref() == Some(attempt.id.as_str())
+                })
         })
         .and_then(|attempt| data.tasks.get(&attempt.task_id))
         .cloned()
+}
+
+/// `Blocked` has two meanings in the persisted schema: a live worker waiting
+/// on an open decision gate, or a terminal worker report with a blocked
+/// outcome. The gate is the authoritative discriminator between them.
+fn attempt_has_open_gate(data: &Stored, attempt: &Attempt) -> bool {
+    data.gates.values().any(|gate| {
+        gate.task_id.as_deref() == Some(attempt.task_id.as_str()) && gate.status == GateStatus::Open
+    })
+}
+
+fn attempt_is_unsettled(data: &Stored, attempt: &Attempt) -> bool {
+    matches!(
+        attempt.status,
+        AttemptStatus::Preparing | AttemptStatus::Running
+    ) || (attempt.status == AttemptStatus::Blocked && attempt_has_open_gate(data, attempt))
 }
 
 fn make_ready(data: &mut Stored, run_id: &str) {
@@ -1343,12 +1503,20 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
 /// than "ghost" workers that hold a task and concurrency slot forever.
 fn recover_interrupted_workers(data: &mut Stored) -> bool {
     let now = now_ms();
+    let gate_blocked_tasks = data
+        .gates
+        .values()
+        .filter(|gate| gate.status == GateStatus::Open)
+        .filter_map(|gate| gate.task_id.clone())
+        .collect::<BTreeSet<_>>();
     let mut recovered = BTreeMap::new();
     for attempt in data.attempts.values_mut() {
-        if !matches!(
+        let interrupted = matches!(
             attempt.status,
-            AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
-        ) {
+            AttemptStatus::Preparing | AttemptStatus::Running
+        ) || (attempt.status == AttemptStatus::Blocked
+            && gate_blocked_tasks.contains(&attempt.task_id));
+        if !interrupted {
             continue;
         }
         attempt.status = AttemptStatus::Failed;
@@ -1362,6 +1530,17 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
     }
     if recovered.is_empty() {
         return false;
+    }
+    for gate in data.gates.values_mut() {
+        if gate.status == GateStatus::Open
+            && gate
+                .task_id
+                .as_ref()
+                .is_some_and(|id| recovered.contains_key(id))
+        {
+            gate.status = GateStatus::Cancelled;
+            gate.updated_at = now;
+        }
     }
     let mut run_ids = BTreeSet::new();
     for (task_id, (attempt_id, run_id)) in recovered {
@@ -1385,8 +1564,8 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
 }
 
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
-    format!(
-        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
+    let brief = format!(
+        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
         run.id,
         task.id,
         attempt.id,
@@ -1394,14 +1573,24 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
         task.title,
         task.spec,
         attempt.id
-    )
+    );
+    let workspace = task.workspace.as_ref().map(|w| format!(
+        "\n\nAssigned workspace: {}\nBranch: {}\nMode: {:?}\nBase SHA: {}\nExisting changes to preserve:\n{}\nThe host owns this workspace lifecycle. Do not switch branches, create replacement worktrees, or remove this directory. Stop all source changes after reporting. Use orchestration validation workspaces for isolated commit checks.",
+        w.plan.cwd, w.plan.branch, w.plan.mode, w.plan.base_sha, w.plan.initial_status
+    )).unwrap_or_default();
+    format!("{brief}{workspace}")
 }
 
 pub fn master_prompt(run: &Run) -> String {
-    format!(
-        "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Dispatch the full ready wave up to the run's concurrency limit ({}) before waiting, using a new worktree for each code task by default. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send for directed coordination and orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
+    let brief = format!(
+        "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Dispatch the full ready wave up to the run's concurrency limit ({}) before ending your turn, using the run workspace policy (the host selects and leases the workspace). After dispatch, end your turn so the person can keep chatting. Do not poll or wait for workers in a long-running turn; the host delivers durable notifications when action is needed. Do not write in a checkout delegated to a worker. Workers use an isolated worktree in Auto mode; Current checkout mode serializes writers. Workspace lifetime continues through review and merge; never delete it merely because a worker completed. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send only for an active attempt; a settled attempt cannot resume. If a blocked or failed task needs more work, start a new authoritative attempt with orchestration_worker_start, using newWorktree=false to reuse its previous worker workspace. Use orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
         run.id, run.objective, run.max_concurrent
-    )
+    );
+    if run.worker_defaults.is_some() {
+        format!("{brief}\n\nAutomatic dispatch is enabled. Create all tasks with their dependencies; the host starts ready tasks and subsequent waves automatically. Do not also start those tasks manually. Failed or blocked tasks still require an explicit retry decision. Workspace mode: {:?}.", run.workspace_mode)
+    } else {
+        brief
+    }
 }
 
 fn model_id(agent: ChatAgent, model: Option<&str>) -> String {
@@ -1517,7 +1706,7 @@ fn announce(run_id: &str, change: &str) {
 mod tests {
     use super::*;
 
-    fn run(store: &OrchestrationStore) -> Run {
+    pub(super) fn run(store: &OrchestrationStore) -> Run {
         store
             .create_run(
                 "chat:master".into(),
@@ -1529,7 +1718,7 @@ mod tests {
             .unwrap()
     }
 
-    fn task(store: &OrchestrationStore, run: &Run, depends_on: Vec<String>) -> Task {
+    pub(super) fn task(store: &OrchestrationStore, run: &Run, depends_on: Vec<String>) -> Task {
         store
             .create_task(
                 "chat:master",
@@ -1542,9 +1731,9 @@ mod tests {
             .unwrap()
     }
 
-    fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
+    pub(super) fn running_worker(store: &OrchestrationStore, run: &Run) -> Attempt {
         let task = task(store, run, Vec::new());
-        let (_, _, attempt) = store
+        let (_, _, attempt, _) = store
             .reserve_attempt(
                 "chat:master",
                 &WorkerLaunch {
@@ -1553,7 +1742,7 @@ mod tests {
                     model: None,
                     effort: None,
                     access: Access::Auto,
-                    new_worktree: true,
+                    new_worktree: Some(true),
                     base_branch: String::new(),
                 },
             )
@@ -1561,6 +1750,32 @@ mod tests {
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
             .unwrap()
+    }
+
+    #[test]
+    fn master_recovery_keeps_run_identity_and_checks_owner_and_settlement() {
+        let store = OrchestrationStore::default();
+        let original = run(&store);
+        for _ in 0..2 {
+            let (_guard, resumed) = store
+                .guard_master_start("chat:master", &original.id)
+                .unwrap();
+            assert_eq!(resumed.id, original.id);
+        }
+        assert_eq!(store.snapshot(None).unwrap().runs.len(), 1);
+        assert!(store
+            .guard_master_start("chat:other", &original.id)
+            .is_err());
+        store
+            .stop_run("chat:master", original.id.clone(), "Stop".into())
+            .unwrap();
+        assert!(store
+            .guard_master_start("chat:master", &original.id)
+            .unwrap_err()
+            .contains("settled"));
+        let next = run(&store);
+        assert_ne!(next.id, original.id);
+        assert!(store.guard_master_start("chat:master", &next.id).is_ok());
     }
 
     fn question() -> crate::question::Question {
@@ -1818,10 +2033,10 @@ mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: true,
+            new_worktree: Some(true),
             base_branch: String::new(),
         };
-        let (_, _, attempt) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
             .unwrap();
@@ -1859,10 +2074,10 @@ mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: true,
+            new_worktree: Some(true),
             base_branch: String::new(),
         };
-        let (_, _, first) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .fail_preparation(
                 &first.id,
@@ -1872,7 +2087,7 @@ mod tests {
                 false,
             )
             .unwrap();
-        let (_, _, second) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, second, _) = store.reserve_attempt("chat:master", &launch).unwrap();
 
         let error = store
             .report_worker(
@@ -1905,10 +2120,10 @@ mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: true,
+            new_worktree: Some(true),
             base_branch: String::new(),
         };
-        let (_, _, attempt) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         let error = store
             .report_worker(
                 "chat:impostor",
@@ -1934,10 +2149,10 @@ mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: true,
+            new_worktree: Some(true),
             base_branch: String::new(),
         };
-        let (_, _, first) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .activate_attempt(&first.id, "/tmp".into(), "first".into(), true)
             .unwrap();
@@ -1952,8 +2167,38 @@ mod tests {
                 },
             )
             .unwrap();
-        let (_, _, second) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let second_report = store
+            .report_worker(
+                &first.worker_chat_key,
+                WorkerReport {
+                    attempt_id: first.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "late completion".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(second_report.contains("already settled"), "{second_report}");
+
+        let message_error = store
+            .record_message(
+                "chat:master",
+                run.id.clone(),
+                first.id.clone(),
+                "instruction".into(),
+                "Continue".into(),
+                "Continue the run.".into(),
+            )
+            .unwrap_err();
+        assert!(message_error.contains("Start a retry"), "{message_error}");
+        assert!(store.snapshot(Some(&run.id)).unwrap().messages.is_empty());
+
+        let (_, _, second, previous) = store.reserve_attempt("chat:master", &launch).unwrap();
         assert_ne!(first.id, second.id);
+        let previous = previous.expect("the retry keeps its predecessor context");
+        assert_eq!(previous.cwd, "/tmp");
+        assert_eq!(previous.branch, "first");
+        assert!(previous.is_worktree);
         assert_eq!(
             store
                 .snapshot(Some(&run.id))
@@ -1972,7 +2217,7 @@ mod tests {
         store
             .create_gate(
                 &second.worker_chat_key,
-                run.id,
+                run.id.clone(),
                 Some(task.id),
                 "Which API?".into(),
                 vec!["A".into(), "B".into()],
@@ -1982,6 +2227,63 @@ mod tests {
             .reserve_attempt("chat:master", &launch)
             .unwrap_err()
             .contains("decision gate"));
+        let gate_message_error = store
+            .record_message(
+                "chat:master",
+                run.id,
+                second.id,
+                "instruction".into(),
+                "Continue".into(),
+                "Continue the run.".into(),
+            )
+            .unwrap_err();
+        assert!(
+            gate_message_error.contains("Resolve that gate"),
+            "{gate_message_error}"
+        );
+    }
+
+    #[test]
+    fn a_settled_block_does_not_consume_a_concurrency_slot() {
+        let store = OrchestrationStore::default();
+        let run = store
+            .create_run(
+                "chat:master".into(),
+                "Ship the feature".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(1),
+            )
+            .unwrap();
+        let first_task = task(&store, &run, Vec::new());
+        let second_task = task(&store, &run, Vec::new());
+        let mut launch = WorkerLaunch {
+            task_id: first_task.id,
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: Some(true),
+            base_branch: String::new(),
+        };
+        let (_, _, first, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store
+            .activate_attempt(&first.id, "/tmp".into(), "first".into(), true)
+            .unwrap();
+        store
+            .report_worker(
+                &first.worker_chat_key,
+                WorkerReport {
+                    attempt_id: first.id,
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "blocked".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        launch.task_id = second_task.id;
+        store.reserve_attempt("chat:master", &launch).unwrap();
     }
 
     #[test]
@@ -2018,10 +2320,10 @@ mod tests {
             model: None,
             effort: None,
             access: Access::Auto,
-            new_worktree: true,
+            new_worktree: Some(true),
             base_branch: String::new(),
         };
-        let (_, _, attempt) = store.reserve_attempt("chat:master", &launch).unwrap();
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
             .unwrap();
@@ -2033,6 +2335,48 @@ mod tests {
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Failed);
         assert_eq!(snapshot.runs[0].status, RunStatus::Failed);
         restored.reserve_attempt("chat:master", &launch).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_reported_block_stays_settled_after_a_server_restart() {
+        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(file.clone());
+        let run = run(&store);
+        let task = task(&store, &run, Vec::new());
+        let launch = WorkerLaunch {
+            task_id: task.id,
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: Some(true),
+            base_branch: String::new(),
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store
+            .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
+            .unwrap();
+        store
+            .report_worker(
+                &attempt.worker_chat_key,
+                WorkerReport {
+                    attempt_id: attempt.id,
+                    outcome: WorkerOutcome::Blocked,
+                    summary: "blocked".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        let restored = OrchestrationStore::load(file);
+        let snapshot = restored.snapshot(Some(&run.id)).unwrap();
+        assert_eq!(snapshot.attempts[0].status, AttemptStatus::Blocked);
+        assert_eq!(snapshot.tasks[0].status, TaskStatus::Blocked);
+        assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
         let _ = fs::remove_dir_all(root);
     }
 }

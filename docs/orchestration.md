@@ -5,8 +5,9 @@ run. The master plans a shallow dependency graph, starts the ready tasks, and
 coordinates workers. OctiqFlow owns the run state outside every agent
 transcript, so a confident sentence from a stale worker cannot complete a task.
 
-Open **Orchestrator** in the top bar, describe the outcome, choose a worker
-limit, and start the run. The current chat becomes its master. The panel shows
+Open **Orchestrator** in the top bar, describe the outcome, choose a workspace
+mode, worker limit and automatic dispatch settings, and start the run. The
+current chat becomes its master. The panel shows
 the task ledger, current attempts, worktree branches, open decisions, and the
 latest structured messages.
 
@@ -47,14 +48,31 @@ file cannot be read, the store refuses to overwrite it.
 ## Worker lifecycle
 
 1. The master creates tasks and real dependency edges.
-2. It starts the entire ready wave up to the run's concurrency limit.
-3. OctiqFlow reserves an attempt before process or Git setup begins.
+2. The host scheduler (or the coordinator in manual mode) starts the entire
+   ready wave up to the run's concurrency limit.
+3. OctiqFlow reserves an attempt and persists its task workspace before process
+   or Git setup begins.
 4. Code work creates a linked Git worktree by default and starts a dedicated
    Claude or Codex chat there.
 5. The worker must call `orchestration_worker_report` with its exact attempt ID.
    Only that chat and the active attempt may settle the task.
 6. Completed dependencies unlock pending tasks. A reported block can be
-   retried; a gate-blocked attempt waits for its decision instead.
+   retried; a gate-blocked attempt waits for its decision instead. Retrying
+   reuses the previous attempt's assigned workspace
+   and preserves its changes while replacing `activeAttemptId` with the new
+   attempt.
+
+A worker report settles its attempt exactly once. Directed messages are
+delivered only to active attempts: a message to a completed, failed, cancelled,
+or reported-blocked attempt is rejected with guidance to create a retry. A
+blocked attempt with an open gate must be resumed by resolving that gate.
+
+A Codex safety rejection that raises OctiqFlow's approval card is still a
+pending host decision, not a blocked worker outcome. The worker ends its turn
+without opening a duplicate gate or settling the attempt, so the person's
+choice can resume that same attempt. If an older worker has already reported
+blocked, the coordinator must start a new attempt before sending further
+instructions.
 
 Late reports from replaced attempts are rejected. Stopping a run cancels open
 tasks and gates and stops its active worker chats. Worker chats stay in the
@@ -77,10 +95,50 @@ The authenticated local `/hook/orchestration` endpoint injects the calling chat
 identity; callers cannot claim another worker's attempt. Browser actions use
 the same dispatch commands as the MCP path.
 
-## Current boundary
+## Workspace and delivery lifecycle
 
-This release owns orchestration through a reviewable worker worktree and
-structured result. Commit, push, PR creation, check monitoring, merge, and safe
-worktree cleanup are the next lifecycle layer; they are not inferred from a
-worker saying “done.” pi.dev remains available for ordinary chats, but is not a
-worker provider until it can call the structured completion tools.
+The [task workspace lifecycle](subagent-worktree-lifecycle.md) defines execution
+modes, host automatic dispatch, persistent workspace ownership, retry and review
+reuse, Git/PR delivery evidence, isolated patch validation, and guarded cleanup.
+Worker completion, publication, merge and directory cleanup are separate states.
+Current checkout mode serializes workers and never removes the person's folder.
+
+Commit, push, PR creation and merge use the existing Git UI or an explicitly
+authorized external workflow; they are never inferred from worker prose.
+pi.dev remains available for ordinary chats but cannot be a worker until it can
+call the structured completion tools.
+
+
+## Mixed chat and run UI
+
+A main chat can hold ordinary conversation and multiple sequential orchestration
+runs. Choose **Execution → Orchestrated** to configure an outcome, project,
+main agent, worker provider, and workspace policy. Starting a run is explicit;
+selecting the mode or opening **Run** does not start workers. **Chat** remains
+the place for instructions and native approvals. **Run** shows only the selected
+chat's ledger, including pause/stop controls, review, delivery, and cleanup.
+An active run prevents switching execution to Normal until it settles or is
+stopped; switching between Chat and Run never stops work.
+
+The chat list shows run progress and one current worker conversation per task.
+Previous attempts stay searchable and accessible in that task's Run history;
+an opened historical attempt remains visible in the list. All worker chats
+remain read-only. Normal chats retain their existing checkout/worktree controls.
+
+The browser saves the coordinator's chat index entry before creating a run,
+then calls browser-only `orchestration_master_start` with the existing run ID
+and selected main-agent settings. This also works for a new chat or after a
+server restart. Launch failure retains the run; **Continue main agent** retries
+that run after the issue is resolved. This command validates coordinator
+ownership and active run state, uses the saved provider session, and serializes
+with workspace/stop operations. It is not exposed through worker MCP hooks.
+
+## Background coordination and durable inbox
+
+The master dispatches workers and ends its turn; workers continue independently while the person talks to the master. A master has one active provider turn at a time. Notifications never interrupt that turn or jump ahead of queued user messages. User turns retain FIFO order ahead of queued internal continuations.
+
+Reports, decision gates, resolutions and messages create inbox entries atomically with their orchestration state change (store schema v3, migrating v1/v2). Only unsent `progress` updates from the same sender to the same target are coalesced, with a two-second debounce and ten-second maximum delay. A settled report supersedes pending progress. Decisions and reports remain separate.
+
+The host retries delivery between turns. A provider-native receipt marks **Received by agent**, not handled or completed. Delivery is at least once: a crash before receipt persistence can repeat a notification; its stable ID and an authoritative snapshot let the master avoid repeating actions. Receipt frames in the transcript recover a missed inbox acknowledgement. Failed delivery uses bounded backoff. Run details expose pending receipts and retry errors.
+
+Orchestrated chat resume settings persist privately without project environment variables; current project environment is reloaded for delivery. Recovery requires a matching indexed provider session, cwd and access. Deleted chats and settled worker attempts cannot be revived by a notification. Stopping a run cancels outstanding delivery. User safety approval remains in the native approval flow.

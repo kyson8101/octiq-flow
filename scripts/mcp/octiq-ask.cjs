@@ -1079,7 +1079,12 @@ const ORCHESTRATION_RUN_CREATE = {
     type: "object",
     properties: {
       objective: { type: "string", description: "The complete outcome the run must deliver." },
-      maxConcurrent: { type: "integer", minimum: 1, maximum: 32, description: "Maximum simultaneous workers. Defaults to 4." },
+      maxConcurrent: { type: "integer", minimum: 1, maximum: 32, description: "Maximum simultaneous workers. Defaults to 4; direct mode uses 1." },
+      workspaceMode: { type: "string", enum: ["auto", "worktree", "direct"], description: "Auto isolates writers, worktree isolates every task, direct edits the current checkout. Retries retain their task workspace." },
+      workerDefaults: { type: "object", description: "Opt into host automatic dispatch of ready tasks with these worker settings.", properties: {
+        agent: { type: "string", enum: ["codex", "claude"] }, access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
+        model: { type: "string" }, effort: { type: "string" },
+      }, required: ["agent", "access"] },
     },
     required: ["objective"],
   },
@@ -1120,8 +1125,8 @@ const ORCHESTRATION_SNAPSHOT = {
 const ORCHESTRATION_WORKER_START = {
   name: "orchestration_worker_start",
   description:
-    "Start an authoritative Claude or Codex worker for a ready task. A new isolated Git " +
-    "worktree is the default. Start the full independent wave before waiting. Failed or " +
+    "Start an authoritative Claude or Codex worker for a ready task. The host applies the run workspace policy " +
+    "and reuses every retry workspace. With automatic dispatch enabled, the host starts ready waves. Failed or " +
     "blocked tasks may be retried; the new attempt becomes authoritative and late older " +
     "workers cannot settle it.",
   inputSchema: {
@@ -1132,7 +1137,7 @@ const ORCHESTRATION_WORKER_START = {
       model: { type: "string", description: "Optional provider-native model flag. Omit for its default." },
       effort: { type: "string", description: "Optional provider-native effort id." },
       access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"], description: "Worker permission level. Use auto unless the task needs a different boundary." },
-      newWorktree: { type: "boolean", description: "Create an isolated task worktree. Defaults to true." },
+      newWorktree: { type: "boolean", description: "Legacy retry hint. Retries always reuse the task workspace. The run policy chooses the initial workspace; false for a first writing attempt requires Current checkout mode." },
       baseBranch: { type: "string", description: "Optional local base branch. Empty means the run checkout's current branch." },
     },
     required: ["taskId", "agent", "access"],
@@ -1191,7 +1196,8 @@ const ORCHESTRATION_MESSAGE_SEND = {
   name: "orchestration_message_send",
   description:
     "Send a durable, structured message within one run. Use to: coordinator for the master, " +
-    "or an attempt ID for a worker. This is coordination, not task completion.",
+    "or an active attempt ID for a worker. Settled attempts cannot resume: start a retry first. " +
+    "This is coordination, not task completion.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1217,6 +1223,28 @@ const ORCHESTRATION_RUN_STOP = {
   },
 };
 
+const WORKER_DEFAULTS_SCHEMA = {
+  type: ["object", "null"], properties: {
+    agent: { type: "string", enum: ["codex", "claude"] },
+    access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
+    model: { type: "string" }, effort: { type: "string" },
+  }, required: ["agent", "access"],
+};
+const WORKSPACE_TOOLS = [
+  { name: "orchestration_automation_configure", description: "Enable host dispatch of ready tasks using explicit worker settings, or pause it with workerDefaults=null. Does not retry failed or blocked tasks. Coordinator only.",
+    inputSchema: { type: "object", properties: { runId: { type: "string" }, workerDefaults: WORKER_DEFAULTS_SCHEMA }, required: ["runId", "workerDefaults"] } },
+  { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically.",
+    inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
+  { name: "orchestration_workspace_refresh", description: "Refresh Git and remote delivery evidence for a task: exact commit, dirty state, push, PR/review, and merge. Requires GitHub CLI for PR evidence. Worker completion alone is not delivery.",
+    inputSchema: { type: "object", properties: { taskId: { type: "string" } }, required: ["taskId"] } },
+  { name: "orchestration_task_reopen", description: "Reopen a completed task for review fixes in its retained workspace. The next attempt gets a new ID. Merged, cleaned, abandoned workspaces and already-started dependants prevent reopening.",
+    inputSchema: { type: "object", properties: { taskId: { type: "string" }, spec: { type: "string" } }, required: ["taskId", "spec"] } },
+  { name: "orchestration_validation_create", description: "Create a detached temporary validation worktree from an exact base commit and optional selected commits. Does not alter the preserved task tree. Git conflicts remain available for inspection. Only this task's active worker or coordinator.",
+    inputSchema: { type: "object", properties: { taskId: { type: "string" }, baseSha: { type: "string" }, commits: { type: "array", items: { type: "string" } } }, required: ["taskId", "baseSha"] } },
+  { name: "orchestration_validation_remove", description: "Remove an owned validation checkout only if Git considers it clean. Never forces removal or accepts an unregistered path.",
+    inputSchema: { type: "object", properties: { taskId: { type: "string" }, path: { type: "string" } }, required: ["taskId", "path"] } },
+];
+
 const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_RUN_CREATE,
   ORCHESTRATION_TASK_CREATE,
@@ -1227,6 +1255,7 @@ const ORCHESTRATION_TOOLS = [
   ORCHESTRATION_GATE_RESOLVE,
   ORCHESTRATION_MESSAGE_SEND,
   ORCHESTRATION_RUN_STOP,
+  ...WORKSPACE_TOOLS,
 ];
 
 const BASE_SERVER_INSTRUCTIONS =

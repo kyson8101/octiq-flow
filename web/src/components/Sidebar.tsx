@@ -6,7 +6,9 @@ import { buildChatTree, type ChatNode } from "../lib/chatTree";
 import { recall, remember } from "../lib/remember";
 import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
-import { isWorkerChat } from "../lib/orchestration";
+import { isWorkerChat, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
+import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
+import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
 import { AgentLogo } from "./AgentLogo";
@@ -43,12 +45,14 @@ function savedCollapsed(): Set<string> {
 }
 
 export function Sidebar({
+  orchestration = EMPTY_ORCHESTRATION,
   projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, onDelete, onPin, onRename,
   onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
 }: {
+  orchestration?: OrchestrationSnapshot;
   projects: Project[];
   shelved: Project[];
   onShowShelved: () => void;
@@ -97,7 +101,7 @@ export function Sidebar({
     })
     : searchActive ? [] : conversations;
 
-  const tree = useMemo(() => buildChatTree(conversations, chatParents), [conversations, chatParents]);
+  const tree = useMemo(() => buildChatTree(workflowChatList(conversations, orchestration, currentConversation), chatParents), [conversations, chatParents, orchestration, currentConversation]);
   const visibleNodes = searchActive
     ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
     : tree;
@@ -162,7 +166,12 @@ export function Sidebar({
       ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
       : undefined;
     const projectName = project?.name ?? "Unknown project";
-    const branch = branches[chat.projectId];
+    const attempt = orchestration.attempts.find((item) => item.workerChatKey === `chat:${chat.id}`);
+    const task = attempt && orchestration.tasks.find((item) => item.id === attempt.taskId);
+    const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
+    const run = workflow.runs[0];
+    const workflowLabel = task ? `${task.title} · ${attempt?.status}` : run ? runSummary(workflow, run) : null;
+    const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
     const searchHit = searchActive ? hitById.get(chat.id) : undefined;
@@ -232,6 +241,7 @@ export function Sidebar({
                   <time className="chat-time" dateTime={new Date(chat.updatedAt).toISOString()} title={new Date(chat.updatedAt).toLocaleString()}>{chatTime(chat.updatedAt)}</time>
                 </span>
                 <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
+                {workflowLabel && <span className="chat-workflow-status">{workflowLabel}</span>}
                 <span className="chat-meta">
                   <span className="chat-project">
                     {project

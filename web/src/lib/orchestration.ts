@@ -1,3 +1,42 @@
+export type WorkspaceMode = "auto" | "worktree" | "direct";
+export type WorkerDefaults = { agent: "codex" | "claude"; access: string; model?: string; effort?: string };
+export type TaskWorkspace = {
+  plan: {
+    mode: WorkspaceMode; cwd: string; checkoutRoot: string; repositoryRoot: string;
+    branch: string; baseBranch: string; baseSha: string; managed: boolean; isRepo: boolean;
+    warnings: string[]; initialStatus: string;
+  };
+  state: "preparing" | "ready" | "retained" | "cleaning" | "cleaned";
+  leaseAttemptId?: string | null;
+  abandoned: boolean;
+  validationPaths: string[];
+  delivery?: {
+    headSha: string; dirty: boolean; hasCommits: boolean; pushed: boolean;
+    remoteBranch?: string; pullRequest?: string; reviewState?: string;
+    merged: boolean; checkedAt: number; notes: string[];
+  } | null;
+};
+
+export const WORKSPACE_MODES: { value: WorkspaceMode; label: string; description: string }[] = [
+  { value: "auto", label: "Auto", description: "Isolate writing tasks; let read-only workers use this checkout." },
+  { value: "worktree", label: "New worktree", description: "Give each task an isolated branch and keep it through review." },
+  { value: "direct", label: "Current checkout", description: "Modify this folder directly, one worker at a time." },
+];
+
+export function workspaceDeliveryLabel(workspace: TaskWorkspace): string {
+  if (workspace.state === "cleaned") return workspace.abandoned ? "Abandoned · workspace removed" : "Merged · workspace removed";
+  if (workspace.state === "cleaning") return "Cleaning workspace";
+  const delivery = workspace.delivery;
+  if (!delivery) return "Workspace retained · delivery not checked";
+  if (delivery.dirty) return "Uncommitted changes";
+  if (delivery.merged) return "Merge verified · ready for cleanup";
+  if (delivery.reviewState) return `Review · ${delivery.reviewState.toLowerCase().replaceAll("_", " ")}`;
+  if (delivery.pullRequest) return "Pull request open";
+  if (delivery.pushed) return "Pushed · awaiting review";
+  if (delivery.hasCommits) return "Committed · push pending";
+  return "No new commits";
+}
+
 export type RunStatus = "planning" | "running" | "waiting" | "completed" | "failed" | "stopped";
 type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 type AttemptStatus = "preparing" | "running" | "blocked" | "completed" | "failed" | "cancelled";
@@ -10,6 +49,8 @@ export type OrchestrationRun = {
   rootPath: string;
   status: RunStatus;
   maxConcurrent: number;
+  workspaceMode?: WorkspaceMode;
+  workerDefaults?: WorkerDefaults | null;
   createdAt: number;
   updatedAt: number;
   stoppedReason?: string;
@@ -20,6 +61,7 @@ export type OrchestrationTask = {
   runId: string;
   title: string;
   spec: string;
+  workspace?: TaskWorkspace;
   dependsOn: string[];
   parentTaskId?: string;
   status: TaskStatus;
@@ -74,12 +116,21 @@ export type OrchestrationMessage = {
   createdAt: number;
 };
 
+export type OrchestrationNotification = {
+  id: string; runId: string; fromChatKey: string; targetChatKey: string;
+  source: string; kind: string; body: string;
+  state: "pending" | "delivering" | "acknowledged" | "cancelled";
+  attempts: number; coalesced: number; createdAt: number; updatedAt: number;
+  nextAttemptAt: number; lastError?: string | null;
+};
+
 export type OrchestrationSnapshot = {
   runs: OrchestrationRun[];
   tasks: OrchestrationTask[];
   attempts: OrchestrationAttempt[];
   gates: OrchestrationGate[];
   messages: OrchestrationMessage[];
+  notifications?: OrchestrationNotification[];
 };
 
 export const EMPTY_ORCHESTRATION: OrchestrationSnapshot = {

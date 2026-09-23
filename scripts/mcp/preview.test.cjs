@@ -72,6 +72,12 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_gate_resolve",
     "orchestration_message_send",
     "orchestration_run_stop",
+    "orchestration_automation_configure",
+    "orchestration_dispatch_ready",
+    "orchestration_workspace_refresh",
+    "orchestration_task_reopen",
+    "orchestration_validation_create",
+    "orchestration_validation_remove",
   ]);
   assert.ok(!standalone.result.tools.some(tool => tool.name === "search_conversations"));
   assert.ok(!standalone.result.tools.some(tool => tool.name.startsWith("orchestration_")));

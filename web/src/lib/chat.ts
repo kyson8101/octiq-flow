@@ -1280,6 +1280,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   }
 
   if (type === "user") {
+    // Host notification echoes are receipts, not messages typed by the person.
+    if (e.octiq_orchestration_notification_id) return state;
     const raw = asObj(e.message).content;
     // The echo of a typed slash command carries its content as one bare
     // string, where every other user message carries a list of blocks. Read

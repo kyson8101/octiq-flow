@@ -1,0 +1,18 @@
+/* Workflow navigation stays in the conversation; the transcript keeps its width. */
+.chat-workflow-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 20px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 12px; }
+.chat-execution { display: flex; align-items: center; gap: 8px; }
+.chat-workflow-bar select, .workflow-setup-context select { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-0); font: inherit; padding: 5px 8px; max-width: 100%; }
+.chat-workflow-views { display: flex; gap: 2px; }
+.chat-workflow-views button, .chat-run-summary { border: 0; background: transparent; color: var(--fg-2); font: inherit; padding: 5px 10px; border-radius: var(--r-sm); cursor: pointer; }
+.chat-workflow-views button[aria-pressed="true"] { background: var(--accent-tint); color: var(--accent); }
+.chat-run-summary { margin-left: auto; font-variant-numeric: tabular-nums; }
+.chat-run-summary:hover { background: var(--bg-2); color: var(--fg-0); }
+.chat-workflow-bar :focus-visible, .workflow-setup-context :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.workflow-chat-surface { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.workflow-chat-surface[hidden], .workflow-run-surface[hidden] { display: none; }
+.workflow-run-surface { display: flex; flex: 1 1 auto; min-height: 0; }
+.workflow-setup-context { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 22px; font-size: 12px; }
+.workflow-setup-context label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.workflow-setup-context p { flex-basis: 100%; margin: 0; color: var(--fg-3); }
+.chat-workflow-status { display: block; font-size: 11px; line-height: 1.5; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) { .chat-workflow-bar { gap: 6px; padding: 8px 12px; } .chat-run-summary { padding-inline: 2px; font-size: 11px; } }
