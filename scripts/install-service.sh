@@ -54,6 +54,22 @@ mkdir -p "${INSTALL_DIR}" "${LOG_DIR}" "$(dirname "${PLIST}")"
 # cannot pull the binary out from under a running service.
 cp "${BUILT}" "${INSTALL_DIR}/octiq-server"
 
+# Write down WHICH COMMIT just became the thing that runs.
+#
+# Nothing else records it. The binary carries no version of its source, and
+# mtimes only ever say "newer than", so "is my fix actually live?" had no
+# answer — which is the question the chat status line's Release row asks. This
+# is the only moment that answer exists, so it is written here, next to the
+# copy that makes it true.
+COMMIT="$(git -C "${REPO}" rev-parse HEAD 2>/dev/null || true)"
+if [[ -n "${COMMIT}" ]]; then
+  printf '{"commit":"%s","branch":"%s","shippedAt":"%s"}\n' \
+    "${COMMIT}" \
+    "$(git -C "${REPO}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "${HOME_DIR}/.octiqflow/live-build.json"
+fi
+
 # Sign it, so macOS stops asking for the same folder after every build.
 #
 # A privacy prompt ("… would like to access files in your Downloads folder") is

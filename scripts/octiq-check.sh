@@ -106,6 +106,11 @@ fi
 # compiled, installed, and still not be the code answering your calls.
 INSTALLED_MTIME="$(mtime_of "${INSTALLED}")"
 BUILT_MTIME="$(mtime_of "${BUILT}")"
+# Which commit was installed, written by install-service.sh next to the copy
+# that made it live. Nothing else knows: the binary carries no version of its
+# source, and an mtime only says "newer than".
+LIVE_COMMIT="$(sed -n 's/.*"commit":"\([0-9a-f]\{7,40\}\)".*/\1/p' \
+  "${OCTIQ_DIR}/live-build.json" 2>/dev/null | head -n 1)"
 STARTED=""
 if [[ -n "${SERVER_PID}" && "${SERVER_PID}" != "0" ]]; then
   STARTED="$(ps -o lstart= -p "${SERVER_PID}" 2>/dev/null | sed 's/^ *//;s/ *$//')"
@@ -113,7 +118,7 @@ if [[ -n "${SERVER_PID}" && "${SERVER_PID}" != "0" ]]; then
   if [[ -n "${INSTALLED_MTIME}" && -n "${STARTED_EPOCH:-}" && ${INSTALLED_MTIME} -gt ${STARTED_EPOCH} ]]; then
     note warn "live build" "the installed binary is NEWER than the running process — it was replaced without a restart, so the running code is stale. touch ${TRIGGER}"
   else
-    note ok "live build" "running since ${STARTED:-unknown}"
+    note ok "live build" "running since ${STARTED:-unknown}${LIVE_COMMIT:+ · ${LIVE_COMMIT}}"
   fi
 fi
 if [[ -n "${BUILT_MTIME}" && -n "${INSTALLED_MTIME}" && ${BUILT_MTIME} -gt ${INSTALLED_MTIME} ]]; then

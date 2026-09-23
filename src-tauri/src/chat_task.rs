@@ -599,12 +599,25 @@ fn verify_delivery(
     let remote_branch = format!("origin/{branch}");
     let remote_target = format!("origin/{target}");
 
-    let (released, release_note) = check_release(&root, &head, release);
+    let merged = !on_target && is_ancestor(&root, &head, &target);
+
+    // A commit that is not even in the target branch cannot be in a release,
+    // and the person is reading the Merge row anyway. Asking anyway would run
+    // the project's check command on every verification — several times a
+    // minute across open tabs — to learn something git has already settled.
+    let (released, release_note) = if merged || on_target {
+        check_release(&root, &head, release)
+    } else {
+        (
+            None,
+            format!("Not in {target} yet, so there is nothing to look for in a release."),
+        )
+    };
     Some(Delivery {
         commits: count_commits(&root, &target, &head),
         uncommitted: workspace.changed,
         pushed: !branch.is_empty() && is_ancestor(&root, &head, &remote_branch),
-        merged: !on_target && is_ancestor(&root, &head, &target),
+        merged,
         merged_remote: !on_target && is_ancestor(&root, &head, &remote_target),
         on_target,
         released,
@@ -913,6 +926,33 @@ mod tests {
             "claude".into(),
         );
         assert!(out.is_err(), "an empty objective is not a report");
+    }
+
+    #[test]
+    fn an_unmerged_branch_does_not_run_the_projects_release_check() {
+        let dir = scratch_repo("guard");
+        let at = dir.to_string_lossy().to_string();
+        let git = |args: &[&str]| run_git(&at, args).expect("git");
+        git(&["checkout", "-b", "feature/thing"]);
+        git(&["commit", "--allow-empty", "-m", "work"]);
+
+        let delivery = verify_delivery(
+            &verify_workspace(&at, None),
+            &Stored::default(),
+            &ReleaseCheck {
+                // Running this would fail the test by writing the file.
+                command: Some(format!("touch {at}/release-check-ran")),
+                ..ReleaseCheck::default()
+            },
+        )
+        .expect("a delivery");
+        assert_eq!(delivery.released, None);
+        assert!(delivery.release_note.contains("Not in main yet"));
+        assert!(
+            !Path::new(&dir).join("release-check-ran").exists(),
+            "a branch git says is unmerged cannot be released; do not go and ask"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

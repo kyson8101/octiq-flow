@@ -195,10 +195,18 @@ forgets:
 Three rules hold:
 
 - **`released: null` is "unverified", never "no".** A project says how a
-  release is recognised with `chat_task_set_release_check`: a git ref only a
-  release advances, or a command whose output names the running commit (for
-  this repo, `./scripts/octiq-check.sh`). Most projects have neither, and the
-  release row says so.
+  release is recognised in the Release row itself, or with
+  `chat_task_set_release_check`: a git ref only a release advances, or a
+  command whose output names the running commit — the first 7–40 character hex
+  string in its output is taken as that commit. Most projects have neither, and
+  the release row says so. The check is not run at all until git says the
+  commit is in the target branch, so an unmerged branch never shells out.
+- **What is running is recorded at install, by `install-service.sh`.** It
+  writes `~/.octiqflow/live-build.json` (`commit`, `branch`, `shippedAt`) next
+  to the `cp` that makes a binary live, because nothing else knows: the binary
+  carries no version of its source and mtimes only say "newer than".
+  `octiq-check.sh` prints that commit on its `live build` line, and it is what
+  this repo's own release check reads.
 - **The record outlives the worktree.** Every verification stores its snapshot
   plus the repository's PRIMARY checkout and the head commit, so a chat whose
   directory has been deleted is re-verified from the primary checkout against
