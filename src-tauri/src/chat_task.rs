@@ -308,6 +308,25 @@ fn verified_at() -> &'static Mutex<HashMap<String, Instant>> {
 
 // ---------------------------------------------------------------- commands
 
+/// Read reported plans in one pass without running git for every worker.
+/// Keys stay in the orchestration ledger's `chat:<id>` form.
+pub fn reports_for_chat_keys<'a>(
+    keys: impl Iterator<Item = &'a str>,
+) -> std::collections::BTreeMap<String, TaskReport> {
+    let keys: Vec<_> = keys.collect();
+    if keys.is_empty() {
+        return Default::default();
+    }
+    let store = read();
+    keys.into_iter()
+        .filter_map(|key| {
+            let id = key.strip_prefix("chat:")?;
+            let report = store.chats.get(id)?.report.clone()?;
+            Some((key.to_owned(), report))
+        })
+        .collect()
+}
+
 /// The agent's own account of the task. Replaces the previous one whole: a
 /// report is a snapshot of the plan, not an edit to it.
 pub fn chat_task_report_impl(
@@ -347,6 +366,8 @@ pub fn chat_task_report_impl(
     // A report says nothing about git, but it is the moment the panel is most
     // likely being looked at, so the verified half is refreshed with it.
     let status = chat_task_impl(chat_id, true)?;
+    // Checklist-only updates matter even when the verified git state did not move.
+    crate::bus::emit("chat-task", &status);
     Ok(status)
 }
 
@@ -913,6 +934,16 @@ mod tests {
             report.steps[1].state, "pending",
             "an unknown state is read as pending, not kept"
         );
+        let key = format!("chat:{chat}");
+        let reports = reports_for_chat_keys(
+            [key.as_str(), "chat:missing-worker", "terminal:other"].into_iter(),
+        );
+        assert_eq!(
+            reports.len(),
+            1,
+            "only requested worker reports are returned"
+        );
+        assert_eq!(reports[&key], report);
         forget(&chat);
     }
 

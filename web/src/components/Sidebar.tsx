@@ -17,6 +17,7 @@ import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
+import { AgentTaskBoard } from "./AgentTaskBoard";
 import "./MobileSidebar.css";
 import "./SidebarArchive.css";
 
@@ -189,7 +190,11 @@ export function Sidebar({
     const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
     const run = workflow.runs[0];
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? runSummary(workflow, run) : null;
+    const hasTaskBoard = !searchActive && !showArchived && workflow.runs.length > 0;
+    const boardChatKeys = new Set(workflow.attempts.map((item) => item.workerChatKey));
+    const otherChildren = hasTaskBoard ? children.filter((child) => !boardChatKeys.has(`chat:${child.chat.id}`)) : children;
+    const hasChildren = children.length > 0 || hasTaskBoard;
+    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run && !hasTaskBoard ? runSummary(workflow, run) : null;
     const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -296,9 +301,9 @@ export function Sidebar({
                 onSelect: () => void archiveWorker(attempt.id, !archived) }] : []),
               ...(!isWorkerChat(chat.id, chatParents) ? [{ id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) }] : []),
             ]} />}
-          {children.length > 0 && (
+          {hasChildren && (
             <button className="chat-children-toggle" type="button"
-              aria-label={`${expanded ? "Collapse" : "Expand"} agent chats for ${chat.title}`}
+              aria-label={`${expanded ? "Collapse" : "Expand"} ${hasTaskBoard ? "task board" : "agent chats"} for ${chat.title}`}
               aria-expanded={expanded} aria-controls={childListId}
               disabled={isLeaving}
               onClick={() => setCollapsed((before) => {
@@ -308,16 +313,21 @@ export function Sidebar({
                 return next;
               })}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-              <span>{descendants.length} {descendants.length === 1 ? "agent" : "agents"}</span>
+              <span>{hasTaskBoard ? `${workflow.tasks.length} tasks` : `${descendants.length} ${descendants.length === 1 ? "agent" : "agents"}`}</span>
               {workingCount > 0 && <span className="chat-children-working">{workingCount} working</span>}
               {unreadCount > 0 && <span className="chat-children-unread">{unreadCount} unread</span>}
             </button>
           )}
         </div>
-        {children.length > 0 && (
-          <ul className="chat-children" id={childListId} aria-label={`Agent chats for ${chat.title}`} hidden={!expanded}>
-            {expanded && children.map(renderChat)}
-          </ul>
+        {hasChildren && (
+          <div id={childListId} hidden={!expanded}>
+            {expanded && hasTaskBoard && <AgentTaskBoard snapshot={workflow} conversations={conversationById}
+              currentConversation={currentConversation} onOpenChat={onPickConversation}
+              onArchiveWorker={onArchiveWorker ? (id) => void archiveWorker(id, true) : undefined} archiving={archiving} />}
+            {expanded && otherChildren.length > 0 && <ul className="chat-children" aria-label={`Agent chats for ${chat.title}`}>
+              {otherChildren.map(renderChat)}
+            </ul>}
+          </div>
         )}
       </AnimatedChatRow>
     );

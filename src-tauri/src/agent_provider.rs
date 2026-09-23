@@ -414,7 +414,7 @@ impl AgentProvider for ClaudeProvider {
                 " --mcp-config {} --allowedTools {} --append-system-prompt {}",
                 sh_quote(&mcp.to_string_lossy()),
                 sh_quote(
-                    "mcp__octiq__ask_user mcp__octiq__set_chat_title mcp__octiq__search_conversations mcp__octiq__read_conversation \\
+                    "mcp__octiq__ask_user mcp__octiq__task_status mcp__octiq__set_chat_title mcp__octiq__search_conversations mcp__octiq__read_conversation \\
                      mcp__octiq__preview_image mcp__octiq__preview_html \\
                      mcp__octiq__orchestration_run_create mcp__octiq__orchestration_task_create \\
                      mcp__octiq__orchestration_snapshot mcp__octiq__orchestration_worker_start \\

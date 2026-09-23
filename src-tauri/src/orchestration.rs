@@ -151,6 +151,9 @@ pub struct Attempt {
     pub summary: Option<String>,
     #[serde(default)]
     pub files_modified: Vec<String>,
+    /// Settlement time is immutable; later archival or delivery metadata is not runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<i64>,
     pub created_at: i64,
@@ -198,6 +201,7 @@ pub struct Snapshot {
     pub gates: Vec<Gate>,
     pub messages: Vec<OrchestrationMessage>,
     pub notifications: Vec<inbox::Notification>,
+    pub reports: BTreeMap<String, crate::chat_task::TaskReport>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -412,7 +416,7 @@ impl OrchestrationStore {
             .cloned()
             .collect();
         messages.sort_by_key(|message| (message.created_at, message.id.clone()));
-        Ok(Snapshot {
+        let mut snapshot = Snapshot {
             runs,
             tasks,
             attempts,
@@ -425,7 +429,16 @@ impl OrchestrationStore {
                 .filter(|n| visible.contains(n.run_id.as_str()))
                 .cloned()
                 .collect(),
-        })
+            reports: BTreeMap::new(),
+        };
+        drop(inner);
+        snapshot.reports = crate::chat_task::reports_for_chat_keys(
+            snapshot
+                .attempts
+                .iter()
+                .map(|attempt| attempt.worker_chat_key.as_str()),
+        );
+        Ok(snapshot)
     }
 
     /// Worker ownership outlives an attempt. A completed, stopped, or deleted
@@ -726,6 +739,7 @@ impl OrchestrationStore {
                     }
                     AttemptStatus::Blocked => {
                         if let Some(previous) = data.attempts.get_mut(&active.id) {
+                            previous.finished_at.get_or_insert(previous.updated_at);
                             previous.status = AttemptStatus::Cancelled;
                             previous.updated_at = now_ms();
                         }
@@ -769,6 +783,7 @@ impl OrchestrationStore {
                 is_worktree: false,
                 summary: None,
                 files_modified: Vec::new(),
+                finished_at: None,
                 archived_at: None,
                 created_at: now,
                 updated_at: now,
@@ -829,6 +844,7 @@ impl OrchestrationStore {
                     .get_mut(attempt_id)
                     .ok_or("The reserved worker attempt disappeared.")?;
                 attempt.status = AttemptStatus::Failed;
+                attempt.finished_at = Some(now);
                 attempt.summary = Some(reason.clone());
                 if !cwd.is_empty() {
                     attempt.cwd = cwd;
@@ -1027,6 +1043,7 @@ impl OrchestrationStore {
             attempt_mut.summary = Some(summary.clone());
             attempt_mut.files_modified = clean_files(report.files_modified);
             attempt_mut.updated_at = now;
+            attempt_mut.finished_at = Some(now);
 
             let task_mut = data
                 .tasks
@@ -1348,6 +1365,7 @@ impl OrchestrationStore {
                     AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
                 ) {
                     attempt.status = AttemptStatus::Cancelled;
+                    attempt.finished_at.get_or_insert(now);
                     attempt.updated_at = now;
                     workers.push(attempt.worker_chat_key.clone());
                 }
@@ -1515,6 +1533,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
         .filter_map(|gate| gate.task_id.clone())
         .collect::<BTreeSet<_>>();
     let mut recovered = BTreeMap::new();
+    let mut migrated = false;
     for attempt in data.attempts.values_mut() {
         let interrupted = matches!(
             attempt.status,
@@ -1522,19 +1541,24 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
         ) || (attempt.status == AttemptStatus::Blocked
             && gate_blocked_tasks.contains(&attempt.task_id));
         if !interrupted {
+            if attempt.finished_at.is_none() {
+                attempt.finished_at = Some(attempt.updated_at);
+                migrated = true;
+            }
             continue;
         }
         attempt.status = AttemptStatus::Failed;
         attempt.summary =
             Some("Worker was interrupted when OctiqFlow restarted. Start a new attempt.".into());
         attempt.updated_at = now;
+        attempt.finished_at = Some(now);
         recovered.insert(
             attempt.task_id.clone(),
             (attempt.id.clone(), attempt.run_id.clone()),
         );
     }
     if recovered.is_empty() {
-        return false;
+        return migrated;
     }
     for gate in data.gates.values_mut() {
         if gate.status == GateStatus::Open
@@ -1570,7 +1594,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
 
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let brief = format!(
-        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
+        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Use task_status to report a short checklist at the start, then send the whole checklist when a step finishes or the plan changes. Set nextStep to the current stage. These reports drive the task board; never invent a completion percentage. Before settling, report the final checklist state. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
         run.id,
         task.id,
         attempt.id,
@@ -1588,7 +1612,7 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
 
 pub fn master_prompt(run: &Run) -> String {
     let brief = format!(
-        "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Dispatch the full ready wave up to the run's concurrency limit ({}) before ending your turn, using the run workspace policy (the host selects and leases the workspace). After dispatch, end your turn so the person can keep chatting. Do not poll or wait for workers in a long-running turn; the host delivers durable notifications when action is needed. Do not write in a checkout delegated to a worker. Workers use an isolated worktree in Auto mode; Current checkout mode serializes writers. Workspace lifetime continues through review and merge; never delete it merely because a worker completed. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send only for an active attempt; a settled attempt cannot resume. If a blocked or failed task needs more work, start a new authoritative attempt with orchestration_worker_start, using newWorktree=false to reuse its previous worker workspace. Use orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
+        "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Give every task a concise outcome-based title and a spec with concrete checklist steps and validation. The person follows these assignments in a compact task board; workers report their steps through task_status. Dispatch the full ready wave up to the run's concurrency limit ({}) before ending your turn, using the run workspace policy (the host selects and leases the workspace). After dispatch, end your turn so the person can keep chatting. Do not poll or wait for workers in a long-running turn; the host delivers durable notifications when action is needed. Do not write in a checkout delegated to a worker. Workers use an isolated worktree in Auto mode; Current checkout mode serializes writers. Workspace lifetime continues through review and merge; never delete it merely because a worker completed. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send only for an active attempt; a settled attempt cannot resume. If a blocked or failed task needs more work, start a new authoritative attempt with orchestration_worker_start, using newWorktree=false to reuse its previous worker workspace. Use orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
         run.id, run.objective, run.max_concurrent
     );
     if run.worker_defaults.is_some() {
@@ -1868,6 +1892,40 @@ mod tests {
             assert!(result.unwrap_err().contains("read-only"), "{command}");
         }
         assert_eq!(svc.chats.questions.pending().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn settlement_time_is_separate_from_later_metadata_changes() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let worker = running_worker(&store, &run);
+        assert_eq!(worker.finished_at, None);
+        store
+            .report_worker(
+                &worker.worker_chat_key,
+                WorkerReport {
+                    attempt_id: worker.id.clone(),
+                    outcome: WorkerOutcome::Completed,
+                    summary: "done".into(),
+                    files_modified: Vec::new(),
+                },
+            )
+            .unwrap();
+        let finished = store.snapshot(None).unwrap().attempts[0]
+            .finished_at
+            .unwrap();
+        let mut inner = store.inner.lock().unwrap();
+        let attempt = inner.data.attempts.get_mut(&worker.id).unwrap();
+        assert_eq!(finished, attempt.updated_at);
+        attempt.updated_at += 100_000;
+        assert!(!recover_interrupted_workers(&mut inner.data));
+        assert_eq!(inner.data.attempts[&worker.id].finished_at, Some(finished));
+        // Old ledgers retain their last settlement time before later metadata changes.
+        let attempt = inner.data.attempts.get_mut(&worker.id).unwrap();
+        attempt.finished_at = None;
+        attempt.updated_at = finished;
+        assert!(recover_interrupted_workers(&mut inner.data));
+        assert_eq!(inner.data.attempts[&worker.id].finished_at, Some(finished));
     }
 
     #[test]

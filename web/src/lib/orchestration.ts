@@ -1,3 +1,5 @@
+import type { TaskReport } from "./chatTask";
+
 export type WorkspaceMode = "auto" | "worktree" | "direct";
 export type WorkerDefaults = { agent: "codex" | "claude"; access: string; model?: string; effort?: string };
 export type TaskWorkspace = {
@@ -87,6 +89,7 @@ export type OrchestrationAttempt = {
   isWorktree: boolean;
   summary?: string;
   filesModified: string[];
+  finishedAt?: number;
   archivedAt?: number | null;
   createdAt: number;
   updatedAt: number;
@@ -126,6 +129,7 @@ export type OrchestrationNotification = {
 };
 
 export type OrchestrationSnapshot = {
+  reports?: Record<string, TaskReport>;
   runs: OrchestrationRun[];
   tasks: OrchestrationTask[];
   attempts: OrchestrationAttempt[];

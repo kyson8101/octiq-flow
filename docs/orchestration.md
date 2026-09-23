@@ -13,6 +13,27 @@ latest structured messages.
 
 ## Communication
 
+The chat list shows a compact task board below each main agent. Each assignment
+appears once, including tasks waiting for dependencies. Retries stay in that
+task's expandable details. The board shows completed/total tasks, to-do and
+working counts, attention states, and elapsed wall time. Expand a task to inspect
+its assignment, reported checklist, branch, full working folder, worktree mode,
+and delivery state, or choose **Open activity** to read its worker conversation.
+
+Overall completion is the fraction of tasks recorded as completed by the host.
+Individual progress comes from completed steps in the worker's `task_status`
+report; a running task without a reported plan has no percentage. The current
+stage comes from its active step, and reports include their timestamp. New
+worker briefs request a checklist at the start and updates as steps finish.
+Checklist completion does not settle an orchestration task.
+
+Task time sums the durations of its attempts, including preparation and decision
+waits but excluding the gaps between retries. Run time spans the first dispatch
+to the latest settlement (or now while an attempt is active), counting overlapping
+workers once. Settled attempts retain a separate finish timestamp so later
+metadata changes cannot increase their runtime. These are elapsed durations,
+not measurements of CPU or model generation time.
+
 The main chat is the person's instruction channel. Worker chats are nested
 under it for inspection and stay read-only, including after completion or a
 retry. Their composer and direct restart, queue, settings, and delete controls

@@ -5,6 +5,7 @@ import { mergedWorkers } from "../lib/__fixtures__/workerArchive";
 import { workerChatParents, type OrchestrationSnapshot } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { Sidebar } from "./Sidebar";
+import { AgentTaskBoard } from "./AgentTaskBoard";
 import { OrchestrationPanel } from "./OrchestrationPanel";
 
 const chats: Conversation[] = ["main", "previous", "worker"].map(id => ({ id, title: `Chat ${id}`, projectId: "project", messages: [], createdAt: 1, updatedAt: 2 }));
@@ -38,7 +39,7 @@ describe("worker archive controls", () => {
     expect(readonly).not.toContain("Restore worker");
   });
 
-  it("hides selected archived workers from the active sidebar", () => {
+  it("hides archived task rows while retaining completion totals", () => {
     const snapshot = mergedWorkers();
     snapshot.attempts.forEach(attempt => { attempt.archivedAt = 3; });
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
@@ -46,8 +47,18 @@ describe("worker archive controls", () => {
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onRename={() => {}}
       onArchiveWorker={async () => {}} onNewProject={() => {}} searchChats={async () => []} />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
-    expect(out).not.toContain('class="chat-title">Chat worker');
-    expect(out).not.toContain('class="chat-title">Chat previous');
+    expect(out).not.toContain('class="agent-task');
+    expect(out).toContain('aria-valuetext="1 of 1 tasks completed"');
+    expect(out).toContain("1 task has archived workers");
   });
 
+  it("offers archiving in the task board and shows restored older attempts", () => {
+    const snapshot = mergedWorkers();
+    snapshot.attempts[1].archivedAt = 3;
+    const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map(chats.map(c => [c.id, c]))}
+      currentConversation={null} onOpenChat={() => {}} onArchiveWorker={() => {}} />);
+    expect(out).toContain('class="agent-task"');
+    expect(out).toContain(">Archive worker</button>");
+    expect(out).toContain("Attempt 2: completed · archived");
+  });
 });

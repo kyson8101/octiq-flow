@@ -10,7 +10,7 @@ export function chatSnapshot(snapshot: OrchestrationSnapshot, coordinatorKey: st
   const runs = snapshot.runs.filter((run) => run.coordinatorChatKey === coordinatorKey)
     .sort((a, b) => Number(isActiveRun(b)) - Number(isActiveRun(a)) || b.createdAt - a.createdAt);
   const ids = new Set(runs.map((run) => run.id));
-  return { runs, tasks: snapshot.tasks.filter((task) => ids.has(task.runId)),
+  return { runs, reports: snapshot.reports, tasks: snapshot.tasks.filter((task) => ids.has(task.runId)),
     attempts: snapshot.attempts.filter((attempt) => ids.has(attempt.runId)),
     gates: snapshot.gates.filter((gate) => ids.has(gate.runId)),
     messages: snapshot.messages.filter((message) => ids.has(message.runId)),
