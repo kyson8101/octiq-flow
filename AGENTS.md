@@ -17,6 +17,13 @@ stdin, and the shell/agent reads them as if typed. PTY output streams back as
 > you find a doc or comment describing a window, an `invoke_handler!` list or a
 > `#[tauri::command]`, it is stale — trust the code.
 
+## Branch workflow
+
+- **`develop` is the base for new work.** Start work on `develop` or create
+  task branches from `develop`. Target `develop` when merging task branches.
+- **`main` is production.** The team uses it for daily work. Changes to `main`
+  belong to an explicitly requested production release or hotfix.
+
 ## Commands
 
 Run everything from the repo root. **Rust + Node + pnpm are required.**
