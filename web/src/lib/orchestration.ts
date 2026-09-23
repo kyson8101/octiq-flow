@@ -25,18 +25,33 @@ export const WORKSPACE_MODES: { value: WorkspaceMode; label: string; description
   { value: "direct", label: "Current checkout", description: "Modify this folder directly, one worker at a time." },
 ];
 
+/** Said in the words a person would use. These strings are read on a phone,
+ *  in a row one line tall, by someone who wants to know whether the work
+ *  landed — not by someone reading the state machine. */
 export function workspaceDeliveryLabel(workspace: TaskWorkspace): string {
   if (workspace.state === "cleaned") return workspace.abandoned ? "Abandoned · workspace removed" : "Merged · workspace removed";
-  if (workspace.state === "cleaning") return "Cleaning workspace";
+  if (workspace.state === "cleaning") return "Removing workspace";
   const delivery = workspace.delivery;
-  if (!delivery) return "Workspace retained · delivery not checked";
+  if (!delivery) return "Not checked yet";
   if (delivery.dirty) return "Uncommitted changes";
-  if (delivery.merged) return "Merge verified · ready for cleanup";
+  if (delivery.merged) return "Merged";
   if (delivery.reviewState) return `Review · ${delivery.reviewState.toLowerCase().replaceAll("_", " ")}`;
   if (delivery.pullRequest) return "Pull request open";
   if (delivery.pushed) return "Pushed · awaiting review";
-  if (delivery.hasCommits) return "Committed · push pending";
+  if (delivery.hasCommits) return "Committed, not pushed";
   return "No new commits";
+}
+
+/** Colour follows meaning, never emphasis: green for work that landed, amber
+ *  for work that still owes something, and nothing at all for the rest. A row
+ *  merely waiting its turn stays quiet. */
+export function deliveryTone(workspace: TaskWorkspace): "ok" | "warn" | "quiet" {
+  if (workspace.state === "cleaned") return workspace.abandoned ? "quiet" : "ok";
+  const delivery = workspace.delivery;
+  if (!delivery) return "quiet";
+  if (delivery.merged) return "ok";
+  if (delivery.dirty || (delivery.hasCommits && !delivery.pushed)) return "warn";
+  return "quiet";
 }
 
 export type RunStatus = "planning" | "running" | "waiting" | "completed" | "failed" | "stopped";

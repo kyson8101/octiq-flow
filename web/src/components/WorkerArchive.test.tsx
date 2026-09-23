@@ -52,13 +52,16 @@ describe("worker archive controls", () => {
     expect(out).toContain("1 task has archived workers");
   });
 
-  it("offers archiving in the task board and shows restored older attempts", () => {
+  it("keeps a task with a restored worker in the board, and archiving in the Run column", () => {
     const snapshot = mergedWorkers();
     snapshot.attempts[1].archivedAt = 3;
     const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map(chats.map(c => [c.id, c]))}
-      currentConversation={null} onOpenChat={() => {}} onArchiveWorker={() => {}} />);
+      currentConversation={null} onOpenChat={() => {}} />);
     expect(out).toContain('class="agent-task"');
-    expect(out).toContain(">Archive worker</button>");
-    expect(out).toContain("Attempt 2: completed · archived");
+    // The sidebar navigates; archiving and attempt history are the dashboard's.
+    expect(out).not.toContain("Archive worker");
+    expect(out).not.toContain("Attempt 2");
+    expect(panel(snapshot)).toContain(">Archive worker</button>");
+    expect(panel(snapshot)).toContain("Previous attempts (1)");
   });
 });

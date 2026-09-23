@@ -91,7 +91,7 @@ import { AgentRail, RailButton } from "./components/AgentRail";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
-import { MOBILE, TOPBAR_ACTIONS, TOPBAR_READOUTS, useMedia, WIDE } from "./lib/media";
+import { MOBILE, TOPBAR_ACTIONS, TOPBAR_READOUTS, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
@@ -380,6 +380,7 @@ export default function App() {
   const wide = useMedia(WIDE);
   const expandedTopbarActions = useMedia(TOPBAR_ACTIONS);
   const topbarReadouts = useMedia(TOPBAR_READOUTS);
+  const roomToSplit = useMedia(WORKFLOW_SPLIT);
   /** A temporary focus view for the tablet layout. On a desktop each column
    *  already has its own control on the bar — the project name, the Git
    *  button — so one more that sweeps both away at once adds nothing. */
@@ -454,6 +455,14 @@ export default function App() {
   const currentWorkflow = useMemo(() => chatSnapshot(orchestration, conversationId ? keyFor(conversationId) : null), [orchestration, conversationId]);
   const orchestrated = currentWorkflow.runs.some(isActiveRun) || !!workflowModes[workflowKey];
   const workflowView = workerChat ? "chat" : workflowViews[workflowKey] ?? "chat";
+  // Wide enough, and this chat has work to show: the conversation and its
+  // tasks sit side by side instead of taking turns behind a tab. Focus mode is
+  // a single reading column by definition, so it never splits.
+  // The tail of this is exactly what decides whether the run surface renders
+  // at all, and has to stay that way: a split with nothing in the second
+  // column is a border down the middle of the transcript.
+  const workflowSplit = roomToSplit && !workerChat && !focusMode
+    && (orchestrated || currentWorkflow.runs.length > 0);
   const showWorkflowView = (view: "chat" | "run") => setWorkflowViews((before) => ({ ...before, [workflowKey]: view }));
   const [pendingGateDecision, setPendingGateDecision] = useState<{ id: string; text: string } | null>(null);
   const coordinatorId = mainChatId(conversationId, chatParents);
@@ -3610,6 +3619,7 @@ export default function App() {
           opens a file is anywhere near them in the tree. */}
       <div className="body" id="dock">
         <Sidebar
+          showTaskBoard={!roomToSplit}
           projects={workspaces}
           shelved={shelved}
           onShowShelved={() => setShelfOpen(true)}
@@ -3650,32 +3660,14 @@ export default function App() {
 
         <main className="main" hidden={showingProjects} ref={pane}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
-          {!workerChat && <ChatWorkflowBar snapshot={currentWorkflow} orchestrated={orchestrated} view={workflowView}
+          {!workerChat && <ChatWorkflowBar snapshot={currentWorkflow} orchestrated={orchestrated} view={workflowView} focusMode={focusMode} split={workflowSplit}
             pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
             onView={showWorkflowView} onMode={(enabled) => {
               setWorkflowModes((before) => ({ ...before, [workflowKey]: enabled }));
               showWorkflowView(enabled ? "run" : "chat");
             }} />}
-          {!workerChat && (orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={workflowView !== "run"}>
-            <OrchestrationPanel embedded project={project} coordinatorKey={conversationId ? keyFor(conversationId) : null}
-              initialSnapshot={orchestration} currentCwd={effectiveCwd}
-              onEnsureCoordinator={ensureCoordinator} onStartMaster={startWorkflowMaster}
-              onOpenChat={openWorkflowChat} onClose={() => showWorkflowView("chat")}
-              setupContext={<div className="workflow-setup-context">
-                <label>Project<select aria-label="Run project" value={project?.id ?? ""} disabled={!!conversationId} onChange={(event) => chooseProject(event.target.value || null)}>
-                  <option value="">Choose a project</option>
-                  {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select></label>
-                <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
-                  const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
-                }}>
-                  {choice.agent === "pi" && <option value={choice.id} disabled>Choose Codex or Claude</option>}
-                  {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
-                </select></label>
-                <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
-              </div>} />
-          </div>}
-          <div className="workflow-chat-surface" hidden={workflowView === "run"}>
+          <div className={`workflow-surfaces${workflowSplit ? " is-split" : ""}`}>
+          <div className="workflow-chat-surface" hidden={!workflowSplit && workflowView === "run"}>
           {conversationId && reading[conversationId] && chat.messages.length > 0 && (
             <div className="chat-sync-note" role="status">Updating conversation…</div>
           )}
@@ -3985,6 +3977,26 @@ export default function App() {
             }
           />}
 
+          </div>
+          {!workerChat && (orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}>
+            <OrchestrationPanel embedded project={project} coordinatorKey={conversationId ? keyFor(conversationId) : null}
+              initialSnapshot={orchestration} currentCwd={effectiveCwd}
+              onEnsureCoordinator={ensureCoordinator} onStartMaster={startWorkflowMaster}
+              onOpenChat={openWorkflowChat} onClose={() => showWorkflowView("chat")}
+              setupContext={<div className="workflow-setup-context">
+                <label>Project<select aria-label="Run project" value={project?.id ?? ""} disabled={!!conversationId} onChange={(event) => chooseProject(event.target.value || null)}>
+                  <option value="">Choose a project</option>
+                  {workspaces.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+                </select></label>
+                <label>Main agent<select aria-label="Main agent" value={choice.id} onChange={(event) => {
+                  const model = MODELS.find((item) => item.id === event.target.value); if (model) changeModel(model);
+                }}>
+                  {choice.agent === "pi" && <option value={choice.id} disabled>Choose Codex or Claude</option>}
+                  {MODELS.filter((item) => item.agent !== "pi" && (!installed || installed.includes(item.agent))).map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}
+                </select></label>
+                <p>Keep talking in Chat. Worker providers are independent of the main agent.</p>
+              </div>} />
+          </div>}
           </div>
           </>}
         </main>

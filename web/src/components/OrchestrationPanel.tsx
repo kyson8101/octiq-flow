@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
+import { AGENT_NAME } from "../lib/agentProviders";
+import {
+  attemptIsLive, boardCounts, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
+  taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
+} from "../lib/agentTaskBoard";
+import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
+import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
+import { AgentLogo } from "./AgentLogo";
+import { RollingNumber } from "./RollingNumber";
+import { BranchIcon, ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
 
 import {
-  EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
+  deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
   type WorkspaceMode, type WorkerDefaults,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
@@ -248,7 +258,9 @@ export function OrchestrationPanel({
               <PlusIcon />
               {embedded ? "New run" : "Start a run"}
             </button>
-            <div className="orch-run-list">
+            {/* One run needs no picker — and inside a chat that is the normal
+                case, where the strip was costing a row above the fold. */}
+            {(!embedded || creating || runs.length > 1) && <div className="orch-run-list">
               {runs.map((run) => {
                 const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
                 const done = runTasks.filter((task) => task.status === "completed").length;
@@ -271,7 +283,7 @@ export function OrchestrationPanel({
                   </button>
                 );
               })}
-            </div>
+            </div>}
             {!embedded && <p className="orch-runs-note">The host owns task state. Agents report into it.</p>}
           </nav>
 
@@ -298,7 +310,9 @@ export function OrchestrationPanel({
               />
             ) : selected ? (
               <RunDetail
+                key={selected.id}
                 run={selected}
+                snapshot={snapshot}
                 tasks={tasks}
                 attempts={attempts}
                 gates={gates}
@@ -419,8 +433,26 @@ function NewRun({
   );
 }
 
+/** The run screen is read at a glance or not at all, so nothing in its default
+ *  state is a paragraph. Every task is one row of labels, numbers and a bar;
+ *  the prose a worker was handed — its brief, its summaries, its paths — is
+ *  real and kept, but it opens on request rather than filling the screen. */
+type TaskFilter = "all" | "working" | "blocked" | "done";
+
+const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: OrchestrationTask) => boolean }[] = [
+  { key: "all", label: "All", match: () => true },
+  { key: "working", label: "Working", match: (task) => task.status === "running" },
+  { key: "blocked", label: "Blocked", match: (task) => task.status === "blocked" || task.status === "failed" },
+  { key: "done", label: "Done", match: (task) => task.status === "completed" },
+];
+
+/** A filter row over four tasks hides nothing and costs a line, so it only
+ *  appears once the list is long enough to need one. */
+const FILTERS_WORTH_SHOWING = 4;
+
 function RunDetail({
   run,
+  snapshot,
   tasks,
   attempts,
   gates,
@@ -441,6 +473,7 @@ function RunDetail({
   onStartMaster,
 }: {
   run: OrchestrationRun;
+  snapshot: OrchestrationSnapshot;
   tasks: OrchestrationTask[];
   attempts: OrchestrationAttempt[];
   gates: OrchestrationGate[];
@@ -460,13 +493,15 @@ function RunDetail({
   onStop: () => void;
   onStartMaster?: () => Promise<void>;
 }) {
+  const [filter, setFilter] = useState<TaskFilter>("all");
+  const now = useElapsedTick(runIsLive(snapshot, run.id));
   const openGates = gates.filter((gate) => gate.status === "open");
   const gateBlockedTasks = new Set(openGates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
-  const completed = tasks.filter((task) => task.status === "completed").length;
-  const active = attempts.filter((attempt) =>
-    ["preparing", "running"].includes(attempt.status)
-      || (attempt.status === "blocked" && gateBlockedTasks.has(attempt.taskId)),
-  ).length;
+  const counts = boardCounts(tasks);
+  const working = attempts.filter((attempt) => attemptIsLive(snapshot, attempt)).length;
+  // A task blocked BY a decision is already named by the decision chip. Saying
+  // it twice reads as two problems when there is one.
+  const attention = tasks.filter((task) => (task.status === "blocked" || task.status === "failed") && !gateBlockedTasks.has(task.id)).length;
   const taskNames = new Map(tasks.map((task) => [task.id, task.title]));
   const archiveSnapshot = { runs: [run], tasks, attempts, gates, messages };
   const archivable = attempts.filter((attempt) => attempt.archivedAt == null && !workerArchiveDisabledReason(archiveSnapshot, attempt));
@@ -480,58 +515,22 @@ function RunDetail({
       {archived ? "Restore worker" : "Archive worker"}
     </button>;
   };
-  const byTask = new Map<string, OrchestrationAttempt>();
-  for (const attempt of attempts) {
-    const previous = byTask.get(attempt.taskId);
-    if (!previous || attempt.number > previous.number) byTask.set(attempt.taskId, attempt);
-  }
+  const active = TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
+  const visible = tasks.filter(active.match);
 
   return (
     <section className="orch-run-detail" aria-labelledby="orch-run-title">
       <header className="orch-run-head">
-        <div>
-          <div className="orch-status-line"><StatusMark status={run.status} />{statusLabel(run.status)}</div>
-          <h2 id="orch-run-title">{run.objective}</h2>
-          <p>{run.rootPath}</p>
-          {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
-          <p>{WORKSPACE_MODES.find((mode) => mode.value === (run.workspaceMode ?? "auto"))?.label} · {run.workerDefaults ? `Automatic dispatch · ${run.workerDefaults.agent}` : "Coordinator dispatch"}</p>
-          {!readOnly && run.status === "completed" && archivable.length > 0 && <button className="orch-quiet" type="button" disabled={busy}
-            title="Hide merged workers from the chat list. Chats, reports, and workspaces are kept."
-            onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })}>Archive all merged workers ({archivable.length})</button>}
-          {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
-            onClick={() => {
-              const previous = attempts.find((a) => a.agent === "codex" || a.agent === "claude");
-              onWorkspaceAction("orchestration_automation_configure", { runId: run.id,
-                workerDefaults: previous ? { agent: previous.agent, access: previous.access, model: previous.model, effort: previous.effort } : { agent: "codex", access: "auto" } });
-            }}>Enable automatic dispatch ({attempts.find((a) => a.agent === "codex" || a.agent === "claude")?.agent ?? "codex"})</button>}
-          {!readOnly && run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
-            onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id, workerDefaults: null })}>Pause automatic dispatch</button>}
-        </div>
-        {!readOnly && ACTIVE_RUNS.has(run.status) && (
-          confirmStop ? (
-            <div className="orch-stop-confirm">
-              <span>Stop workers and cancel open tasks?</span>
-              <button type="button" onClick={onCancelStop}>Keep running</button>
-              <button className="is-danger" type="button" disabled={busy} onClick={onStop}>Stop run</button>
-            </div>
-          ) : (
-            <button className="orch-quiet" type="button" onClick={onAskStop}>Stop run</button>
-          )
-        )}
+        <div className="orch-status-line"><StatusMark status={run.status} />{statusLabel(run.status)}</div>
+        <h2 id="orch-run-title">{run.objective}</h2>
       </header>
-
-      <div className="orch-metrics" aria-label="Run status">
-        <div><strong>{completed}<span>/{tasks.length}</span></strong><small>Tasks complete</small></div>
-        <div><strong>{active}</strong><small>Workers active</small></div>
-        <div className={openGates.length ? "needs-decision" : ""}><strong>{openGates.length}</strong><small>Decisions waiting</small></div>
-        <div><strong>{run.maxConcurrent}</strong><small>Worker limit</small></div>
-      </div>
 
       {openGates.length > 0 && (
         <section className="orch-decisions" aria-labelledby="orch-decisions-title">
-          <h3 id="orch-decisions-title">Decisions</h3>
+          <h3 id="orch-decisions-title">Needs you</h3>
           {openGates.map((gate) => (
             <article className="orch-gate" key={gate.id}>
+              <p className="orch-gate-task">{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This run"}</p>
               <p>{gate.question}</p>
               {!readOnly && gate.options.length > 0 && (
                 <div className="orch-gate-options">
@@ -554,71 +553,63 @@ function RunDetail({
         </section>
       )}
 
-      <section className="orch-ledger" aria-labelledby="orch-ledger-title">
+      <RunProgress run={run} tasks={tasks} counts={counts} working={working} attention={attention}
+        decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} />
+
+      <details className="orch-run-settings">
+        <summary>Run settings</summary>
+        <div className="orch-run-settings-body">
+          <dl>
+            <dt>Folder</dt><dd title={run.rootPath}>{shortWorkspacePath(run.rootPath)}</dd>
+            <dt>Workspace</dt><dd>{WORKSPACE_MODES.find((mode) => mode.value === (run.workspaceMode ?? "auto"))?.label}</dd>
+            <dt>Dispatch</dt><dd>{run.workerDefaults ? `Automatic · ${run.workerDefaults.agent}` : "Coordinator"}</dd>
+            <dt>Worker limit</dt><dd>{run.maxConcurrent}</dd>
+          </dl>
+          <div className="orch-run-actions">
+            {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
+            {!readOnly && run.status === "completed" && archivable.length > 0 && <button className="orch-quiet" type="button" disabled={busy}
+              title="Hide merged workers from the chat list. Chats, reports, and workspaces are kept."
+              onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })}>Archive all merged workers ({archivable.length})</button>}
+            {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
+              onClick={() => {
+                const previous = attempts.find((a) => a.agent === "codex" || a.agent === "claude");
+                onWorkspaceAction("orchestration_automation_configure", { runId: run.id,
+                  workerDefaults: previous ? { agent: previous.agent, access: previous.access, model: previous.model, effort: previous.effort } : { agent: "codex", access: "auto" } });
+              }}>Enable automatic dispatch ({attempts.find((a) => a.agent === "codex" || a.agent === "claude")?.agent ?? "codex"})</button>}
+            {!readOnly && run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
+              onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id, workerDefaults: null })}>Pause automatic dispatch</button>}
+            {!readOnly && ACTIVE_RUNS.has(run.status) && (
+              confirmStop ? (
+                <div className="orch-stop-confirm">
+                  <span>Stop workers and cancel open tasks?</span>
+                  <button type="button" onClick={onCancelStop}>Keep running</button>
+                  <button className="is-danger" type="button" disabled={busy} onClick={onStop}>Stop run</button>
+                </div>
+              ) : (
+                <button className="orch-quiet" type="button" onClick={onAskStop}>Stop run</button>
+              )
+            )}
+          </div>
+        </div>
+      </details>
+
+      <section className="orch-tasks" aria-labelledby="orch-tasks-title">
         <div className="orch-section-head">
-          <h3 id="orch-ledger-title">Execution ledger</h3>
-          <span>{tasks.length ? `${completed} settled` : "Planning"}</span>
+          <h3 id="orch-tasks-title">Tasks</h3>
+          {tasks.length > FILTERS_WORTH_SHOWING && <div className="orch-task-filters" role="group" aria-label="Filter tasks">
+            {TASK_FILTERS.map((option) => <button key={option.key} type="button" className={option.key === filter ? "is-on" : ""}
+              aria-pressed={option.key === filter} onClick={() => setFilter(option.key)}>{option.label}</button>)}
+          </div>}
         </div>
         {tasks.length === 0 ? (
-          <div className="orch-planning"><span className="orch-pulse" />The master is turning the outcome into tasks.</div>
-        ) : tasks.map((task) => {
-          const attempt = attempts.find((candidate) => candidate.id === task.activeAttemptId) ?? byTask.get(task.id);
-          const history = attempts.filter((candidate) => candidate.taskId === task.id && candidate.id !== attempt?.id).sort((a, b) => b.number - a.number);
-          const reviewReady = task.status === "ready" && attempt?.status === "completed";
-          const retryable = !!attempt
-            && ["blocked", "failed"].includes(task.status)
-            && ["blocked", "failed"].includes(attempt.status)
-            && !gateBlockedTasks.has(task.id);
-          return (
-            <article className={`orch-task is-${task.status}`} key={task.id}>
-              <div className="orch-task-rail"><StatusMark status={task.status} /></div>
-              <div className="orch-task-body">
-                <header>
-                  <div>
-                    <h4>{task.title}</h4>
-                    {task.dependsOn.length > 0 && <p>After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
-                  </div>
-                  <span className="orch-task-state">{statusLabel(task.status)}</span>
-                </header>
-                <p className="orch-task-spec">{task.spec}</p>
-                {attempt && (
-                  <div className="orch-attempt">
-                    <button type="button" onClick={() => onOpenChat(attempt.workerChatKey)}>
-                      {attempt.agent} worker #{attempt.number}
-                    </button>
-                    {attempt.archivedAt != null && <span>Archived</span>}
-                    {archiveControl(attempt)}
-                    {attempt.branch && <code>{attempt.branch}</code>}
-                    {attempt.isWorktree && <span>worktree</span>}
-                    {attempt.summary && <p>{attempt.summary}</p>}
-                    {(retryable || reviewReady) && !readOnly && run.status !== "stopped" && (
-                      <div className="orch-attempt-retry">
-                        <small>{attempt.cwd
-                          ? "This attempt settled. Continue in the same workspace with a new authoritative attempt."
-                          : "This attempt settled before a workspace was assigned. Start a fresh authoritative attempt."}</small>
-                        <button type="button" disabled={busy} onClick={() => onRetry(task, attempt)}>{reviewReady ? "Start next attempt" : "Start retry"}</button>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {history.length > 0 && <details className="orch-attempt-history">
-                  <summary>Previous attempts ({history.length})</summary>
-                  {history.map((previous) => <div key={previous.id}>
-                    <button type="button" onClick={() => onOpenChat(previous.workerChatKey)}>{previous.agent} worker #{previous.number}</button>
-                    <span>{statusLabel(previous.status)}</span>
-                    {previous.archivedAt != null && <span>Archived</span>}
-                    {archiveControl(previous)}
-                    {previous.summary && <p>{previous.summary}</p>}
-                  </div>)}
-                </details>}
-                {task.workspace && <WorkspaceDelivery task={task} busy={busy} readOnly={readOnly} stopped={run.status === "stopped"}
-                  active={!!attempt && (["preparing", "running"].includes(attempt.status) || gateBlockedTasks.has(task.id))}
-                  onAction={onWorkspaceAction} />}
-                {!attempt && task.result && <p className="orch-task-result">{task.result}</p>}
-              </div>
-            </article>
-          );
-        })}
+          <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
+        ) : visible.length === 0 ? (
+          <p className="orch-task-none">Nothing is {active.label.toLowerCase()} right now.</p>
+        ) : visible.map((task) => (
+          <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates}
+            taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
+            archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction} />
+        ))}
       </section>
 
       {notifications.length > 0 && <details className="orch-notifications">
@@ -633,17 +624,160 @@ function RunDetail({
       </details>}
 
       {messages.length > 0 && (
-        <section className="orch-messages" aria-labelledby="orch-messages-title">
-          <div className="orch-section-head"><h3 id="orch-messages-title">Coordination log</h3><span>Latest {Math.min(messages.length, 6)}</span></div>
+        <details className="orch-messages">
+          <summary>Coordination log · latest {Math.min(messages.length, 6)}</summary>
           {messages.slice(-6).reverse().map((message) => (
             <article key={message.id}>
               <div><strong>{message.subject}</strong><span>{message.kind} · {timeLabel(message.createdAt)}</span></div>
               <p>{message.body}</p>
             </article>
           ))}
-        </section>
+        </details>
       )}
     </section>
+  );
+}
+
+/** The whole run in three lines: how many are done, the shape of the rest, and
+ *  the states that still owe something. A count of zero is left out rather
+ *  than printed — four tiles reading 0 is how the old screen managed to fill
+ *  a phone while saying nothing. */
+function RunProgress({ run, tasks, counts, working, attention, decisions, elapsed }: {
+  run: OrchestrationRun;
+  tasks: OrchestrationTask[];
+  counts: ReturnType<typeof boardCounts>;
+  working: number;
+  attention: number;
+  decisions: number;
+  elapsed: number | null;
+}) {
+  if (!tasks.length) return null;
+  const chips = [
+    working > 0 ? { key: "working", tone: "working", label: `${working} of ${run.maxConcurrent} working` } : null,
+    decisions > 0 ? { key: "decisions", tone: "decision", label: `${decisions} ${decisions === 1 ? "decision" : "decisions"} waiting` } : null,
+    attention > 0 ? { key: "blocked", tone: "blocked", label: `${attention} ${attention === 1 ? "needs" : "need"} attention` } : null,
+    counts.todo > 0 ? { key: "todo", tone: "quiet", label: `${counts.todo} queued` } : null,
+    counts.cancelled > 0 ? { key: "cancelled", tone: "quiet", label: `${counts.cancelled} cancelled` } : null,
+  ].filter((chip): chip is { key: string; tone: string; label: string } => chip !== null);
+
+  return (
+    <div className="orch-progress" aria-label="Run progress">
+      <div className="orch-progress-head">
+        <strong><RollingNumber value={counts.done} /><span> / {counts.total} tasks</span></strong>
+        <span className="orch-progress-percent"><RollingNumber value={counts.percent} />%</span>
+        {elapsed !== null && <span className="orch-progress-elapsed"
+          title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
+      </div>
+      <TaskMeter tasks={tasks} done={counts.done} />
+      {chips.length > 0 && <div className="orch-progress-chips">
+        {chips.map((chip) => <span className="orch-chip" data-tone={chip.tone} key={chip.key}>{chip.label}</span>)}
+      </div>}
+    </div>
+  );
+}
+
+/** One task, one row. What it is, what it is doing, how far it got, and where
+ *  — then everything else on a tap. */
+function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction }: {
+  run: OrchestrationRun;
+  snapshot: OrchestrationSnapshot;
+  task: OrchestrationTask;
+  attempts: OrchestrationAttempt[];
+  gates: OrchestrationGate[];
+  taskNames: Map<string, string>;
+  gateBlockedTasks: Set<string>;
+  now: number;
+  busy: boolean;
+  readOnly: boolean;
+  archiveControl: (attempt: OrchestrationAttempt) => ReactNode;
+  onOpenChat: (chatKey: string) => void;
+  onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
+  onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
+}) {
+  const mine = attempts.filter((candidate) => candidate.taskId === task.id).sort((a, b) => b.number - a.number);
+  const attempt = attempts.find((candidate) => candidate.id === task.activeAttemptId) ?? mine[0];
+  const history = mine.filter((candidate) => candidate.id !== attempt?.id);
+  const report = attempt ? snapshot.reports?.[attempt.workerChatKey] : undefined;
+  const progress = taskProgress(task, report);
+  const stage = attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report);
+  // A task that has reported nothing has `taskStage` fall back to its own
+  // status word, which line one already carries. Saying "Blocked · Blocked"
+  // is how a row starts looking busy while telling you less.
+  const reportedStage = stage === TASK_LABELS[task.status] ? null : stage;
+  const elapsed = taskElapsed(snapshot, task, now);
+  const branch = task.workspace?.plan.branch || attempt?.branch;
+  const gate = gates.find((item) => item.taskId === task.id && item.status === "open");
+  const reviewReady = task.status === "ready" && attempt?.status === "completed";
+  const retryable = !!attempt
+    && ["blocked", "failed"].includes(task.status)
+    && ["blocked", "failed"].includes(attempt.status)
+    && !gateBlockedTasks.has(task.id);
+
+  return (
+    <article className={`orch-task is-${task.status}`} data-status={task.status}>
+      <details>
+        <summary className="orch-task-summary">
+          <span className="orch-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
+          <h4>{task.title}</h4>
+          <span className="orch-task-state">{TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
+          <span className="orch-task-meta">
+            {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
+            {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
+            {attempt && <span className="orch-task-agent" title={`${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}><AgentLogo agent={attempt.agent} size={10} /></span>}
+            {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
+          </span>
+        </summary>
+        <div className="orch-task-detail">
+          {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
+          {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
+            {report.steps.map((step, index) => <li key={index} data-state={step.state}>
+              <span aria-label={step.state}>{step.state === "done" ? "✓" : step.state === "active" ? "◉" : "○"}</span>{step.title}
+            </li>)}
+          </ol> : null}
+          {report && <p className="orch-task-reported">
+            {progress.total ? `${progress.done} of ${progress.total} steps done` : "No checklist reported"} · reported {agoLabel(report.reportedAt, now)}
+          </p>}
+          {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
+          {attempt && (
+            <div className="orch-attempt">
+              <button type="button" onClick={() => onOpenChat(attempt.workerChatKey)}>
+                {attempt.agent} worker #{attempt.number}
+              </button>
+              {attempt.archivedAt != null && <span>Archived</span>}
+              {archiveControl(attempt)}
+              {attempt.isWorktree && <span>worktree</span>}
+              {attempt.summary && <p>{attempt.summary}</p>}
+              {(retryable || reviewReady) && !readOnly && run.status !== "stopped" && (
+                <div className="orch-attempt-retry">
+                  <small>{attempt.cwd
+                    ? "This attempt settled. Continue in the same workspace with a new authoritative attempt."
+                    : "This attempt settled before a workspace was assigned. Start a fresh authoritative attempt."}</small>
+                  <button type="button" disabled={busy} onClick={() => onRetry(task, attempt)}>{reviewReady ? "Start next attempt" : "Start retry"}</button>
+                </div>
+              )}
+            </div>
+          )}
+          {history.length > 0 && <details className="orch-attempt-history">
+            <summary>Previous attempts ({history.length})</summary>
+            {history.map((previous) => <div key={previous.id}>
+              <button type="button" onClick={() => onOpenChat(previous.workerChatKey)}>{previous.agent} worker #{previous.number}</button>
+              <span>{statusLabel(previous.status)}</span>
+              {previous.archivedAt != null && <span>Archived</span>}
+              {archiveControl(previous)}
+              {previous.summary && <p>{previous.summary}</p>}
+            </div>)}
+          </details>}
+          {task.workspace && <WorkspaceDelivery task={task} busy={busy} readOnly={readOnly} stopped={run.status === "stopped"}
+            active={!!attempt && (["preparing", "running"].includes(attempt.status) || gateBlockedTasks.has(task.id))}
+            onAction={onWorkspaceAction} />}
+          {!attempt && task.result && <p className="orch-task-result">{task.result}</p>}
+          <details className="orch-task-brief">
+            <summary>Brief</summary>
+            <p>{task.spec}</p>
+          </details>
+        </div>
+      </details>
+    </article>
   );
 }
 
@@ -659,36 +793,38 @@ function WorkspaceDelivery({ task, busy, readOnly, active, stopped, onAction }: 
   const closed = workspace.state === "cleaned";
   const canCleanup = !active && !closed && workspace.plan.managed && workspace.plan.mode === "worktree" && !!delivery && !delivery.dirty;
   const canAbandon = canCleanup && (delivery.pushed || !delivery.hasCommits);
-  return <section className="orch-workspace" aria-label={`Workspace for ${task.title}`}>
-    <strong>{workspaceDeliveryLabel(workspace)}</strong>
-    <code>{workspace.plan.cwd}</code>
-    {workspace.plan.warnings.map((warning) => <p className="orch-workspace-warning" key={warning}>{warning}</p>)}
-    {delivery && <p className="orch-delivery-evidence">Checked {timeLabel(delivery.checkedAt)} · {delivery.headSha.slice(0, 8)}
-      {delivery.pullRequest && <> · <a href={delivery.pullRequest} target="_blank" rel="noreferrer">Pull request</a></>}
-    </p>}
-    {delivery?.notes.map((note) => <p key={note}>{note}</p>)}
-    {workspace.validationPaths.map((path) => <div className="orch-validation" key={path}>
-      <span>Validation: <code>{path}</code></span>
-      {!readOnly && <button type="button" disabled={busy} onClick={() => onAction("orchestration_validation_remove", { taskId: task.id, path })}>Remove validation checkout</button>}
-    </div>)}
-    {!readOnly && !closed && <div className="orch-workspace-actions">
-      <button type="button" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
-      {task.status === "completed" && !stopped && !delivery?.merged && <button type="button" disabled={busy} onClick={() => setFollowup(!followup)}>Continue after review</button>}
-      {canCleanup && delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("merged")}>Clean up worktree</button>}
-      {canAbandon && !delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("abandon")}>Abandon workspace…</button>}
-    </div>}
-    {!readOnly && followup && !closed && <div className="orch-followup">
-      <label>Review fixes<textarea aria-label={`Review fixes for ${task.title}`} value={spec} onChange={(event) => setSpec(event.target.value)} rows={3} /></label>
-      <button type="button" disabled={busy || !spec.trim()} onClick={() => { onAction("orchestration_task_reopen", { taskId: task.id, spec: spec.trim() }); setFollowup(false); }}>Reopen task in this workspace</button>
-    </div>}
-    {!readOnly && cleanup && !closed && <div className="orch-cleanup-confirm" role="group" aria-label="Confirm workspace cleanup">
-      <p>{cleanup === "abandon" ? "Abandon this task and remove its clean worktree?" : "Remove this merged worktree?"} Branches and published history are kept.</p>
-      <button type="button" disabled={busy} onClick={() => setCleanup(null)}>Keep worktree</button>
-      <button type="button" disabled={busy || !delivery || (cleanup === "abandon" ? !canAbandon : !canCleanup || !delivery.merged)} onClick={() => {
-        onAction("orchestration_workspace_cleanup", { taskId: task.id, abandon: cleanup === "abandon", expectedHead: delivery?.headSha }); setCleanup(null);
-      }}>Confirm removal</button>
-    </div>}
-  </section>;
+  return <details className="orch-workspace" data-tone={deliveryTone(workspace)} aria-label={`Workspace for ${task.title}`}>
+    <summary><span>Delivery</span><strong>{workspaceDeliveryLabel(workspace)}</strong></summary>
+    <div className="orch-workspace-body">
+      <code title={workspace.plan.cwd}>{shortWorkspacePath(workspace.plan.cwd)}</code>
+      {workspace.plan.warnings.map((warning) => <p className="orch-workspace-warning" key={warning}>{warning}</p>)}
+      {delivery && <p className="orch-delivery-evidence">Checked {timeLabel(delivery.checkedAt)} · {delivery.headSha.slice(0, 8)}
+        {delivery.pullRequest && <> · <a href={delivery.pullRequest} target="_blank" rel="noreferrer">Pull request</a></>}
+      </p>}
+      {delivery?.notes.map((note) => <p key={note}>{note}</p>)}
+      {workspace.validationPaths.map((path) => <div className="orch-validation" key={path}>
+        <span>Validation: <code>{path}</code></span>
+        {!readOnly && <button type="button" disabled={busy} onClick={() => onAction("orchestration_validation_remove", { taskId: task.id, path })}>Remove validation checkout</button>}
+      </div>)}
+      {!readOnly && !closed && <div className="orch-workspace-actions">
+        <button type="button" disabled={busy} onClick={() => onAction("orchestration_workspace_refresh", { taskId: task.id })}>Refresh delivery status</button>
+        {task.status === "completed" && !stopped && !delivery?.merged && <button type="button" disabled={busy} onClick={() => setFollowup(!followup)}>Continue after review</button>}
+        {canCleanup && delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("merged")}>Clean up worktree</button>}
+        {canAbandon && !delivery.merged && <button type="button" disabled={busy} onClick={() => setCleanup("abandon")}>Abandon workspace…</button>}
+      </div>}
+      {!readOnly && followup && !closed && <div className="orch-followup">
+        <label>Review fixes<textarea aria-label={`Review fixes for ${task.title}`} value={spec} onChange={(event) => setSpec(event.target.value)} rows={3} /></label>
+        <button type="button" disabled={busy || !spec.trim()} onClick={() => { onAction("orchestration_task_reopen", { taskId: task.id, spec: spec.trim() }); setFollowup(false); }}>Reopen task in this workspace</button>
+      </div>}
+      {!readOnly && cleanup && !closed && <div className="orch-cleanup-confirm" role="group" aria-label="Confirm workspace cleanup">
+        <p>{cleanup === "abandon" ? "Abandon this task and remove its clean worktree?" : "Remove this merged worktree?"} Branches and published history are kept.</p>
+        <button type="button" disabled={busy} onClick={() => setCleanup(null)}>Keep worktree</button>
+        <button type="button" disabled={busy || !delivery || (cleanup === "abandon" ? !canAbandon : !canCleanup || !delivery.merged)} onClick={() => {
+          onAction("orchestration_workspace_cleanup", { taskId: task.id, abandon: cleanup === "abandon", expectedHead: delivery?.headSha }); setCleanup(null);
+        }}>Confirm removal</button>
+      </div>}
+    </div>
+  </details>;
 }
 
 function StatusMark({ status }: { status: string }) {

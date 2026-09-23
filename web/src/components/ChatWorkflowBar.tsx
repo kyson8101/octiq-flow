@@ -2,24 +2,34 @@ import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { isActiveRun, runSummary } from "../lib/chatWorkflow";
 import "./ChatWorkflowBar.css";
 
-export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, disabled = false, pendingApprovals = 0 }: {
+export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, disabled = false, pendingApprovals = 0, focusMode = false, split = false }: {
   snapshot: OrchestrationSnapshot; orchestrated: boolean; view: "chat" | "run";
-  onMode: (orchestrated: boolean) => void; onView: (view: "chat" | "run") => void; disabled?: boolean; pendingApprovals?: number;
+  onMode: (orchestrated: boolean) => void; onView: (view: "chat" | "run") => void; disabled?: boolean;
+  pendingApprovals?: number; focusMode?: boolean; split?: boolean;
 }) {
   const active = snapshot.runs.find(isActiveRun);
   const run = active ?? snapshot.runs[0];
+  // With both columns on screen there is nothing to switch between, so the
+  // tabs go; approvals still need saying, and they move onto the run line.
+  const views = (orchestrated || !!run) && !split;
+  // Focus mode is the conversation and nothing else, so the control that
+  // CONFIGURES the chat goes; the Chat/Run tabs and the run line stay, because
+  // they are how you get back to work in flight. A normal chat has neither, so
+  // the bar itself goes rather than leaving an empty rule across the column.
+  if (focusMode && !views && !run) return null;
   return <nav className="chat-workflow-bar" aria-label="Chat workflow">
-    <label className="chat-execution">Execution
+    {!focusMode && <label className="chat-execution">Execution
       <select aria-label="Execution mode" value={active || orchestrated ? "orchestrated" : "normal"}
         disabled={disabled} onChange={(event) => onMode(event.target.value === "orchestrated")}>
         <option value="normal" disabled={!!active}>Normal</option>
         <option value="orchestrated">Orchestrated</option>
       </select>
-    </label>
-    {(orchestrated || run) && <div className="chat-workflow-views" role="group" aria-label="Conversation view">
+    </label>}
+    {views && <div className="chat-workflow-views" role="group" aria-label="Conversation view">
       <button type="button" aria-pressed={view === "chat"} onClick={() => onView("chat")}>Chat{pendingApprovals > 0 ? ` (${pendingApprovals} awaiting approval)` : ""}</button>
       <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>Run</button>
     </div>}
+    {split && pendingApprovals > 0 && <span className="chat-workflow-approvals">{pendingApprovals} awaiting approval</span>}
     {run && <button type="button" className="chat-run-summary" onClick={() => onView("run")}
       title={active ? "Open Run to pause dispatch or stop. Chat messages go to the main agent." : "Open run history"}>
       {runSummary(snapshot, run)}

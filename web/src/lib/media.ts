@@ -50,3 +50,9 @@ export const TOPBAR_READOUTS = "(min-width: 1500px)";
 /** Below this the project list occupies its own screen; at and above it,
  *  projects remain a column beside the workspace. Matches styles.css. */
 export const MOBILE = "(max-width: 859.98px)";
+
+/** Enough room to put the run's tasks BESIDE the conversation instead of
+ *  behind a tab. A readable transcript wants ~600px and the task column ~360px,
+ *  on top of the chat list — so below this the two stay one at a time. Kept in
+ *  step with the `1180px` query in ChatWorkflowBar.css. */
+export const WORKFLOW_SPLIT = "(min-width: 1181px)";

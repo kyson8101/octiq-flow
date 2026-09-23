@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { OrchestrationAttempt, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
 import type { TaskReport } from "./chatTask";
 
@@ -68,4 +69,36 @@ export function boardCounts(tasks: OrchestrationTask[]) {
 export function shortWorkspacePath(path: string): string {
   const parts = path.replaceAll("\\", "/").split("/").filter(Boolean);
   return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : path;
+}
+
+/** True while any worker in this run is still going, which is the only time
+ *  an elapsed readout has anything new to say. */
+export function runIsLive(snapshot: OrchestrationSnapshot, runId?: string): boolean {
+  return snapshot.attempts.some((attempt) => (!runId || attempt.runId === runId) && attemptIsLive(snapshot, attempt));
+}
+
+/** One clock for every surface that shows elapsed time, and it runs ONLY while
+ *  something is moving: a settled run's numbers never change, so a timer over
+ *  them is a repaint that says nothing. Ten seconds is the beat, because the
+ *  labels round to whole minutes the moment they pass one. */
+export function useElapsedTick(live: boolean): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!live) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(timer);
+  }, [live]);
+  return now;
+}
+
+/** `feature/octiq-cc2541144f174ad492ba768b5b5671c1` -> `octiq-cc25...`.
+ *  A prepared worktree's branch ends in the 32 hex characters of its run id:
+ *  unreadable, unmemorable, and the widest thing in the row. The whole name
+ *  still belongs in the title attribute, because that is what gets pasted. */
+export function shortBranch(branch: string): string {
+  const leaf = branch.split("/").filter(Boolean).pop() ?? branch;
+  const generated = /^(.*?)([0-9a-f]{12,})$/.exec(leaf);
+  if (generated) return `${generated[1]}${generated[2].slice(0, 4)}\u2026`;
+  return leaf.length > 24 ? `${leaf.slice(0, 23)}\u2026` : leaf;
 }

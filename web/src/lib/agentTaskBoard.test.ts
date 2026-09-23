@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { taskBoardFixture } from "./__fixtures__/agentTaskBoard";
-import { attemptIsLive, boardCounts, currentAttempt, runElapsed, taskElapsed, taskProgress, taskStage } from "./agentTaskBoard";
+import { attemptIsLive, boardCounts, currentAttempt, runElapsed, shortBranch, taskElapsed, taskProgress, taskStage } from "./agentTaskBoard";
 
 describe("agent task progress", () => {
   it("counts assignments once, including unstarted and blocked work", () => {
@@ -20,6 +20,16 @@ describe("agent task progress", () => {
     const snapshot = taskBoardFixture();
     snapshot.tasks[3].status = "cancelled";
     expect(boardCounts(snapshot.tasks)).toMatchObject({ done: 1, percent: 25, todo: 0, cancelled: 1 });
+  });
+});
+
+describe("branch names in a one-line row", () => {
+  it("drops the run id a prepared worktree carries, and keeps a name someone chose", () => {
+    expect(shortBranch("feature/octiq-cc2541144f174ad492ba768b5b5671c1")).toBe("octiq-cc25…");
+    expect(shortBranch("develop")).toBe("develop");
+    expect(shortBranch("feature/excel-import")).toBe("excel-import");
+    expect(shortBranch("release/2026-09-excel-import-and-payroll-fixes")).toBe("2026-09-excel-import-an…");
+    expect(shortBranch("")).toBe("");
   });
 });
 

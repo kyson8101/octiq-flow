@@ -53,7 +53,7 @@ export function Sidebar({
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, onDelete, onPin, onRename, onArchiveWorker,
-  onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
+  onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot, showTaskBoard = true,
 }: {
   orchestration?: OrchestrationSnapshot;
   projects: Project[];
@@ -75,6 +75,9 @@ export function Sidebar({
   onRename: (id: string, title: string) => void;
   onArchiveWorker?: (attemptId: string, archived: boolean) => Promise<void>;
   onNewProject: () => void;
+  /** False once the run's own column is on screen beside the conversation: the
+   *  chat list then stays a chat list rather than repeating the task board. */
+  showTaskBoard?: boolean;
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
   branches?: Readonly<Record<string, string>>;
   chatParents?: ReadonlyMap<string, string>;
@@ -190,10 +193,13 @@ export function Sidebar({
     const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
     const run = workflow.runs[0];
-    const hasTaskBoard = !searchActive && !showArchived && workflow.runs.length > 0;
+    const ownsRun = !searchActive && !showArchived && workflow.runs.length > 0;
+    // Worker chats are always folded away under their parent; whether their
+    // TASKS are listed here as well depends on there being no run column.
+    const hasTaskBoard = ownsRun && showTaskBoard;
     const boardChatKeys = new Set(workflow.attempts.map((item) => item.workerChatKey));
-    const otherChildren = hasTaskBoard ? children.filter((child) => !boardChatKeys.has(`chat:${child.chat.id}`)) : children;
-    const hasChildren = children.length > 0 || hasTaskBoard;
+    const otherChildren = ownsRun ? children.filter((child) => !boardChatKeys.has(`chat:${child.chat.id}`)) : children;
+    const hasChildren = otherChildren.length > 0 || hasTaskBoard;
     const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run && !hasTaskBoard ? runSummary(workflow, run) : null;
     const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
@@ -322,8 +328,7 @@ export function Sidebar({
         {hasChildren && (
           <div id={childListId} hidden={!expanded}>
             {expanded && hasTaskBoard && <AgentTaskBoard snapshot={workflow} conversations={conversationById}
-              currentConversation={currentConversation} onOpenChat={onPickConversation}
-              onArchiveWorker={onArchiveWorker ? (id) => void archiveWorker(id, true) : undefined} archiving={archiving} />}
+              currentConversation={currentConversation} onOpenChat={onPickConversation} />}
             {expanded && otherChildren.length > 0 && <ul className="chat-children" aria-label={`Agent chats for ${chat.title}`}>
               {otherChildren.map(renderChat)}
             </ul>}

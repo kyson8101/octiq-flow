@@ -110,12 +110,74 @@ describe("OrchestrationPanel", () => {
       />,
     );
 
-    expect(html).toContain("Execution ledger");
+    expect(html).toContain("Tasks");
     expect(html).toContain("Build the host ledger");
     expect(html).toContain("Use the durable schema?");
     expect(html).toContain("codex worker #1");
     expect(html).toContain("feature/worker");
     expect(html).not.toContain("Start retry");
+  });
+
+  it("keeps the worker's brief out of the default view", () => {
+    const html = renderToStaticMarkup(
+      <OrchestrationPanel
+        project={{ id: "project", name: "OctiqFlow", primary_path: "/repo" }}
+        coordinatorKey="chat:master"
+        initialSnapshot={snapshot}
+        onOpenChat={() => {}}
+        onClose={() => {}}
+      />,
+    );
+
+    // The spec is the instruction block written FOR the worker, and runs to
+    // tens of thousands of characters. It stays available and stays shut.
+    expect(html).toContain('<details class="orch-task-brief"><summary>Brief</summary>');
+    expect(html).toContain("Persist authoritative worker state.");
+    expect(html).not.toContain('class="orch-task-brief" open');
+    // Line one already says "Blocked"; the meta line must not repeat it.
+    expect(html).not.toContain('class="orch-task-stage"');
+  });
+
+  it("leaves out every count that is zero", () => {
+    const settled: OrchestrationSnapshot = {
+      ...snapshot,
+      runs: [{ ...snapshot.runs[0], status: "completed" }],
+      tasks: [{ ...snapshot.tasks[0], status: "completed" }],
+      attempts: [{ ...snapshot.attempts[0], status: "completed", finishedAt: 3 }],
+      gates: [],
+    };
+    const html = renderToStaticMarkup(
+      <OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+        initialSnapshot={settled} onOpenChat={() => {}} onClose={() => {}} />,
+    );
+
+    expect(html).toContain("<strong>1<span> / 1 tasks</span></strong>");
+    expect(html).toContain("100%");
+    // Nothing is owed, so no chip row at all — rather than five reading zero.
+    expect(html).not.toContain("orch-progress-chips");
+    for (const gone of ["working", "decision waiting", "needs attention", "queued", "cancelled"]) {
+      expect(html).not.toContain(gone);
+    }
+    // The worker limit is configuration, not status: it moved out of the tiles.
+    expect(html).toContain("<dt>Worker limit</dt>");
+  });
+
+  it("counts a task waiting on a decision once", () => {
+    // The fixture's one task is blocked BY the open gate. Naming it as both a
+    // waiting decision and a task needing attention reads as two problems.
+    const html = renderToStaticMarkup(
+      <OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+        initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />,
+    );
+    expect(html).toContain("1 decision waiting");
+    expect(html).not.toContain("needs attention");
+
+    // Blocked with no gate to explain it is the case that does need naming.
+    const stuck = renderToStaticMarkup(
+      <OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+        initialSnapshot={{ ...snapshot, gates: [] }} onOpenChat={() => {}} onClose={() => {}} />,
+    );
+    expect(stuck).toContain("1 needs attention");
   });
 
   it("offers a new authoritative attempt for a settled block", () => {
@@ -173,6 +235,17 @@ it("makes workspace removal distinct from a worker completing", () => {
   expect(html).toContain("Abandoned · workspace removed");
   expect(html).not.toContain("Refresh delivery status");
 });
+it("says where the work got to in plain words, and hides the machinery behind them", () => {
+  const unchecked = deliveryHtml({ ...workspace, delivery: null });
+  expect(unchecked).toContain("Not checked yet");
+  expect(unchecked).not.toContain("Workspace retained");
+  expect(deliveryHtml({ ...workspace, delivery: { ...workspace.delivery!, merged: true } })).toContain("<strong>Merged</strong>");
+  expect(deliveryHtml({ ...workspace, delivery: { ...workspace.delivery!, pushed: false } })).toContain("Committed, not pushed");
+  // The absolute worktree path is a tooltip, never five wrapped lines of row.
+  const pushed = deliveryHtml({ ...workspace, plan: { ...workspace.plan, cwd: "/Users/someone/code/project/.worktrees/Thing/feature/octiq-cc2541144f174ad492ba768b5b5671c1" } });
+  expect(pushed).toContain("…/feature/octiq-cc2541144f174ad492ba768b5b5671c1<");
+  expect(pushed).not.toContain(">/Users/someone/code/project/.worktrees");
+});
 
 
 describe("embedded chat runs", () => {
@@ -185,6 +258,22 @@ describe("embedded chat runs", () => {
     expect(html).not.toContain('aria-modal="true"');
     expect(html).not.toContain('class="panel-scrim"');
   });
+  it("drops the run picker when the chat has only one run", () => {
+    const one = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(one).toContain("New run");
+    expect(one).not.toContain("orch-run-list");
+
+    const two = {
+      ...snapshot,
+      runs: [...snapshot.runs, { ...snapshot.runs[0], id: "run_2", objective: "Second outcome" }],
+    };
+    const both = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={two} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(both).toContain("orch-run-list");
+    expect(both).toContain("Second outcome");
+  });
+
   it("keeps retry records inside the original task", () => {
     const retried = { ...snapshot, tasks: [{ ...snapshot.tasks[0], activeAttemptId: "attempt_2" }],
       attempts: [...snapshot.attempts, { ...snapshot.attempts[0], id: "attempt_2", number: 2, workerChatKey: "chat:second" }] };

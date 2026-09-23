@@ -1,0 +1,16 @@
+/* The meter sizes itself from its context: a sidebar board wants a hairline,
+   a run header wants something readable at arm's length. */
+.task-meter {
+  display: flex;
+  gap: 3px;
+  height: var(--meter-height, 5px);
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--bg-2);
+}
+
+.task-meter > span { flex: 1 1 0; min-width: 0; border-radius: 2px; background: var(--border-strong); }
+.task-meter > [data-status="completed"] { background: var(--ok); }
+.task-meter > [data-status="running"] { background: var(--link); }
+.task-meter > [data-status="blocked"],
+.task-meter > [data-status="failed"] { background: var(--warn); }
