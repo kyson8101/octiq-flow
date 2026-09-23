@@ -115,6 +115,7 @@ import {
 } from "./lib/agentProviders";
 import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
+import { ChatTaskBar } from "./components/ChatTaskBar";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
@@ -3501,6 +3502,21 @@ export default function App() {
             </span>}
           </button>
           <ConnectionStatus state={conn} />
+          {/* Where this chat is, next to what it is — the two questions a
+              chat picked up an hour later cannot answer for itself. */}
+          {!showingProjects && conversationId && (
+            <ChatTaskBar
+              chatId={conversationId}
+              connected={conn === "open"}
+              busy={chat.busy && !cutOff}
+              waiting={
+                (questions[conversationId]?.length ?? 0) +
+                  (asks[conversationId]?.length ?? 0) +
+                  (safetyBlocks[conversationId]?.length ?? 0) >
+                0
+              }
+            />
+          )}
         </div>
 
         <div className="topbar-actions">

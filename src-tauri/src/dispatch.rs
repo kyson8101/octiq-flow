@@ -357,6 +357,32 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
         "chat_index_list" => Ok(json!(crate::agent_chat::chat_index_list())),
         "chat_index_deleted" => Ok(json!(crate::agent_chat::chat_index_deleted())),
+        // Where this chat is and what became of its work. The report half is
+        // whatever the agent last said; everything else is checked with git on
+        // the way out (`chat_task.rs`).
+        "chat_task" => to_value(crate::chat_task::chat_task_impl(
+            arg(&args, "chatId")?,
+            arg::<Option<bool>>(&args, "refresh")?.unwrap_or(false),
+        )),
+        "chat_task_report" => to_value(crate::chat_task::chat_task_report_impl(
+            arg(&args, "chatId")?,
+            arg(&args, "objective")?,
+            arg::<Option<String>>(&args, "nextStep")?.unwrap_or_default(),
+            arg::<Option<Vec<crate::chat_task::TaskStep>>>(&args, "steps")?.unwrap_or_default(),
+            arg::<Option<String>>(&args, "reportedBy")?.unwrap_or_default(),
+        )),
+        "chat_task_set_target" => to_value(crate::chat_task::chat_task_set_target_impl(
+            arg(&args, "chatId")?,
+            arg(&args, "branch")?,
+            arg::<Option<String>>(&args, "setBy")?.unwrap_or_default(),
+        )),
+        "chat_task_set_release_check" => {
+            to_value(crate::chat_task::chat_task_set_release_check_impl(
+                arg(&args, "projectId")?,
+                arg(&args, "reference")?,
+                arg(&args, "command")?,
+            ))
+        }
         "chat_search" => to_value(crate::chat_search::search(
             &svc.workspaces,
             arg(&args, "query")?,

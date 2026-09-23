@@ -319,6 +319,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/hook/permission", post(permission_handler))
             .route("/hook/ask", post(ask_handler))
             .route("/hook/orchestration", post(orchestration_handler))
+            .route("/hook/task", post(task_handler))
             .fallback(get(asset_handler))
             .with_state(ctx.clone());
 
@@ -984,6 +985,72 @@ async fn orchestration_handler(
         }
     };
     args.insert("actorChatKey".into(), Value::String(request.chat_key));
+    match run_command(&ctx, command.into(), Value::Object(args)).await {
+        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
+    }
+}
+
+/// What an agent may say about its own task, and nothing else.
+///
+/// The chat key comes from the process OctiqFlow started, not from the body,
+/// so an agent can only ever describe the chat it is running in. As with the
+/// orchestration hook this is a whitelist: three actions, no generic bridge to
+/// the command table.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskHook {
+    chat_key: String,
+    action: String,
+    #[serde(default)]
+    args: Value,
+}
+
+async fn task_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<TokenQuery>,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    let command = match request.action.as_str() {
+        "report" => "chat_task_report",
+        "target" => "chat_task_set_target",
+        "read" => "chat_task",
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": "Unknown task action." })),
+            )
+                .into_response()
+        }
+    };
+    let mut args = match request.args {
+        Value::Object(args) => args,
+        Value::Null => serde_json::Map::new(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                axum::Json(json!({ "error": "Task arguments must be an object." })),
+            )
+                .into_response()
+        }
+    };
+    // `chat:<id>` is the key an agent knows itself by; the status store is
+    // keyed by the chat id alone.
+    let chat_id = request
+        .chat_key
+        .strip_prefix("chat:")
+        .unwrap_or(&request.chat_key)
+        .to_string();
+    args.insert("chatId".into(), Value::String(chat_id));
+    args.entry("setBy")
+        .or_insert_with(|| Value::String("agent".into()));
     match run_command(&ctx, command.into(), Value::Object(args)).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
         Err(error) => (

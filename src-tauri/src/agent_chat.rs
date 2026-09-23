@@ -1584,6 +1584,9 @@ pub(crate) fn start_session(
         // The hook answers only for agents we started, and needs to know
         // which chat is asking so the UI can attach the question to it.
         .env("OCTIQ_CHAT_KEY", &key)
+        // Which agent is reporting, so a task report carries a name rather
+        // than an anonymous timestamp.
+        .env("OCTIQ_CHAT_AGENT", agent.id())
         .env("OCTIQ_SESSION_KEY", &session_key)
         .env("OCTIQ_LAUNCH_ID", &launch_id)
         // The conversation reader in that MCP must use this exact profile.
@@ -3648,6 +3651,10 @@ pub fn chat_index_restore(id: String) -> Result<Option<crate::chat_index::ChatMe
 fn purge_deleted_chats() -> Result<usize, String> {
     let expired = crate::chat_index::purge_expired()?;
     for id in &expired {
+        // The task record goes with the chat it describes. It is kept through
+        // the trash window, so a restore brings back a chat that still knows
+        // where its work went.
+        crate::chat_task::forget(id);
         announce_index_change(id, true);
     }
     if !expired.is_empty() {
