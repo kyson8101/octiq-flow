@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::agent_chat::{Access, ChatAgent, ChatManager};
 use crate::workspaces::{Workspace, WorkspaceState};
 
+mod archive;
 pub mod automation;
 pub mod inbox;
 mod workspaces;
@@ -150,6 +151,8 @@ pub struct Attempt {
     pub summary: Option<String>,
     #[serde(default)]
     pub files_modified: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -766,6 +769,7 @@ impl OrchestrationStore {
                 is_worktree: false,
                 summary: None,
                 files_modified: Vec::new(),
+                archived_at: None,
                 created_at: now,
                 updated_at: now,
             };

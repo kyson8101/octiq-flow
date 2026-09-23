@@ -87,6 +87,7 @@ export type OrchestrationAttempt = {
   isWorktree: boolean;
   summary?: string;
   filesModified: string[];
+  archivedAt?: number | null;
   createdAt: number;
   updatedAt: number;
 };

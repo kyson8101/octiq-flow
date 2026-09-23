@@ -8,6 +8,7 @@ export type SidebarMenuItem = {
   onSelect: () => void;
   danger?: boolean;
   disabled?: boolean;
+  title?: string;
   /** Keep delete's countdown and its undo action in the same menu. */
   keepOpen?: boolean;
 };
@@ -120,7 +121,7 @@ function Dropdown({ id, label, anchor, items, onClose }: {
         buttons[next]?.focus();
       }}>
       {items.map(item => <button key={item.id} type="button" role="menuitem" tabIndex={-1}
-        className={item.danger ? "is-danger" : undefined} disabled={item.disabled}
+        className={item.danger ? "is-danger" : undefined} disabled={item.disabled} title={item.title}
         onClick={() => {
           if (!item.keepOpen) dismiss();
           item.onSelect();

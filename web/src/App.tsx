@@ -3633,6 +3633,14 @@ export default function App() {
           onDelete={deleteConversation}
           onPin={togglePin}
           onRename={renameConversation}
+          onArchiveWorker={async (attemptId, archived) => {
+            const attempt = orchestration.attempts.find((item) => item.id === attemptId);
+            const run = orchestration.runs.find((item) => item.id === attempt?.runId);
+            if (!run) throw new Error("This worker's run is unavailable. Reconnect and try again.");
+            await bridge.invoke("orchestration_worker_archive", {
+              actorChatKey: run.coordinatorChatKey, attemptId, archived,
+            });
+          }}
           onNewProject={() => setSettingsFor("new")}
           searchChats={searchChats}
           branches={projectBranches}

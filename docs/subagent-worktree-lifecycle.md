@@ -113,6 +113,16 @@ reopened prerequisite to finish again.
 
 ## Cleanup
 
+**Archive worker** hides a worker chat from the active sidebar after its task
+completes and Refresh delivery status records a clean, verified merge. Open
+decisions and workers still executing prevent archiving. A completed run also
+offers **Archive all merged workers**, which skips tasks without that evidence.
+Archive status persists with each attempt. **Archived workers** in the chat list
+menu lets the person view or restore them; the execution ledger also retains
+their chat links, reports, and restore actions. Restoring changes visibility
+only, and does not resume a settled worker. Archiving never deletes transcripts,
+branches, or workspaces and has no automatic expiry.
+
 Cleanup is a separate person-facing confirmation in the Orchestrator. Persistent
 task-worktree removal is not exposed through the chat-bound MCP hook. Its
 backend command requires the HEAD from the preview and checks everything again:

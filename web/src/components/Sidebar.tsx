@@ -8,6 +8,7 @@ import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
 import { isWorkerChat, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
+import { workerArchiveChatList, workerArchiveDisabledReason } from "../lib/workerArchive";
 import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
@@ -17,6 +18,7 @@ import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
 import "./MobileSidebar.css";
+import "./SidebarArchive.css";
 
 export type Project = ProjectAppearance & {
   primary_path?: string;
@@ -49,7 +51,7 @@ export function Sidebar({
   projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
-  loadPreview, onNewChat, onDelete, onPin, onRename,
+  loadPreview, onNewChat, onDelete, onPin, onRename, onArchiveWorker,
   onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
 }: {
   orchestration?: OrchestrationSnapshot;
@@ -70,6 +72,7 @@ export function Sidebar({
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
   onRename: (id: string, title: string) => void;
+  onArchiveWorker?: (attemptId: string, archived: boolean) => Promise<void>;
   onNewProject: () => void;
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
   branches?: Readonly<Record<string, string>>;
@@ -82,6 +85,9 @@ export function Sidebar({
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const [searchHits, setSearchHits] = useState<ChatSearchHit[]>([]);
   const [searchState, setSearchState] = useState<"idle" | "searching" | "ready" | "error">("idle");
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -91,18 +97,21 @@ export function Sidebar({
   const knownProjects = [...projects, ...shelved];
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
   const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
+  const archivedConversations = workerArchiveChatList(conversations, orchestration, true);
+  const listedConversations = showArchived ? archivedConversations : workerArchiveChatList(conversations, orchestration);
+  const listedIds = new Set(listedConversations.map((chat) => chat.id));
   const trimmedQuery = query.trim();
   const searchActive = [...trimmedQuery].length >= 2;
   const hitById = new Map(searchHits.map((hit) => [hit.id, hit]));
   const visibleConversations = searchActive && searchState === "ready"
     ? searchHits.flatMap((hit) => {
       const conversation = conversationById.get(hit.id);
-      return conversation ? [conversation] : [];
+      return conversation && listedIds.has(conversation.id) ? [conversation] : [];
     })
-    : searchActive ? [] : conversations;
+    : searchActive ? [] : listedConversations;
 
   const tree = useMemo(() => buildChatTree(workflowChatList(conversations, orchestration, currentConversation), chatParents), [conversations, chatParents, orchestration, currentConversation]);
-  const visibleNodes = searchActive
+  const visibleNodes = searchActive || showArchived
     ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
     : tree;
   const ancestors = new Set<string>();
@@ -151,6 +160,14 @@ export function Sidebar({
     };
   }, [searchActive, searchChats, trimmedQuery]);
   const cancelHold = () => clearTimeout(hold.current);
+  const archiveWorker = async (attemptId: string, archived: boolean) => {
+    if (!onArchiveWorker || archiving) return;
+    setArchiving(true);
+    setArchiveError(null);
+    try { await onArchiveWorker(attemptId, archived); }
+    catch (error) { setArchiveError(error instanceof Error ? error.message : String(error)); }
+    finally { setArchiving(false); }
+  };
 
   const renderChat = ({ chat, children, descendants }: ChatNode): ReactNode => {
     const expanded = !collapsed.has(chat.id);
@@ -168,9 +185,11 @@ export function Sidebar({
     const projectName = project?.name ?? "Unknown project";
     const attempt = orchestration.attempts.find((item) => item.workerChatKey === `chat:${chat.id}`);
     const task = attempt && orchestration.tasks.find((item) => item.id === attempt.taskId);
+    const archived = attempt?.archivedAt != null;
+    const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
     const run = workflow.runs[0];
-    const workflowLabel = task ? `${task.title} · ${attempt?.status}` : run ? runSummary(workflow, run) : null;
+    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? runSummary(workflow, run) : null;
     const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -271,6 +290,10 @@ export function Sidebar({
             items={[
               { id: "rename", label: "Rename chat", icon: <PencilIcon />, disabled: going, onSelect: () => setRenaming(chat.id) },
               { id: "pin", label: chat.pinned ? "Unpin chat" : "Pin chat", icon: <PinIcon />, disabled: going, onSelect: () => onPin(chat.id) },
+              ...(attempt && onArchiveWorker ? [{ id: "archive", label: archived ? "Restore worker" : "Archive worker", icon: <ArchiveIcon />,
+                disabled: archiving || !!archiveReason || (!archived && busy.has(chat.id)),
+                title: archiveReason ?? (archived ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept."),
+                onSelect: () => void archiveWorker(attempt.id, !archived) }] : []),
               ...(!isWorkerChat(chat.id, chatParents) ? [{ id: "delete", label: going ? "Cancel delete" : "Delete chat", icon: <TrashIcon />, danger: true, keepOpen: !going, onSelect: () => onDelete(chat.id) }] : []),
             ]} />}
           {children.length > 0 && (
@@ -314,6 +337,8 @@ export function Sidebar({
             onOpenChange={setMenuOpen}
             items={[
               { id: "new-project", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
+              ...(archivedConversations.length || showArchived ? [{ id: "archived", label: showArchived ? "Active chats" : `Archived workers (${archivedConversations.length})`, icon: <ArchiveIcon />,
+                onSelect: () => { setShowArchived(!showArchived); setQuery(""); } }] : []),
               ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
               ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
             ]}
@@ -345,7 +370,13 @@ export function Sidebar({
         </div>
       </div>
 
-      {!conversations.length ? (
+      {showArchived && <div className="sidebar-archive-view">
+        <div><strong>Archived workers</strong><span>{archivedConversations.length}</span></div>
+        <button type="button" onClick={() => { setShowArchived(false); setQuery(""); }}>Back to active chats</button>
+      </div>}
+      {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
+      {!listedConversations.length ? (
+        showArchived ? <div className="sidebar-empty" role="status"><span>No archived workers.</span></div> :
         <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
       ) : searchActive && searchState !== "ready" ? (
         <div className="sidebar-empty" role="status" aria-live="polite">

@@ -1,4 +1,5 @@
 import type { Conversation } from "./store";
+import { workerArchiveChatList } from "./workerArchive";
 import { EMPTY_ORCHESTRATION, type OrchestrationSnapshot, type OrchestrationRun } from "./orchestration";
 
 export const isActiveRun = (run: OrchestrationRun) => ["planning", "running", "waiting"].includes(run.status);
@@ -38,5 +39,5 @@ export function workflowChatList(chats: Conversation[], snapshot: OrchestrationS
     if (!current || !parent || !chatIds.has(parent) || !chatIds.has(current.workerChatKey.replace(/^chat:/, ""))) continue;
     for (const attempt of attempts) if (attempt.id !== current.id) hidden.add(attempt.workerChatKey.replace(/^chat:/, ""));
   }
-  return chats.filter((chat) => chat.id === selectedId || !hidden.has(chat.id));
+  return workerArchiveChatList(chats, snapshot).filter((chat) => chat.id === selectedId || !hidden.has(chat.id));
 }

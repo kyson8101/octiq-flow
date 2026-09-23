@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } fro
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
+import { workerArchiveDisabledReason } from "../lib/workerArchive";
 
 import {
   EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
@@ -467,6 +468,18 @@ function RunDetail({
       || (attempt.status === "blocked" && gateBlockedTasks.has(attempt.taskId)),
   ).length;
   const taskNames = new Map(tasks.map((task) => [task.id, task.title]));
+  const archiveSnapshot = { runs: [run], tasks, attempts, gates, messages };
+  const archivable = attempts.filter((attempt) => attempt.archivedAt == null && !workerArchiveDisabledReason(archiveSnapshot, attempt));
+  const archiveControl = (attempt: OrchestrationAttempt) => {
+    if (readOnly) return null;
+    const archived = attempt.archivedAt != null;
+    const reason = archived ? null : workerArchiveDisabledReason(archiveSnapshot, attempt);
+    return <button type="button" disabled={busy || !!reason}
+      title={reason ?? (archived ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept.")}
+      onClick={() => onWorkspaceAction("orchestration_worker_archive", { attemptId: attempt.id, archived: !archived })}>
+      {archived ? "Restore worker" : "Archive worker"}
+    </button>;
+  };
   const byTask = new Map<string, OrchestrationAttempt>();
   for (const attempt of attempts) {
     const previous = byTask.get(attempt.taskId);
@@ -482,6 +495,9 @@ function RunDetail({
           <p>{run.rootPath}</p>
           {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
           <p>{WORKSPACE_MODES.find((mode) => mode.value === (run.workspaceMode ?? "auto"))?.label} · {run.workerDefaults ? `Automatic dispatch · ${run.workerDefaults.agent}` : "Coordinator dispatch"}</p>
+          {!readOnly && run.status === "completed" && archivable.length > 0 && <button className="orch-quiet" type="button" disabled={busy}
+            title="Hide merged workers from the chat list. Chats, reports, and workspaces are kept."
+            onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })}>Archive all merged workers ({archivable.length})</button>}
           {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
             onClick={() => {
               const previous = attempts.find((a) => a.agent === "codex" || a.agent === "claude");
@@ -570,6 +586,8 @@ function RunDetail({
                     <button type="button" onClick={() => onOpenChat(attempt.workerChatKey)}>
                       {attempt.agent} worker #{attempt.number}
                     </button>
+                    {attempt.archivedAt != null && <span>Archived</span>}
+                    {archiveControl(attempt)}
                     {attempt.branch && <code>{attempt.branch}</code>}
                     {attempt.isWorktree && <span>worktree</span>}
                     {attempt.summary && <p>{attempt.summary}</p>}
@@ -588,6 +606,8 @@ function RunDetail({
                   {history.map((previous) => <div key={previous.id}>
                     <button type="button" onClick={() => onOpenChat(previous.workerChatKey)}>{previous.agent} worker #{previous.number}</button>
                     <span>{statusLabel(previous.status)}</span>
+                    {previous.archivedAt != null && <span>Archived</span>}
+                    {archiveControl(previous)}
                     {previous.summary && <p>{previous.summary}</p>}
                   </div>)}
                 </details>}

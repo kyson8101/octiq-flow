@@ -769,6 +769,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "taskId")?,
             arg(&args, "spec")?,
         )),
+        "orchestration_worker_archive" => to_value(svc.orchestrations.set_worker_archived(
+            &svc.chats,
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "attemptId")?,
+            arg(&args, "archived")?,
+        )),
+        "orchestration_workers_archive_merged" => to_value(svc.orchestrations.archive_merged_workers(
+            &svc.chats,
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+        )),
         "orchestration_workspace_cleanup" => to_value(svc.orchestrations.cleanup_workspace(
             &svc.chats,
             &arg::<String>(&args, "actorChatKey")?,
