@@ -41,6 +41,11 @@ export type IndexEntry = {
   readAt?: number;
   /** Sits above every newer chat in its project. */
   pinned: boolean;
+  /** When the person ticked this chat off, or absent. Read-only on this
+   *  shape: `chat_index::upsert` keeps whatever it already holds and ignores
+   *  what a save carries, so a stale browser can neither untick a chat nor put
+   *  a tick back. `setChatDone` is the only way to move it. */
+  doneAt?: number | null;
   /** Server-owned lifecycle generation. It changes only when Trash restores a
    *  chat, so an older delete retry cannot hide that restored row again. */
   generation?: number;
@@ -175,7 +180,15 @@ export function cancelIndexRemoval(id: string): void {
   if (unconfirmed.get(id)?.kind === "remove") unconfirmed.delete(id);
 }
 
-const unconfirmedReads = new Map<string, number>();
+/** The narrow marks: one field, set on its own, against a chat the server
+ *  already holds. They share a queue with each other and stay out of
+ *  `unconfirmed` — see `markChatRead` for why — and are keyed by KIND and id,
+ *  so ticking a chat off cannot evict the record that it was opened. */
+type Mark =
+  | { kind: "read"; id: string; at: number }
+  | { kind: "done"; id: string; at: number | null };
+
+const unconfirmedMarks = new Map<string, Mark>();
 let readRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let readRetryDelay = 0;
 
@@ -192,28 +205,55 @@ let readRetryDelay = 0;
  *  Moves forward only: a call for a chat reopened a moment later must not be
  *  overtaken, in this queue, by a slower retry of an earlier one. */
 export function markChatRead(id: string, at: number): void {
-  const known = unconfirmedReads.get(id);
-  if (known !== undefined && known >= at) return;
-  unconfirmedReads.set(id, at);
+  const held = unconfirmedMarks.get(`read:${id}`);
+  if (held?.kind === "read" && held.at >= at) return;
+  queueMark({ kind: "read", id, at });
+}
+
+/** Tick a chat off, or take the tick back with `null`.
+ *
+ *  Its own narrow command rather than a field on the save, for the reason
+ *  above and one more: the tick is the one thing on a row the PERSON said. A
+ *  save is assembled from whatever the page happened to be holding, and twice
+ *  already (see `rewriteConversation`) a field added to that shape went
+ *  missing from one of the half-dozen places that build it. A tick lost that
+ *  way is a chat back in a list somebody had finished with.
+ *
+ *  `at` is the moment it was ticked, from this device's clock, because the
+ *  mark only means anything against this chat's `updatedAt` (see
+ *  `lib/chatFilter`). The latest call wins: unlike a read mark there is nothing
+ *  monotonic about it, since untick is a legitimate move backwards. */
+export function setChatDone(id: string, at: number | null): void {
+  const held = unconfirmedMarks.get(`done:${id}`);
+  if (held?.kind === "done" && held.at === at) return;
+  queueMark({ kind: "done", id, at });
+}
+
+function queueMark(mark: Mark): void {
+  unconfirmedMarks.set(`${mark.kind}:${mark.id}`, mark);
   watchConnection();
   flushReads();
 }
 
 function flushReads(): void {
-  for (const [id, at] of unconfirmedReads) sendRead(id, at);
+  for (const mark of [...unconfirmedMarks.values()]) sendMark(mark);
 }
 
-function sendRead(id: string, at: number): void {
+function sendMark(mark: Mark): void {
+  const key = `${mark.kind}:${mark.id}`;
+  const command = mark.kind === "read" ? "chat_mark_read" : "chat_set_done";
   let settled = false;
   const deadline = new Promise<never>((_, reject) => {
     setTimeout(() => {
-      if (!settled) reject(new Error("chat_mark_read was not acknowledged"));
+      if (!settled) reject(new Error(`${command} was not acknowledged`));
     }, ACK_MS);
   });
-  Promise.race([bridge.invoke("chat_mark_read", { id, at }), deadline])
+  Promise.race([bridge.invoke(command, { id: mark.id, at: mark.at }), deadline])
     .then(() => {
       settled = true;
-      if (unconfirmedReads.get(id) === at) unconfirmedReads.delete(id);
+      // Only the exact mark that was acknowledged. A newer one may have
+      // replaced it while this call was in the air, and that one is still owed.
+      if (unconfirmedMarks.get(key) === mark) unconfirmedMarks.delete(key);
       readRetryDelay = 0;
     })
     .catch(() => {
@@ -223,7 +263,7 @@ function sendRead(id: string, at: number): void {
 }
 
 function scheduleReadRetry(): void {
-  if (readRetryTimer || unconfirmedReads.size === 0) return;
+  if (readRetryTimer || unconfirmedMarks.size === 0) return;
   readRetryDelay = readRetryDelay === 0 ? FIRST_RETRY_MS : Math.min(readRetryDelay * 2, MAX_RETRY_MS);
   readRetryTimer = setTimeout(() => {
     readRetryTimer = null;
@@ -238,7 +278,7 @@ export function resetIndexQueue(): void {
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
   retryDelay = 0;
-  unconfirmedReads.clear();
+  unconfirmedMarks.clear();
   if (readRetryTimer) clearTimeout(readRetryTimer);
   readRetryTimer = null;
   readRetryDelay = 0;
@@ -247,7 +287,7 @@ export function resetIndexQueue(): void {
 /** True while at least one entry is still unacknowledged. Exposed for tests
  *  and for anything that wants to know the index is behind. */
 export function indexBacklog(): number {
-  return unconfirmed.size + unconfirmedReads.size;
+  return unconfirmed.size + unconfirmedMarks.size;
 }
 
 /** A reconnection is the one moment worth retrying immediately: whatever was

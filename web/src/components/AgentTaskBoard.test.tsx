@@ -34,7 +34,7 @@ describe("compact agent task board", () => {
     const snapshot = taskBoardFixture();
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
-      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onRename={() => {}}
+      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
       onNewProject={() => {}} searchChats={async () => []} />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
     expect(out.match(/class="agent-task"/g)).toHaveLength(4);
@@ -45,7 +45,7 @@ describe("compact agent task board", () => {
     const snapshot = taskBoardFixture();
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
-      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onRename={() => {}}
+      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
       onNewProject={() => {}} searchChats={async () => []} />);
     // Worker transcripts stay folded away, while their status rows remain a
     // useful navigation index beside the detailed run dashboard.

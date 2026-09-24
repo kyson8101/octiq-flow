@@ -12,6 +12,7 @@ import {
   resetIndexQueue,
   saveIndexEntry,
   saveIndexEntries,
+  setChatDone,
 } from "./chatIndex";
 import type { Conversation } from "./store";
 
@@ -208,6 +209,68 @@ describe("marking a chat read", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(invoke).toHaveBeenCalledWith("chat_index_save", { meta: entry("c1") });
     expect(invoke).toHaveBeenCalledWith("chat_mark_read", { id: "c1", at: 500 });
+  });
+});
+
+describe("ticking a chat off", () => {
+  it("sends the tick, and stops once the server has answered", async () => {
+    invoke.mockResolvedValue(undefined);
+    setChatDone("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invoke).toHaveBeenCalledWith("chat_set_done", { id: "c1", at: 500 });
+    expect(indexBacklog()).toBe(0);
+  });
+
+  it("keeps trying when the call is never answered", async () => {
+    invoke.mockReturnValue(unanswered());
+    setChatDone("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(invoke.mock.calls.length).toBeGreaterThan(1);
+    expect(indexBacklog()).toBe(1);
+  });
+
+  it("lets an untick supersede a tick still on its way", async () => {
+    invoke.mockReturnValue(unanswered());
+    setChatDone("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+    invoke.mockClear();
+
+    // Ticked, then immediately unticked. Unlike a read mark there is nothing
+    // monotonic here: the latest answer is the right one.
+    setChatDone("c1", null);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    for (const call of invoke.mock.calls) expect(call[1]).toEqual({ id: "c1", at: null });
+    expect(indexBacklog()).toBe(1);
+  });
+
+  it("does not resend a tick it already holds queued", async () => {
+    invoke.mockReturnValue(unanswered());
+    setChatDone("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+    invoke.mockClear();
+
+    setChatDone("c1", 500);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(indexBacklog()).toBe(1);
+  });
+
+  it("does not evict the record that the same chat was opened", async () => {
+    invoke.mockReturnValue(unanswered());
+    markChatRead("c1", 500);
+    setChatDone("c1", 700);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(indexBacklog()).toBe(2);
+    expect(invoke).toHaveBeenCalledWith("chat_mark_read", { id: "c1", at: 500 });
+    expect(invoke).toHaveBeenCalledWith("chat_set_done", { id: "c1", at: 700 });
   });
 });
 

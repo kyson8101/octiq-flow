@@ -70,6 +70,11 @@ export type Conversation = {
    *  pinned. Held on the server's index as well, so a pin made on the laptop
    *  is a pin on the phone. */
   pinned?: boolean;
+  /** When the person ticked this chat off by hand (see `lib/chatFilter`). A
+   *  TIME, not a flag: the tick holds only while it is at least as new as
+   *  `updatedAt`, so the next message retires it by itself. Server-owned —
+   *  only `setChatDone` moves it, never an ordinary save. */
+  doneAt?: number | null;
   /** Server-owned lifecycle generation. Incremented when a deleted chat is
    *  restored, so an older delete retry cannot hide it again. */
   generation?: number;
@@ -313,6 +318,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       held.updatedAt === c.updatedAt &&
       held.seq === c.seq &&
       !!held.pinned === !!c.pinned &&
+      (held.doneAt ?? null) === (c.doneAt ?? null) &&
       (held.generation ?? 0) === (c.generation ?? 0) &&
       !!held.synced === !!c.synced
     );

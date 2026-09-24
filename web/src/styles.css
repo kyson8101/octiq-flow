@@ -653,6 +653,42 @@ body {
 .sidebar-search button:hover { background: var(--bg-2); color: var(--fg-0); }
 .sidebar-search button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* Which chats the list is showing. Present only once something has been ticked
+   off, so the toolbar keeps its two rows for everybody who never uses it — and
+   the search field hands its dividing line down to whichever row is last. */
+.sidebar-search-wrap:has(+ .sidebar-filter) { border-bottom: 0; padding-bottom: 6px; }
+.sidebar-filter {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-filter button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    color 140ms ease-out;
+}
+.sidebar-filter button:hover { background: var(--bg-2); color: var(--fg-1); }
+.sidebar-filter button.is-on { background: var(--accent-tint); color: var(--fg-0); }
+.sidebar-filter button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sidebar-filter button > span {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.sidebar-filter button.is-on > span { color: var(--fg-2); }
+
 .task-chat-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -692,12 +728,17 @@ body {
   );
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-project-color) 30%, var(--border));
 }
-.task-chat-list .chat::after { left: 14px; right: 14px; }
+.task-chat-list .chat::after { left: 45px; right: 14px; }
+/* The left gutter holds the tick as well as the state dot now, and holds it at
+   a fixed width whether or not the tick is showing: a control that appears on
+   hover must not be able to move the title it sits beside. */
 .task-chat-list .chat-btn {
   grid-column: 1;
   width: 100%;
   height: 78px;
-  padding: 8px 6px 8px 14px;
+  /* `.sidebar .task-chat-list .chat-btn` in MobileSidebar.css outranks this
+     and carries the same numbers; change both or neither. */
+  padding: 8px 6px 8px 45px;
 }
 .task-chat-list .chat-rename {
   grid-column: 1 / -1;
@@ -754,30 +795,192 @@ body {
   max-width: 46%;
   color: var(--fg-2);
 }
-.task-chat-list .chat-indicators {
+
+/* The one mark on the left of a chat row.
+   ------------------------------------------------------------------
+   It carries the project's logo, whether the chat is running, and whether it
+   has been ticked off — three things that used to be three separate marks
+   squeezed into a 14px gutter, none of them big enough to read.
+
+   Every state is drawn INSIDE the same 30px square, so none of them can move
+   the title beside it. */
+.chat-badge {
   position: absolute;
-  left: 4px;
-  top: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
+  left: 7px;
+  top: 50%;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  transform: translateY(-50%);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.chat-badge:disabled { pointer-events: none; opacity: 0.4; }
+.chat-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 9px; }
+.chat-badge .project-avatar { transition: opacity 140ms ease-out; }
+
+/* Under the pointer the logo gives way to what clicking it does. The logo
+   stays faintly behind rather than vanishing, so the row keeps its colour and
+   the slot never reads as empty. */
+.chat-badge-tick {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-1);
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+.chat-badge:hover .chat-badge-tick,
+.chat-badge:focus-visible .chat-badge-tick { opacity: 1; }
+.chat-badge:hover .project-avatar,
+.chat-badge:focus-visible .project-avatar { opacity: 0.22; }
+.chat.is-done .chat-badge-tick { color: var(--accent); }
+
+/* Ticked off, pointer elsewhere: a small mark ON the logo. A tint inside an
+   accent ring rather than a disc of accent — at this size a filled one is a
+   bright dot on every finished row, and the accent is a tint here throughout. */
+.chat-badge-check {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-1));
+  box-shadow: 0 0 0 1.25px var(--accent);
+  color: var(--accent);
+  transition: opacity 140ms ease-out;
+}
+.chat-badge:hover .chat-badge-check,
+.chat-badge:focus-visible .chat-badge-check { opacity: 0; }
+
+/* The opposite corner from the tick, and inside the row rather than out on its
+   rounded edge, where it was being clipped. */
+.chat-badge-pin {
+  position: absolute;
+  right: -5px;
+  top: -5px;
+  display: flex;
+  color: var(--fg-2);
+  line-height: 0;
+}
+.chat-badge-pin svg { width: 11px; height: 11px; }
+
+/* The running border: a snake going round the tile, eating.
+   ------------------------------------------------------------------
+   It is the only moving thing in the sidebar, which is what makes a working
+   chat findable when it is not the one on screen. A session that is merely UP
+   gets the same ring, still and grey — green is kept for work in flight.
+
+   Three strokes share one rounded-rect path, positioned by `stroke-dashoffset`
+   along a perimeter of
+
+       4 × (30 − 2 × 8) + 2π × 8 = 56 + 50.27 = 106.27
+
+   and every number below is derived from that, so the loop closes seamlessly:
+
+     * the SNAKE is a 22-long dash sliding the whole 106.27 in one lap, evenly;
+     * the PELLET is a dot that does the same lap in FOUR jumps, `steps(4)`,
+       starting a quarter-lap plus one body length ahead — which puts it
+       exactly where the snake's head arrives at the end of each quarter. So
+       the head reaches it precisely as it jumps on, and the snake reads as
+       catching the thing in front of it rather than chasing a fixed light.
+
+   Change the tile's size or corner radius and all five numbers move together:
+   perimeter P, the snake's spare dash P − 22, the pellet's P − 0.1, and the
+   pellet's start −(P/4 + 22) and end −(P/4 + 22 + P). */
+.chat-badge-ring {
+  position: absolute;
+  inset: -1px;
+  width: 32px;
+  height: 32px;
   pointer-events: none;
 }
-.task-chat-list .chat-mark,
-.task-chat-list .chat:hover .chat-mark {
-  position: static;
-  display: none;
-  width: 5px;
-  height: 5px;
-  opacity: 1;
-  transform: none;
+.chat-badge-ring rect {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 1.5;
+  transition: stroke 140ms ease-out;
 }
-.task-chat-list .chat:is(.is-busy, .is-live) .chat-mark { display: block; }
-.task-chat-list .chat-mobile-pin { display: inline-flex; color: var(--fg-2); line-height: 0; }
-.task-chat-list .chat-mobile-pin svg { width: 10px; height: 10px; }
+.chat.is-live .chat-badge-track { stroke: var(--fg-3); }
+/* Under a running snake the track stays, very faintly: without it the lit
+   segment reads as a stray mark rather than as something going round. */
+.chat.is-busy .chat-badge-track { stroke: color-mix(in srgb, var(--ok) 18%, transparent); }
+.chat.is-busy .chat-badge-snake {
+  stroke: var(--ok);
+  stroke-linecap: round;
+  stroke-dasharray: 22 84.27;
+  animation: chat-badge-snake 2.2s linear infinite;
+}
+.chat.is-busy .chat-badge-pellet {
+  stroke: var(--ok);
+  stroke-linecap: round;
+  stroke-width: 2.6;
+  /* A dash of no length at all: the round cap IS the pellet. */
+  stroke-dasharray: 0.1 106.17;
+  /* Two animations, and the second one's duration is why they stay together:
+     the pellet MOVES once a quarter-lap, so the pop that lands it runs on a
+     quarter-lap cycle of its own (2.2 ÷ 4 = 0.55). Both start at the same
+     moment and the ratio is exact, so every wrap of the short one falls on a
+     step of the long one — the food appears exactly where it jumped to, for
+     as many laps as the turn lasts. Keep 2.2 and 0.55 in that ratio. */
+  animation:
+    chat-badge-pellet 2.2s steps(4, end) infinite,
+    chat-badge-bite 0.55s ease-out infinite;
+}
+
+@keyframes chat-badge-snake {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -106.27; }
+}
+
+@keyframes chat-badge-pellet {
+  from { stroke-dashoffset: -48.57; }
+  to { stroke-dashoffset: -154.84; }
+}
+
+/* Food arriving: fades up and grows past its size before settling, the way a
+   thing dropped into place does. There is no matching fade OUT — it is EATEN,
+   so it goes the instant the head reaches it, which is what the wrap from
+   100% back to 0% does for free. The round cap grows along the path as well
+   as across it, so widening the stroke is the whole of the scale. */
+@keyframes chat-badge-bite {
+  0% { stroke-opacity: 0; stroke-width: 0.4; }
+  24% { stroke-opacity: 1; stroke-width: 3.1; }
+  40%, 100% { stroke-opacity: 1; stroke-width: 2.6; }
+}
+
+/* A shut fold holds rows nobody can see; an infinite animation on one is work
+   for nothing, and the count on the parent row already reports them. */
+.chat-children[hidden] .chat-badge-ring rect,
+.chat-fold:not(.is-open) .chat-badge-ring rect { animation: none; }
+
+/* A ticked chat still on screen — the one being read, or the Done view —
+   reads as settled rather than gone. */
+.chat.is-done .chat-btn { opacity: 0.6; }
+.chat.is-done:hover .chat-btn,
+.chat.is-done.is-on .chat-btn { opacity: 0.85; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-badge .project-avatar,
+  .chat-badge-tick,
+  .chat-badge-check,
+  .chat-badge-ring rect { transition: none; }
+  /* Still says "working", without anything moving: the whole ring lights. */
+  .chat.is-busy .chat-badge-track { stroke: var(--ok); }
+  .chat.is-busy .chat-badge-snake,
+  .chat.is-busy .chat-badge-pellet { stroke: transparent; animation: none; }
+}
 
 .sidebar-empty {
   display: flex;
@@ -6200,6 +6403,7 @@ body.is-ultra .eff {
   flex: 1 1 auto;
   min-width: 0;
   height: 60px;
+  transition: opacity 160ms ease-out;
   padding: 7px 8px 7px 28px;
   border: 0;
   background: transparent;

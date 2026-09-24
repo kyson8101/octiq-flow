@@ -1007,6 +1007,7 @@ impl OrchestrationStore {
             updated_at: now,
             read_at: None,
             pinned: false,
+            done_at: None,
             deleted_at: None,
             generation: 0,
         };

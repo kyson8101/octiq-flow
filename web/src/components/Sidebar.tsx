@@ -8,6 +8,9 @@ import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
 import { isWorkerChat, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
+import {
+  CHAT_FILTERS, chatFilterCount, chatFilterList, isChatDone, isChatFilter, type ChatFilter,
+} from "../lib/chatFilter";
 import { workerArchiveChatList, workerArchiveDisabledReason } from "../lib/workerArchive";
 import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
@@ -37,6 +40,15 @@ export type ChatSearchHit = {
 const NONE: ReadonlySet<string> = new Set();
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
 const COLLAPSED_KEY = "octiq.chat.collapsed-agents";
+const FILTER_KEY = "octiq.chat.filter";
+
+/** Which chats the list is showing, remembered per browser. Deliberately NOT
+ *  on the server: a phone catching up on what happened overnight and a laptop
+ *  working through the day want different answers to the same list. */
+function savedFilter(): ChatFilter {
+  const value = recall(FILTER_KEY);
+  return isChatFilter(value) ? value : "active";
+}
 
 function savedCollapsed(): Set<string> {
   try {
@@ -52,7 +64,7 @@ export function Sidebar({
   projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
-  loadPreview, onNewChat, onDelete, onPin, onRename, onArchiveWorker,
+  loadPreview, onNewChat, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
 }: {
   orchestration?: OrchestrationSnapshot;
@@ -72,6 +84,8 @@ export function Sidebar({
   onNewChat: () => void;
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
+  /** Tick a chat off by hand, or take the tick back. */
+  onToggleDone: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onArchiveWorker?: (attemptId: string, archived: boolean) => Promise<void>;
   onNewProject: () => void;
@@ -82,6 +96,7 @@ export function Sidebar({
   foot?: ReactNode;
 } & ChatPreviewSource) {
   const [collapsed, setCollapsed] = useState(savedCollapsed);
+  const [filter, setFilter] = useState<ChatFilter>(savedFilter);
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
@@ -99,7 +114,18 @@ export function Sidebar({
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
   const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
   const archivedConversations = workerArchiveChatList(conversations, orchestration, true);
-  const listedConversations = showArchived ? archivedConversations : workerArchiveChatList(conversations, orchestration);
+  const activeConversations = workerArchiveChatList(conversations, orchestration);
+  // What each view would hold. A view is offered only once it has something in
+  // it, so somebody who has never ticked or pinned a chat sees no filter row at
+  // all, and the row never grows a chip reading zero.
+  const doneTotal = chatFilterCount(activeConversations, "done");
+  const pinnedTotal = chatFilterCount(activeConversations, "pinned");
+  const offered = CHAT_FILTERS.filter((option) =>
+    option === "active" || option === "all" || filter === option
+    || (option === "done" ? doneTotal : pinnedTotal) > 0);
+  const filtering = !showArchived && offered.length > 2;
+  const listedConversations = showArchived ? archivedConversations
+    : chatFilterList(activeConversations, filter, currentConversation);
   const listedIds = new Set(listedConversations.map((chat) => chat.id));
   const trimmedQuery = query.trim();
   const searchActive = [...trimmedQuery].length >= 2;
@@ -111,7 +137,21 @@ export function Sidebar({
     })
     : searchActive ? [] : listedConversations;
 
-  const tree = useMemo(() => buildChatTree(workflowChatList(conversations, orchestration, currentConversation), chatParents), [conversations, chatParents, orchestration, currentConversation]);
+  // Filtered on the way OUT of `workflowChatList`, never on the way in: it
+  // decides which older attempts to fold away by looking at who is present,
+  // and handing it a thinned list would unfold every superseded worker under a
+  // coordinator that had merely been ticked off.
+  const tree = useMemo(
+    () => buildChatTree(
+      chatFilterList(
+        workflowChatList(conversations, orchestration, currentConversation),
+        filter,
+        currentConversation,
+      ),
+      chatParents,
+    ),
+    [conversations, chatParents, orchestration, currentConversation, filter],
+  );
   const visibleNodes = searchActive || showArchived
     ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
     : tree;
@@ -130,6 +170,7 @@ export function Sidebar({
     });
   }, [currentConversation, ancestorKey]);
   useEffect(() => { remember(COLLAPSED_KEY, JSON.stringify([...collapsed])); }, [collapsed]);
+  useEffect(() => { remember(FILTER_KEY, filter); }, [filter]);
 
   useEffect(() => { seenChatIds.current = new Set(conversations.map((chat) => chat.id)); }, [conversations]);
   useEffect(() => () => clearTimeout(hold.current), []);
@@ -179,6 +220,7 @@ export function Sidebar({
     const going = deleting.has(chat.id);
     const isLeaving = leaving.has(chat.id);
     const unread = isUnread(chat, currentConversation);
+    const done = isChatDone(chat);
     const project = projectById.get(chat.projectId);
     const chatTintStyle = project
       ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
@@ -216,7 +258,7 @@ export function Sidebar({
           running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
           going ? "is-going" : "", isLeaving ? "is-leaving" : "",
           chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
-          unread ? "is-unread" : "",
+          unread ? "is-unread" : "", done ? "is-done" : "",
         ].filter(Boolean).join(" ")} style={chatTintStyle}>
           {renaming === chat.id ? (
             <form className="chat-rename" onSubmit={(event) => {
@@ -241,7 +283,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {
@@ -273,9 +315,6 @@ export function Sidebar({
                 {workflowLabel && <span className="chat-workflow-status">{workflowLabel}</span>}
                 <span className="chat-meta">
                   <span className="chat-project">
-                    {project
-                      ? <ProjectAvatar project={project} size="tiny" />
-                      : <span className="project-avatar is-tiny" aria-hidden="true">?</span>}
                     <span className="chat-project-name" title={projectContext}>{projectContext}</span>
                   </span>
                   {model && (
@@ -289,10 +328,40 @@ export function Sidebar({
             </ChatPreviewButton>
           )}
 
-          <span className="chat-indicators">
-            {chat.pinned && <span className="chat-mobile-pin" title="Pinned" aria-label="Pinned"><PinIcon /></span>}
-            <span className="chat-mark" aria-hidden="true" title={busy.has(chat.id) ? "working" : running.has(chat.id) ? "session running" : undefined} />
-          </span>
+          {/* One slot on the left, answering three questions at once: whose
+              project this is, whether it is running, and whether you are
+              finished with it. They were three separate marks before —
+              a letter tile down in the meta line, a coloured dot and a pin in
+              a 14px gutter — none of them big enough to read and all of them
+              competing for the same corner.
+
+              So the project logo IS the control. A ring runs around it while a
+              turn is in flight; a tick badge sits on it once the chat has been
+              ticked off; and under the pointer the logo gives way to the tick
+              itself, which is what clicking does. Nothing moves when it
+              changes: every state is drawn inside the same 30px square. */}
+          <button className="chat-badge" type="button" aria-pressed={done}
+            title={done ? "Not done after all" : "Mark done"}
+            aria-label={`${done ? "Mark not done" : "Mark done"}: ${chat.title}`}
+            disabled={going || isLeaving}
+            onClick={(event) => { event.stopPropagation(); onToggleDone(chat.id); }}>
+            {project
+              ? <ProjectAvatar project={project} size="medium" />
+              : <span className="project-avatar is-medium" aria-hidden="true">?</span>}
+            {/* Three strokes on one path, all of them always rendered and
+                transparent at rest: a ring that appeared by mounting would
+                arrive a frame late and jump. The track is the still ring; the
+                snake and the pellet only have a colour while a turn is in
+                flight. */}
+            <svg className="chat-badge-ring" viewBox="0 0 32 32" aria-hidden="true">
+              <rect className="chat-badge-track" x="1" y="1" width="30" height="30" rx="8" />
+              <rect className="chat-badge-snake" x="1" y="1" width="30" height="30" rx="8" />
+              <rect className="chat-badge-pellet" x="1" y="1" width="30" height="30" rx="8" />
+            </svg>
+            <span className="chat-badge-tick" aria-hidden="true"><TickIcon done={done} /></span>
+            {done && <span className="chat-badge-check" aria-hidden="true"><CheckIcon /></span>}
+            {chat.pinned && <span className="chat-badge-pin" aria-hidden="true"><PinIcon /></span>}
+          </button>
           {renaming !== chat.id && <SidebarMenu className="chat-actions-trigger"
             label={`Actions for ${chat.title}`} open={actionsId === chat.id}
             onOpenChange={(open) => setActionsId(open ? chat.id : null)} disabled={isLeaving}
@@ -382,6 +451,24 @@ export function Sidebar({
             )}
           </label>
         </div>
+        {/* Offered only once there is something to hide. Ticking the first
+            chat off is what reveals it, which is also the moment it first
+            means anything. */}
+        {filtering && (
+          <div className="sidebar-filter" role="group" aria-label="Show chats">
+            {offered.map((option) => {
+              const total = option === "done" ? doneTotal : option === "pinned" ? pinnedTotal : 0;
+              return (
+                <button key={option} type="button" aria-pressed={filter === option}
+                  className={filter === option ? "is-on" : ""}
+                  onClick={() => setFilter(option)}>
+                  {FILTER_LABELS[option]}
+                  {total > 0 && <span>{total}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {showArchived && <div className="sidebar-archive-view">
@@ -391,6 +478,19 @@ export function Sidebar({
       {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
       {!listedConversations.length ? (
         showArchived ? <div className="sidebar-empty" role="status"><span>No archived workers.</span></div> :
+        // An empty list under a filter is not an empty app, and offering to
+        // start a first chat to somebody with forty of them is how a filter
+        // gets mistaken for a loss.
+        filter !== "active" ? <div className="sidebar-empty" role="status">
+          <span>{filter === "done" ? "No chats are ticked off."
+            : filter === "pinned" ? "No chats are pinned."
+            : "No chats yet"}</span>
+          <button type="button" onClick={() => setFilter("active")}>Show active chats</button>
+        </div> :
+        conversations.length ? <div className="sidebar-empty" role="status">
+          <span>Every chat is ticked off.</span>
+          <button type="button" onClick={() => setFilter("done")}>Show done chats</button>
+        </div> :
         <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
       ) : searchActive && searchState !== "ready" ? (
         <div className="sidebar-empty" role="status" aria-live="polite">
@@ -413,6 +513,31 @@ export function Sidebar({
         aria-orientation="vertical" aria-label="Resize the chat column" />}
     </nav>
   );
+}
+
+const FILTER_LABELS: Record<ChatFilter, string> = {
+  active: "Active", pinned: "Pinned", done: "Done", all: "All",
+};
+
+/** What clicking the logo will do: an empty ring, or a ticked one to take the
+ *  tick back. A ring rather than a box because the logo behind it is already
+ *  square, and a stroke rather than a fill — the accent is a tint here, never
+ *  a block of colour. */
+function TickIcon({ done }: { done: boolean }) {
+  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={done ? 2.4 : 1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    {done && <path d="m8 12 2.8 2.8L16 9.6" />}
+  </svg>;
+}
+
+/** The small mark left ON the logo of a chat already ticked off — what says so
+ *  when the pointer is somewhere else entirely. */
+function CheckIcon() {
+  return <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m5 12.5 4.5 4.5L19 7" />
+  </svg>;
 }
 
 function chatTime(timestamp: number): string {

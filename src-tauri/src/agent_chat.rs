@@ -4000,6 +4000,18 @@ pub fn chat_mark_read(id: String, at: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// Tick a chat off by hand, or take the tick back. Narrow for the same reason
+/// as `chat_mark_read`: it answers one question, and a full save cannot be
+/// trusted to carry an answer it was assembled before hearing (see
+/// `chat_index::set_done`). Announced, so the other devices' lists move too —
+/// a chat ticked off on the phone should not still be sitting in the laptop's
+/// active list.
+pub fn chat_set_done(id: String, at: Option<i64>) -> Result<(), String> {
+    crate::chat_index::set_done(&id, at)?;
+    announce_index_change(&id, false);
+    Ok(())
+}
+
 /// Move a chat into the one-day trash. The old command name is kept so an
 /// already-open browser gets the safer behaviour as soon as the backend is
 /// updated. `expected_generation` makes a delayed retry from before a restore

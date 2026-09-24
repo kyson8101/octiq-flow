@@ -44,7 +44,7 @@ describe("worker archive controls", () => {
     snapshot.attempts.forEach(attempt => { attempt.archivedAt = 3; });
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation="worker" running={new Set()} busy={new Set()}
-      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onRename={() => {}}
+      onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
       onArchiveWorker={async () => {}} onNewProject={() => {}} searchChats={async () => []} />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
     expect(out).not.toContain('class="agent-task');

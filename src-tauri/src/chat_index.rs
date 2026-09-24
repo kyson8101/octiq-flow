@@ -81,6 +81,21 @@ pub struct ChatMeta {
     /// exactly as it was written.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// When the person ticked this chat off by hand. Nothing infers it: the
+    /// agent's own report and the git verification in `chat_task.rs` answer
+    /// "did the work land", and neither answers "am I finished with this".
+    ///
+    /// A TIME rather than a flag, because the tick has to retire itself. A
+    /// chat counts as done only while `done_at >= updated_at` (see
+    /// `is_done`), so the next user send or completed turn un-ticks it
+    /// without anything having to remember to — and without a second write
+    /// racing the one that recorded the activity.
+    ///
+    /// Server-owned, like `read_at`: an ordinary save carries whatever the
+    /// sending browser held when it was QUEUED, which can predate a tick made
+    /// on another device a moment ago. Only `set_done` moves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<i64>,
     /// Soft-deleted chats stay in the index, but not in the active list. The
     /// reaper removes this row and its transcript after `DELETED_CHAT_TTL_MS`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,6 +108,15 @@ pub struct ChatMeta {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+impl ChatMeta {
+    /// Ticked off, and nothing has happened since. The comparison IS the
+    /// auto-clear: a chat marked done at noon and written to at one o'clock is
+    /// not done any more, and no second write was needed to say so.
+    pub fn is_done(&self) -> bool {
+        self.done_at.is_some_and(|at| at >= self.updated_at)
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -236,8 +260,16 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
+            // Kept whole, never taken from the save. A browser that has not
+            // heard about a tick made elsewhere would otherwise untick it with
+            // the next rename, and a browser holding a stale tick would put it
+            // back after the person cleared it. `set_done` is the only writer;
+            // the activity this save carries retires the tick by itself,
+            // through `is_done`.
+            let done_at = existing.done_at;
             *existing = meta;
             existing.created_at = created;
+            existing.done_at = done_at;
             // Only the lifecycle commands below may change these. In
             // particular, a save already in flight when Delete was pressed
             // must not resurrect the chat.
@@ -251,6 +283,7 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             meta.deleted_at = None;
             meta.generation = 0;
             meta.agent_title = false;
+            meta.done_at = None;
             index.chats.push(meta);
         }
     }
@@ -331,6 +364,31 @@ pub fn mark_read(id: &str, at: i64) -> Result<(), String> {
         return Ok(());
     }
     existing.read_at = Some(next);
+    write(&index)
+}
+
+/// Tick a chat off, or take the tick back. The one writer of `done_at`, for
+/// the same reason `mark_read` is the one writer of `read_at`: the full save
+/// carries a whole row that may have been assembled before this was decided,
+/// and a pin or a rename must not be able to answer a question nobody asked it.
+///
+/// `at` is when the person ticked it — the caller's clock, not this one's, so
+/// the tick is stamped at the moment it was made rather than the moment it
+/// arrived. `None` clears it. A chat the index does not know about is not an
+/// error: as with `mark_read`, the mark simply has nothing to attach to.
+pub fn set_done(id: &str, at: Option<i64>) -> Result<(), String> {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut index = match read_checked() {
+        Ok(index) => index,
+        Err(_) => return Ok(()),
+    };
+    let Some(existing) = index.chats.iter_mut().find(|c| c.id == id) else {
+        return Ok(());
+    };
+    if existing.done_at == at {
+        return Ok(());
+    }
+    existing.done_at = at;
     write(&index)
 }
 
@@ -607,6 +665,7 @@ mod tests {
             updated_at: created,
             read_at: None,
             pinned: false,
+            done_at: None,
             deleted_at: None,
             generation: 0,
         }
@@ -750,6 +809,81 @@ mod tests {
             "a narrow mark must not touch other fields"
         );
         assert!(found.pinned, "a narrow mark must not touch other fields");
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn a_tick_survives_an_ordinary_save() {
+        let id = "test-index-done-survives-save";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        set_done(id, Some(900)).unwrap();
+
+        // A rename assembled before the tick was made — the exact shape of a
+        // second device, or of this one with a queued save in flight.
+        let mut stale = meta(id, 100);
+        stale.title = "renamed".into();
+        stale.custom_title = true;
+        upsert(stale).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.title, "renamed");
+        assert_eq!(found.done_at, Some(900), "only set_done may clear a tick");
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn activity_retires_a_tick_without_a_second_write() {
+        let id = "test-index-done-retires";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+        set_done(id, Some(900)).unwrap();
+        assert!(list().into_iter().find(|c| c.id == id).unwrap().is_done());
+
+        // A new message. Nothing clears `done_at`; the comparison does it.
+        let mut active = meta(id, 100);
+        active.updated_at = 1_000;
+        upsert(active).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.done_at, Some(900), "the tick is kept, not erased");
+        assert!(
+            !found.is_done(),
+            "activity after the tick un-ticks the chat"
+        );
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn unticking_clears_the_mark_and_nothing_else() {
+        let id = "test-index-done-cleared";
+        cleanup(&[id]);
+        let mut original = meta(id, 100);
+        original.pinned = true;
+        upsert(original).unwrap();
+        set_done(id, Some(900)).unwrap();
+
+        set_done(id, None).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.done_at, None);
+        assert!(found.pinned, "a narrow mark must not touch other fields");
+        cleanup(&[id]);
+    }
+
+    #[test]
+    fn an_entry_written_before_ticks_existed_reads_back_unticked() {
+        let id = "test-index-done-legacy";
+        cleanup(&[id]);
+        upsert(meta(id, 100)).unwrap();
+
+        let found = list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found.done_at, None);
+        assert!(!found.is_done());
+        // And an unticked row is written without the field, so an index from
+        // before this shipped reads back byte for byte as it was written.
+        let written = serde_json::to_string(&found).unwrap();
+        assert!(!written.contains("doneAt"));
         cleanup(&[id]);
     }
 

@@ -73,30 +73,6 @@
 .sidebar .chat-snippet.is-placeholder { visibility: hidden; }
 .sidebar .chat-time { font-size: 10px; }
 .sidebar .chat-actions-trigger { grid-column: 2; grid-row: 1; align-self: center; }
-.sidebar .chat-indicators {
-  position: absolute;
-  left: 9px;
-  top: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  pointer-events: none;
-}
-.sidebar .chat-mobile-pin { display: inline-flex; color: var(--fg-2); line-height: 0; }
-.sidebar .chat-mobile-pin svg { width: 11px; height: 11px; }
-.sidebar .chat-mark,
-.sidebar .chat:hover .chat-mark {
-  position: static;
-  display: none;
-  width: 5px;
-  height: 5px;
-  opacity: 1;
-  transform: none;
-}
-.sidebar .chat:is(.is-busy, .is-live) .chat-mark { display: block; }
 .sidebar .chat.is-going .sidebar-menu-trigger { color: var(--danger); }
 
 @media (max-width: 859.98px), (pointer: coarse) {
@@ -137,7 +113,10 @@
    above while themes and mobile bundles migrate. */
 .sidebar .task-chat-list { flex: 1 1 auto; overflow-y: auto; padding: 6px 8px 14px; }
 .sidebar .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 34px; }
-.sidebar .task-chat-list .chat-btn { height: 78px; padding: 8px 6px 8px 14px; }
+/* The left gutter holds the tick as well as the state dot, at a fixed width
+   whether or not the tick is showing: a control that appears on hover must not
+   move the title beside it. */
+.sidebar .task-chat-list .chat-btn { height: 78px; padding: 8px 6px 8px 45px; }
 .sidebar .task-chat-list .chat-rename { height: 78px; padding-left: 12px; }
 .sidebar .task-chat-list .chat-snippet { margin: 1px 0 0; padding: 0; line-height: 18px; }
 
@@ -180,4 +159,14 @@
   .sidebar .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
   .sidebar .task-chat-list .chat-btn,
   .sidebar .task-chat-list .chat-rename { height: 82px; }
+  /* Nothing hovers here, so the tick is always out — and wide enough to hit
+     with a thumb, which the gutter widens to make room for. */
+  /* Nothing hovers here, so the logo never becomes the tick on its own: the
+     badge is a 40px target that toggles on tap, and the tick badge on a ticked
+     chat is the only thing that says so. */
+  .sidebar .task-chat-list .chat-btn { padding-left: 56px; }
+  .sidebar .task-chat-list .chat::after { left: 56px; }
+  .sidebar .chat-badge { left: 8px; width: 40px; height: 40px; }
+  .sidebar .chat-badge-ring { inset: 4px; }
+  .sidebar .chat-done svg { width: 17px; height: 17px; }
 }

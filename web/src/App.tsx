@@ -57,9 +57,11 @@ import {
   removeIndexEntry,
   saveIndexEntry,
   saveIndexEntries,
+  setChatDone,
   type DeletedIndexEntry,
   type IndexEntry,
 } from "./lib/chatIndex";
+import { isChatDone } from "./lib/chatFilter";
 import { isUnread } from "./lib/unread";
 import { recall, remember } from "./lib/remember";
 import { forgetChatPlace } from "./lib/chatPlace";
@@ -2610,6 +2612,29 @@ export default function App() {
     });
   }, []);
 
+  /** Tick a chat off, or take the tick back.
+   *
+   *  Not saved through `saveIndexEntry` like a pin, and that is the point: the
+   *  tick is server-owned, and `chat_index::upsert` deliberately ignores what
+   *  a save carries for it. A save assembled a second ago — a rename, a
+   *  streaming transcript write — would otherwise answer a question it was
+   *  built before anyone asked.
+   *
+   *  Stamped with this moment so `isChatDone` can retire it against the
+   *  chat's own `updatedAt`: the next message moves that past this stamp and
+   *  the chat comes back on its own. */
+  const toggleDone = useCallback((id: string) => {
+    const held = conversationsRef.current.find((c) => c.id === id);
+    if (!held) return;
+    const doneAt = isChatDone(held) ? null : Date.now();
+    setChatDone(id, doneAt);
+    setConversations((prev) => {
+      const list = prev.map((c) => (c.id === id ? { ...c, doneAt } : c));
+      saveConversations(list);
+      return list;
+    });
+  }, []);
+
   /** Give a chat a title chosen by the user. Like pinning, this is metadata,
    *  so save it immediately rather than waiting for another message to make
    *  the transcript-save effect run. */
@@ -3641,6 +3666,7 @@ export default function App() {
           onNewChat={newChat}
           onDelete={deleteConversation}
           onPin={togglePin}
+          onToggleDone={toggleDone}
           onRename={renameConversation}
           onArchiveWorker={async (attemptId, archived) => {
             const attempt = orchestration.attempts.find((item) => item.id === attemptId);

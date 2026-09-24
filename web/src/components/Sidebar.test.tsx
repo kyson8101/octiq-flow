@@ -22,7 +22,7 @@ function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     projects={projects} shelved={[]} onShowShelved={() => {}}
     conversations={[]} currentConversation={null} running={new Set()} busy={new Set()}
     onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}}
-    onPin={() => {}} onRename={() => {}} onNewProject={() => {}}
+    onPin={() => {}} onToggleDone={() => {}} onRename={() => {}} onNewProject={() => {}}
     searchChats={async () => []}
     {...over}
   />);
@@ -91,7 +91,7 @@ describe("task-oriented Sidebar", () => {
     const out = html({ conversations: [chat("a")], running: new Set(["a"]), busy: new Set(["a"]) });
     expect(out).toContain('class="chat is-live is-busy"');
     expect(out).toContain('class="chat-snippet">Working…</span>');
-    expect(out).toContain('title="working"');
+    expect(out).toContain('aria-label="Task a, octiq-flow, working"');
   });
 
   it("keeps a streaming response visible while the task is working", () => {
@@ -105,7 +105,8 @@ describe("task-oriented Sidebar", () => {
 
   it("keeps pin, rename, delete, and resize actions", () => {
     const out = html({ conversations: [{ ...chat("a"), pinned: true }], onResize: () => {} });
-    expect(out).toContain('aria-label="Pinned"');
+    expect(out).toContain('class="chat-badge-pin"');
+    expect(out).toContain('aria-label="Task a, octiq-flow, pinned"');
     expect(out).toContain('aria-label="Actions for Task a"');
     expect(out).toContain('aria-label="Resize the chat column"');
   });
@@ -165,6 +166,66 @@ describe("task-oriented Sidebar", () => {
       });
       expect(out).not.toContain("is-unread");
       expect(out).not.toContain("chat-unread-dot");
+    });
+  });
+
+  describe("ticking a chat off", () => {
+    const ticked = (id: string, doneAt: number) => ({ ...chat(id), updatedAt: 100, doneAt });
+
+    it("offers a tick on every row, and no filter until one is used", () => {
+      const out = html({ conversations: [chat("a")] });
+      expect(out).toContain('aria-label="Mark done: Task a"');
+      expect(out).not.toContain("sidebar-filter");
+    });
+
+    it("hides a ticked chat and offers the filter that brings it back", () => {
+      const out = html({ conversations: [chat("a"), ticked("b", 500)] });
+      expect(out).toContain('class="chat-title">Task a</span>');
+      expect(out).not.toContain("Task b");
+      expect(out).toContain('class="sidebar-filter"');
+      // The count is the whole reason the row is worth its space.
+      expect(out).toContain("Done<span>1</span>");
+      // And a view with nothing in it is not offered at all.
+      expect(out).not.toContain("Pinned");
+    });
+
+    it("offers a pinned view only once something is pinned", () => {
+      const plain = html({ conversations: [chat("a"), ticked("b", 500)] });
+      expect(plain).not.toContain("Pinned");
+
+      const out = html({ conversations: [{ ...chat("a"), pinned: true }, ticked("b", 500)] });
+      expect(out).toContain("Pinned<span>1</span>");
+      expect(out).toContain("Done<span>1</span>");
+    });
+
+    it("says nothing about filters when nothing is ticked or pinned", () => {
+      expect(html({ conversations: [chat("a"), chat("b")] })).not.toContain("sidebar-filter");
+    });
+
+    it("keeps the chat being read listed, ticked and ready to be taken back", () => {
+      // Which chats each filter shows is `chatFilterList`'s own test; what
+      // matters here is that ticking the row you are IN does not pull it out
+      // from under you, and leaves the way back on screen.
+      const out = html({ conversations: [ticked("b", 500)], currentConversation: "b" });
+      expect(out).toContain("Task b");
+      expect(out).toContain("is-done");
+      expect(out).toContain('aria-label="Mark not done: Task b"');
+      expect(out).toContain('aria-pressed="true"');
+    });
+
+    it("un-ticks a chat that has been written to since", () => {
+      // Nothing cleared `doneAt`; the message that moved `updatedAt` past it
+      // did the work (see lib/chatFilter).
+      const out = html({ conversations: [{ ...chat("a"), updatedAt: 900, doneAt: 500 }] });
+      expect(out).toContain("Task a");
+      expect(out).not.toContain("is-done");
+      expect(out).not.toContain("sidebar-filter");
+    });
+
+    it("says a filter emptied the list rather than offering a first chat", () => {
+      const out = html({ conversations: [ticked("b", 500)] });
+      expect(out).toContain("Every chat is ticked off.");
+      expect(out).not.toContain("Start your first chat");
     });
   });
 });
