@@ -27,6 +27,8 @@ use std::process::Command;
 
 use serde::Serialize;
 
+pub mod pull_requests;
+
 /// The uncommitted changes for one git repository.
 #[derive(Debug, Clone, Serialize)]
 pub struct RepoChanges {

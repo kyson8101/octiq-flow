@@ -226,6 +226,12 @@ pub struct TaskStatus {
     /// without asking a second command where the chat lives.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_id: String,
+    /// Verified PR completion linked to this chat. This is deliberately
+    /// independent of git delivery: approval, merge, and release remain
+    /// separate facts. When several PRs link to one chat this is present only
+    /// after every linked PR is complete.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_completion: Option<crate::pr_workflow::PrChatCompletion>,
 }
 
 /// What is kept on disk for one chat: the agent's report, the chosen target,
@@ -495,6 +501,7 @@ fn assemble(chat_id: String, stored: Stored, store: &Store) -> TaskStatus {
         .get(&stored.project_id)
         .filter(|check| check.configured())
         .cloned();
+    let pr_completion = crate::pr_workflow::completion_for_chat(&chat_id);
     TaskStatus {
         chat_id,
         report: stored.report,
@@ -503,6 +510,7 @@ fn assemble(chat_id: String, stored: Stored, store: &Store) -> TaskStatus {
         delivery: stored.delivery,
         release_check,
         project_id: stored.project_id,
+        pr_completion,
     }
 }
 

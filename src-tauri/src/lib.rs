@@ -35,6 +35,7 @@ mod notify_hook;
 mod orchestration;
 mod paths;
 mod permission;
+mod pr_workflow;
 mod proc;
 mod profile;
 mod profile_lock;

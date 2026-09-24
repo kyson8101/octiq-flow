@@ -146,4 +146,26 @@ describe("the status line above the chat", () => {
     expect(html).toContain("Unverified");
     expect(html).not.toContain("Released");
   });
+
+  it("shows linked PR completion without replacing Git delivery", () => {
+    const html = bar({
+      status: status({
+        prCompletion: {
+          root: "/repos/octiq-flow",
+          number: 42,
+          url: "https://github.test/pr/42",
+          headSha: "abcdef123456",
+          trigger: "approved",
+          completedAt: NOW - 60_000,
+        },
+      }),
+      open: true,
+      now: NOW,
+      onToggle: () => {},
+    });
+    expect(html).toContain("PR #42 completed on current-head approval");
+    expect(html).toContain("Head abcdef12");
+    expect(html).toContain("6 uncommitted");
+    expect(html).toContain("https://github.test/pr/42");
+  });
 });
