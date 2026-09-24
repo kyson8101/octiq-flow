@@ -1074,6 +1074,7 @@ mod tests {
             updated_at: now_ms(),
             read_at: None,
             pinned: false,
+            done_at: None,
             deleted_at: None,
             generation: 0,
         })
