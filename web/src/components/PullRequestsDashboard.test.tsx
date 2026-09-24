@@ -14,7 +14,7 @@ describe("pull request dashboard shell", () => {
       agent={{ provider: "Codex", model: "Sol", access: "Workspace write" }}
       connected
       onClose={() => {}}
-      onLaunch={async () => "c1"}
+      onPrepareChat={async () => ({ chatId: "c1", start: async () => {} })}
       onOpenChat={() => {}}
     />);
     expect(html).toContain("Pull requests");
@@ -23,7 +23,7 @@ describe("pull request dashboard shell", () => {
     expect(html).toContain("Repository");
     expect(html).toContain("Search title, branch, author…");
     expect(html).toContain("Codex · Sol");
-    expect(html).toContain("Workspace write");
+    expect(html).toContain("Publish &amp; ticket · Workspace write");
   });
 
   it("renders a readable, numbered unified diff", () => {
