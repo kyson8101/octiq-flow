@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, useRef, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME, modelFromReported } from "../lib/agentProviders";
@@ -672,8 +672,7 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
   );
 }
 
-/** One task, one row. What it is, what it is doing, how far it got, and where
- *  — then everything else on a tap. */
+/** The row opens the worker chat; the separate disclosure shows its checklist. */
 function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction }: {
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
@@ -690,6 +689,8 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
   onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const detailId = useId();
   const mine = attempts.filter((candidate) => candidate.taskId === task.id).sort((a, b) => b.number - a.number);
   const attempt = attempts.find((candidate) => candidate.id === task.activeAttemptId) ?? mine[0];
   const history = mine.filter((candidate) => candidate.id !== attempt?.id);
@@ -711,10 +712,13 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
 
   return (
     <article className={`orch-task is-${task.status}`} data-status={task.status}>
-      <details>
-        <summary className="orch-task-summary">
+      <div className="orch-task-heading">
+        <button type="button" className="orch-task-summary" disabled={!attempt}
+          aria-label={`Open task chat: ${task.title}`}
+          title={attempt ? `Open task chat: ${task.title}` : "No worker chat yet"}
+          onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
           <span className="orch-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
-          <h4>{task.title}</h4>
+          <span className="orch-task-title">{task.title}</span>
           <span className="orch-task-state">{attempt?.execution && task.activeAttemptId === attempt.id ? EXECUTION_LABELS[attempt.execution.state] : TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
           <span className="orch-task-meta">
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
@@ -722,19 +726,29 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
             {attempt && <span className="orch-task-agent" title={`${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}><AgentLogo agent={attempt.agent} size={10} /></span>}
             {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
           </span>
-        </summary>
-        <div className="orch-task-detail">
+        </button>
+        <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
+          aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
+          title={expanded ? "Collapse task progress" : "Expand task progress"}
+          onClick={() => setExpanded(!expanded)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={expanded ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>
+        </button>
+      </div>
+      <div className="orch-task-detail" id={detailId} hidden={!expanded}>
+        {task.worker && <p>Selected worker: {AGENT_NAME[task.worker.agent]} · {modelFromReported(task.worker.agent, task.worker.model ?? "")?.model ?? task.worker.model}{task.worker.effort ? ` · ${task.worker.effort} effort` : ""}</p>}
+        {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
+          {report.steps.map((step, index) => <li key={index} data-state={step.state}>
+            <span aria-label={step.state}>{step.state === "done" ? "✓" : step.state === "active" ? "◉" : "○"}</span>{step.title}
+          </li>)}
+        </ol> : null}
+        {report && <p className="orch-task-reported">
+          {progress.total ? `${progress.done} of ${progress.total} steps done` : "No checklist reported"} · reported {agoLabel(report.reportedAt, now)}
+        </p>}
+        {!report && <p className="orch-task-reported">No checklist reported</p>}
+        <details className="orch-task-more">
+          <summary>Task details</summary>
           {attempt?.execution && <><p>Task: {TASK_LABELS[task.status]}</p><WorkerExecutionEvidence execution={attempt.execution} /></>}
-          {task.worker && <p>Selected worker: {AGENT_NAME[task.worker.agent]} · {modelFromReported(task.worker.agent, task.worker.model ?? "")?.model ?? task.worker.model}{task.worker.effort ? ` · ${task.worker.effort} effort` : ""}</p>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
-          {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
-            {report.steps.map((step, index) => <li key={index} data-state={step.state}>
-              <span aria-label={step.state}>{step.state === "done" ? "✓" : step.state === "active" ? "◉" : "○"}</span>{step.title}
-            </li>)}
-          </ol> : null}
-          {report && <p className="orch-task-reported">
-            {progress.total ? `${progress.done} of ${progress.total} steps done` : "No checklist reported"} · reported {agoLabel(report.reportedAt, now)}
-          </p>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}
           {attempt && (
             <div className="orch-attempt">
@@ -773,8 +787,8 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
             <summary>Brief</summary>
             <p>{task.spec}</p>
           </details>
-        </div>
-      </details>
+        </details>
+      </div>
     </article>
   );
 }

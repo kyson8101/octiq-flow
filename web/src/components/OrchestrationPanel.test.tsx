@@ -81,8 +81,11 @@ describe("host execution evidence", () => {
     };
     const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={failed} onOpenChat={() => {}} onClose={() => {}} />);
-    for (const expected of ["Capacity blocked", "Last activity", "Last meaningful progress", "Saved the implementation", "Current operation", "Latest error:", "Selected model is at capacity", "Retry 1 scheduled", "gpt-5.6-terra", "Workspace retained"]) {
+    for (const expected of ["Capacity blocked", "Latest error:", "Selected model is at capacity", "Retry 1 scheduled", "gpt-5.6-terra", "Workspace retained"]) {
       expect(html).toContain(expected);
+    }
+    for (const removed of ["Last activity", "Last meaningful progress", "Saved the implementation", "Current operation"]) {
+      expect(html).not.toContain(removed);
     }
     expect(html).not.toContain("of 4 working");
     expect(html).not.toContain("Reported checklist");
@@ -118,7 +121,7 @@ describe("OrchestrationPanel", () => {
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
 
-    expect([...html.matchAll(/<h4>(.*?)<\/h4>/g)].map((match) => match[1])).toEqual([
+    expect([...html.matchAll(/<span class="orch-task-title">(.*?)<\/span>/g)].map((match) => match[1])).toEqual([
       "Task 5", "Task 7", "Task 2", "Task 6", "Task 4", "Task 1", "Task 0", "Task 8", "Task 3",
     ]);
     expect(current).toEqual(before);
@@ -139,7 +142,7 @@ describe("OrchestrationPanel", () => {
       const html = renderToStaticMarkup(<OrchestrationPanel embedded
         project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
         initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
-      return [...html.matchAll(/<h4>(.*?)<\/h4>/g)].map((match) => match[1]);
+      return [...html.matchAll(/<span class="orch-task-title">(.*?)<\/span>/g)].map((match) => match[1]);
     };
 
     expect(titles()).toEqual(["Stalled task", "Working task", "Completed task"]);
@@ -379,7 +382,7 @@ describe("embedded chat runs", () => {
     expect(html).toContain("Previous attempts (1)");
     expect(html).toContain("codex worker #2");
     expect(html).toContain("codex worker #1");
-    expect(html.match(/<h4>Build the host ledger<\/h4>/g)).toHaveLength(1);
+    expect(html.match(/<span class="orch-task-title">Build the host ledger<\/span>/g)).toHaveLength(1);
   });
 });
 
