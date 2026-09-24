@@ -805,6 +805,7 @@ body {
    Every state is drawn INSIDE the same 30px square, so none of them can move
    the title beside it. */
 .chat-badge {
+  touch-action: manipulation;
   position: absolute;
   left: 7px;
   top: 50%;

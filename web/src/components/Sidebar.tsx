@@ -110,6 +110,7 @@ export function Sidebar({
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
   const held = useRef(false);
+  const badgeTap = useRef<{ chatId: string; at: number } | null>(null);
   const seenChatIds = useRef<ReadonlySet<string>>(new Set(conversations.map((chat) => chat.id)));
   const knownProjects = [...projects, ...shelved];
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
@@ -339,13 +340,26 @@ export function Sidebar({
               So the project logo IS the control. A ring runs around it while a
               turn is in flight; a tick badge sits on it once the chat has been
               ticked off; and under the pointer the logo gives way to the tick
-              itself, which is what clicking does. Nothing moves when it
+              itself, which is what double-tapping does. Nothing moves when it
               changes: every state is drawn inside the same 30px square. */}
           <button className="chat-badge" type="button" aria-pressed={done}
-            title={done ? "Not done after all" : "Mark done"}
+            title={done ? "Double-click or double-tap to mark not done" : "Double-click or double-tap to mark done"}
             aria-label={`${done ? "Mark not done" : "Mark done"}: ${chat.title}`}
+            aria-description="Double-click or double-tap. With a keyboard, press Enter or Space."
             disabled={going || isLeaving}
-            onClick={(event) => { event.stopPropagation(); onToggleDone(chat.id); }}>
+            onBlur={() => { badgeTap.current = null; }}
+            onClick={(event) => {
+              event.stopPropagation();
+              const previous = badgeTap.current;
+              badgeTap.current = null;
+              // Touch browsers need not emit dblclick. Count clicks on the
+              // same badge; detail 0 preserves keyboard and assistive activation.
+              if (event.detail === 0 || (previous?.chatId === chat.id && event.timeStamp - previous.at <= 500)) {
+                onToggleDone(chat.id);
+              } else {
+                badgeTap.current = { chatId: chat.id, at: event.timeStamp };
+              }
+            }}>
             {project
               ? <ProjectAvatar project={project} size="medium" />
               : <span className="project-avatar is-medium" aria-hidden="true">?</span>}
@@ -524,7 +538,7 @@ const FILTER_LABELS: Record<ChatFilter, string> = {
   active: "Active", pinned: "Pinned", done: "Done", all: "All",
 };
 
-/** What clicking the logo will do: an empty ring, or a ticked one to take the
+/** What double-tapping the logo will do: an empty ring, or a ticked one to take the
  *  tick back. A ring rather than a box because the logo behind it is already
  *  square, and a stroke rather than a fill — the accent is a tint here, never
  *  a block of colour. */

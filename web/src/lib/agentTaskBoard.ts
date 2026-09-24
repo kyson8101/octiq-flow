@@ -61,6 +61,23 @@ export function executionNeedsAttention(attempt?: OrchestrationAttempt): boolean
   return !!attempt?.execution && ["capacity_blocked", "stalled", "disconnected", "failed", "awaiting_report"].includes(attempt.execution.state);
 }
 
+const TASK_PRIORITY: Record<OrchestrationTask["status"], number> = {
+  blocked: 0, failed: 0, running: 1, ready: 2, pending: 3, completed: 4, cancelled: 5,
+};
+
+/** Both task lists put unfinished work first, preserving ledger order among
+ *  peers and leaving the shared snapshot untouched. */
+export function sortTasksByActivity(tasks: readonly OrchestrationTask[], attempts: readonly OrchestrationAttempt[]): OrchestrationTask[] {
+  const byId = new Map(attempts.map((attempt) => [attempt.id, attempt]));
+  const priority = (task: OrchestrationTask) => {
+    // Stale execution evidence must not promote an already settled task.
+    if (task.status === "completed" || task.status === "cancelled") return TASK_PRIORITY[task.status];
+    const attempt = task.activeAttemptId ? byId.get(task.activeAttemptId) : undefined;
+    return executionNeedsAttention(attempt) ? 0 : TASK_PRIORITY[task.status];
+  };
+  return [...tasks].sort((a, b) => priority(a) - priority(b));
+}
+
 export function attemptIsExecuting(attempt: OrchestrationAttempt): boolean {
   return attempt.execution ? ["executing", "waiting_tool"].includes(attempt.execution.state) : attempt.status === "running";
 }

@@ -4,7 +4,7 @@ import "./OrchestrationPanel.css";
 import { AGENT_NAME, modelFromReported } from "../lib/agentProviders";
 import {
   attemptIsExecuting, boardCounts, executionNeedsAttention, EXECUTION_LABELS, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
-  taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
+  sortTasksByActivity, taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
 } from "../lib/agentTaskBoard";
 import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
@@ -440,10 +440,6 @@ const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: Orchestratio
   { key: "done", label: "Done", match: (task) => task.status === "completed" },
 ];
 
-const TASK_PRIORITY: Record<OrchestrationTask["status"], number> = {
-  blocked: 0, failed: 0, running: 1, ready: 2, pending: 3, completed: 4, cancelled: 5,
-};
-
 /** A filter row over four tasks hides nothing and costs a line, so it only
  *  appears once the list is long enough to need one. */
 const FILTERS_WORTH_SHOWING = 4;
@@ -514,15 +510,10 @@ function RunDetail({
     </button>;
   };
   const active = TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
-  const priority = (task: OrchestrationTask) => {
-    // Settled tasks stay below unfinished work even if execution evidence is stale.
-    if (task.status === "completed" || task.status === "cancelled") return TASK_PRIORITY[task.status];
-    const attempt = attempts.find((item) => item.id === task.activeAttemptId);
-    return executionNeedsAttention(attempt) ? 0 : TASK_PRIORITY[task.status];
-  };
-  // Stable sorting keeps peers in ledger order as snapshots and filters change.
-  const visible = tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId)))
-    .sort((a, b) => priority(a) - priority(b));
+  const visible = sortTasksByActivity(
+    tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId))),
+    attempts,
+  );
 
   return (
     <section className="orch-run-detail" aria-labelledby="orch-run-title">

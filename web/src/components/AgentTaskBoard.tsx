@@ -7,7 +7,7 @@
 // column beside the conversation (`OrchestrationPanel`). What is left here is
 // an index: where the work is, and how to get to it.
 import { useEffect, useState } from "react";
-import { boardCounts, currentAttempt, runElapsed, runIsLive, taskAttempts, taskProgress, taskStage, useElapsedTick } from "../lib/agentTaskBoard";
+import { boardCounts, currentAttempt, runElapsed, runIsLive, sortTasksByActivity, taskAttempts, taskProgress, taskStage, useElapsedTick } from "../lib/agentTaskBoard";
 import type { OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
@@ -33,10 +33,10 @@ export function AgentTaskBoard(props: Props) {
   const run = snapshot.runs.find((item) => item.id === chosenRun) ?? snapshot.runs.find((item) => item.id === selectedRun) ?? snapshot.runs[0];
   if (!run) return null;
   const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
-  const visibleTasks = tasks.filter((task) => {
+  const visibleTasks = sortTasksByActivity(tasks.filter((task) => {
     const attempts = taskAttempts(snapshot, task);
     return !attempts.length || attempts.some((attempt) => attempt.archivedAt == null);
-  });
+  }), snapshot.attempts);
   const counts = boardCounts(tasks, snapshot);
   const elapsed = runElapsed(snapshot, run.id, now);
   return <section className="agent-board" aria-label="Agent task board">

@@ -10,6 +10,38 @@ const conversation = (id: string): Conversation => ({ id, projectId: "project", 
 const chats = [conversation("main"), conversation("w-auth"), conversation("w-reader"), conversation("w-export")];
 
 describe("compact agent task board", () => {
+  it("puts attention and active work above settled tasks without changing ledger order", () => {
+    const snapshot = taskBoardFixture();
+    const statuses = ["completed", "pending", "running", "cancelled", "ready", "blocked", "running", "failed", "completed"] as const;
+    snapshot.tasks = statuses.map((status, index) => ({
+      ...snapshot.tasks[0], id: `task-${index}`, title: `Task ${index}`, status, activeAttemptId: undefined,
+    }));
+    snapshot.attempts = [];
+    const before = structuredClone(snapshot);
+    const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />);
+    expect([...out.matchAll(/<strong title="([^"]+)">/g)].map(match => match[1])).toEqual([
+      "Task 5", "Task 7", "Task 2", "Task 6", "Task 4", "Task 1", "Task 0", "Task 8", "Task 3",
+    ]);
+    expect(snapshot).toEqual(before);
+  });
+
+  it("reorders live updates and ignores stale attention evidence on completed tasks", () => {
+    const snapshot = taskBoardFixture();
+    snapshot.tasks = [snapshot.tasks[0], snapshot.tasks[1]];
+    const [completed, working] = snapshot.tasks;
+    snapshot.attempts[0].execution = { state: "stalled", retryCount: 0 };
+    snapshot.attempts[1].execution = { state: "waiting_tool", retryCount: 0 };
+    const titles = () => {
+      const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />);
+      return [...out.matchAll(/<strong title="([^"]+)">/g)].map(match => match[1]);
+    };
+    expect(titles()).toEqual([working.title, completed.title]);
+    completed.status = "running";
+    expect(titles()).toEqual([completed.title, working.title]);
+    completed.status = "completed";
+    expect(titles()).toEqual([working.title, completed.title]);
+  });
+
   it("shows the run's shape and one tappable line per task", () => {
     const out = renderToStaticMarkup(<AgentTaskBoard snapshot={taskBoardFixture()} conversations={new Map(chats.map((chat) => [chat.id, chat]))} currentConversation={null} onOpenChat={() => {}} />);
     expect(out).toContain('aria-valuetext="1 of 4 tasks completed"');

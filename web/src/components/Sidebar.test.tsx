@@ -175,6 +175,8 @@ describe("task-oriented Sidebar", () => {
     it("offers a tick on every row, and no filter until one is used", () => {
       const out = html({ conversations: [chat("a")] });
       expect(out).toContain('aria-label="Mark done: Task a"');
+      expect(out).toContain('title="Double-click or double-tap to mark done"');
+      expect(out).toContain('aria-description="Double-click or double-tap. With a keyboard, press Enter or Space."');
       expect(out).not.toContain("sidebar-filter");
     });
 
@@ -210,6 +212,7 @@ describe("task-oriented Sidebar", () => {
       expect(out).toContain("Task b");
       expect(out).toContain("is-done");
       expect(out).toContain('aria-label="Mark not done: Task b"');
+      expect(out).toContain('title="Double-click or double-tap to mark not done"');
       expect(out).toContain('aria-pressed="true"');
     });
 
