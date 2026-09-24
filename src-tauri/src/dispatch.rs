@@ -25,6 +25,8 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
+mod pull_requests;
+
 use crate::agent_chat::ChatManager;
 use crate::file_watch::FileWatchState;
 use crate::git_watch::GitWatchState;
@@ -846,6 +848,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
 
         // ---- git ----------------------------------------------------------
+        cmd if cmd.starts_with("pr_") => pull_requests::dispatch(svc, cmd, args),
         // No `_impl` split here: git.rs and git_ops.rs never held managed state,
         // so they were already plain functions before the window went and there
         // was never a wrapper to strip.
