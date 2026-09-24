@@ -8,6 +8,8 @@ Agents can also read another OctiqFlow conversation from a supplied browser URL
 through the bundled [`read_conversation` MCP tool](docs/conversation-mcp.md).
 Agents can also create [standalone HTML artifacts](docs/artifacts.md) for reading,
 per-item decisions and comments, and copying feedback back as JSON.
+Claude and Codex chats can report OctiqFlow bugs and hiccups to the local
+[feedback inbox](docs/feedback-inbox.md), with source context and triage notes.
 
 For supervised multi-agent work, a chat can become a
 [master orchestrator](docs/orchestration.md): it creates a durable task DAG,

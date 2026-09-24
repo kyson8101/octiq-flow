@@ -61,7 +61,7 @@ function savedCollapsed(): Set<string> {
 
 export function Sidebar({
   orchestration = EMPTY_ORCHESTRATION,
-  projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted,
+  projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted, onFeedback,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
@@ -73,6 +73,7 @@ export function Sidebar({
   onShowShelved: () => void;
   deletedCount?: number;
   onShowDeleted?: () => void;
+  onFeedback?: () => void;
   conversations: Conversation[];
   currentConversation: string | null;
   running: Set<string>;
@@ -508,6 +509,10 @@ export function Sidebar({
         </div>
       )}
 
+      {onFeedback && <button type="button" className="feedback-launch" onClick={onFeedback}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 4h16v13H9l-5 4V4Z" /><path d="M8 8h8M8 12h5" /></svg>
+        Feedback inbox
+      </button>}
       {foot && <div className="sidebar-slot is-foot">{foot}</div>}
       {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
         aria-orientation="vertical" aria-label="Resize the chat column" />}

@@ -94,6 +94,8 @@ The bundled server is a dependency-free Node stdio MCP at
 `scripts/mcp/octiq-ask.cjs`. Outside an OctiqFlow-launched chat it offers
 `read_conversation` and [`create_artifact`](artifacts.md); chat-bound tools such
 as `ask_user`, [`preview_image` and `preview_html`](image-preview.md) remain hidden.
+The [feedback inbox tools](feedback-inbox.md) are also chat-bound: agents can
+submit OctiqFlow bugs and hiccups for review without opening another service.
 
 Codex can register it with:
 

@@ -1,0 +1,62 @@
+/* Existing OctiqFlow palette/type; a report list beside its evidence and triage. */
+.feedback-launch { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 16px; background: transparent; color: var(--fg-2); border: 0; border-top: 1px solid var(--border); text-align: left; cursor: pointer; font-size: 12px; }
+.feedback-launch:hover { background: var(--bg-2); color: var(--fg-0); }
+.feedback-inbox { width: min(1060px, calc(100vw - 48px)); height: min(800px, calc(100dvh - 64px)); max-width: none; max-height: none; margin: auto; padding: 0; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-0); color: var(--fg-0); box-shadow: var(--shadow); }
+.feedback-inbox::backdrop { background: rgb(0 0 0 / 55%); }
+.feedback-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.feedback-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 24px 26px 18px; }
+.feedback-head h2 { margin: 0 0 5px; font-size: 21px; font-weight: 650; letter-spacing: -.4px; }
+.feedback-head p { margin: 0; color: var(--fg-2); font-size: 13px; }
+.feedback-inbox button, .feedback-inbox input, .feedback-inbox select, .feedback-inbox textarea { font: inherit; font-size: 13px; }
+.feedback-inbox button { cursor: pointer; }
+.feedback-inbox button:disabled { cursor: default; opacity: .5; }
+.feedback-inbox .feedback-close { border: 0; background: transparent; color: var(--fg-2); font-size: 26px; padding: 0 8px; }
+.feedback-toolbar { display: flex; gap: 10px; padding: 0 26px 18px; border-bottom: 1px solid var(--border); }
+.feedback-toolbar input { min-width: 0; flex: 1; }
+.feedback-inbox input, .feedback-inbox select, .feedback-inbox textarea { border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px; background: var(--bg-1); color: var(--fg-0); }
+.feedback-toolbar button, .feedback-actions button, .feedback-pagination button, .feedback-back { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-1); color: var(--fg-0); padding: 8px 12px; }
+.feedback-content { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(260px, 34%) minmax(0, 1fr); }
+.feedback-list { overflow-y: auto; border-right: 1px solid var(--border); }
+.feedback-count { padding: 15px 20px 10px; font-size: 12px; color: var(--fg-2); }
+.feedback-list ul { margin: 0; padding: 0; list-style: none; }
+.feedback-inbox .feedback-row { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 17px 20px; border: 0; border-bottom: 1px solid var(--border); border-left: 3px solid transparent; background: transparent; color: var(--fg-0); text-align: left; }
+.feedback-row:hover { background: var(--bg-1); }
+.feedback-inbox .feedback-row.is-selected { background: var(--bg-1); border-left-color: var(--accent); }
+.feedback-row strong { font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+.feedback-row-meta { display: flex; justify-content: space-between; gap: 8px; color: var(--fg-2); font-size: 11px; }
+.feedback-row-context, .feedback-row time { color: var(--fg-2); font-size: 11px; overflow-wrap: anywhere; }
+.feedback-severity { text-transform: capitalize; }
+.feedback-severity.is-high { color: var(--danger); }
+.feedback-empty, .feedback-pick { padding: 26px; color: var(--fg-2); font-size: 13px; line-height: 1.65; }
+.feedback-empty h3, .feedback-pick h3 { color: var(--fg-0); font-size: 16px; font-weight: 550; margin-top: 0; }
+.feedback-pick { align-self: center; max-width: 420px; margin: auto; }
+.feedback-detail { padding: 24px 28px; overflow-y: auto; min-width: 0; }
+.feedback-detail h3 { font-size: 22px; line-height: 1.35; margin: 12px 0; letter-spacing: -.4px; overflow-wrap: anywhere; }
+.feedback-detail-meta { display: flex; gap: 14px; color: var(--fg-2); font-size: 12px; text-transform: capitalize; }
+.feedback-origin { font-size: 12px; line-height: 1.55; color: var(--fg-2); margin: 5px 0; overflow-wrap: anywhere; }
+.feedback-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.feedback-evidence { margin: 24px 0; }
+.feedback-evidence h4, .feedback-triage h4 { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
+.feedback-evidence p { font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; color: var(--fg-1); }
+.feedback-triage { border-top: 1px solid var(--border); padding-top: 20px; }
+.feedback-triage label { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; font-size: 12px; color: var(--fg-2); }
+.feedback-triage select { align-self: start; }
+.feedback-triage textarea { width: 100%; box-sizing: border-box; resize: vertical; line-height: 1.5; }
+.feedback-inbox .feedback-save { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+.feedback-error { color: var(--danger); padding: 10px 24px; font-size: 13px; line-height: 1.5; margin: 0; }
+.feedback-triage .feedback-error { padding: 12px 0 0; }
+.feedback-id { font-size: 11px; color: var(--fg-3); overflow-wrap: anywhere; }
+.feedback-pagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 16px; font-size: 12px; color: var(--fg-2); }
+.feedback-back { display: none; }
+@media (max-width: 700px) {
+  .feedback-inbox { width: 100%; height: 100dvh; border: 0; border-radius: 0; }
+  .feedback-head { padding: max(18px, env(safe-area-inset-top)) 18px 16px; }
+  .feedback-toolbar { padding: 0 18px 14px; flex-wrap: wrap; }
+  .feedback-toolbar input { flex-basis: 100%; }
+  .feedback-toolbar select { flex: 1; }
+  .feedback-content { display: flex; flex-direction: column; }
+  .feedback-list { border-right: 0; flex: 1; }
+  .feedback-content.has-selection .feedback-list, .feedback-pick { display: none; }
+  .feedback-detail { padding: 18px 20px max(24px, env(safe-area-inset-bottom)); flex: 1; }
+  .feedback-back { display: block; margin-bottom: 22px; }
+}

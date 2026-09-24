@@ -347,18 +347,9 @@ worker owns the write lease; it must not also edit that checkout.
 
 ## Conventions & gotchas
 
-- **End a finished task with `Task Completed`.** When the work asked for in THIS
-  chat is done, the last line of the reply says so in those words — plus
-  `— ready to ship` when it is committed and only the build/restart is left.
-  Several chats run against this one checkout at once, and from the prose alone
-  it is not clear whether the one being read has finished or is still going; the
-  flag answers that at a glance. It goes LAST, after any caveats, flags, or
-  things left to watch — a caveat is not a hedge on whether the work is done,
-  and a reply that ends on one is exactly what the flag exists to disambiguate.
-  When the work is NOT done the last line is `Task Not Completed` and one line
-  saying why — blocked, waiting on an answer, part of the scope dropped — so a
-  reply with no flag is never something to interpret. It speaks for this chat
-  ONLY: other sessions working in parallel neither earn it nor withhold it.
+- **Keep closing replies natural and concise.** Do not append `Task Completed`,
+  `Task Not Completed`, or `— ready to ship` sign-offs. State any remaining work
+  or blockers in plain language when relevant.
 - **Code comments reference "card NN"** (e.g. "card 04 — Project mode"). The app
   was built in numbered work cards/phases; the numbers are historical context,
   not a live system.

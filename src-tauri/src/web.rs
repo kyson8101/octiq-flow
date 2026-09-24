@@ -320,6 +320,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             .route("/hook/ask", post(ask_handler))
             .route("/hook/orchestration", post(orchestration_handler))
             .route("/hook/task", post(task_handler))
+            .route("/hook/feedback", post(feedback_handler))
             .route("/hook/vault", post(vault_handler))
             .fallback(get(asset_handler))
             .with_state(ctx.clone());
@@ -1040,6 +1041,32 @@ async fn vault_handler(
         Err(error) => {
             (StatusCode::BAD_REQUEST, axum::Json(json!({"error": error}))).into_response()
         }
+    }
+}
+
+async fn feedback_handler(
+    AxumState(ctx): AxumState<Ctx>,
+    Query(q): Query<TokenQuery>,
+    Json(request): Json<TaskHook>,
+) -> Response {
+    if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
+        return (StatusCode::UNAUTHORIZED, "bad token").into_response();
+    }
+    match run_command(
+        &ctx,
+        "feedback_agent".into(),
+        json!({
+            "chatKey": request.chat_key, "action": request.action, "args": request.args,
+        }),
+    )
+    .await
+    {
+        Ok(result) => axum::Json(json!({ "result": result })).into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "error": error })),
+        )
+            .into_response(),
     }
 }
 

@@ -22,6 +22,7 @@ mod chat_task;
 mod codex_app_server;
 mod diagnostics;
 mod dispatch;
+mod feedback;
 mod file_watch;
 mod fsbrowse;
 mod git;

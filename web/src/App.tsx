@@ -125,6 +125,7 @@ import { Sidebar, type ChatSearchHit, type Project } from "./components/Sidebar"
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { DeletedChats } from "./components/DeletedChats";
+import { FeedbackInbox } from "./components/FeedbackInbox";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings } from "./components/Settings";
@@ -448,6 +449,7 @@ export default function App() {
   // `main.tsx` has already applied this one; the state is here only so the
   // tick in the sheet has something to read.
   const [appSettings, setAppSettings] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const orchestration = useOrchestrationSnapshot();
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
@@ -3649,6 +3651,7 @@ export default function App() {
           onShowShelved={() => setShelfOpen(true)}
           deletedCount={deletedChats.length}
           onShowDeleted={() => setTrashOpen(true)}
+          onFeedback={() => setFeedbackOpen(true)}
           conversations={taskList}
           chatParents={chatParents}
           orchestration={orchestration}
@@ -4089,6 +4092,13 @@ export default function App() {
           onClose={() => setTrashOpen(false)}
         />
       )}
+
+      {feedbackOpen && <FeedbackInbox onClose={() => setFeedbackOpen(false)}
+        availableChatIds={new Set(conversations.map(chat => chat.id))}
+        onOpenChat={id => {
+          const source = conversations.find(chat => chat.id === id);
+          if (source) { setFeedbackOpen(false); openConversation(source); }
+        }} />}
 
       {appSettings && !settingsFor && (
         <Settings

@@ -184,6 +184,21 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     }
     match cmd {
         // ---- projects -----------------------------------------------------
+        "feedback_list" => crate::feedback::Store::profile().list(
+            serde_json::from_value(args).map_err(|e| format!("Invalid feedback filter: {e}"))?,
+        ),
+        "feedback_get" => {
+            to_value(crate::feedback::Store::profile().get(&arg::<String>(&args, "id")?))
+        }
+        "feedback_update" => to_value(crate::feedback::Store::profile().update(
+            serde_json::from_value(args).map_err(|e| format!("Invalid feedback update: {e}"))?,
+        )),
+        "feedback_agent" => crate::feedback::agent_call(
+            svc,
+            &arg::<String>(&args, "chatKey")?,
+            &arg::<String>(&args, "action")?,
+            arg(&args, "args")?,
+        ),
         "memory_vault_settings" => to_value(crate::memory_vault::Vault::profile().settings()),
         "memory_vault_configure" => {
             to_value(crate::memory_vault::Vault::profile().configure(arg(&args, "config")?))

@@ -29,7 +29,7 @@ function selectOnIOS(el: HTMLTextAreaElement, length: number): void {
 
 /** Copy `text`. Resolves to whether it actually landed, so a caller can say so
  *  rather than showing "copied" over a clipboard that never changed. */
-export async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string, container: HTMLElement = document.body): Promise<boolean> {
   if (haveAsyncClipboard()) {
     try {
       await navigator.clipboard.writeText(text);
@@ -47,7 +47,9 @@ export async function copyText(text: string): Promise<boolean> {
   // to it would move the page under the reader. Fixed and invisible instead.
   holder.style.cssText =
     "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;";
-  document.body.appendChild(holder);
+  // A modal dialog makes the rest of the document inert. Callers inside one
+  // keep the fallback textarea there so selection still works on LAN/iOS.
+  container.appendChild(holder);
 
   try {
     const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
