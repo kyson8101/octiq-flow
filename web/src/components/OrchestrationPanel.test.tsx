@@ -104,6 +104,51 @@ describe("host execution evidence", () => {
 });
 
 describe("OrchestrationPanel", () => {
+  it.each([false, true])("keeps attention and ongoing work above settled tasks (embedded: %s)", (embedded) => {
+    const statuses = ["completed", "pending", "running", "cancelled", "ready", "blocked", "running", "failed", "completed"] as const;
+    const current: OrchestrationSnapshot = {
+      ...snapshot,
+      tasks: statuses.map((status, index) => ({
+        ...snapshot.tasks[0], id: `task_${index}`, title: `Task ${index}`, status, activeAttemptId: undefined,
+      })),
+      attempts: [], gates: [],
+    };
+    const before = structuredClone(current);
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded={embedded}
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+
+    expect([...html.matchAll(/<h4>(.*?)<\/h4>/g)].map((match) => match[1])).toEqual([
+      "Task 5", "Task 7", "Task 2", "Task 6", "Task 4", "Task 1", "Task 0", "Task 8", "Task 3",
+    ]);
+    expect(current).toEqual(before);
+  });
+
+  it("promotes execution problems and moves completed or retried tasks on the next snapshot", () => {
+    const current: OrchestrationSnapshot = {
+      ...snapshot,
+      tasks: [
+        { ...snapshot.tasks[0], id: "working", title: "Working task", status: "running", activeAttemptId: undefined },
+        { ...snapshot.tasks[0], title: "Stalled task", status: "running" },
+        { ...snapshot.tasks[0], id: "done", title: "Completed task", status: "completed", activeAttemptId: undefined },
+      ],
+      attempts: [{ ...snapshot.attempts[0], status: "running", execution: { state: "stalled", retryCount: 0 } }],
+      gates: [],
+    };
+    const titles = () => {
+      const html = renderToStaticMarkup(<OrchestrationPanel embedded
+        project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+        initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+      return [...html.matchAll(/<h4>(.*?)<\/h4>/g)].map((match) => match[1]);
+    };
+
+    expect(titles()).toEqual(["Stalled task", "Working task", "Completed task"]);
+    current.tasks[1].status = "completed";
+    expect(titles()).toEqual(["Working task", "Stalled task", "Completed task"]);
+    current.tasks[2].status = "running";
+    expect(titles()).toEqual(["Working task", "Completed task", "Stalled task"]);
+  });
+
   it("keeps the ledger visible without decision inputs or run controls in worker chats", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey={null} readOnly
