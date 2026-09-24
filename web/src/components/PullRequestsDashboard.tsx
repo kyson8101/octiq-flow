@@ -2,15 +2,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import {
   completionLabel,
+  createPrMutationGates,
   createRequestGate,
   filterPullRequests,
+  launchPrTicketAgent,
   parseUnifiedDiff,
   prAgentPrompt,
   prKey,
+  prPatchKey,
   shortSha,
   ticketActionLabel,
   type PrAgentAction,
   type PrAgentLaunch,
+  type PrPreparedAgentChat,
   type PrDetail,
   type PrFile,
   type PrList,
@@ -55,7 +59,7 @@ export function PullRequestsDashboard({
   agent,
   connected,
   onClose,
-  onLaunch,
+  onPrepareChat,
   onOpenChat,
 }: {
   projects: PrDashboardProject[];
@@ -64,7 +68,7 @@ export function PullRequestsDashboard({
   agent: PrAgentSelection;
   connected: boolean;
   onClose: () => void;
-  onLaunch: (launch: PrAgentLaunch) => Promise<string>;
+  onPrepareChat: (launch: PrAgentLaunch) => Promise<PrPreparedAgentChat>;
   onOpenChat: (chatId: string) => void;
 }) {
   const [projectId, setProjectId] = useState(initialProjectId ?? projects[0]?.id ?? "");
@@ -109,8 +113,18 @@ export function PullRequestsDashboard({
   const remoteListGate = useRef(createRequestGate()).current;
   const detailGate = useRef(createRequestGate()).current;
   const patchGate = useRef(createRequestGate()).current;
-  const workflowGate = useRef(createRequestGate()).current;
+  const mutationGates = useRef(createPrMutationGates()).current;
+  const { workflow: workflowGate, launch: launchGate } = mutationGates;
   const detailScope = detail ? `${detail.pr.root}:${prKey(detail.pr)}:${detail.pr.headSha}` : "";
+
+  useEffect(() => () => {
+    repositoriesGate.cancel();
+    localListGate.cancel();
+    remoteListGate.cancel();
+    detailGate.cancel();
+    patchGate.cancel();
+    mutationGates.invalidate();
+  }, [repositoriesGate, localListGate, remoteListGate, detailGate, patchGate, mutationGates]);
 
   useEffect(() => {
     const valid = projects.some((item) => item.id === projectId);
@@ -240,9 +254,21 @@ export function PullRequestsDashboard({
       });
   }, [selectedKey, selected, detailGate]);
 
+  // Mutations belong to the exact project/repository/selection snapshot that
+  // started them. A late save, prepare, attach, or confirmation may finish on
+  // the server, but it must not paint its workflow or notice into another PR.
+  useEffect(() => {
+    mutationGates.invalidate();
+    setWorkflow(null);
+    setWorkflowLoading(false);
+    setWorkflowError("");
+    setLaunchNotice(null);
+  }, [projectId, root, source, selectedKey, detailScope, mutationGates]);
+
   useEffect(() => {
     const token = workflowGate.next();
     setWorkflow(null);
+    setWorkflowLoading(false);
     setWorkflowError("");
     if (!detail || detail.pr.source !== "github" || detail.pr.number == null) return;
     setWorkflowLoading(true);
@@ -286,7 +312,7 @@ export function PullRequestsDashboard({
   }, [detail?.pr.root, detail?.pr.number, detail?.pr.source]);
 
   const selectedFile = detail?.files.find((file) => file.path === filePath) ?? null;
-  const patchKey = detail && selectedFile ? `${detail.pr.headSha}:${selectedFile.path}` : "";
+  const patchKey = detail && selectedFile ? prPatchKey(detail, selectedFile) : "";
   useEffect(() => {
     const token = patchGate.next();
     setPatchError("");
@@ -314,14 +340,20 @@ export function PullRequestsDashboard({
 
   const startAgent = async (action: PrAgentAction) => {
     if (!detail || !project) return;
+    const token = launchGate.next();
     const scope = detailScope;
     const request = prAgentPrompt(action, detail);
     setLaunchNotice({ scope, kind: "working", text: `Starting ${action === "publish" ? "publication" : action} chat…` });
     try {
-      const chatId = await onLaunch({ ...request, projectId: project.id });
-      setLaunchNotice({ scope, kind: "success", text: `${request.title} started in a separate chat.`, chatId });
+      const prepared = await onPrepareChat({ ...request, projectId: project.id });
+      await prepared.start();
+      if (launchGate.current(token)) {
+        setLaunchNotice({ scope, kind: "success", text: `${request.title} started in a separate chat.`, chatId: prepared.chatId });
+      }
     } catch (error) {
-      setLaunchNotice({ scope, kind: "error", text: `Could not start agent chat: ${errorText(error)}` });
+      if (launchGate.current(token)) {
+        setLaunchNotice({ scope, kind: "error", text: `Could not start agent chat: ${errorText(error)}` });
+      }
     }
   };
 
@@ -370,44 +402,43 @@ export function PullRequestsDashboard({
   const prepareTicket = async () => {
     if (!detail || detail.pr.number == null || !project) return;
     const token = workflowGate.next();
+    const launchToken = launchGate.next();
     const scope = detailScope;
     setWorkflowLoading(true);
     setWorkflowError("");
     setLaunchNotice({ scope, kind: "working", text: "Preparing ticket completion chat…" });
-    let launch: PrTicketLaunch | null = null;
     try {
-      launch = await bridge.invoke<PrTicketLaunch>("pr_ticket_prepare", {
+      const launch = await bridge.invoke<PrTicketLaunch>("pr_ticket_prepare", {
         root: detail.pr.root,
         number: detail.pr.number,
         expectedHeadSha: detail.pr.headSha,
       });
       if (workflowGate.current(token)) setWorkflow(launch.workflow);
-      const chatId = await onLaunch({
-        projectId: project.id,
-        cwd: launch.cwd,
-        title: launch.title,
-        prompt: launch.prompt,
+      const result = await launchPrTicketAgent(launch, {
+        projectId: project.id, cwd: launch.cwd, title: launch.title, prompt: launch.prompt,
+      }, {
+        prepareChat: onPrepareChat,
+        attach: (actionId, chatId) => bridge.invoke<PrWorkflow>("pr_ticket_attach", { actionId, chatId }),
+        fail: (actionId, message) => bridge.invoke<PrWorkflow>("pr_ticket_confirm", {
+          actionId, confirmed: false, message,
+        }),
       });
-      const next = await bridge.invoke<PrWorkflow>("pr_ticket_attach", { actionId: launch.actionId, chatId });
-      if (workflowGate.current(token)) setWorkflow(next);
-      setLaunchNotice({ scope, kind: "success", text: "Ticket completion agent started. Confirm the ticket only after checking its result.", chatId });
+      if (workflowGate.current(token)) {
+        setWorkflow(result.workflow);
+        if (result.kind === "failed") setWorkflowError(result.message);
+      }
+      if (launchGate.current(launchToken)) {
+        setLaunchNotice({
+          scope,
+          kind: result.kind === "failed" ? "error" : "success",
+          text: result.message,
+          ...(result.chatId ? { chatId: result.chatId } : {}),
+        });
+      }
     } catch (error) {
       const message = `Could not start ticket completion: ${errorText(error)}`;
-      setLaunchNotice({ scope, kind: "error", text: message });
+      if (launchGate.current(launchToken)) setLaunchNotice({ scope, kind: "error", text: message });
       if (workflowGate.current(token)) setWorkflowError(message);
-      if (launch) {
-        try {
-          const failed = await bridge.invoke<PrWorkflow>("pr_ticket_confirm", {
-            actionId: launch.actionId,
-            confirmed: false,
-            message,
-          });
-          if (workflowGate.current(token)) setWorkflow(failed);
-        } catch {
-          // The visible launch error remains authoritative when failure recording
-          // itself cannot be reached; a refresh can reconcile it later.
-        }
-      }
     } finally {
       if (workflowGate.current(token)) setWorkflowLoading(false);
     }
@@ -456,10 +487,10 @@ export function PullRequestsDashboard({
           <h1>Pull requests</h1>
           <span>{repository ? repository.name : "Review local and GitHub work"}</span>
         </div>
-        <div className="pr-agent-setting" title="New agent chats use the current chat settings">
+        <div className="pr-agent-setting" title="Publication and ticket chats use the current settings; study and review are read-only">
           <span className="pr-agent-dot" aria-hidden="true" />
           <span>{agent.provider} · {agent.model}</span>
-          <small>{agent.access}</small>
+          <small>Publish &amp; ticket · {agent.access}</small>
         </div>
       </header>
 
@@ -564,8 +595,8 @@ export function PullRequestsDashboard({
                   <p><strong>{detail.pr.branch}</strong><span aria-hidden="true"> → </span>{detail.pr.base}</p>
                 </div>
                 <div className="pr-agent-actions">
-                  <button type="button" disabled={isLaunching || !connected} onClick={() => void startAgent("study")}>Study</button>
-                  <button type="button" disabled={isLaunching || !connected} onClick={() => void startAgent("review")}>Request review</button>
+                  <button type="button" disabled={isLaunching || !connected} onClick={() => void startAgent("study")}>Study · read-only</button>
+                  <button type="button" disabled={isLaunching || !connected} onClick={() => void startAgent("review")}>Request review · read-only</button>
                   {detail.pr.source === "local" && <button type="button" className="is-primary" disabled={isLaunching || !connected} onClick={() => void startAgent("publish")}>Create GitHub PR</button>}
                   {detail.pr.url && <a href={detail.pr.url} target="_blank" rel="noreferrer noopener">Open on GitHub</a>}
                 </div>
@@ -681,7 +712,7 @@ function Overview({
   const action = workflow?.ticketAction ?? null;
   const ticketAgentBusy = !!action?.chatId && chats.find((chat) => chat.id === action.chatId)?.busy === true;
   const canPrepareTicket = workflow?.completion.state === "completed" && !!workflow.ticket
-    && action?.status !== "confirmed" && action?.status !== "running" && action?.status !== "pending";
+    && action?.status !== "confirmed" && action?.status !== "running";
   return (
     <div className="pr-overview">
       <div className="pr-overview-main">
@@ -727,7 +758,9 @@ function Overview({
               <div className="pr-ticket-action">
                 <div><strong>Complete {workflow.ticket.reference}</strong><span>{ticketActionLabel(action)}</span></div>
                 {action?.chatId && <button type="button" onClick={() => onOpenChat(action.chatId!)}>Open agent chat</button>}
-                {canPrepareTicket && <button type="button" className="is-primary" disabled={workflowLoading} onClick={onPrepareTicket}>{action?.status === "failed" ? "Retry ticket update" : "Start ticket update"}</button>}
+                {action?.status === "pending" && <p className="pr-ticket-note">This pending action can be claimed after a reload or interrupted launch. Continue it, or mark it failed before starting over.</p>}
+                {canPrepareTicket && <button type="button" className="is-primary" disabled={workflowLoading} onClick={onPrepareTicket}>{action?.status === "failed" ? "Retry ticket update" : action?.status === "pending" ? "Continue pending update" : "Start ticket update"}</button>}
+                {action?.status === "pending" && <button type="button" disabled={workflowLoading} onClick={() => onConfirmTicket(false)}>Mark pending action failed</button>}
                 {action?.status === "running" && ticketAgentBusy && <p className="pr-ticket-note">The agent turn is still running. Confirmation unlocks when it finishes.</p>}
                 {action?.status === "running" && !ticketAgentBusy && (
                   <div className="pr-ticket-confirm">

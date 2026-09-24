@@ -172,7 +172,7 @@ import {
   PullRequestsDashboard,
   type PrDashboardChat,
 } from "./components/PullRequestsDashboard";
-import type { PrAgentLaunch } from "./lib/pullRequests";
+import type { PrAgentLaunch, PrPreparedAgentChat } from "./lib/pullRequests";
 import "./components/FocusMode.css";
 
 type Workspace = Project & {
@@ -3035,33 +3035,34 @@ export default function App() {
     ],
   );
 
-  /** Start a PR study/review/publication task without borrowing any of the
+  /** Prepare a PR study/review/publication task without borrowing any of the
    * active chat's setters. The request carries its project and exact cwd; the
    * selected provider settings are captured by this callback at click time.
    *
-   * The server-side chat index is saved before process launch. That ordering is
-   * the durable-chat contract: a fast agent response or a server restart can
-   * never leave a transcript that no metadata row points at. */
-  const launchPullRequestChat = useCallback(async (request: PrAgentLaunch): Promise<string> => {
+   * Saving and starting are separate on purpose. Ticket work claims its
+   * server-side action between these two phases, so a competing browser can
+   * never start a second agent. Every caller still gets the same invariant:
+   * the server-side chat index is durable before a process may launch. */
+  const preparePullRequestChat = useCallback(async (request: PrAgentLaunch): Promise<PrPreparedAgentChat> => {
     const targetProject = workspaces.find((item) => item.id === request.projectId);
     if (!targetProject) throw new Error("The selected project is no longer available.");
     if (!request.cwd) throw new Error("The selected repository has no working directory.");
 
     const id = crypto.randomUUID();
-    const turnId = userTurnId();
-    const startedAt = Date.now();
-    const chatState = addUserTurn({ ...emptyChat(), cwd: request.cwd }, request.prompt, [], startedAt, turnId);
+    const preparedAt = Date.now();
+    const launchAccess: AccessLevel = request.access ?? access;
+    const preparedState = { ...emptyChat(), cwd: request.cwd };
     const activity: Conversation = {
       id,
       projectId: targetProject.id,
       title: request.title,
       customTitle: true,
       cwd: request.cwd,
-      messages: chatState.messages,
+      messages: [],
       modelId: choice.id,
-      permission: access,
-      createdAt: startedAt,
-      updatedAt: startedAt,
+      permission: launchAccess,
+      createdAt: preparedAt,
+      updatedAt: preparedAt,
     };
 
     await bridge.invoke("chat_index_save", {
@@ -3069,59 +3070,76 @@ export default function App() {
         ...activity,
         messages: undefined,
         sessionId: null,
-        access,
+        access: launchAccess,
         pinned: false,
         generation: 0,
       },
     });
 
-    meta.current[id] = { projectId: targetProject.id, modelId: choice.id, access };
+    meta.current[id] = { projectId: targetProject.id, modelId: choice.id, access: launchAccess };
     catchUp.current.own(keyFor(id));
-    patch(id, () => chatState);
+    patch(id, () => preparedState);
     const next = [activity, ...conversationsRef.current.filter((item) => item.id !== id)];
     conversationsRef.current = next;
     setConversations(next);
     saveConversations(next);
-    sendingTurns.current.add(turnId);
-    setRunning((before) => new Set(before).add(id));
+    let started = false;
+    return {
+      chatId: id,
+      start: async () => {
+        if (started) throw new Error("This PR agent chat has already been started.");
+        started = true;
+        const turnId = userTurnId();
+        const startedAt = Date.now();
+        const chatState = addUserTurn(chatsRef.current[id] ?? preparedState, request.prompt, [], startedAt, turnId);
+        patch(id, () => chatState);
+        const startedConversations = conversationsRef.current.map((conversation) => conversation.id === id
+          ? { ...conversation, messages: chatState.messages, updatedAt: startedAt }
+          : conversation);
+        conversationsRef.current = startedConversations;
+        setConversations(startedConversations);
+        saveConversations(startedConversations);
+        sendingTurns.current.add(turnId);
+        setRunning((before) => new Set(before).add(id));
 
-    try {
-      await bridge.invoke("chat_start", {
-        key: keyFor(id),
-        cwd: request.cwd,
-        extraDirs: targetProject.paths ?? [],
-        env: targetProject.env ?? {},
-        agent: choice.agent,
-        model: choice.flag || null,
-        access,
-        effort,
-        lite,
-        images: [],
-        prompt: request.prompt,
-        handoff: null,
-        turnId,
-        resume: null,
-      });
-      return id;
-    } catch (error) {
-      const why = String((error as Error)?.message ?? error);
-      patch(id, (state) => ({
-        ...state,
-        busy: false,
-        messages: state.messages.map((message) => message.turnId === turnId
-          ? { ...message, delivery: "unknown", queueError: why }
-          : message),
-        notices: [...state.notices, `Could not start this PR agent: ${why}`].slice(-8),
-      }));
-      setRunning((before) => {
-        const after = new Set(before);
-        after.delete(id);
-        return after;
-      });
-      throw error;
-    } finally {
-      sendingTurns.current.delete(turnId);
-    }
+        try {
+          await bridge.invoke("chat_start", {
+            key: keyFor(id),
+            cwd: request.cwd,
+            extraDirs: targetProject.paths ?? [],
+            env: targetProject.env ?? {},
+            agent: choice.agent,
+            model: choice.flag || null,
+            access: launchAccess,
+            effort,
+            lite,
+            images: [],
+            prompt: request.prompt,
+            handoff: null,
+            turnId,
+            resume: null,
+          });
+        } catch (error) {
+          const why = String((error as Error)?.message ?? error);
+          patch(id, (state) => ({
+            ...state,
+            busy: false,
+            messages: state.messages.map((message) => message.turnId === turnId
+              ? { ...message, delivery: "unknown", queueError: why }
+              : message),
+            notices: [...state.notices, `Could not start this PR agent: ${why}`].slice(-8),
+          }));
+          setRunning((before) => {
+            const after = new Set(before);
+            after.delete(id);
+            return after;
+          });
+          throw error;
+        } finally {
+          sendingTurns.current.delete(turnId);
+        }
+      },
+    };
   }, [workspaces, choice, access, effort, lite, patch]);
 
   // Use the ordinary send/resume path after switching to the coordinator;
@@ -3802,7 +3820,7 @@ export default function App() {
             }}
             connected={conn === "open"}
             onClose={() => setPrDashboardOpen(false)}
-            onLaunch={launchPullRequestChat}
+            onPrepareChat={preparePullRequestChat}
             onOpenChat={openPullRequestChat}
           />}
           <div className="chat-app-surface" hidden={prDashboardOpen}>

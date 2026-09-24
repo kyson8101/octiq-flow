@@ -100,6 +100,22 @@ export type PrAgentLaunch = {
   cwd: string;
   title: string;
   prompt: string;
+  /** Study and review use a real read-only process, independently of the
+   * access selected for publication and ticket-writing work. */
+  access?: "read";
+};
+
+export type PrPreparedAgentChat = {
+  chatId: string;
+  start: () => Promise<void>;
+};
+
+export type PrTicketAgentLaunchResult = {
+  kind: "started" | "existing" | "failed";
+  phase: "existing" | "save" | "claim" | "start";
+  workflow: PrWorkflow;
+  chatId: string | null;
+  message: string;
 };
 
 export function prKey(pr: Pick<PrSummary, "source" | "number" | "branch" | "base">): string {
@@ -127,7 +143,7 @@ export function filterPullRequests(items: readonly PrSummary[], query: string): 
   });
 }
 
-export function prAgentPrompt(action: PrAgentAction, detail: PrDetail): { title: string; prompt: string; cwd: string } {
+export function prAgentPrompt(action: PrAgentAction, detail: PrDetail): { title: string; prompt: string; cwd: string; access?: "read" } {
   const { pr } = detail;
   const cwd = pr.worktreePath || pr.root;
   const identity = pr.number == null ? `${pr.branch} → ${pr.base}` : `#${pr.number} ${pr.title}`;
@@ -163,6 +179,7 @@ export function prAgentPrompt(action: PrAgentAction, detail: PrDetail): { title:
   return {
     cwd,
     title: `${action === "review" ? "Review" : "Study"} ${identity}`,
+    access: "read",
     prompt: [
       purpose,
       "",
@@ -171,6 +188,133 @@ export function prAgentPrompt(action: PrAgentAction, detail: PrDetail): { title:
       "Inspect the pinned refs without changing repository or remote state. Do not edit files, create commits, push, merge, publish a review, post comments, or update tickets. If the live branch has moved, keep the analysis on the pinned SHAs and call out the difference.",
     ].join("\n"),
   };
+}
+
+/** The lazy patch cache belongs to an exact comparison, not just its head.
+ * A user can change target branches without moving the feature branch, and
+ * repositories can contain identical paths and object ids. */
+export function prPatchKey(detail: PrDetail, file: Pick<PrFile, "path">): string {
+  return JSON.stringify([
+    detail.pr.root,
+    detail.mergeBaseSha ?? detail.pr.baseSha,
+    detail.pr.headSha,
+    file.path,
+  ]);
+}
+
+/** Complete the ticket launch transaction after pr_ticket_prepare.
+ *
+ * Saving the durable chat is deliberately separate from starting its process:
+ * only the browser that successfully attaches that chat to the pending action
+ * may start it. A competing browser either receives the winner's chat or a
+ * claim error, and must never mark that winner's action failed. */
+export async function launchPrTicketAgent(
+  launch: PrTicketLaunch,
+  request: PrAgentLaunch,
+  operations: {
+    prepareChat: (request: PrAgentLaunch) => Promise<PrPreparedAgentChat>;
+    attach: (actionId: string, chatId: string) => Promise<PrWorkflow>;
+    fail: (actionId: string, message: string) => Promise<PrWorkflow>;
+  },
+): Promise<PrTicketAgentLaunchResult> {
+  const preparedAction = launch.workflow.ticketAction;
+  if (preparedAction?.id === launch.actionId
+    && (preparedAction.status === "running" || preparedAction.status === "confirmed")) {
+    if (preparedAction.chatId) {
+      return {
+        kind: "existing",
+        phase: "existing",
+        workflow: launch.workflow,
+        chatId: preparedAction.chatId,
+        message: preparedAction.status === "confirmed"
+          ? "This ticket update was already confirmed."
+          : "This ticket update already has an agent chat.",
+      };
+    }
+    return {
+      kind: "failed",
+      phase: "claim",
+      workflow: launch.workflow,
+      chatId: null,
+      message: "This ticket action is already running but has no chat to open. Mark it failed before retrying.",
+    };
+  }
+
+  let prepared: PrPreparedAgentChat;
+  try {
+    prepared = await operations.prepareChat(request);
+  } catch (error) {
+    return {
+      kind: "failed",
+      phase: "save",
+      workflow: launch.workflow,
+      chatId: null,
+      message: `Could not save the ticket agent chat: ${errorMessage(error)}`,
+    };
+  }
+
+  let claimed: PrWorkflow;
+  try {
+    claimed = await operations.attach(launch.actionId, prepared.chatId);
+  } catch (error) {
+    return {
+      kind: "failed",
+      phase: "claim",
+      workflow: launch.workflow,
+      chatId: null,
+      message: `Could not claim the ticket action: ${errorMessage(error)}`,
+    };
+  }
+
+  const claimedAction = claimed.ticketAction;
+  if (claimedAction?.id !== launch.actionId
+    || claimedAction.chatId !== prepared.chatId
+    || claimedAction.status !== "running") {
+    if (claimedAction?.chatId
+      && (claimedAction.status === "running" || claimedAction.status === "confirmed")) {
+      return {
+        kind: "existing",
+        phase: "existing",
+        workflow: claimed,
+        chatId: claimedAction.chatId,
+        message: "Another browser already claimed this ticket action. Its chat was opened instead.",
+      };
+    }
+    return {
+      kind: "failed",
+      phase: "claim",
+      workflow: claimed,
+      chatId: null,
+      message: "The ticket action was not claimed by this chat, so its agent was not started.",
+    };
+  }
+
+  try {
+    await prepared.start();
+    return {
+      kind: "started",
+      phase: "start",
+      workflow: claimed,
+      chatId: prepared.chatId,
+      message: "Ticket completion agent started. Confirm the ticket only after checking its result.",
+    };
+  } catch (error) {
+    const startMessage = `Could not start ticket completion: ${errorMessage(error)}`;
+    let failed = claimed;
+    let message = startMessage;
+    try {
+      failed = await operations.fail(launch.actionId, startMessage);
+    } catch (recordError) {
+      message = `${startMessage} The claimed action could not be marked failed: ${errorMessage(recordError)}`;
+    }
+    return {
+      kind: "failed",
+      phase: "start",
+      workflow: failed,
+      chatId: prepared.chatId,
+      message,
+    };
+  }
 }
 
 export type UnifiedDiffLine = {
@@ -188,31 +332,59 @@ export function parseUnifiedDiff(text: string): UnifiedDiffLine[] {
   if (raw.length > 1 && raw.at(-1) === "") raw.pop();
   let oldLine: number | null = null;
   let newLine: number | null = null;
+  let oldRemaining = 0;
+  let newRemaining = 0;
+  let inHunk = false;
   return raw.map((line) => {
-    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (/^diff --(?:git|cc|combined) /.test(line)) {
+      oldLine = null;
+      newLine = null;
+      oldRemaining = 0;
+      newRemaining = 0;
+      inHunk = false;
+      return { kind: "meta", text: line, oldLine: null, newLine: null };
+    }
+    const hunk = /^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@/.exec(line);
     if (hunk) {
       oldLine = Number(hunk[1]);
-      newLine = Number(hunk[2]);
+      newLine = Number(hunk[3]);
+      oldRemaining = hunk[2] == null ? 1 : Number(hunk[2]);
+      newRemaining = hunk[4] == null ? 1 : Number(hunk[4]);
+      inHunk = oldRemaining > 0 || newRemaining > 0;
       return { kind: "hunk", text: line, oldLine: null, newLine: null };
     }
-    if (oldLine != null && newLine != null && line.startsWith("+") && !line.startsWith("+++")) {
+    if (inHunk && line.startsWith("\\ No newline at end of file")) {
+      return { kind: "meta", text: line, oldLine: null, newLine: null };
+    }
+    if (inHunk && oldLine != null && newLine != null && line.startsWith("+")) {
       const row = { kind: "add" as const, text: line, oldLine: null, newLine };
       newLine += 1;
+      newRemaining = Math.max(0, newRemaining - 1);
+      if (oldRemaining === 0 && newRemaining === 0) inHunk = false;
       return row;
     }
-    if (oldLine != null && newLine != null && line.startsWith("-") && !line.startsWith("---")) {
+    if (inHunk && oldLine != null && newLine != null && line.startsWith("-")) {
       const row = { kind: "delete" as const, text: line, oldLine, newLine: null };
       oldLine += 1;
+      oldRemaining = Math.max(0, oldRemaining - 1);
+      if (oldRemaining === 0 && newRemaining === 0) inHunk = false;
       return row;
     }
-    if (oldLine != null && newLine != null && (line.startsWith(" ") || line === "")) {
+    if (inHunk && oldLine != null && newLine != null && (line.startsWith(" ") || line === "")) {
       const row = { kind: "context" as const, text: line, oldLine, newLine };
       oldLine += 1;
       newLine += 1;
+      oldRemaining = Math.max(0, oldRemaining - 1);
+      newRemaining = Math.max(0, newRemaining - 1);
+      if (oldRemaining === 0 && newRemaining === 0) inHunk = false;
       return row;
     }
     return { kind: "meta", text: line, oldLine: null, newLine: null };
   });
+}
+
+function errorMessage(error: unknown): string {
+  return String((error as Error)?.message ?? error);
 }
 
 /** Small sequence guard used by selector-driven requests. A late response can
@@ -223,6 +395,21 @@ export function createRequestGate() {
     next(): number { current += 1; return current; },
     current(token: number): boolean { return token === current; },
     cancel(): void { current += 1; },
+  };
+}
+
+/** Save/prepare/confirm results and their notices are separate state channels,
+ * but a view change or unmount invalidates both as one operation. */
+export function createPrMutationGates() {
+  const workflow = createRequestGate();
+  const launch = createRequestGate();
+  return {
+    workflow,
+    launch,
+    invalidate(): void {
+      workflow.cancel();
+      launch.cancel();
+    },
   };
 }
 
