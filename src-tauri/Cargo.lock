@@ -1459,6 +1459,7 @@ dependencies = [
  "ureq",
  "uuid",
  "web-push",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

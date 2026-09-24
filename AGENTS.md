@@ -142,7 +142,10 @@ browser ──HTTP/WS──► web.rs ──► dispatch.rs ──► the backen
   Unix, powershell on Windows; see `resolve_shell`) so `PATH` is fully
   populated — otherwise `claude` would not be found.
 - `agent_chat.rs` — agents run as a JSON stream (`claude -p`, `codex exec`)
-  rather than a TUI, for the chat view.
+  rather than a TUI, for the chat view. All three providers are launched from
+  ONE place here, through a POSIX shell, because `build_command` returns a
+  POSIX-quoted line; `proc::resolve_agent_shell` picks that shell (Git for
+  Windows' bash off Windows' own `PATH`).
 - `workspaces.rs` — the "project" store (a project groups several folder paths).
 - `git.rs` — the **single** git-read backend (status summary, changed files,
   file diff). Read-only; shells out to `git`. Resolves each project path to its
@@ -353,6 +356,18 @@ worker owns the write lease; it must not also edit that checkout.
 - **Code comments reference "card NN"** (e.g. "card 04 — Project mode"). The app
   was built in numbered work cards/phases; the numbers are historical context,
   not a live system.
+- **Every process this backend spawns needs a Windows path.** The product runs
+  on Windows, where `/bin/sh`, `/bin/zsh` and even `$SHELL` may none of them
+  exist. A spawn site that assumes one fails at the worst possible moment: agent
+  chats could not start at all on a clean Windows machine for exactly this
+  reason, and the error it gave ("The system cannot find the path specified")
+  named nothing anyone could act on. The three working patterns are
+  `pty.rs::resolve_shell` (interactive terminals → PowerShell),
+  `proc::resolve_agent_shell` (POSIX-quoted command lines → the bash Git for
+  Windows ships) and `agents::probe_command` (`#[cfg(windows)]`). Prefer taking
+  `is_windows` as a PARAMETER over `#[cfg(windows)]` wherever the logic can be
+  pure — this is developed on macOS, so a `#[cfg]` branch is a branch nobody
+  here can run a test against.
 - **The `src-tauri/` folder name is historical.** There is no Tauri in it. It
   was left alone so paths, the service plist and muscle memory keep working;
   renaming it is a separate job.

@@ -1690,7 +1690,11 @@ pub(crate) fn start_session(
         orchestration_worker,
     });
     let process_cwd = if cwd.trim().is_empty() {
-        std::env::var("HOME").unwrap_or_else(|_| "/".into())
+        // `home_dir` reads USERPROFILE too, so this does not land on "/" the
+        // moment a Windows machine is asked for a chat with no folder.
+        crate::paths::home_dir()
+            .map(|home| home.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".into())
     } else {
         cwd.clone()
     };
@@ -1723,11 +1727,20 @@ pub(crate) fn start_session(
         )
     });
 
-    // Login shell, for PATH — see the module docs.
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    // Login shell, for PATH — see the module docs. Windows has no login shell,
+    // so the resolution finds the bash that Git for Windows ships; the command
+    // itself is POSIX-quoted either way and does not change.
+    let shell = crate::proc::resolve_agent_shell(
+        std::env::var("SHELL").ok(),
+        std::env::var("LOCALAPPDATA").ok(),
+        cfg!(windows),
+        &crate::proc::find_executable,
+    )
+    .map_err(|e| format!("could not start {}: {e}", provider.bin()))?;
     let launch_id = uuid::Uuid::new_v4().to_string();
-    let mut child = Command::new(&shell)
-        .args(["-lc", &format!("exec {line}")])
+    let mut child = Command::new(&shell.program)
+        .args(&shell.args)
+        .arg(format!("exec {line}"))
         .current_dir(&process_cwd)
         // The project's own environment, so a chat agent picks up the same
         // variables a terminal in this project would (e.g. `starfall`'s
