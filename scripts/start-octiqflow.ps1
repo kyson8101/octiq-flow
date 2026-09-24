@@ -72,7 +72,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $repo 'web\dist\index.html'))) {
 
 # The active profile decides where web.json lives: config.json carries the
 # base directory and the active profile name.
-$octiqHome = Join-Path $env:USERPROFILE '.octiqflow'
+# Match paths::home_dir, including HOME overrides used for isolated profiles.
+$userHomePath = $env:HOME
+if ([string]::IsNullOrEmpty($userHomePath)) { $userHomePath = $env:USERPROFILE }
+$octiqHome = Join-Path $userHomePath '.octiqflow'
 $base      = Join-Path $octiqHome 'profiles'
 $active    = 'default'
 $configPath = Join-Path $octiqHome 'config.json'
@@ -94,6 +97,8 @@ if (Test-Path -LiteralPath $webJson) {
 }
 if ($PSBoundParameters.ContainsKey('Port')) { $effectivePort = $Port }
 if ($PSBoundParameters.ContainsKey('Bind')) { $effectiveBind = $Bind }
+$tokenOverride = [Environment]::GetEnvironmentVariable('OCTIQ_WEB_TOKEN')
+if ($null -ne $tokenOverride) { $token = $tokenOverride }
 
 # One server at a time. A second one would bind-fail anyway, but saying so here
 # is clearer than a Rust panic scrolling past.
@@ -122,8 +127,12 @@ if ($desktop) {
 # A bind address is not always a reachable host: 0.0.0.0 means "every
 # interface", which no browser can dial.
 $hostName = $effectiveBind
-if ($hostName -eq '0.0.0.0' -or $hostName -eq '::' -or $hostName -eq '[::]') { $hostName = '127.0.0.1' }
-$url = "http://${hostName}:${effectivePort}/?token=$token"
+if ($hostName -eq '0.0.0.0') { $hostName = '127.0.0.1' }
+if ($hostName -eq '::' -or $hostName -eq '[::]') { $hostName = '[::1]' }
+$connectHost = $hostName.Trim('[', ']')
+$baseUrl = "http://${hostName}:${effectivePort}/"
+$url = $baseUrl
+if ($token) { $url += '?token=' + [Uri]::EscapeDataString($token) }
 
 Write-Host ''
 Write-Host 'OctiqFlow' -ForegroundColor Cyan
@@ -136,21 +145,36 @@ Write-Host ''
 
 # Open the browser only once the port actually answers -- a browser pointed at
 # a port that is not up yet just shows a connection error and does not retry.
-if (-not $NoOpen -and $token) {
-    Start-Job -ScriptBlock {
-        param($JobPort, $JobUrl)
+$browserJob = $null
+if (-not $NoOpen) {
+    $browserJob = Start-Job -ScriptBlock {
+        param($JobHost, $JobPort, $JobUrl, $JobWebJson, $JobTokenOverride)
+        $ErrorActionPreference = 'Stop'
         for ($i = 0; $i -lt 60; $i++) {
+            $client = $null
             try {
                 $client = New-Object System.Net.Sockets.TcpClient
-                $client.Connect('127.0.0.1', $JobPort)
+                $client.Connect($JobHost, $JobPort)
                 $client.Close()
-                Start-Process $JobUrl
+                # On first launch web::load_config creates the token only
+                # after the server starts. Read it here, never before spawn.
+                $jobToken = $JobTokenOverride
+                if ($null -eq $jobToken) {
+                    $jobWeb = Get-Content -LiteralPath $JobWebJson -Raw | ConvertFrom-Json
+                    $jobToken = [string] $jobWeb.token
+                }
+                if ([string]::IsNullOrWhiteSpace($jobToken)) {
+                    throw 'The server token is not ready yet.'
+                }
+                Start-Process ($JobUrl + '?token=' + [Uri]::EscapeDataString($jobToken))
                 return
             } catch {
                 Start-Sleep -Milliseconds 500
+            } finally {
+                if ($null -ne $client) { $client.Dispose() }
             }
         }
-    } -ArgumentList $effectivePort, $url | Out-Null
+    } -ArgumentList $connectHost, $effectivePort, $baseUrl, $webJson, $tokenOverride
 }
 
 # Env overrides win over web.json and are never written back (web.rs applies
@@ -165,7 +189,9 @@ try {
     # which is exactly the start-it/stop-it behaviour this script is for.
     & $exe
 } finally {
-    Get-Job -ErrorAction SilentlyContinue | Remove-Job -Force -ErrorAction SilentlyContinue
+    if ($null -ne $browserJob) {
+        Remove-Job -Job $browserJob -Force -ErrorAction SilentlyContinue
+    }
     Write-Host ''
     Write-Host 'OctiqFlow stopped.' -ForegroundColor DarkGray
 }

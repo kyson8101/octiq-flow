@@ -76,7 +76,8 @@ Resolution order:
 1. `SHELL`, when set and non-empty — unchanged, so macOS behaviour is untouched.
 2. Not Windows: `/bin/zsh` — unchanged.
 3. Windows: find Git's bash, cheapest lookup first —
-   `bash` on `PATH`; then `git` on `PATH` resolved to `<git>\..\bin\bash.exe`;
+   native `bash` on `PATH` (skipping WSL's System32, Sysnative and WindowsApps
+   launchers); then `git` on `PATH` resolved to `<git>\..\bin\bash.exe`;
    then the fixed installer locations `C:\Program Files\Git\bin\bash.exe`,
    `C:\Program Files (x86)\Git\bin\bash.exe`, and
    `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`.
@@ -122,8 +123,9 @@ still names which agent failed.
 
 ## Tests
 
-The maintainer cannot run Windows, so tests carry this change rather than
-description.
+The resolver tests run on macOS and native Windows. Launcher tests also run
+under Windows PowerShell 5.1 and PowerShell 7, with OS/process boundaries mocked;
+native smoke checks verify the login shell and background job behavior.
 
 - `resolve_agent_shell(None, true, …)` finds Git bash from a stubbed `git`
   lookup, and from each fixed location.
@@ -133,6 +135,20 @@ description.
 - `resolve_agent_shell(None, false, …)` still yields `/bin/zsh`, and a set
   `SHELL` still wins on both platforms. These two lock macOS against
   regression, which is what review should care about most.
+- Windows path derivation handles both separators independently of the host OS.
+  PATH lookup continues past WSL launchers to a native bash later on PATH.
+- `pwsh -NoProfile -File scripts/start-octiqflow.test.ps1` exercises the actual
+  Windows launcher with file/process boundaries mocked. It covers home/profile
+  selection, first-run token creation, effective token overrides, bind addresses,
+  and preserving unrelated jobs on normal exit, failure and `-NoOpen`.
+- Windows profile locks query native process handles. A child-process test
+  verifies that a live owner blocks a second claim and that an exited owner
+  can be replaced on both platforms.
+- Path tests preserve literal `..` components, including Windows verbatim
+  paths. Missing directories cannot be normalized away before validation;
+  traversal through existing directories and canonical root checks still work.
+- Preview fixtures join path components separately so their expected paths
+  use native separators on both systems.
 
 ## Out of scope
 

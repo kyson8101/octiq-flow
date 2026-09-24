@@ -67,6 +67,31 @@ pub fn is_within(candidate: &Path, roots: &[PathBuf]) -> bool {
 /// Returns `None` when the path is empty, when no ancestor exists, or when the
 /// unresolved tail contains anything other than normal names.
 pub fn canonical_target(path: &Path) -> Option<PathBuf> {
+    // Windows normalizes `missing\..` before opening a path, even if the
+    // target exists. Check the directory being traversed before the OS can
+    // erase an unresolved parent segment. Existing-directory traversal stays
+    // valid and is still canonicalized (including symlinks) below.
+    let mut checked_path = None;
+    if path.components().any(|part| part == Component::ParentDir) {
+        let mut prefix = PathBuf::new();
+        for part in path.components() {
+            if part == Component::ParentDir {
+                let parent = if prefix.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    prefix.as_path()
+                };
+                if !parent.is_dir() {
+                    return None;
+                }
+            }
+            prefix.push(part);
+        }
+        // PathBuf normalizes parents in Windows verbatim paths. Only use that
+        // normalized form after checking every directory it traversed above.
+        checked_path = Some(prefix);
+    }
+    let path = checked_path.as_deref().unwrap_or(path);
     // The common case: it exists, so the OS resolves every symlink for us.
     if let Ok(resolved) = path.canonicalize() {
         return Some(resolved);
@@ -231,8 +256,54 @@ mod tests {
         // below `nope` exists, so the tail is re-attached by hand — and a `..`
         // there would climb straight back out of the root we just validated.
         let dir = tmp("tail-dotdot");
-        let sneaky = dir.join("nope").join("..").join("escaped.txt");
+        // PathBuf::push normalizes `..` for Windows verbatim paths (the form
+        // canonicalize returns). Preserve the actual caller-supplied input.
+        let mut raw = dir.as_os_str().to_os_string();
+        raw.push(format!(
+            "{sep}nope{sep}..{sep}escaped.txt",
+            sep = std::path::MAIN_SEPARATOR
+        ));
+        let sneaky = PathBuf::from(raw);
         assert_eq!(canonical_target(&sneaky), None);
+    }
+
+    #[test]
+    fn an_unresolved_parent_segment_cannot_be_hidden_by_an_existing_target() {
+        let dir = tmp("tail-dotdot-existing");
+        std::fs::write(dir.join("existing.txt"), "keep").unwrap();
+        let mut raw = dir.as_os_str().to_os_string();
+        raw.push(format!(
+            "{sep}missing{sep}..{sep}existing.txt",
+            sep = std::path::MAIN_SEPARATOR
+        ));
+        assert_eq!(canonical_target(Path::new(&raw)), None);
+    }
+
+    #[test]
+    fn an_existing_directory_can_be_traversed_before_a_new_file() {
+        let dir = tmp("existing-parent-new-file");
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        let mut raw = dir.as_os_str().to_os_string();
+        raw.push(format!(
+            "{sep}sub{sep}..{sep}new.txt",
+            sep = std::path::MAIN_SEPARATOR
+        ));
+        assert_eq!(canonical_target(Path::new(&raw)), Some(dir.join("new.txt")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_windows_paths_cannot_normalize_away_a_missing_directory() {
+        let dir = tmp("ordinary-tail-dotdot");
+        std::fs::write(dir.join("existing.txt"), "keep").unwrap();
+        let ordinary = dir
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_string();
+        for name in ["existing.txt", "new.txt"] {
+            let sneaky = PathBuf::from(format!(r"{ordinary}\missing\..\{name}"));
+            assert_eq!(canonical_target(&sneaky), None, "{}", sneaky.display());
+        }
     }
 
     #[test]

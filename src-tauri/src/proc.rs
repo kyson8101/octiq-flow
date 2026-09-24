@@ -65,21 +65,24 @@ pub fn resolve_agent_shell(
         return found("/bin/zsh".to_string());
     }
 
-    // Windows, cheapest lookup first. A bash already on PATH needs no guessing.
-    if let Some(bash) = probe("bash") {
+    // WSL's bash.exe launches a Linux distribution, not a native agent. Keep
+    // looking for Git Bash when a Windows system launcher is first on PATH.
+    if let Some(bash) = probe("bash").filter(|path| !is_wsl_bash(path)) {
         return found(bash);
     }
     // Otherwise follow git to its sibling bash: git sits in <root>\cmd, bash in
     // <root>\bin, so the install root is git's grandparent.
-    if let Some(root) = probe("git")
-        .as_deref()
-        .map(Path::new)
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-    {
-        let bash = root.join("bin").join("bash.exe");
-        if let Some(bash) = probe(&bash.to_string_lossy()) {
-            return found(bash);
+    if let Some(git) = probe("git") {
+        // Use Windows separators explicitly: std::path follows the host OS,
+        // even when is_windows is true in a test running on macOS or Linux.
+        let git = git.replace('/', "\\");
+        if let Some((root, _)) = git
+            .rsplit_once('\\')
+            .and_then(|(dir, _)| dir.rsplit_once('\\'))
+        {
+            if let Some(bash) = probe(&format!(r"{root}\bin\bash.exe")) {
+                return found(bash);
+            }
         }
     }
     // The installer's "Use Git from Git Bash only" option keeps git OFF PATH,
@@ -106,6 +109,20 @@ pub fn resolve_agent_shell(
          from https://git-scm.com/download/win, or set SHELL to a bash."
             .to_string(),
     )
+}
+
+/// Known Windows/Store entry points into WSL. Explicit SHELL overrides are
+/// honored separately; automatic discovery must not silently switch OSes.
+fn is_wsl_bash(path: &str) -> bool {
+    let path = path.replace('\\', "/").to_ascii_lowercase();
+    let path = path.strip_suffix(".exe").unwrap_or(&path);
+    [
+        "/system32/bash",
+        "/sysnative/bash",
+        "/microsoft/windowsapps/bash",
+    ]
+    .iter()
+    .any(|suffix| path.ends_with(suffix))
 }
 
 /// Resolve a program name, or an absolute path, to a usable executable path.
@@ -136,6 +153,9 @@ fn look_up_program(
             format!("{dir}{join}{name_or_path}"),
             format!("{dir}{join}{name_or_path}.exe"),
         ] {
+            if sep == ';' && name_or_path.eq_ignore_ascii_case("bash") && is_wsl_bash(&candidate) {
+                continue;
+            }
             if exists(&candidate) {
                 return Some(candidate);
             }
@@ -250,6 +270,59 @@ mod tests {
         })
         .expect("git on PATH leads to its bash");
         assert_eq!(shell.program, r"D:\dev\PortableGit\bin\bash.exe");
+    }
+
+    #[test]
+    fn windows_derives_bash_from_a_git_path_with_forward_slashes() {
+        let shell = resolve_agent_shell(None, None, true, &|name| match name {
+            "git" => Some("D:/dev/PortableGit/cmd/git.exe".to_string()),
+            r"D:\dev\PortableGit\bin\bash.exe" => Some(name.to_string()),
+            _ => None,
+        })
+        .expect("Windows accepts either path separator");
+        assert_eq!(shell.program, r"D:\dev\PortableGit\bin\bash.exe");
+    }
+
+    #[test]
+    fn windows_skips_wsl_launchers_for_git_bash() {
+        for wsl in [
+            r"C:\WINDOWS\System32\bash.exe",
+            "C:/Windows/Sysnative/bash.exe",
+            r"C:\Users\a\AppData\Local\Microsoft\WindowsApps\bash.exe",
+        ] {
+            let shell = resolve_agent_shell(None, None, true, &|name| match name {
+                "bash" => Some(wsl.to_string()),
+                r"C:\Program Files\Git\bin\bash.exe" => Some(name.to_string()),
+                _ => None,
+            })
+            .expect("Git Bash is available");
+            assert_eq!(shell.program, r"C:\Program Files\Git\bin\bash.exe");
+        }
+    }
+
+    #[test]
+    fn windows_with_only_wsl_names_the_native_shell_requirement() {
+        let error = resolve_agent_shell(None, None, true, &|name| {
+            (name == "bash").then(|| r"C:\Windows\System32\bash.exe".to_string())
+        })
+        .expect_err("WSL is not a native Windows agent shell");
+        assert!(error.contains("Git for Windows"));
+    }
+
+    #[test]
+    fn windows_path_search_continues_past_wsl_to_native_bash() {
+        let shell = look_up_program(
+            "bash",
+            Some(r"C:\Windows\System32;D:\PortableGit\bin"),
+            ';',
+            &|path| {
+                matches!(
+                    path,
+                    r"C:\Windows\System32\bash.exe" | r"D:\PortableGit\bin\bash.exe"
+                )
+            },
+        );
+        assert_eq!(shell.as_deref(), Some(r"D:\PortableGit\bin\bash.exe"));
     }
 
     #[test]
