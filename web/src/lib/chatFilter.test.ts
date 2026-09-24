@@ -71,6 +71,14 @@ describe("chatFilterList", () => {
     expect(chatFilterList(list, "done", "open").map((c) => c.id)).toEqual(["open", "ticked"]);
   });
 
+  it("keeps locally changed rows in place until the viewer changes filters", () => {
+    expect(chatFilterList(list, "active", null, new Set(["ticked"])).map((c) => c.id))
+      .toEqual(["open", "ticked", "reopened"]);
+    expect(chatFilterList(list, "done", null, new Set(["open"])).map((c) => c.id))
+      .toEqual(["open", "ticked"]);
+    expect(chatFilterList(list, "active").map((c) => c.id)).toEqual(["open", "reopened"]);
+  });
+
   it("copies rather than filtering the caller's array in place", () => {
     expect(chatFilterList(list, "all")).not.toBe(list);
   });

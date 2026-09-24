@@ -98,6 +98,7 @@ export function Sidebar({
 } & ChatPreviewSource) {
   const [collapsed, setCollapsed] = useState(savedCollapsed);
   const [filter, setFilter] = useState<ChatFilter>(savedFilter);
+  const [keptMarked, setKeptMarked] = useState<ReadonlySet<string>>(() => new Set());
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
@@ -117,17 +118,30 @@ export function Sidebar({
   const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
   const archivedConversations = workerArchiveChatList(conversations, orchestration, true);
   const activeConversations = workerArchiveChatList(conversations, orchestration);
-  // What each view would hold. A view is offered only once it has something in
-  // it, so somebody who has never ticked or pinned a chat sees no filter row at
-  // all, and the row never grows a chip reading zero.
+  // A later message can make a done chat active again. Stop retaining that
+  // row then, so a future mark from another device follows the live filter.
+  useEffect(() => {
+    setKeptMarked((before) => {
+      const next = new Set(before);
+      for (const id of before) {
+        const chat = conversationById.get(id);
+        if (!chat || (filter === "active" ? !isChatDone(chat) : filter === "done" ? isChatDone(chat) : true)) {
+          next.delete(id);
+        }
+      }
+      return next.size === before.size ? before : next;
+    });
+  }, [conversations, filter]);
+  // Keep the filter row's height stable while chats are being ticked off. The
+  // optional views appear only once they hold a chat; Active and All stay put.
   const doneTotal = chatFilterCount(activeConversations, "done");
   const pinnedTotal = chatFilterCount(activeConversations, "pinned");
   const offered = CHAT_FILTERS.filter((option) =>
     option === "active" || option === "all" || filter === option
     || (option === "done" ? doneTotal : pinnedTotal) > 0);
-  const filtering = !showArchived && offered.length > 2;
+  const filtering = !showArchived && activeConversations.length > 0;
   const listedConversations = showArchived ? archivedConversations
-    : chatFilterList(activeConversations, filter, currentConversation);
+    : chatFilterList(activeConversations, filter, currentConversation, keptMarked);
   const listedIds = new Set(listedConversations.map((chat) => chat.id));
   const trimmedQuery = query.trim();
   const searchActive = [...trimmedQuery].length >= 2;
@@ -149,10 +163,11 @@ export function Sidebar({
         workflowChatList(conversations, orchestration, currentConversation),
         filter,
         currentConversation,
+        keptMarked,
       ),
       chatParents,
     ),
-    [conversations, chatParents, orchestration, currentConversation, filter],
+    [conversations, chatParents, orchestration, currentConversation, filter, keptMarked],
   );
   const visibleNodes = searchActive || showArchived
     ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
@@ -211,6 +226,21 @@ export function Sidebar({
     try { await onArchiveWorker(attemptId, archived); }
     catch (error) { setArchiveError(error instanceof Error ? error.message : String(error)); }
     finally { setArchiving(false); }
+  };
+  const chooseFilter = (next: ChatFilter) => {
+    setKeptMarked(new Set());
+    setFilter(next);
+  };
+  const toggleDone = (chat: Conversation) => {
+    const done = isChatDone(chat);
+    const wouldLeave = (filter === "active" && !done) || (filter === "done" && done);
+    setKeptMarked((before) => {
+      const next = new Set(before);
+      if (wouldLeave) next.add(chat.id);
+      else next.delete(chat.id);
+      return next;
+    });
+    onToggleDone(chat.id);
   };
 
   const renderChat = ({ chat, children, descendants }: ChatNode): ReactNode => {
@@ -355,7 +385,7 @@ export function Sidebar({
               // Touch browsers need not emit dblclick. Count clicks on the
               // same badge; detail 0 preserves keyboard and assistive activation.
               if (event.detail === 0 || (previous?.chatId === chat.id && event.timeStamp - previous.at <= 500)) {
-                onToggleDone(chat.id);
+                toggleDone(chat);
               } else {
                 badgeTap.current = { chatId: chat.id, at: event.timeStamp };
               }
@@ -436,7 +466,7 @@ export function Sidebar({
             items={[
               { id: "new-project", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
               ...(archivedConversations.length || showArchived ? [{ id: "archived", label: showArchived ? "Active chats" : `Archived workers (${archivedConversations.length})`, icon: <ArchiveIcon />,
-                onSelect: () => { setShowArchived(!showArchived); setQuery(""); } }] : []),
+                onSelect: () => { setShowArchived(!showArchived); setKeptMarked(new Set()); setQuery(""); } }] : []),
               ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
               ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
             ]}
@@ -466,9 +496,8 @@ export function Sidebar({
             )}
           </label>
         </div>
-        {/* Offered only once there is something to hide. Ticking the first
-            chat off is what reveals it, which is also the moment it first
-            means anything. */}
+        {/* This row keeps its height when the first chat is ticked off, so the
+            list below does not jump while somebody is working through it. */}
         {filtering && (
           <div className="sidebar-filter" role="group" aria-label="Show chats">
             {offered.map((option) => {
@@ -476,7 +505,7 @@ export function Sidebar({
               return (
                 <button key={option} type="button" aria-pressed={filter === option}
                   className={filter === option ? "is-on" : ""}
-                  onClick={() => setFilter(option)}>
+                  onClick={() => chooseFilter(option)}>
                   {FILTER_LABELS[option]}
                   {total > 0 && <span>{total}</span>}
                 </button>
@@ -488,7 +517,7 @@ export function Sidebar({
 
       {showArchived && <div className="sidebar-archive-view">
         <div><strong>Archived workers</strong><span>{archivedConversations.length}</span></div>
-        <button type="button" onClick={() => { setShowArchived(false); setQuery(""); }}>Back to active chats</button>
+        <button type="button" onClick={() => { setShowArchived(false); setKeptMarked(new Set()); setQuery(""); }}>Back to active chats</button>
       </div>}
       {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
       {!listedConversations.length ? (
@@ -500,11 +529,11 @@ export function Sidebar({
           <span>{filter === "done" ? "No chats are ticked off."
             : filter === "pinned" ? "No chats are pinned."
             : "No chats yet"}</span>
-          <button type="button" onClick={() => setFilter("active")}>Show active chats</button>
+          <button type="button" onClick={() => chooseFilter("active")}>Show active chats</button>
         </div> :
         conversations.length ? <div className="sidebar-empty" role="status">
           <span>Every chat is ticked off.</span>
-          <button type="button" onClick={() => setFilter("done")}>Show done chats</button>
+          <button type="button" onClick={() => chooseFilter("done")}>Show done chats</button>
         </div> :
         <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
       ) : searchActive && searchState !== "ready" ? (

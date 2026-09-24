@@ -573,6 +573,20 @@ describe("the meter on a turn in flight", () => {
 
 
 describe("the agent roster", () => {
+  it("shows host interruption and clears only the named background work on replay", () => {
+    let state = emptyChat();
+    for (const id of ["lost", "retained"]) state = reduceChat(state, {
+      type: "system", subtype: "task_started", task_id: id,
+      task_type: "local_agent", description: id,
+    });
+    const event = { type: "octiq_background_interrupted", task_ids: ["lost"], message: "Background agent lost was interrupted; inspect its output." };
+    state = reduceChat(state, event);
+    expect(state.background.map((task) => task.id)).toEqual(["retained"]);
+    expect(state.agents.find((agent) => agent.id === "lost")?.status).toBe("failed");
+    expect(state.agents.find((agent) => agent.id === "retained")?.status).toBe("running");
+    expect(reduceChat(state, event).notices.filter((notice) => notice === event.message)).toHaveLength(1);
+  });
+
   it("leaves a tracked shell command off the rail", () => {
     // `task_started` is not only for agents: a Bash call the harness decides to
     // track arrives on the same channel as `local_bash`. The rail is a list of

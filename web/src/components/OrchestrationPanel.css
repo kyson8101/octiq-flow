@@ -579,6 +579,9 @@
 .orch-task-detail > p, .orch-task-more > p { margin: 0 0 10px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
 .orch-task-more > summary { padding: 2px 0; color: var(--fg-3); font-size: 10.5px; cursor: pointer; }
 .orch-task-more[open] > summary { margin-bottom: 10px; }
+.orch-task-lifecycle { margin-bottom: 12px; overflow-wrap: anywhere; }
+.orch-task-lifecycle p { margin: 0 0 6px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
+.orch-task-lifecycle code { font-family: var(--mono); font-size: 10.5px; }
 .orch-task-blocker { color: var(--warn); }
 .orch-task-reported, .orch-task-after { color: var(--fg-3); font-size: 10.5px; }
 .orch-task-steps { margin: 0 0 10px; padding: 0; list-style: none; font-size: 11.5px; }

@@ -200,6 +200,22 @@ pub(crate) fn has_pending_for_chat(chat_key: &str) -> bool {
     with_pending(|pending| pending.values().any(|block| block.chat_key == chat_key))
 }
 
+/// Coordinator evidence deliberately excludes the raw router diagnostic.
+pub(crate) fn decision_summaries() -> Vec<(String, String, String)> {
+    with_pending(|pending| {
+        pending
+            .values()
+            .map(|block| {
+                (
+                    block.id.clone(),
+                    block.chat_key.clone(),
+                    block.summary.clone(),
+                )
+            })
+            .collect()
+    })
+}
+
 /// Remove one card after the person chooses a path or dismisses it.
 pub fn dismiss(id: &str) -> bool {
     let removed = with_pending(|pending| pending.remove(id).is_some());

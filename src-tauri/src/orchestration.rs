@@ -23,10 +23,12 @@ use uuid::Uuid;
 use crate::agent_chat::{Access, ChatAgent, ChatManager};
 use crate::workspaces::{Workspace, WorkspaceState};
 
+pub mod agent_view;
 mod archive;
 pub mod automation;
 pub mod execution;
 pub mod inbox;
+pub mod lifecycle;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 use workspaces::TaskWorkspace;
@@ -207,6 +209,8 @@ pub struct Snapshot {
     pub messages: Vec<OrchestrationMessage>,
     pub notifications: Vec<inbox::Notification>,
     pub reports: BTreeMap<String, crate::chat_task::TaskReport>,
+    pub native_decisions: Vec<lifecycle::NativeDecision>,
+    pub services: Vec<lifecycle::Service>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,6 +231,10 @@ struct Stored {
     notifications: BTreeMap<String, inbox::Notification>,
     #[serde(default)]
     resume_contexts: BTreeMap<String, crate::agent_chat::StartContext>,
+    #[serde(default)]
+    native_decisions: BTreeMap<String, lifecycle::NativeDecision>,
+    #[serde(default)]
+    services: BTreeMap<String, lifecycle::Service>,
 }
 
 fn store_version() -> u32 {
@@ -244,6 +252,8 @@ impl Default for Stored {
             messages: BTreeMap::new(),
             notifications: BTreeMap::new(),
             resume_contexts: BTreeMap::new(),
+            native_decisions: BTreeMap::new(),
+            services: BTreeMap::new(),
         }
     }
 }
@@ -302,6 +312,7 @@ impl OrchestrationStore {
                     data.version = STORE_VERSION;
                     recovered |= recover_interrupted_workers(&mut data);
                     recovered |= workspaces::recover_workspaces(&mut data);
+                    recovered |= lifecycle::recover(&mut data);
                     inner.data = data;
                 }
                 Ok(data) => {
@@ -375,6 +386,7 @@ impl OrchestrationStore {
     }
 
     pub fn snapshot(&self, run_id: Option<&str>) -> Result<Snapshot, String> {
+        self.capture_native_decisions()?;
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
@@ -435,8 +447,23 @@ impl OrchestrationStore {
                 .cloned()
                 .collect(),
             reports: BTreeMap::new(),
+            native_decisions: inner
+                .data
+                .native_decisions
+                .values()
+                .filter(|d| visible.contains(d.run_id.as_str()))
+                .cloned()
+                .collect(),
+            services: inner
+                .data
+                .services
+                .values()
+                .filter(|s| visible.contains(s.run_id.as_str()))
+                .cloned()
+                .collect(),
         };
         drop(inner);
+        lifecycle::refresh_decision_views(&mut snapshot);
         snapshot.reports = crate::chat_task::reports_for_chat_keys(
             snapshot
                 .attempts
@@ -1105,6 +1132,10 @@ impl OrchestrationStore {
         actor_chat_key: &str,
         report: WorkerReport,
     ) -> Result<Task, String> {
+        self.capture_native_decisions()?;
+        if crate::safety_block::has_pending_for_chat(actor_chat_key) {
+            return Err("A native safety decision is still pending. End the turn without settling; the existing safety card must keep this attempt resumable.".into());
+        }
         let mut event_run_id = String::new();
         let result = self.mutate(|data| {
             let attempt = data
@@ -1752,7 +1783,7 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
         "\n\nAssigned workspace: {}\nBranch: {}\nMode: {:?}\nBase SHA: {}\nExisting changes to preserve:\n{}\nThe host owns this workspace lifecycle. Do not switch branches, create replacement worktrees, or remove this directory. Stop all source changes after reporting. Use orchestration validation workspaces for isolated commit checks.",
         w.plan.cwd, w.plan.branch, w.plan.mode, w.plan.base_sha, w.plan.initial_status
     )).unwrap_or_default();
-    format!("{brief}{workspace}")
+    format!("{brief}{workspace}\n\nIf you start a local service that downstream work needs, register its loopback host, port, and precise source/recovery guidance with orchestration_service_register before settling. A completed startup task is not live service readiness; application health still needs verification. Never include credentials in recovery guidance.")
 }
 
 pub fn master_prompt(run: &Run) -> String {
@@ -2515,6 +2546,43 @@ mod tests {
             .is_err());
         assert_eq!(fs::read(&file).unwrap(), b"not json");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pending_safety_card_keeps_its_worker_attempt_resumable() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let task = task(&store, &run, Vec::new());
+        let launch = WorkerLaunch {
+            task_id: task.id,
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: Some(true),
+            base_branch: String::new(),
+        };
+        let (_, _, attempt, _) = store.reserve_attempt("chat:master", &launch).unwrap();
+        store
+            .activate_attempt(&attempt.id, "/tmp".into(), "worker".into(), true)
+            .unwrap();
+        crate::safety_block::observe(ChatAgent::Codex, &attempt.worker_chat_key,
+            "codex_core::tools::router: error=This action was rejected due to unacceptable risk.\\nReason: Upload requires a decision.");
+        let result = store.report_worker(
+            &attempt.worker_chat_key,
+            WorkerReport {
+                attempt_id: attempt.id.clone(),
+                outcome: WorkerOutcome::Blocked,
+                summary: "Waiting for upload decision".into(),
+                files_modified: vec![],
+            },
+        );
+        crate::safety_block::forget_chat(&attempt.worker_chat_key);
+        assert!(result.unwrap_err().contains("safety"));
+        assert_eq!(
+            store.snapshot(Some(&run.id)).unwrap().attempts[0].status,
+            AttemptStatus::Running
+        );
     }
 
     #[test]

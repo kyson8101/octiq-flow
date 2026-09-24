@@ -163,6 +163,8 @@ export type OrchestrationNotification = {
 };
 
 export type OrchestrationSnapshot = {
+  nativeDecisions?: NativeDecision[];
+  services?: RuntimeService[];
   reports?: Record<string, TaskReport>;
   runs: OrchestrationRun[];
   tasks: OrchestrationTask[];
@@ -170,6 +172,18 @@ export type OrchestrationSnapshot = {
   gates: OrchestrationGate[];
   messages: OrchestrationMessage[];
   notifications?: OrchestrationNotification[];
+};
+
+export type NativeDecision = {
+  id: string; runId: string; taskId: string; attemptId: string; chatKey: string;
+  reason: string; blockedAction: string | null; status: string;
+  continuation: string; recovery: string; observedAt: number;
+};
+
+export type RuntimeService = {
+  id: string; runId: string; taskId: string; attemptId: string; name: string;
+  host: string; port: number; state: "unverified" | "listening" | "stopped";
+  checkedAt: number | null; recovery: string;
 };
 
 export const EMPTY_ORCHESTRATION: OrchestrationSnapshot = {

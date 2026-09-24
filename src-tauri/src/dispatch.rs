@@ -651,7 +651,30 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         // key when it resolves a visible gate or starts a run explicitly.
         "orchestration_snapshot" => {
             let run_id: Option<String> = arg(&args, "runId")?;
-            to_value(svc.orchestrations.snapshot(run_id.as_deref()))
+            let snapshot = svc.orchestrations.snapshot(run_id.as_deref());
+            // An agent's read lands in its transcript and goes out to every
+            // tab, so it gets the compact view; the browser, which names no
+            // actor, keeps the whole store.
+            let Some(actor) = arg::<Option<String>>(&args, "actorChatKey")? else {
+                return to_value(snapshot);
+            };
+            let task_id: Option<String> = arg(&args, "taskId")?;
+            let message_limit: Option<usize> = arg(&args, "messageLimit")?;
+            crate::orchestration::agent_view::agent_snapshot(
+                snapshot?,
+                &crate::orchestration::agent_view::AgentRead {
+                    actor: &actor,
+                    run_id: run_id.as_deref(),
+                    task_id: task_id.as_deref(),
+                    message_limit: message_limit
+                        .unwrap_or(crate::orchestration::agent_view::DEFAULT_MESSAGES),
+                },
+            )
+        }
+        "orchestration_service_register" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let registration = serde_json::from_value(args).map_err(|e| e.to_string())?;
+            to_value(svc.orchestrations.register_service(&actor, registration))
         }
         "orchestration_run_create" => {
             let actor: String = arg(&args, "actorChatKey")?;

@@ -225,6 +225,9 @@ pub fn start_scheduler(
 ) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
+        if let Err(error) = store.check_services(now_ms()) {
+            eprintln!("orchestration: service monitoring failed: {error}");
+        }
         if let Err(error) = store.recover_due_workers(chats.clone(), &workspaces, now_ms()) {
             eprintln!("orchestration: worker monitoring failed: {error}");
         }

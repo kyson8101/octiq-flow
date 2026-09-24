@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useState, useRef, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME, modelFromReported } from "../lib/agentProviders";
@@ -10,8 +10,11 @@ import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
 import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
+import { orchestrationFeed } from "../lib/orchestrationFeed";
+import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
 import { AgentLogo } from "./AgentLogo";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
+import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { RollingNumber } from "./RollingNumber";
 import { BranchIcon, ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
 
@@ -76,7 +79,9 @@ export function OrchestrationPanel({
   onEnsureCoordinator?: (objective: string) => Promise<string>;
   onStartMaster?: (run: OrchestrationRun) => Promise<void>;
 }) {
-  const [snapshot, setSnapshot] = useState(initialSnapshot);
+  // The tab's shared ledger; `initialSnapshot` stands in until its first read.
+  const feed = useOrchestrationFeed();
+  const snapshot = feed.snapshot ?? initialSnapshot;
   const [selectedId, setSelectedId] = useState<string | null>((embedded ? chatSnapshot(initialSnapshot, coordinatorKey) : initialSnapshot).runs[0]?.id ?? null);
   const [creating, setCreating] = useState((embedded ? chatSnapshot(initialSnapshot, coordinatorKey) : initialSnapshot).runs.length === 0 && !readOnly);
   const [objective, setObjective] = useState("");
@@ -88,27 +93,10 @@ export function OrchestrationPanel({
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [confirmStop, setConfirmStop] = useState(false);
 
-  const readRevision = useRef(0);
-  const read = useCallback(async () => {
-    const requested = ++readRevision.current;
-    try {
-      const next = await bridge.invoke<OrchestrationSnapshot>("orchestration_snapshot");
-      if (requested === readRevision.current) setSnapshot(next ?? EMPTY);
-    } catch (problem) {
-      if (requested === readRevision.current) setError(messageOf(problem));
-    }
-  }, []);
-
-  useEffect(() => {
-    void read();
-    const offEvent = bridge.on("orchestration-changed", () => void read());
-    const offState = bridge.onState((state) => state === "open" && void read());
-    return () => {
-      readRevision.current++;
-      offEvent();
-      offState();
-    };
-  }, [read]);
+  // After an action: the action itself succeeded, and a failed read shows
+  // through the feed's error.
+  const read = () => orchestrationFeed.refresh().catch(() => {});
+  const shownError = error ?? feed.error;
 
   const runs = useMemo(
     () => embedded ? chatSnapshot(snapshot, coordinatorKey).runs : snapshot.runs.filter((run) => !project || run.workspaceId === project.id),
@@ -155,7 +143,7 @@ export function OrchestrationPanel({
         startMaster: !onStartMaster,
       });
       setObjective("");
-      setSnapshot((before) => ({ ...before, runs: [run, ...before.runs.filter((item) => item.id !== run.id)] }));
+      orchestrationFeed.patch((before) => ({ ...before, runs: [run, ...before.runs.filter((item) => item.id !== run.id)] }));
       setSelectedId(run.id);
       setCreating(false);
       await read();
@@ -288,7 +276,7 @@ export function OrchestrationPanel({
           </nav>
 
           <div className="orch-content">
-            {error && <div className="orch-error" role="alert">{error}</div>}
+            {shownError && <div className="orch-error" role="alert">{shownError}</div>}
             {readOnly && <p className="orch-empty">This agent chat is read-only. Send instructions and decisions in the main chat.</p>}
             {creating && !readOnly ? (
               <NewRun
@@ -721,6 +709,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           <span className="orch-task-title">{task.title}</span>
           <span className="orch-task-state">{attempt?.execution && task.activeAttemptId === attempt.id ? EXECUTION_LABELS[attempt.execution.state] : TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
           <span className="orch-task-meta">
+            {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
             {attempt && <span className="orch-task-agent" title={`${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}><AgentLogo agent={attempt.agent} size={10} /></span>}
@@ -747,6 +736,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
         {!report && <p className="orch-task-reported">No checklist reported</p>}
         <details className="orch-task-more">
           <summary>Task details</summary>
+          <TaskLifecycleEvidence snapshot={snapshot} taskId={task.id} now={now} />
           {attempt?.execution && <><p>Task: {TASK_LABELS[task.status]}</p><WorkerExecutionEvidence execution={attempt.execution} /></>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {task.dependsOn.length > 0 && <p className="orch-task-after">After {task.dependsOn.map((id) => taskNames.get(id) ?? id).join(", ")}</p>}

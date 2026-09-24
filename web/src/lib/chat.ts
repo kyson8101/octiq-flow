@@ -948,6 +948,17 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     };
   }
 
+  if (type === "octiq_background_interrupted") {
+    const ids = new Set(asArr(e.task_ids).map(asStr));
+    const message = asStr(e.message);
+    return {
+      ...state,
+      background: state.background.filter((task) => !ids.has(task.id)),
+      agents: state.agents.map((agent) => ids.has(agent.id) ? { ...agent, status: "failed" as const, summary: message } : agent),
+      notices: message && !state.notices.includes(message) ? [...state.notices, message].slice(-8) : state.notices,
+    };
+  }
+
   if (type === "octiq_auto_resume_cancelled") {
     const id = asStr(e.id);
     if (!state.autoResume || (id && state.autoResume.id !== id)) return state;

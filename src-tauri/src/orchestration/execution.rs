@@ -166,6 +166,14 @@ fn classify(message: &str, now: i64) -> ExecutionError {
     }
 }
 
+/// What observing a worker changed: nothing, only its attempt's execution,
+/// or the ledger beyond it (a settlement, a queued notification).
+enum Touched {
+    Nothing,
+    Execution(Execution),
+    Ledger,
+}
+
 enum Observation {
     Activity,
     ModelActivity,
@@ -435,12 +443,13 @@ impl OrchestrationStore {
         {
             return Ok(());
         }
-        let changed = self.mutate(|data| {
-            let Some(current) = data.attempts.get(&before.id) else { return Ok(false); };
-            if !attempt_is_unsettled(data, current) { return Ok(false); }
+        let touched = self.mutate(|data| {
+            let Some(current) = data.attempts.get(&before.id) else { return Ok(Touched::Nothing); };
+            if !attempt_is_unsettled(data, current) { return Ok(Touched::Nothing); }
+            let mut ledger = false;
             for observation in observations {
                 if let Observation::Error(error, false) = observation {
-                    return Ok(fail(data, &before.id, error, now));
+                    return Ok(if fail(data, &before.id, error, now) { Touched::Ledger } else { Touched::Nothing });
                 }
                 let attempt = data.attempts.get_mut(&before.id).unwrap();
                 let e = &mut attempt.execution;
@@ -454,6 +463,7 @@ impl OrchestrationStore {
                         let target = data.runs[&before.run_id].coordinator_chat_key.clone();
                         inbox::enqueue(data, &before.run_id, key, &target, format!("provider-retry:{}:{episode}", before.id), &error.kind,
                             format!("Provider retry for task {} (attempt {}): {}. Execution is waiting for the provider, not making progress. Read orchestration_snapshot.", before.task_id, before.id, error.message));
+                        ledger = true;
                         continue;
                     }
                     Observation::ToolStart(id, name) => { e.last_progress_at = Some(now); e.last_progress = Some(format!("Started {name}")); e.pending_tools.insert(id, name); }
@@ -489,10 +499,18 @@ impl OrchestrationStore {
                     e.current_operation = Some(if e.pending_tools.is_empty() { "Requesting model response".into() } else { e.pending_tools.values().cloned().collect::<Vec<_>>().join(", ") });
                 }
             }
-            Ok(true)
+            Ok(if ledger { Touched::Ledger } else { Touched::Execution(data.attempts[&before.id].execution.clone()) })
         })?;
-        if changed {
-            announce(&before.run_id, "worker_execution");
+        match touched {
+            Touched::Nothing => {}
+            Touched::Ledger => announce(&before.run_id, "worker_execution"),
+            // The commonest change by far — every tool start and end of every
+            // worker. It rides in the event, so an open tab patches one attempt
+            // instead of refetching the whole ledger.
+            Touched::Execution(execution) => crate::bus::emit(
+                "orchestration-changed",
+                json!({ "runId": before.run_id, "change": "worker_execution", "attemptId": before.id, "execution": execution }),
+            ),
         }
         Ok(())
     }
@@ -808,6 +826,35 @@ mod tests {
         assert_eq!(reloaded.notifications[0].id, note.id);
         assert_eq!(reloaded.attempts[0].cwd, attempt.cwd);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn execution_only_changes_ride_in_the_event_and_others_ask_for_a_refetch() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let attempt = running_worker(&store, &run);
+        let mut browser = crate::bus::events().subscribe();
+        store.observe_worker_event(&attempt.worker_chat_key, &json!({"type":"item.started","item":{"id":"c1","type":"command_execution","command":"cargo test"}})).unwrap();
+        let patched = latest(&store, &attempt.id).execution;
+        // A provider retry also queues a coordinator notification.
+        store.observe_worker_event(&attempt.worker_chat_key, &json!({"type":"warning","will_retry":true,"message":"Selected model is at capacity"})).unwrap();
+        let frames: Vec<Value> = std::iter::from_fn(|| browser.try_recv().ok())
+            .map(|frame| serde_json::from_str::<Value>(&frame).unwrap())
+            .filter(|frame| {
+                frame["event"] == "orchestration-changed" && frame["payload"]["runId"] == run.id
+            })
+            .collect();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0]["payload"]["attemptId"], attempt.id);
+        assert_eq!(
+            frames[0]["payload"]["execution"],
+            serde_json::to_value(&patched).unwrap()
+        );
+        assert_eq!(
+            frames[0]["payload"]["execution"]["lastProgress"],
+            "Started cargo test"
+        );
+        assert!(frames[1]["payload"].get("execution").is_none());
     }
 
     #[test]

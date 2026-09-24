@@ -293,22 +293,25 @@ fn emit_unstructured_output(
     key: &str,
     text: String,
     disposition: OutputDisposition,
-) {
+) -> bool {
     match disposition {
-        OutputDisposition::Ignore => {}
+        OutputDisposition::Ignore => false,
         OutputDisposition::DiagnosticsOnly => {
             crate::diagnostics::record(agent, key, "stderr", &text);
-            crate::safety_block::observe(agent, key, &text);
+            crate::safety_block::observe(agent, key, &text)
         }
-        OutputDisposition::Visible => emit_status(
-            agent,
-            ChatStatus {
-                key: key.to_string(),
-                kind: "stderr".into(),
-                text,
-                code: None,
-            },
-        ),
+        OutputDisposition::Visible => {
+            emit_status(
+                agent,
+                ChatStatus {
+                    key: key.to_string(),
+                    kind: "stderr".into(),
+                    text,
+                    code: None,
+                },
+            );
+            false
+        }
     }
 }
 
@@ -514,6 +517,7 @@ struct QueuedTurn {
 
 #[derive(Default)]
 pub struct ChatManager {
+    background: crate::background_tasks::Store,
     pub(crate) orchestrations: Arc<crate::orchestration::OrchestrationStore>,
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
@@ -532,7 +536,9 @@ pub struct ChatManager {
 impl ChatManager {
     pub(crate) fn with_saved_questions(path: std::path::PathBuf) -> Self {
         let auto_resume_path = path.with_file_name("auto-resumes.json");
+        let background_path = path.with_file_name("background-tasks.json");
         Self {
+            background: crate::background_tasks::Store::load(background_path),
             questions: Arc::new(crate::question_store::QuestionStore::load(path)),
             auto_resumes: crate::auto_resume::Store::load(auto_resume_path),
             ..Self::default()
@@ -1630,6 +1636,14 @@ pub(crate) fn start_session(
         return Err(format!("chat '{session_key}' is already running"));
     }
 
+    let (prompt, visible_prompt) = match (prompt, manager.background.continuation(&key)) {
+        (Some(prompt), Some(context)) => {
+            let visible = visible_prompt.or_else(|| Some(prompt.clone()));
+            (Some(format!("{context}\n\n{prompt}")), visible)
+        }
+        (prompt, _) => (prompt, visible_prompt),
+    };
+
     manager.orchestrations.require_workspace_access(
         &session_key,
         &cwd,
@@ -2070,6 +2084,13 @@ pub(crate) fn start_session(
                             .flatten()
                             .or(blocked_quota_reset);
                         let observed = stream_provider.observe_event(&event);
+                        if let Ok(session) = asking.lock() {
+                            if let Err(error) =
+                                reading.background.observe(&key, &session.launch_id, &event)
+                            {
+                                eprintln!("chat: cannot record background work: {error}");
+                            }
+                        }
                         // Anything the agent asks US, named in the log first.
                         //
                         // This whole path is invisible otherwise: a
@@ -2269,12 +2290,16 @@ pub(crate) fn start_session(
                         {
                             eprintln!("orchestration: cannot record provider output: {error}");
                         }
-                        emit_unstructured_output(
+                        if emit_unstructured_output(
                             stream_provider.kind(),
                             &key,
                             trimmed.to_string(),
                             stream_provider.classify_output(trimmed, &mut output_state),
-                        )
+                        ) {
+                            if let Err(error) = reading.orchestrations.capture_native_decisions() {
+                                eprintln!("orchestration: cannot record native decision: {error}");
+                            }
+                        }
                     }
                 }
             }
@@ -2310,7 +2335,11 @@ pub(crate) fn start_session(
                         eprintln!("orchestration: cannot record provider stderr: {error}");
                     }
                 }
-                emit_unstructured_output(stderr_provider.kind(), &key, line, disposition);
+                if emit_unstructured_output(stderr_provider.kind(), &key, line, disposition) {
+                    if let Err(error) = observing.orchestrations.capture_native_decisions() {
+                        eprintln!("orchestration: cannot record native decision: {error}");
+                    }
+                }
             }
             let _ = output_closed.send(());
         });
@@ -2393,7 +2422,7 @@ pub(crate) fn start_session(
                 .ok()
                 .flatten()
                 .is_some();
-            let drained = is_worker
+            let drained = (is_worker || manager_for_exit.background.has_running(&key))
                 && (0..2).all(|_| output_drained.recv_timeout(Duration::from_secs(2)).is_ok());
 
             // A command-line provider has no second-input channel. If somebody
@@ -2429,6 +2458,12 @@ pub(crate) fn start_session(
             if drained {
                 if let Err(error) = manager_for_exit.orchestrations.worker_disconnected(&key) {
                     eprintln!("orchestration: cannot record worker disconnect: {error}");
+                }
+            }
+            if let Ok(session) = session.lock() {
+                if let Err(error) = manager_for_exit.background.interrupt(&key, &session.launch_id,
+                    "The provider process exited before a background completion was observed. Inspect retained output before retrying.") {
+                    eprintln!("chat: cannot record interrupted background work: {error}");
                 }
             }
             emit_status(
@@ -3615,8 +3650,27 @@ pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, St
 /// queued follow-up is discarded: the person explicitly ended the process it
 /// was waiting on.
 fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
+    end_process_when(manager, key, None)
+}
+
+fn end_process_when(
+    manager: &ChatManager,
+    key: &str,
+    idle: Option<Duration>,
+) -> Result<bool, String> {
     let session = {
         let mut sessions = manager.sessions.lock().map_err(|e| e.to_string())?;
+        if let Some(timeout) = idle {
+            let Some(session) = sessions.get(key) else {
+                return Ok(false);
+            };
+            let session = session.lock().map_err(|e| e.to_string())?;
+            if session.still_for().is_none_or(|still| still < timeout)
+                || manager.background.has_running(key)
+            {
+                return Ok(false);
+            }
+        }
         sessions.remove(key)
     };
     // Removal from the session map happens before clearing the queue, so a
@@ -3626,6 +3680,10 @@ fn end_process(manager: &ChatManager, key: &str) -> Result<bool, String> {
         return Ok(false);
     };
     let mut guard = session.lock().map_err(|e| e.to_string())?;
+    if let Err(error) = manager.background.interrupt(key, &guard.launch_id,
+        "The provider session was ended or switched. Background work is no longer attached; inspect retained output before retrying.") {
+        eprintln!("chat: cannot record interrupted background work: {error}");
+    }
     // Closing stdin asks persistent providers to finish; kill is the backstop.
     guard.stdin.take();
     let _ = guard.child.kill();
@@ -3653,7 +3711,7 @@ fn still_keys(manager: &ChatManager, timeout: Duration) -> Vec<String> {
 fn sweep_still_chats(manager: &ChatManager, timeout: Duration) -> Vec<String> {
     let mut ended = Vec::new();
     for key in still_keys(manager, timeout) {
-        if end_process(manager, &key) == Ok(true) {
+        if end_process_when(manager, &key, Some(timeout)) == Ok(true) {
             ended.push(key);
         }
     }
@@ -6027,6 +6085,41 @@ mod idle_tests {
     }
 
     const FIFTEEN: Duration = Duration::from_secs(15 * 60);
+
+    #[test]
+    fn native_background_work_keeps_an_idle_parent_alive_and_explicit_end_reports_ids() {
+        let manager = ChatManager::default();
+        let key = format!("chat:test-background-{}", uuid::Uuid::new_v4());
+        put(
+            &manager,
+            &key,
+            still_session(false, Duration::from_secs(20 * 60)),
+        );
+        manager.background.observe(&key, "test-launch", &json!({
+            "type": "system", "subtype": "task_started", "task_id": "native-agent-42", "task_type": "local_agent"
+        })).unwrap();
+        assert!(sweep_still_chats(&manager, FIFTEEN).is_empty());
+        assert!(manager.sessions.lock().unwrap().contains_key(&key));
+        end_process(&manager, &key).unwrap();
+        assert!(manager
+            .background
+            .continuation(&key)
+            .unwrap()
+            .contains("native-agent-42"));
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
+    fn idle_removal_rechecks_a_turn_that_started_after_the_sweep() {
+        let manager = ChatManager::default();
+        let key = "idle-recheck";
+        let session = still_session(false, Duration::from_secs(20 * 60));
+        put(&manager, key, session.clone());
+        assert_eq!(still_keys(&manager, FIFTEEN), vec![key]);
+        session.lock().unwrap().turn_started();
+        assert!(!end_process_when(&manager, key, Some(FIFTEEN)).unwrap());
+        end_process(&manager, key).unwrap();
+    }
 
     #[test]
     fn a_chat_still_for_longer_than_the_timeout_is_ended() {

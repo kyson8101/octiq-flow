@@ -43,9 +43,9 @@ export function isChatDone(chat: Conversation): boolean {
 /** The chats a filter shows, in the order they came in.
  *
  *  `keep` is the chat being read, and it stays listed whatever the filter
- *  says. Ticking off the chat you are looking at should SHOW you the tick, not
- *  pull the row out from under the pointer that made it; the row leaves the
- *  list once you move on, which is both undoable and unsurprising.
+ *  says. `keepMarked` holds rows changed by hand in the current view, so
+ *  ticking several chats does not shift the list under the pointer. The view
+ *  can apply the filter again when the person chooses one.
  *
  *  Order is preserved rather than appended to, because the tree built from
  *  this list ranks its rows by their position in it — a kept chat pushed to
@@ -55,13 +55,14 @@ export function chatFilterList(
   chats: readonly Conversation[],
   filter: ChatFilter,
   keep: string | null = null,
+  keepMarked?: ReadonlySet<string>,
 ): Conversation[] {
   if (filter === "all") return [...chats];
   // Pinned is read literally: a pinned chat you have also ticked off is still
   // pinned, and hiding it here would mean a row nothing in this menu lists.
   if (filter === "pinned") return chats.filter((chat) => chat.id === keep || !!chat.pinned);
   const want = filter === "done";
-  return chats.filter((chat) => chat.id === keep || isChatDone(chat) === want);
+  return chats.filter((chat) => chat.id === keep || !!keepMarked?.has(chat.id) || isChatDone(chat) === want);
 }
 
 /** How many chats a view would show. Drives whether that view is offered at

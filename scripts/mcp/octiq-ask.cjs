@@ -1249,12 +1249,19 @@ const ORCHESTRATION_TASK_CREATE = {
 const ORCHESTRATION_SNAPSHOT = {
   name: "orchestration_snapshot",
   description:
-    "Read durable orchestration state: runs, task DAG, authoritative attempts, gates, " +
-    "and messages. Pass runId for one run. This is the source of truth; never infer " +
-    "task state from chat prose.",
+    "Read durable orchestration state for your run: task statuses, the authoritative attempt per task, gates, " +
+    "undelivered notifications and the latest messages. Task specs, superseded attempts and older messages are " +
+    "left out and long text is clipped; pass taskId for one task in full. This is the source of truth; never " +
+    "infer task state from chat prose. nativeDecisions identifies observed safety cards and continuation viability; " +
+    "absence is not proof of approval. services reports registered local listener reachability and checkedAt, " +
+    "independent of task completion; verify application health before use.",
   inputSchema: {
     type: "object",
-    properties: { runId: { type: "string" } },
+    properties: {
+      runId: { type: "string", description: "Read this run. Defaults to the runs you coordinate or work in." },
+      taskId: { type: "string", description: "Read one task in full: spec, every attempt, gates, and messages with its workers." },
+      messageLimit: { type: "integer", minimum: 1, maximum: 100, description: "How many of the latest messages to include. Defaults to 12." },
+    },
   },
   annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 };
@@ -1376,6 +1383,16 @@ const WORKSPACE_TOOLS = [
 ];
 
 const ORCHESTRATION_TOOLS = [
+  {
+    name: "orchestration_service_register",
+    description: "Register a local service required by this run before settling its startup task. The host checks loopback TCP reachability independently of task completion, invalidates old evidence after restart, and notifies the coordinator when reachability changes. This does not launch or restart a process, prove application health, or grant permission. The owning active worker or coordinator may register; re-registering a task's service name replaces its prior record.",
+    inputSchema: { type: "object", properties: {
+      attemptId: { type: "string" }, name: { type: "string" },
+      host: { type: "string", enum: ["127.0.0.1", "::1"] },
+      port: { type: "integer", minimum: 1, maximum: 65535 },
+      recovery: { type: "string", description: "Exact source/workspace and supported recovery steps; guidance only, never executed automatically. Do not include credentials." },
+    }, required: ["attemptId", "name", "host", "port", "recovery"] },
+  },
   ORCHESTRATION_RUN_CREATE,
   ORCHESTRATION_TASK_CREATE,
   ORCHESTRATION_SNAPSHOT,
@@ -1574,8 +1591,10 @@ async function handle(msg) {
         try {
           const action = msg.params.name.slice("orchestration_".length);
           const result = await callOrchestration(action, msg.params.arguments || {});
+          // Unindented: a snapshot is re-read after every report, and each read
+          // is kept in the transcript.
           return reply(msg.id, {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(result) }],
           });
         } catch (error) {
           return reply(msg.id, {

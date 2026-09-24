@@ -172,12 +172,15 @@ describe("task-oriented Sidebar", () => {
   describe("ticking a chat off", () => {
     const ticked = (id: string, doneAt: number) => ({ ...chat(id), updatedAt: 100, doneAt });
 
-    it("offers a tick on every row, and no filter until one is used", () => {
+    it("offers a tick and keeps the filter row in place before the first tick", () => {
       const out = html({ conversations: [chat("a")] });
       expect(out).toContain('aria-label="Mark done: Task a"');
       expect(out).toContain('title="Double-click or double-tap to mark done"');
       expect(out).toContain('aria-description="Double-click or double-tap. With a keyboard, press Enter or Space."');
-      expect(out).not.toContain("sidebar-filter");
+      expect(out).toContain('class="sidebar-filter"');
+      expect(out).toContain("Active</button>");
+      expect(out).toContain("All</button>");
+      expect(out).not.toContain("Done</button>");
     });
 
     it("hides a ticked chat and offers the filter that brings it back", () => {
@@ -200,8 +203,11 @@ describe("task-oriented Sidebar", () => {
       expect(out).toContain("Done<span>1</span>");
     });
 
-    it("says nothing about filters when nothing is ticked or pinned", () => {
-      expect(html({ conversations: [chat("a"), chat("b")] })).not.toContain("sidebar-filter");
+    it("keeps the filter row's height when chats are ticked", () => {
+      const before = html({ conversations: [chat("a"), chat("b")] });
+      const after = html({ conversations: [chat("a"), ticked("b", 500)] });
+      expect(before).toContain('class="sidebar-filter"');
+      expect(after).toContain('class="sidebar-filter"');
     });
 
     it("keeps the chat being read listed, ticked and ready to be taken back", () => {
@@ -222,7 +228,7 @@ describe("task-oriented Sidebar", () => {
       const out = html({ conversations: [{ ...chat("a"), updatedAt: 900, doneAt: 500 }] });
       expect(out).toContain("Task a");
       expect(out).not.toContain("is-done");
-      expect(out).not.toContain("sidebar-filter");
+      expect(out).toContain("sidebar-filter");
     });
 
     it("says a filter emptied the list rather than offering a first chat", () => {

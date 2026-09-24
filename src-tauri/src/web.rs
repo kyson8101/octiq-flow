@@ -964,6 +964,7 @@ async fn orchestration_handler(
         "snapshot" => "orchestration_snapshot",
         "worker_start" => "orchestration_worker_start",
         "worker_report" => "orchestration_worker_report",
+        "service_register" => "orchestration_service_register",
         "workspace_refresh" => "orchestration_workspace_refresh",
         "task_reopen" => "orchestration_task_reopen",
         "validation_create" => "orchestration_validation_create",

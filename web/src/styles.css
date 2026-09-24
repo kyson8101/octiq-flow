@@ -653,9 +653,8 @@ body {
 .sidebar-search button:hover { background: var(--bg-2); color: var(--fg-0); }
 .sidebar-search button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* Which chats the list is showing. Present only once something has been ticked
-   off, so the toolbar keeps its two rows for everybody who never uses it — and
-   the search field hands its dividing line down to whichever row is last. */
+/* Which chats the list is showing. Keep this row mounted while chats are
+   ticked off, so the list below does not shift when Done first appears. */
 .sidebar-search-wrap:has(+ .sidebar-filter) { border-bottom: 0; padding-bottom: 6px; }
 .sidebar-filter {
   display: flex;

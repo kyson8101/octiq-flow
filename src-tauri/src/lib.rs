@@ -14,6 +14,7 @@ mod agent_history;
 mod agent_provider;
 mod agents;
 mod auto_resume;
+mod background_tasks;
 mod bus;
 mod canvas;
 mod chat_index;

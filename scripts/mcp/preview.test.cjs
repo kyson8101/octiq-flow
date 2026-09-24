@@ -72,6 +72,7 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     .filter(tool => tool.name.startsWith("orchestration_"))
     .map(tool => tool.name);
   assert.deepEqual(orchestration, [
+    "orchestration_service_register",
     "orchestration_run_create",
     "orchestration_task_create",
     "orchestration_snapshot",
@@ -88,6 +89,11 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_validation_create",
     "orchestration_validation_remove",
   ]);
+  const service = bound.result.tools.find(tool => tool.name === "orchestration_service_register");
+  assert.deepEqual(service.inputSchema.properties.host.enum, ["127.0.0.1", "::1"]);
+  assert.equal(service.inputSchema.properties.port.minimum, 1);
+  assert.equal(service.inputSchema.properties.port.maximum, 65535);
+  assert.deepEqual(service.inputSchema.required, ["attemptId", "name", "host", "port", "recovery"]);
   assert.ok(!standalone.result.tools.some(tool => tool.name === "search_conversations"));
   assert.ok(!standalone.result.tools.some(tool => tool.name.startsWith("orchestration_")));
   const codex = await mcp(root, "chat:one", "tools/list", undefined, ["--disable-ask-user"]);
