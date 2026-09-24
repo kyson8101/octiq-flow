@@ -11,6 +11,26 @@ current chat becomes its master. The panel shows
 the task ledger, current attempts, worktree branches, open decisions, and the
 latest structured messages.
 
+The main agent chooses the provider, model, and reasoning effort for each task.
+A run can mix Claude and Codex workers. Fable and Astra are reserved for main
+agents orchestrating other agents; the host rejects them for every worker,
+including retries and review tasks. Suitable execution choices include Sol,
+Terra, Luna, Opus, Sonnet, and Haiku. This restriction applies to orchestration
+workers, while ordinary chat model selection remains available.
+
+Pass each choice as `worker: { agent, model, effort, access }` when creating a
+task. Automatic dispatch uses that saved choice, including for dependent tasks
+in later waves. Enable it with `workerDefaults: { access: "auto" }`; the main
+agent must select a worker before a new task is accepted. Manual dispatch and
+retries choose their settings through `orchestration_worker_start`.
+
+Existing runs may still have a run-wide provider fallback; a task's own worker
+settings take precedence. Missing models resolve explicitly to Codex Sol or
+Claude Sonnet, never to the provider CLI's configured default. Legacy tasks
+without a selection or a run-wide fallback wait for an explicit worker start
+and do not consume dispatch capacity. Pausing automatic dispatch preserves
+task selections; enabling it again does not copy the last attempt's model.
+
 ## Communication
 
 The chat list shows a compact task board below each main agent. Each assignment
@@ -68,7 +88,7 @@ file cannot be read, the store refuses to overwrite it.
 
 ## Worker lifecycle
 
-1. The master creates tasks and real dependency edges.
+1. The master creates tasks, chooses suitable execution workers, and adds real dependency edges.
 2. The host scheduler (or the coordinator in manual mode) starts the entire
    ready wave up to the run's concurrency limit.
 3. OctiqFlow reserves an attempt and persists its task workspace before process
@@ -134,7 +154,7 @@ call the structured completion tools.
 
 A main chat can hold ordinary conversation and multiple sequential orchestration
 runs. Choose **Execution → Orchestrated** to configure an outcome, project,
-main agent, worker provider, and workspace policy. Starting a run is explicit;
+main agent, and workspace policy. The main agent selects task workers. Starting a run is explicit;
 selecting the mode or opening **Run** does not start workers. **Chat** remains
 the place for instructions and native approvals. **Run** shows only the selected
 chat's ledger, including pause/stop controls, review, delivery, and cleanup.

@@ -112,6 +112,8 @@ pub struct Task {
     pub title: String,
     pub spec: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<automation::WorkerSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -635,12 +637,19 @@ impl OrchestrationStore {
         spec: String,
         depends_on: Vec<String>,
         parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
     ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
+        let worker = worker
+            .map(automation::WorkerSettings::normalized)
+            .transpose()?;
         let run_id_for_event = run_id.clone();
         self.mutate(|data| {
-            coordinator(data, &run_id, actor_chat_key)?;
+            let run = coordinator(data, &run_id, actor_chat_key)?;
+            if worker.is_none() && run.worker_defaults.as_ref().is_some_and(|d| d.agent.is_none()) {
+                return Err("Choose a suitable worker for this task: provide worker.agent, worker.model, worker.access, and optional worker.effort.".into());
+            }
             let deps: BTreeSet<_> = depends_on.iter().collect();
             if deps.len() != depends_on.len() {
                 return Err("A task dependency was listed more than once.".into());
@@ -674,6 +683,7 @@ impl OrchestrationStore {
                 run_id: run_id.clone(),
                 title,
                 spec,
+                worker,
                 workspace: None,
                 depends_on,
                 parent_task_id,
@@ -703,6 +713,13 @@ impl OrchestrationStore {
         actor_chat_key: &str,
         launch: &WorkerLaunch,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
+        let worker = automation::WorkerSettings {
+            agent: launch.agent,
+            model: launch.model.clone(),
+            effort: launch.effort.clone(),
+            access: launch.access,
+        }
+        .normalized()?;
         self.mutate(|data| {
             let task = data
                 .tasks
@@ -774,7 +791,7 @@ impl OrchestrationStore {
                 number,
                 worker_chat_key: format!("chat:orch-{}", compact_id()),
                 agent: launch.agent,
-                model: launch.model.clone(),
+                model: worker.model.clone(),
                 effort: launch.effort.clone(),
                 access: launch.access,
                 status: AttemptStatus::Preparing,
@@ -794,6 +811,7 @@ impl OrchestrationStore {
                 .get_mut(&task.id)
                 .expect("the task was read above");
             reserved_task.status = TaskStatus::Running;
+            reserved_task.worker = Some(worker);
             reserved_task.active_attempt_id = Some(id);
             reserved_task.result = None;
             reserved_task.updated_at = now;
@@ -871,14 +889,12 @@ impl OrchestrationStore {
         chats: Arc<ChatManager>,
         workspaces: &WorkspaceState,
         actor_chat_key: &str,
-        launch: WorkerLaunch,
+        mut launch: WorkerLaunch,
     ) -> Result<Attempt, String> {
-        if launch.agent == ChatAgent::Pi {
-            return Err(
-                "pi.dev does not yet expose OctiqFlow's worker completion tools; choose Claude or Codex."
-                    .into(),
-            );
-        }
+        launch.model = Some(automation::worker_model(
+            launch.agent,
+            launch.model.as_deref(),
+        )?);
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         // Validate project before reserving a concurrency slot.
         let (owning_run, _) = self.owned_task(actor_chat_key, &launch.task_id)?;
@@ -1615,8 +1631,9 @@ pub fn master_prompt(run: &Run) -> String {
         "OctiqFlow created orchestration run {} and assigned this chat as its master.\n\nObjective\n{}\n\nTreat the host orchestration state as authoritative. Start by creating a shallow task DAG with orchestration_task_create. Give every task a concise outcome-based title and a spec with concrete checklist steps and validation. The person follows these assignments in a compact task board; workers report their steps through task_status. Dispatch the full ready wave up to the run's concurrency limit ({}) before ending your turn, using the run workspace policy (the host selects and leases the workspace). After dispatch, end your turn so the person can keep chatting. Do not poll or wait for workers in a long-running turn; the host delivers durable notifications when action is needed. Do not write in a checkout delegated to a worker. Workers use an isolated worktree in Auto mode; Current checkout mode serializes writers. Workspace lifetime continues through review and merge; never delete it merely because a worker completed. Re-read orchestration_snapshot after worker reports or decisions. Use orchestration_message_send only for an active attempt; a settled attempt cannot resume. If a blocked or failed task needs more work, start a new authoritative attempt with orchestration_worker_start, using newWorktree=false to reuse its previous worker workspace. Use orchestration_gate_create only for a decision that truly needs the person. Do not claim the run is complete until every required task is completed in the snapshot. A worker's prose does not settle a task; its orchestration_worker_report does.",
         run.id, run.objective, run.max_concurrent
     );
+    let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
     if run.worker_defaults.is_some() {
-        format!("{brief}\n\nAutomatic dispatch is enabled. Create all tasks with their dependencies; the host starts ready tasks and subsequent waves automatically. Do not also start those tasks manually. Failed or blocked tasks still require an explicit retry decision. Workspace mode: {:?}.", run.workspace_mode)
+        format!("{brief}\n\nAutomatic dispatch is enabled. Create all tasks with their dependencies and chosen worker settings; the host starts each task with its own selection and starts subsequent waves automatically. Do not also start those tasks manually. Legacy tasks without a worker selection can be started explicitly with orchestration_worker_start. Failed or blocked tasks still require an explicit retry decision. Workspace mode: {:?}.", run.workspace_mode)
     } else {
         brief
     }
@@ -1755,6 +1772,7 @@ mod tests {
                 "Implement".into(),
                 "Make the requested change".into(),
                 depends_on,
+                None,
                 None,
             )
             .unwrap()

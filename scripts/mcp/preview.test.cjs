@@ -59,6 +59,11 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.ok(bound.result.tools.some(tool => tool.name === "ask_user"));
   assert.ok(bound.result.tools.some(tool => tool.name === "preview_image"));
   assert.ok(bound.result.tools.some(tool => tool.name === "search_conversations"));
+  const runTool = bound.result.tools.find(tool => tool.name === "orchestration_run_create");
+  assert.deepEqual(runTool.inputSchema.properties.workerDefaults.required, ["access"]);
+  const taskTool = bound.result.tools.find(tool => tool.name === "orchestration_task_create");
+  assert.deepEqual(taskTool.inputSchema.properties.worker.required, ["agent", "access"]);
+  assert.match(taskTool.inputSchema.properties.worker.properties.model.description, /Fable and Astra/);
   const orchestration = bound.result.tools
     .filter(tool => tool.name.startsWith("orchestration_"))
     .map(tool => tool.name);

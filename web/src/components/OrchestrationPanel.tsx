@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
-import { AGENT_NAME } from "../lib/agentProviders";
+import { AGENT_NAME, modelFromReported } from "../lib/agentProviders";
 import {
   attemptIsLive, boardCounts, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
   taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
@@ -16,7 +16,7 @@ import { BranchIcon, ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
 
 import {
   deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
-  type WorkspaceMode, type WorkerDefaults,
+  type WorkspaceMode,
   type OrchestrationRun, type OrchestrationSnapshot, type RunStatus,
   type OrchestrationTask, type OrchestrationAttempt, type OrchestrationGate, type OrchestrationMessage, type OrchestrationNotification,
 } from "../lib/orchestration";
@@ -82,7 +82,6 @@ export function OrchestrationPanel({
   const [maxConcurrent, setMaxConcurrent] = useState(4);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("auto");
   const [automatic, setAutomatic] = useState(true);
-  const [workerAgent, setWorkerAgent] = useState<WorkerDefaults["agent"]>("codex");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -151,7 +150,7 @@ export function OrchestrationPanel({
         rootPath: currentCwd || project.primary_path || "",
         maxConcurrent: workspaceMode === "direct" ? 1 : maxConcurrent,
         workspaceMode,
-        workerDefaults: automatic ? { agent: workerAgent, access: "auto" } : null,
+        workerDefaults: automatic ? { access: "auto" } : null,
         startMaster: !onStartMaster,
       });
       setObjective("");
@@ -301,8 +300,6 @@ export function OrchestrationPanel({
                 onWorkspaceMode={setWorkspaceMode}
                 automatic={automatic}
                 onAutomatic={setAutomatic}
-                workerAgent={workerAgent}
-                onWorkerAgent={setWorkerAgent}
                 busy={busy}
                 onObjective={setObjective}
                 onConcurrency={setMaxConcurrent}
@@ -353,7 +350,7 @@ function NewRun({
   setupContext,
   objective,
   maxConcurrent,
-  workspaceMode, onWorkspaceMode, automatic, onAutomatic, workerAgent, onWorkerAgent,
+  workspaceMode, onWorkspaceMode, automatic, onAutomatic,
   busy,
   onObjective,
   onConcurrency,
@@ -368,8 +365,6 @@ function NewRun({
   onWorkspaceMode: (mode: WorkspaceMode) => void;
   automatic: boolean;
   onAutomatic: (automatic: boolean) => void;
-  workerAgent: WorkerDefaults["agent"];
-  onWorkerAgent: (agent: WorkerDefaults["agent"]) => void;
   busy: boolean;
   onObjective: (value: string) => void;
   onConcurrency: (value: number) => void;
@@ -410,10 +405,8 @@ function NewRun({
       </p>}
       <div className="orch-automation-options">
         <label><input type="checkbox" checked={automatic} disabled={busy} onChange={(event) => onAutomatic(event.target.checked)} /> Automatically start ready tasks</label>
-        {automatic && <label>Worker <select aria-label="Worker provider" value={workerAgent} disabled={busy} onChange={(event) => onWorkerAgent(event.target.value as WorkerDefaults["agent"])}>
-          <option value="codex">Codex</option><option value="claude">Claude</option>
-        </select></label>}
       </div>
+      <p>The main agent chooses a suitable worker and reasoning effort for each task. Fable and Astra are reserved for orchestration.</p>
       <div className="orch-start-row">
         <label className="orch-field orch-concurrency">
           <span>Worker limit</span>
@@ -562,7 +555,8 @@ function RunDetail({
           <dl>
             <dt>Folder</dt><dd title={run.rootPath}>{shortWorkspacePath(run.rootPath)}</dd>
             <dt>Workspace</dt><dd>{WORKSPACE_MODES.find((mode) => mode.value === (run.workspaceMode ?? "auto"))?.label}</dd>
-            <dt>Dispatch</dt><dd>{run.workerDefaults ? `Automatic · ${run.workerDefaults.agent}` : "Coordinator"}</dd>
+            <dt>Dispatch</dt><dd>{run.workerDefaults ? "Automatic" : "Coordinator"}</dd>
+            <dt>Workers</dt><dd>{run.workerDefaults?.agent ? `Chosen per task · ${AGENT_NAME[run.workerDefaults.agent]} fallback` : "Chosen per task by the main agent"}</dd>
             <dt>Worker limit</dt><dd>{run.maxConcurrent}</dd>
           </dl>
           <div className="orch-run-actions">
@@ -571,11 +565,8 @@ function RunDetail({
               title="Hide merged workers from the chat list. Chats, reports, and workspaces are kept."
               onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })}>Archive all merged workers ({archivable.length})</button>}
             {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
-              onClick={() => {
-                const previous = attempts.find((a) => a.agent === "codex" || a.agent === "claude");
-                onWorkspaceAction("orchestration_automation_configure", { runId: run.id,
-                  workerDefaults: previous ? { agent: previous.agent, access: previous.access, model: previous.model, effort: previous.effort } : { agent: "codex", access: "auto" } });
-              }}>Enable automatic dispatch ({attempts.find((a) => a.agent === "codex" || a.agent === "claude")?.agent ?? "codex"})</button>}
+              onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id,
+                workerDefaults: { access: "auto" } })}>Enable automatic dispatch</button>}
             {!readOnly && run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
               onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id, workerDefaults: null })}>Pause automatic dispatch</button>}
             {!readOnly && ACTIVE_RUNS.has(run.status) && (
@@ -728,6 +719,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           </span>
         </summary>
         <div className="orch-task-detail">
+          {task.worker && <p>Selected worker: {AGENT_NAME[task.worker.agent]} · {modelFromReported(task.worker.agent, task.worker.model ?? "")?.model ?? task.worker.model}{task.worker.effort ? ` · ${task.worker.effort} effort` : ""}</p>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
             {report.steps.map((step, index) => <li key={index} data-state={step.state}>

@@ -96,7 +96,22 @@ describe("OrchestrationPanel", () => {
     expect(html).toContain("Current checkout");
     expect(html).toContain("New worktree");
     expect(html).toContain("Automatically start ready tasks");
+    expect(html).toContain("main agent chooses a suitable worker");
+    expect(html).toContain("Fable and Astra are reserved for orchestration");
+    expect(html).not.toContain('aria-label="Worker provider"');
     expect(html).toContain('aria-modal="true"');
+  });
+
+  it("shows the main agent's task model selection with automatic dispatch", () => {
+    const html = renderToStaticMarkup(<OrchestrationPanel
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={{ ...snapshot,
+        runs: [{ ...snapshot.runs[0], workerDefaults: { access: "auto" } }],
+        tasks: [{ ...snapshot.tasks[0], worker: { agent: "claude", model: "sonnet", effort: "high", access: "auto" } }],
+      }} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).toContain("Chosen per task by the main agent");
+    expect(html).toContain("Selected worker: Claude · Sonnet latest · high effort");
+    expect(html).not.toContain("Automatic · undefined");
   });
 
   it("shows authoritative task state and decisions", () => {

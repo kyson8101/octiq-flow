@@ -73,8 +73,10 @@ permission to delete a directory the new workflow did not create.
 
 ## Automatic dispatch
 
-**Automatically start ready tasks** opts into a host scheduler with explicit
-provider, access, and optional model/effort settings. It runs every two seconds,
+**Automatically start ready tasks** opts into a host scheduler. The main agent
+chooses a provider, model, access, and reasoning effort for each task in its
+`worker` settings. Fable and Astra are reserved for main orchestrators and
+rejected for execution workers, including retries. It runs every two seconds,
 starts the ready wave up to the concurrency limit, and advances dependencies
 from authoritative reports. Task creation can come from the master agent, a
 static workflow, or authenticated API calls. No LLM turn is needed to allocate
@@ -161,7 +163,10 @@ can manage them after the worker settles.
 The authenticated browser dispatch and chat-bound MCP share these operations:
 
 - `orchestration_run_create`: optional `workspaceMode`, `workerDefaults`.
-- `orchestration_automation_configure`: set worker defaults or `null` to pause.
+- `orchestration_task_create`: record the main agent's per-task `worker` selection.
+- `orchestration_automation_configure`: use `{access: "auto"}` to dispatch the
+  selected workers, or `null` to pause. Existing run-wide defaults remain a
+  fallback for tasks without their own selection.
 - `orchestration_dispatch_ready`: run the configured ready wave immediately.
 - `orchestration_worker_start`: reserve a new attempt and reuse/provision its
   task workspace. Duplicate active starts are rejected without allocating more.

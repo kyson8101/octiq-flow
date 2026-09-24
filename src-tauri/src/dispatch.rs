@@ -633,12 +633,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             )?;
             let defaults: Option<crate::orchestration::automation::WorkerDefaults> =
                 arg(&args, "workerDefaults")?;
-            if defaults
-                .as_ref()
-                .is_some_and(|d| d.agent == crate::agent_chat::ChatAgent::Pi)
-            {
-                return Err("Choose Claude or Codex for workers.".into());
-            }
+            let defaults = defaults.map(|d| d.normalized()).transpose()?;
             let run = svc.orchestrations.create_run_with_mode(
                 actor.clone(),
                 arg(&args, "objective")?,
@@ -721,6 +716,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "spec")?,
             arg(&args, "dependsOn")?,
             arg(&args, "parentTaskId")?,
+            arg(&args, "worker")?,
         )),
         "orchestration_worker_start" => {
             let actor: String = arg(&args, "actorChatKey")?;
@@ -777,11 +773,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "attemptId")?,
             arg(&args, "archived")?,
         )),
-        "orchestration_workers_archive_merged" => to_value(svc.orchestrations.archive_merged_workers(
-            &svc.chats,
-            &arg::<String>(&args, "actorChatKey")?,
-            &arg::<String>(&args, "runId")?,
-        )),
+        "orchestration_workers_archive_merged" => {
+            to_value(svc.orchestrations.archive_merged_workers(
+                &svc.chats,
+                &arg::<String>(&args, "actorChatKey")?,
+                &arg::<String>(&args, "runId")?,
+            ))
+        }
         "orchestration_workspace_cleanup" => to_value(svc.orchestrations.cleanup_workspace(
             &svc.chats,
             &arg::<String>(&args, "actorChatKey")?,

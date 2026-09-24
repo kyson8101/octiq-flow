@@ -1185,6 +1185,19 @@ const READ_CONVERSATION = {
   },
 };
 
+const WORKER_SETTINGS_PROPERTIES = {
+  agent: { type: "string", enum: ["codex", "claude"], description: "Choose the provider suitable for this task; tasks may use different providers." },
+  access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
+  model: { type: "string", description: "Choose a provider-native execution model: Codex gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna; Claude opus, sonnet, haiku. Fable and Astra (including versioned IDs) are reserved for main orchestrators and rejected for workers. If omitted, uses Sol for Codex or Sonnet for Claude, never a CLI default." },
+  effort: { type: "string", description: "Provider-native reasoning effort suited to this task's complexity." },
+};
+const WORKER_DEFAULTS_SCHEMA = {
+  type: ["object", "null"],
+  description: "Use {access:'auto'} for automatic dispatch with the main agent choosing each task's worker. Optional agent/model/effort provide a legacy fallback for unassigned tasks. Null pauses automatic dispatch.",
+  properties: WORKER_SETTINGS_PROPERTIES,
+  required: ["access"],
+};
+
 const ORCHESTRATION_RUN_CREATE = {
   name: "orchestration_run_create",
   description:
@@ -1198,10 +1211,7 @@ const ORCHESTRATION_RUN_CREATE = {
       objective: { type: "string", description: "The complete outcome the run must deliver." },
       maxConcurrent: { type: "integer", minimum: 1, maximum: 32, description: "Maximum simultaneous workers. Defaults to 4; direct mode uses 1." },
       workspaceMode: { type: "string", enum: ["auto", "worktree", "direct"], description: "Auto isolates writers, worktree isolates every task, direct edits the current checkout. Retries retain their task workspace." },
-      workerDefaults: { type: "object", description: "Opt into host automatic dispatch of ready tasks with these worker settings.", properties: {
-        agent: { type: "string", enum: ["codex", "claude"] }, access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
-        model: { type: "string" }, effort: { type: "string" },
-      }, required: ["agent", "access"] },
+      workerDefaults: WORKER_DEFAULTS_SCHEMA,
     },
     required: ["objective"],
   },
@@ -1212,7 +1222,8 @@ const ORCHESTRATION_TASK_CREATE = {
   description:
     "Add one task to a run owned by this master chat. Dependencies are task IDs from " +
     "the same run. Use dependencies only for real ordering; independent tasks should " +
-    "form one parallel wave. Keep the DAG shallow and each spec independently executable.",
+    "form one parallel wave. Keep the DAG shallow and each spec independently executable. " +
+    "Choose a suitable provider, model and effort for each task in worker; Fable and Astra are main orchestrators only.",
   inputSchema: {
     type: "object",
     properties: {
@@ -1221,6 +1232,7 @@ const ORCHESTRATION_TASK_CREATE = {
       spec: { type: "string", description: "Bounded worker assignment with outcome and checks." },
       dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first. Defaults to none." },
       parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency." },
+      worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
     },
     required: ["runId", "title", "spec"],
   },
@@ -1251,7 +1263,7 @@ const ORCHESTRATION_WORKER_START = {
     properties: {
       taskId: { type: "string" },
       agent: { type: "string", enum: ["claude", "codex"] },
-      model: { type: "string", description: "Optional provider-native model flag. Omit for its default." },
+      model: WORKER_SETTINGS_PROPERTIES.model,
       effort: { type: "string", description: "Optional provider-native effort id." },
       access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"], description: "Worker permission level. Use auto unless the task needs a different boundary." },
       newWorktree: { type: "boolean", description: "Legacy retry hint. Retries always reuse the task workspace. The run policy chooses the initial workspace; false for a first writing attempt requires Current checkout mode." },
@@ -1340,15 +1352,8 @@ const ORCHESTRATION_RUN_STOP = {
   },
 };
 
-const WORKER_DEFAULTS_SCHEMA = {
-  type: ["object", "null"], properties: {
-    agent: { type: "string", enum: ["codex", "claude"] },
-    access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
-    model: { type: "string" }, effort: { type: "string" },
-  }, required: ["agent", "access"],
-};
 const WORKSPACE_TOOLS = [
-  { name: "orchestration_automation_configure", description: "Enable host dispatch of ready tasks using explicit worker settings, or pause it with workerDefaults=null. Does not retry failed or blocked tasks. Coordinator only.",
+  { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause with workerDefaults=null. Does not retry failed or blocked tasks. Coordinator only.",
     inputSchema: { type: "object", properties: { runId: { type: "string" }, workerDefaults: WORKER_DEFAULTS_SCHEMA }, required: ["runId", "workerDefaults"] } },
   { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically.",
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },
@@ -1423,7 +1428,9 @@ const BASE_SERVER_INSTRUCTIONS =
   "action; do not open it in Browser or infer its history from workspace files. " +
   "Use orchestration tools only when the person explicitly asks for supervised multi-agent " +
   "work or a task DAG. The master creates one run, creates a shallow dependency graph, " +
+  "chooses a suitable provider, model and effort for each task in its worker settings, " +
   "starts the full ready wave before waiting, and reads orchestration_snapshot as truth. " +
+  "Fable and Astra are reserved for main agents orchestrating other agents, never execution workers. " +
   "Workers must settle their exact attempt with orchestration_worker_report. " +
   "Use task_status when you take on a task of more than a couple of steps, and " +
   "again whenever the plan or the active step changes: it fills the status line " +
