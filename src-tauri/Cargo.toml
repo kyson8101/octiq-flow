@@ -41,6 +41,11 @@ web-push = { version = "0.11.0", default-features = false }
 # on a Homebrew/Linux libssl that may not exist on an npm user's machine.
 openssl = { version = "0.10", features = ["vendored"] }
 p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
+
+[target.'cfg(windows)'.dependencies]
+# Profile ownership uses native process handles, not Unix/MSYS process IDs.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # The server ships as one stripped binary, so the only things that matter here
 # are size and speed — not incremental rebuild time (card 20).
 [profile.release]

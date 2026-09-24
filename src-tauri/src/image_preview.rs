@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn snapshots_are_scoped_and_untrusted_paths_are_ignored() {
         let root = std::env::temp_dir().join(format!("octiq-preview-{}", uuid::Uuid::new_v4()));
-        let dir = root.join("previews/one");
+        let dir = root.join("previews").join("one");
         std::fs::create_dir_all(&dir).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let file = format!("{id}.png");
@@ -131,7 +131,7 @@ mod tests {
     fn html_metadata_requires_a_matching_kind_and_remains_chat_scoped() {
         let root =
             std::env::temp_dir().join(format!("octiq-html-preview-{}", uuid::Uuid::new_v4()));
-        let dir = root.join("previews/one");
+        let dir = root.join("previews").join("one");
         std::fs::create_dir_all(&dir).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         std::fs::write(dir.join(format!("{id}.html")), "<h1>Preview</h1>").unwrap();

@@ -829,7 +829,22 @@ fn find_commit(output: &str) -> Option<String> {
 /// the module that runs something other than git, and it runs only what the
 /// person configured for their own project.
 fn run_release_command(root: &str, command: &str) -> Result<String, String> {
-    let mut cmd = Command::new("sh");
+    // `sh` is on every Unix; Windows has none, so the release check borrows the
+    // same POSIX shell that launches agents. Unix keeps `sh -c` exactly as it
+    // was — this change is about Windows having a shell at all, not about which
+    // shell a Mac should use.
+    let shell = if cfg!(windows) {
+        crate::proc::resolve_agent_shell(
+            std::env::var("SHELL").ok(),
+            std::env::var("LOCALAPPDATA").ok(),
+            true,
+            &crate::proc::find_executable,
+        )?
+        .program
+    } else {
+        "sh".to_string()
+    };
+    let mut cmd = Command::new(&shell);
     cmd.arg("-c")
         .arg(command)
         .current_dir(root)
