@@ -662,6 +662,13 @@ impl ChatManager {
             .is_some_and(|s| s.try_lock().map(|s| s.busy).unwrap_or(true))
     }
 
+    pub(crate) fn has_process(&self, key: &str) -> bool {
+        self.sessions
+            .lock()
+            .map(|s| s.contains_key(key))
+            .unwrap_or(true)
+    }
+
     pub(crate) fn require_checkout_idle(&self, checkout: &str) -> Result<(), String> {
         let sessions = self.sessions.lock().map_err(|e| e.to_string())?;
         let starts = self.starts.lock().map_err(|e| e.to_string())?;
@@ -861,6 +868,17 @@ fn schedule_quota_resume(
     agent: ChatAgent,
     reset_hint: Option<i64>,
 ) {
+    // Orchestration recovery creates a new authoritative attempt. The ordinary
+    // chat quota timer must never revive a failed worker under its old lease.
+    if manager
+        .orchestrations
+        .worker_coordinator(chat_key)
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
     let now = crate::auto_resume::unix_now();
     let Some(start) = manager.start_context(session_key) else {
         return;
@@ -1869,8 +1887,10 @@ pub(crate) fn start_session(
         }
     }
 
+    let (output_closed, output_drained) = std::sync::mpsc::channel();
     // stdout: one JSON object per line, passed through as-is.
     {
+        let output_closed = output_closed.clone();
         let key = key.clone();
         let session_key = session_key.clone();
         let stream_provider = provider;
@@ -1906,6 +1926,12 @@ pub(crate) fn start_session(
                     Ok(mut event) => {
                         if transport.is_app_server() {
                             if crate::codex_app_server::is_server_request(&event) {
+                                if let Err(error) = reading
+                                    .orchestrations
+                                    .observe_worker_event(&key, &json!({"type":"control_request"}))
+                                {
+                                    eprintln!("orchestration: cannot record tool wait: {error}");
+                                }
                                 answer_codex_server_request(
                                     &reading,
                                     &asking,
@@ -1972,6 +1998,11 @@ pub(crate) fn start_session(
                                     continue;
                                 }
                             } else {
+                                if let Err(error) =
+                                    reading.orchestrations.observe_codex_activity(&key, &event)
+                                {
+                                    eprintln!("orchestration: cannot record activity: {error}");
+                                }
                                 let Some(normalized) =
                                     crate::codex_app_server::normalize_notification(&event)
                                 else {
@@ -1979,6 +2010,11 @@ pub(crate) fn start_session(
                                 };
                                 event = normalized;
                             }
+                        }
+                        if let Err(error) =
+                            reading.orchestrations.observe_worker_event(&key, &event)
+                        {
+                            eprintln!("orchestration: cannot record provider event: {error}");
                         }
                         if transport.is_app_server()
                             && event.get("type").and_then(Value::as_str) == Some("turn.started")
@@ -2214,12 +2250,19 @@ pub(crate) fn start_session(
                     // not ask for (a login prompt, an update notice). Surface it
                     // rather than dropping it — it is usually the reason a chat
                     // produced nothing. The one exception is below.
-                    Err(_) => emit_unstructured_output(
-                        stream_provider.kind(),
-                        &key,
-                        trimmed.to_string(),
-                        stream_provider.classify_output(trimmed, &mut output_state),
-                    ),
+                    Err(_) => {
+                        if let Err(error) =
+                            reading.orchestrations.observe_worker_output(&key, trimmed)
+                        {
+                            eprintln!("orchestration: cannot record provider output: {error}");
+                        }
+                        emit_unstructured_output(
+                            stream_provider.kind(),
+                            &key,
+                            trimmed.to_string(),
+                            stream_provider.classify_output(trimmed, &mut output_state),
+                        )
+                    }
                 }
             }
             // Drain stdout before deciding: the final buffered line may be the
@@ -2229,6 +2272,7 @@ pub(crate) fn start_session(
                 reading.questions.detach_launch(&session.launch_id);
                 record_delivery(&key, session.user_turn_id.take().as_deref(), "unknown");
             }
+            let _ = output_closed.send(());
         });
     }
 
@@ -2238,6 +2282,7 @@ pub(crate) fn start_session(
     {
         let key = key.clone();
         let stderr_provider = provider;
+        let observing = manager.clone();
         thread::spawn(move || {
             let reader = BufReader::new(stderr);
             let mut output_state = OutputState::default();
@@ -2246,8 +2291,15 @@ pub(crate) fn start_session(
                     continue;
                 }
                 let disposition = stderr_provider.classify_output(&line, &mut output_state);
+                if disposition == OutputDisposition::Visible {
+                    if let Err(error) = observing.orchestrations.observe_worker_output(&key, &line)
+                    {
+                        eprintln!("orchestration: cannot record provider stderr: {error}");
+                    }
+                }
                 emit_unstructured_output(stderr_provider.kind(), &key, line, disposition);
             }
+            let _ = output_closed.send(());
         });
     }
 
@@ -2320,6 +2372,16 @@ pub(crate) fn start_session(
             if was_replaced {
                 return;
             }
+            // Read the final buffered error/report before declaring a lost
+            // worker. A pipe inherited by a tool must not block the reaper.
+            let is_worker = manager_for_exit
+                .orchestrations
+                .worker_coordinator(&key)
+                .ok()
+                .flatten()
+                .is_some();
+            let drained = is_worker
+                && (0..2).all(|_| output_drained.recv_timeout(Duration::from_secs(2)).is_ok());
 
             // A command-line provider has no second-input channel. If somebody
             // sent a message after its full-stop but before this reaper saw the
@@ -2349,6 +2411,11 @@ pub(crate) fn start_session(
                             );
                         }
                     }
+                }
+            }
+            if drained {
+                if let Err(error) = manager_for_exit.orchestrations.worker_disconnected(&key) {
+                    eprintln!("orchestration: cannot record worker disconnect: {error}");
                 }
             }
             emit_status(

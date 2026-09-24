@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { OrchestrationAttempt, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
+import type { ExecutionState, OrchestrationAttempt, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
 import type { TaskReport } from "./chatTask";
 
 export function taskAttempts(snapshot: OrchestrationSnapshot, task: OrchestrationTask): OrchestrationAttempt[] {
@@ -50,18 +50,35 @@ export const TASK_LABELS: Record<OrchestrationTask["status"], string> = {
   completed: "Done", failed: "Failed", cancelled: "Cancelled",
 };
 
-export function taskStage(task: OrchestrationTask, report?: TaskReport): string {
+export const EXECUTION_LABELS: Record<ExecutionState, string> = {
+  queued: "Queued", executing: "Executing", waiting_tool: "Waiting for a tool", retrying: "Retrying",
+  capacity_blocked: "Capacity blocked", stalled: "Stalled", disconnected: "Disconnected",
+  awaiting_report: "Awaiting worker report", blocked: "Blocked", failed: "Failed",
+  completed: "Completed", cancelled: "Cancelled",
+};
+
+export function executionNeedsAttention(attempt?: OrchestrationAttempt): boolean {
+  return !!attempt?.execution && ["capacity_blocked", "stalled", "disconnected", "failed", "awaiting_report"].includes(attempt.execution.state);
+}
+
+export function attemptIsExecuting(attempt: OrchestrationAttempt): boolean {
+  return attempt.execution ? ["executing", "waiting_tool"].includes(attempt.execution.state) : attempt.status === "running";
+}
+
+export function taskStage(task: OrchestrationTask, report?: TaskReport, attempt?: OrchestrationAttempt): string {
+  if (attempt?.execution && task.activeAttemptId === attempt.id) return EXECUTION_LABELS[attempt.execution.state];
   if (task.status !== "running") return TASK_LABELS[task.status];
   return report?.steps.find((step) => step.state === "active")?.title || report?.nextStep || "Working";
 }
 
-export function boardCounts(tasks: OrchestrationTask[]) {
+export function boardCounts(tasks: OrchestrationTask[], snapshot?: OrchestrationSnapshot) {
+  const attemptFor = (task: OrchestrationTask) => snapshot && currentAttempt(snapshot, task);
   const done = tasks.filter((task) => task.status === "completed").length;
   return {
     done, total: tasks.length, percent: tasks.length ? Math.round(done / tasks.length * 100) : 0,
     todo: tasks.filter((task) => task.status === "pending" || task.status === "ready").length,
-    running: tasks.filter((task) => task.status === "running").length,
-    blocked: tasks.filter((task) => task.status === "blocked" || task.status === "failed").length,
+    running: tasks.filter((task) => task.status === "running" && (!attemptFor(task)?.execution || attemptIsExecuting(attemptFor(task)!))).length,
+    blocked: tasks.filter((task) => task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attemptFor(task))).length,
     cancelled: tasks.filter((task) => task.status === "cancelled").length,
   };
 }

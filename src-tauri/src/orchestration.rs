@@ -25,12 +25,13 @@ use crate::workspaces::{Workspace, WorkspaceState};
 
 mod archive;
 pub mod automation;
+pub mod execution;
 pub mod inbox;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 use workspaces::TaskWorkspace;
 
-const STORE_VERSION: u32 = 3;
+const STORE_VERSION: u32 = 4;
 const DEFAULT_MAX_CONCURRENT: u16 = 4;
 const MAX_CONCURRENT: u16 = 32;
 
@@ -143,6 +144,8 @@ pub struct Attempt {
     pub effort: Option<String>,
     pub access: Access,
     pub status: AttemptStatus,
+    #[serde(default)]
+    pub execution: execution::Execution,
     #[serde(default)]
     pub cwd: String,
     #[serde(default)]
@@ -708,16 +711,27 @@ impl OrchestrationStore {
         .inspect(|_| announce(&run_id_for_event, "task_created"))
     }
 
+    #[cfg(test)]
     fn reserve_attempt(
         &self,
         actor_chat_key: &str,
         launch: &WorkerLaunch,
     ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
-        let worker = automation::WorkerSettings {
+        self.reserve_attempt_for(actor_chat_key, launch, None)
+    }
+
+    fn reserve_attempt_for(
+        &self,
+        actor_chat_key: &str,
+        launch: &WorkerLaunch,
+        recovery_of: Option<&str>,
+    ) -> Result<(Run, Task, Attempt, Option<Attempt>), String> {
+        let mut worker = automation::WorkerSettings {
             agent: launch.agent,
             model: launch.model.clone(),
             effort: launch.effort.clone(),
             access: launch.access,
+            recovery: None,
         }
         .normalized()?;
         self.mutate(|data| {
@@ -727,6 +741,37 @@ impl OrchestrationStore {
                 .cloned()
                 .ok_or("The task does not exist.")?;
             let run = coordinator(data, &task.run_id, actor_chat_key)?.clone();
+            worker.recovery = task
+                .worker
+                .as_ref()
+                .and_then(|w| w.recovery.clone())
+                .or_else(|| {
+                    run.worker_defaults
+                        .as_ref()
+                        .and_then(|w| w.recovery.clone())
+                });
+            let recovery_agent = task
+                .worker
+                .as_ref()
+                .filter(|w| w.recovery.is_some())
+                .map(|w| w.agent)
+                .or_else(|| run.worker_defaults.as_ref().and_then(|w| w.agent));
+            if recovery_agent.is_some_and(|agent| agent != worker.agent) {
+                if let Some(policy) = &mut worker.recovery {
+                    policy.fallback_model = None;
+                }
+            }
+            worker = worker.normalized()?;
+            if let Some(expected) = recovery_of {
+                if task.active_attempt_id.as_deref() != Some(expected)
+                    || !data.attempts.get(expected).is_some_and(|a| {
+                        a.status == AttemptStatus::Failed
+                            && a.execution.next_retry_at.is_some_and(|at| at <= now_ms())
+                    })
+                {
+                    return Err("This recovery was superseded or is not due.".into());
+                }
+            }
             if matches!(run.status, RunStatus::Completed | RunStatus::Stopped) {
                 return Err("This run no longer accepts workers.".into());
             }
@@ -758,6 +803,7 @@ impl OrchestrationStore {
                         if let Some(previous) = data.attempts.get_mut(&active.id) {
                             previous.finished_at.get_or_insert(previous.updated_at);
                             previous.status = AttemptStatus::Cancelled;
+                            previous.execution.state = execution::ExecutionState::Cancelled;
                             previous.updated_at = now_ms();
                         }
                     }
@@ -784,6 +830,17 @@ impl OrchestrationStore {
                 .saturating_add(1) as u32;
             let id = format!("attempt_{}", compact_id());
             let now = now_ms();
+            let mut execution = execution::Execution::queued(
+                now,
+                recovery_of
+                    .and(previous.as_ref())
+                    .map_or(0, |a| a.execution.retry_count + 1),
+            );
+            if let Some(previous) = recovery_of.and(previous.as_ref()) {
+                execution.latest_error = previous.execution.latest_error.clone();
+                execution.last_progress = previous.execution.last_progress.clone();
+                execution.last_progress_at = previous.execution.last_progress_at;
+            }
             let attempt = Attempt {
                 id: id.clone(),
                 run_id: run.id.clone(),
@@ -795,6 +852,7 @@ impl OrchestrationStore {
                 effort: launch.effort.clone(),
                 access: launch.access,
                 status: AttemptStatus::Preparing,
+                execution,
                 cwd: String::new(),
                 branch: String::new(),
                 is_worktree: false,
@@ -805,6 +863,9 @@ impl OrchestrationStore {
                 created_at: now,
                 updated_at: now,
             };
+            if let Some(previous) = previous.as_ref().and_then(|a| data.attempts.get_mut(&a.id)) {
+                previous.execution.next_retry_at = None;
+            }
             data.attempts.insert(id.clone(), attempt.clone());
             let reserved_task = data
                 .tasks
@@ -838,6 +899,8 @@ impl OrchestrationStore {
                 return Err("The worker attempt is no longer being prepared.".into());
             }
             attempt.status = AttemptStatus::Running;
+            attempt.execution.current_operation = Some("Dispatching provider request".into());
+            attempt.execution.last_activity_at = Some(now_ms());
             attempt.cwd = cwd;
             attempt.branch = branch;
             attempt.is_worktree = is_worktree;
@@ -854,34 +917,22 @@ impl OrchestrationStore {
         branch: String,
         is_worktree: bool,
     ) -> Result<(), String> {
-        self.mutate(|data| {
-            let now = now_ms();
-            let (task_id, run_id) = {
-                let attempt = data
-                    .attempts
-                    .get_mut(attempt_id)
-                    .ok_or("The reserved worker attempt disappeared.")?;
-                attempt.status = AttemptStatus::Failed;
-                attempt.finished_at = Some(now);
-                attempt.summary = Some(reason.clone());
-                if !cwd.is_empty() {
-                    attempt.cwd = cwd;
-                    attempt.branch = branch;
-                    attempt.is_worktree = is_worktree;
-                }
-                attempt.updated_at = now;
-                (attempt.task_id.clone(), attempt.run_id.clone())
-            };
-            if let Some(task) = data.tasks.get_mut(&task_id) {
-                if task.active_attempt_id.as_deref() == Some(attempt_id) {
-                    task.status = TaskStatus::Failed;
-                    task.result = Some(reason);
-                    task.updated_at = now;
-                }
+        let run_id = self.mutate(|data| {
+            let attempt = data
+                .attempts
+                .get_mut(attempt_id)
+                .ok_or("The reserved worker attempt disappeared.")?;
+            if !cwd.is_empty() {
+                attempt.cwd = cwd;
+                attempt.branch = branch;
+                attempt.is_worktree = is_worktree;
             }
-            recompute_run(data, &run_id);
-            Ok(())
-        })
+            let run_id = attempt.run_id.clone();
+            execution::fail_dispatch(data, attempt_id, &reason);
+            Ok(run_id)
+        })?;
+        announce(&run_id, "worker_failed");
+        Ok(())
     }
 
     pub fn start_worker(
@@ -889,7 +940,18 @@ impl OrchestrationStore {
         chats: Arc<ChatManager>,
         workspaces: &WorkspaceState,
         actor_chat_key: &str,
+        launch: WorkerLaunch,
+    ) -> Result<Attempt, String> {
+        self.start_worker_for(chats, workspaces, actor_chat_key, launch, None)
+    }
+
+    pub(super) fn start_worker_for(
+        &self,
+        chats: Arc<ChatManager>,
+        workspaces: &WorkspaceState,
+        actor_chat_key: &str,
         mut launch: WorkerLaunch,
+        recovery_of: Option<&str>,
     ) -> Result<Attempt, String> {
         launch.model = Some(automation::worker_model(
             launch.agent,
@@ -899,7 +961,8 @@ impl OrchestrationStore {
         // Validate project before reserving a concurrency slot.
         let (owning_run, _) = self.owned_task(actor_chat_key, &launch.task_id)?;
         let workspace = workspace(workspaces, &owning_run.workspace_id)?;
-        let (run, task, reserved, previous) = self.reserve_attempt(actor_chat_key, &launch)?;
+        let (run, task, reserved, previous) =
+            self.reserve_attempt_for(actor_chat_key, &launch, recovery_of)?;
         announce(&run.id, "worker_preparing");
         let prepared = match self.prepare_task_workspace(
             &chats,
@@ -966,7 +1029,16 @@ impl OrchestrationStore {
             prepared.branch.clone(),
             prepared.is_worktree,
         )?;
-        let prompt = worker_prompt(&run, &task, &active);
+        let mut prompt = worker_prompt(&run, &task, &active);
+        if let Some(previous) = &previous {
+            let reports = crate::chat_task::reports_for_chat_keys(std::iter::once(
+                previous.worker_chat_key.as_str(),
+            ));
+            prompt.push_str(&format!("\n\nPrevious attempt {} stopped: {}\nLast observed progress: {}\nPrevious checklist: {}\nContinue from the retained workspace. Inspect existing changes and completed work before acting; do not blindly repeat earlier tools or external actions. The previous worker chat is {}.",
+                previous.id, previous.summary.as_deref().unwrap_or("No summary"),
+                previous.execution.last_progress.as_deref().unwrap_or("Not observed"),
+                serde_json::to_string(&reports).unwrap_or_default(), previous.worker_chat_key));
+        }
         let mut worker_env = workspace.env.clone();
         worker_env.insert("OCTIQ_ORCHESTRATION_ATTEMPT".into(), reserved.id.clone());
         let start = crate::agent_chat::chat_start_user_impl(
@@ -991,26 +1063,40 @@ impl OrchestrationStore {
             Some(false),
             Some(format!("orchestration-{}", reserved.id)),
         );
+        self.finish_dispatch(&active, start)
+    }
+
+    fn finish_dispatch(
+        &self,
+        active: &Attempt,
+        start: Result<(), String>,
+    ) -> Result<Attempt, String> {
         if let Err(error) = start {
-            let _ = crate::agent_chat::chat_index_remove(
-                chat_id,
-                reserved.worker_chat_key.clone(),
-                None,
-                Some(meta),
-            );
-            let _ = self.fail_preparation(
-                &reserved.id,
+            self.fail_preparation(
+                &active.id,
                 error.clone(),
-                prepared.cwd,
-                prepared.branch,
-                prepared.is_worktree,
-            );
-            announce(&run.id, "worker_failed");
+                active.cwd.clone(),
+                active.branch.clone(),
+                active.is_worktree,
+            )?;
             return Err(error);
         }
-
-        announce(&run.id, "worker_started");
-        Ok(active)
+        // A provider can fail during startup, before chat_start returns.
+        let current = self
+            .snapshot(Some(&active.run_id))?
+            .attempts
+            .into_iter()
+            .find(|a| a.id == active.id)
+            .unwrap_or_else(|| active.clone());
+        announce(
+            &active.run_id,
+            if current.status == AttemptStatus::Failed {
+                "worker_failed"
+            } else {
+                "worker_started"
+            },
+        );
+        Ok(current)
     }
 
     pub fn report_worker(
@@ -1060,6 +1146,16 @@ impl OrchestrationStore {
             attempt_mut.files_modified = clean_files(report.files_modified);
             attempt_mut.updated_at = now;
             attempt_mut.finished_at = Some(now);
+            attempt_mut.execution.state = match report.outcome {
+                WorkerOutcome::Completed => execution::ExecutionState::Completed,
+                WorkerOutcome::Failed => execution::ExecutionState::Failed,
+                WorkerOutcome::Blocked => execution::ExecutionState::Blocked,
+            };
+            attempt_mut.execution.last_activity_at = Some(now);
+            attempt_mut.execution.last_progress_at = Some(now);
+            attempt_mut.execution.last_progress = Some(summary.clone());
+            attempt_mut.execution.current_operation = None;
+            attempt_mut.execution.next_retry_at = None;
 
             let task_mut = data
                 .tasks
@@ -1167,6 +1263,8 @@ impl OrchestrationStore {
                     .and_then(|id| data.attempts.get_mut(id))
                 {
                     attempt.status = AttemptStatus::Blocked;
+                    attempt.execution.state = execution::ExecutionState::Blocked;
+                    attempt.execution.current_operation = Some("Waiting for a decision".into());
                     attempt.updated_at = now;
                 }
             }
@@ -1242,6 +1340,8 @@ impl OrchestrationStore {
                 {
                     if attempt.status == AttemptStatus::Blocked {
                         attempt.status = AttemptStatus::Running;
+                        attempt.execution.state = execution::ExecutionState::Queued;
+                        attempt.execution.current_operation = Some("Waiting for decision delivery".into());
                         attempt.updated_at = now;
                     }
                 }
@@ -1376,11 +1476,14 @@ impl OrchestrationStore {
                 .values_mut()
                 .filter(|attempt| attempt.run_id == run_id)
             {
+                attempt.execution.next_retry_at = None;
                 if matches!(
                     attempt.status,
                     AttemptStatus::Preparing | AttemptStatus::Running | AttemptStatus::Blocked
                 ) {
                     attempt.status = AttemptStatus::Cancelled;
+                    attempt.execution.state = execution::ExecutionState::Cancelled;
+                    attempt.execution.current_operation = None;
                     attempt.finished_at.get_or_insert(now);
                     attempt.updated_at = now;
                     workers.push(attempt.worker_chat_key.clone());
@@ -1551,6 +1654,17 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
     let mut recovered = BTreeMap::new();
     let mut migrated = false;
     for attempt in data.attempts.values_mut() {
+        if attempt.execution.last_activity_at.is_none() {
+            attempt.execution.last_activity_at = Some(attempt.updated_at);
+            attempt.execution.state = match attempt.status {
+                AttemptStatus::Completed => execution::ExecutionState::Completed,
+                AttemptStatus::Failed => execution::ExecutionState::Failed,
+                AttemptStatus::Cancelled => execution::ExecutionState::Cancelled,
+                AttemptStatus::Blocked => execution::ExecutionState::Blocked,
+                _ => execution::ExecutionState::Queued,
+            };
+            migrated = true;
+        }
         let interrupted = matches!(
             attempt.status,
             AttemptStatus::Preparing | AttemptStatus::Running
@@ -1564,6 +1678,15 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
             continue;
         }
         attempt.status = AttemptStatus::Failed;
+        attempt.execution.state = execution::ExecutionState::Disconnected;
+        attempt.execution.current_operation = None;
+        attempt.execution.next_retry_at = None;
+        attempt.execution.latest_error = Some(execution::ExecutionError {
+            kind: "disconnected".into(),
+            message: "Worker was interrupted when OctiqFlow restarted.".into(),
+            at: now,
+            retryable: false,
+        });
         attempt.summary =
             Some("Worker was interrupted when OctiqFlow restarted. Start a new attempt.".into());
         attempt.updated_at = now;
@@ -1589,6 +1712,11 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
     }
     let mut run_ids = BTreeSet::new();
     for (task_id, (attempt_id, run_id)) in recovered {
+        let attempt = &data.attempts[&attempt_id];
+        let target = data.runs[&run_id].coordinator_chat_key.clone();
+        let worker = attempt.worker_chat_key.clone();
+        inbox::enqueue(data, &run_id, &worker, &target, format!("execution-failed:{attempt_id}"), "disconnected",
+            format!("Worker for task {task_id} (attempt {attempt_id}) disconnected when the host restarted. The attempt is failed. Workspace and completed work are preserved. Read orchestration_snapshot before retrying."));
         run_ids.insert(run_id);
         if let Some(task) = data.tasks.get_mut(&task_id) {
             if task.active_attempt_id.as_deref() == Some(attempt_id.as_str())
@@ -1632,8 +1760,9 @@ pub fn master_prompt(run: &Run) -> String {
         run.id, run.objective, run.max_concurrent
     );
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
+    let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
     if run.worker_defaults.is_some() {
-        format!("{brief}\n\nAutomatic dispatch is enabled. Create all tasks with their dependencies and chosen worker settings; the host starts each task with its own selection and starts subsequent waves automatically. Do not also start those tasks manually. Legacy tasks without a worker selection can be started explicitly with orchestration_worker_start. Failed or blocked tasks still require an explicit retry decision. Workspace mode: {:?}.", run.workspace_mode)
+        format!("{brief}\n\nAutomatic dispatch is enabled. Create all tasks with their dependencies and chosen worker settings; the host starts each task with its own selection and starts subsequent waves automatically. Do not also start those tasks manually. Legacy tasks without a worker selection can be started explicitly with orchestration_worker_start. Host-detected transient provider failures have bounded automatic recovery. Inspect attempt.execution and nextRetryAt before retrying; do not duplicate a scheduled recovery. Worker-reported failures and blocks still require an explicit retry decision. Workspace mode: {:?}.", run.workspace_mode)
     } else {
         brief
     }

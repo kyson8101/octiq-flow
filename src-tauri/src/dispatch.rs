@@ -408,13 +408,28 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             arg(&args, "chatId")?,
             arg::<Option<bool>>(&args, "refresh")?.unwrap_or(false),
         )),
-        "chat_task_report" => to_value(crate::chat_task::chat_task_report_impl(
-            arg(&args, "chatId")?,
-            arg(&args, "objective")?,
-            arg::<Option<String>>(&args, "nextStep")?.unwrap_or_default(),
-            arg::<Option<Vec<crate::chat_task::TaskStep>>>(&args, "steps")?.unwrap_or_default(),
-            arg::<Option<String>>(&args, "reportedBy")?.unwrap_or_default(),
-        )),
+        "chat_task_report" => {
+            let status = crate::chat_task::chat_task_report_impl(
+                arg(&args, "chatId")?,
+                arg(&args, "objective")?,
+                arg::<Option<String>>(&args, "nextStep")?.unwrap_or_default(),
+                arg::<Option<Vec<crate::chat_task::TaskStep>>>(&args, "steps")?.unwrap_or_default(),
+                arg::<Option<String>>(&args, "reportedBy")?.unwrap_or_default(),
+            )?;
+            if let Some(report) = &status.report {
+                let summary = report
+                    .steps
+                    .iter()
+                    .find(|s| s.state == "active")
+                    .map(|s| s.title.as_str())
+                    .unwrap_or(&report.next_step);
+                svc.orchestrations.observe_worker_event(
+                    &format!("chat:{}", status.chat_id),
+                    &json!({"type":"octiq.progress", "summary": summary}),
+                )?;
+            }
+            to_value(Ok(status))
+        }
         "chat_task_set_target" => to_value(crate::chat_task::chat_task_set_target_impl(
             arg(&args, "chatId")?,
             arg(&args, "branch")?,

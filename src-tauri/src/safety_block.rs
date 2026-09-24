@@ -196,6 +196,10 @@ pub fn pending() -> Vec<BlockedAction> {
     with_pending(|pending| pending.values().cloned().collect())
 }
 
+pub(crate) fn has_pending_for_chat(chat_key: &str) -> bool {
+    with_pending(|pending| pending.values().any(|block| block.chat_key == chat_key))
+}
+
 /// Remove one card after the person chooses a path or dismisses it.
 pub fn dismiss(id: &str) -> bool {
     let removed = with_pending(|pending| pending.remove(id).is_some());

@@ -1,7 +1,8 @@
 import type { TaskReport } from "./chatTask";
 
 export type WorkspaceMode = "auto" | "worktree" | "direct";
-export type WorkerSettings = { agent: "codex" | "claude"; access: string; model?: string; effort?: string };
+export type RecoveryPolicy = { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; fallbackModel?: string | null; stallAfterMs?: number; toolStallAfterMs?: number };
+export type WorkerSettings = { agent: "codex" | "claude"; access: string; model?: string; effort?: string; recovery?: RecoveryPolicy | null };
 /** Omitting agent lets the main agent select workers individually. */
 export type WorkerDefaults = Omit<WorkerSettings, "agent"> & { agent?: WorkerSettings["agent"] };
 export type TaskWorkspace = {
@@ -102,6 +103,7 @@ export type OrchestrationAttempt = {
   effort?: string;
   access: string;
   status: AttemptStatus;
+  execution?: WorkerExecution;
   cwd: string;
   branch: string;
   isWorktree: boolean;
@@ -111,6 +113,20 @@ export type OrchestrationAttempt = {
   archivedAt?: number | null;
   createdAt: number;
   updatedAt: number;
+};
+
+export type ExecutionState = "queued" | "executing" | "waiting_tool" | "retrying" | "capacity_blocked" | "stalled" | "disconnected" | "awaiting_report" | "blocked" | "failed" | "completed" | "cancelled";
+export type WorkerExecution = {
+  state: ExecutionState;
+  lastActivityAt?: number | null;
+  lastProgressAt?: number | null;
+  lastProgress?: string | null;
+  currentOperation?: string | null;
+  latestError?: { kind: string; message: string; at: number; retryable: boolean } | null;
+  retryCount: number;
+  nextRetryAt?: number | null;
+  retryModel?: string | null;
+  stalledAt?: number | null;
 };
 
 export type OrchestrationGate = {

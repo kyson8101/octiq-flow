@@ -13,6 +13,8 @@ pub struct WorkerDefaults {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub recovery: Option<execution::RecoveryPolicy>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,6 +26,8 @@ pub struct WorkerSettings {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    #[serde(default)]
+    pub recovery: Option<execution::RecoveryPolicy>,
 }
 
 /// Always pass an explicit execution model to the provider. Its configured
@@ -51,6 +55,9 @@ pub(super) fn worker_model(agent: ChatAgent, model: Option<&str>) -> Result<Stri
 impl WorkerSettings {
     pub(super) fn normalized(mut self) -> Result<Self, String> {
         self.model = Some(worker_model(self.agent, self.model.as_deref())?);
+        if let Some(policy) = &self.recovery {
+            policy.validate(self.agent)?;
+        }
         Ok(self)
     }
 }
@@ -59,8 +66,21 @@ impl WorkerDefaults {
     pub fn normalized(mut self) -> Result<Self, String> {
         if let Some(agent) = self.agent {
             self.model = Some(worker_model(agent, self.model.as_deref())?);
+            if let Some(policy) = &self.recovery {
+                policy.validate(agent)?;
+            }
         } else if self.model.is_some() || self.effort.is_some() {
             return Err("Choose a provider with run-wide model settings, or set worker settings on each task.".into());
+        }
+        if self.agent.is_none() {
+            if let Some(policy) = &self.recovery {
+                if policy.fallback_model.is_some() {
+                    return Err(
+                        "Set a fallback model on each task when the run mixes providers.".into(),
+                    );
+                }
+                policy.validate(ChatAgent::Codex)?;
+            }
         }
         Ok(self)
     }
@@ -72,6 +92,7 @@ impl WorkerDefaults {
                 access: self.access,
                 model: self.model.clone(),
                 effort: self.effort.clone(),
+                recovery: self.recovery.clone(),
             })
         });
         settings.map(WorkerSettings::normalized).transpose()
@@ -204,6 +225,9 @@ pub fn start_scheduler(
 ) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(2));
+        if let Err(error) = store.recover_due_workers(chats.clone(), &workspaces, now_ms()) {
+            eprintln!("orchestration: worker monitoring failed: {error}");
+        }
         if let Err(error) = super::inbox::deliver_pending(&chats, &workspaces) {
             eprintln!("orchestration: notification delivery failed: {error}");
         }
@@ -243,6 +267,7 @@ mod tests {
             model: Some(model.into()),
             effort: Some("high".into()),
             access: Access::Auto,
+            recovery: None,
         }
     }
 
@@ -283,6 +308,7 @@ mod tests {
                             model: settings.model.clone(),
                             access: Access::Auto,
                             effort: None,
+                            recovery: None,
                         })
                     )
                     .unwrap_err()

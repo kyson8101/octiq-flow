@@ -10,6 +10,8 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 import type { TaskWorkspace } from "../lib/orchestration";
+import { boardCounts, EXECUTION_LABELS } from "../lib/agentTaskBoard";
+import type { ExecutionState } from "../lib/orchestration";
 import { OrchestrationPanel, retryLaunchArgs, type OrchestrationSnapshot } from "./OrchestrationPanel";
 
 const snapshot: OrchestrationSnapshot = {
@@ -65,6 +67,41 @@ const snapshot: OrchestrationSnapshot = {
   }],
   messages: [],
 };
+
+describe("host execution evidence", () => {
+  it("shows a dispatch capacity failure without a worker report or an active-work count", () => {
+    const failed = structuredClone(snapshot);
+    failed.gates = [];
+    failed.attempts[0].status = "failed";
+    failed.attempts[0].execution = {
+      state: "capacity_blocked", lastActivityAt: 1000, lastProgressAt: 500,
+      lastProgress: "Saved the implementation", currentOperation: null, retryCount: 0,
+      nextRetryAt: 6000, retryModel: "gpt-5.6-terra",
+      latestError: { kind: "capacity", message: "Selected model is at capacity", at: 1000, retryable: true },
+    };
+    const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={failed} onOpenChat={() => {}} onClose={() => {}} />);
+    for (const expected of ["Capacity blocked", "Last activity", "Last meaningful progress", "Saved the implementation", "Current operation", "Latest error:", "Selected model is at capacity", "Retry 1 scheduled", "gpt-5.6-terra", "Workspace retained"]) {
+      expect(html).toContain(expected);
+    }
+    expect(html).not.toContain("of 4 working");
+    expect(html).not.toContain("Reported checklist");
+    expect(boardCounts(failed.tasks, failed)).toMatchObject({ running: 0, blocked: 1 });
+  });
+
+  it.each(Object.keys(EXECUTION_LABELS) as ExecutionState[])("keeps task outcome separate from %s execution", (state) => {
+    const current = structuredClone(snapshot);
+    current.gates = [];
+    current.tasks[0].status = "running";
+    current.attempts[0].status = "running";
+    current.attempts[0].execution = { state, retryCount: 0 };
+    const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).toContain(EXECUTION_LABELS[state]);
+    expect(html).toContain("Task: Working");
+    if (["capacity_blocked", "stalled", "disconnected", "retrying"].includes(state)) expect(boardCounts(current.tasks, current).running).toBe(0);
+  });
+});
 
 describe("OrchestrationPanel", () => {
   it("keeps the ledger visible without decision inputs or run controls in worker chats", () => {

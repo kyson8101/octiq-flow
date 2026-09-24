@@ -281,6 +281,8 @@ pub(crate) fn normalize_notification(message: &Value) -> Option<Value> {
             if params.get("willRetry").and_then(Value::as_bool) == Some(true) {
                 Some(json!({
                     "type": "warning",
+                    "will_retry": true,
+                    "error": snake_value(error.clone()),
                     "message": error.get("message").and_then(Value::as_str).unwrap_or("Codex is retrying"),
                 }))
             } else {

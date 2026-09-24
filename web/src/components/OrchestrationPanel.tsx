@@ -3,7 +3,7 @@ import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME, modelFromReported } from "../lib/agentProviders";
 import {
-  attemptIsLive, boardCounts, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
+  attemptIsExecuting, boardCounts, executionNeedsAttention, EXECUTION_LABELS, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
   taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
 } from "../lib/agentTaskBoard";
 import { agoLabel } from "../lib/chatTask";
@@ -11,6 +11,7 @@ import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
 import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { AgentLogo } from "./AgentLogo";
+import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { RollingNumber } from "./RollingNumber";
 import { BranchIcon, ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
 
@@ -432,10 +433,10 @@ function NewRun({
  *  real and kept, but it opens on request rather than filling the screen. */
 type TaskFilter = "all" | "working" | "blocked" | "done";
 
-const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: OrchestrationTask) => boolean }[] = [
+const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: OrchestrationTask, attempt?: OrchestrationAttempt) => boolean }[] = [
   { key: "all", label: "All", match: () => true },
-  { key: "working", label: "Working", match: (task) => task.status === "running" },
-  { key: "blocked", label: "Blocked", match: (task) => task.status === "blocked" || task.status === "failed" },
+  { key: "working", label: "Working", match: (task, attempt) => task.status === "running" && (!attempt?.execution || attemptIsExecuting(attempt)) },
+  { key: "blocked", label: "Blocked", match: (task, attempt) => task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt) },
   { key: "done", label: "Done", match: (task) => task.status === "completed" },
 ];
 
@@ -490,11 +491,11 @@ function RunDetail({
   const now = useElapsedTick(runIsLive(snapshot, run.id));
   const openGates = gates.filter((gate) => gate.status === "open");
   const gateBlockedTasks = new Set(openGates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
-  const counts = boardCounts(tasks);
-  const working = attempts.filter((attempt) => attemptIsLive(snapshot, attempt)).length;
+  const counts = boardCounts(tasks, snapshot);
+  const working = attempts.filter(attemptIsExecuting).length;
   // A task blocked BY a decision is already named by the decision chip. Saying
   // it twice reads as two problems when there is one.
-  const attention = tasks.filter((task) => (task.status === "blocked" || task.status === "failed") && !gateBlockedTasks.has(task.id)).length;
+  const attention = tasks.filter((task) => (task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempts.find((a) => a.id === task.activeAttemptId))) && !gateBlockedTasks.has(task.id)).length;
   const taskNames = new Map(tasks.map((task) => [task.id, task.title]));
   const archiveSnapshot = { runs: [run], tasks, attempts, gates, messages };
   const archivable = attempts.filter((attempt) => attempt.archivedAt == null && !workerArchiveDisabledReason(archiveSnapshot, attempt));
@@ -509,7 +510,7 @@ function RunDetail({
     </button>;
   };
   const active = TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
-  const visible = tasks.filter(active.match);
+  const visible = tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId)));
 
   return (
     <section className="orch-run-detail" aria-labelledby="orch-run-title">
@@ -607,8 +608,9 @@ function RunDetail({
         <summary>Notifications · {notifications.filter((item) => item.state === "pending" || item.state === "delivering").length} awaiting receipt</summary>
         <p>Delivery waits while the main agent is busy or user messages are queued. Receipt confirms delivery, not completion of the requested action.</p>
         {[...notifications].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 12).map((item) => <article key={item.id}>
-          <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : "Agent message"}</strong>
+          <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : "Agent message"}</strong>
           <span>{({ pending: "Queued", delivering: "Awaiting receipt", acknowledged: "Received by agent", cancelled: "No longer needed" })[item.state]}</span>
+          {["capacity", "provider", "disconnected", "stalled"].includes(item.kind) && <p>{item.body}</p>}
           {item.coalesced > 0 && <small>{item.coalesced + 1} updates combined</small>}
           {item.lastError && (item.state === "pending" || item.state === "delivering") && <p className="orch-workspace-warning">{item.lastError} Delivery will retry automatically.</p>}
         </article>)}
@@ -690,11 +692,11 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
   const history = mine.filter((candidate) => candidate.id !== attempt?.id);
   const report = attempt ? snapshot.reports?.[attempt.workerChatKey] : undefined;
   const progress = taskProgress(task, report);
-  const stage = attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report);
+  const stage = !attempt?.execution && attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report, attempt);
   // A task that has reported nothing has `taskStage` fall back to its own
   // status word, which line one already carries. Saying "Blocked · Blocked"
   // is how a row starts looking busy while telling you less.
-  const reportedStage = stage === TASK_LABELS[task.status] ? null : stage;
+  const reportedStage = attempt?.execution || stage === TASK_LABELS[task.status] ? null : stage;
   const elapsed = taskElapsed(snapshot, task, now);
   const branch = task.workspace?.plan.branch || attempt?.branch;
   const gate = gates.find((item) => item.taskId === task.id && item.status === "open");
@@ -710,7 +712,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
         <summary className="orch-task-summary">
           <span className="orch-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
           <h4>{task.title}</h4>
-          <span className="orch-task-state">{TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
+          <span className="orch-task-state">{attempt?.execution && task.activeAttemptId === attempt.id ? EXECUTION_LABELS[attempt.execution.state] : TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
           <span className="orch-task-meta">
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
@@ -719,6 +721,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           </span>
         </summary>
         <div className="orch-task-detail">
+          {attempt?.execution && <><p>Task: {TASK_LABELS[task.status]}</p><WorkerExecutionEvidence execution={attempt.execution} /></>}
           {task.worker && <p>Selected worker: {AGENT_NAME[task.worker.agent]} · {modelFromReported(task.worker.agent, task.worker.model ?? "")?.model ?? task.worker.model}{task.worker.effort ? ` · ${task.worker.effort} effort` : ""}</p>}
           {gate && <p className="orch-task-blocker">Waiting on a decision: {gate.question}</p>}
           {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">

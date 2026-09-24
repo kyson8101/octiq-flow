@@ -1190,6 +1190,14 @@ const WORKER_SETTINGS_PROPERTIES = {
   access: { type: "string", enum: ["read", "manual", "edits", "auto", "full"] },
   model: { type: "string", description: "Choose a provider-native execution model: Codex gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna; Claude opus, sonnet, haiku. Fable and Astra (including versioned IDs) are reserved for main orchestrators and rejected for workers. If omitted, uses Sol for Codex or Sonnet for Claude, never a CLI default." },
   effort: { type: "string", description: "Provider-native reasoning effort suited to this task's complexity." },
+  recovery: { type: "object", description: "Host recovery for transient provider failures. Defaults to two retries with exponential backoff. Retains the task workspace and starts a new attempt; pending tools and disconnects require coordinator review.", properties: {
+    maxRetries: { type: "integer", minimum: 0, maximum: 5, description: "0 disables automatic retries; default 2." },
+    baseDelayMs: { type: "integer", minimum: 1000, maximum: 300000, description: "Initial backoff; default 5000 ms." },
+    maxDelayMs: { type: "integer", minimum: 1000, maximum: 300000, description: "Backoff ceiling and provider retry time budget; default 60000 ms." },
+    fallbackModel: { type: "string", description: "Optional execution model for recovery, using the same provider and access boundary. Set per task for mixed-provider runs." },
+    stallAfterMs: { type: "integer", minimum: 30000, maximum: 86400000, description: "Alert after no meaningful progress; default 300000 ms. Does not kill work." },
+    toolStallAfterMs: { type: "integer", minimum: 30000, maximum: 86400000, description: "Longer alert threshold for tools; default 1800000 ms, at least stallAfterMs." },
+  } },
 };
 const WORKER_DEFAULTS_SCHEMA = {
   type: ["object", "null"],
@@ -1353,7 +1361,7 @@ const ORCHESTRATION_RUN_STOP = {
 };
 
 const WORKSPACE_TOOLS = [
-  { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause with workerDefaults=null. Does not retry failed or blocked tasks. Coordinator only.",
+  { name: "orchestration_automation_configure", description: "Enable host dispatch with workerDefaults={access:'auto'} using the main agent's per-task worker selections, or pause ready-wave dispatch with workerDefaults=null. Transient provider recovery uses each task's recovery policy; worker-reported failures and blocks still need explicit retries. Coordinator only.",
     inputSchema: { type: "object", properties: { runId: { type: "string" }, workerDefaults: WORKER_DEFAULTS_SCHEMA }, required: ["runId", "workerDefaults"] } },
   { name: "orchestration_dispatch_ready", description: "Immediately dispatch the configured run's full ready wave up to its capacity. Repeated calls do not duplicate active workers. The scheduler also does this automatically.",
     inputSchema: { type: "object", properties: { runId: { type: "string" } }, required: ["runId"] } },

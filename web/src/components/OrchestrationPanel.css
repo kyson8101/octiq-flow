@@ -720,3 +720,9 @@
   .orch-notifications > summary,
   .orch-workspace > summary { padding-block: 8px; }
 }
+
+.orch-execution { margin-block: 12px; font-size: 12px; color: var(--fg-2); }
+.orch-execution dl { display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); gap: 6px 12px; }
+.orch-execution dt { color: var(--fg-3); }
+.orch-execution dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.orch-execution-error { color: var(--danger); overflow-wrap: anywhere; }

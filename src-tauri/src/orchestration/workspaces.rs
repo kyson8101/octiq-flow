@@ -622,6 +622,69 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn capacity_recovery_reuses_the_lease_branch_and_uncommitted_work() {
+        let repo = Repo::new();
+        let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        fs::write(
+            Path::new(&first.cwd).join("completed.txt"),
+            "completed work",
+        )
+        .unwrap();
+        store
+            .observe_worker_event(
+                &first.worker_chat_key,
+                &json!({"type":"turn.failed", "error":{"message":"Selected model is at capacity"}}),
+            )
+            .unwrap();
+        store
+            .mutate(|data| {
+                data.attempts
+                    .get_mut(&first.id)
+                    .unwrap()
+                    .execution
+                    .next_retry_at = Some(now_ms() - 1);
+                Ok(())
+            })
+            .unwrap();
+        let launch = WorkerLaunch {
+            task_id: task.id,
+            agent: first.agent,
+            access: first.access,
+            model: first.model.clone(),
+            effort: first.effort.clone(),
+            new_worktree: Some(false),
+            base_branch: String::new(),
+        };
+        let (run, task, reserved, previous) = store
+            .reserve_attempt_for("chat:master", &launch, Some(&first.id))
+            .unwrap();
+        let workspace = store
+            .prepare_task_workspace(
+                &ChatManager::default(),
+                &run,
+                &task,
+                &reserved,
+                previous.as_ref(),
+                &launch,
+            )
+            .unwrap();
+        assert_ne!(reserved.id, first.id);
+        assert_eq!(reserved.execution.retry_count, 1);
+        assert_eq!(workspace.cwd, first.cwd);
+        assert_eq!(workspace.branch, first.branch);
+        assert_eq!(
+            fs::read_to_string(Path::new(&workspace.cwd).join("completed.txt")).unwrap(),
+            "completed work"
+        );
+        let task = store.snapshot(Some(&run.id)).unwrap().tasks.remove(0);
+        assert_eq!(
+            task.workspace.unwrap().lease_attempt_id.as_deref(),
+            Some(reserved.id.as_str())
+        );
+    }
+
+    #[test]
     fn retry_and_review_reuse_workspace_and_preserve_uncommitted_changes() {
         let repo = Repo::new();
         let (store, run, task) = setup(&repo, WorkspaceMode::Auto);

@@ -62,7 +62,7 @@ pub(super) fn enqueue(
             n.next_attempt_at = (now + 2_000).min(n.created_at + 10_000);
             return;
         }
-    } else if kind == "report" {
+    } else if matches!(kind, "report" | "capacity" | "provider" | "disconnected") {
         for n in data.notifications.values_mut().filter(|n| {
             n.run_id == run_id
                 && n.from_chat_key == from
@@ -457,9 +457,22 @@ mod tests {
         assert!(!saved.contains("must not persist"));
         let loaded = OrchestrationStore::load(path.clone());
         assert_eq!(
-            loaded.snapshot(None).unwrap().notifications[0].state,
+            loaded
+                .snapshot(None)
+                .unwrap()
+                .notifications
+                .iter()
+                .find(|saved| saved.id == n.id)
+                .unwrap()
+                .state,
             DeliveryState::Delivering
         );
+        assert!(loaded
+            .snapshot(None)
+            .unwrap()
+            .notifications
+            .iter()
+            .any(|n| n.kind == "disconnected" && n.state == DeliveryState::Pending));
         assert!(loaded.saved_resume_context("chat:master").is_some());
         assert!(serde_json::to_value(loaded.snapshot(None).unwrap())
             .unwrap()

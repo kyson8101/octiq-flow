@@ -77,7 +77,7 @@ The profile stores `orchestrations.json` atomically. A snapshot contains:
 - **Task** — bounded specification, dependencies, current state, and the one
   authoritative attempt.
 - **Attempt** — worker chat, provider, access, worktree, branch, report, and
-  changed files.
+  changed files, plus a separate host-owned `execution` record.
 - **Gate** — a blocking decision with optional known choices. Resolving it
   records the answer and resumes the requesting agent.
 - **Message** — a durable directed coordinator/worker message. Delivery wakes
@@ -85,6 +85,69 @@ The profile stores `orchestrations.json` atomically. A snapshot contains:
 
 Each mutation is persisted before it is announced to browsers. If the saved
 file cannot be read, the store refuses to overwrite it.
+
+### Execution evidence and provider recovery
+
+Task state describes the assignment's outcome. `attempt.execution.state`
+describes what the provider is doing: `queued`, `executing`, `waiting_tool`,
+`retrying`, `capacity_blocked`, `failed`, `disconnected`, `stalled`, or
+`awaiting_report`, with completed, cancelled and decision-blocked states too.
+The board uses execution evidence when counting active work. A model at
+capacity is never counted as executing merely because its process is alive.
+
+The host observes dispatch results, Claude/Codex error events, provider retries,
+tool starts/results, model output, and process disconnections. A terminal
+provider failure fails the attempt and atomically records a coordinator inbox
+notification. The task becomes blocked while a host retry is scheduled, or
+failed when recovery needs review. Browsers receive `orchestration-changed`
+after persistence. Neither path needs another successful worker model response.
+An internal provider retry is visible immediately and has a finite time budget.
+
+Both the snapshot and Run details expose `lastActivityAt`, `lastProgressAt`,
+`lastProgress`, `currentOperation`, and `latestError` (kind, message, timestamp,
+retryability). Streaming tokens count as activity, not completed progress.
+Tool activity and structured progress reports update progress evidence.
+Errors remain visible during recovery. A completed tool failing is not itself
+a failed model request; quoted error text in worker prose is not failure evidence.
+
+Workers default to two host retries, with 5-second then 10-second backoff and
+a 60-second ceiling. Set `worker.recovery` in `orchestration_task_create`, or
+`workerDefaults.recovery` for a run, to configure:
+
+```json
+{
+  "maxRetries": 2,
+  "baseDelayMs": 5000,
+  "maxDelayMs": 60000,
+  "fallbackModel": "gpt-5.6-terra",
+  "stallAfterMs": 300000,
+  "toolStallAfterMs": 1800000
+}
+```
+
+`maxRetries: 0` disables host retries; the maximum is five. `maxDelayMs` also
+bounds a provider's own retry loop. A configured fallback uses the same provider
+and access level and must be an execution model. Mixed-provider runs configure
+fallback models on each task. Each recovery gets a new authoritative attempt
+and reuses the task's existing workspace, branch, uncommitted files and prior
+checklist context. The previous process stops before the lease transfers.
+Late reports cannot settle a replacement. Inspect `nextRetryAt`, `retryCount`
+and `retryModel` before starting a manual retry, which supersedes scheduled
+recovery. Pausing ready-wave dispatch does not cancel already scheduled recovery;
+stopping the run does.
+
+No meaningful progress for five minutes raises a durable stalled notification;
+tool waits get thirty minutes by default. These are advisory alerts: silence
+does not prove a tool failed, so the host does not kill or replay a stalled tool.
+Disconnects and failures with outstanding tools require coordinator review.
+Open decisions and pending safety approvals keep their existing wait behavior.
+On host restart, interrupted workers become disconnected failures with durable
+notifications; retained work and previously scheduled recovery survive.
+
+Failure notifications are immediately available in the coordinator's snapshot
+and durable inbox. Delivery runs on the host's two-second scheduler and waits
+behind an active coordinator turn or queued user messages. A delivery receipt
+confirms provider receipt, not that the coordinator has acted.
 
 ## Worker lifecycle
 
@@ -96,7 +159,8 @@ file cannot be read, the store refuses to overwrite it.
 4. Code work creates a linked Git worktree by default and starts a dedicated
    Claude or Codex chat there.
 5. The worker must call `orchestration_worker_report` with its exact attempt ID.
-   Only that chat and the active attempt may settle the task.
+   Only that chat and the active attempt may report an outcome. The host can
+   also fail an attempt from provider execution evidence.
 6. Completed dependencies unlock pending tasks. A reported block can be
    retried; a gate-blocked attempt waits for its decision instead. Retrying
    reuses the previous attempt's assigned workspace
@@ -178,7 +242,7 @@ with workspace/stop operations. It is not exposed through worker MCP hooks.
 
 The master dispatches workers and ends its turn; workers continue independently while the person talks to the master. A master has one active provider turn at a time. Notifications never interrupt that turn or jump ahead of queued user messages. User turns retain FIFO order ahead of queued internal continuations.
 
-Reports, decision gates, resolutions and messages create inbox entries atomically with their orchestration state change (store schema v3, migrating v1/v2). Only unsent `progress` updates from the same sender to the same target are coalesced, with a two-second debounce and ten-second maximum delay. A settled report supersedes pending progress. Decisions and reports remain separate.
+Reports, decision gates, resolutions, messages and execution failures create inbox entries atomically with their orchestration state change (store schema v4, migrating v1–v3). Only unsent `progress` updates from the same sender to the same target are coalesced, with a two-second debounce and ten-second maximum delay. A settled report or execution failure supersedes pending progress. Decisions and reports remain separate.
 
 The host retries delivery between turns. A provider-native receipt marks **Received by agent**, not handled or completed. Delivery is at least once: a crash before receipt persistence can repeat a notification; its stable ID and an authoritative snapshot let the master avoid repeating actions. Receipt frames in the transcript recover a missed inbox acknowledgement. Failed delivery uses bounded backoff. Run details expose pending receipts and retry errors.
 

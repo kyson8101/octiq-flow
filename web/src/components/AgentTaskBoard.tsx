@@ -37,7 +37,7 @@ export function AgentTaskBoard(props: Props) {
     const attempts = taskAttempts(snapshot, task);
     return !attempts.length || attempts.some((attempt) => attempt.archivedAt == null);
   });
-  const counts = boardCounts(tasks);
+  const counts = boardCounts(tasks, snapshot);
   const elapsed = runElapsed(snapshot, run.id, now);
   return <section className="agent-board" aria-label="Agent task board">
     {snapshot.runs.length > 1 && <select className="agent-board-runs" aria-label="Task run" value={run.id} onChange={(event) => setChosenRun(event.target.value)}>
@@ -69,7 +69,7 @@ function TaskRow({ snapshot, conversations, currentConversation, onOpenChat, tas
   const chat = attempt && conversations.get(attempt.workerChatKey.replace(/^chat:/, ""));
   const report = attempt && snapshot.reports?.[attempt.workerChatKey];
   const progress = taskProgress(task, report);
-  const stage = attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report);
+  const stage = !attempt?.execution && attempt?.status === "preparing" ? "Preparing workspace" : taskStage(task, report, attempt);
   const selected = attempts.some((item) => item.workerChatKey === `chat:${currentConversation}`);
   const unread = !!chat && isUnread(chat, currentConversation);
   const body = <>
@@ -80,7 +80,7 @@ function TaskRow({ snapshot, conversations, currentConversation, onOpenChat, tas
         {unread && <span className="agent-task-unread" title="Unread activity" />}
         <span className="agent-task-percent" title={task.status === "completed" ? "Task completed" : progress.total ? `${progress.done} of ${progress.total} reported steps done` : "No checklist reported"}>{progress.percent === null ? "—" : `${progress.percent}%`}</span>
       </span>
-      <span className="agent-task-meta"><span className="agent-task-stage" title={stage}>{stage}</span></span>
+      <span className="agent-task-meta"><span className="agent-task-stage" title={attempt?.execution?.latestError?.message || stage}>{stage}</span></span>
     </span>
   </>;
   // A task with no transcript yet is not navigation, so it is not a button —
