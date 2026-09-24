@@ -121,6 +121,35 @@ complete Cloudflare Access configuration is present in `web.json`.
 On macOS, `./scripts/install-service.sh` installs the server as a launchd agent
 so it starts at login and survives a logout.
 
+### On Windows
+
+Two things bite here, and both report themselves as something else:
+
+- **Install `web/`'s dependencies separately, and again after pulling.** `web/`
+  is not a pnpm workspace member, so a root install leaves it empty — and an
+  existing `web/node_modules` is no proof it is current. A stale one fails as
+  TypeScript `Cannot find module`, which reads like broken code rather than a
+  stale install.
+- **Build with `OPENSSL_NO_VENDOR=1`.** `openssl`'s `vendored` feature (there so
+  the published npm binaries carry their own OpenSSL) overrides `OPENSSL_DIR`
+  and builds OpenSSL from source, which needs a native Windows perl. Git Bash's
+  MSYS perl is not one, and it fails as a Rust build error about `Configure`.
+
+```powershell
+pnpm --dir web install
+pnpm --dir web build
+$env:OPENSSL_NO_VENDOR = "1"
+cargo build --release --bin octiq-server --manifest-path src-tauri\Cargo.toml
+```
+
+`scripts\start-octiqflow.ps1` then starts the server and opens the browser for
+you; closing its window stops the server. There is no Windows service —
+`octiqflow install` is macOS-only, and `install-service.sh` is launchd.
+
+Agents are launched through a POSIX shell, so **Git for Windows must be
+installed**; its bash is found automatically, even when the installer kept `git`
+off `PATH`.
+
 ## Security
 
 The token is the only thing standing between a request and the machine, so:
