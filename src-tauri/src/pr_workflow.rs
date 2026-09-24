@@ -212,7 +212,60 @@ fn clean_observation(mut observation: PrObservation) -> Result<PrObservation, St
     {
         return Err("A PR observation needs a root, number, URL, head SHA, and base SHA.".into());
     }
+    pr_repository_identity(&observation.url, observation.number)?;
     Ok(observation)
+}
+
+/// Return the repository identity carried by a canonical GitHub pull-request
+/// URL. GitHub owner and repository names are case-insensitive, while the host
+/// remains part of the identity so GitHub Enterprise repositories cannot be
+/// confused with github.com (or with one another).
+fn pr_repository_identity(url: &str, number: u64) -> Result<String, String> {
+    let without_suffix = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('/');
+    let (_, location) = without_suffix
+        .split_once("://")
+        .ok_or_else(|| format!("The observed URL does not identify GitHub PR #{number}."))?;
+    let parts: Vec<_> = location
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if parts.len() < 5
+        || !parts[3].eq_ignore_ascii_case("pull")
+        || parts[4].parse::<u64>().ok() != Some(number)
+    {
+        return Err(format!(
+            "The observed URL does not identify GitHub PR #{number}."
+        ));
+    }
+
+    Ok(format!(
+        "{}/{}/{}",
+        parts[0].to_ascii_lowercase(),
+        parts[1].to_ascii_lowercase(),
+        parts[2]
+            .strip_suffix(".git")
+            .unwrap_or(parts[2])
+            .to_ascii_lowercase()
+    ))
+}
+
+fn require_same_repository(
+    workflow: &PrWorkflow,
+    observation: &PrObservation,
+) -> Result<(), String> {
+    let saved = pr_repository_identity(&workflow.url, workflow.number)?;
+    let observed = pr_repository_identity(&observation.url, observation.number)?;
+    if saved != observed {
+        return Err(
+            "The observed PR belongs to a different GitHub repository than the saved workflow; the existing links and action history were preserved."
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn clean_root(root: String, number: u64) -> Result<(String, u64), String> {
@@ -413,18 +466,32 @@ fn apply_evidence(
     *workflow != before
 }
 
-fn invalidate_current_action(store: &mut Store, previous: &PrWorkflow, reason: &str) {
-    let Some(current) = previous.ticket_action.as_ref() else {
-        return;
+fn invalidate_current_action(store: &mut Store, workflow: &mut PrWorkflow, reason: &str) -> bool {
+    let Some(current) = workflow.ticket_action.clone() else {
+        return false;
     };
-    let Some(stored) = store.actions.get_mut(&current.id) else {
-        return;
-    };
-    if matches!(stored.action.status.as_str(), "pending" | "running") {
-        stored.action.status = "failed".into();
-        stored.action.message = reason.into();
-        stored.action.updated_at = now_ms();
+    let mut action = store
+        .actions
+        .get(&current.id)
+        .map(|stored| stored.action.clone())
+        .unwrap_or(current);
+    if !matches!(action.status.as_str(), "pending" | "running") {
+        return false;
     }
+
+    action.status = "failed".into();
+    action.message = reason.into();
+    action.updated_at = now_ms();
+    store.actions.insert(
+        action.id.clone(),
+        StoredAction {
+            root: workflow.root.clone(),
+            number: workflow.number,
+            action: action.clone(),
+        },
+    );
+    workflow.ticket_action = Some(action);
+    true
 }
 
 fn short(sha: &str) -> String {
@@ -458,6 +525,26 @@ pub fn get(root: String, number: u64) -> Result<Option<PrWorkflow>, String> {
     Ok(read()?.workflows.get(&workflow_key(&root, number)).cloned())
 }
 
+/// Locate the current PR workflow for a durable ticket action without
+/// mutating either record. Dispatch uses this before obtaining fresh GitHub
+/// evidence and validating the chat that will be attached.
+pub fn workflow_for_action(action_id: String) -> Result<PrWorkflow, String> {
+    let action_id = action_id.trim();
+    if action_id.is_empty() {
+        return Err("A ticket action ID is required.".into());
+    }
+    let store = read()?;
+    let stored = store
+        .actions
+        .get(action_id)
+        .ok_or("The ticket action does not exist.")?;
+    store
+        .workflows
+        .get(&workflow_key(&stored.root, stored.number))
+        .cloned()
+        .ok_or_else(|| "The ticket action's PR workflow no longer exists.".into())
+}
+
 pub fn save(
     observation: PrObservation,
     expected_head: String,
@@ -478,6 +565,9 @@ pub fn save(
         let _guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
         let mut store = read()?;
         let previous = store.workflows.get(&key).cloned();
+        if let Some(previous) = previous.as_ref() {
+            require_same_repository(previous, &observation)?;
+        }
         let previous_chat = previous.as_ref().and_then(|item| item.chat_id.clone());
         let mut workflow = previous.clone().unwrap_or_else(|| PrWorkflow {
             root: observation.root.clone(),
@@ -501,14 +591,17 @@ pub fn save(
             workflow.head_sha != observation.head_sha || workflow.base_sha != observation.base_sha;
         let ticket_changed = workflow.ticket != ticket;
         let trigger_changed = workflow.complete_on != complete_on;
-        if snapshot_changed || ticket_changed {
-            invalidate_current_action(
+        let mut action_history_changed = false;
+        if snapshot_changed || ticket_changed || trigger_changed {
+            action_history_changed |= invalidate_current_action(
                 &mut store,
-                &workflow,
+                &mut workflow,
                 if snapshot_changed {
                     "The ticket action was superseded by a new PR head or base."
-                } else {
+                } else if ticket_changed {
                     "The ticket action was superseded by a changed ticket link."
+                } else {
+                    "The ticket action was superseded by a changed PR completion trigger."
                 },
             );
             workflow.ticket_action = None;
@@ -528,7 +621,15 @@ pub fn save(
             &observation,
             previous.is_none() || !snapshot_changed,
         );
-        let changed = previous.as_ref() != Some(&workflow) || evidence_changed;
+        if workflow.completion.state != "completed" {
+            action_history_changed |= invalidate_current_action(
+                &mut store,
+                &mut workflow,
+                "The configured PR completion event is no longer satisfied.",
+            );
+        }
+        let changed =
+            previous.as_ref() != Some(&workflow) || evidence_changed || action_history_changed;
         if changed {
             touch(&mut workflow);
             store.workflows.insert(key, workflow.clone());
@@ -551,17 +652,28 @@ pub fn refresh(observation: PrObservation) -> Result<Option<PrWorkflow>, String>
         let Some(mut workflow) = store.workflows.get(&key).cloned() else {
             return Ok(None);
         };
+        require_same_repository(&workflow, &observation)?;
         let previous = workflow.clone();
         let snapshot_changed =
             workflow.head_sha != observation.head_sha || workflow.base_sha != observation.base_sha;
         if snapshot_changed {
             invalidate_current_action(
                 &mut store,
-                &workflow,
+                &mut workflow,
                 "The ticket action was superseded by a new PR head or base.",
             );
         }
-        let changed = apply_evidence(&mut workflow, &observation, false);
+        let evidence_changed = apply_evidence(&mut workflow, &observation, false);
+        let action_history_changed = if workflow.completion.state != "completed" {
+            invalidate_current_action(
+                &mut store,
+                &mut workflow,
+                "The configured PR completion event is no longer satisfied.",
+            )
+        } else {
+            false
+        };
+        let changed = evidence_changed || action_history_changed;
         if changed {
             touch(&mut workflow);
             store.workflows.insert(key, workflow.clone());
@@ -597,18 +709,27 @@ pub fn prepare_ticket(
             .get(&key)
             .cloned()
             .ok_or("Save this PR workflow before preparing a ticket update.")?;
+        require_same_repository(&workflow, &observation)?;
         let before = workflow.clone();
         let snapshot_changed =
             workflow.head_sha != observation.head_sha || workflow.base_sha != observation.base_sha;
+        let mut action_history_changed = false;
         if snapshot_changed {
-            invalidate_current_action(
+            action_history_changed |= invalidate_current_action(
                 &mut store,
-                &workflow,
+                &mut workflow,
                 "The ticket action was superseded by a new PR head or base.",
             );
         }
         let evidence_changed = apply_evidence(&mut workflow, &observation, false);
-        if evidence_changed {
+        if workflow.completion.state != "completed" {
+            action_history_changed |= invalidate_current_action(
+                &mut store,
+                &mut workflow,
+                "The configured PR completion event is no longer satisfied.",
+            );
+        }
+        if evidence_changed || action_history_changed {
             touch(&mut workflow);
             store.workflows.insert(key.clone(), workflow.clone());
             write(&store)?;
@@ -717,16 +838,11 @@ pub fn attach_ticket(action_id: String, chat_id: String) -> Result<PrWorkflow, S
         return Err("A ticket workflow chat ID is required.".into());
     }
 
-    // Locate the workflow first so project validation uses its repository.
-    let root = {
-        let store = read()?;
-        store
-            .actions
-            .get(&action_id)
-            .map(|stored| stored.root.clone())
-            .ok_or("The ticket action does not exist.")?
-    };
-    validate_chat(&chat_id, &root)?;
+    // Keep durable existence/worker validation outside the workflow mutex.
+    // Besides avoiding a recursive lock through chat metadata, this gives the
+    // coordinator the same repository identity exposed by workflow_for_action.
+    let located = workflow_for_action(action_id.clone())?;
+    validate_chat(&chat_id, &located.root)?;
 
     let workflow = {
         let _guard = LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -742,7 +858,7 @@ pub fn attach_ticket(action_id: String, chat_id: String) -> Result<PrWorkflow, S
             .get(&key)
             .cloned()
             .ok_or("The ticket action's PR workflow no longer exists.")?;
-        require_current_action(&workflow, &stored.action)?;
+        require_current_completed_action(&workflow, &stored.action)?;
         let mut action = stored.action;
         match action.status.as_str() {
             "pending" => {
@@ -803,20 +919,29 @@ pub fn confirm_ticket(
             .get(&key)
             .cloned()
             .ok_or("The ticket action's PR workflow no longer exists.")?;
-        require_current_action(&workflow, &stored.action)?;
         let mut action = stored.action;
 
-        if confirmed && action.status == "confirmed" {
-            return Ok(workflow);
-        }
-        if !confirmed && action.status == "failed" {
-            return Ok(workflow);
-        }
-        if confirmed && action.status != "running" {
-            return Err("Only a running ticket workflow can be user-confirmed.".into());
-        }
-        if !confirmed && !matches!(action.status.as_str(), "pending" | "running") {
-            return Err("A confirmed ticket action cannot be changed to failed.".into());
+        if confirmed {
+            require_current_completed_action(&workflow, &action)?;
+            if action.status == "confirmed" {
+                return Ok(workflow);
+            }
+            if action.status != "running" {
+                return Err("Only a running ticket workflow can be user-confirmed.".into());
+            }
+        } else {
+            // Launch and agent failures remain reportable even when fresh
+            // evidence has revoked completion or superseded this action. That
+            // closes the durable history without allowing a stale success.
+            if action.status == "failed" {
+                return Ok(workflow);
+            }
+            if action.status == "confirmed" {
+                return Err("A confirmed ticket action cannot be changed to failed.".into());
+            }
+            if !matches!(action.status.as_str(), "pending" | "running") {
+                return Err("The ticket action has an unsupported status.".into());
+            }
         }
 
         action.status = if confirmed { "confirmed" } else { "failed" }.into();
@@ -839,9 +964,15 @@ pub fn confirm_ticket(
                 action: action.clone(),
             },
         );
-        workflow.ticket_action = Some(action);
-        touch(&mut workflow);
-        store.workflows.insert(key, workflow.clone());
+        if workflow
+            .ticket_action
+            .as_ref()
+            .is_some_and(|current| current.id == action.id)
+        {
+            workflow.ticket_action = Some(action);
+            touch(&mut workflow);
+            store.workflows.insert(key, workflow.clone());
+        }
         write(&store)?;
         workflow
     };
@@ -849,7 +980,10 @@ pub fn confirm_ticket(
     Ok(workflow)
 }
 
-fn require_current_action(workflow: &PrWorkflow, action: &PrTicketAction) -> Result<(), String> {
+fn require_current_completed_action(
+    workflow: &PrWorkflow,
+    action: &PrTicketAction,
+) -> Result<(), String> {
     if action.head_sha != workflow.head_sha
         || workflow
             .ticket_action
@@ -858,6 +992,14 @@ fn require_current_action(workflow: &PrWorkflow, action: &PrTicketAction) -> Res
             != Some(action.id.as_str())
     {
         return Err("The ticket action is stale for the current PR head.".into());
+    }
+    if workflow.completion.state != "completed"
+        || workflow.completion.head_sha != workflow.head_sha
+        || workflow.completion.trigger != workflow.complete_on
+    {
+        return Err(
+            "The configured PR completion event is no longer confirmed for this action.".into(),
+        );
     }
     Ok(())
 }
@@ -1094,6 +1236,174 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("worker chats"));
         remove_chat(&worker);
+    }
+
+    #[test]
+    fn revoked_approval_invalidates_running_action_and_prevents_stale_success() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let suffix = Uuid::new_v4().simple().to_string();
+        let root = format!("/test/pr-revoked-action-{suffix}");
+        let runner = format!("runner-{suffix}");
+        let other_runner = format!("other-runner-{suffix}");
+        add_chat(&runner);
+        add_chat(&other_runner);
+
+        let mut observed = observation(&root, 36, "head-a");
+        observed.approved = true;
+        save(
+            observed.clone(),
+            "head-a".into(),
+            None,
+            Some(PrTicketLink {
+                reference: "T-36".into(),
+                url: None,
+            }),
+            "approved".into(),
+        )
+        .unwrap();
+        let launch = prepare_ticket(observed.clone(), "head-a".into()).unwrap();
+        let running = attach_ticket(launch.action_id.clone(), runner.clone()).unwrap();
+        assert_eq!(running.ticket_action.as_ref().unwrap().status, "running");
+
+        // Retrying the same attachment is harmless, while a different chat
+        // cannot steal an action that has already started.
+        let duplicate = attach_ticket(launch.action_id.clone(), runner.clone()).unwrap();
+        assert_eq!(duplicate.ticket_action, running.ticket_action);
+        assert!(
+            attach_ticket(launch.action_id.clone(), other_runner.clone())
+                .unwrap_err()
+                .contains("another chat")
+        );
+
+        observed.approved = false;
+        let revoked = refresh(observed).unwrap().unwrap();
+        assert_eq!(revoked.completion.state, "pending");
+        assert_eq!(revoked.ticket_action.as_ref().unwrap().status, "failed");
+        assert_eq!(
+            read().unwrap().actions[&launch.action_id].action.status,
+            "failed"
+        );
+        assert!(
+            confirm_ticket(launch.action_id.clone(), true, "stale success".into())
+                .unwrap_err()
+                .contains("no longer confirmed")
+        );
+
+        // Failure reporting is still idempotent after eligibility is lost.
+        let failed = confirm_ticket(launch.action_id, false, "approval revoked".into()).unwrap();
+        assert_eq!(failed.ticket_action.unwrap().status, "failed");
+
+        remove_chat(&runner);
+        remove_chat(&other_runner);
+    }
+
+    #[test]
+    fn changing_from_approval_to_unmet_merge_invalidates_the_action() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let suffix = Uuid::new_v4().simple().to_string();
+        let root = format!("/test/pr-trigger-change-{suffix}");
+        let runner = format!("runner-{suffix}");
+        add_chat(&runner);
+
+        let mut observed = observation(&root, 37, "head-a");
+        observed.approved = true;
+        save(
+            observed.clone(),
+            "head-a".into(),
+            None,
+            Some(PrTicketLink {
+                reference: "T-37".into(),
+                url: None,
+            }),
+            "approved".into(),
+        )
+        .unwrap();
+        let launch = prepare_ticket(observed.clone(), "head-a".into()).unwrap();
+        attach_ticket(launch.action_id.clone(), runner.clone()).unwrap();
+
+        let changed = save(
+            observed.clone(),
+            "head-a".into(),
+            None,
+            Some(PrTicketLink {
+                reference: "T-37".into(),
+                url: None,
+            }),
+            "merged".into(),
+        )
+        .unwrap();
+        assert_eq!(changed.complete_on, "merged");
+        assert_eq!(changed.completion.state, "pending");
+        assert!(changed.ticket_action.is_none());
+        assert_eq!(
+            read().unwrap().actions[&launch.action_id].action.status,
+            "failed"
+        );
+        assert!(
+            confirm_ticket(launch.action_id.clone(), true, "stale success".into())
+                .unwrap_err()
+                .contains("stale")
+        );
+        assert!(confirm_ticket(launch.action_id.clone(), false, "trigger changed".into()).is_ok());
+
+        observed.state = "merged".into();
+        let completed = refresh(observed.clone()).unwrap().unwrap();
+        assert_eq!(completed.completion.state, "completed");
+        let retry = prepare_ticket(observed, "head-a".into()).unwrap();
+        assert_ne!(retry.action_id, launch.action_id);
+        remove_chat(&runner);
+    }
+
+    #[test]
+    fn repository_identity_mismatch_never_rewrites_an_existing_workflow() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let suffix = Uuid::new_v4().simple().to_string();
+        let root = format!("/test/pr-identity-{suffix}");
+        let mut observed = observation(&root, 38, "head-a");
+        observed.approved = true;
+        save(
+            observed.clone(),
+            "head-a".into(),
+            None,
+            Some(PrTicketLink {
+                reference: "T-38".into(),
+                url: None,
+            }),
+            "approved".into(),
+        )
+        .unwrap();
+        let launch = prepare_ticket(observed.clone(), "head-a".into()).unwrap();
+        assert_eq!(
+            workflow_for_action(launch.action_id.clone()).unwrap().url,
+            observed.url
+        );
+        let before = serde_json::to_value(read().unwrap()).unwrap();
+
+        let mut mismatched = observed;
+        mismatched.url = "https://github.test/other/repository/pull/38".into();
+        for result in [
+            save(
+                mismatched.clone(),
+                "head-a".into(),
+                None,
+                Some(PrTicketLink {
+                    reference: "T-38-changed".into(),
+                    url: None,
+                }),
+                "approved".into(),
+            )
+            .map(|_| ()),
+            refresh(mismatched.clone()).map(|_| ()),
+            prepare_ticket(mismatched, "head-a".into()).map(|_| ()),
+        ] {
+            assert!(result.unwrap_err().contains("different GitHub repository"));
+        }
+
+        let after = serde_json::to_value(read().unwrap()).unwrap();
+        assert_eq!(after, before);
+        let preserved = workflow_for_action(launch.action_id).unwrap();
+        assert_eq!(preserved.url, "https://github.test/acme/repo/pull/38");
+        assert_eq!(preserved.ticket.unwrap().reference, "T-38");
     }
 
     #[test]
