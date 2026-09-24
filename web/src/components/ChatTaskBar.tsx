@@ -20,6 +20,7 @@ import {
   locationOf,
   mergeLine,
   phaseOf,
+  prCompletionLine,
   releaseBasis,
   releaseLine,
   stepProgress,
@@ -239,6 +240,19 @@ function ChatTaskPanel({
             ))}
           </ul>
         </>
+      )}
+
+      {status?.prCompletion && (
+        <section className="chat-task-pr-completion" aria-label="Pull request completion">
+          <span className="chat-task-pr-mark" aria-hidden="true" />
+          <div>
+            <strong>{prCompletionLine(status.prCompletion)}</strong>
+            <span>
+              Head {status.prCompletion.headSha.slice(0, 8)} · confirmed {agoLabel(status.prCompletion.completedAt, now)}
+            </span>
+          </div>
+          <a href={status.prCompletion.url} target="_blank" rel="noreferrer noopener">Open</a>
+        </section>
       )}
 
       <div className="chat-task-section-head">

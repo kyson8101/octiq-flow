@@ -67,6 +67,15 @@ export type TaskDelivery = {
  *  is unverified — which is most projects, and is the honest answer. */
 export type ReleaseCheck = { reference?: string; command?: string };
 
+export type PrChatCompletion = {
+  root: string;
+  number: number;
+  url: string;
+  headSha: string;
+  trigger: "approved" | "merged";
+  completedAt: number;
+};
+
 export type TaskStatus = {
   chatId: string;
   report?: TaskReport;
@@ -75,7 +84,16 @@ export type TaskStatus = {
   delivery?: TaskDelivery;
   releaseCheck?: ReleaseCheck;
   projectId?: string;
+  /** Present only when every tracked PR linked to this chat is complete. Git
+   * delivery remains separate and continues to own the main phase label. */
+  prCompletion?: PrChatCompletion;
 };
+
+export function prCompletionLine(completion: PrChatCompletion): string {
+  return completion.trigger === "approved"
+    ? `PR #${completion.number} completed on current-head approval`
+    : `PR #${completion.number} completed on merge`;
+}
 
 /** What "released" is being decided against, for the row that says it. */
 export function releaseBasis(check?: ReleaseCheck): string {

@@ -7,6 +7,7 @@ import {
   locationOf,
   mergeLine,
   phaseOf,
+  prCompletionLine,
   releaseLine,
   stepProgress,
   type TaskDelivery,
@@ -156,5 +157,13 @@ describe("how old a report looks", () => {
     expect(agoLabel(now - 3 * 3_600_000, now)).toBe("3h ago");
     expect(agoLabel(now - 26 * 3_600_000, now)).toBe("yesterday");
     expect(agoLabel(0, now)).toBe("never");
+  });
+});
+
+describe("pull request completion", () => {
+  it("names approval and merge as distinct completion rules", () => {
+    const base = { root: "/repo", number: 42, url: "https://github.test/pr/42", headSha: "abc", completedAt: 1 };
+    expect(prCompletionLine({ ...base, trigger: "approved" })).toBe("PR #42 completed on current-head approval");
+    expect(prCompletionLine({ ...base, trigger: "merged" })).toBe("PR #42 completed on merge");
   });
 });
