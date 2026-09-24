@@ -10,17 +10,7 @@
 // bury the two or three folders that are.
 import { useCallback, useEffect, useState } from "react";
 import { bridge } from "../lib/bridge";
-
-type DirEntry = { name: string; path: string; is_dir: boolean };
-
-/** The parent of a path, or null at the root. String work rather than a call:
- *  the answer is already in the path we have. */
-function parentOf(path: string): string | null {
-  const trimmed = path.replace(/\/+$/, "");
-  const at = trimmed.lastIndexOf("/");
-  if (at < 0) return null;
-  return at === 0 ? "/" : trimmed.slice(0, at);
-}
+import { isAbsoluteFolderPath, parentFolderPath, visiblePickerEntries, type FolderEntry } from "../lib/folderPicker";
 
 export function FolderPicker({
   start,
@@ -43,7 +33,7 @@ export function FolderPicker({
   // What is in the box, which is not the same as where we are: you can type a
   // path that does not exist yet without the listing chasing every keystroke.
   const [typed, setTyped] = useState(start);
-  const [entries, setEntries] = useState<DirEntry[]>([]);
+  const [entries, setEntries] = useState<FolderEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -56,17 +46,17 @@ export function FolderPicker({
     let alive = true;
     setLoading(true);
     bridge
-      .invoke<DirEntry[]>("list_dir", { path })
+      .invoke<FolderEntry[]>("list_dir", { path })
       .then((list) => {
         if (!alive) return;
-        setEntries((list ?? []).filter((e) => e.is_dir || files));
+        setEntries(visiblePickerEntries(list ?? [], files));
         setError(null);
         // `list_dir` resolves "" and "~" for us; adopt the real path it walked
         // so the Use button and the parent row have something absolute to work
         // with.
         const first = (list ?? [])[0];
-        if (first && !path.startsWith("/")) {
-          const resolved = parentOf(first.path);
+        if (first && !isAbsoluteFolderPath(path)) {
+          const resolved = parentFolderPath(first.path);
           if (resolved) {
             setPath(resolved);
             setTyped(resolved);
@@ -90,7 +80,7 @@ export function FolderPicker({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const up = parentOf(path);
+  const up = parentFolderPath(path);
 
   return (
     <>
@@ -116,7 +106,7 @@ export function FolderPicker({
             spellCheck={false}
             autoCapitalize="off"
             autoCorrect="off"
-            placeholder="/path/to/folder"
+            placeholder="Folder path"
             onChange={(e) => setTyped(e.target.value)}
           />
           <button className="panel-btn" type="submit">
@@ -137,7 +127,7 @@ export function FolderPicker({
           {loading && entries.length === 0 && !error && <div className="dots" aria-label="loading" />}
 
           {!loading && entries.length === 0 && !error && (
-            <div className="fp-picker-empty">No folders in here.</div>
+            <div className="fp-picker-empty">{files ? "No files or visible folders in here." : "No visible folders in here."}</div>
           )}
 
           {entries.map((e) => (
@@ -164,7 +154,7 @@ export function FolderPicker({
             <button
               className="panel-btn is-primary"
               type="button"
-              disabled={!path.startsWith("/")}
+              disabled={!isAbsoluteFolderPath(path)}
               onClick={() => onPick(path)}
             >
               Use this folder

@@ -39,6 +39,14 @@ pub struct DirEntry {
     pub path: String,
     /// True for a directory (including a symlink that resolves to a directory).
     pub is_dir: bool,
+    /// Dot-prefixed name or the Windows hidden attribute. Consumers decide
+    /// whether to show it; keep all entries for path resolution and file trees.
+    pub is_hidden: bool,
+}
+
+fn is_hidden_entry(name: &str, windows_attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    name.starts_with('.') || windows_attributes & FILE_ATTRIBUTE_HIDDEN != 0
 }
 
 /// List the direct children of `path`, directories first then files, each group
@@ -81,10 +89,19 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
         let is_dir = item.path().is_dir();
         let name = item.file_name().to_string_lossy().to_string();
         let full = item.path().to_string_lossy().to_string();
+        #[cfg(windows)]
+        let windows_attributes = {
+            use std::os::windows::fs::MetadataExt;
+            item.metadata().map(|m| m.file_attributes()).unwrap_or(0)
+        };
+        #[cfg(not(windows))]
+        let windows_attributes = 0;
+        let is_hidden = is_hidden_entry(&name, windows_attributes);
         entries.push(DirEntry {
             name,
             path: full,
             is_dir,
+            is_hidden,
         });
     }
 
@@ -354,6 +371,40 @@ fn modified_ms(path: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::natural_cmp;
+
+    #[test]
+    fn hidden_entries_include_dot_names_and_windows_hidden_attributes() {
+        assert!(super::is_hidden_entry(".git", 0));
+        assert!(super::is_hidden_entry("AppData", 0x12));
+        assert!(super::is_hidden_entry("hidden.txt", 0x2));
+        assert!(!super::is_hidden_entry("project", 0x10));
+        assert!(!super::is_hidden_entry("project.v2", 0));
+        assert!(!super::is_hidden_entry("readonly.txt", 0x1));
+    }
+
+    #[test]
+    fn listing_marks_hidden_entries_without_removing_them() {
+        let dir = std::env::temp_dir().join(format!("octiq-list-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir(dir.join("project")).unwrap();
+        std::fs::write(dir.join(".env"), "").unwrap();
+
+        let entries = super::list_dir(dir.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(entries.len(), 3);
+        let hidden = entries.iter().find(|entry| entry.name == ".git").unwrap();
+        assert!(hidden.is_dir && hidden.is_hidden);
+        assert!(std::path::Path::new(&hidden.path).is_absolute());
+        let visible = entries
+            .iter()
+            .find(|entry| entry.name == "project")
+            .unwrap();
+        assert!(visible.is_dir && !visible.is_hidden);
+        let file = entries.iter().find(|entry| entry.name == ".env").unwrap();
+        assert!(!file.is_dir && file.is_hidden);
+        assert_eq!(serde_json::to_value(hidden).unwrap()["is_hidden"], true);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn browser_video_files_are_classified_for_inline_playback() {
