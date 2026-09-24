@@ -168,6 +168,11 @@ import {
 } from "./lib/projectGit";
 import type { WorkspaceGitStatus } from "./lib/workspaceContext";
 import { FocusModeButton, useFocusMode } from "./components/FocusMode";
+import {
+  PullRequestsDashboard,
+  type PrDashboardChat,
+} from "./components/PullRequestsDashboard";
+import type { PrAgentLaunch } from "./lib/pullRequests";
 import "./components/FocusMode.css";
 
 type Workspace = Project & {
@@ -354,6 +359,9 @@ export default function App() {
    *  waits for this before letting a stale busy record behave as idle. */
   const [liveKnown, setLiveKnown] = useState(false);
   const [projectsScreen, setProjectsScreen] = useState(false);
+  /** A first-class main-area view. The chat stays mounted behind it so opening
+   *  the review desk cannot reset scroll, drafts, requests, or live streams. */
+  const [prDashboardOpen, setPrDashboardOpen] = useState(false);
   // The stored list, minus everything this browser has deleted. The two are
   // written at different moments — a save already on its way when the × was
   // clicked lands after it — so the copy on disk can still carry a chat whose
@@ -1930,6 +1938,7 @@ export default function App() {
     setWorkflowViews((before) => ({ ...before, new: "chat" }));
     remember(LAST_KEY, "");
     setProjectsScreen(false);
+    setPrDashboardOpen(false);
     setFocusBox((n) => n + 1);
   }, []);
 
@@ -2102,6 +2111,7 @@ export default function App() {
     if (c.modelId) setChoice(model);
     setAccess(conversationAccess);
     setProjectsScreen(false);
+    setPrDashboardOpen(false);
   }, [catchUpChat, writeChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
@@ -3025,6 +3035,95 @@ export default function App() {
     ],
   );
 
+  /** Start a PR study/review/publication task without borrowing any of the
+   * active chat's setters. The request carries its project and exact cwd; the
+   * selected provider settings are captured by this callback at click time.
+   *
+   * The server-side chat index is saved before process launch. That ordering is
+   * the durable-chat contract: a fast agent response or a server restart can
+   * never leave a transcript that no metadata row points at. */
+  const launchPullRequestChat = useCallback(async (request: PrAgentLaunch): Promise<string> => {
+    const targetProject = workspaces.find((item) => item.id === request.projectId);
+    if (!targetProject) throw new Error("The selected project is no longer available.");
+    if (!request.cwd) throw new Error("The selected repository has no working directory.");
+
+    const id = crypto.randomUUID();
+    const turnId = userTurnId();
+    const startedAt = Date.now();
+    const chatState = addUserTurn({ ...emptyChat(), cwd: request.cwd }, request.prompt, [], startedAt, turnId);
+    const activity: Conversation = {
+      id,
+      projectId: targetProject.id,
+      title: request.title,
+      customTitle: true,
+      cwd: request.cwd,
+      messages: chatState.messages,
+      modelId: choice.id,
+      permission: access,
+      createdAt: startedAt,
+      updatedAt: startedAt,
+    };
+
+    await bridge.invoke("chat_index_save", {
+      meta: {
+        ...activity,
+        messages: undefined,
+        sessionId: null,
+        access,
+        pinned: false,
+        generation: 0,
+      },
+    });
+
+    meta.current[id] = { projectId: targetProject.id, modelId: choice.id, access };
+    catchUp.current.own(keyFor(id));
+    patch(id, () => chatState);
+    const next = [activity, ...conversationsRef.current.filter((item) => item.id !== id)];
+    conversationsRef.current = next;
+    setConversations(next);
+    saveConversations(next);
+    sendingTurns.current.add(turnId);
+    setRunning((before) => new Set(before).add(id));
+
+    try {
+      await bridge.invoke("chat_start", {
+        key: keyFor(id),
+        cwd: request.cwd,
+        extraDirs: targetProject.paths ?? [],
+        env: targetProject.env ?? {},
+        agent: choice.agent,
+        model: choice.flag || null,
+        access,
+        effort,
+        lite,
+        images: [],
+        prompt: request.prompt,
+        handoff: null,
+        turnId,
+        resume: null,
+      });
+      return id;
+    } catch (error) {
+      const why = String((error as Error)?.message ?? error);
+      patch(id, (state) => ({
+        ...state,
+        busy: false,
+        messages: state.messages.map((message) => message.turnId === turnId
+          ? { ...message, delivery: "unknown", queueError: why }
+          : message),
+        notices: [...state.notices, `Could not start this PR agent: ${why}`].slice(-8),
+      }));
+      setRunning((before) => {
+        const after = new Set(before);
+        after.delete(id);
+        return after;
+      });
+      throw error;
+    } finally {
+      sendingTurns.current.delete(turnId);
+    }
+  }, [workspaces, choice, access, effort, lite, patch]);
+
   // Use the ordinary send/resume path after switching to the coordinator;
   // a gate answer must also reach an idle main chat and appear in its history.
   useEffect(() => {
@@ -3417,6 +3516,25 @@ export default function App() {
     openConversation(conversation);
   };
 
+  const prDashboardChats = useMemo<PrDashboardChat[]>(
+    () => conversations
+      .filter((conversation) => !isWorkerChat(conversation.id, chatParents))
+      .map(({ id, title, projectId: chatProjectId, cwd }) => ({
+        id,
+        title,
+        projectId: chatProjectId,
+        cwd,
+        busy: chats[id]?.busy ?? running.has(id),
+      })),
+    [conversations, chatParents, chats, running],
+  );
+
+  const openPullRequestChat = useCallback((id: string) => {
+    const conversation = conversationsRef.current.find((item) => item.id === id);
+    if (!conversation) return;
+    openConversation(conversation);
+  }, [openConversation]);
+
   if (conn === "unauthorized") return <Connect />;
 
   /* Built once and placed once — on a wide screen in the top bar, otherwise
@@ -3441,6 +3559,21 @@ export default function App() {
 
       {/* The way in and out of the changes column at every width. */}
       <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
+
+      <button
+        className={`icon-btn pr-dashboard-toggle${prDashboardOpen ? " is-on" : ""}`}
+        type="button"
+        aria-label="Pull requests"
+        title="Pull requests"
+        aria-pressed={prDashboardOpen}
+        onClick={() => setPrDashboardOpen((open) => !open)}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" />
+          <path d="M6 7v10M8 5h4a6 6 0 0 1 6 6v-2" />
+        </svg>
+        <span className="topbar-action-label">Pull requests</span>
+      </button>
 
       {!workerChat && <button className={`orch-toggle${workflowView === "run" ? " is-on" : ""}`} type="button" title="Run" aria-label="Open this chat's run" onClick={() => {
         setWorkflowModes((before) => ({ ...before, [workflowKey]: true }));
@@ -3583,7 +3716,7 @@ export default function App() {
           <ConnectionStatus state={conn} />
           {/* Where this chat is, next to what it is — the two questions a
               chat picked up an hour later cannot answer for itself. */}
-          {!showingProjects && conversationId && (
+          {!showingProjects && !prDashboardOpen && conversationId && (
             <ChatTaskBar
               chatId={conversationId}
               connected={conn === "open"}
@@ -3658,6 +3791,21 @@ export default function App() {
         />
 
         <main className="main" hidden={showingProjects} ref={pane}>
+          {prDashboardOpen && <PullRequestsDashboard
+            projects={workspaces}
+            initialProjectId={projectId}
+            chats={prDashboardChats}
+            agent={{
+              provider: providerFor(choice.agent).name,
+              model: choice.model,
+              access: providerAccessLabel(choice.agent, access),
+            }}
+            connected={conn === "open"}
+            onClose={() => setPrDashboardOpen(false)}
+            onLaunch={launchPullRequestChat}
+            onOpenChat={openPullRequestChat}
+          />}
+          <div className="chat-app-surface" hidden={prDashboardOpen}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {!workerChat && <ChatWorkflowBar snapshot={currentWorkflow} orchestrated={orchestrated} view={workflowView} focusMode={focusMode} split={workflowSplit}
             pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
@@ -3998,6 +4146,7 @@ export default function App() {
           </div>}
           </div>
           </>}
+          </div>
         </main>
 
         {/* The agent column: the agents this chat started, as a card that
@@ -4013,7 +4162,7 @@ export default function App() {
             here it takes width from the view, so the transcript and the prompt
             box move together and stay lined up — which is what the git and
             files panels beside it have always done. */}
-        {!previewVisible && !railShut && chat.agents.length > 0 && (
+        {!prDashboardOpen && !previewVisible && !railShut && chat.agents.length > 0 && (
           <aside className="side">
             <AgentRail
               agents={chat.agents}
@@ -4027,7 +4176,7 @@ export default function App() {
             rather than something laid over it, so the chat gives up width while
             this is open and takes it straight back when it closes. On a phone
             the stylesheet turns it into a sheet that slides in from the right. */}
-        {gitMounted && !previewVisible && sessionProject && (
+        {!prDashboardOpen && gitMounted && !previewVisible && sessionProject && (
           <GitPanel
             project={sessionProject}
             open={gitOpen}
@@ -4036,8 +4185,8 @@ export default function App() {
           />
         )}
 
-        {previewVisible && conversationId && <ImagePreviewPanel key={conversationId} conversationKey={keyFor(conversationId)} images={previews.images} error={previews.error} onClose={() => previews.setOpen(false)} />}
-        {filesMounted && !previewVisible && (
+        {!prDashboardOpen && previewVisible && conversationId && <ImagePreviewPanel key={conversationId} conversationKey={keyFor(conversationId)} images={previews.images} error={previews.error} onClose={() => previews.setOpen(false)} />}
+        {!prDashboardOpen && filesMounted && !previewVisible && (
           <SessionFilesPanel
             pins={sessionFiles}
             open={filesOpen}
