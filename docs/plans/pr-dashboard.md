@@ -1,6 +1,6 @@
 # PR dashboard implementation contract
 
-GitHub owns actual PR state. Local entries are unpublished branch comparisons, not persisted local PRs. Optional links connect a GitHub PR to one originating chat and one Workspace ticket. Agent study, review, publication, and ticket completion open separate durable chats. No merge, release, external ticket mutation, or publication happens while developing this feature.
+GitHub owns actual PR state. Local entries are committed branch comparisons, not persisted local PRs; a local comparison can also have a GitHub PR, and publication status is not inferred from local Git. Optional links connect a GitHub PR to one originating chat and one Workspace ticket. Agent study, review, publication, and ticket completion open separate durable chats. No merge, release, external ticket mutation, or publication happens while developing this feature.
 
 All new command arguments and response fields use camelCase. Root paths are canonical primary repository paths; repository discovery deduplicates linked worktrees. Git/gh commands are argument arrays, noninteractive, bounded by deadlines and output caps. No checkout/fetch occurs for read operations. Git diff must disable external diff/textconv and use literal pathspecs.
 
@@ -68,5 +68,7 @@ Use existing App send/start path with an explicit new-chat context override or a
 
 ## Ownership, integration, verification
 
-Workers use assigned host worktrees from local develop, never edit coordinator/other worker checkouts. No Astra or Fable subagents; use Sol only if any subdelegation were needed, but prefer none. Commit scoped changes locally (no push/deploy/restart) and report commit IDs, tests and limitations via orchestration_worker_report. Coordinator integrates commits, registers dispatch, runs end-to-end protocol tests and build into a temporary output folder (never web/dist during development), and arranges independent review. Tests should cover real parsing/snapshot/eligibility/race boundaries and useful rendered UI contracts. No production external writes or real ticket/PR mutations during verification.
+The combined review target and completed checks are recorded in
+[PR dashboard integration verification](pr-dashboard-validation.md).
 
+Workers use assigned host worktrees from local develop, never edit coordinator/other worker checkouts. No Astra or Fable subagents; use Sol only if any subdelegation were needed, but prefer none. Commit scoped changes locally (no push/deploy/restart) and report commit IDs, tests and limitations via orchestration_worker_report. Coordinator integrates commits, registers dispatch, runs end-to-end protocol tests and build into a temporary output folder (never web/dist during development), and arranges independent review. Tests should cover real parsing/snapshot/eligibility/race boundaries and useful rendered UI contracts. No production external writes or real ticket/PR mutations during verification.

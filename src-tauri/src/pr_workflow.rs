@@ -816,8 +816,9 @@ fn ticket_launch(workflow: PrWorkflow, action_id: String, ticket: &PrTicketLink)
         .map(|url| format!(" ({url})"))
         .unwrap_or_default();
     let prompt = format!(
-        "Inspect ticket {}{} and the completed PR #{} at {}. Use the available Workspace tools or the project's resolve-ticket workflow as appropriate. Follow every required confirmation gate. Update the development status and resolution, include the PR link and concrete verification, and check the resulting ticket before reporting success. Do not imply that OctiqFlow updated or remotely verified the ticket automatically; the person will separately confirm the result in the PR dashboard.",
-        ticket.reference, ticket_location, workflow.number, workflow.url
+        "Inspect ticket {}{} and the completed PR #{} at {}.\n\nPinned head SHA: {}\nPinned base SHA: {}\nCompletion trigger: {}\n\nBefore updating the ticket, verify that this same PR still has the pinned head/base and satisfies the completion trigger. If it changed or no longer qualifies, stop and ask the person to refresh the PR dashboard. Use the available Workspace tools or the project's resolve-ticket workflow as appropriate. Follow every required confirmation gate. Update the development status and resolution, include the PR link and concrete verification, and check the resulting ticket before reporting success. Do not imply that OctiqFlow updated or remotely verified the ticket automatically; the person will separately confirm the result in the PR dashboard.",
+        ticket.reference, ticket_location, workflow.number, workflow.url,
+        workflow.head_sha, workflow.base_sha, workflow.complete_on
     );
     PrTicketLaunch {
         cwd: workflow.root.clone(),
@@ -1430,6 +1431,13 @@ mod tests {
         .unwrap();
 
         let first = prepare_ticket(observed.clone(), "head-a".into()).unwrap();
+        assert!(first
+            .prompt
+            .contains(&format!("Pinned head SHA: {}", observed.head_sha)));
+        assert!(first
+            .prompt
+            .contains(&format!("Pinned base SHA: {}", observed.base_sha)));
+        assert!(first.prompt.contains("Completion trigger: merged"));
         let duplicate = prepare_ticket(observed.clone(), "head-a".into()).unwrap();
         assert_eq!(first.action_id, duplicate.action_id);
         attach_ticket(first.action_id.clone(), runner.clone()).unwrap();

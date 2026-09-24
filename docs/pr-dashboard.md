@@ -6,7 +6,8 @@ dashboard preserves the chat you were reading and its running agents.
 Choose a project and repository, then a source:
 
 - **Local** compares committed branch changes with a selected target. These are
-  unpublished changes, including branches in retained worktrees. The comparison
+  local comparisons, including branches in retained worktrees. A branch can
+  also have a GitHub PR; this list does not infer publication status. The comparison
   starts at the merge base; it does not include uncommitted working-copy edits.
 - **GitHub** lists actual pull requests through the server machine's `gh`
   installation and account. Local comparisons remain available when GitHub

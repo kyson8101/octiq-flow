@@ -542,7 +542,7 @@ export function PullRequestsDashboard({
       <div className="pr-desk">
         <aside className="pr-list-pane" aria-label={`${source === "local" ? "Local changes" : "GitHub pull requests"} list`}>
           <div className="pr-list-title">
-            <strong>{source === "local" ? "Unpublished branches" : "GitHub pull requests"}</strong>
+            <strong>{source === "local" ? "Local branch comparisons" : "GitHub pull requests"}</strong>
             {currentLoading ? <span className="pr-spinner" role="status" aria-label="Loading pull requests" /> : <button type="button" onClick={() => setListRefresh((value) => value + 1)} aria-label="Refresh pull requests" title="Refresh pull requests">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5" /><path d="M18 9a7 7 0 0 0-12-2L4 11M6 15a7 7 0 0 0 12 2l2-4" /></svg>
             </button>}
@@ -556,7 +556,7 @@ export function PullRequestsDashboard({
             <ListSkeleton />
           ) : visibleItems.length === 0 ? (
             <EmptyPanel
-              title={query ? "No matching pull requests" : source === "local" ? "No unpublished branches" : "No GitHub pull requests"}
+              title={query ? "No matching pull requests" : source === "local" ? "No local branch changes" : "No GitHub pull requests"}
               detail={query ? "Try a branch, author, PR number, or fewer words." : source === "local" ? `Every branch matches ${localBase}, or only the target branch exists.` : `No ${remoteState} pull requests were returned.`}
             />
           ) : (

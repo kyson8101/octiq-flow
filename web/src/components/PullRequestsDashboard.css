@@ -266,6 +266,15 @@
 .pr-workflow-head p, .pr-ticket-note { margin: 0; color: var(--fg-3); font-size: 10px; line-height: 1.45; }
 .pr-workflow-head button { flex: 0 0 auto; min-height: 26px; padding: 0 7px; }
 .pr-workflow-card select, .pr-workflow-card input { width: 100%; }
+.pr-workflow-card input[type="radio"],
+.pr-workflow-card input[type="checkbox"] {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
 .pr-workflow-ticket-row { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 8px; }
 .pr-workflow-ticket-row label span, .pr-ticket-confirm label span { color: var(--fg-3); font-size: 9px; }
 .pr-workflow-card fieldset { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; }
