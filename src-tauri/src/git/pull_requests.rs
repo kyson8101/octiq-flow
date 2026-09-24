@@ -25,6 +25,8 @@ const DETAIL_FILE_LIMIT: usize = 500;
 const DETAIL_COMMIT_LIMIT: usize = 500;
 const REMOTE_LIST_LIMIT: usize = 100;
 const REMOTE_PAGE_SIZE: usize = 100;
+const GH_SUMMARY_FIELDS: &str = "additions,author,baseRefName,baseRefOid,changedFiles,deletions,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,isDraft,mergedAt,number,reviewDecision,reviews,state,title,updatedAt,url";
+const GH_DETAIL_FIELDS: &str = "additions,author,baseRefName,baseRefOid,body,changedFiles,commits,deletions,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,isDraft,mergedAt,number,reviewDecision,reviews,state,title,updatedAt,url";
 const GH_LIST_JQ: &str = r#"map({
     additions, author, baseRefName, baseRefOid, changedFiles,
     commitCount: ((.commits // []) | length), deletions,
@@ -36,6 +38,16 @@ const GH_LIST_JQ: &str = r#"map({
     }],
     state, title, updatedAt, url
 })"#;
+const GH_SUMMARY_JQ: &str = r#"{
+    additions, author, baseRefName, baseRefOid, changedFiles, deletions,
+    headRefName, headRefOid, headRepository, headRepositoryOwner,
+    isCrossRepository, isDraft, mergedAt, number, reviewDecision,
+    reviews: [(.reviews // [])[] | {
+        state,
+        commit: (if .commit == null then null else {oid: .commit.oid} end)
+    }],
+    state, title, updatedAt, url
+}"#;
 const GH_DETAIL_JQ: &str = r#"{
     additions, author, baseRefName, baseRefOid, body, changedFiles,
     commits: [(.commits // [])[] | {oid, messageHeadline, authors}],
@@ -157,6 +169,16 @@ struct RemoteIdentity {
     host: String,
     owner: String,
     repo: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemotePrMetadata {
+    repository: String,
+    number: u64,
+    url: String,
+    head_sha: String,
+    base_sha: String,
+    commit_count: u64,
 }
 
 impl RemoteIdentity {
@@ -316,6 +338,12 @@ pub fn pr_remote_list(root: String, state: String) -> Result<PrList, String> {
             "Showing the first {REMOTE_LIST_LIMIT} GitHub pull requests; refine the state filter to see more."
         ));
     }
+    if !values.is_empty() {
+        warnings.push(
+            "Commit counts in the GitHub list reflect the bounded commit arrays returned by gh and may be lower than the PR total; open a pull request for its authoritative count."
+                .to_string(),
+        );
+    }
     let mut items = Vec::new();
     for value in values.into_iter().take(REMOTE_LIST_LIMIT) {
         match parse_remote_summary(&value, &repo, &remote) {
@@ -339,6 +367,18 @@ pub fn pr_remote_list(root: String, state: String) -> Result<PrList, String> {
         }
     }
     Ok(PrList { items, warnings })
+}
+
+/// Load the current verified metadata needed by trusted completion workflows.
+/// This intentionally avoids changed-file patches and the full commit list.
+pub fn pr_remote_get(root: String, number: u64) -> Result<PrSummary, String> {
+    if number == 0 {
+        return Err("Pull-request number must be greater than zero".into());
+    }
+    let repo = discover_repository(&root)?;
+    let remote = github_remote(&repo.primary_root)?;
+    let mut run_gh = |cwd: &str, args: &[String]| run_gh_text(cwd, args);
+    github_remote_get_with(&repo, &remote, number, &mut run_gh)
 }
 
 /// Load one commit-pinned local comparison or one current GitHub PR.
@@ -492,24 +532,22 @@ fn github_detail(root: &str, number: u64) -> Result<PrDetail, String> {
     }
     let repo = discover_repository(root)?;
     let remote = github_remote(&repo.primary_root)?;
-    let fields = "additions,author,baseRefName,baseRefOid,body,changedFiles,commits,deletions,headRefName,headRefOid,headRepository,headRepositoryOwner,isCrossRepository,isDraft,mergedAt,number,reviewDecision,reviews,state,title,updatedAt,url";
-    let raw = run_gh_text(
-        &repo.primary_root,
-        &[
-            "pr".into(),
-            "view".into(),
-            number.to_string(),
-            "--repo".into(),
-            remote.selector(),
-            "--json".into(),
-            fields.into(),
-            "--jq".into(),
-            GH_DETAIL_JQ.into(),
-        ],
-    )?;
-    let value: Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("gh returned invalid pull-request JSON: {error}"))?;
-    let (pr, approval_without_head) = parse_remote_summary(&value, &repo, &remote)?;
+    let mut run_gh = |cwd: &str, args: &[String]| run_gh_text(cwd, args);
+    github_detail_with(&repo, &remote, number, &mut run_gh)
+}
+
+fn github_detail_with<F>(
+    repo: &Repository,
+    remote: &RemoteIdentity,
+    number: u64,
+    run_gh: &mut F,
+) -> Result<PrDetail, String>
+where
+    F: FnMut(&str, &[String]) -> Result<String, String>,
+{
+    let value =
+        github_view_json_with(repo, remote, number, GH_DETAIL_FIELDS, GH_DETAIL_JQ, run_gh)?;
+    let (mut pr, approval_without_head) = parse_remote_summary(&value, repo, remote)?;
     let mut warnings = Vec::new();
     if approval_without_head {
         warnings.push(
@@ -517,9 +555,15 @@ fn github_detail(root: &str, number: u64) -> Result<PrDetail, String> {
                 .to_string(),
         );
     }
-    let (files, file_warnings) =
-        github_files(&repo.primary_root, &remote, number, pr.changed_files)?;
+    let (files, file_warnings) = github_files_with(repo, remote, number, pr.changed_files, run_gh)?;
     warnings.extend(file_warnings);
+
+    // File pages are mutable REST reads. Re-read fixed PR metadata afterwards
+    // so patches can never be paired with stale head/base SHAs.
+    let metadata = github_metadata_with(repo, remote, number, run_gh)?;
+    verify_remote_snapshot(&pr, remote, &metadata)?;
+    pr.commit_count = metadata.commit_count;
+
     let mut commits = parse_remote_commits(value.get("commits"));
     if commits.len() > DETAIL_COMMIT_LIMIT {
         commits.truncate(DETAIL_COMMIT_LIMIT);
@@ -545,12 +589,69 @@ fn github_detail(root: &str, number: u64) -> Result<PrDetail, String> {
     })
 }
 
-fn github_files(
-    root: &str,
+fn github_remote_get_with<F>(
+    repo: &Repository,
+    remote: &RemoteIdentity,
+    number: u64,
+    run_gh: &mut F,
+) -> Result<PrSummary, String>
+where
+    F: FnMut(&str, &[String]) -> Result<String, String>,
+{
+    let value = github_view_json_with(
+        repo,
+        remote,
+        number,
+        GH_SUMMARY_FIELDS,
+        GH_SUMMARY_JQ,
+        run_gh,
+    )?;
+    let (mut pr, _) = parse_remote_summary(&value, repo, remote)?;
+    let metadata = github_metadata_with(repo, remote, number, run_gh)?;
+    verify_remote_snapshot(&pr, remote, &metadata)?;
+    pr.commit_count = metadata.commit_count;
+    Ok(pr)
+}
+
+fn github_view_json_with<F>(
+    repo: &Repository,
+    remote: &RemoteIdentity,
+    number: u64,
+    fields: &str,
+    jq: &str,
+    run_gh: &mut F,
+) -> Result<Value, String>
+where
+    F: FnMut(&str, &[String]) -> Result<String, String>,
+{
+    let raw = run_gh(
+        &repo.primary_root,
+        &[
+            "pr".into(),
+            "view".into(),
+            number.to_string(),
+            "--repo".into(),
+            remote.selector(),
+            "--json".into(),
+            fields.into(),
+            "--jq".into(),
+            jq.into(),
+        ],
+    )?;
+    serde_json::from_str(&raw)
+        .map_err(|error| format!("gh returned invalid pull-request JSON: {error}"))
+}
+
+fn github_files_with<F>(
+    repo: &Repository,
     remote: &RemoteIdentity,
     number: u64,
     expected_files: u64,
-) -> Result<(Vec<PrFile>, Vec<String>), String> {
+    run_gh: &mut F,
+) -> Result<(Vec<PrFile>, Vec<String>), String>
+where
+    F: FnMut(&str, &[String]) -> Result<String, String>,
+{
     let mut files = Vec::new();
     let mut warnings = Vec::new();
     let max_pages = DETAIL_FILE_LIMIT.div_ceil(REMOTE_PAGE_SIZE);
@@ -560,8 +661,8 @@ fn github_files(
             "repos/{}/{}/pulls/{number}/files?per_page={REMOTE_PAGE_SIZE}&page={page}",
             remote.owner, remote.repo
         );
-        let raw = run_gh_text(
-            root,
+        let raw = run_gh(
+            &repo.primary_root,
             &[
                 "api".into(),
                 "--hostname".into(),
@@ -601,6 +702,97 @@ fn github_files(
         ));
     }
     Ok((files, warnings))
+}
+
+fn github_metadata_with<F>(
+    repo: &Repository,
+    remote: &RemoteIdentity,
+    number: u64,
+    run_gh: &mut F,
+) -> Result<RemotePrMetadata, String>
+where
+    F: FnMut(&str, &[String]) -> Result<String, String>,
+{
+    let endpoint = format!("repos/{}/{}/pulls/{number}", remote.owner, remote.repo);
+    let raw = run_gh(
+        &repo.primary_root,
+        &[
+            "api".into(),
+            "--hostname".into(),
+            remote.host.clone(),
+            "--method".into(),
+            "GET".into(),
+            endpoint,
+        ],
+    )?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("gh returned invalid pull-request metadata JSON: {error}"))?;
+    parse_remote_metadata(&value)
+}
+
+fn parse_remote_metadata(value: &Value) -> Result<RemotePrMetadata, String> {
+    let nested_string = |parent: &str, child: &str| {
+        value
+            .get(parent)
+            .and_then(|value| value.get(child))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| format!("GitHub PR metadata is missing {parent}.{child}"))
+    };
+    let repository = value
+        .get("base")
+        .and_then(|base| base.get("repo"))
+        .and_then(|repo| repo.get("full_name"))
+        .and_then(Value::as_str)
+        .filter(|repository| !repository.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "GitHub PR metadata is missing base.repo.full_name".to_string())?;
+    Ok(RemotePrMetadata {
+        repository,
+        number: value
+            .get("number")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "GitHub PR metadata is missing number".to_string())?,
+        url: required_json_string(value, "html_url")?,
+        head_sha: nested_string("head", "sha")?,
+        base_sha: nested_string("base", "sha")?,
+        commit_count: value
+            .get("commits")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "GitHub PR metadata is missing commits".to_string())?,
+    })
+}
+
+fn verify_remote_snapshot(
+    initial: &PrSummary,
+    remote: &RemoteIdentity,
+    current: &RemotePrMetadata,
+) -> Result<(), String> {
+    let mut changes = Vec::new();
+    let expected_number = initial.number.unwrap_or_default();
+    let expected_url = initial.url.as_deref().unwrap_or_default();
+    if !current
+        .repository
+        .eq_ignore_ascii_case(&remote.name_with_owner())
+        || current.number != expected_number
+        || current.url != expected_url
+    {
+        changes.push("pull-request identity");
+    }
+    if !current.head_sha.eq_ignore_ascii_case(&initial.head_sha) {
+        changes.push("head SHA");
+    }
+    if !current.base_sha.eq_ignore_ascii_case(&initial.base_sha) {
+        changes.push("base SHA");
+    }
+    if changes.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Pull request #{expected_number} changed while GitHub data was loading ({} changed). Refresh the pull request and try again.",
+        changes.join(", ")
+    ))
 }
 
 fn parse_remote_file(value: &Value) -> Result<PrFile, String> {
@@ -1003,6 +1195,15 @@ fn clean_field(bytes: &[u8]) -> Result<String, String> {
 }
 
 fn default_base(repo: &Repository) -> String {
+    // OctiqFlow development work targets develop even when the repository's
+    // remote HEAD or primary checkout still points at main.
+    if repo
+        .branches
+        .iter()
+        .any(|candidate| candidate.name == "develop")
+    {
+        return "develop".to_string();
+    }
     if let Ok(value) = git_text(
         &repo.primary_root,
         &[
@@ -1035,7 +1236,7 @@ fn default_base(repo: &Repository) -> String {
             return primary_branch.to_string();
         }
     }
-    for conventional in ["main", "master", "develop"] {
+    for conventional in ["main", "master"] {
         if repo
             .branches
             .iter()
@@ -1532,6 +1733,7 @@ fn read_capped<R: Read>(mut reader: R, cap: usize) -> io::Result<(Vec<u8>, bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1609,6 +1811,62 @@ mod tests {
             ],
         );
         TestRepo { root, linked }
+    }
+
+    fn remote_test_repo() -> Repository {
+        Repository {
+            primary_root: "/repo".into(),
+            branches: vec![],
+            worktrees: vec![],
+        }
+    }
+
+    fn remote_test_identity() -> RemoteIdentity {
+        RemoteIdentity {
+            host: "github.com".into(),
+            owner: "base".into(),
+            repo: "repo".into(),
+        }
+    }
+
+    fn remote_view_fixture(head_sha: &str, base_sha: &str) -> Value {
+        serde_json::json!({
+            "number": 42,
+            "title": "Stable snapshot",
+            "url": "https://github.com/base/repo/pull/42",
+            "state": "OPEN",
+            "isDraft": false,
+            "headRefName": "feature/stable",
+            "headRefOid": head_sha,
+            "baseRefName": "develop",
+            "baseRefOid": base_sha,
+            "headRepository": {"name": "repo", "nameWithOwner": "base/repo"},
+            "headRepositoryOwner": {"login": "base"},
+            "isCrossRepository": false,
+            "author": {"login": "alice"},
+            "updatedAt": "2026-09-24T00:00:00Z",
+            "body": "Body",
+            "commits": [{
+                "oid": head_sha,
+                "messageHeadline": "Stable change",
+                "authors": [{"login": "alice"}]
+            }],
+            "additions": 3,
+            "deletions": 1,
+            "changedFiles": 1,
+            "reviewDecision": "APPROVED",
+            "reviews": [{"state": "APPROVED", "commit": {"oid": head_sha}}]
+        })
+    }
+
+    fn remote_metadata_fixture(head_sha: &str, base_sha: &str, commits: u64) -> Value {
+        serde_json::json!({
+            "number": 42,
+            "html_url": "https://github.com/base/repo/pull/42",
+            "head": {"sha": head_sha},
+            "base": {"sha": base_sha, "repo": {"full_name": "base/repo"}},
+            "commits": commits
+        })
     }
 
     #[test]
@@ -1742,6 +2000,80 @@ mod tests {
     }
 
     #[test]
+    fn github_detail_rejects_head_movement_during_file_paging() {
+        let original_head = "2222222222222222222222222222222222222222";
+        let moved_head = "3333333333333333333333333333333333333333";
+        let base_sha = "1111111111111111111111111111111111111111";
+        let mut responses = VecDeque::from([
+            remote_view_fixture(original_head, base_sha).to_string(),
+            serde_json::json!([{
+                "filename": "src/lib.rs",
+                "status": "modified",
+                "additions": 3,
+                "deletions": 1,
+                "patch": "@@ -1 +1 @@\n-old\n+new"
+            }])
+            .to_string(),
+            remote_metadata_fixture(moved_head, base_sha, 2).to_string(),
+        ]);
+        let mut calls = Vec::new();
+        let error = github_detail_with(
+            &remote_test_repo(),
+            &remote_test_identity(),
+            42,
+            &mut |_root, args| {
+                calls.push(args.to_vec());
+                responses
+                    .pop_front()
+                    .ok_or_else(|| "unexpected gh call".to_string())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(calls.len(), 3);
+        assert!(calls[1].iter().any(|arg| arg.contains("pulls/42/files")));
+        assert!(calls[2].iter().any(|arg| arg == "repos/base/repo/pulls/42"));
+        assert!(error.contains("head SHA"));
+        assert!(error.contains("Refresh the pull request"));
+    }
+
+    #[test]
+    fn remote_get_uses_authoritative_count_without_downloading_commits_or_files() {
+        let head_sha = "2222222222222222222222222222222222222222";
+        let base_sha = "1111111111111111111111111111111111111111";
+        let mut summary = remote_view_fixture(head_sha, base_sha);
+        summary.as_object_mut().unwrap().remove("commits");
+        let mut responses = VecDeque::from([
+            summary.to_string(),
+            remote_metadata_fixture(head_sha, base_sha, 731).to_string(),
+        ]);
+        let mut calls = Vec::new();
+        let pr = github_remote_get_with(
+            &remote_test_repo(),
+            &remote_test_identity(),
+            42,
+            &mut |_root, args| {
+                calls.push(args.to_vec());
+                responses
+                    .pop_front()
+                    .ok_or_else(|| "unexpected gh call".to_string())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(pr.commit_count, 731);
+        assert!(pr.approved);
+        assert_eq!(calls.len(), 2);
+        let json_fields = calls[0]
+            .iter()
+            .skip_while(|arg| arg.as_str() != "--json")
+            .nth(1)
+            .unwrap();
+        assert!(!json_fields.split(',').any(|field| field == "commits"));
+        assert!(!calls.iter().flatten().any(|arg| arg.contains("/files")));
+    }
+
+    #[test]
     fn remote_list_rejects_unknown_state_before_running_commands() {
         let error = pr_remote_list(String::new(), "pending".into()).unwrap_err();
         assert!(error.contains("Unsupported pull-request state"));
@@ -1764,6 +2096,36 @@ mod tests {
             .branches
             .contains(&"feature/literal".to_string()));
         assert_eq!(repositories[0].default_base, "main");
+    }
+
+    #[test]
+    fn default_base_prefers_develop_when_present() {
+        let repo = Repository {
+            primary_root: "/does/not/need/to/exist".into(),
+            branches: vec![
+                Branch {
+                    name: "main".into(),
+                    sha: "1".into(),
+                    author: String::new(),
+                    updated_at: String::new(),
+                    title: String::new(),
+                },
+                Branch {
+                    name: "develop".into(),
+                    sha: "2".into(),
+                    author: String::new(),
+                    updated_at: String::new(),
+                    title: String::new(),
+                },
+            ],
+            worktrees: vec![Worktree {
+                path: "/does/not/need/to/exist".into(),
+                head_sha: "1".into(),
+                branch: Some("main".into()),
+            }],
+        };
+
+        assert_eq!(default_base(&repo), "develop");
     }
 
     #[test]
