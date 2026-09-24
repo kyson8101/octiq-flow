@@ -113,7 +113,7 @@ export type PrPreparedAgentChat = {
 export type PrTicketAgentLaunchResult = {
   kind: "started" | "existing" | "failed";
   phase: "existing" | "save" | "claim" | "start";
-  workflow: PrWorkflow;
+  workflow: PrWorkflow | null;
   chatId: string | null;
   message: string;
 };
@@ -215,6 +215,7 @@ export async function launchPrTicketAgent(
     prepareChat: (request: PrAgentLaunch) => Promise<PrPreparedAgentChat>;
     attach: (actionId: string, chatId: string) => Promise<PrWorkflow>;
     fail: (actionId: string, message: string) => Promise<PrWorkflow>;
+    reload: () => Promise<PrWorkflow | null>;
   },
 ): Promise<PrTicketAgentLaunchResult> {
   const preparedAction = launch.workflow.ticketAction;
@@ -257,10 +258,36 @@ export async function launchPrTicketAgent(
   try {
     claimed = await operations.attach(launch.actionId, prepared.chatId);
   } catch (error) {
+    // Attach can reject after another browser claims the action or after fresh
+    // PR evidence revokes it. Never restore the snapshot from before the claim.
+    let current: PrWorkflow | null;
+    try {
+      current = await operations.reload();
+    } catch (reloadError) {
+      return {
+        kind: "failed",
+        phase: "claim",
+        workflow: null,
+        chatId: null,
+        message: `Could not claim the ticket action: ${errorMessage(error)}. Refresh tracking to recover its current state: ${errorMessage(reloadError)}`,
+      };
+    }
+    const winner = current?.ticketAction;
+    if (current?.completion.state === "completed"
+      && winner?.id === launch.actionId && winner.chatId
+      && (winner.status === "running" || winner.status === "confirmed")) {
+      return {
+        kind: "existing",
+        phase: "existing",
+        workflow: current,
+        chatId: winner.chatId,
+        message: "Another browser already claimed this ticket action. Open its existing chat to continue.",
+      };
+    }
     return {
       kind: "failed",
       phase: "claim",
-      workflow: launch.workflow,
+      workflow: current,
       chatId: null,
       message: `Could not claim the ticket action: ${errorMessage(error)}`,
     };
@@ -277,7 +304,7 @@ export async function launchPrTicketAgent(
         phase: "existing",
         workflow: claimed,
         chatId: claimedAction.chatId,
-        message: "Another browser already claimed this ticket action. Its chat was opened instead.",
+        message: "Another browser already claimed this ticket action. Open its existing chat to continue.",
       };
     }
     return {

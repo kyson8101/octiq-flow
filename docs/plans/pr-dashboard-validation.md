@@ -15,9 +15,9 @@ Checks completed on 24 September 2026:
   and working-copy changes cannot change an already selected local diff.
 - After adding pinned head/base/trigger evidence to ticket-agent instructions,
   all 10 workflow tests passed again.
-- `pnpm exec tsc -b --pretty false` passed; all 156 Vitest files and 1,452 tests
-  passed in the integration checkout.
-- Production Vite build passed to `/tmp/octiq-pr-dashboard-integrated-build`.
+- After the integrated review fixes, `pnpm exec tsc -b --pretty false` passed;
+  all 156 Vitest files and 1,454 tests passed in the integration checkout.
+- Final production Vite build passed to `/tmp/octiq-pr-dashboard-final-review-build`.
   The existing large-bundle warning remains. `web/dist` was not changed.
 - `cargo fmt --check` and `git diff --check` passed.
 - `scripts/test-pr-dashboard.mjs` passed against synthetic HTTP/WebSocket data
@@ -28,6 +28,10 @@ Checks completed on 24 September 2026:
   failure/retry, save-before-claim-before-start ordering, confirmation withheld
   while the agent is busy, explicit user confirmation, unavailable GitHub with
   Local still usable, and a 390px viewport without horizontal overflow.
+- The final browser run also covers competing ticket claims: the losing browser
+  reloads authoritative workflow state, opens the winning chat, and does not
+  start another agent or fail the winning action. It verifies detail-tab arrow
+  navigation, Home/End, roving focus, and tab/panel ARIA relationships.
 - Desktop and mobile screenshots were inspected. Radio controls were corrected
   after that inspection; the browser checks and production build passed again.
 
@@ -37,5 +41,20 @@ Chrome. The script creates its own temporary Vite server and prints the path
 to its screenshots. The development run used
 `/tmp/octiq-pr-dashboard-tools/node_modules/playwright/index.mjs`.
 
-The remaining step is independent read-only Sol review. No live deployment,
-GitHub publication, external ticket update, push, or server restart occurred.
+The independent read-only Sol review completed. Both findings are resolved:
+rejected claims now reload current workflow state (including revoked completion
+or an explicit unknown state when offline), and detail tabs implement keyboard
+navigation and accessible panel relationships. Three claim regression tests
+were observed failing before the fix and passing afterward. The full web gate
+and browser checks then passed. Rust sources were unchanged by these fixes;
+the Rust verification above remains applicable.
+
+The review worker could not submit its host completion report because its
+read-only access rejected that control-plane write. Its finished review was
+read and its findings were handled by the coordinator; a running orchestration
+label is not evidence of an unfinished review.
+
+Work is committed on `feature/pr-dashboard-integration`. The primary `develop`
+checkout has concurrent unrelated work, so it was not changed for finalization.
+No live deployment, GitHub publication, external ticket update, push, or server
+restart occurred.

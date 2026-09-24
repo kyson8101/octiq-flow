@@ -223,6 +223,7 @@ describe("ticket agent launch transaction", () => {
         return workflow({ ticketAction: { id: "action-1", headSha: "11111111", status: "running", chatId: "chat-1", message: "", updatedAt: 3 } });
       },
       fail: async () => { order.push("fail"); return workflow(); },
+      reload: async () => null,
     });
 
     expect(order).toEqual(["save", "attach", "start"]);
@@ -235,23 +236,47 @@ describe("ticket agent launch transaction", () => {
       prepareChat: async () => ({ chatId: "chat-loser", start: async () => { order.push("start"); } }),
       attach: async () => { order.push("attach"); throw new Error("already claimed"); },
       fail: async () => { order.push("fail"); return workflow(); },
+      reload: async () => null,
     });
 
     expect(order).toEqual(["attach"]);
     expect(result).toMatchObject({ kind: "failed", phase: "claim" });
   });
 
-  it("exposes the winning chat when a concurrent attach returns its action", async () => {
+  it("refetches the winning chat after the backend rejects a competing claim", async () => {
     const order: string[] = [];
     const winner = workflow({ ticketAction: { id: "action-1", headSha: "11111111", status: "running", chatId: "chat-winner", message: "", updatedAt: 3 } });
     const result = await launchPrTicketAgent(ticketLaunch(), request, {
       prepareChat: async () => ({ chatId: "chat-loser", start: async () => { order.push("start"); } }),
-      attach: async () => winner,
+      attach: async () => { throw new Error("already attached to another chat"); },
       fail: async () => { order.push("fail"); return workflow(); },
+      reload: async () => { order.push("reload"); return winner; },
     });
 
-    expect(order).toEqual([]);
+    expect(order).toEqual(["reload"]);
     expect(result).toMatchObject({ kind: "existing", chatId: "chat-winner", workflow: winner });
+  });
+
+  it("keeps revoked completion from the backend instead of the pre-claim snapshot", async () => {
+    const revoked = workflow({ completion: { state: "pending", trigger: "merged", headSha: "new-head", completedAt: null, note: "Head changed" }, headSha: "new-head" });
+    const result = await launchPrTicketAgent(ticketLaunch(), request, {
+      prepareChat: async () => ({ chatId: "loser", start: async () => { throw new Error("must not start"); } }),
+      attach: async () => { throw new Error("action stale"); },
+      fail: async () => { throw new Error("must not fail"); },
+      reload: async () => revoked,
+    });
+    expect(result).toMatchObject({ kind: "failed", workflow: revoked, chatId: null });
+  });
+
+  it("returns unknown state when a rejected claim cannot be reconciled offline", async () => {
+    const result = await launchPrTicketAgent(ticketLaunch(), request, {
+      prepareChat: async () => ({ chatId: "loser", start: async () => { throw new Error("must not start"); } }),
+      attach: async () => { throw new Error("connection lost"); },
+      fail: async () => { throw new Error("must not fail"); },
+      reload: async () => { throw new Error("offline"); },
+    });
+    expect(result.workflow).toBeNull();
+    expect(result.message).toContain("Refresh");
   });
 
   it("records failure only after its successful claim when process start fails", async () => {
@@ -270,6 +295,7 @@ describe("ticket agent launch transaction", () => {
         order.push(`fail:${actionId}:${message.includes("boom")}`);
         return failed;
       },
+      reload: async () => null,
     });
 
     expect(order).toEqual(["save", "attach", "start", "fail:action-1:true"]);
@@ -282,6 +308,7 @@ describe("ticket agent launch transaction", () => {
       prepareChat,
       attach: async () => { throw new Error("must not attach"); },
       fail: async () => { throw new Error("must not fail"); },
+      reload: async () => null,
     });
 
     expect(result).toMatchObject({ kind: "existing", chatId: "chat-existing" });

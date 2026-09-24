@@ -49,6 +49,7 @@ const liveChats = new Set();
 const finishChats = new Map();
 let workflow = null;
 let failNextLaunch = false;
+let competeNextAttach = false;
 let remoteFailure = false;
 let holdNextWorkflowSave = false;
 let releaseWorkflowSave;
@@ -109,7 +110,14 @@ async function mockBackend(context) {
         }
         break;
       case 'pr_ticket_attach':
-        if (!workflow?.ticketAction || !chats.some(chat => chat.id === args.chatId)) error = 'Save completion chat first.';
+        if (competeNextAttach) {
+          competeNextAttach = false;
+          chats.push({ ...chats.find(chat => chat.id === args.chatId), id: 'winning-ticket-chat', title: 'Existing ticket agent' });
+          workflow = { ...workflow, ticketAction: { ...workflow.ticketAction, status: 'running', chatId: 'winning-ticket-chat' } };
+          socket.send(JSON.stringify({ t: 'event', event: 'chat-index-changed', payload: {} }));
+          error = 'Already attached to another chat.';
+        }
+        else if (!workflow?.ticketAction || !chats.some(chat => chat.id === args.chatId)) error = 'Save completion chat first.';
         else if (workflow.ticketAction.chatId && workflow.ticketAction.chatId !== args.chatId) error = 'Already attached.';
         else { workflow.ticketAction = { ...workflow.ticketAction, status: 'running', chatId: args.chatId }; result = workflow; }
         break;
@@ -154,7 +162,26 @@ try {
   const dashboard = page.getByRole('region', { name: 'Pull requests dashboard' });
   await dashboard.getByRole('listitem').filter({ hasText: localPr.title }).click();
   await dashboard.getByRole('heading', { name: localPr.title }).waitFor();
-  await dashboard.getByRole('tab', { name: /Files changed/ }).click();
+  const overviewTab = dashboard.getByRole('tab', { name: 'Overview', exact: true });
+  const filesTab = dashboard.getByRole('tab', { name: /Files changed/ });
+  const commitsTab = dashboard.getByRole('tab', { name: /Commits/ });
+  await overviewTab.focus();
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await commitsTab.getAttribute('aria-selected'), 'true', 'left arrow wraps to the last tab');
+  await page.keyboard.press('Home');
+  assert.equal(await overviewTab.getAttribute('aria-selected'), 'true');
+  await page.keyboard.press('End');
+  assert.equal(await commitsTab.getAttribute('aria-selected'), 'true');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await filesTab.getAttribute('aria-selected'), 'true');
+  assert.equal(await filesTab.getAttribute('tabindex'), '0');
+  assert.equal(await overviewTab.getAttribute('tabindex'), '-1');
+  assert.equal(await filesTab.evaluate(element => element === document.activeElement), true);
+  const filesPanel = dashboard.getByRole('tabpanel', { name: /Files changed/ });
+  assert.equal(await filesTab.getAttribute('aria-controls'), await filesPanel.getAttribute('id'));
+  assert.equal(await filesPanel.getAttribute('aria-labelledby'), await filesTab.getAttribute('id'));
+  assert.equal(await dashboard.getByRole('tabpanel').count(), 1, 'only the selected panel is visible');
   await dashboard.getByRole('table', { name: 'Unified diff' }).waitFor();
   assert(calls.some(call => call.cmd === 'pr_file_diff' && call.args.baseSha === mergeBaseSha && call.args.headSha === headSha));
   const increment = dashboard.getByRole('row').filter({ hasText: '+++count;' });
@@ -203,8 +230,22 @@ try {
     await dashboard.getByRole('listitem').filter({ hasText: remotePr.title }).click();
   } else releaseWorkflowSave();
   await dashboard.getByRole('button', { name: 'Start ticket update', exact: true }).waitFor();
-  failNextLaunch = true;
+  const raceStart = calls.length;
+  competeNextAttach = true;
   await dashboard.getByRole('button', { name: 'Start ticket update', exact: true }).click();
+  await dashboard.getByText(/Another browser already claimed/).waitFor();
+  assert(calls.slice(raceStart).some(call => call.cmd === 'pr_workflow_get'), 'rejected claim reloads authoritative workflow');
+  assert.equal(calls.slice(raceStart).some(call => ['chat_start', 'pr_ticket_confirm'].includes(call.cmd)), false, 'loser cannot start or fail the winning action');
+  await page.getByRole('button', { name: /Existing ticket agent/ }).first().waitFor();
+  await dashboard.getByRole('button', { name: 'Open chat', exact: true }).click();
+  await page.waitForURL(/winning-ticket-chat/);
+  await page.getByRole('button', { name: 'Pull requests', exact: true }).click();
+  await dashboard.getByRole('button', { name: /^GitHub/ }).click();
+  await dashboard.getByRole('listitem').filter({ hasText: remotePr.title }).click();
+  await dashboard.getByRole('button', { name: 'Mark failed', exact: true }).click();
+  failNextLaunch = true;
+  await dashboard.getByRole('button', { name: 'Retry ticket update', exact: true }).click();
+  await dashboard.getByText(/Could not start ticket completion/).first().waitFor();
   await dashboard.getByRole('button', { name: 'Retry ticket update', exact: true }).waitFor();
   assert.equal(workflow.ticketAction.status, 'failed');
   await dashboard.getByRole('button', { name: 'Retry ticket update', exact: true }).click();

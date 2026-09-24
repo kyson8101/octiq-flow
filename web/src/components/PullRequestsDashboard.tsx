@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { bridge } from "../lib/bridge";
 import {
   completionLabel,
@@ -92,6 +92,7 @@ export function PullRequestsDashboard({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
   const [tab, setTab] = useState<DetailTab>("overview");
+  const tabsId = useId();
   const [mobileDetail, setMobileDetail] = useState(false);
   const [filePath, setFilePath] = useState("");
   const [patches, setPatches] = useState<Record<string, PrPatch>>({});
@@ -422,6 +423,9 @@ export function PullRequestsDashboard({
         fail: (actionId, message) => bridge.invoke<PrWorkflow>("pr_ticket_confirm", {
           actionId, confirmed: false, message,
         }),
+        reload: () => bridge.invoke<PrWorkflow | null>("pr_workflow_get", {
+          root: launch.workflow.root, number: launch.workflow.number,
+        }),
       });
       if (workflowGate.current(token)) {
         setWorkflow(result.workflow);
@@ -607,12 +611,25 @@ export function PullRequestsDashboard({
                   {shownLaunch.chatId && <button type="button" onClick={() => onOpenChat(shownLaunch.chatId!)}>Open chat</button>}
                 </div>
               )}
-              <div className="pr-tabs" role="tablist" aria-label="Pull request detail">
-                <TabButton value="overview" current={tab} onPick={setTab}>Overview</TabButton>
-                <TabButton value="files" current={tab} onPick={setTab}>Files changed <span>{detail.files.length}</span></TabButton>
-                <TabButton value="commits" current={tab} onPick={setTab}>Commits <span>{detail.commits.length}</span></TabButton>
+              <div className="pr-tabs" role="tablist" aria-label="Pull request detail" onKeyDown={(event) => {
+                if (event.altKey || event.ctrlKey || event.metaKey) return;
+                const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+                const current = tabs.indexOf(event.target as HTMLButtonElement);
+                if (current < 0) return;
+                const next = event.key === "ArrowRight" ? (current + 1) % tabs.length
+                  : event.key === "ArrowLeft" ? (current + tabs.length - 1) % tabs.length
+                  : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
+                if (next === null) return;
+                event.preventDefault();
+                tabs[next].focus();
+                tabs[next].click();
+              }}>
+                <TabButton idPrefix={tabsId} value="overview" current={tab} onPick={setTab}>Overview</TabButton>
+                <TabButton idPrefix={tabsId} value="files" current={tab} onPick={setTab}>Files changed <span>{detail.files.length}</span></TabButton>
+                <TabButton idPrefix={tabsId} value="commits" current={tab} onPick={setTab}>Commits <span>{detail.commits.length}</span></TabButton>
               </div>
               {detail.warnings.map((warning) => <div key={warning} className="pr-banner">{warning}</div>)}
+              <div role="tabpanel" id={`${tabsId}-overview-panel`} aria-labelledby={`${tabsId}-overview-tab`} hidden={tab !== "overview"} tabIndex={0}>
               {tab === "overview" && (
                 <Overview
                   detail={detail}
@@ -639,6 +656,8 @@ export function PullRequestsDashboard({
                   onOpenChat={onOpenChat}
                 />
               )}
+              </div>
+              <div role="tabpanel" id={`${tabsId}-files-panel`} aria-labelledby={`${tabsId}-files-tab`} hidden={tab !== "files"} tabIndex={0}>
               {tab === "files" && (
                 <FilesView
                   detail={detail}
@@ -651,7 +670,10 @@ export function PullRequestsDashboard({
                   onFile={setFilePath}
                 />
               )}
+              </div>
+              <div role="tabpanel" id={`${tabsId}-commits-panel`} aria-labelledby={`${tabsId}-commits-tab`} hidden={tab !== "commits"} tabIndex={0}>
               {tab === "commits" && <CommitsView detail={detail} />}
+              </div>
             </>
           )}
         </article>
@@ -660,8 +682,8 @@ export function PullRequestsDashboard({
   );
 }
 
-function TabButton({ value, current, onPick, children }: { value: DetailTab; current: DetailTab; onPick: (tab: DetailTab) => void; children: React.ReactNode }) {
-  return <button type="button" role="tab" aria-selected={current === value} onClick={() => onPick(value)}>{children}</button>;
+function TabButton({ idPrefix, value, current, onPick, children }: { idPrefix: string; value: DetailTab; current: DetailTab; onPick: (tab: DetailTab) => void; children: React.ReactNode }) {
+  return <button type="button" role="tab" id={`${idPrefix}-${value}-tab`} aria-controls={`${idPrefix}-${value}-panel`} aria-selected={current === value} tabIndex={current === value ? 0 : -1} onClick={() => onPick(value)}>{children}</button>;
 }
 
 function PrListItem({ item, active, onClick }: { item: PrSummary; active: boolean; onClick: () => void }) {
