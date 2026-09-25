@@ -938,7 +938,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 }
                 None => None,
             };
-            let task = svc.orchestrations.create_task_for(
+            to_value(svc.orchestrations.create_carded_task(
                 &actor,
                 run_id,
                 arg(&args, "title")?,
@@ -948,11 +948,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 worker,
                 assignee,
                 routed.destination,
-            )?;
-            to_value(match card {
-                Some(card) => svc.orchestrations.set_task_card(&task.id, card),
-                None => Ok(task),
-            })
+                card,
+            ))
         }
         // Where the caller may send work: registered projects, their
         // repositories, and which of its direct reports can work in each.

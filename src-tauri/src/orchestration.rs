@@ -832,26 +832,6 @@ impl OrchestrationStore {
         Ok(active_task_for_actor(&inner.data, chat_key))
     }
 
-    /// Attach the plan card a task was created with. Only once, and only by
-    /// the chat that created it: the card is part of the plan the person
-    /// approves, so it can no more change afterwards than the destination.
-    pub fn set_task_card(&self, task_id: &str, card: TaskCard) -> Result<Task, String> {
-        let updated = self.mutate(|data| {
-            let task = data
-                .tasks
-                .get_mut(task_id)
-                .ok_or("The task does not exist.")?;
-            if task.card.is_some() {
-                return Err("This task already has its plan card.".into());
-            }
-            task.card = Some(card);
-            task.updated_at = now_ms();
-            Ok(task.clone())
-        })?;
-        announce(&updated.run_id, "task_updated");
-        Ok(updated)
-    }
-
     /// Agents mode: the registered agent a worker chat is running as, from the
     /// task of its most recent attempt.
     pub fn assignee_for_worker(&self, chat_key: &str) -> Result<Option<String>, String> {
@@ -940,6 +920,7 @@ impl OrchestrationStore {
         .inspect(|run| announce(&run.id, "plan_approved"))
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn create_task_for(
         &self,
@@ -952,6 +933,39 @@ impl OrchestrationStore {
         worker: Option<automation::WorkerSettings>,
         assignee: Option<TaskAssignee>,
         destination: Option<TaskDestination>,
+    ) -> Result<Task, String> {
+        self.create_carded_task(
+            actor_chat_key,
+            run_id,
+            title,
+            spec,
+            depends_on,
+            parent_task_id,
+            worker,
+            assignee,
+            destination,
+            None,
+        )
+    }
+
+    /// Create a task with the plan card it was given. The card goes in with
+    /// the task, in the same write: nothing that reads the store, and no
+    /// browser told `task_created`, ever sees the task without it. There is
+    /// no setter afterwards — the card is part of the plan the person
+    /// approves, so it is fixed once the task exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_carded_task(
+        &self,
+        actor_chat_key: &str,
+        run_id: String,
+        title: String,
+        spec: String,
+        depends_on: Vec<String>,
+        parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
+        assignee: Option<TaskAssignee>,
+        destination: Option<TaskDestination>,
+        card: Option<TaskCard>,
     ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
@@ -1025,7 +1039,7 @@ impl OrchestrationStore {
                 assignee,
                 destination,
                 approved_at: None,
-                card: None,
+                card,
                 workspace: None,
                 depends_on,
                 parent_task_id,
@@ -2489,17 +2503,51 @@ mod tests {
         assert!(TaskCard::checked(None, None, Some(vec!["a".into(); 6])).is_err());
         assert!(TaskCard::checked(None, None, Some(vec!["a".repeat(241)])).is_err());
 
-        let store = OrchestrationStore::default();
+        let root = std::env::temp_dir().join(format!("octiq-orchestration-{}", compact_id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(file.clone());
         let run = run(&store);
-        let created = task(&store, &run, Vec::new());
-        assert_eq!(created.card, None);
-        let carded = store.set_task_card(&created.id, card.clone()).unwrap();
-        assert_eq!(carded.card.as_ref(), Some(&card));
-        // Part of the plan the person approves: it cannot be rewritten.
-        assert!(store
-            .set_task_card(&created.id, TaskCard::default())
-            .is_err());
-        assert!(store.set_task_card("task_missing", card).is_err());
+        let bare = task(&store, &run, Vec::new());
+        assert_eq!(bare.card, None);
+        let carded = |actor: &str, card: TaskCard| {
+            store.create_carded_task(
+                actor,
+                run.id.clone(),
+                "Show destinations".into(),
+                "Badge each row".into(),
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                Some(card),
+            )
+        };
+        let created = carded("chat:master", card.clone()).unwrap();
+        assert_eq!(created.card.as_ref(), Some(&card));
+        // One write: the task is stored, and saved, with its card already on
+        // it, so neither a snapshot nor the file ever holds it without one.
+        let seen = store.snapshot(Some(&run.id)).unwrap();
+        let stored = seen.tasks.iter().find(|t| t.id == created.id).unwrap();
+        assert_eq!(stored.card.as_ref(), Some(&card));
+        let reloaded = OrchestrationStore::load(file);
+        let saved = reloaded.snapshot(Some(&run.id)).unwrap();
+        let by_id = |id: &str| {
+            saved
+                .tasks
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap()
+                .card
+                .clone()
+        };
+        assert_eq!(by_id(&created.id), Some(card.clone()));
+        assert_eq!(by_id(&bare.id), None);
+        // A refused create leaves no task behind, carded or not.
+        assert!(carded("chat:stranger", card).is_err());
+        assert_eq!(store.snapshot(Some(&run.id)).unwrap().tasks.len(), 2);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
