@@ -1,3 +1,4 @@
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { OrchestrationRun, OrchestrationSnapshot } from "../lib/orchestration";
 import { isActiveRun, runSummary } from "../lib/chatWorkflow";
 import "./ChatWorkflowBar.css";
@@ -23,9 +24,9 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, 
   // the bar itself goes rather than leaving an empty rule across the column.
   if (focusMode && !views && !run) return null;
   return <header className={unified ? "workflow-header" : undefined}>
-    {unified && <h1 className="workflow-title">{run?.objective ?? "New run"}</h1>}
+    {unified && <RunTitle text={run?.objective ?? "New run"} />}
     <nav className="chat-workflow-bar" aria-label="Chat workflow">
-    {!focusMode && !worker && <label className="chat-execution">Execution
+    {!focusMode && !worker && <label className="chat-execution"><span className="chat-execution-label">Execution</span>
       <select aria-label="Execution mode" value={active || orchestrated ? "orchestrated" : "normal"}
         disabled={disabled} onChange={(event) => onMode(event.target.value === "orchestrated")}>
         <option value="normal" disabled={!!active}>Normal</option>
@@ -42,4 +43,33 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, 
       {runSummary(snapshot, run)}
     </button>}
   </nav></header>;
+}
+
+/** An objective is written for the agent, and can run to a paragraph. It gets
+ *  two lines above the work; the rest opens on request, in place. */
+function RunTitle({ text }: { text: string }) {
+  const ref = useRef<HTMLHeadingElement>(null);
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [clipped, setClipped] = useState(false);
+  useEffect(() => setOpen(false), [text]);
+  // Measured, not guessed from the length: two lines hold very different
+  // amounts of text in a 380px column and across a 1400px one. Only while
+  // shut — an open title is never clipped, and would hide its own "Less".
+  useLayoutEffect(() => {
+    const title = ref.current;
+    if (!title || open) return;
+    const measure = () => setClipped(title.scrollHeight > title.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(title);
+    return () => observer.disconnect();
+  }, [text, open]);
+  return <div className={`workflow-heading${open ? " is-open" : ""}`}>
+    <h1 className="workflow-title" id={id} ref={ref} tabIndex={open ? 0 : undefined}>{text}</h1>
+    {(clipped || open) && <button type="button" className="workflow-title-toggle" aria-expanded={open} aria-controls={id}
+      aria-label={open ? "Show less of the objective" : "Show the full objective"}
+      onClick={() => setOpen(!open)}>{open ? "Less" : "More"}</button>}
+  </div>;
 }

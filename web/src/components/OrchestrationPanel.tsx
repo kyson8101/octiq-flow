@@ -247,18 +247,37 @@ export function OrchestrationPanel({
     }
   };
 
+  const newRunButton = (
+    <button
+      className={`orch-new${creating ? " is-on" : ""}`}
+      type="button"
+      disabled={readOnly || busy || (embedded && runs.some(isActiveRun))}
+      title={embedded && runs.some(isActiveRun) ? "Finish or stop the active run first" : undefined}
+      onClick={() => { setCreating(true); setConfirmStop(false); }}
+    >
+      <PlusIcon />
+      {embedded ? "New run" : "Start a run"}
+    </button>
+  );
+
   return (
     <>
       {!embedded && <div className="panel-scrim" onClick={onClose} />}
       <aside className={embedded ? "orch-embedded" : "panel orch-page"} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label={embedded ? "Runs for this chat" : undefined} aria-labelledby={embedded ? undefined : "orch-title"}>
-        {embedded && <nav className="orch-main-nav" aria-label="Main conversation">
-          <button type="button" className="orch-main-chat"
-            aria-current={coordinatorKey && currentChatKey === coordinatorKey ? "page" : undefined}
-            disabled={!coordinatorKey} onClick={() => coordinatorKey && onOpenChat(coordinatorKey)}>
-            <OrchestratorIcon />
-            <span><strong>Main chat</strong><small>Coordinate the work</small></span>
-          </button>
-        </nav>}
+        {/* One row: the coordinator's chat pinned first, and starting another
+            run as a small action beside it rather than a section of its own. */}
+        {embedded && <div className="orch-main-strip">
+          <nav className="orch-main-nav" aria-label="Main conversation">
+            <button type="button" className="orch-main-chat"
+              aria-current={coordinatorKey && currentChatKey === coordinatorKey ? "page" : undefined}
+              title="Coordinate the work with the main agent"
+              disabled={!coordinatorKey} onClick={() => coordinatorKey && onOpenChat(coordinatorKey)}>
+              <OrchestratorIcon />
+              <span><strong>Main chat</strong><small>Coordinate the work</small></span>
+            </button>
+          </nav>
+          {newRunButton}
+        </div>}
         {!embedded && <>
         <header className="panel-head orch-page-head">
           <div className="panel-id">
@@ -272,19 +291,11 @@ export function OrchestrationPanel({
         </>}
 
         <div className="orch-layout">
-          <nav className="orch-runs" aria-label="Orchestration runs">
-            <button
-              className={`orch-new${creating ? " is-on" : ""}`}
-              type="button"
-              disabled={readOnly || busy || (embedded && runs.some(isActiveRun))}
-              onClick={() => { setCreating(true); setConfirmStop(false); }}
-            >
-              <PlusIcon />
-              {embedded ? "New run" : "Start a run"}
-            </button>
-            {/* One run needs no picker — and inside a chat that is the normal
-                case, where the strip was costing a row above the fold. */}
-            {(!embedded || creating || runs.length > 1) && <div className="orch-run-list">
+          {/* One run needs no picker — and inside a chat that is the normal
+              case, where the strip was costing a row above the fold. */}
+          {(!embedded || runs.length > 1 || (creating && runs.length > 0)) && <nav className="orch-runs" aria-label="Orchestration runs">
+            {!embedded && newRunButton}
+            <div className="orch-run-list">
               {runs.map((run) => {
                 const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
                 const done = runTasks.filter((task) => task.status === "completed").length;
@@ -307,9 +318,9 @@ export function OrchestrationPanel({
                   </button>
                 );
               })}
-            </div>}
+            </div>
             {!embedded && <p className="orch-runs-note">The host owns task state. Agents report into it.</p>}
-          </nav>
+          </nav>}
 
           <div className="orch-content">
             {shownError && <div className="orch-error" role="alert">{shownError}</div>}
@@ -531,6 +542,13 @@ function RunDetail({
   sharedHeading: boolean;
 }) {
   const [filter, setFilter] = useState<TaskFilter>("all");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsId = useId();
+  const settingsToggle = <button type="button" className="orch-settings-toggle" aria-expanded={settingsOpen} aria-controls={settingsId}
+    aria-label="Run settings" title={settingsOpen ? "Hide run settings" : "Run settings and controls"}
+    onClick={() => setSettingsOpen(!settingsOpen)}>
+    <SettingsIcon /><span>Settings</span>
+  </button>;
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
   const now = useElapsedTick(runIsLive(snapshot, run.id));
@@ -576,7 +594,7 @@ function RunDetail({
           <h3 id="orch-decisions-title">Needs you</h3>
           {openGates.map((gate) => (
             <article className="orch-gate" key={gate.id}>
-              <p className="orch-gate-task">{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This run"}</p>
+              <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This run"}</p>
               <p>{gate.question}</p>
               {!readOnly && gate.options.length > 0 && (
                 <div className="orch-gate-options">
@@ -599,11 +617,15 @@ function RunDetail({
         </section>
       )}
 
-      {!planPending && <RunProgress run={run} tasks={tasks} counts={counts} working={working} attention={attention}
-        decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} />}
+      {/* Status in one dense band, and the run's configuration one click
+          behind it: the folder, the limits and the controls that change them
+          are looked at once a run, and were costing every glance a section. */}
+      {!planPending && tasks.length > 0
+        ? <RunProgress run={run} tasks={tasks} counts={counts} working={working} attention={attention}
+          decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} action={settingsToggle} />
+        : <div className="orch-summary">{settingsToggle}</div>}
 
-      <details className="orch-run-settings">
-        <summary>Run settings</summary>
+      <div className="orch-run-settings" id={settingsId} role="region" aria-label="Run settings" hidden={!settingsOpen}>
         <div className="orch-run-settings-body">
           <dl>
             <dt>Folder</dt><dd title={run.rootPath}>{shortWorkspacePath(run.rootPath)}</dd>
@@ -611,6 +633,7 @@ function RunDetail({
             <dt>Dispatch</dt><dd>{run.workerDefaults ? "Automatic" : "Coordinator"}</dd>
             <dt>Workers</dt><dd>{run.workerDefaults?.agent ? `Chosen per task · ${AGENT_NAME[run.workerDefaults.agent]} fallback` : "Chosen per task by the main agent"}</dd>
             <dt>Worker limit</dt><dd>{run.maxConcurrent}</dd>
+            <dt>Acceptance</dt><dd title={ACCEPTANCE_NOTE}>Unverified</dd>
           </dl>
           <div className="orch-run-actions">
             {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
@@ -635,7 +658,7 @@ function RunDetail({
             )}
           </div>
         </div>
-      </details>
+      </div>
 
       {!planPending && <section className="orch-tasks" aria-labelledby="orch-tasks-title">
         <div className="orch-section-head">
@@ -688,7 +711,7 @@ function RunDetail({
  *  the states that still owe something. A count of zero is left out rather
  *  than printed — four tiles reading 0 is how the old screen managed to fill
  *  a phone while saying nothing. */
-function RunProgress({ run, tasks, counts, working, attention, decisions, elapsed }: {
+function RunProgress({ run, tasks, counts, working, attention, decisions, elapsed, action }: {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   counts: ReturnType<typeof boardCounts>;
@@ -696,6 +719,8 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
   attention: number;
   decisions: number;
   elapsed: number | null;
+  /** Ends the first line, so the meter under it keeps the column's width. */
+  action?: ReactNode;
 }) {
   if (!tasks.length) return null;
   const chips = [
@@ -706,23 +731,30 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
     counts.cancelled > 0 ? { key: "cancelled", tone: "quiet", label: `${counts.cancelled} cancelled` } : null,
   ].filter((chip): chip is { key: string; tone: string; label: string } => chip !== null);
 
+  // Every task done reads as "finished", which is exactly when it needs saying
+  // that nothing checked the outcome. Before that, it waits in Settings.
+  const settled = counts.total > 0 && counts.done === counts.total;
   return (
-    <div className="orch-progress" aria-label="Task completion">
-      <div className="orch-progress-label">Tasks completed</div>
+    <div className="orch-progress" role="group" aria-label="Tasks completed">
       <div className="orch-progress-head">
         <strong><RollingNumber value={counts.done} /><span> / {counts.total} tasks</span></strong>
         <span className="orch-progress-percent"><RollingNumber value={counts.percent} />%</span>
         {elapsed !== null && <span className="orch-progress-elapsed"
           title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
+        {action}
       </div>
       <TaskMeter tasks={tasks} done={counts.done} />
-      <p className="orch-progress-acceptance" title="OctiqFlow does not yet track acceptance results. Review the test evidence separately.">Acceptance: unverified</p>
-      {chips.length > 0 && <div className="orch-progress-chips">
-        {chips.map((chip) => <span className="orch-chip" data-tone={chip.tone} key={chip.key}>{chip.label}</span>)}
+      {(chips.length > 0 || settled) && <div className="orch-progress-foot">
+        {chips.length > 0 && <span className="orch-progress-chips">
+          {chips.map((chip) => <span className="orch-chip" data-tone={chip.tone} key={chip.key}>{chip.label}</span>)}
+        </span>}
+        {settled && <span className="orch-progress-acceptance" title={ACCEPTANCE_NOTE}>Acceptance: unverified</span>}
       </div>}
     </div>
   );
 }
+
+const ACCEPTANCE_NOTE = "OctiqFlow does not yet track acceptance results. Review the test evidence separately.";
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
 function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction, open }: {
@@ -931,6 +963,10 @@ function OrchestratorIcon() {
 
 function OrchestratorGlyph() {
   return <div className="orch-glyph" aria-hidden="true"><span /><span /><span /><i /><i /></div>;
+}
+
+function SettingsIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8" /><circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" /></svg>;
 }
 
 function PlusIcon() {

@@ -389,6 +389,24 @@ describe("embedded chat runs", () => {
     expect(html).toContain('aria-label="Ship orchestration"');
   });
 
+  it("keeps New run beside Main chat and run settings one click away, shut", () => {
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
+      initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
+    const strip = html.slice(html.indexOf('class="orch-main-strip"'), html.indexOf('class="orch-layout"'));
+    expect(strip).toContain("Main chat");
+    expect(strip).toContain("New run");
+    const toggle = html.match(/<button type="button" class="orch-settings-toggle" aria-expanded="false" aria-controls="([^"]+)"/);
+    expect(toggle).not.toBeNull();
+    const region = html.slice(html.indexOf(`id="${toggle![1]}"`));
+    expect(html).toContain(`class="orch-run-settings" id="${toggle![1]}" role="region" aria-label="Run settings" hidden=""`);
+    // The controls moved with the configuration; they are shut, not gone.
+    expect(region.slice(0, region.indexOf('class="orch-tasks"'))).toContain(">Stop run<");
+    // Not every task is done, so the acceptance caveat waits in Settings.
+    expect(html).not.toContain("Acceptance: unverified");
+    expect(html).toContain("<dt>Acceptance</dt>");
+  });
+
   it("marks the worker task current while keeping Main chat available", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:worker"

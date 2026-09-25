@@ -1,7 +1,18 @@
 /* Workflow navigation stays in the conversation; the transcript keeps its width. */
-.workflow-header { flex: 0 0 auto; min-width: 0; padding: 18px 20px 0; border-bottom: 1px solid var(--border); background: var(--bg-0); }
-.workflow-title { margin: 0; color: var(--fg-0); font-size: 20px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
-.workflow-header .chat-workflow-bar { padding: 10px 0 12px; border-bottom: 0; }
+/* One band: the objective, held to two lines, and the controls beside it. The
+   band wraps rather than squeezing either, so a narrow column stacks them. */
+.workflow-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; flex: 0 0 auto; min-width: 0; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--bg-0); }
+.workflow-heading { display: flex; align-items: flex-end; gap: 6px; flex: 1 1 360px; min-width: 0; }
+.workflow-title { display: -webkit-box; flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--fg-0); font-size: 15px; font-weight: 620; line-height: 1.4; overflow-wrap: anywhere; }
+/* Opened, it is whole — up to a bound, past which it scrolls in place rather
+   than pushing the tasks and the conversation off the screen. */
+.workflow-heading.is-open .workflow-title { display: block; max-height: min(40vh, 360px); overflow-y: auto; -webkit-line-clamp: unset; }
+.workflow-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
+.workflow-title-toggle { flex: 0 0 auto; min-height: 24px; padding: 0 7px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-2); font: inherit; font-size: 12px; cursor: pointer; transition: background 130ms ease-out, color 130ms ease-out; }
+.workflow-title-toggle:hover { background: var(--bg-2); color: var(--fg-0); }
+.workflow-title-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.workflow-header .chat-workflow-bar { flex: 0 1 auto; gap: 8px; margin-left: auto; padding: 0; border-bottom: 0; }
+.workflow-header .chat-workflow-bar select { padding-block: 3px; }
 .chat-workflow-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 20px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 12px; }
 .chat-execution { display: flex; align-items: center; gap: 8px; }
 .chat-workflow-bar select, .workflow-setup-context select { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-0); font: inherit; padding: 5px 8px; max-width: 100%; }
@@ -35,15 +46,20 @@
   cursor: col-resize; touch-action: none; transition: background 130ms ease-out;
 }
 .workflow-run-resizer:hover, .workflow-run-resizer:active { background: var(--accent-tint); }
-.workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-content { padding: 20px 18px 40px; }
-.workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-runs { padding: 10px 14px; }
+.workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-content { padding: 0 14px 32px; }
 /* The objective sizes itself from the viewport everywhere else; in a 380px
    column that reads as a poster. Size it from the column instead. */
 .workflow-surfaces.is-split > .workflow-run-surface .orch-run-head h2 { max-width: none; font-size: 19px; }
-.workflow-surfaces.is-split > .workflow-run-surface .orch-progress-head strong { font-size: 22px; }
 .workflow-setup-context { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 22px; font-size: 12px; }
 .workflow-setup-context label { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .workflow-setup-context p { flex-basis: 100%; margin: 0; color: var(--fg-3); }
 .chat-workflow-status { display: block; font-size: 11px; line-height: 1.5; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 600px) { .chat-workflow-bar { gap: 6px; padding: 8px 12px; } .chat-run-summary { padding-inline: 2px; font-size: 11px; } }
-@media (max-width: 600px) { .workflow-header { padding: 12px 12px 0; } .workflow-title { font-size: 18px; } }
+@media (max-width: 600px) {
+  .workflow-header { padding: 8px 12px; }
+  .workflow-header .chat-workflow-bar { flex: 1 1 100%; flex-wrap: nowrap; gap: 6px; margin-left: 0; }
+  .workflow-title { font-size: 14px; }
+  /* The select names itself ("Orchestrated"), and the phone needs the width. */
+  .workflow-header .chat-execution-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .workflow-header .chat-run-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
