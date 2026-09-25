@@ -12758,6 +12758,90 @@ body.is-ultra .eff {
   overflow-wrap: anywhere;
 }
 
+/* ---- Somebody else's words, handed over by the harness ----------------
+   A subagent's final report, or another Claude session on this machine. A
+   THIRD voice in a conversation that has room for two, and the whole failure
+   it replaces was drawing it as one of them: a page of `<agent-message …>` on
+   the reader's own side, with "Sent" underneath.
+
+   So it is neither bubble. A rule was wrong too — that is the compaction's
+   shape, and a compaction is a moment, while this is something a stranger
+   SAID. It gets the quietest thing that can still hold words: a bordered
+   block, named along the top, with a stripe down the side saying the voice is
+   from outside. */
+.peer-note {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  /* The one mark that separates it from every other quiet block in the
+     transcript: a voice standing outside the conversation. */
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--r-sm, 6px);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+
+/* The whole row is the handle. A 10px chevron is not something you can hit on
+   a phone — the same reason `.compacted-label.is-button` is drawn this way. */
+.peer-note-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.peer-note-head:hover,
+.peer-note.is-open .peer-note-head {
+  background: var(--bg-2);
+  color: var(--fg-2);
+}
+
+/* Who said it does NOT shrink. It is the information on this row; the quoted
+   line beside it is the preview, and a preview gives up its width first. */
+.peer-note-who {
+  flex: 0 0 auto;
+  color: var(--fg-2);
+}
+
+/* Cut rather than wrapped: the row is a label, and a label three lines tall
+   has stopped being one. */
+.peer-note-opening {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Written here rather than in the markup so the narrow layout can drop it
+   without the separator being left behind. */
+.peer-note-opening::before {
+  content: " · ";
+}
+
+.peer-note-body {
+  padding: 4px 12px 10px;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+/* A phone has no width to spend on a preview, and cutting it after four words
+   says less than leaving it out. The name alone still says who is talking. */
+@media (max-width: 700px) {
+  .peer-note-opening {
+    display: none;
+  }
+}
+
 /* ── The board ─────────────────────────────────────────────────────────────
    A page, not a side sheet: four columns need the width. It reuses the `.panel`
    shell for its head, close button, scrim and slide-in, and only widens it. */
