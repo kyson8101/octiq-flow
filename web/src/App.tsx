@@ -138,7 +138,7 @@ import { LeadPicker } from "./components/AgentsSettings";
 import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
-  agentIdentity, headConversation, leadSettings, loadHead, loadHome, loadLeads, loadTeam,
+  agentIdentity, leadSettings, loadHead, loadHome, loadLeads, loadTeam,
   recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
 import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
@@ -164,6 +164,7 @@ import { InstalledReload } from "./components/InstalledReload";
 import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
 import { TopbarActionLayout } from "./components/TopbarActionsMenu";
+import { ChatTaskBar } from "./components/ChatTaskBar";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -1906,6 +1907,30 @@ export default function App() {
         : null,
     [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity],
   );
+  // Task details combine the chat's recorded launch plan, the newest worker
+  // attempt, sandbox state and registered persona with live host verification.
+  // Keep this at the App boundary: isolated task-panel renders cannot prove
+  // that the real conversation has all of those sources wired together.
+  const panelContext = useMemo(() => {
+    if (!conversationId) return undefined;
+    const key = keyFor(conversationId);
+    const attempt = orchestration.attempts
+      .filter((candidate) => candidate.workerChatKey === key)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
+    const held = conversations.find((conversation) => conversation.id === conversationId);
+    const sandbox = Object.values(sandboxes.snapshot?.environments ?? {})
+      .find((environment) => environment.chatKey === key) ?? null;
+    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
+    return {
+      launch: held?.launch ?? null,
+      worker: task ? { task, attempt } : null,
+      sandbox,
+      projectName: (id: string) => names.get(id),
+      persona,
+      runsOn: persona ? `${providerFor(choice.agent).name} ${choice.model}` : undefined,
+    };
+  }, [conversationId, orchestration, conversations, sandboxes.snapshot, workspaces, shelved, persona, choice]);
   const pickLead = useCallback((agent: TeamAgent) => {
     setLeadId(agent.id);
     remember(LEAD_KEY, agent.id);
@@ -3896,32 +3921,16 @@ export default function App() {
     openConversation(conversation);
   };
 
-  // Agents mode: "Talk to <head>". Reopens the newest conversation handed to
-  // THIS head, from whichever project is on screen; with none, starts one.
-  // A conversation handed to an earlier head is never reopened under a new
-  // one's name — its history stays with the lead it was written with.
-  const talkToHead = async () => {
-    // Re-read both: the head may have been changed, or its conversation
-    // started, on another device since this page last looked.
-    const [configured, current] = await Promise.all([
-      loadHead().catch(() => head),
-      loadLeads().catch(() => leads),
-    ]);
+  // Agents mode's creation action always prepares a new cross-project CTO
+  // conversation. Existing conversations remain ordinary sidebar navigation;
+  // conflating the two made "New conversation" silently reopen the last one.
+  const startHeadConversation = async () => {
+    // Re-read the configured head: it may have changed on another device.
+    const configured = await loadHead().catch(() => head);
     setHead(configured);
-    setLeads(current);
     if (!configured) {
       openAgentsSettings();
       return;
-    }
-    const known = headConversation(current, configured.id, (chatKey) =>
-      conversationsRef.current.some((item) => keyFor(item.id) === chatKey));
-    if (known) {
-      try {
-        openWorkflowChat(known.chatKey);
-        return;
-      } catch {
-        /* not in this browser's list yet: start a fresh one below */
-      }
     }
     newChat();
     setHeadDraft(true);
@@ -3985,6 +3994,19 @@ export default function App() {
       </button>}
 
       {!mainPage && <>
+        {conversationId && <ChatTaskBar
+          action
+          chatId={conversationId}
+          connected={conn === "open"}
+          context={panelContext}
+          busy={chat.busy && !cutOff}
+          waiting={
+            (questions[conversationId]?.length ?? 0) +
+              (asks[conversationId]?.length ?? 0) +
+              (safetyBlocks[conversationId]?.length ?? 0) >
+            0
+          }
+        />}
         <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
           onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />
         <FilesButton count={sessionFiles.length} open={filesOpen && !previewVisible}
@@ -4057,7 +4079,7 @@ export default function App() {
         onPickConversation={(conversation) => {
           openConversation(conversation);
         }}
-        onNewChat={agentsMode ? () => void talkToHead() : newChat}
+        onNewChat={agentsMode ? () => void startHeadConversation() : newChat}
         newLabel={agentsMode ? "New conversation" : "New task"}
         allowEmptyCreate={!agentsMode}
         onDelete={deleteConversation}

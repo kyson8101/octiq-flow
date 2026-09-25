@@ -67,6 +67,16 @@ describe("the status line above the chat", () => {
     expect(html).not.toContain("/repos/octiq-flow");
   });
 
+  it("offers the same panel behind a stable Task details overflow action", () => {
+    const closed = bar({ status: status(), open: false, now: NOW, action: true, onToggle: () => {} });
+    expect(closed).toContain('aria-label="Task details"');
+    expect(closed).not.toContain("To commit");
+    expect(closed).not.toContain("feature/chat-context");
+    const open = bar({ status: status(), open: true, now: NOW, action: true, onToggle: () => {} });
+    expect(open).toContain("Task &amp; workspace");
+    expect(open).toContain("/trees/octiq-flow/feature/chat-context");
+  });
+
   it("marks a live turn, and only a live turn, with the accent", () => {
     const working = bar({ status: status(), open: false, now: NOW, busy: true, onToggle: () => {} });
     expect(working).toContain('data-tone="accent"');

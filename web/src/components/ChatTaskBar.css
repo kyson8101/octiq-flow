@@ -1,5 +1,14 @@
 .chat-task { position: relative; flex: 0 1 auto; min-width: 0; }
 
+/* The compact navbar labels are gone, but their full verified panel remains
+   reachable from the one secondary-action menu. Keep the panel anchored back
+   from that menu's right edge rather than letting it run off screen. */
+.mobile-actions-panel > .chat-task { width: 100%; }
+.mobile-actions-panel .chat-task-action { width: 100%; min-height: 40px; justify-content: flex-start; gap: 10px; padding: 7px 10px; color: var(--fg-1); font-size: 13px; }
+.mobile-actions-panel .chat-task-action:hover,
+.mobile-actions-panel .chat-task-action[aria-expanded="true"] { background: var(--bg-2); color: var(--fg-0); }
+.chat-task.is-action .chat-task-panel { position: fixed; top: 58px; right: 12px; left: auto; width: min(380px, calc(100vw - 24px)); max-height: calc(100dvh - 90px); }
+
 .chat-task-trigger { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; min-height: var(--control-sm); padding: 4px 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-2); font: inherit; font-size: var(--text-xs); cursor: pointer; transition: background 140ms ease-out, color 140ms ease-out; }
 .chat-task-trigger:hover, .chat-task-trigger[aria-expanded="true"] { background: var(--bg-2); color: var(--fg-1); }
 .chat-task-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
@@ -95,7 +104,8 @@
   .chat-task-phase { max-width: 12ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chat-task-branch { max-width: 10ch; }
   .chat-task-count { display: none; }
-  .chat-task-panel { position: fixed; top: 58px; left: 12px; right: 12px; width: auto; max-height: calc(100dvh - 90px); }
+  .chat-task-panel,
+  .chat-task.is-action .chat-task-panel { position: fixed; top: 58px; left: 12px; right: 12px; width: auto; max-height: calc(100dvh - 90px); }
 }
 
 @media (max-width: 430px) {

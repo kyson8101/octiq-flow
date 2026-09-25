@@ -49,7 +49,8 @@ export function ChatTaskBar({
   busy,
   waiting,
   context,
-}: { chatId: string; connected: boolean; context?: PanelContext } & Live) {
+  action = false,
+}: { chatId: string; connected: boolean; context?: PanelContext; action?: boolean } & Live) {
   const [status, setStatus] = useState<TaskStatus>();
   const [open, setOpen] = useState(false);
   /** True once the backend has said it does not know this command. The two
@@ -146,6 +147,7 @@ export function ChatTaskBar({
       onTarget={setTarget}
       onReleaseCheck={setReleaseCheck}
       context={context}
+      action={action}
     />
   );
 }
@@ -162,6 +164,7 @@ export function ChatTaskBarView({
   onTarget,
   onReleaseCheck,
   context,
+  action = false,
 }: {
   status?: TaskStatus;
   context?: PanelContext;
@@ -170,32 +173,46 @@ export function ChatTaskBarView({
   onToggle: () => void;
   onTarget?: (branch: string) => void;
   onReleaseCheck?: (check: ReleaseCheck) => void;
+  /** Draw a stable overflow action instead of the old navbar status chip. */
+  action?: boolean;
 } & Live) {
   const phase = phaseOf(status, { busy, waiting });
   const progress = stepProgress(status?.report);
   const branch = status?.workspace?.branch ?? "";
   return (
-    <div className="chat-task">
+    <div className={`chat-task${action ? " is-action" : ""}`}>
       <button
         type="button"
-        className="chat-task-trigger"
+        className={`chat-task-trigger${action ? " chat-task-action" : ""}`}
         aria-expanded={open}
-        aria-label={`Task and workspace — ${phase.label}${branch ? ` on ${branch}` : ""}`}
-        title={`${phase.label}${branch ? ` · ${branch}` : ""} — ${locationOf(status?.workspace)}`}
+        aria-label={action ? "Task details" : `Task and workspace — ${phase.label}${branch ? ` on ${branch}` : ""}`}
+        title={action ? "Task details" : `${phase.label}${branch ? ` · ${branch}` : ""} — ${locationOf(status?.workspace)}`}
         onClick={onToggle}
       >
-        <span className="chat-task-dot" data-tone={phase.tone} aria-hidden="true" />
-        <span className="chat-task-phase">{phase.label}</span>
-        {progress && <span className="chat-task-count">{progress}</span>}
-        {branch && (
+        {action ? (
           <>
-            <span className="chat-task-sep" aria-hidden="true" />
-            <span className="chat-task-branch">{branch}</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z" />
+              <path d="M8 9h8M8 13h8M8 17h5" />
+            </svg>
+            <span>Task details</span>
+          </>
+        ) : (
+          <>
+            <span className="chat-task-dot" data-tone={phase.tone} aria-hidden="true" />
+            <span className="chat-task-phase">{phase.label}</span>
+            {progress && <span className="chat-task-count">{progress}</span>}
+            {branch && (
+              <>
+                <span className="chat-task-sep" aria-hidden="true" />
+                <span className="chat-task-branch">{branch}</span>
+              </>
+            )}
+            <svg className="chat-task-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
           </>
         )}
-        <svg className="chat-task-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m6 9 6 6 6-6" />
-        </svg>
       </button>
       {open && (
         <ChatTaskPanel
