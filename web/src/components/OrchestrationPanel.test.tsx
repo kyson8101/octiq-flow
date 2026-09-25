@@ -410,14 +410,13 @@ describe("embedded chat runs", () => {
     expect(html).toContain("<dt>Acceptance</dt>");
   });
 
-  it("marks the worker task current and offers one compact way back to the main chat", () => {
+  it("marks the worker task current without duplicating the topbar return control", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
       allowManualRun={false}
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:worker"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
     expect(html).toContain('aria-current="page" aria-label="Open task chat: Build the host ledger"');
-    expect(html).toContain('class="orch-back-main" title="Back to main chat" aria-label="Back to main chat"');
-    expect(html.match(/Back to main chat/g)).toHaveLength(2);
+    expect(html).not.toContain("Back to main chat");
   });
   it("scopes the ledger to the current chat and keeps the surrounding app visible", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:other"
@@ -464,6 +463,9 @@ describe("embedded chat runs", () => {
     expect(second).toContain('id="orch-goal-run_2" hidden=""');
     expect(html).toContain('aria-label="Run options"');
     expect(html).not.toContain(">Settings</span>");
+    const options = html.slice(html.indexOf('aria-label="Run options"'));
+    expect(options).not.toContain('aria-label="Run settings"');
+    expect(options).not.toContain("<dt>Folder</dt>");
   });
 
   it("keeps retry records inside the original task", () => {

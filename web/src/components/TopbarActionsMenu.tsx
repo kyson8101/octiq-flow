@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
-/** The phone has one top-bar action: the door to every action that would
- * otherwise squeeze the project name off the bar. The actual controls stay
- * mounted only while the menu is open, so polling controls still exist once. */
+/** One top-bar disclosure owns every secondary action at every width. The
+ * actual controls stay mounted only while the menu is open, so polling
+ * controls still exist once. */
 export function TopbarActionsMenu({
   children,
   attentionCount = 0,
@@ -84,4 +84,20 @@ export function TopbarActionsMenu({
       )}
     </div>
   );
+}
+
+/** Keep the small set of live workspace instruments visible, followed by one
+ * disclosure for everything else. This seam also makes the hierarchy testable
+ * without mounting the application shell. */
+export function TopbarActionLayout({
+  directActions,
+  overflowActions,
+  initiallyOpen = false,
+}: {
+  directActions: ReactNode;
+  overflowActions: ReactNode;
+  /** Static-render seam for the layout test. */
+  initiallyOpen?: boolean;
+}) {
+  return <>{directActions}<TopbarActionsMenu initiallyOpen={initiallyOpen}>{overflowActions}</TopbarActionsMenu></>;
 }

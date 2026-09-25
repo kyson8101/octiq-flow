@@ -3,6 +3,9 @@
    tint, and moves only while the main agent is still writing. */
 .plan-review {
   display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   gap: 18px;
   margin-top: 22px;
   animation: plan-review-in 200ms ease-out;
@@ -31,8 +34,8 @@
 @keyframes plan-review-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
 /* Stages: a number on a rail, the tasks hanging off it. */
-.plan-stages { margin: 0; padding: 0; list-style: none; display: grid; }
-.plan-stage { position: relative; padding: 0 0 18px 34px; }
+.plan-stages { min-width: 0; max-width: 100%; margin: 0; padding: 0; list-style: none; display: grid; }
+.plan-stage { position: relative; min-width: 0; max-width: 100%; padding: 0 0 18px 34px; }
 .plan-stage::before {
   content: ""; position: absolute; left: 10px; top: 24px; bottom: 2px;
   width: 1px; background: var(--border);
@@ -53,11 +56,14 @@
 .plan-stage[data-blocked] .plan-stage-title { color: var(--warn); }
 
 .plan-stage-tasks {
+  min-width: 0; max-width: 100%;
   margin: 0; padding: 0; list-style: none;
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--bg-1); overflow: hidden;
 }
+.plan-task { min-width: 0; max-width: 100%; }
 .plan-task + .plan-task { border-top: 1px solid var(--border); }
+.plan-task > details { min-width: 0; max-width: 100%; }
 .plan-task summary, .plan-task-row {
   display: flex; align-items: center; gap: 10px; min-width: 0;
   padding: 10px 12px; list-style: none;
@@ -101,8 +107,10 @@
 }
 .plan-task-brief > summary:hover { background: transparent; color: var(--fg-0); }
 @media (max-width: 520px) {
+  .plan-stage { padding-left: 28px; }
   .plan-task > details > .plan-card,
-  .plan-task-brief > summary { padding-left: 12px; }
+  .plan-task-brief > summary,
+  .plan-task-spec { padding-left: 12px; }
 }
 .plan-task-spec {
   padding: 2px 12px 12px 40px;

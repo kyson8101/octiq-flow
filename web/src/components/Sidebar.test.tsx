@@ -129,13 +129,13 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain(`class="sidebar-title">OctiqFlow <span class="sidebar-version">v${__APP_VERSION__}</span></span>`);
     expect(out).toContain('aria-label="Hide sidebar"');
     expect(out).toContain('class="sidebar-place sidebar-new-chat"');
-    expect(out).toContain("New chat</span>");
+    expect(out).toContain("New task</span>");
     expect(out).not.toContain("Project settings:");
   });
 
-  it("uses one primary CTO entry and omits the duplicate empty-state create action", () => {
-    const out = html({ newLabel: "Talk to Tofu Juice", allowEmptyCreate: false });
-    expect(out.match(/Talk to Tofu Juice/g)).toHaveLength(1);
+  it("uses one primary conversation entry in agents mode and omits the duplicate empty-state create action", () => {
+    const out = html({ newLabel: "New conversation", allowEmptyCreate: false });
+    expect(out.match(/New conversation/g)).toHaveLength(1);
     expect(out).not.toContain("Start your first chat");
   });
 
@@ -164,7 +164,7 @@ describe("task-oriented Sidebar", () => {
     const out = html({ onSearch: () => {}, onSettings: () => {}, onAgents: () => {}, onProjects: () => {}, activeView: "search" });
     const places = out.indexOf('class="sidebar-places"');
     const list = out.slice(places, out.indexOf("</ul>", places));
-    const order = ["New chat</span>", "Search chats</span>", "Projects</span>", "Agents</span>", "Settings</span>"]
+    const order = ["New task</span>", "Search chats</span>", "Projects</span>", "Agents</span>", "Settings</span>"]
       .map((label) => list.indexOf(label));
     expect(order.every((at) => at > 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);

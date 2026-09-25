@@ -483,6 +483,8 @@ body {
     padding: 0 max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
   }
 
+  .topbar-actions { gap: 2px; }
+
   .topbar .icon-btn {
     width: 32px;
     height: 32px;
@@ -541,6 +543,7 @@ body {
 
 .topbar .mobile-actions-panel > .icon-btn,
 .topbar .mobile-actions-panel > .gitp-toggle,
+.topbar .mobile-actions-panel > .orch-toggle,
 .topbar .mobile-actions-panel > .attention-inbox .attention-trigger {
   width: 100%;
   min-height: 40px;
@@ -558,6 +561,7 @@ body {
 
 .topbar .mobile-actions-panel > .icon-btn:hover,
 .topbar .mobile-actions-panel > .gitp-toggle:hover,
+.topbar .mobile-actions-panel > .orch-toggle:hover,
 .topbar .mobile-actions-panel > .attention-inbox .attention-trigger:hover,
 .topbar .mobile-actions-panel > .attention-inbox .attention-trigger[aria-expanded="true"] {
   background: var(--bg-2);
@@ -590,6 +594,13 @@ body {
   flex: 1 1 auto;
   min-width: 0;
   text-align: left;
+}
+
+.mobile-actions-panel > .topbar-actions-separator {
+  display: block;
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
 }
 
 .copy-chat-id.is-done {

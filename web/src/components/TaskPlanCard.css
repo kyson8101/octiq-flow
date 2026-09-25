@@ -1,9 +1,10 @@
 /* The standard plan card: facts as a two-column list, then three short
    answers. Labels and values only; the state chips are tints, and only a
    host-confirmed value gets colour. */
-.plan-card { display: grid; gap: 10px; min-width: 0; font-size: 12px; }
+.plan-card { display: grid; gap: 10px; width: 100%; min-width: 0; max-width: 100%; font-size: 12px; }
 .plan-card-facts {
   display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 6px 12px;
+  width: 100%; min-width: 0; max-width: 100%;
   margin: 0;
 }
 .plan-card-facts dt { color: var(--fg-3); }
@@ -11,7 +12,7 @@
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px;
   margin: 0; min-width: 0; color: var(--fg-1); overflow-wrap: anywhere;
 }
-.plan-card-path { font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 11px; color: var(--fg-2); }
+.plan-card-path { min-width: 0; max-width: 100%; overflow-wrap: anywhere; font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 11px; color: var(--fg-2); }
 .plan-card-state {
   padding: 0 6px; border-radius: 999px; font-size: 10px; line-height: 16px;
   color: var(--fg-2); background: var(--bg-2);

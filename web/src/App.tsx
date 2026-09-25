@@ -96,7 +96,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
-import { MOBILE, TOPBAR_ACTIONS, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
+import { MOBILE, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
@@ -120,7 +120,6 @@ import {
 } from "./lib/agentProviders";
 import { Connect } from "./components/Connect";
 import { ConnectionStatus } from "./components/ConnectionStatus";
-import { ChatTaskBar } from "./components/ChatTaskBar";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
@@ -164,7 +163,7 @@ import { FullscreenButton } from "./components/FullscreenButton";
 import { InstalledReload } from "./components/InstalledReload";
 import { ChatDeleteButton } from "./components/ChatDeleteButton";
 import { CopyChatIdButton } from "./components/CopyChatIdButton";
-import { TopbarActionsMenu } from "./components/TopbarActionsMenu";
+import { TopbarActionLayout } from "./components/TopbarActionsMenu";
 import { useCloseFile } from "./components/OpenFile";
 import { PathCwdProvider } from "./components/ProsePath";
 import { TerminalDrawer } from "./components/TerminalDrawer";
@@ -429,7 +428,6 @@ export default function App() {
   /** Wide enough to keep the primary navigation in the top bar. Below this it moves
    *  into the projects screen; actions and readouts use wider thresholds. */
   const wide = useMedia(WIDE);
-  const expandedTopbarActions = useMedia(TOPBAR_ACTIONS);
   const roomToSplit = useMedia(WORKFLOW_SPLIT);
   /** A temporary focus view for the tablet layout. On a desktop each column
    *  already has its own control on the bar — the project name, the Git
@@ -1908,29 +1906,6 @@ export default function App() {
         : null,
     [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity],
   );
-  // What the task panel knows beyond git: the plan this chat was started
-  // with, the orchestration task a worker chat runs (its destination and
-  // workspace plan, latest attempt), its sandbox, and who it is.
-  const panelContext = useMemo(() => {
-    if (!conversationId) return undefined;
-    const key = keyFor(conversationId);
-    const attempt = orchestration.attempts
-      .filter((candidate) => candidate.workerChatKey === key)
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
-    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
-    const held = conversations.find((conversation) => conversation.id === conversationId);
-    const sandbox = Object.values(sandboxes.snapshot?.environments ?? {})
-      .find((environment) => environment.chatKey === key) ?? null;
-    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
-    return {
-      launch: held?.launch ?? null,
-      worker: task ? { task, attempt } : null,
-      sandbox,
-      projectName: (id: string) => names.get(id),
-      persona,
-      runsOn: persona ? `${providerFor(choice.agent).name} ${choice.model}` : undefined,
-    };
-  }, [conversationId, orchestration, conversations, sandboxes.snapshot, workspaces, shelved, persona, choice]);
   const pickLead = useCallback((agent: TeamAgent) => {
     setLeadId(agent.id);
     remember(LEAD_KEY, agent.id);
@@ -3984,29 +3959,44 @@ export default function App() {
     setAgentsDashboard(page === "agents");
   };
 
-  // A page's own controls come from the page (WorkspaceHeader). The chat's —
-  // its panels, Run, focus, its id and delete — act on a surface a page
-  // hides, so they leave the bar while one is open rather than doing nothing.
-  const topbarActions = (
+  // The bar keeps only the live workspace instruments visible. Everything
+  // else has one stable home in the overflow at every width.
+  const topbarDirectActions = !mainPage ? (
     <>
-      {!mainPage && <>
-      <RailButton
-        count={chat.agents.length}
-        open={!railShut && !previewVisible}
-        onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }}
-      />
-
       {conversationId && <PreviewButton count={previewSlots(previews.images).length} open={previews.open} onClick={() => previews.setOpen(!previews.open)} />}
-      <FilesButton
-        count={sessionFiles.length}
-        open={filesOpen && !previewVisible}
-        onToggle={() => { previews.setOpen(false); showFiles(previewVisible || !filesOpen); }}
-      />
+      {sessionProject && <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />}
+      {project && !unavailableChat && <FocusModeButton onClick={enterFocus} />}
+    </>
+  ) : null;
 
-      {/* The way in and out of the changes column at every width. */}
-      <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
+  const topbarOverflowActions = (
+    <>
+      {!agentsMode && <button
+        className="icon-btn new-chat"
+        type="button"
+        aria-label="Start new task"
+        title="Start new task"
+        onClick={newChat}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+        <span className="topbar-action-label">New task</span>
+      </button>}
+
+      {!mainPage && <>
+        <RailButton count={chat.agents.length} open={!railShut && !previewVisible}
+          onToggle={() => { previews.setOpen(false); showRail(previewVisible || railShut); }} />
+        <FilesButton count={sessionFiles.length} open={filesOpen && !previewVisible}
+          onToggle={() => { previews.setOpen(false); showFiles(previewVisible || !filesOpen); }} />
+        {wide && isMobile && <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />}
+        {!agentsMode && !workerChat && <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
+          title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
+          aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
+          setRunOpened((before) => ({ ...before, [workflowKey]: true }));
+          showWorkflowView("run");
+        }}><span className="topbar-action-label">Run</span></button>}
       </>}
-
       <button
         className={`icon-btn pr-dashboard-toggle${prDashboardOpen ? " is-on" : ""}`}
         type="button"
@@ -4021,64 +4011,14 @@ export default function App() {
         </svg>
         <span className="topbar-action-label">Pull requests</span>
       </button>
-
-      {!mainPage && <>
-      {/* The one way for the PERSON to start supervised multi-agent work
-          from here. Opening it chooses nothing on its own: a run begins only
-          when one is started in the surface it opens. */}
-      {!agentsMode && !workerChat && <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
-        title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
-        aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
-        setRunOpened((before) => ({ ...before, [workflowKey]: true }));
-        showWorkflowView("run");
-      }}>Run</button>}
-
-      {project && !unavailableChat && (
-        <FocusModeButton onClick={enterFocus} />
-      )}
-      {/* Full-width chat is only useful where there are columns to put away. */}
-      {wide && isMobile && (
-        <FullscreenButton expanded={chatExpanded} onToggle={toggleChatWidth} />
-      )}
-
-      {conversationId && (
-        <>
-          <CopyChatIdButton chatId={conversationId} />
-          {!workerChat && <ChatDeleteButton
-            deleting={deleting.has(conversationId)}
-            disabled={leaving.has(conversationId)}
-            deleteMs={UNDO_MS}
-            onDelete={() => deleteConversation(conversationId)}
-          />}
-        </>
-      )}
-      </>}
-
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
-
-      {!agentsMode && <button
-          className="icon-btn new-chat"
-          type="button"
-          aria-label="Start new chat"
-          title="Start new chat"
-          onClick={newChat}
-        >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            aria-hidden="true"
-          >
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-          <span className="topbar-action-label">New chat</span>
-        </button>}
-
+      {!mainPage && conversationId && <CopyChatIdButton chatId={conversationId} />}
+      {!mainPage && conversationId && !workerChat && <>
+        <span className="topbar-actions-separator" role="separator" />
+        <ChatDeleteButton deleting={deleting.has(conversationId)} disabled={leaving.has(conversationId)}
+          deleteMs={UNDO_MS} onDelete={() => deleteConversation(conversationId)} />
+      </>}
     </>
   );
 
@@ -4118,7 +4058,7 @@ export default function App() {
           openConversation(conversation);
         }}
         onNewChat={agentsMode ? () => void talkToHead() : newChat}
-        newLabel={agentsMode ? (head ? `Talk to ${head.name}` : "Choose CTO") : "New chat"}
+        newLabel={agentsMode ? "New conversation" : "New task"}
         allowEmptyCreate={!agentsMode}
         onDelete={deleteConversation}
         onPin={togglePin}
@@ -4209,22 +4149,6 @@ export default function App() {
               into this on wider screens (components/ChatWorkflowBar). */}
           <div className="topbar-context" ref={setContextSlot} hidden={mainPage || showingProjects} />
           <ConnectionStatus state={conn} />
-          {/* Where this chat is, next to what it is — the two questions a
-              chat picked up an hour later cannot answer for itself. */}
-          {!showingProjects && !mainPage && conversationId && (
-            <ChatTaskBar
-              chatId={conversationId}
-              connected={conn === "open"}
-              context={panelContext}
-              busy={chat.busy && !cutOff}
-              waiting={
-                (questions[conversationId]?.length ?? 0) +
-                  (asks[conversationId]?.length ?? 0) +
-                  (safetyBlocks[conversationId]?.length ?? 0) >
-                0
-              }
-            />
-          )}
         </div>
 
         <div className="topbar-actions">
@@ -4239,7 +4163,7 @@ export default function App() {
                 <path d="M5 12h14m-6-6 6 6-6 6" />
               </svg>
             </button>
-          ) : expandedTopbarActions ? topbarActions : <TopbarActionsMenu>{topbarActions}</TopbarActionsMenu>}
+          ) : <TopbarActionLayout directActions={topbarDirectActions} overflowActions={topbarOverflowActions} />}
           {/* Plan usage, at every width: one small number that opens the full
               breakdown. Mounted once, outside the actions menu, because it
               polls a rate-limited endpoint and a second copy would double it. */}
@@ -4348,6 +4272,7 @@ export default function App() {
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
+            onBackToMain={workerChat && runChatKey ? () => openWorkflowChat(runChatKey) : undefined}
             planPending={!!plan}
             pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
             onView={showWorkflowView} />}

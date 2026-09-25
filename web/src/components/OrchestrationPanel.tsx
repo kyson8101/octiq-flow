@@ -326,12 +326,6 @@ export function OrchestrationPanel({
     <>
       {!embedded && <div className="panel-scrim" onClick={onClose} />}
       <aside className={embedded ? "orch-embedded" : "panel orch-page"} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label={embedded ? "Runs for this chat" : undefined} aria-labelledby={embedded ? undefined : "orch-title"}>
-        {embedded && coordinatorKey && currentChatKey && currentChatKey !== coordinatorKey && <div className="orch-back-strip">
-          <button type="button" className="orch-back-main" title="Back to main chat" aria-label="Back to main chat"
-            onClick={() => onOpenChat(coordinatorKey)}>
-            <BackIcon />
-          </button>
-        </div>}
         {!embedded && <>
         <header className="panel-head orch-page-head">
           <div className="panel-id">
@@ -679,16 +673,16 @@ function RunDetail({
           decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} action={settingsToggle} />
         : <div className="orch-summary">{settingsToggle}</div>}
 
-      <div className="orch-run-settings" id={settingsId} role="region" aria-label="Run settings" hidden={!settingsOpen}>
+      <div className={`orch-run-settings${compactControls ? " is-compact" : ""}`} id={settingsId} role="region" aria-label={compactControls ? "Run options" : "Run settings"} hidden={!settingsOpen}>
         <div className="orch-run-settings-body">
-          <dl>
+          {!compactControls && <dl>
             <dt>Folder</dt><dd title={run.rootPath}>{shortWorkspacePath(run.rootPath)}</dd>
             <dt>Workspace</dt><dd>{WORKSPACE_MODES.find((mode) => mode.value === (run.workspaceMode ?? "auto"))?.label}</dd>
             <dt>Dispatch</dt><dd>{run.workerDefaults ? "Automatic" : "Coordinator"}</dd>
             <dt>Workers</dt><dd>{run.workerDefaults?.agent ? `Chosen per task · ${AGENT_NAME[run.workerDefaults.agent]} fallback` : "Chosen per task by the main agent"}</dd>
             <dt>Worker limit</dt><dd>{run.maxConcurrent}</dd>
             <dt>Acceptance</dt><dd title={ACCEPTANCE_NOTE}>Unverified</dd>
-          </dl>
+          </dl>}
           <div className="orch-run-actions">
             {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
             {!readOnly && run.status === "completed" && archivable.length > 0 && <button className="orch-quiet" type="button" disabled={busy}
@@ -1035,10 +1029,6 @@ function PlusIcon() {
 
 function CloseIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>;
-}
-
-function BackIcon() {
-  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>;
 }
 
 function MoreIcon() {

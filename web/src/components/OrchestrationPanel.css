@@ -471,10 +471,12 @@
 .orch-settings-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .orch-run-settings { margin: -4px 0 14px; padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); }
 .orch-run-settings[hidden] { display: none; }
+.orch-run-settings.is-compact { width: fit-content; max-width: 100%; margin-left: auto; padding: 6px; }
 .orch-run-settings dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; margin: 0 0 10px; font-size: 11.5px; }
 .orch-run-settings dt { color: var(--fg-3); }
 .orch-run-settings dd { min-width: 0; overflow: hidden; margin: 0; color: var(--fg-1); text-overflow: ellipsis; white-space: nowrap; }
 .orch-run-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.orch-run-settings.is-compact .orch-run-actions { justify-content: flex-end; }
 .orch-run-actions .orch-stop-confirm { max-width: none; justify-content: flex-start; }
 .orch-run-actions .orch-stop-confirm span { text-align: left; }
 
@@ -734,21 +736,6 @@
 
 /* Embedded runs share the chat navigation instead of covering the application. */
 .orch-embedded { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; background: var(--bg-0); }
-.orch-back-strip { position: absolute; z-index: 2; top: 8px; left: 8px; }
-.orch-back-main {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg-1);
-  color: var(--fg-2);
-  cursor: pointer;
-}
-.orch-back-main:hover { background: var(--bg-2); color: var(--fg-0); }
-.orch-back-main:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .orch-embedded .orch-layout { width: 100%; flex-direction: column; }
 .orch-embedded .orch-runs { width: 100%; flex: 0 0 auto; padding: 6px 12px; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; gap: 10px; align-items: center; }
 .orch-embedded .orch-new { flex: 0 0 auto; min-height: 30px; padding: 0 10px; border-style: solid; border-color: var(--border); font-size: 12px; font-weight: 550; }
@@ -763,7 +750,6 @@
 /* No top padding on the scroller itself: the sticky task heading pins to its
    edge, and padding there would leave a strip of rows showing above it. */
 .orch-embedded .orch-content { padding: 0 clamp(12px, 3vw, 32px) 36px; }
-.orch-embedded .orch-back-strip + .orch-layout .orch-content { padding-top: 48px; }
 .orch-embedded .orch-content > :first-child { margin-top: 12px; }
 .orch-embedded .orch-start { padding-top: 12px; }
 .orch-embedded .orch-start-intro { margin-bottom: 22px; }
@@ -843,7 +829,6 @@
   .orch-task-filters button,
   .orch-settings-toggle,
   .orch-embedded .orch-new { min-height: 36px; }
-  .orch-back-main { width: 44px; height: 44px; }
   .orch-run-accordion-toggle { min-height: 60px; }
   .orch-task-brief > summary,
   .orch-task-more > summary,

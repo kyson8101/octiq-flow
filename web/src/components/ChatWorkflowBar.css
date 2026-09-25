@@ -3,6 +3,13 @@
    band wraps rather than squeezing either, so a narrow column stacks them. */
 .workflow-header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; flex: 0 0 auto; min-width: 0; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--bg-0); }
 .workflow-heading { display: flex; align-items: flex-end; gap: 6px; flex: 1 1 360px; min-width: 0; }
+.workflow-back-main {
+  display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto;
+  padding: 0; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-2); cursor: pointer;
+}
+.workflow-back-main:hover { background: var(--bg-2); color: var(--fg-0); }
+.workflow-back-main:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .workflow-title { display: -webkit-box; flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; color: var(--fg-0); font-size: 15px; font-weight: 620; line-height: 1.4; overflow-wrap: anywhere; }
 /* Opened, it is whole — up to a bound, past which it scrolls in place rather
    than pushing the tasks and the conversation off the screen. */

@@ -67,7 +67,7 @@ export function Sidebar({
   projects, shelved, deletedCount = 0, onShowDeleted,
   conversations: everyChat, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
-  loadPreview, onNewChat, newLabel = "New chat", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
+  loadPreview, onNewChat, newLabel = "New task", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
   onSearch, onSettings, onAgents, onProjects, activeView = null,
 }: {
