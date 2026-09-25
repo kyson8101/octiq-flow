@@ -125,7 +125,9 @@ type Frame = { tag: string; attrs: string; body: string };
  *    harness bolts things on — a reminder, a second frame — so the close is
  *    not always the end of the turn; but a turn that carries a person's own
  *    words after it is a person's turn, and reading it as a peer's would
- *    delete what they wrote and put a stranger's name on the rest. */
+ *    delete what they wrote and put a stranger's name on the rest. Markup is
+ *    a real tag — a name, then `>` or whitespace — and not merely a `<`:
+ *    "<3 thanks" is somebody talking. */
 function frames(text: string): Frame[] {
   const found: Frame[] = [];
   let rest = text.replace(LEAD_IN, "");
@@ -139,8 +141,11 @@ function frames(text: string): Frame[] {
     rest = after.slice(close.index + close[0].length).trimStart();
   }
   // Prose left over, or a frame that never opened: not a peer turn at all.
-  return rest && !rest.startsWith("<") ? [] : found;
+  return rest && !TAG.test(rest) ? [] : found;
 }
+
+/** A tag the harness bolts on after a frame, such as `<system-reminder>`. */
+const TAG = /^<[A-Za-z][\w-]*[\s>]/;
 
 /** What one frame says. */
 function read(frame: Frame): PeerMessage | null {
@@ -153,21 +158,47 @@ function read(frame: Frame): PeerMessage | null {
   return said ? { source, from, text: said } : null;
 }
 
+export type PeerReadOptions = {
+  /** The turn is known to be machinery rather than typing: the harness's own
+   *  `isSynthetic`, which it puts on every turn it injects. Without it, or an
+   *  `origin` envelope, a frame is only text, because a person can paste one. */
+  synthetic?: boolean;
+};
+
 /** Read a turn the harness injected on somebody else's behalf. Empty for
  *  anything a person could have typed.
  *
  *  The envelope is believed first and the text second, because the two fail in
  *  different places: a record written before the harness stamped `origin` has
  *  only the text, and a wording change in the frame leaves only the envelope.
- *  Either alone is enough.
+ *  Either alone is enough, but the text alone only on a turn marked
+ *  `synthetic`, since the frame is the one part a person can type.
  *
  *  A LIST, because one turn can carry more than one frame — two subagents
  *  reporting back at once. Returning only the first dropped the second
  *  entirely, and a report that never arrives is worse than one drawn wrongly. */
-export function parsePeerMessages(text: string, origin?: unknown): PeerMessage[] {
+export function parsePeerMessages(
+  text: string,
+  origin?: unknown,
+  { synthetic = false }: PeerReadOptions = {},
+): PeerMessage[] {
   const body = text.trim();
   const marked = readOrigin(origin);
+  if (!marked && !synthetic) return [];
   const found = frames(body);
+
+  // Several frames are several senders, and the envelope names only one of
+  // them. Believed over the lot, it drew the whole turn — tags and all — as
+  // one message. It can still name a frame that did not name itself, but only
+  // the one unnamed frame of its kind, and only when no frame took the name.
+  if (marked && !marked.body && found.length >= 2) {
+    const messages = found.map(read).filter((m): m is PeerMessage => m !== null);
+    const unnamed = messages.filter((m) => !m.from && m.source === marked.source);
+    if (marked.from && unnamed.length === 1 && !messages.some((m) => m.from === marked.from)) {
+      unnamed[0].from = marked.from;
+    }
+    return messages;
+  }
 
   if (marked) {
     // The envelope names ONE sender, so it speaks for one message. Its body is

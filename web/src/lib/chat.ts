@@ -1440,8 +1440,9 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // report, or another Claude session on this machine. Read before the two
     // rules below, because both of those go by `isSynthetic` — which every
     // one of these carries — and a hand-back arriving while a Skill call was
-    // waiting for its prompt was taken for that prompt.
-    const peers = parsePeerMessages(spoken, e.origin);
+    // waiting for its prompt was taken for that prompt. The flag goes in too:
+    // without an envelope, it is all that tells a peer's frame from a pasted one.
+    const peers = parsePeerMessages(spoken, e.origin, { synthetic: e.isSynthetic === true });
     if (peers.length) return foldPeerMessages(state, peers, uuid);
 
     if (isCompactSummary(spoken) || (state.awaitingSummary && e.isSynthetic === true)) {
@@ -1734,9 +1735,12 @@ function foldLocalOutput(state: ChatState, reported: string): ChatState {
  *
  *  Keyed on the harness's uuid, because a catch-up that overlaps what was
  *  already seen live delivers the same turn twice and two reports of one piece
- *  of work read as two pieces of work. */
+ *  of work read as two pieces of work. With no uuid, the key is the words
+ *  themselves: a position in the list is new every time, so it never matched. */
 function foldPeerMessages(state: ChatState, peers: PeerMessage[], uuid: string): ChatState {
-  const id = uuid ? `peer-${uuid}` : `peer-${state.messages.length}`;
+  const id = uuid
+    ? `peer-${uuid}`
+    : `peer-${hashText(peers.map((p) => `${p.source}|${p.from}|${p.text}`).join("\n"))}`;
   if (state.messages.some((m) => m.id === id)) return state;
   return {
     ...state,
@@ -1758,6 +1762,17 @@ function foldPeerMessages(state: ChatState, peers: PeerMessage[], uuid: string):
       },
     ],
   };
+}
+
+/** A short, stable key for a piece of text (FNV-1a, 32 bits). Only ever
+ *  compared with another key, never trusted as unique beyond that. */
+function hashText(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
 }
 
 /** Put a Codex event into the conversation.

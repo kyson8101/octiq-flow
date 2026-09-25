@@ -96,6 +96,29 @@ it("carries forward a checkpoint from before there was a stamp at all", async ()
   expect((await readChatCheckpoint("ancient"))?.state.messages[0].role).toBe("assistant");
 });
 
+it("leaves a frame the person sent in a checkpoint as their own message", async () => {
+  const state = staleChat();
+  state.messages[0].turnId = "t1";
+  await saveChatCheckpoint({ id: "sent", seq: 5, state, updatedAt: 1 });
+  await restamp("sent", { schema: 1 });
+
+  expect((await readChatCheckpoint("sent"))?.state.messages[0].role).toBe("user");
+});
+
+it("redraws a checkpointed hand-back that carries nothing but an echo", async () => {
+  // A rebuilt turn is stamped `echo` whoever wrote it, so the echo alone does
+  // not keep a pre-6ea80b0 report as a bubble.
+  const state = staleChat();
+  state.messages[0].echo = "u1";
+  await saveChatCheckpoint({ id: "echoed", seq: 5, state, updatedAt: 1 });
+  await restamp("echoed", { schema: 1 });
+
+  expect((await readChatCheckpoint("echoed"))?.state.messages[0]).toMatchObject({
+    role: "assistant",
+    blocks: [{ kind: "peer", from: "a1" }],
+  });
+});
+
 it("hands back this reader's own checkpoint untouched", async () => {
   const state = staleChat();
   await saveChatCheckpoint({ id: "mine", seq: 5, state, updatedAt: 1 });
