@@ -220,6 +220,40 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             {
                 return Err("This chat is not in the active chat index.".into());
             }
+            let action: String = arg(&args, "action")?;
+            // Agents mode: an agent's own memory. Identity comes from the chat,
+            // never from the tool's arguments.
+            if let Some(op) = action.strip_prefix("agent_memory_") {
+                let actor = format!("chat:{id}");
+                let team_path = crate::team::default_path();
+                let (me, team) = crate::team::identity(
+                    &team_path,
+                    &actor,
+                    svc.orchestrations.assignee_for_worker(&actor)?,
+                )?;
+                let tool: Value = arg(&args, "args")?;
+                let text = |name: &str| tool.get(name).and_then(Value::as_str);
+                let vault = crate::memory_vault::Vault::profile();
+                return match op {
+                    "read" => crate::team::memory_read(
+                        &vault,
+                        &actor,
+                        &me,
+                        &team,
+                        text("agent"),
+                        tool.get("startLine").and_then(Value::as_u64),
+                    ),
+                    "append" => crate::team::memory_append(
+                        &vault,
+                        &actor,
+                        &me,
+                        text("text").unwrap_or_default(),
+                        text("date"),
+                        text("requestId").ok_or("Pass a unique requestId.")?,
+                    ),
+                    _ => Err("Unknown agent memory operation.".into()),
+                };
+            }
             crate::memory_vault::Vault::profile().call(
                 &format!("chat:{id}"),
                 &arg::<String>(&args, "action")?,
@@ -893,10 +927,22 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 all,
             ))
         }
-        "team_save" => to_value(crate::team::save(
-            &crate::team::default_path(),
-            arg(&args, "agent")?,
-        )),
+        "team_save" => {
+            let saved = crate::team::save(&crate::team::default_path(), arg(&args, "agent")?)?;
+            // Its memory note, when a writable vault is connected. The agent
+            // is saved either way; the note is also made on first use.
+            let memory = crate::team::ensure_memory(
+                &crate::memory_vault::Vault::profile(),
+                "octiq:team",
+                &saved,
+            )
+            .err();
+            let mut value = serde_json::to_value(&saved).map_err(|e| e.to_string())?;
+            if let (Some(error), Some(object)) = (memory, value.as_object_mut()) {
+                object.insert("memoryError".into(), Value::String(error));
+            }
+            Ok(value)
+        }
         "team_delete" => unit(crate::team::delete(
             &crate::team::default_path(),
             &arg::<String>(&args, "id")?,

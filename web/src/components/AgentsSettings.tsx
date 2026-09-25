@@ -53,7 +53,8 @@ export function AgentsSettings({ on, onToggle, projects }: {
     setSaving(true);
     setError("");
     try {
-      await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null });
+      const saved = await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null });
+      if (saved.memoryError) setError(`${saved.name} was saved, but its memory note could not be created: ${saved.memoryError}`);
       // Re-read: a save can move nothing else today, but a delete moves
       // reports up, and one source of truth is simpler than two.
       setTeam(await loadTeam(null, true));

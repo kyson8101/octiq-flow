@@ -423,7 +423,8 @@ impl AgentProvider for ClaudeProvider {
                      mcp__octiq__orchestration_run_stop \\
                      mcp__octiq__vault_info mcp__octiq__vault_list mcp__octiq__vault_search \\
                      mcp__octiq__vault_read mcp__octiq__vault_write mcp__octiq__vault_patch \\
-                     mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt",
+                     mcp__octiq__vault_move mcp__octiq__vault_archive mcp__octiq__vault_receipt \\
+                     mcp__octiq__vault_agent_memory_read mcp__octiq__vault_agent_memory_append",
                 ),
                 sh_quote(&format!(
                     "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker_prompt}"

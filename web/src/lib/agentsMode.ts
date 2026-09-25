@@ -36,6 +36,10 @@ export type TeamAgent = {
   projectId?: string;
   /** The agent this one reports to; absent reports to the person. */
   reportsTo?: string;
+  /** Its memory note, relative to the Memory Vault. */
+  memoryNote?: string;
+  /** Set on a save whose memory note could not be created. */
+  memoryError?: string;
   createdAt: number;
   updatedAt: number;
 };

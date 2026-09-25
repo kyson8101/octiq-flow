@@ -42,6 +42,10 @@ pub struct TeamAgent {
     /// The agent this one reports to; `None` reports to the person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reports_to: Option<String>,
+    /// Its memory note, relative to the Memory Vault. Fixed when first
+    /// assigned, so renaming an agent does not orphan what it remembers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_note: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -137,7 +141,12 @@ fn write(path: &Path, stored: &Stored) -> Result<(), String> {
 /// the global agents plus its own.
 pub fn list(path: &Path, project_id: Option<&str>, all: bool) -> Result<Vec<TeamAgent>, String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
-    let mut agents = read(path)?.agents;
+    let mut stored = read(path)?;
+    // Agents registered before memory existed get their note now, once.
+    if assign_memory_notes(&mut stored.agents) {
+        write(path, &stored)?;
+    }
+    let mut agents = stored.agents;
     if !all {
         agents.retain(|a| a.visible_in(project_id));
     }
@@ -271,6 +280,7 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 access,
                 project_id,
                 reports_to,
+                memory_note: existing.memory_note.clone(),
                 created_at: existing.created_at,
                 updated_at: now,
             };
@@ -287,13 +297,25 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 access,
                 project_id,
                 reports_to,
+                memory_note: None,
                 created_at: now,
                 updated_at: now,
             };
-            stored.agents.push(agent.clone());
-            agent
+            stored.agents.push(agent);
+            stored
+                .agents
+                .last()
+                .cloned()
+                .ok_or("The agent was not saved.")?
         }
     };
+    assign_memory_notes(&mut stored.agents);
+    let saved = stored
+        .agents
+        .iter()
+        .find(|a| a.id == saved.id)
+        .cloned()
+        .unwrap_or(saved);
     write(path, &stored)?;
     Ok(saved)
 }
@@ -398,6 +420,271 @@ pub fn resolve(
     Ok(found)
 }
 
+/// Where agents' memory notes live in the vault. The vault's own schema
+/// reserves `agent-zone/agents/` for the named agent roster.
+pub const MEMORY_DIR: &str = "agent-zone/agents";
+
+fn slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-').to_owned();
+    if out.is_empty() {
+        "agent".into()
+    } else {
+        out
+    }
+}
+
+/// Give every agent without a memory note one, unique among them. Answers
+/// whether anything changed.
+fn assign_memory_notes(agents: &mut [TeamAgent]) -> bool {
+    let mut changed = false;
+    for i in 0..agents.len() {
+        if agents[i].memory_note.is_some() {
+            continue;
+        }
+        let base = slug(&agents[i].name);
+        let taken = |candidate: &str, agents: &[TeamAgent]| {
+            agents
+                .iter()
+                .any(|a| a.memory_note.as_deref() == Some(candidate))
+        };
+        let mut note = format!("{MEMORY_DIR}/{base}/memory.md");
+        if taken(&note, agents) {
+            let tail = agents[i].id.trim_start_matches("agent_");
+            note = format!(
+                "{MEMORY_DIR}/{base}-{}/memory.md",
+                &tail[..tail.len().min(6)]
+            );
+        }
+        agents[i].memory_note = Some(note);
+        changed = true;
+    }
+    changed
+}
+
+/// The first contents of an agent's memory note.
+pub fn memory_seed(agent: &TeamAgent) -> String {
+    format!(
+        "---\ntype: agent-memory\nagent: {name}\nagent-id: {id}\n---\n\n# {name} — memory\n\nWorking memory for {name}, a registered OctiqFlow agent. It holds only what is worth keeping between tasks: decisions and why, gotchas, how things work, and what to pick up next. Entries are dated and appended; none is rewritten.\n",
+        name = agent.name,
+        id = agent.id,
+    )
+}
+
+/// How an agent's memory is described in its brief.
+pub fn memory_brief(agent: &TeamAgent, team: &[TeamAgent]) -> String {
+    let reports = direct_reports(team, &agent.id);
+    let managers = if reports.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " You may also read your direct reports' memories by passing their name as `agent`: {}.",
+            reports.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")
+        )
+    };
+    format!(
+        "You have your own working memory in the shared Memory Vault. Before starting, call vault_agent_memory_read to load it. Record only what your future self would need, with one short entry through vault_agent_memory_append: a decision and why, a gotcha, how something works, or what to pick up next. Do not log routine steps, restate the diff, or copy the task. Pass today's local date as `date`.{managers}"
+    )
+}
+
+/// The civil date (UTC) for a Unix time in milliseconds, as YYYY-MM-DD.
+pub fn utc_date(ms: i64) -> String {
+    let days = ms.div_euclid(86_400_000);
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+pub fn today() -> String {
+    utc_date(now_ms())
+}
+
+/// The registered agent behind a chat: the lead a task was handed to, or the
+/// assignee of the task a worker chat is running (`worker_assignee`, looked up
+/// by the caller from orchestration). Never taken from tool arguments.
+pub fn identity(
+    path: &Path,
+    chat_key: &str,
+    worker_assignee: Option<String>,
+) -> Result<(TeamAgent, Vec<TeamAgent>), String> {
+    let id = match lead_for_chat(path, chat_key)? {
+        Some(record) => record.lead_id,
+        None => worker_assignee.ok_or(
+            "Only a registered agent's chat has an agent memory. This chat is neither a task lead nor an assigned worker.",
+        )?,
+    };
+    let team = list(path, None, true)?;
+    let me = team
+        .iter()
+        .find(|a| a.id == id)
+        .cloned()
+        .ok_or("Your registered agent no longer exists.")?;
+    Ok((me, team))
+}
+
+fn note_of(agent: &TeamAgent) -> Result<&str, String> {
+    agent
+        .memory_note
+        .as_deref()
+        .ok_or_else(|| format!("{} has no memory note yet.", agent.name))
+}
+
+/// Create an agent's memory note if it is missing. A vault that is not
+/// connected or not writable is reported, not hidden.
+pub fn ensure_memory(
+    vault: &crate::memory_vault::Vault,
+    actor: &str,
+    agent: &TeamAgent,
+) -> Result<(), String> {
+    let path = note_of(agent)?;
+    let exists = vault
+        .call(
+            actor,
+            "read",
+            &serde_json::json!({ "path": path, "lineCount": 1 }),
+        )
+        .is_ok();
+    if exists {
+        return Ok(());
+    }
+    let receipt = vault.call(
+        actor,
+        "write",
+        &serde_json::json!({
+            "path": path,
+            "content": memory_seed(agent),
+            "mode": "create",
+            "requestId": format!("agent-memory-seed-{}", agent.id),
+        }),
+    )?;
+    saved(receipt)
+}
+
+fn saved(receipt: serde_json::Value) -> Result<(), String> {
+    match receipt.get("status").and_then(|s| s.as_str()) {
+        Some("saved") | None => Ok(()),
+        Some(other) => Err(format!("The memory write was not confirmed ({other}).")),
+    }
+}
+
+/// Read one agent's memory: your own, or a direct report's when `who` names one.
+pub fn memory_read(
+    vault: &crate::memory_vault::Vault,
+    actor: &str,
+    me: &TeamAgent,
+    team: &[TeamAgent],
+    who: Option<&str>,
+    start_line: Option<u64>,
+) -> Result<serde_json::Value, String> {
+    let target = match who.map(str::trim).filter(|w| !w.is_empty()) {
+        None => me,
+        Some(who) => {
+            let found = team
+                .iter()
+                .find(|a| a.id == who || a.name.eq_ignore_ascii_case(who))
+                .ok_or_else(|| format!("No registered agent called {who}."))?;
+            if found.id != me.id && found.reports_to.as_deref() != Some(me.id.as_str()) {
+                return Err(format!(
+                    "{} does not report to you. You can read only your own memory and your direct reports'.",
+                    found.name
+                ));
+            }
+            found
+        }
+    };
+    let path = note_of(target)?;
+    let mut args = serde_json::json!({ "path": path });
+    if let Some(line) = start_line {
+        args["startLine"] = line.into();
+    }
+    match vault.call(actor, "read", &args) {
+        Ok(mut note) => {
+            note["agent"] = target.name.clone().into();
+            Ok(note)
+        }
+        Err(error) if error.contains("No such file") || error.contains("not found") => {
+            Ok(serde_json::json!({
+                "agent": target.name, "path": path, "content": "", "empty": true,
+            }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Append one dated entry to your own memory.
+pub fn memory_append(
+    vault: &crate::memory_vault::Vault,
+    actor: &str,
+    me: &TeamAgent,
+    text: &str,
+    date: Option<&str>,
+    request_id: &str,
+) -> Result<serde_json::Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Write what is worth remembering.".into());
+    }
+    if text.chars().count() > 4000 {
+        return Err("Keep a memory entry under 4000 characters; record the essence.".into());
+    }
+    let date = match date.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d)
+            if d.len() == 10
+                && d.chars().enumerate().all(|(i, c)| {
+                    if i == 4 || i == 7 {
+                        c == '-'
+                    } else {
+                        c.is_ascii_digit()
+                    }
+                }) =>
+        {
+            d.to_owned()
+        }
+        Some(_) => return Err("Pass the date as YYYY-MM-DD.".into()),
+        None => today(),
+    };
+    ensure_memory(vault, actor, me)?;
+    let path = note_of(me)?;
+    let current = vault.call(
+        actor,
+        "read",
+        &serde_json::json!({ "path": path, "lineCount": 1 }),
+    )?;
+    let revision = current
+        .get("revision")
+        .and_then(|r| r.as_str())
+        .ok_or("Could not read the memory note's revision.")?
+        .to_owned();
+    let receipt = vault.call(
+        actor,
+        "write",
+        &serde_json::json!({
+            "path": path,
+            "mode": "append",
+            "content": format!("\n## {date}\n\n{text}\n"),
+            "expectedRevision": revision,
+            "requestId": request_id,
+        }),
+    )?;
+    saved(receipt.clone())?;
+    Ok(serde_json::json!({ "agent": me.name, "path": path, "receipt": receipt }))
+}
+
 fn direct_reports<'a>(team: &'a [TeamAgent], manager: &str) -> Vec<&'a TeamAgent> {
     team.iter()
         .filter(|a| a.reports_to.as_deref() == Some(manager))
@@ -491,7 +778,7 @@ Your direct reports:\n{roster}"
         )
     };
     record_lead(path, chat_key, lead, project_id)?;
-    Ok(text)
+    Ok(format!("{text}\n\n{}", memory_brief(lead, &team)))
 }
 
 /// Appended to a worker's brief when its assignee manages agents and the task
@@ -711,5 +998,69 @@ mod tests {
         assert!(manager_brief(&path, "p1", &dev.id, "task_2", "run_1")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn every_agent_gets_one_stable_memory_note() {
+        let path = temp();
+        let ryan = save(&path, draft("Ryan Lee", None)).unwrap();
+        assert_eq!(
+            ryan.memory_note.as_deref(),
+            Some("agent-zone/agents/ryan-lee/memory.md")
+        );
+        // Two agents in different projects may share a name, not a note.
+        let one = save(&path, draft("Kai", Some("p1"))).unwrap();
+        let two = save(&path, draft("Kai", Some("p2"))).unwrap();
+        assert_ne!(one.memory_note, two.memory_note);
+        // A rename keeps what the agent remembers.
+        let mut renamed = draft("Ryan", None);
+        renamed.id = Some(ryan.id.clone());
+        let renamed = save(&path, renamed).unwrap();
+        assert_eq!(renamed.memory_note, ryan.memory_note);
+    }
+
+    #[test]
+    fn dates_are_civil_utc() {
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(951_782_400_000), "2000-02-29");
+        assert_eq!(utc_date(1_790_294_400_000), "2026-09-25");
+    }
+
+    #[test]
+    fn identity_comes_from_the_chat_and_reads_stop_at_direct_reports() {
+        let path = temp();
+        let ceo = save(&path, draft("Ceo", None)).unwrap();
+        let ada = save(&path, under("Ada", None, &ceo)).unwrap();
+        let dev = save(&path, under("Dev", None, &ada)).unwrap();
+        brief(&path, "chat:lead", "p1", &ceo.id, "Do it").unwrap();
+        assert_eq!(identity(&path, "chat:lead", None).unwrap().0.id, ceo.id);
+        assert_eq!(
+            identity(&path, "chat:worker", Some(dev.id.clone()))
+                .unwrap()
+                .0
+                .id,
+            dev.id
+        );
+        assert!(identity(&path, "chat:stranger", None).is_err());
+
+        let (me, team) = identity(&path, "chat:lead", None).unwrap();
+        let vault = crate::memory_vault::Vault::profile();
+        // Two levels down is not a direct report; refused before the vault.
+        assert!(
+            memory_read(&vault, "chat:lead", &me, &team, Some("Dev"), None)
+                .unwrap_err()
+                .contains("does not report to you")
+        );
+    }
+
+    #[test]
+    fn briefs_carry_the_memory_instructions() {
+        let path = temp();
+        let ceo = save(&path, draft("Ceo", None)).unwrap();
+        save(&path, under("Ada", None, &ceo)).unwrap();
+        let text = brief(&path, "chat:1", "p1", &ceo.id, "Ship it").unwrap();
+        assert!(text.contains("vault_agent_memory_read"));
+        assert!(text.contains("direct reports' memories"));
+        assert!(text.contains("Ada"));
     }
 }

@@ -28,8 +28,10 @@ test("both providers discover native vault tools without another MCP server", as
   for (const flags of [[], ["--disable-ask-user"]]) {
     const result = await call("", "chat:current", "tools/list", {}, flags);
     const tools = result.tools.filter(tool => tool.name.startsWith("vault_"));
-    assert.equal(tools.length, 9);
+    assert.equal(tools.length, 11);
     assert.ok(tools.some(tool => tool.name === "vault_search"));
+    assert.ok(tools.some(tool => tool.name === "vault_agent_memory_read"));
+    assert.ok(tools.some(tool => tool.name === "vault_agent_memory_append"));
     assert.ok(tools.some(tool => tool.name === "vault_patch"));
     assert.ok(!tools.some(tool => /config|delete/.test(tool.name)));
     for (const tool of tools) {

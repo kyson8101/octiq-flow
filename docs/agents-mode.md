@@ -75,6 +75,31 @@ turn.
 
 Only the top plan needs you. Managers split their tasks further without asking.
 
+## Memory
+
+Each registered agent has its own working memory: one note in the Memory Vault
+at `agent-zone/agents/<name>/memory.md`, the roster folder the vault's schema
+reserves. The note path is fixed the first time it is assigned and stored on the
+agent (`memoryNote`), so renaming an agent keeps its memory. Saving an agent
+creates the note when a writable vault is connected; otherwise the first write
+creates it.
+
+Agents reach it through two tools, `vault_agent_memory_read` and
+`vault_agent_memory_append`. The host works out **which agent is calling from
+the chat itself**: the lead a task was handed to (`team.json` `leads`), or the
+assignee of the task a worker chat runs. Tool arguments never name the caller.
+An agent may:
+
+- read its own memory, and its **direct reports'** (managers see what their
+  people know);
+- append only to its own memory, one dated entry at a time, never overwriting.
+
+Every lead and worker brief tells the agent to load its memory first, and to
+record only what its future self needs: decisions and why, gotchas, how things
+work, and what to pick up next. Routine steps don't go there. The generic
+`vault_*` tools are still available to agents, so this read rule is a
+convention for the agent-memory tools, not a lock on the vault.
+
 ## Dashboard
 
 **Agents** in the top bar shows the org chart for the current project. Each row

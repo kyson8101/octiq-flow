@@ -752,6 +752,21 @@ impl OrchestrationStore {
             .ok_or_else(|| "The parent task does not exist.".into())
     }
 
+    /// Agents mode: the registered agent a worker chat is running as, from the
+    /// task of its most recent attempt.
+    pub fn assignee_for_worker(&self, chat_key: &str) -> Result<Option<String>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .max_by_key(|attempt| attempt.created_at)
+            .and_then(|attempt| inner.data.tasks.get(&attempt.task_id))
+            .and_then(|task| task.assignee.as_ref())
+            .map(|assignee| assignee.id.clone()))
+    }
+
     /// Agents mode: hold this run's workers until the person approves.
     pub fn require_plan_approval(&self, run_id: &str) -> Result<Run, String> {
         self.mutate(|data| {
@@ -1240,6 +1255,21 @@ impl OrchestrationStore {
             prepared.is_worktree,
         )?;
         let mut prompt = worker_prompt(&run, &task, &active);
+        // Agents mode: every assigned agent has its own memory.
+        if let Some(assignee) = &task.assignee {
+            let path = crate::team::default_path();
+            if let Ok(team) = crate::team::list(&path, None, true) {
+                if let Some(me) = team.iter().find(|a| a.id == assignee.id) {
+                    let _ = crate::team::ensure_memory(
+                        &crate::memory_vault::Vault::profile(),
+                        &reserved.worker_chat_key,
+                        me,
+                    );
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&crate::team::memory_brief(me, &team));
+                }
+            }
+        }
         // Agents mode: a second-level assignee that manages agents may split.
         if let (Some(assignee), None) = (&task.assignee, &task.parent_task_id) {
             if let Ok(Some(brief)) = crate::team::manager_brief(

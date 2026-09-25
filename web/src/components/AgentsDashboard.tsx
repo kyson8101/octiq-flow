@@ -141,6 +141,11 @@ export function AgentsDashboard({ projectId, snapshot, chatTitle, onOpenChat, on
                   </button>
                   {expanded && (
                     <div className="dash-agent-work">
+                      {agent.memoryNote && (
+                        <p className="dash-memory" title="This agent's working memory in the Memory Vault">
+                          Memory · <bdi>{agent.memoryNote}</bdi>
+                        </p>
+                      )}
                       {work.led.length === 0 && work.assigned.length === 0 && (
                         <p className="settings-note">Nothing yet.</p>
                       )}
