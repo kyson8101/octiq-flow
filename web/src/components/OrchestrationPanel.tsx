@@ -69,6 +69,8 @@ export function OrchestrationPanel({
   onEnsureCoordinator,
   onStartMaster,
   coordinatorBusy = false,
+  sharedHeading = false,
+  onSelectedRunChange,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
@@ -87,6 +89,9 @@ export function OrchestrationPanel({
   /** The main agent is mid-turn, so a plan waiting for approval may not be
    *  finished yet. */
   coordinatorBusy?: boolean;
+  /** The workspace above both columns owns the run title. */
+  sharedHeading?: boolean;
+  onSelectedRunChange?: (runId: string | null) => void;
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
@@ -129,6 +134,20 @@ export function OrchestrationPanel({
   }, [runs, selectedId, creating, readOnly, embedded]);
 
   const selected = runs.find((run) => run.id === selectedId) ?? null;
+  useEffect(() => {
+    onSelectedRunChange?.(creating ? null : selected?.id ?? null);
+  }, [creating, selected?.id, onSelectedRunChange]);
+
+  // Opening a historical worker from the sidebar selects its own run. Moving
+  // back to the main chat keeps the run and task navigation in place.
+  const workerRunId = snapshot.attempts.find((item) => item.workerChatKey === currentChatKey)?.runId;
+  const visibleWorkerRunId = runs.some((run) => run.id === workerRunId) ? workerRunId : null;
+  useEffect(() => {
+    if (visibleWorkerRunId) {
+      setSelectedId(visibleWorkerRunId);
+      setCreating(false);
+    }
+  }, [currentChatKey, coordinatorKey, visibleWorkerRunId]);
   const tasks = snapshot.tasks.filter((task) => task.runId === selected?.id);
   const attempts = snapshot.attempts.filter((attempt) => attempt.runId === selected?.id);
   const gates = snapshot.gates.filter((gate) => gate.runId === selected?.id);
@@ -232,6 +251,14 @@ export function OrchestrationPanel({
     <>
       {!embedded && <div className="panel-scrim" onClick={onClose} />}
       <aside className={embedded ? "orch-embedded" : "panel orch-page"} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label={embedded ? "Runs for this chat" : undefined} aria-labelledby={embedded ? undefined : "orch-title"}>
+        {embedded && <nav className="orch-main-nav" aria-label="Main conversation">
+          <button type="button" className="orch-main-chat"
+            aria-current={coordinatorKey && currentChatKey === coordinatorKey ? "page" : undefined}
+            disabled={!coordinatorKey} onClick={() => coordinatorKey && onOpenChat(coordinatorKey)}>
+            <OrchestratorIcon />
+            <span><strong>Main chat</strong><small>Coordinate the work</small></span>
+          </button>
+        </nav>}
         {!embedded && <>
         <header className="panel-head orch-page-head">
           <div className="panel-id">
@@ -324,6 +351,7 @@ export function OrchestrationPanel({
                 onOpenChat={onOpenChat}
                 currentChatKey={currentChatKey}
                 coordinatorBusy={coordinatorBusy}
+                sharedHeading={sharedHeading}
                 onPlanApproved={() => void read()}
                 onRequestPlanChanges={(note) => {
                   onOpenChat(selected.coordinatorChatKey,
@@ -474,6 +502,7 @@ function RunDetail({
   coordinatorBusy,
   onPlanApproved,
   onRequestPlanChanges,
+  sharedHeading,
 }: {
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
@@ -499,6 +528,7 @@ function RunDetail({
   coordinatorBusy: boolean;
   onPlanApproved: () => void;
   onRequestPlanChanges: (note: string) => void;
+  sharedHeading: boolean;
 }) {
   const [filter, setFilter] = useState<TaskFilter>("all");
   // Plan mode: until the person approves, the plan IS the run.
@@ -531,11 +561,11 @@ function RunDetail({
   );
 
   return (
-    <section className="orch-run-detail" aria-labelledby="orch-run-title">
-      <header className="orch-run-head">
+    <section className="orch-run-detail" aria-label={sharedHeading ? run.objective : undefined} aria-labelledby={sharedHeading ? undefined : "orch-run-title"}>
+      {!sharedHeading && <header className="orch-run-head">
         <div className="orch-status-line"><StatusMark status={run.status} />{statusLabel(run.status)}</div>
         <h2 id="orch-run-title">{run.objective}</h2>
-      </header>
+      </header>}
 
       {planPending && (
         <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />

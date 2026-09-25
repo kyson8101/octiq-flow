@@ -1,4 +1,7 @@
 /* Workflow navigation stays in the conversation; the transcript keeps its width. */
+.workflow-header { flex: 0 0 auto; min-width: 0; padding: 18px 20px 0; border-bottom: 1px solid var(--border); background: var(--bg-0); }
+.workflow-title { margin: 0; color: var(--fg-0); font-size: 20px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
+.workflow-header .chat-workflow-bar { padding: 10px 0 12px; border-bottom: 0; }
 .chat-workflow-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 20px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 12px; }
 .chat-execution { display: flex; align-items: center; gap: 8px; }
 .chat-workflow-bar select, .workflow-setup-context select { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-0); font: inherit; padding: 5px 8px; max-width: 100%; }
@@ -14,12 +17,8 @@
 .workflow-chat-surface[hidden], .workflow-run-surface[hidden] { display: none; }
 .workflow-run-surface { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
 
-/* Two columns: the conversation with the main agent, and the run its workers
-   are doing. The transcript keeps the larger share and a floor under it, so
-   the task column can never squeeze it into a gutter. The run column comes
-   LAST in the DOM — keyboard order is conversation then tasks — but is placed
-   on the LEFT, against the chat list: you pick the orchestrator chat there and
-   its task list opens right beside it, not across the window. */
+/* The shared heading owns both columns. Navigation comes first in reading,
+   keyboard and visual order; only the conversation changes on a task pick. */
 .workflow-surfaces.is-split { flex-direction: row; }
 /* Neither column gets a hard floor. A git or files panel can open beside these
    at any moment, and a column that refuses to shrink puts a horizontal scroll
@@ -28,7 +27,7 @@
 /* Its width is dragged (`--run-w`, from `useDockWidth`); the chat always keeps
    340px of whatever is left, so a wide drag squeezes this column, not the chat. */
 .workflow-surfaces.is-split > .workflow-run-surface {
-  position: relative; order: -1; flex: 0 1 var(--run-w, 440px); min-width: 0;
+  position: relative; flex: 0 1 var(--run-w, 440px); min-width: 0;
   max-width: calc(100% - 340px); border-right: 1px solid var(--border);
 }
 .workflow-run-resizer {
@@ -47,3 +46,4 @@
 .workflow-setup-context p { flex-basis: 100%; margin: 0; color: var(--fg-3); }
 .chat-workflow-status { display: block; font-size: 11px; line-height: 1.5; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 600px) { .chat-workflow-bar { gap: 6px; padding: 8px 12px; } .chat-run-summary { padding-inline: 2px; font-size: 11px; } }
+@media (max-width: 600px) { .workflow-header { padding: 12px 12px 0; } .workflow-title { font-size: 18px; } }

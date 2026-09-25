@@ -1,16 +1,19 @@
-import type { OrchestrationSnapshot } from "../lib/orchestration";
+import type { OrchestrationRun, OrchestrationSnapshot } from "../lib/orchestration";
 import { isActiveRun, runSummary } from "../lib/chatWorkflow";
 import "./ChatWorkflowBar.css";
 
-export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, disabled = false, pendingApprovals = 0, planPending = false, focusMode = false, split = false }: {
+export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, disabled = false, pendingApprovals = 0, planPending = false, focusMode = false, split = false, unified = false, selectedRun, worker = false }: {
   snapshot: OrchestrationSnapshot; orchestrated: boolean; view: "chat" | "run";
   onMode: (orchestrated: boolean) => void; onView: (view: "chat" | "run") => void; disabled?: boolean;
   pendingApprovals?: number;
   /** The main agent's plan waits for Approve, which lives in Run. */
   planPending?: boolean; focusMode?: boolean; split?: boolean;
+  unified?: boolean;
+  selectedRun?: OrchestrationRun | null;
+  worker?: boolean;
 }) {
   const active = snapshot.runs.find(isActiveRun);
-  const run = active ?? snapshot.runs[0];
+  const run = selectedRun === undefined ? active ?? snapshot.runs[0] : selectedRun;
   // With both columns on screen there is nothing to switch between, so the
   // tabs go; approvals still need saying, and they move onto the run line.
   const views = (orchestrated || !!run) && !split;
@@ -19,8 +22,10 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, 
   // they are how you get back to work in flight. A normal chat has neither, so
   // the bar itself goes rather than leaving an empty rule across the column.
   if (focusMode && !views && !run) return null;
-  return <nav className="chat-workflow-bar" aria-label="Chat workflow">
-    {!focusMode && <label className="chat-execution">Execution
+  return <header className={unified ? "workflow-header" : undefined}>
+    {unified && <h1 className="workflow-title">{run?.objective ?? "New run"}</h1>}
+    <nav className="chat-workflow-bar" aria-label="Chat workflow">
+    {!focusMode && !worker && <label className="chat-execution">Execution
       <select aria-label="Execution mode" value={active || orchestrated ? "orchestrated" : "normal"}
         disabled={disabled} onChange={(event) => onMode(event.target.value === "orchestrated")}>
         <option value="normal" disabled={!!active}>Normal</option>
@@ -28,13 +33,13 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, 
       </select>
     </label>}
     {views && <div className="chat-workflow-views" role="group" aria-label="Conversation view">
+      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>{unified ? "Tasks" : "Run"}{planPending ? " (plan awaiting approval)" : ""}</button>
       <button type="button" aria-pressed={view === "chat"} onClick={() => onView("chat")}>Chat{pendingApprovals > 0 ? ` (${pendingApprovals} awaiting approval)` : ""}</button>
-      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>Run{planPending ? " (plan awaiting approval)" : ""}</button>
     </div>}
     {split && pendingApprovals > 0 && <span className="chat-workflow-approvals">{pendingApprovals} awaiting approval</span>}
     {run && <button type="button" className="chat-run-summary" onClick={() => onView("run")}
-      title={active ? "Open Run to pause dispatch or stop. Chat messages go to the main agent." : "Open run history"}>
+      title={isActiveRun(run) ? `Open ${unified ? "Tasks" : "Run"} to pause dispatch or stop. Chat messages go to the main agent.` : "Open run history"}>
       {runSummary(snapshot, run)}
     </button>}
-  </nav>;
+  </nav></header>;
 }

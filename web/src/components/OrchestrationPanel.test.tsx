@@ -377,6 +377,26 @@ it("says where the work got to in plain words, and hides the machinery behind th
 
 
 describe("embedded chat runs", () => {
+  it.each([false, true])("pins Main chat outside run content, including plan review (%s)", (planning) => {
+    const ledger = structuredClone(snapshot);
+    if (planning) ledger.runs[0].planApproval = { status: "pending", requestedAt: 1 };
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
+      initialSnapshot={ledger} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).toContain('class="orch-main-chat" aria-current="page"');
+    expect(html.indexOf("Main chat")).toBeLessThan(html.indexOf('class="orch-content"'));
+    expect(html).not.toContain('id="orch-run-title"');
+    expect(html).toContain('aria-label="Ship orchestration"');
+  });
+
+  it("marks the worker task current while keeping Main chat available", () => {
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:worker"
+      initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).not.toContain('class="orch-main-chat" aria-current="page"');
+    expect(html).toContain('aria-current="page" aria-label="Open task chat: Build the host ledger"');
+    expect(html).toContain("Main chat");
+  });
   it("scopes the ledger to the current chat and keeps the surrounding app visible", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:other"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);

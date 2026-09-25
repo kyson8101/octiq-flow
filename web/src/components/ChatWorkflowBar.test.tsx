@@ -4,6 +4,26 @@ import { ChatWorkflowBar } from "./ChatWorkflowBar";
 import { EMPTY_ORCHESTRATION } from "../lib/orchestration";
 
 describe("ChatWorkflowBar", () => {
+  it("keeps the selected run title above task and chat navigation in a worker chat", () => {
+    const run = { id: "run", coordinatorChatKey: "chat:main", objective: "Ship the unified workspace", status: "running" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 };
+    const html = renderToStaticMarkup(<ChatWorkflowBar unified worker selectedRun={run}
+      snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }} orchestrated view="chat" onMode={() => {}} onView={() => {}} />);
+    expect(html).toContain('<h1 class="workflow-title">Ship the unified workspace</h1>');
+    expect(html).toContain('aria-pressed="false">Tasks');
+    expect(html).toContain('aria-pressed="true">Chat');
+    expect(html).not.toContain('aria-label="Execution mode"');
+    expect(html.indexOf("Ship the unified workspace")).toBeLessThan(html.indexOf('aria-label="Conversation view"'));
+  });
+
+  it("shows the selected historical run instead of the active run's title and status", () => {
+    const run = { id: "history", coordinatorChatKey: "chat:main", objective: "Earlier work", status: "completed" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 };
+    const html = renderToStaticMarkup(<ChatWorkflowBar unified selectedRun={run}
+      snapshot={{ ...EMPTY_ORCHESTRATION, runs: [{ ...run, id: "active", objective: "Current work", status: "running" }, run] }}
+      orchestrated view="chat" onMode={() => {}} onView={() => {}} />);
+    expect(html).toContain("Earlier work");
+    expect(html).toContain("Completed · 0/0");
+    expect(html).not.toContain("Current work");
+  });
   it("starts as a normal conversation with no empty Run tab", () => {
     const html = renderToStaticMarkup(<ChatWorkflowBar snapshot={EMPTY_ORCHESTRATION} orchestrated={false} view="chat" onMode={() => {}} onView={() => {}} />);
     expect(html).toContain('value="normal" selected=""');
