@@ -29,14 +29,7 @@ export type Project = ProjectAppearance & {
   env?: Record<string, string>;
 };
 
-export type SidebarView = "settings" | "agents" | "projects";
-
-export type ChatSearchHit = {
-  id: string;
-  excerpt: string;
-  speaker: string;
-  role: string;
-};
+export type SidebarView = "search" | "settings" | "agents" | "projects";
 
 const NONE: ReadonlySet<string> = new Set();
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
@@ -45,7 +38,8 @@ const FILTER_KEY = "octiq.chat.filter";
 
 /** Which chats the list is showing, remembered per browser. Deliberately NOT
  *  on the server: a phone catching up on what happened overnight and a laptop
- *  working through the day want different answers to the same list. */
+ *  working through the day want different answers to the same list. A saved
+ *  view this build no longer offers (the old `pinned`) reads as `active`. */
 function savedFilter(): ChatFilter {
   const value = recall(FILTER_KEY);
   return isChatFilter(value) ? value : "active";
@@ -62,20 +56,22 @@ function savedCollapsed(): Set<string> {
 
 export function Sidebar({
   orchestration = EMPTY_ORCHESTRATION,
-  projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted, onFeedback,
+  projects, shelved, deletedCount = 0, onShowDeleted,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New chat", onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
-  onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
-  onSettings, onAgents, onProjects, activeView = null,
+  branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
+  onSearch, onSettings, onAgents, onProjects, activeView = null,
 }: {
   orchestration?: OrchestrationSnapshot;
   projects: Project[];
+  /** Only read to name a shelved project's chats; the shelf itself lives on
+   *  the Projects page. */
   shelved: Project[];
-  onShowShelved: () => void;
+  /** The deleted chats, offered from the Recent menu beside the other views
+   *  of the chat list. */
   deletedCount?: number;
   onShowDeleted?: () => void;
-  onFeedback?: () => void;
   conversations: Conversation[];
   currentConversation: string | null;
   running: Set<string>;
@@ -93,14 +89,14 @@ export function Sidebar({
   onToggleDone: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onArchiveWorker?: (attemptId: string, archived: boolean) => Promise<void>;
-  onNewProject: () => void;
-  searchChats: (query: string) => Promise<ChatSearchHit[]>;
   branches?: Readonly<Record<string, string>>;
   chatParents?: ReadonlyMap<string, string>;
   onResize?: (event: React.PointerEvent<HTMLElement>) => void;
-  foot?: ReactNode;
+  /** Put the column away. Only given where the sidebar is a column. */
+  onCollapse?: () => void;
   /** The app-level places, listed straight under New task. Each is drawn only
    *  when it is given: Agents exists in agents mode alone. */
+  onSearch?: () => void;
   onSettings?: () => void;
   onAgents?: () => void;
   onProjects?: () => void;
@@ -110,16 +106,12 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(savedCollapsed);
   const [filter, setFilter] = useState<ChatFilter>(savedFilter);
   const [keptMarked, setKeptMarked] = useState<ReadonlySet<string>>(() => new Set());
-  const [menuOpen, setMenuOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [searchHits, setSearchHits] = useState<ChatSearchHit[]>([]);
-  const [searchState, setSearchState] = useState<"idle" | "searching" | "ready" | "error">("idle");
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
   const held = useRef(false);
@@ -145,43 +137,34 @@ export function Sidebar({
     });
   }, [conversations, filter]);
   // The views live in one dropdown beside the Recent heading, so every view is
-  // always offered: a menu costs no row height, and a fixed set of four is
-  // easier to find again than one that grows as chats are ticked or pinned.
-  const filtering = !showArchived && activeConversations.length > 0;
+  // always offered: a menu costs no row height, and a fixed set is easier to
+  // find again than one that grows as chats are ticked. The other ways of
+  // looking at the chat list — archived workers, deleted chats — sit in the
+  // same menu, under the views.
   const listedConversations = showArchived ? archivedConversations
     : chatFilterList(activeConversations, filter, currentConversation, keptMarked);
-  const listedIds = new Set(listedConversations.map((chat) => chat.id));
-  const trimmedQuery = query.trim();
-  const searchActive = [...trimmedQuery].length >= 2;
-  const hitById = new Map(searchHits.map((hit) => [hit.id, hit]));
-  const visibleConversations = searchActive && searchState === "ready"
-    ? searchHits.flatMap((hit) => {
-      const conversation = conversationById.get(hit.id);
-      return conversation && listedIds.has(conversation.id) ? [conversation] : [];
-    })
-    : searchActive ? [] : listedConversations;
 
   // Filtered on the way OUT of `workflowChatList`, never on the way in: it
   // decides which older attempts to fold away by looking at who is present,
   // and handing it a thinned list would unfold every superseded worker under a
   // coordinator that had merely been ticked off.
-  const tree = useMemo(
-    () => buildChatTree(
-      chatFilterList(
-        workflowChatList(conversations, orchestration, currentConversation),
-        filter,
-        currentConversation,
-        keptMarked,
-      ),
-      chatParents,
-    ),
-    [conversations, chatParents, orchestration, currentConversation, filter, keptMarked],
+  const workflowList = useMemo(
+    () => workflowChatList(conversations, orchestration, currentConversation),
+    [conversations, orchestration, currentConversation],
   );
-  const visibleNodes = searchActive || showArchived
-    ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
-    : tree;
-  const pinnedNodes = visibleNodes.filter((node) => node.chat.pinned || node.descendants.some((chat) => chat.pinned));
-  const recentNodes = visibleNodes.filter((node) => !node.chat.pinned && !node.descendants.some((chat) => chat.pinned));
+  const tree = useMemo(
+    () => buildChatTree(chatFilterList(workflowList, filter, currentConversation, keptMarked), chatParents),
+    [workflowList, chatParents, currentConversation, filter, keptMarked],
+  );
+  // Pins are not a view. A pinned chat is listed under Pinned whatever Recent
+  // is showing — ticked off or not — so switching Recent to Done never makes a
+  // pin disappear, and Recent never lists it twice.
+  const fullTree = useMemo(() => buildChatTree(workflowList, chatParents), [workflowList, chatParents]);
+  const hasPin = (node: ChatNode) => !!node.chat.pinned || node.descendants.some((chat) => chat.pinned);
+  const pinnedNodes = showArchived ? [] : fullTree.filter(hasPin);
+  const recentNodes = showArchived
+    ? archivedConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
+    : tree.filter((node) => !hasPin(node));
   const ancestors = new Set<string>();
   let ancestor = currentConversation ? chatParents.get(currentConversation) : undefined;
   while (ancestor && !ancestors.has(ancestor)) {
@@ -201,33 +184,6 @@ export function Sidebar({
 
   useEffect(() => { seenChatIds.current = new Set(conversations.map((chat) => chat.id)); }, [conversations]);
   useEffect(() => () => clearTimeout(hold.current), []);
-  useEffect(() => {
-    if (!searchActive) {
-      setSearchHits([]);
-      setSearchState("idle");
-      return;
-    }
-    let current = true;
-    setSearchHits([]);
-    setSearchState("searching");
-    const timer = setTimeout(() => {
-      void searchChats(trimmedQuery)
-        .then((hits) => {
-          if (!current) return;
-          setSearchHits(hits);
-          setSearchState("ready");
-        })
-        .catch(() => {
-          if (!current) return;
-          setSearchHits([]);
-          setSearchState("error");
-        });
-    }, 180);
-    return () => {
-      current = false;
-      clearTimeout(timer);
-    };
-  }, [searchActive, searchChats, trimmedQuery]);
   const cancelHold = () => clearTimeout(hold.current);
   const archiveWorker = async (attemptId: string, archived: boolean) => {
     if (!onArchiveWorker || archiving) return;
@@ -274,7 +230,7 @@ export function Sidebar({
     const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
     const run = workflow.runs[0];
-    const ownsRun = !searchActive && !showArchived && workflow.runs.length > 0;
+    const ownsRun = !showArchived && workflow.runs.length > 0;
     // A run's worker chats are not listed here. Its task list opens beside the
     // chat list when this row is picked, and stays while a worker is open, so
     // that list IS the way to them; a second copy here was the same tasks twice.
@@ -286,10 +242,8 @@ export function Sidebar({
     const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
-    const searchHit = searchActive ? hitById.get(chat.id) : undefined;
     const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
     const snippet = going ? "Deleting…"
-      : searchHit ? `${searchHit.speaker}: ${searchHit.excerpt}`
       : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
 
     return (
@@ -458,138 +412,115 @@ export function Sidebar({
     );
   };
 
+  const closeArchived = () => { setShowArchived(false); setKeptMarked(new Set()); };
+  const recentMenu = [
+    ...chatFilterOptions(activeConversations, filter).map((option) => ({
+      id: option.filter, label: option.label, checked: !showArchived && option.checked,
+      onSelect: () => { closeArchived(); chooseFilter(option.filter); },
+    })),
+    ...(archivedConversations.length || showArchived ? [{
+      id: "archived", label: `Archived workers (${archivedConversations.length})`, icon: <ArchiveIcon />,
+      checked: showArchived, separator: true,
+      onSelect: () => { setShowArchived(true); setKeptMarked(new Set()); },
+    }] : []),
+    ...(deletedCount && onShowDeleted ? [{
+      id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />,
+      separator: !(archivedConversations.length || showArchived), onSelect: onShowDeleted,
+    }] : []),
+  ];
+  const recentLabel = showArchived ? "Archived" : CHAT_FILTER_LABELS[filter];
+
   return (
     <nav className="sidebar task-sidebar" aria-label="Chats">
       <div className="sidebar-toolbar">
+        {/* The column is the full height of the window, so its first row sits
+            level with the top bar beside it and carries the name of the app. */}
         <div className="sidebar-head">
-          <span className="sidebar-title">Chats</span>
-          <SidebarMenu
-            label="Chat list actions"
-            open={menuOpen}
-            onOpenChange={setMenuOpen}
-            items={[
-              { id: "new-project", label: "New project", icon: <PlusIcon />, onSelect: onNewProject },
-              ...(archivedConversations.length || showArchived ? [{ id: "archived", label: showArchived ? "Active chats" : `Archived workers (${archivedConversations.length})`, icon: <ArchiveIcon />,
-                onSelect: () => { setShowArchived(!showArchived); setKeptMarked(new Set()); setQuery(""); } }] : []),
-              ...(shelved.length ? [{ id: "shelved", label: `Shelved projects (${shelved.length})`, icon: <ArchiveIcon />, onSelect: onShowShelved }] : []),
-              ...(deletedCount && onShowDeleted ? [{ id: "trash", label: `Deleted chats (${deletedCount})`, icon: <TrashIcon />, onSelect: onShowDeleted }] : []),
-            ]}
-          />
+          <img className="sidebar-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />
+          <span className="sidebar-title">OctiqFlow</span>
+          {onCollapse && <button className="sidebar-collapse" type="button" onClick={onCollapse}
+            aria-label="Hide sidebar" title="Hide sidebar">
+            <CollapseIcon />
+          </button>}
         </div>
-        <button className="sidebar-new-chat" type="button" onClick={onNewChat}>
-          <NewChatIcon /><span>{newLabel}</span>
-        </button>
-        {(onSettings || onAgents || onProjects) && (
-          <ul className="sidebar-places" aria-label="App">
-            {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
-              aria-current={activeView === "settings" ? "page" : undefined}>
-              <SettingsIcon /><span>Settings</span>
-            </button></li>}
-            {onAgents && <li><button className="sidebar-place" type="button" onClick={onAgents}
-              aria-current={activeView === "agents" ? "page" : undefined}>
-              <AgentsIcon /><span>Agents</span>
-            </button></li>}
-            {onProjects && <li><button className="sidebar-place" type="button" onClick={onProjects}
-              aria-current={activeView === "projects" ? "page" : undefined}>
-              <ProjectsIcon /><span>Projects</span>
-            </button></li>}
-          </ul>
-        )}
-        <div className="sidebar-search-wrap">
-          <label className="sidebar-search">
-            <SearchIcon />
-            <input
-              type="search"
-              value={query}
-              placeholder="Search chats"
-              aria-label="Search chats"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Escape" || !query) return;
-                event.preventDefault();
-                setQuery("");
-              }}
-            />
-            {query && (
-              <button type="button" aria-label="Clear chat search" onClick={() => setQuery("")}>
-                <ClearIcon />
-              </button>
-            )}
-          </label>
-        </div>
+        <ul className="sidebar-places" aria-label="App">
+          <li><button className="sidebar-place sidebar-new-chat" type="button" onClick={onNewChat}>
+            <NewChatIcon /><span>{newLabel}</span>
+          </button></li>
+          {onSearch && <li><button className="sidebar-place" type="button" onClick={onSearch}
+            aria-current={activeView === "search" ? "page" : undefined}>
+            <SearchIcon /><span>Search chats</span>
+          </button></li>}
+          {onProjects && <li><button className="sidebar-place" type="button" onClick={onProjects}
+            aria-current={activeView === "projects" ? "page" : undefined}>
+            <ProjectsIcon /><span>Projects</span>
+          </button></li>}
+          {onAgents && <li><button className="sidebar-place" type="button" onClick={onAgents}
+            aria-current={activeView === "agents" ? "page" : undefined}>
+            <AgentsIcon /><span>Agents</span>
+          </button></li>}
+          {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
+            aria-current={activeView === "settings" ? "page" : undefined}>
+            <SettingsIcon /><span>Settings</span>
+          </button></li>}
+        </ul>
       </div>
 
-      {showArchived && <div className="sidebar-archive-view">
-        <div><strong>Archived workers</strong><span>{archivedConversations.length}</span></div>
-        <button type="button" onClick={() => { setShowArchived(false); setKeptMarked(new Set()); setQuery(""); }}>Back to active chats</button>
-      </div>}
       {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
-      {visibleConversations.length > 0 || filtering ? (
+      {conversations.length > 0 || showArchived ? (
         <div className="task-chat-scroll">
           {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
             <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
             <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
           </section>}
-          {/* The heading stays whenever there are chats to filter, even with
-              nothing under it: it carries the only way to change the view. */}
-          {(recentNodes.length > 0 || filtering) && <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
+          {/* The heading stays whenever there are chats, even with nothing
+              under it: it carries the only way to change the view. */}
+          <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
             <div className="sidebar-section-head">
-              <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived" : "Recent"}</h2>
-              {filtering && <SidebarMenu className="sidebar-filter-trigger"
-                label={`Show chats: ${CHAT_FILTER_LABELS[filter]}`}
+              <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived workers" : "Recent"}</h2>
+              <SidebarMenu className="sidebar-filter-trigger"
+                label={`Show chats: ${recentLabel}`}
                 open={filterOpen} onOpenChange={setFilterOpen}
-                icon={<><span>{CHAT_FILTER_LABELS[filter]}</span><ChevronIcon /></>}
-                items={chatFilterOptions(activeConversations, filter).map((option) => ({
-                  id: option.filter, label: option.label, checked: option.checked,
-                  onSelect: () => chooseFilter(option.filter),
-                }))} />}
+                icon={<><span>{recentLabel}</span><ChevronIcon /></>}
+                items={recentMenu} />
             </div>
-            {recentNodes.length > 0 && <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul>}
-            {!visibleConversations.length && emptyList()}
-          </section>}
+            {recentNodes.length > 0 ? <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul> : emptyRecent()}
+          </section>
         </div>
-      ) : emptyList()}
+      ) : (
+        <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
+      )}
 
-      {onFeedback && <button type="button" className="feedback-launch" onClick={onFeedback}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 4h16v13H9l-5 4V4Z" /><path d="M8 8h8M8 12h5" /></svg>
-        Feedback inbox
-      </button>}
-      {foot && <div className="sidebar-slot is-foot">{foot}</div>}
       {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
         aria-orientation="vertical" aria-label="Resize the chat column" />}
     </nav>
   );
 
-  function emptyList(): ReactNode {
-    return !listedConversations.length ? (
-        showArchived ? <div className="sidebar-empty" role="status"><span>No archived workers.</span></div> :
-        // An empty list under a filter is not an empty app, and offering to
-        // start a first chat to somebody with forty of them is how a filter
-        // gets mistaken for a loss.
-        filter !== "active" ? <div className="sidebar-empty" role="status">
-          <span>{filter === "done" ? "No chats are ticked off."
-            : filter === "pinned" ? "No chats are pinned."
-            : "No chats yet"}</span>
-          <button type="button" onClick={() => chooseFilter("active")}>Show active chats</button>
-        </div> :
-        conversations.length ? <div className="sidebar-empty" role="status">
-          <span>Every chat is ticked off.</span>
-          <button type="button" onClick={() => chooseFilter("done")}>Show done chats</button>
-        </div> :
-        <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
-      ) : searchActive && searchState !== "ready" ? (
-        <div className="sidebar-empty" role="status" aria-live="polite">
-          <span>{searchState === "error" ? "Chat search is unavailable." : "Searching chats…"}</span>
-          {searchState === "error" && <button type="button" onClick={() => setQuery("")}>Clear search</button>}
-        </div>
-      ) : (
-        <div className="sidebar-empty" role="status" aria-live="polite">
-          <span>No chats found for “{trimmedQuery}”.</span>
-          <button type="button" onClick={() => setQuery("")}>Clear search</button>
-        </div>
-      );
+  function emptyRecent(): ReactNode {
+    if (showArchived) {
+      return <div className="sidebar-empty" role="status">
+        <span>No archived workers.</span>
+        <button type="button" onClick={closeArchived}>Show active chats</button>
+      </div>;
+    }
+    // An empty list under a filter is not an empty app, and offering to start
+    // a first chat to somebody with forty of them is how a filter gets
+    // mistaken for a loss.
+    if (filter !== "active") {
+      return <div className="sidebar-empty" role="status">
+        <span>{filter === "done" ? "No chats are ticked off." : "Every chat is pinned."}</span>
+        <button type="button" onClick={() => chooseFilter("active")}>Show active chats</button>
+      </div>;
+    }
+    const ticked = activeConversations.some((chat) => isChatDone(chat) && !chat.pinned);
+    return ticked && !listedConversations.some((chat) => !chat.pinned)
+      ? <div className="sidebar-empty" role="status">
+        <span>Every chat is ticked off.</span>
+        <button type="button" onClick={() => chooseFilter("done")}>Show done chats</button>
+      </div>
+      : <div className="sidebar-empty" role="status">
+        <span>{pinnedNodes.length > 0 ? "Every active chat is pinned." : "No active chats."}</span>
+      </div>;
   }
 }
 
@@ -634,8 +565,7 @@ function AnimatedChatRow({ entering, leaving, children }: { entering: boolean; l
 }
 
 function SearchIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }
-function ClearIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>; }
-function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>; }
+function CollapseIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M15 10l-2 2 2 2" /></svg>; }
 function NewChatIcon() { return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.5" /><path d="m12 12 7.5-7.5a2.12 2.12 0 0 1 3 3L15 15l-4 1 1-4Z" /></svg>; }
 function ArchiveIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M6 7v12h12V7" /><path d="M3 4h18v3H3z" /><path d="M10 11h4" /></svg>; }
 function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 14h10l1-14" /><path d="M10 10v6M14 10v6" /></svg>; }

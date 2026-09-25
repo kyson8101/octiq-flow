@@ -88,30 +88,12 @@
   .sidebar .proj-list { overscroll-behavior: contain; padding: 2px 8px 8px; }
   .sidebar .proj-btn { height: 40px; }
   .sidebar .proj-node { --sib-mid: 22px; }
-  .sidebar .sidebar-slot.is-foot {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 4px;
-    padding: 2px 8px;
-  }
-  .sidebar .sidebar-slot.is-foot .usage { position: static; min-width: 0; }
-  .sidebar .sidebar-slot.is-foot .usage-btn { min-height: 44px; padding: 4px; gap: 8px; }
-  .sidebar .sidebar-slot.is-foot .usage-pill { gap: 4px; }
-  .sidebar .sidebar-slot.is-foot .usage-pop {
-    inset: auto 8px calc(100% + 6px);
-    width: auto;
-    max-height: calc(100dvh - 100px - env(safe-area-inset-bottom));
-    overflow-y: auto;
-    overscroll-behavior: contain;
-  }
 }
 
 /* The primary list is task-first now; these more specific rules keep the
    three-line row intact regardless of the older project-folder overrides
    above while themes and mobile bundles migrate. */
-.sidebar .task-chat-scroll { flex: 1 1 auto; overflow-y: auto; padding: 12px 8px 14px; }
+.sidebar .task-chat-scroll { flex: 1 1 auto; overflow-y: auto; padding: 8px 6px 12px; }
 .sidebar .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 34px; }
 /* The left gutter holds the tick as well as the state dot, at a fixed width
    whether or not the tick is showing: a control that appears on hover must not

@@ -1,13 +1,11 @@
-.sidebar-archive-view, .sidebar-archive-error {
+.sidebar-archive-error {
   margin: 0 12px 10px;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   font-size: 12px;
 }
-.sidebar-archive-view > div { display: flex; justify-content: space-between; gap: 8px; }
-.sidebar-archive-view span { color: var(--fg-2); }
-.sidebar-archive-view button, .sidebar-archive-error button {
+.sidebar-archive-error button {
   display: block;
   margin-top: 8px;
   color: var(--accent);

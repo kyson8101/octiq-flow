@@ -93,6 +93,20 @@ describe("ProjectsPage", () => {
     expect(out).toContain("Project settings</button>");
   });
 
+  it("owns New project and the shelf, which left the sidebar", () => {
+    const out = html({ onShowShelved: () => {}, onRestoreProject: async () => {} });
+    expect(out).toContain("New project</span>");
+    expect(out).toContain('aria-label="Shelved projects"');
+    expect(out).toContain("Restore shelved projects</button>");
+  });
+
+  it("offers Restore on a shelved project's page, and only there", () => {
+    const shelvedPage = html({ selectedProjectId: "p3", onRestoreProject: async () => {} });
+    expect(shelvedPage).toContain("Restore project</span>");
+    const livePage = html({ selectedProjectId: "p1", onRestoreProject: async () => {} });
+    expect(livePage).not.toContain("Restore project");
+  });
+
   it("explains a project that is gone instead of listing nothing", () => {
     const out = html({ selectedProjectId: "missing" });
     expect(out).toContain("Project unavailable</h1>");

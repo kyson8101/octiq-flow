@@ -50,13 +50,6 @@ describe("chatFilterList", () => {
     expect(chatFilterList(list, "done").map((c) => c.id)).toEqual(["ticked"]);
   });
 
-  it("shows pinned chats literally, ticked ones included", () => {
-    // A pinned chat that has also been ticked off is still pinned. Hiding it
-    // here would leave a row that no view in the menu lists at all.
-    const pinned = [chat("open", 100), { ...chat("kept", 100, 200), pinned: true }];
-    expect(chatFilterList(pinned, "pinned").map((c) => c.id)).toEqual(["kept"]);
-  });
-
   it("shows everything under all, without reordering", () => {
     expect(chatFilterList(list, "all").map((c) => c.id)).toEqual(["open", "ticked", "reopened"]);
   });
@@ -89,15 +82,15 @@ describe("chatFilterCount", () => {
     const list = [chat("a", 100), chat("b", 100, 200), chat("c", 900, 500),
       { ...chat("d", 100), pinned: true }];
     expect(chatFilterCount(list, "done")).toBe(1);
-    expect(chatFilterCount(list, "pinned")).toBe(1);
     expect(chatFilterCount(list, "active")).toBe(3);
   });
 });
 
 describe("isChatFilter", () => {
-  it("accepts the four filters and nothing else", () => {
+  it("accepts the three views, and not the retired pinned view", () => {
     expect(isChatFilter("active")).toBe(true);
-    expect(isChatFilter("pinned")).toBe(true);
+    // Pins are a section of their own now; a saved "pinned" view falls back.
+    expect(isChatFilter("pinned")).toBe(false);
     expect(isChatFilter("done")).toBe(true);
     expect(isChatFilter("all")).toBe(true);
     expect(isChatFilter("archived")).toBe(false);
@@ -106,9 +99,9 @@ describe("isChatFilter", () => {
 });
 
 describe("chatFilterOptions", () => {
-  it("always offers all four views, and marks only the current one", () => {
+  it("always offers all three views, and marks only the current one", () => {
     const options = chatFilterOptions([chat("open", 100)], "active");
-    expect(options.map((option) => option.label)).toEqual(["Active", "Pinned", "Done", "All"]);
+    expect(options.map((option) => option.label)).toEqual(["Active", "Done", "All"]);
     expect(options.filter((option) => option.checked).map((option) => option.filter)).toEqual(["active"]);
   });
 
@@ -117,7 +110,7 @@ describe("chatFilterOptions", () => {
       [chat("open", 100), chat("ticked", 100, 200), { ...chat("saved", 100), pinned: true }],
       "done",
     );
-    expect(options.map((option) => option.label)).toEqual(["Active", "Pinned (1)", "Done (1)", "All"]);
+    expect(options.map((option) => option.label)).toEqual(["Active", "Done (1)", "All"]);
     expect(options.find((option) => option.checked)?.filter).toBe("done");
   });
 });

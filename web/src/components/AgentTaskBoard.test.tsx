@@ -76,10 +76,10 @@ describe("compact agent task board", () => {
     // carries a second copy of it: one row for the main chat, with the run's
     // one-line summary, and no worker transcripts or task rows under it.
     const snapshot = taskBoardFixture();
-    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
+    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
-      onNewProject={() => {}} searchChats={async () => []} />);
+      />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
     expect(out).not.toContain('class="agent-task');
     expect(out).not.toContain("chat-children-toggle");
@@ -88,10 +88,10 @@ describe("compact agent task board", () => {
   });
   it("outlines the main chat while one of its workers is open", () => {
     const snapshot = taskBoardFixture();
-    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
+    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation="w-reader" running={new Set()} busy={new Set()}
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
-      onNewProject={() => {}} searchChats={async () => []} />);
+      />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
     expect(out).toContain("is-worker-on");
   });

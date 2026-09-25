@@ -14,6 +14,8 @@ export type SidebarMenuItem = {
   /** Set on every item of a menu that picks one value; the item becomes a
    *  radio and the chosen one is where focus lands when the menu opens. */
   checked?: boolean;
+  /** Draw a rule above this item, to start a second group in the menu. */
+  separator?: boolean;
 };
 
 /** Every sidebar action lives behind the same quiet, labelled disclosure. */
@@ -126,7 +128,7 @@ function Dropdown({ id, label, anchor, items, onClose }: {
       }}>
       {items.map(item => <button key={item.id} type="button" tabIndex={-1}
         role={item.checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={item.checked}
-        className={[item.danger ? "is-danger" : "", item.checked ? "is-checked" : ""].filter(Boolean).join(" ") || undefined}
+        className={[item.danger ? "is-danger" : "", item.checked ? "is-checked" : "", item.separator ? "has-separator" : ""].filter(Boolean).join(" ") || undefined}
         disabled={item.disabled} title={item.title}
         onClick={() => {
           if (!item.keepOpen) dismiss();

@@ -8,8 +8,9 @@
   padding-top: calc(52px + env(safe-area-inset-top));
 }
 
-.app.focus-mode > .topbar,
-.app.focus-mode > .body > :not(.main),
+.app.focus-mode > .sidebar,
+.app.focus-mode .shell-main > .topbar,
+.app.focus-mode .shell-main > .body > :not(.main),
 .app.focus-mode .main .drawer,
 .app.focus-mode .chat-main > .focus,
 .app.focus-mode .conversation-map {
@@ -154,7 +155,7 @@
 html[data-zen-transition] .app .chat-body,
 html[data-zen-transition] .app .main .hero { view-transition-name: zen-chat; }
 html[data-zen-transition] .app .composer-box { view-transition-name: zen-composer; }
-html[data-zen-transition] .app > .topbar { view-transition-name: zen-header; }
+html[data-zen-transition] .app .shell-main > .topbar { view-transition-name: zen-header; }
 html[data-zen-transition] .app .sidebar { view-transition-name: zen-sidebar; }
 html[data-zen-transition] .focus-mode-exit { view-transition-name: zen-exit; }
 
