@@ -66,26 +66,6 @@
   font: inherit; text-decoration: underline; cursor: pointer;
 }
 
-/* A lead's plan, waiting for the person above the composer. */
-.plan-approval {
-  display: grid; gap: 10px; margin: 0 0 10px; padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
-  border-radius: var(--r-md);
-  background: color-mix(in srgb, var(--accent) 7%, var(--bg-1));
-  animation: plan-approval-in 180ms ease-out;
-}
-@keyframes plan-approval-in { from { opacity: 0; transform: translateY(4px); } }
-@media (prefers-reduced-motion: reduce) { .plan-approval { animation: none; } }
-.plan-approval-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
-.plan-approval-head strong { color: var(--fg-0); font-size: 13.5px; }
-.plan-approval-head span { color: var(--fg-2); font-size: 12px; }
-.plan-approval-list { margin: 0; padding-inline-start: 20px; display: grid; gap: 4px; color: var(--fg-1); font-size: 12.5px; }
-.plan-approval-list li { display: flex; gap: 8px; min-width: 0; }
-.plan-approval-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.plan-approval-who { flex: 0 0 auto; color: var(--fg-2); font-weight: 600; }
-.plan-approval-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
-.plan-approval-hint { color: var(--fg-3); font-size: 12px; }
-.plan-approval button:disabled { opacity: .5; cursor: default; }
 
 /* The Agents dashboard. */
 .agents-dashboard-list { padding: 0 16px; }

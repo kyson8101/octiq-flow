@@ -1,0 +1,129 @@
+/* Plan mode, inside the Run panel. One quiet column: a state line, the stages
+   as a numbered rail, and the two answers pinned under them. The accent is a
+   tint, and moves only while the main agent is still writing. */
+.plan-review {
+  display: grid;
+  gap: 18px;
+  margin-top: 22px;
+  animation: plan-review-in 200ms ease-out;
+}
+@keyframes plan-review-in { from { opacity: 0; transform: translateY(4px); } }
+
+.plan-review-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+.plan-review-state { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.plan-review-state h3 { margin: 0; color: var(--fg-0); font-size: 15px; font-weight: 650; }
+.plan-review-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-3); }
+.plan-review[data-drafting] .plan-review-dot { background: var(--accent); animation: plan-review-pulse 1.4s ease-in-out infinite; }
+@keyframes plan-review-pulse { 50% { opacity: 0.25; } }
+.plan-review-meta { margin: 0; color: var(--fg-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* Nothing written yet: three ghost rows hold the place the tasks will take. */
+.plan-review-empty { display: grid; gap: 8px; padding: 16px 0 4px; border-top: 1px solid var(--border); }
+.plan-review-empty p { margin: 4px 0 0; color: var(--fg-2); font-size: 12px; }
+.plan-review-ghost {
+  height: 34px; border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--bg-1), var(--bg-2), var(--bg-1));
+  background-size: 200% 100%;
+  animation: plan-review-shimmer 1.6s ease-in-out infinite;
+}
+.plan-review-ghost:nth-child(2) { width: 82%; }
+.plan-review-ghost:nth-child(3) { width: 64%; }
+@keyframes plan-review-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* Stages: a number on a rail, the tasks hanging off it. */
+.plan-stages { margin: 0; padding: 0; list-style: none; display: grid; }
+.plan-stage { position: relative; padding: 0 0 18px 34px; }
+.plan-stage::before {
+  content: ""; position: absolute; left: 10px; top: 24px; bottom: 2px;
+  width: 1px; background: var(--border);
+}
+.plan-stage:last-child { padding-bottom: 0; }
+.plan-stage:last-child::before { display: none; }
+.plan-stage-head { display: flex; align-items: center; gap: 10px; min-height: 22px; margin-bottom: 8px; }
+.plan-stage-num {
+  position: absolute; left: 0; top: 0;
+  display: grid; place-items: center; width: 21px; height: 21px;
+  border: 1px solid var(--border-strong, var(--border)); border-radius: 50%;
+  background: var(--bg-1); color: var(--fg-1);
+  font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums;
+}
+.plan-stage-title { color: var(--fg-0); font-size: 12.5px; font-weight: 600; }
+.plan-stage-note { color: var(--fg-3); font-size: 11.5px; }
+.plan-stage[data-blocked] .plan-stage-num { border-color: color-mix(in srgb, var(--warn) 60%, var(--border)); color: var(--warn); }
+.plan-stage[data-blocked] .plan-stage-title { color: var(--warn); }
+
+.plan-stage-tasks {
+  margin: 0; padding: 0; list-style: none;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-1); overflow: hidden;
+}
+.plan-task + .plan-task { border-top: 1px solid var(--border); }
+.plan-task summary, .plan-task-row {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 10px 12px; list-style: none;
+}
+.plan-task summary { cursor: pointer; transition: background 130ms ease-out; }
+.plan-task summary::-webkit-details-marker { display: none; }
+.plan-task summary:hover { background: var(--accent-tint); }
+.plan-task summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.plan-task-num { flex: 0 0 auto; min-width: 18px; color: var(--fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.plan-task-title { flex: 1 1 auto; min-width: 0; color: var(--fg-0); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-task-owner {
+  flex: 0 1 auto; min-width: 0; max-width: 40%;
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--fg-2); font-size: 11.5px;
+}
+.plan-task-owner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plan-task-after { flex: 0 0 auto; color: var(--fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.plan-task-chevron {
+  flex: 0 0 auto; width: 6px; height: 6px; margin: 0 2px 3px 2px;
+  border-right: 1.5px solid var(--fg-3); border-bottom: 1.5px solid var(--fg-3);
+  transform: rotate(45deg); transition: transform 160ms ease-out;
+}
+.plan-task details[open] .plan-task-chevron { transform: translateY(2px) rotate(-135deg); }
+.plan-task-spec {
+  padding: 2px 12px 12px 40px;
+  color: var(--fg-1); font-size: 12.5px; line-height: 1.55;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
+.plan-review-error { margin: 0; color: var(--danger, var(--warn)); font-size: 12px; }
+
+/* The two answers. Changes go to Chat; Approve starts the first stage. */
+.plan-review-actions {
+  position: sticky; bottom: 0; z-index: 1;
+  display: grid; gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-1);
+  box-shadow: 0 -12px 24px -18px rgb(0 0 0 / 50%);
+}
+.plan-review-change { display: flex; align-items: flex-end; gap: 8px; }
+.plan-review-change textarea {
+  flex: 1 1 auto; min-width: 0; min-height: 34px; max-height: 140px;
+  padding: 8px 10px; resize: none; field-sizing: content;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-0, transparent); color: var(--fg-0);
+  font: inherit; font-size: 12.5px; line-height: 1.4;
+}
+.plan-review-change textarea:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.plan-review-quiet {
+  flex: 0 0 auto; min-height: 34px; padding: 0 12px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-1);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: border-color 130ms ease-out, color 130ms ease-out;
+}
+.plan-review-quiet:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-0); }
+.plan-review-quiet:disabled { opacity: 0.45; cursor: default; }
+.plan-review-approve { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
+.plan-review-hint { margin-right: auto; color: var(--fg-2); font-size: 12px; }
+
+@media (max-width: 640px) {
+  .plan-task-owner { max-width: 34%; }
+  .plan-task-after { display: none; }
+  .plan-review-approve .orch-primary { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-review, .plan-review-dot, .plan-review-ghost { animation: none !important; }
+}

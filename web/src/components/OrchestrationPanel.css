@@ -519,16 +519,23 @@
 .orch-task[data-status="blocked"] { --task-color: var(--warn); }
 .orch-task[data-status="failed"] { --task-color: var(--danger); }
 
-.orch-task-heading { display: flex; align-items: center; gap: 4px; }
+/* The row is the surface: hover and the open-chat tint cover the summary AND
+   its chevron, with room inside the edge, rather than hugging the text. */
+.orch-task-heading {
+  display: flex; align-items: center; gap: 6px;
+  margin: 4px 0; padding: 0 6px 0 12px;
+  border-radius: var(--r-md);
+  transition: background 130ms ease-out;
+}
 .orch-task-summary {
   flex: 1;
   min-width: 0;
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr) auto;
   align-items: center;
-  column-gap: 10px;
-  row-gap: 3px;
-  padding: 11px 2px;
+  column-gap: 12px;
+  row-gap: 4px;
+  padding: 12px 0;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -538,14 +545,14 @@
   cursor: pointer;
 }
 
-.orch-task-summary:not(:disabled):hover { background: var(--bg-1); }
+.orch-task-heading:has(.orch-task-summary:not(:disabled):hover) { background: var(--bg-1); }
 /* The worker chat on screen. A tint, never a fill. */
-.orch-task.is-open .orch-task-summary { background: var(--accent-tint); }
+.orch-task.is-open .orch-task-heading { background: var(--accent-tint); }
 .orch-task.is-open .orch-task-title { color: var(--fg-0); }
 .orch-task-summary:disabled { opacity: 1; cursor: default; }
-.orch-task-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.orch-task-expand { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; }
-.orch-task-expand:hover { background: var(--bg-1); color: var(--fg-0); }
+.orch-task-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.orch-task-expand { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; transition: background 130ms ease-out, color 130ms ease-out; }
+.orch-task-expand:hover { background: var(--bg-2); color: var(--fg-0); }
 .orch-task-expand:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 
 .orch-task-glyph {
@@ -580,7 +587,8 @@
 .orch-task-agent { display: inline-flex; flex: 0 0 auto; margin-left: auto; }
 .orch-task-branch { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; max-width: 42%; overflow: hidden; white-space: nowrap; }
 
-.orch-task-detail { padding: 2px 2px 16px 36px; }
+/* Under the title: the row's 12px inset + the 26px glyph + its 12px gap. */
+.orch-task-detail { padding: 4px 18px 16px 50px; }
 .orch-task-detail > p, .orch-task-more > p { margin: 0 0 10px; color: var(--fg-2); font-size: 11.5px; line-height: 1.5; }
 .orch-task-more > summary { padding: 2px 0; color: var(--fg-3); font-size: 10.5px; cursor: pointer; }
 .orch-task-more[open] > summary { margin-bottom: 10px; }

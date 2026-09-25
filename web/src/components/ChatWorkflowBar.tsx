@@ -2,10 +2,12 @@ import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { isActiveRun, runSummary } from "../lib/chatWorkflow";
 import "./ChatWorkflowBar.css";
 
-export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, disabled = false, pendingApprovals = 0, focusMode = false, split = false }: {
+export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, disabled = false, pendingApprovals = 0, planPending = false, focusMode = false, split = false }: {
   snapshot: OrchestrationSnapshot; orchestrated: boolean; view: "chat" | "run";
   onMode: (orchestrated: boolean) => void; onView: (view: "chat" | "run") => void; disabled?: boolean;
-  pendingApprovals?: number; focusMode?: boolean; split?: boolean;
+  pendingApprovals?: number;
+  /** The main agent's plan waits for Approve, which lives in Run. */
+  planPending?: boolean; focusMode?: boolean; split?: boolean;
 }) {
   const active = snapshot.runs.find(isActiveRun);
   const run = active ?? snapshot.runs[0];
@@ -27,7 +29,7 @@ export function ChatWorkflowBar({ snapshot, orchestrated, view, onMode, onView, 
     </label>}
     {views && <div className="chat-workflow-views" role="group" aria-label="Conversation view">
       <button type="button" aria-pressed={view === "chat"} onClick={() => onView("chat")}>Chat{pendingApprovals > 0 ? ` (${pendingApprovals} awaiting approval)` : ""}</button>
-      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>Run</button>
+      <button type="button" aria-pressed={view === "run"} onClick={() => onView("run")}>Run{planPending ? " (plan awaiting approval)" : ""}</button>
     </div>}
     {split && pendingApprovals > 0 && <span className="chat-workflow-approvals">{pendingApprovals} awaiting approval</span>}
     {run && <button type="button" className="chat-run-summary" onClick={() => onView("run")}

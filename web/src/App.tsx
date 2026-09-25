@@ -132,7 +132,7 @@ import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { LeadPicker } from "./components/AgentsSettings";
-import { AgentsDashboard, PlanApproval } from "./components/AgentsDashboard";
+import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan } from "./lib/agentsDashboard";
 import {
   leadSettings, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
@@ -330,6 +330,11 @@ const NAV_W_KEY = "octiq.v2.navWidth";
  *  point past which a list of names is only whitespace. `dockWidth` squeezes
  *  both ends further when the window cannot afford them. */
 const NAV_SIZES: Sizes = { initial: 260, min: 200, max: 460 };
+/** The Run column beside an orchestrated chat, dragged by its right edge. The
+ *  ceiling is generous because a plan under review reads best wide; the CSS
+ *  still keeps the chat beside it from being squeezed out. */
+const RUN_W_KEY = "octiq.v2.runWidth";
+const RUN_SIZES: Sizes = { initial: 440, min: 320, max: 960 };
 /** How long a chat NOBODY IS LOOKING AT may sit unrendered.
  *
  *  Long enough that eight agents streaming at once cost a handful of renders a
@@ -422,6 +427,7 @@ export default function App() {
    *  read on desktop, where the sidebar is a column; the mobile list
    *  is the width of the screen. */
   const nav = useDockWidth(NAV_W_KEY, NAV_SIZES, "left");
+  const runDock = useDockWidth(RUN_W_KEY, RUN_SIZES, "left");
   /* Published on the root rather than on the shell, because the layout is not
    * the only thing that needs it: a right-hand panel works out its own maximum
    * from what the project column is taking, and `dockWidth` reads it from
@@ -3960,6 +3966,7 @@ export default function App() {
           <div className="chat-app-surface" hidden={prDashboardOpen}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {!workerChat && <ChatWorkflowBar snapshot={currentWorkflow} orchestrated={orchestrated} view={workflowView} focusMode={focusMode} split={workflowSplit}
+            planPending={!!plan}
             pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
             onView={showWorkflowView} onMode={(enabled) => {
               setWorkflowModes((before) => ({ ...before, [workflowKey]: enabled }));
@@ -4214,10 +4221,6 @@ export default function App() {
             </section>
           ))}
 
-          {plan && (
-            <PlanApproval run={plan.run} tasks={plan.tasks} drafting={chat.busy && !cutOff} />
-          )}
-
           {workerChat ? <WorkerChatNotice
             busy={chat.busy && !cutOff}
             onOpenMain={coordinatorConversation ? () => openWorkflowChat(keyFor(coordinatorConversation.id)) : undefined}
@@ -4292,8 +4295,12 @@ export default function App() {
           />}
 
           </div>
-          {(workerChat ? workflowSplit : orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}>
+          {(workerChat ? workflowSplit : orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}
+            style={{ "--run-w": `${runDock.width}px` } as React.CSSProperties}>
+            {workflowSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
+              aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             <OrchestrationPanel embedded project={project} coordinatorKey={runChatKey}
+              coordinatorBusy={!workerChat && chat.busy && !cutOff}
               currentChatKey={conversationId ? keyFor(conversationId) : null}
               initialSnapshot={orchestration} currentCwd={effectiveCwd}
               onEnsureCoordinator={ensureCoordinator} onStartMaster={startWorkflowMaster}

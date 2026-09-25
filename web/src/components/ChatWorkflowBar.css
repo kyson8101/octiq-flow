@@ -25,7 +25,17 @@
    at any moment, and a column that refuses to shrink puts a horizontal scroll
    bar under the whole app — worse than a cramped run column. */
 .workflow-surfaces.is-split > .workflow-chat-surface { flex: 1 1 auto; min-width: 0; }
-.workflow-surfaces.is-split > .workflow-run-surface { order: -1; flex: 0 1 380px; min-width: 0; max-width: 440px; border-right: 1px solid var(--border); }
+/* Its width is dragged (`--run-w`, from `useDockWidth`); the chat always keeps
+   340px of whatever is left, so a wide drag squeezes this column, not the chat. */
+.workflow-surfaces.is-split > .workflow-run-surface {
+  position: relative; order: -1; flex: 0 1 var(--run-w, 440px); min-width: 0;
+  max-width: calc(100% - 340px); border-right: 1px solid var(--border);
+}
+.workflow-run-resizer {
+  position: absolute; z-index: 2; top: 0; bottom: 0; right: -5px; width: 9px;
+  cursor: col-resize; touch-action: none; transition: background 130ms ease-out;
+}
+.workflow-run-resizer:hover, .workflow-run-resizer:active { background: var(--accent-tint); }
 .workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-content { padding: 20px 18px 40px; }
 .workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-runs { padding: 10px 14px; }
 /* The objective sizes itself from the viewport everywhere else; in a 380px

@@ -107,6 +107,21 @@ describe("host execution evidence", () => {
 });
 
 describe("OrchestrationPanel", () => {
+  it("asks for plan approval in the run, and only while it is pending", () => {
+    const pending = structuredClone(snapshot);
+    pending.runs[0].planApproval = { status: "pending", requestedAt: 1 };
+    const render = (current: OrchestrationSnapshot) => renderToStaticMarkup(<OrchestrationPanel embedded
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey={current.runs[0].coordinatorChatKey}
+      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+    // Plan mode: the review stands in for the progress bar and task list.
+    expect(render(pending)).toContain("Approve plan");
+    expect(render(pending)).not.toContain("Tasks completed");
+    const approved = structuredClone(pending);
+    approved.runs[0].planApproval = { status: "approved", requestedAt: 1 };
+    expect(render(approved)).not.toContain("Approve plan");
+    expect(render(approved)).toContain("Tasks completed");
+  });
+
   it("keeps acceptance unverified even when every task has completed", () => {
     const current = structuredClone(snapshot);
     current.runs[0].status = "completed";

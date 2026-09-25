@@ -1,67 +1,15 @@
-// Agents mode's two surfaces beyond Settings:
-//
-//   - PlanApproval, above a lead's composer: the plan it made, waiting for the
-//     person. No worker starts until Approve — the host refuses them, this card
-//     only asks.
-//   - AgentsDashboard, from the top bar: the org chart, and for each agent the
-//     tasks it leads and the tasks it was given.
+// Agents mode's dashboard, from the top bar: the org chart, and for each agent
+// the tasks it leads and the tasks it was given. A lead's plan waiting for
+// approval is reviewed in its Run panel (`PlanReview`), not here.
 import { useEffect, useMemo, useState } from "react";
 import "./AgentsSettings.css";
 import { AGENT_NAME } from "../lib/agentProviders";
-import { approvePlan, loadLeads, loadTeam, type TeamAgent } from "../lib/agentsMode";
+import { loadLeads, loadTeam, type TeamAgent } from "../lib/agentsMode";
 import { orgChart, workFor, type LeadRecord } from "../lib/agentsDashboard";
 import { TASK_LABELS } from "../lib/agentTaskBoard";
-import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
+import type { OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
 import { AgentLogo } from "./AgentLogo";
 import { TaskStatusIcon } from "./TaskMeter";
-
-export function PlanApproval({ run, tasks, drafting, onApproved }: {
-  run: OrchestrationRun;
-  tasks: OrchestrationTask[];
-  /** The lead is still in its turn: the plan may not be finished. */
-  drafting: boolean;
-  onApproved?: () => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const approve = async () => {
-    setBusy(true);
-    setError("");
-    try {
-      await approvePlan(run.coordinatorChatKey, run.id);
-      onApproved?.();
-    } catch (reason) {
-      setError(String((reason as Error).message ?? reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <section className="plan-approval" aria-label="Plan waiting for approval">
-      <header className="plan-approval-head">
-        <strong>{drafting ? "Plan in progress" : "Plan ready for your approval"}</strong>
-        <span>{tasks.length} {tasks.length === 1 ? "task" : "tasks"} · no worker starts until you approve</span>
-      </header>
-      {tasks.length > 0 && (
-        <ol className="plan-approval-list">
-          {tasks.map((task) => (
-            <li key={task.id}>
-              <span className="plan-approval-title">{task.title}</span>
-              <span className="plan-approval-who">{task.assignee?.name ?? "unassigned"}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-      {error && <p className="set-warn" role="alert">{error}</p>}
-      <div className="plan-approval-actions">
-        <span className="plan-approval-hint">To change it, reply below.</span>
-        <button className="settings-primary" type="button" disabled={busy || drafting || tasks.length === 0} onClick={() => void approve()}>
-          {busy ? "Approving…" : "Approve plan"}
-        </button>
-      </div>
-    </section>
-  );
-}
 
 export function AgentsDashboard({ projectId, snapshot, chatTitle, onOpenChat, onManage, onClose }: {
   projectId: string | null;

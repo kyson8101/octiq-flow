@@ -13,6 +13,7 @@ import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
 import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
 import { AgentLogo } from "./AgentLogo";
+import { PlanReview } from "./PlanReview";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { RollingNumber } from "./RollingNumber";
@@ -67,6 +68,7 @@ export function OrchestrationPanel({
   setupContext,
   onEnsureCoordinator,
   onStartMaster,
+  coordinatorBusy = false,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
@@ -82,6 +84,9 @@ export function OrchestrationPanel({
   setupContext?: ReactNode;
   onEnsureCoordinator?: (objective: string) => Promise<string>;
   onStartMaster?: (run: OrchestrationRun) => Promise<void>;
+  /** The main agent is mid-turn, so a plan waiting for approval may not be
+   *  finished yet. */
+  coordinatorBusy?: boolean;
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
@@ -318,6 +323,13 @@ export function OrchestrationPanel({
                 onWorkspaceAction={(command, args) => void workspaceAction(command, args)}
                 onOpenChat={onOpenChat}
                 currentChatKey={currentChatKey}
+                coordinatorBusy={coordinatorBusy}
+                onPlanApproved={() => void read()}
+                onRequestPlanChanges={(note) => {
+                  onOpenChat(selected.coordinatorChatKey,
+                    `Before I approve the plan for run ${selected.id}, change this:\n\n${note}\n\nRevise the tasks through the orchestration tools and ask for approval again.`);
+                  onClose();
+                }}
                 onAskStop={() => setConfirmStop(true)}
                 onCancelStop={() => setConfirmStop(false)}
                 onStop={() => void stopRun()}
@@ -459,6 +471,9 @@ function RunDetail({
   onCancelStop,
   onStop,
   onStartMaster,
+  coordinatorBusy,
+  onPlanApproved,
+  onRequestPlanChanges,
 }: {
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
@@ -481,8 +496,13 @@ function RunDetail({
   onCancelStop: () => void;
   onStop: () => void;
   onStartMaster?: () => Promise<void>;
+  coordinatorBusy: boolean;
+  onPlanApproved: () => void;
+  onRequestPlanChanges: (note: string) => void;
 }) {
   const [filter, setFilter] = useState<TaskFilter>("all");
+  // Plan mode: until the person approves, the plan IS the run.
+  const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
   const now = useElapsedTick(runIsLive(snapshot, run.id));
   const openGates = gates.filter((gate) => gate.status === "open");
   const gateBlockedTasks = new Set(openGates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
@@ -517,6 +537,10 @@ function RunDetail({
         <h2 id="orch-run-title">{run.objective}</h2>
       </header>
 
+      {planPending && (
+        <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
+      )}
+
       {openGates.length > 0 && (
         <section className="orch-decisions" aria-labelledby="orch-decisions-title">
           <h3 id="orch-decisions-title">Needs you</h3>
@@ -545,8 +569,8 @@ function RunDetail({
         </section>
       )}
 
-      <RunProgress run={run} tasks={tasks} counts={counts} working={working} attention={attention}
-        decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} />
+      {!planPending && <RunProgress run={run} tasks={tasks} counts={counts} working={working} attention={attention}
+        decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} />}
 
       <details className="orch-run-settings">
         <summary>Run settings</summary>
@@ -583,7 +607,7 @@ function RunDetail({
         </div>
       </details>
 
-      <section className="orch-tasks" aria-labelledby="orch-tasks-title">
+      {!planPending && <section className="orch-tasks" aria-labelledby="orch-tasks-title">
         <div className="orch-section-head">
           <h3 id="orch-tasks-title">Tasks</h3>
           {tasks.length > FILTERS_WORTH_SHOWING && <div className="orch-task-filters" role="group" aria-label="Filter tasks">
@@ -601,7 +625,7 @@ function RunDetail({
             archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
             open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)} />
         ))}
-      </section>
+      </section>}
 
       {notifications.length > 0 && <details className="orch-notifications">
         <summary>Notifications · {notifications.filter((item) => item.state === "pending" || item.state === "delivering").length} awaiting receipt</summary>

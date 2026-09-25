@@ -1,12 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
-import { createElement } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { orgChart, pendingPlan, workFor, type LeadRecord } from "./agentsDashboard";
 import { EMPTY_ORCHESTRATION, type OrchestrationRun, type OrchestrationSnapshot, type OrchestrationTask } from "./orchestration";
 import type { TeamAgent } from "./agentsMode";
-import { PlanApproval } from "../components/AgentsDashboard";
 
 const agent = (id: string, name: string, reportsTo?: string): TeamAgent => ({
   id, name, role: "", agent: "claude", model: "sonnet", access: "auto", reportsTo, createdAt: 1, updatedAt: 1,
@@ -56,15 +53,5 @@ describe("agents dashboard", () => {
     expect(pendingPlan(snapshot, "chat:other")).toBeNull();
     expect(pendingPlan({ ...snapshot, runs: [run({ status: "stopped" })] }, "chat:lead")).toBeNull();
     expect(pendingPlan({ ...snapshot, runs: [run({ planApproval: { status: "approved", requestedAt: 1 } })] }, "chat:lead")).toBeNull();
-  });
-
-  it("will not approve a plan still being drafted", () => {
-    const html = renderToStaticMarkup(createElement(PlanApproval, { run: run(), tasks: [task("a", "ready", "Ada")], drafting: true }));
-    expect(html).toContain("Plan in progress");
-    expect(html).toContain("Ada");
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Approve plan/);
-    const ready = renderToStaticMarkup(createElement(PlanApproval, { run: run(), tasks: [task("a", "ready", "Ada")], drafting: false }));
-    expect(ready).toContain("Plan ready for your approval");
-    expect(ready).not.toMatch(/disabled=""[^>]*>Approve plan/);
   });
 });
