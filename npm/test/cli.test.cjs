@@ -45,6 +45,10 @@ test('foreground run forwards bind and port to the native server', async () => {
       invocation = args;
       return 7;
     },
+    // Stubbed so this stays a test about the env, not about the page: run
+    // opens a browser now, and the real wait would poll a port for seconds.
+    waitForUrl: async () => 'http://127.0.0.1:1666/?token=test',
+    openBrowser: () => {},
   });
   assert.equal(code, 7);
   assert.equal(invocation[0].binary, '/runtime/octiq-server');
@@ -80,4 +84,61 @@ test('readiness uses the public health endpoint before asking for the local toke
     'http://127.0.0.1:1777/token',
   ]);
   assert.equal(url, 'http://127.0.0.1:1777/?token=token%20with%20spaces');
+});
+
+test('foreground run opens the browser once the server answers', async () => {
+  const calls = [];
+  const code = await main(['run', '--port', '1777'], {
+    resolveRuntime: () => ({ binary: '/runtime/octiq-server' }),
+    runForeground: async () => {
+      calls.push(['foreground']);
+      return 0;
+    },
+    waitForUrl: async (port) => {
+      calls.push(['wait', port]);
+      return 'http://127.0.0.1:1777/?token=test';
+    },
+    openBrowser: (url) => calls.push(['open', url]),
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(calls.find(([name]) => name === 'wait'), ['wait', 1777]);
+  assert.deepEqual(calls.find(([name]) => name === 'open'), [
+    'open',
+    'http://127.0.0.1:1777/?token=test',
+  ]);
+});
+
+test('foreground run honours --no-open', async () => {
+  const calls = [];
+  const code = await main(['run', '--no-open'], {
+    resolveRuntime: () => ({ binary: '/runtime/octiq-server' }),
+    runForeground: async () => 0,
+    waitForUrl: async () => {
+      calls.push(['wait']);
+      return 'http://127.0.0.1:1421/?token=test';
+    },
+    openBrowser: () => calls.push(['open']),
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(calls, []);
+});
+
+test('a browser that cannot be reached never changes the run exit code', async () => {
+  // A non-loopback bind, a token the CLI may not read, a machine with no
+  // browser at all: none of these are reasons to fail the server the user
+  // actually asked for.
+  const code = await main(['run'], {
+    resolveRuntime: () => ({ binary: '/runtime/octiq-server' }),
+    runForeground: async () => 3,
+    waitForUrl: async () => {
+      throw new Error('did not listen');
+    },
+    openBrowser: () => {
+      throw new Error('no browser');
+    },
+  });
+
+  assert.equal(code, 3);
 });

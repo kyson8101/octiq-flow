@@ -12,7 +12,7 @@ const {
 const HELP = `OctiqFlow — agent workflow orchestration in your browser
 
 Usage:
-  octiqflow                     Run in the foreground
+  octiqflow                     Run in the foreground and open the client
   octiqflow install [options]   Install and start the macOS background service
   octiqflow uninstall           Remove the macOS background service
   octiqflow status [options]    Check the service and HTTP endpoint
@@ -22,7 +22,7 @@ Usage:
 Options:
   --port <number>               HTTP port (default: 1421)
   --bind <address>              Bind address (default: 127.0.0.1)
-  --no-open                     Do not open a browser after installation
+  --no-open                     Do not open a browser
   -h, --help                    Show this help
   -v, --version                 Show the package version
 
@@ -114,12 +114,30 @@ async function main(args, dependencies = {}) {
 
   if (command === 'run') {
     const runtime = (dependencies.resolveRuntime || resolveRuntime)();
-    return (dependencies.runForeground || runForeground)(runtime, [], {
+    // Open the page as soon as the server answers. The URL carries a token
+    // that only exists once the server has written its config, so it has to be
+    // read AFTER startup rather than guessed before it — and printing it for
+    // the user to copy by hand is the thing this saves them.
+    //
+    // Nothing here may affect the server: a non-loopback bind, a machine with
+    // no browser, or a server that never comes up are all reasons to skip the
+    // page, never reasons to fail the run.
+    const opened = options.open
+      ? (async () => {
+          const url = await (dependencies.waitForUrl || waitForUrl)(options.port);
+          (dependencies.openBrowser || openBrowser)(url);
+        })().catch(() => {})
+      : Promise.resolve();
+    const code = await (dependencies.runForeground || runForeground)(runtime, [], {
       env: {
         OCTIQ_WEB_BIND: options.bind,
         OCTIQ_WEB_PORT: String(options.port),
       },
     });
+    // Settle the opener so a caller (and a test) never races it. Ctrl+C does
+    // not come through here: `runForeground` re-raises the signal on itself.
+    await opened;
+    return code;
   }
   if (command === 'install') {
     const runtime = (dependencies.resolveRuntime || resolveRuntime)();
