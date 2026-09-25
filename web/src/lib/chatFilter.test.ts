@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chatFilterCount, chatFilterList, isChatDone, isChatFilter } from "./chatFilter";
+import { chatFilterCount, chatFilterList, chatFilterOptions, isChatDone, isChatFilter } from "./chatFilter";
 import type { Conversation } from "./store";
 
 function chat(id: string, updatedAt: number, doneAt?: number | null): Conversation {
@@ -102,5 +102,22 @@ describe("isChatFilter", () => {
     expect(isChatFilter("all")).toBe(true);
     expect(isChatFilter("archived")).toBe(false);
     expect(isChatFilter(null)).toBe(false);
+  });
+});
+
+describe("chatFilterOptions", () => {
+  it("always offers all four views, and marks only the current one", () => {
+    const options = chatFilterOptions([chat("open", 100)], "active");
+    expect(options.map((option) => option.label)).toEqual(["Active", "Pinned", "Done", "All"]);
+    expect(options.filter((option) => option.checked).map((option) => option.filter)).toEqual(["active"]);
+  });
+
+  it("counts the hand-made views once they hold a chat", () => {
+    const options = chatFilterOptions(
+      [chat("open", 100), chat("ticked", 100, 200), { ...chat("saved", 100), pinned: true }],
+      "done",
+    );
+    expect(options.map((option) => option.label)).toEqual(["Active", "Pinned (1)", "Done (1)", "All"]);
+    expect(options.find((option) => option.checked)?.filter).toBe("done");
   });
 });

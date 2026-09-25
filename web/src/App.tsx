@@ -92,6 +92,7 @@ import {
 import * as push from "./lib/push";
 import { AgentFocus } from "./components/AgentFocus";
 import { AgentRail, RailButton } from "./components/AgentRail";
+import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
@@ -379,6 +380,10 @@ export default function App() {
   /** A first-class main-area view. The chat stays mounted behind it so opening
    *  the review desk cannot reset scroll, drafts, requests, or live streams. */
   const [prDashboardOpen, setPrDashboardOpen] = useState(false);
+  /** The Projects page, the same kind of main-area view: null when closed,
+   *  otherwise the project whose tasks it lists, or null for the list. */
+  const [projectsPage, setProjectsPage] = useState<{ projectId: string | null } | null>(null);
+  const mainPage = prDashboardOpen || projectsPage !== null;
   // The stored list, minus everything this browser has deleted. The two are
   // written at different moments — a save already on its way when the × was
   // clicked lands after it — so the copy on disk can still carry a chat whose
@@ -2017,6 +2022,7 @@ export default function App() {
     remember(LAST_KEY, "");
     setProjectsScreen(false);
     setPrDashboardOpen(false);
+    setProjectsPage(null);
     setFocusBox((n) => n + 1);
   }, []);
 
@@ -2190,6 +2196,7 @@ export default function App() {
     setAccess(conversationAccess);
     setProjectsScreen(false);
     setPrDashboardOpen(false);
+    setProjectsPage(null);
   }, [catchUpChat, writeChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
@@ -3704,7 +3711,7 @@ export default function App() {
         aria-label="Pull requests"
         title="Pull requests"
         aria-pressed={prDashboardOpen}
-        onClick={() => setPrDashboardOpen((open) => !open)}
+        onClick={() => { setProjectsPage(null); setPrDashboardOpen((open) => !open); }}
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" />
@@ -3741,47 +3748,7 @@ export default function App() {
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
 
-      {agentsMode && (
-        <button
-          className={`icon-btn${agentsDashboard ? " is-on" : ""}`}
-          type="button"
-          aria-label="Agents"
-          title="Agents"
-          aria-pressed={agentsDashboard}
-          onClick={() => setAgentsDashboard((open) => !open)}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <rect x="9" y="3" width="6" height="5" rx="1" /><rect x="3" y="16" width="6" height="5" rx="1" /><rect x="15" y="16" width="6" height="5" rx="1" />
-            <path d="M12 8v4M6 16v-2h12v2" />
-          </svg>
-          <span className="topbar-action-label">Agents</span>
-        </button>
-      )}
-
-      <button
-        className="icon-btn"
-        type="button"
-        aria-label="Settings"
-        title="Settings"
-        onClick={() => setAppSettings(true)}
-      >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.9"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-        <span className="topbar-action-label">Settings</span>
-      </button>
-
+      {/* Settings and Agents live in the sidebar, under New task. */}
       <button
           className="icon-btn new-chat"
           type="button"
@@ -3871,7 +3838,7 @@ export default function App() {
           <ConnectionStatus state={conn} />
           {/* Where this chat is, next to what it is — the two questions a
               chat picked up an hour later cannot answer for itself. */}
-          {!showingProjects && !prDashboardOpen && conversationId && (
+          {!showingProjects && !mainPage && conversationId && (
             <ChatTaskBar
               chatId={conversationId}
               connected={conn === "open"}
@@ -3946,6 +3913,14 @@ export default function App() {
           branches={projectBranches}
           onResize={isMobile ? undefined : nav.startDrag}
           foot={topbarReadouts ? undefined : readouts}
+          onSettings={() => setAppSettings(true)}
+          onAgents={agentsMode ? () => setAgentsDashboard(true) : undefined}
+          onProjects={() => {
+            setPrDashboardOpen(false);
+            setProjectsScreen(false);
+            setProjectsPage({ projectId: null });
+          }}
+          activeView={projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents" : appSettings ? "settings" : null}
         />
 
         <main className="main" hidden={showingProjects} ref={pane}>
@@ -3963,7 +3938,24 @@ export default function App() {
             onPrepareChat={preparePullRequestChat}
             onOpenChat={openPullRequestChat}
           />}
-          <div className="chat-app-surface" hidden={prDashboardOpen}>
+          {projectsPage && <ProjectsPage
+            projects={workspaces}
+            shelved={shelved}
+            conversations={conversations}
+            selectedProjectId={projectsPage.projectId}
+            busy={busySet}
+            chatParents={chatParents}
+            onSelectProject={(id) => setProjectsPage({ projectId: id })}
+            onOpenChat={openConversation}
+            onNewTask={(id) => {
+              newChat();
+              setProjectId(id);
+            }}
+            onNewProject={() => setSettingsFor("new")}
+            onProjectSettings={setSettingsFor}
+            onClose={() => setProjectsPage(null)}
+          />}
+          <div className="chat-app-surface" hidden={mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {!workerChat && <ChatWorkflowBar snapshot={currentWorkflow} orchestrated={orchestrated} view={workflowView} focusMode={focusMode} split={workflowSplit}
             planPending={!!plan}
@@ -4337,7 +4329,7 @@ export default function App() {
             here it takes width from the view, so the transcript and the prompt
             box move together and stay lined up — which is what the git and
             files panels beside it have always done. */}
-        {!prDashboardOpen && !previewVisible && !railShut && chat.agents.length > 0 && (
+        {!mainPage && !previewVisible && !railShut && chat.agents.length > 0 && (
           <aside className="side">
             <AgentRail
               agents={chat.agents}
@@ -4351,7 +4343,7 @@ export default function App() {
             rather than something laid over it, so the chat gives up width while
             this is open and takes it straight back when it closes. On a phone
             the stylesheet turns it into a sheet that slides in from the right. */}
-        {!prDashboardOpen && gitMounted && !previewVisible && sessionProject && (
+        {!mainPage && gitMounted && !previewVisible && sessionProject && (
           <GitPanel
             project={sessionProject}
             open={gitOpen}
@@ -4360,8 +4352,8 @@ export default function App() {
           />
         )}
 
-        {!prDashboardOpen && previewVisible && conversationId && <ImagePreviewPanel key={conversationId} conversationKey={keyFor(conversationId)} images={previews.images} error={previews.error} onClose={() => previews.setOpen(false)} />}
-        {!prDashboardOpen && filesMounted && !previewVisible && (
+        {!mainPage && previewVisible && conversationId && <ImagePreviewPanel key={conversationId} conversationKey={keyFor(conversationId)} images={previews.images} error={previews.error} onClose={() => previews.setOpen(false)} />}
+        {!mainPage && filesMounted && !previewVisible && (
           <SessionFilesPanel
             pins={sessionFiles}
             open={filesOpen}

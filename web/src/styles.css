@@ -662,40 +662,80 @@ body {
 .sidebar-search button:hover { background: var(--bg-2); color: var(--fg-0); }
 .sidebar-search button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* Which chats the list is showing. Keep this row mounted while chats are
-   ticked off, so the list below does not shift when Done first appears. */
-.sidebar-search-wrap:has(+ .sidebar-filter) { border-bottom: 0; padding-bottom: 6px; }
-.sidebar-filter {
-  display: flex;
-  gap: 4px;
-  padding: 0 8px 8px;
-  border-bottom: 1px solid var(--border);
+/* The app-level places, straight under New task. Quieter than New task
+   itself: a row of the same height would make four primary actions. */
+.sidebar-new-chat:has(+ .sidebar-places) { margin-bottom: 2px; }
+.sidebar-places {
+  display: grid;
+  gap: 1px;
+  margin: 0;
+  padding: 0 8px 10px;
+  list-style: none;
 }
-.sidebar-filter button {
-  display: inline-flex;
+.sidebar-place {
+  display: flex;
   align-items: center;
-  gap: 5px;
-  min-height: 24px;
-  padding: 0 9px;
+  gap: 14px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 14px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--r-sm);
   background: transparent;
-  color: var(--fg-3);
+  color: var(--fg-2);
   font: inherit;
-  font-size: 11px;
+  font-size: 13px;
+  text-align: left;
   cursor: pointer;
   transition:
     background 140ms ease-out,
     color 140ms ease-out;
 }
-.sidebar-filter button:hover { background: var(--bg-2); color: var(--fg-1); }
-.sidebar-filter button.is-on { background: var(--accent-tint); color: var(--fg-0); }
-.sidebar-filter button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.sidebar-filter button > span {
-  color: var(--fg-3);
-  font-variant-numeric: tabular-nums;
+.sidebar-place svg { flex: 0 0 20px; width: 18px; height: 18px; }
+.sidebar-place:hover { background: var(--bg-2); color: var(--fg-0); }
+.sidebar-place[aria-current="page"] { background: var(--accent-tint); color: var(--fg-0); }
+.sidebar-place:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Recent's heading carries the view picker on its own line, so the list
+   below never moves when the view changes or the first chat is ticked. */
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 6px;
 }
-.sidebar-filter button.is-on > span { color: var(--fg-2); }
+.sidebar-section-head .sidebar-section-heading { margin-bottom: 0; }
+.sidebar .sidebar-section-head .sidebar-filter-trigger {
+  width: auto;
+  height: 24px;
+  gap: 4px;
+  padding: 0 6px 0 9px;
+  border-radius: 999px;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 11px;
+  transition:
+    background 140ms ease-out,
+    color 140ms ease-out;
+}
+.sidebar-filter-trigger svg { transition: transform 160ms ease-out; }
+.sidebar-filter-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.sidebar-dropdown button[role="menuitemradio"]::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: transparent;
+}
+.sidebar-dropdown button[aria-checked="true"] { color: var(--fg-0); }
+.sidebar-dropdown button[aria-checked="true"]::after { background: var(--accent); }
+.sidebar-chat-section > .sidebar-empty { margin-top: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-filter-trigger svg { transition: none; }
+}
 
 .task-chat-scroll {
   flex: 1 1 auto;
@@ -1044,6 +1084,8 @@ body {
 
 @media (max-width: 859.98px), (pointer: coarse) {
   .sidebar-new-chat { min-height: 40px; }
+  .sidebar-place { min-height: 40px; }
+  .sidebar .sidebar-section-head .sidebar-filter-trigger { width: auto; height: 36px; }
   .sidebar-search { min-height: 40px; }
   .sidebar-search button { width: 32px; height: 32px; }
   .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }

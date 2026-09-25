@@ -89,6 +89,25 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("Project settings:");
   });
 
+  it("lists Settings, Agents and Projects straight under New task", () => {
+    const out = html({ onSettings: () => {}, onAgents: () => {}, onProjects: () => {}, activeView: "projects" });
+    const places = out.indexOf('class="sidebar-places"');
+    expect(out.indexOf('class="sidebar-new-chat"')).toBeLessThan(places);
+    expect(places).toBeLessThan(out.indexOf('class="sidebar-search-wrap"'));
+    const list = out.slice(places, out.indexOf('class="sidebar-search-wrap"'));
+    expect(list.indexOf("Settings</span>")).toBeLessThan(list.indexOf("Agents</span>"));
+    expect(list.indexOf("Agents</span>")).toBeLessThan(list.indexOf("Projects</span>"));
+    expect(list).toContain('aria-current="page"><svg');
+    expect(list.match(/aria-current="page"/g)).toHaveLength(1);
+  });
+
+  it("leaves Agents out when agents mode is off", () => {
+    const out = html({ onSettings: () => {}, onProjects: () => {} });
+    expect(out).toContain("Settings</span>");
+    expect(out).toContain("Projects</span>");
+    expect(out).not.toContain("Agents</span>");
+  });
+
   it("groups pinned chats above recent chats without duplicating either row", () => {
     const out = html({ conversations: [chat("recent"), { ...chat("saved"), pinned: true }] });
     expect(out).toContain('aria-labelledby="sidebar-pinned-heading"');
@@ -194,42 +213,39 @@ describe("task-oriented Sidebar", () => {
   describe("ticking a chat off", () => {
     const ticked = (id: string, doneAt: number) => ({ ...chat(id), updatedAt: 100, doneAt });
 
-    it("offers a tick and keeps the filter row in place before the first tick", () => {
+    it("offers a tick and puts the view picker beside the Recent heading", () => {
       const out = html({ conversations: [chat("a")] });
       expect(out).toContain('aria-label="Mark done: Task a"');
       expect(out).toContain('title="Double-click or double-tap to mark done"');
       expect(out).toContain('aria-description="Double-click or double-tap. With a keyboard, press Enter or Space."');
-      expect(out).toContain('class="sidebar-filter"');
-      expect(out).toContain("Active</button>");
-      expect(out).toContain("All</button>");
-      expect(out).not.toContain("Done</button>");
+      expect(out).not.toContain('class="sidebar-filter"');
+      const head = out.slice(out.indexOf('class="sidebar-section-head"'), out.indexOf('class="chat-list task-chat-list"'));
+      expect(head).toContain('class="sidebar-section-heading">Recent</h2>');
+      expect(head).toContain('aria-label="Show chats: Active"');
+      expect(head).toContain('aria-haspopup="menu"');
+      expect(head).toContain('aria-expanded="false"');
+      expect(head).toContain("<span>Active</span>");
     });
 
-    it("hides a ticked chat and offers the filter that brings it back", () => {
+    it("hides a ticked chat and keeps the picker that brings it back", () => {
       const out = html({ conversations: [chat("a"), ticked("b", 500)] });
       expect(out).toContain('class="chat-title">Task a</span>');
       expect(out).not.toContain("Task b");
-      expect(out).toContain('class="sidebar-filter"');
-      // The count is the whole reason the row is worth its space.
-      expect(out).toContain("Done<span>1</span>");
-      // And a view with nothing in it is not offered at all.
-      expect(out).not.toContain("Pinned");
+      expect(out).toContain('aria-label="Show chats: Active"');
     });
 
-    it("offers a pinned view only once something is pinned", () => {
-      const plain = html({ conversations: [chat("a"), ticked("b", 500)] });
-      expect(plain).not.toContain("Pinned");
-
-      const out = html({ conversations: [{ ...chat("a"), pinned: true }, ticked("b", 500)] });
-      expect(out).toContain("Pinned<span>1</span>");
-      expect(out).toContain("Done<span>1</span>");
+    it("keeps pinned chats in their own section above the picker", () => {
+      const out = html({ conversations: [{ ...chat("a"), pinned: true }, chat("c"), ticked("b", 500)] });
+      expect(out.indexOf('class="sidebar-section-heading">Pinned')).toBeLessThan(out.indexOf('class="chat-title">Task a'));
+      expect(out.indexOf('class="chat-title">Task a')).toBeLessThan(out.indexOf('aria-label="Show chats: Active"'));
+      expect(out.indexOf('aria-label="Show chats: Active"')).toBeLessThan(out.indexOf('class="chat-title">Task c'));
     });
 
-    it("keeps the filter row's height when chats are ticked", () => {
-      const before = html({ conversations: [chat("a"), chat("b")] });
-      const after = html({ conversations: [chat("a"), ticked("b", 500)] });
-      expect(before).toContain('class="sidebar-filter"');
-      expect(after).toContain('class="sidebar-filter"');
+    it("keeps the Recent heading and its picker when only pinned chats are listed", () => {
+      const out = html({ conversations: [{ ...chat("a"), pinned: true }] });
+      expect(out).toContain('class="sidebar-section-heading">Pinned');
+      expect(out).toContain('class="sidebar-section-heading">Recent');
+      expect(out).toContain('aria-label="Show chats: Active"');
     });
 
     it("keeps the chat being read listed, ticked and ready to be taken back", () => {
@@ -250,13 +266,18 @@ describe("task-oriented Sidebar", () => {
       const out = html({ conversations: [{ ...chat("a"), updatedAt: 900, doneAt: 500 }] });
       expect(out).toContain("Task a");
       expect(out).not.toContain("is-done");
-      expect(out).toContain("sidebar-filter");
+      expect(out).toContain('aria-label="Show chats: Active"');
     });
 
     it("says a filter emptied the list rather than offering a first chat", () => {
       const out = html({ conversations: [ticked("b", 500)] });
       expect(out).toContain("Every chat is ticked off.");
       expect(out).not.toContain("Start your first chat");
+    });
+
+    it("keeps the picker on screen when the view is empty", () => {
+      const out = html({ conversations: [ticked("b", 500)] });
+      expect(out.indexOf('aria-label="Show chats: Active"')).toBeLessThan(out.indexOf("Every chat is ticked off."));
     });
   });
 });

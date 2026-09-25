@@ -9,7 +9,7 @@ import { projectColor } from "../lib/projectColor";
 import { isWorkerChat, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
 import {
-  CHAT_FILTERS, chatFilterCount, chatFilterList, isChatDone, isChatFilter, type ChatFilter,
+  CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
 } from "../lib/chatFilter";
 import { workerArchiveChatList, workerArchiveDisabledReason } from "../lib/workerArchive";
 import "./ChatWorkflowBar.css";
@@ -28,6 +28,8 @@ export type Project = ProjectAppearance & {
   sibling_ids?: string[];
   env?: Record<string, string>;
 };
+
+export type SidebarView = "settings" | "agents" | "projects";
 
 export type ChatSearchHit = {
   id: string;
@@ -65,6 +67,7 @@ export function Sidebar({
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New chat", onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
+  onSettings, onAgents, onProjects, activeView = null,
 }: {
   orchestration?: OrchestrationSnapshot;
   projects: Project[];
@@ -96,11 +99,19 @@ export function Sidebar({
   chatParents?: ReadonlyMap<string, string>;
   onResize?: (event: React.PointerEvent<HTMLElement>) => void;
   foot?: ReactNode;
+  /** The app-level places, listed straight under New task. Each is drawn only
+   *  when it is given: Agents exists in agents mode alone. */
+  onSettings?: () => void;
+  onAgents?: () => void;
+  onProjects?: () => void;
+  /** Which of those places the main area is showing, for `aria-current`. */
+  activeView?: SidebarView | null;
 } & ChatPreviewSource) {
   const [collapsed, setCollapsed] = useState(savedCollapsed);
   const [filter, setFilter] = useState<ChatFilter>(savedFilter);
   const [keptMarked, setKeptMarked] = useState<ReadonlySet<string>>(() => new Set());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [actionsId, setActionsId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -133,13 +144,9 @@ export function Sidebar({
       return next.size === before.size ? before : next;
     });
   }, [conversations, filter]);
-  // Keep the filter row's height stable while chats are being ticked off. The
-  // optional views appear only once they hold a chat; Active and All stay put.
-  const doneTotal = chatFilterCount(activeConversations, "done");
-  const pinnedTotal = chatFilterCount(activeConversations, "pinned");
-  const offered = CHAT_FILTERS.filter((option) =>
-    option === "active" || option === "all" || filter === option
-    || (option === "done" ? doneTotal : pinnedTotal) > 0);
+  // The views live in one dropdown beside the Recent heading, so every view is
+  // always offered: a menu costs no row height, and a fixed set of four is
+  // easier to find again than one that grows as chats are ticked or pinned.
   const filtering = !showArchived && activeConversations.length > 0;
   const listedConversations = showArchived ? archivedConversations
     : chatFilterList(activeConversations, filter, currentConversation, keptMarked);
@@ -472,6 +479,22 @@ export function Sidebar({
         <button className="sidebar-new-chat" type="button" onClick={onNewChat}>
           <NewChatIcon /><span>{newLabel}</span>
         </button>
+        {(onSettings || onAgents || onProjects) && (
+          <ul className="sidebar-places" aria-label="App">
+            {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
+              aria-current={activeView === "settings" ? "page" : undefined}>
+              <SettingsIcon /><span>Settings</span>
+            </button></li>}
+            {onAgents && <li><button className="sidebar-place" type="button" onClick={onAgents}
+              aria-current={activeView === "agents" ? "page" : undefined}>
+              <AgentsIcon /><span>Agents</span>
+            </button></li>}
+            {onProjects && <li><button className="sidebar-place" type="button" onClick={onProjects}
+              aria-current={activeView === "projects" ? "page" : undefined}>
+              <ProjectsIcon /><span>Projects</span>
+            </button></li>}
+          </ul>
+        )}
         <div className="sidebar-search-wrap">
           <label className="sidebar-search">
             <SearchIcon />
@@ -496,23 +519,6 @@ export function Sidebar({
             )}
           </label>
         </div>
-        {/* This row keeps its height when the first chat is ticked off, so the
-            list below does not jump while somebody is working through it. */}
-        {filtering && (
-          <div className="sidebar-filter" role="group" aria-label="Show chats">
-            {offered.map((option) => {
-              const total = option === "done" ? doneTotal : option === "pinned" ? pinnedTotal : 0;
-              return (
-                <button key={option} type="button" aria-pressed={filter === option}
-                  className={filter === option ? "is-on" : ""}
-                  onClick={() => chooseFilter(option)}>
-                  {FILTER_LABELS[option]}
-                  {total > 0 && <span>{total}</span>}
-                </button>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {showArchived && <div className="sidebar-archive-view">
@@ -520,7 +526,44 @@ export function Sidebar({
         <button type="button" onClick={() => { setShowArchived(false); setKeptMarked(new Set()); setQuery(""); }}>Back to active chats</button>
       </div>}
       {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
-      {!listedConversations.length ? (
+      {visibleConversations.length > 0 || filtering ? (
+        <div className="task-chat-scroll">
+          {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
+            <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
+            <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
+          </section>}
+          {/* The heading stays whenever there are chats to filter, even with
+              nothing under it: it carries the only way to change the view. */}
+          {(recentNodes.length > 0 || filtering) && <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
+            <div className="sidebar-section-head">
+              <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived" : "Recent"}</h2>
+              {filtering && <SidebarMenu className="sidebar-filter-trigger"
+                label={`Show chats: ${CHAT_FILTER_LABELS[filter]}`}
+                open={filterOpen} onOpenChange={setFilterOpen}
+                icon={<><span>{CHAT_FILTER_LABELS[filter]}</span><ChevronIcon /></>}
+                items={chatFilterOptions(activeConversations, filter).map((option) => ({
+                  id: option.filter, label: option.label, checked: option.checked,
+                  onSelect: () => chooseFilter(option.filter),
+                }))} />}
+            </div>
+            {recentNodes.length > 0 && <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul>}
+            {!visibleConversations.length && emptyList()}
+          </section>}
+        </div>
+      ) : emptyList()}
+
+      {onFeedback && <button type="button" className="feedback-launch" onClick={onFeedback}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 4h16v13H9l-5 4V4Z" /><path d="M8 8h8M8 12h5" /></svg>
+        Feedback inbox
+      </button>}
+      {foot && <div className="sidebar-slot is-foot">{foot}</div>}
+      {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
+        aria-orientation="vertical" aria-label="Resize the chat column" />}
+    </nav>
+  );
+
+  function emptyList(): ReactNode {
+    return !listedConversations.length ? (
         showArchived ? <div className="sidebar-empty" role="status"><span>No archived workers.</span></div> :
         // An empty list under a filter is not an empty app, and offering to
         // start a first chat to somebody with forty of them is how a filter
@@ -541,38 +584,14 @@ export function Sidebar({
           <span>{searchState === "error" ? "Chat search is unavailable." : "Searching chats…"}</span>
           {searchState === "error" && <button type="button" onClick={() => setQuery("")}>Clear search</button>}
         </div>
-      ) : visibleConversations.length ? (
-        <div className="task-chat-scroll">
-          {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
-            <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
-            <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
-          </section>}
-          {recentNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
-            <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived" : filter === "done" ? "Done" : "Recent"}</h2>
-            <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul>
-          </section>}
-        </div>
       ) : (
         <div className="sidebar-empty" role="status" aria-live="polite">
           <span>No chats found for “{trimmedQuery}”.</span>
           <button type="button" onClick={() => setQuery("")}>Clear search</button>
         </div>
-      )}
-
-      {onFeedback && <button type="button" className="feedback-launch" onClick={onFeedback}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M4 4h16v13H9l-5 4V4Z" /><path d="M8 8h8M8 12h5" /></svg>
-        Feedback inbox
-      </button>}
-      {foot && <div className="sidebar-slot is-foot">{foot}</div>}
-      {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
-        aria-orientation="vertical" aria-label="Resize the chat column" />}
-    </nav>
-  );
+      );
+  }
 }
-
-const FILTER_LABELS: Record<ChatFilter, string> = {
-  active: "Active", pinned: "Pinned", done: "Done", all: "All",
-};
 
 /** What double-tapping the logo will do: an empty ring, or a ticked one to take the
  *  tick back. A ring rather than a box because the logo behind it is already
@@ -595,7 +614,7 @@ function CheckIcon() {
   </svg>;
 }
 
-function chatTime(timestamp: number): string {
+export function chatTime(timestamp: number): string {
   const date = new Date(timestamp);
   const today = new Date();
   if (date.toDateString() === today.toDateString()) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -621,4 +640,8 @@ function NewChatIcon() { return <svg width="20" height="20" viewBox="0 0 24 24" 
 function ArchiveIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M6 7v12h12V7" /><path d="M3 4h18v3H3z" /><path d="M10 11h4" /></svg>; }
 function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 14h10l1-14" /><path d="M10 10v6M14 10v6" /></svg>; }
 function PinIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 17v5" /><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" /></svg>; }
+function ChevronIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>; }
+function SettingsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>; }
+function AgentsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="5" rx="1" /><rect x="3" y="16" width="6" height="5" rx="1" /><rect x="15" y="16" width="6" height="5" rx="1" /><path d="M12 8v4M6 16v-2h12v2" /></svg>; }
+function ProjectsIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>; }
 function PencilIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>; }

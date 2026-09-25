@@ -71,3 +71,23 @@ export function chatFilterList(
 export function chatFilterCount(chats: readonly Conversation[], filter: ChatFilter): number {
   return chatFilterList(chats, filter).length;
 }
+
+export const CHAT_FILTER_LABELS: Record<ChatFilter, string> = {
+  active: "Active", pinned: "Pinned", done: "Done", all: "All",
+};
+
+/** The views as the Recent dropdown offers them: all four, always, with a
+ *  count on the two a chat is put into by hand once they hold anything. */
+export function chatFilterOptions(
+  chats: readonly Conversation[],
+  current: ChatFilter,
+): { filter: ChatFilter; label: string; checked: boolean }[] {
+  return CHAT_FILTERS.map((filter) => {
+    const total = filter === "done" || filter === "pinned" ? chatFilterCount(chats, filter) : 0;
+    return {
+      filter,
+      label: total > 0 ? `${CHAT_FILTER_LABELS[filter]} (${total})` : CHAT_FILTER_LABELS[filter],
+      checked: filter === current,
+    };
+  });
+}

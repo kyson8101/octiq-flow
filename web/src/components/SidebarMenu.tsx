@@ -11,6 +11,9 @@ export type SidebarMenuItem = {
   title?: string;
   /** Keep delete's countdown and its undo action in the same menu. */
   keepOpen?: boolean;
+  /** Set on every item of a menu that picks one value; the item becomes a
+   *  radio and the chosen one is where focus lands when the menu opens. */
+  checked?: boolean;
 };
 
 /** Every sidebar action lives behind the same quiet, labelled disclosure. */
@@ -63,7 +66,8 @@ function Dropdown({ id, label, anchor, items, onClose }: {
     const trigger = anchor.current!;
     trigger.focus({ preventScroll: true });
     element.showModal();
-    element.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
+    (element.querySelector<HTMLButtonElement>('button[aria-checked="true"]:not(:disabled)')
+      ?? element.querySelector<HTMLButtonElement>("button:not(:disabled)"))?.focus({ preventScroll: true });
     const position = () => {
       const rect = trigger.getBoundingClientRect();
       const viewport = window.visualViewport;
@@ -120,8 +124,10 @@ function Dropdown({ id, label, anchor, items, onClose }: {
           : (current + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
         buttons[next]?.focus();
       }}>
-      {items.map(item => <button key={item.id} type="button" role="menuitem" tabIndex={-1}
-        className={item.danger ? "is-danger" : undefined} disabled={item.disabled} title={item.title}
+      {items.map(item => <button key={item.id} type="button" tabIndex={-1}
+        role={item.checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={item.checked}
+        className={[item.danger ? "is-danger" : "", item.checked ? "is-checked" : ""].filter(Boolean).join(" ") || undefined}
+        disabled={item.disabled} title={item.title}
         onClick={() => {
           if (!item.keepOpen) dismiss();
           item.onSelect();
