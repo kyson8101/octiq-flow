@@ -121,4 +121,53 @@ describe("what is still yours", () => {
     expect(after.messages[0].role).toBe("user");
     expect(said(after)).toContain("<agent-message");
   });
+  it("leaves a whole frame the person typed as their own message", () => {
+    // Pasted agent output opens with the frame and closes it at column zero,
+    // exactly like the real thing. What the harness adds and a person cannot
+    // type is the mark: an `origin` of kind "peer", or `isSynthetic`.
+    const pasted = {
+      type: "user",
+      message: { role: "user", content: `<agent-message from="x">\n${HANDBACK_BODY}</agent-message>` },
+      uuid: "u-pasted",
+    };
+    const after = reduceChat(emptyChat(), pasted);
+
+    expect(after.messages).toHaveLength(1);
+    expect(after.messages[0].role).toBe("user");
+    expect(kinds(after)).toEqual(["text"]);
+  });
+});
+
+describe("a peer turn the record kept no envelope for", () => {
+  /** The frame and the harness's `isSynthetic`, and nothing else: an older
+   *  record, or a stream that forwards no `origin`. */
+  const bare = (uuid?: string, said = "Verdict — APPROVE") => ({
+    type: "user",
+    message: {
+      role: "user",
+      content: `<agent-message from="a1">\n[Subagent hand-back] The report follows:\n  ${said}\n</agent-message>`,
+    },
+    isSynthetic: true,
+    ...(uuid ? { uuid } : {}),
+  });
+
+  it("is still read as a peer's, on the harness's own mark", () => {
+    const after = reduceChat(emptyChat(), bare("u-5"));
+
+    expect(kinds(after)).toEqual(["peer"]);
+    expect(said(after)).toBe("Verdict — APPROVE");
+  });
+
+  it("is drawn once when it carries no uuid and arrives twice", () => {
+    const once = reduceChat(emptyChat(), bare());
+    const twice = reduceChat(once, bare());
+
+    expect(twice.messages).toHaveLength(1);
+  });
+
+  it("keeps two different reports with no uuid apart", () => {
+    const after = reduceChat(reduceChat(emptyChat(), bare(undefined, "one")), bare(undefined, "two"));
+
+    expect(after.messages).toHaveLength(2);
+  });
 });

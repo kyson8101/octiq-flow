@@ -68,6 +68,22 @@ it("redraws a peer's words an earlier reader drew as a bubble", () => {
   });
 });
 
+it("leaves a frame the person sent or saw echoed as their own message", () => {
+  // Sent (`turnId`) or echoed back (`echo`) is the record of a person typing.
+  // A frame pasted into the composer is still their words.
+  const typed = chat();
+  typed.messages = [
+    { id: "m1", role: "user", streaming: false, turnId: "t1", blocks: [{ kind: "text", text: FRAME }] },
+    { id: "m2", role: "user", streaming: false, echo: "u2", blocks: [{ kind: "text", text: FRAME }] },
+  ];
+  saveConversations([typed]);
+  restamp({ schema: 1 });
+
+  const [back] = loadConversations();
+  expect(back.messages.map((m) => m.role)).toEqual(["user", "user"]);
+  expect(back.messages[1].blocks).toEqual([{ kind: "text", text: FRAME }]);
+});
+
 it("keeps `seq`, so the chat still resumes where it did", () => {
   // The whole reason not to blank. Without `seq` the chat reloads from zero,
   // which means the PAGED path — the last few turns and nothing else, for

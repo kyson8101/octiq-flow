@@ -31,16 +31,21 @@ function spoken(message: Message): string {
  *  had typed, frame and all. The frame is still there in the cached text,
  *  which is what makes this readable without the original events.
  *
+ *  A message that was SENT (`turnId`) or ECHOED back (`echo`) is left as it
+ *  is: either one is the record of the person typing it, and a frame they
+ *  pasted is still their words. The cache kept no `isSynthetic`, so what is
+ *  left — a user message nothing claims was typed — is the nearest it has.
+ *
  *  Idempotent: a message already redrawn holds a `peer` block rather than
  *  text, so it no longer matches. That matters because this runs on every load
  *  until the row is saved back with the current stamp. */
 export function migrateMessages(messages: Message[]): Message[] {
   let changed = false;
   const drawn = messages.map((message) => {
-    if (message.role !== "user") return message;
+    if (message.role !== "user" || message.turnId || message.echo) return message;
     const text = spoken(message);
     if (!text) return message;
-    const peers = parsePeerMessages(text);
+    const peers = parsePeerMessages(text, undefined, { synthetic: true });
     if (!peers.length) return message;
     changed = true;
     return {
