@@ -52,4 +52,3 @@ export function nextMobileMenuScroll(
 
   return { top, direction, travel, floating, hidden };
 }
-
