@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePeerMessage } from "./peerMessage";
+import { parsePeerMessages } from "./peerMessage";
+
+/** Most of these turns carry exactly one frame; this keeps the assertions
+ *  about what it says rather than about the shape of the list. */
+const one = (text: string, origin?: unknown) => parsePeerMessages(text, origin)[0] ?? null;
 
 /** A subagent's final report, verbatim as the harness injects it: the frame,
  *  the paragraph of boilerplate warning the AGENT that what follows carries no
@@ -46,15 +50,15 @@ const session = {
 
 describe("a subagent handing its report back", () => {
   it("is read as a peer turn, not as typing", () => {
-    expect(parsePeerMessage(handback.text, handback.origin)?.source).toBe("handback");
+    expect(one(handback.text, handback.origin)?.source).toBe("handback");
   });
 
   it("names the subagent that sent it", () => {
-    expect(parsePeerMessage(handback.text, handback.origin)?.from).toBe("ac73ceeede1748538");
+    expect(one(handback.text, handback.origin)?.from).toBe("ac73ceeede1748538");
   });
 
   it("drops the frame and the boilerplate the warning is made of", () => {
-    const read = parsePeerMessage(handback.text, handback.origin);
+    const read = one(handback.text, handback.origin);
 
     expect(read?.text).not.toContain("agent-message");
     expect(read?.text).not.toContain("Subagent hand-back");
@@ -62,14 +66,14 @@ describe("a subagent handing its report back", () => {
   });
 
   it("undoes the indent the harness added, keeping the report's own nesting", () => {
-    expect(parsePeerMessage(handback.text, handback.origin)?.text).toBe(
+    expect(one(handback.text, handback.origin)?.text).toBe(
       "Verdict — APPROVE WITH FOLLOW-UP\n    - it touches auth and the company cookie",
     );
   });
 
   it("is still read when the record kept no envelope, only the words", () => {
     // Older records, and any stream that forwards the text and nothing else.
-    const read = parsePeerMessage(handback.text);
+    const read = one(handback.text);
 
     expect(read?.source).toBe("handback");
     expect(read?.from).toBe("ac73ceeede1748538");
@@ -79,19 +83,19 @@ describe("a subagent handing its report back", () => {
 
 describe("another Claude session messaging this one", () => {
   it("is read as a peer turn", () => {
-    expect(parsePeerMessage(session.text, session.origin)?.source).toBe("session");
+    expect(one(session.text, session.origin)?.source).toBe("session");
   });
 
   it("names the session the way its own user named it", () => {
-    expect(parsePeerMessage(session.text, session.origin)?.from).toBe("pandahrms-web-2d");
+    expect(one(session.text, session.origin)?.from).toBe("pandahrms-web-2d");
   });
 
   it("keeps the words and nothing else", () => {
-    expect(parsePeerMessage(session.text, session.origin)?.text).toBe(SESSION_BODY);
+    expect(one(session.text, session.origin)?.text).toBe(SESSION_BODY);
   });
 
   it("is still read from the words alone, down to the sender's name", () => {
-    const read = parsePeerMessage(session.text);
+    const read = one(session.text);
 
     expect(read?.source).toBe("session");
     expect(read?.from).toBe("pandahrms-web-2d");
@@ -104,7 +108,7 @@ describe("an envelope that knows more than the words", () => {
     // A harness that stops framing, or a record that kept only the mark. The
     // words are the message either way; dropping them for want of a frame
     // would be a worse bug than the one this reader exists to fix.
-    const read = parsePeerMessage("b1 has finished: card 11 is closed.", {
+    const read = one("b1 has finished: card 11 is closed.", {
       kind: "peer",
       name: "pandahrms-web-b1",
     });
@@ -117,17 +121,89 @@ describe("an envelope that knows more than the words", () => {
   });
 });
 
+describe("a frame the harness appended something after", () => {
+  // The closing tag is not always the last thing in the turn: a reminder, a
+  // second frame, anything the harness bolts on ends up past it. Anchoring the
+  // tag to the END of the message made a turn like this unreadable, and an
+  // unread peer turn falls through to being drawn as a bubble you typed.
+  const trailing = "\n<system-reminder>mind the budget</system-reminder>";
+
+  it("reads a hand-back with a reminder bolted on after it", () => {
+    const read = one(handback.text + trailing);
+
+    expect(read?.source).toBe("handback");
+    expect(read?.text).toContain("Verdict");
+    expect(read?.text).not.toContain("system-reminder");
+  });
+
+  it("reads a session message with a reminder bolted on after it", () => {
+    const read = one(session.text + trailing);
+
+    expect(read?.source).toBe("session");
+    expect(read?.from).toBe("pandahrms-web-2d");
+    expect(read?.text).toBe(SESSION_BODY);
+  });
+});
+
+describe("the three ways dropping the end anchor went wrong", () => {
+  it("does not read a turn somebody TYPED that happens to open with a frame", () => {
+    // Pasting agent output into the composer is enough. Read as a peer turn,
+    // the words after the tag are deleted and what is left is drawn under a
+    // name the text itself chose — a stranger put in the reader's mouth, and
+    // the reader's own question gone.
+    const typed = '<agent-message from="x">hi</agent-message> is what the harness sends, right?';
+
+    expect(parsePeerMessages(typed)).toEqual([]);
+  });
+
+  it("does not let an INDENTED closing tag inside a report end it", () => {
+    // The harness indents every line of a report precisely so that no line
+    // inside it can pose as the frame. A reader that matches the tag anywhere
+    // throws that guarantee away — and the first report to quote the tag is a
+    // review OF this file.
+    // The quoted tag is INDENTED, exactly as the harness leaves it.
+    const body = [
+      "[Subagent hand-back] The report follows:",
+      "  Verdict — the close must be at column zero:",
+      "  </agent-message>",
+      "  and the REST of the report follows here",
+      "",
+    ].join("\n");
+
+    expect(one(`<agent-message from="a">
+${body}</agent-message>`)?.text).toContain(
+      "REST of the report",
+    );
+  });
+
+  it("reads BOTH frames when two subagents report in one turn", () => {
+    const frame = (id: string, said: string) =>
+      `<agent-message from="${id}">
+[Subagent hand-back] The report follows:
+  ${said}
+</agent-message>`;
+
+    const read = parsePeerMessages(`${frame("a1", "first report")}
+${frame("a2", "second report")}`);
+
+    expect(read).toEqual([
+      { source: "handback", from: "a1", text: "first report" },
+      { source: "handback", from: "a2", text: "second report" },
+    ]);
+  });
+});
+
 describe("what is NOT a peer turn", () => {
   it("leaves ordinary typing alone", () => {
-    expect(parsePeerMessage("fix the UI issue in the screenshot")).toBeNull();
+    expect(one("fix the UI issue in the screenshot")).toBeNull();
   });
 
   it("leaves a person talking ABOUT the frame alone", () => {
     // The tag quoted mid-sentence is somebody's own words, and stays a bubble.
-    expect(parsePeerMessage('what does <agent-message from="x"> mean?')).toBeNull();
+    expect(one('what does <agent-message from="x"> mean?')).toBeNull();
   });
 
   it("does not take an unclosed frame on trust", () => {
-    expect(parsePeerMessage('<agent-message from="x">\nhalf a message')).toBeNull();
+    expect(one('<agent-message from="x">\nhalf a message')).toBeNull();
   });
 });

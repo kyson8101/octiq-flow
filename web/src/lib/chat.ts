@@ -45,7 +45,7 @@ import { readCodexEvent } from "./codexEvents";
 import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
-import { parsePeerMessage, type PeerMessage } from "./peerMessage";
+import { parsePeerMessages, type PeerMessage } from "./peerMessage";
 import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { taskLabel, type BackgroundTask } from "./background";
@@ -1441,8 +1441,8 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     // rules below, because both of those go by `isSynthetic` — which every
     // one of these carries — and a hand-back arriving while a Skill call was
     // waiting for its prompt was taken for that prompt.
-    const peer = parsePeerMessage(spoken, e.origin);
-    if (peer) return foldPeerMessage(state, peer, uuid);
+    const peers = parsePeerMessages(spoken, e.origin);
+    if (peers.length) return foldPeerMessages(state, peers, uuid);
 
     if (isCompactSummary(spoken) || (state.awaitingSummary && e.isSynthetic === true)) {
       const folded = foldCompactSummary(state, spoken);
@@ -1735,7 +1735,7 @@ function foldLocalOutput(state: ChatState, reported: string): ChatState {
  *  Keyed on the harness's uuid, because a catch-up that overlaps what was
  *  already seen live delivers the same turn twice and two reports of one piece
  *  of work read as two pieces of work. */
-function foldPeerMessage(state: ChatState, peer: PeerMessage, uuid: string): ChatState {
+function foldPeerMessages(state: ChatState, peers: PeerMessage[], uuid: string): ChatState {
   const id = uuid ? `peer-${uuid}` : `peer-${state.messages.length}`;
   if (state.messages.some((m) => m.id === id)) return state;
   return {
@@ -1745,7 +1745,15 @@ function foldPeerMessage(state: ChatState, peer: PeerMessage, uuid: string): Cha
       {
         id,
         role: "assistant",
-        blocks: [{ kind: "peer", source: peer.source, from: peer.from, text: peer.text }],
+        // One block each. Two subagents reporting in the same turn are two
+        // voices, and running them together would read as one long report
+        // nobody wrote.
+        blocks: peers.map((peer) => ({
+          kind: "peer" as const,
+          source: peer.source,
+          from: peer.from,
+          text: peer.text,
+        })),
         streaming: false,
       },
     ],

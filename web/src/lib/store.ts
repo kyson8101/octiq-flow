@@ -17,6 +17,8 @@
 // is what it would hold.
 import { readTaskBrief } from "./taskBrief";
 import type { Message } from "./chat";
+import { BUILD_STAMP, ourBuild } from "./buildStamp";
+import { migrateMessages } from "./cacheMigration";
 
 export type Conversation = {
   id: string;
@@ -82,6 +84,9 @@ export type Conversation = {
 };
 
 const KEY = "octiq.v2.conversations";
+/** The same key, for a test that plants a row this module would never write.
+ *  Exported so it is stated once rather than re-typed wherever it is needed. */
+export const CONVERSATIONS_KEY = KEY;
 /** Plenty to scroll through, few enough to stay inside a localStorage quota. */
 const MAX_CONVERSATIONS = 80;
 
@@ -105,6 +110,11 @@ export function loadConversations(): Conversation[] {
     if (!Array.isArray(raw)) return [];
     return raw
       .filter((c) => c && typeof c.id === "string" && Array.isArray(c.messages))
+      // A transcript an earlier reader drew is carried forward rather than
+      // thrown away. Nothing is fetched and `seq` is untouched, so the chat
+      // still resumes exactly where it did — see lib/cacheMigration for why
+      // discarding it is the more damaging of the two.
+      .map((c) => (ourBuild(c) ? c : { ...c, messages: migrateMessages(c.messages) }))
       // Chats saved before `createdAt` existed take their last-used time as
       // their start time — a one-off guess that then holds still forever.
       .map((c) => (typeof c.createdAt === "number" ? c : { ...c, createdAt: c.updatedAt ?? 0 }));
@@ -135,7 +145,10 @@ export function saveConversations(list: Conversation[]): void {
   const kept: string[] = [];
   let used = 2; // the brackets
   for (const c of ordered) {
-    let json = JSON.stringify(c);
+    // Stamped HERE, on the one path that writes, so no caller can leave a
+    // transcript looking like this build's work when it is not.
+    const row = { ...c, ...BUILD_STAMP };
+    let json = JSON.stringify(row);
     let cost = json.length + (kept.length ? 1 : 0); // and the comma
     // Large transcripts live in IndexedDB; smaller copies can still paint
     // synchronously from localStorage. Keep metadata when messages do not fit.
@@ -143,7 +156,7 @@ export function saveConversations(list: Conversation[]): void {
       // Keep the sidebar row so reload can find the IndexedDB checkpoint
       // without first waiting for the server's index. An empty local copy
       // must never claim the full transcript's sequence number.
-      json = JSON.stringify({ ...c, messages: [], seq: undefined });
+      json = JSON.stringify({ ...row, messages: [], seq: undefined });
       cost = json.length + (kept.length ? 1 : 0);
       if (used + cost > BUDGET) continue;
     }
