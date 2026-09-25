@@ -31,20 +31,32 @@ function Picture({ image, className }: { image: ImagePreview; className?: string
   return url ? <img className={className} src={url} alt={image.title} draggable={false} onError={() => setError(true)} /> : <span className="preview-loading">Loading…</span>;
 }
 
-function HtmlPreviewCard({ document }: { document: ImagePreview }) {
+// Same grants as the backend's HTML_FILE_CSP. Never add allow-same-origin: a
+// srcdoc frame would then share this page's origin, token and localStorage.
+const HTML_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads";
+
+function HtmlPreview({ document }: { document: ImagePreview }) {
+  const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState("");
+  useEffect(() => {
+    let alive = true;
+    setHtml(null); setError("");
+    bridge.fetchFile(document.path).then(blob => blob.text()).then(text => alive && setHtml(text))
+      .catch(() => alive && setError("Document unavailable"));
+    return () => { alive = false; };
+  }, [document.path]);
   function open() {
     setError("");
     try { bridge.openFileInBrowser(document.path); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "The document could not be opened."); }
   }
-  return <div className="html-preview-card">
-    <span className="html-preview-mark" aria-hidden="true">&lt;/&gt;</span>
-    <strong>{document.title}</strong>
-    <p>Open this document in a new tab. Your chat stays here.</p>
-    <button type="button" onClick={open}>Open HTML</button>
-    {error && <p className="image-preview-error" role="alert">{error}</p>}
-  </div>;
+  return <>
+    <div className="html-preview-stage">
+      {html !== null ? <iframe title={document.title} sandbox={HTML_SANDBOX} srcDoc={html} />
+        : error ? <span role="status">{error}</span> : <span className="preview-loading">Loading…</span>}
+    </div>
+    <div className="image-preview-tools"><span /><button type="button" onClick={open}>Open in new tab</button></div>
+  </>;
 }
 
 export function ImagePreviewPanel({ conversationKey, images, error, onClose }: { conversationKey: string; images: ImagePreview[]; error: string; onClose: () => void }) {
@@ -79,7 +91,7 @@ export function ImagePreviewPanel({ conversationKey, images, error, onClose }: {
       {image ? <>
         <div className="image-preview-caption"><strong title={image.title}>{image.title}</strong><label>Version <select aria-label="Preview version" value={image.id} onChange={event => choose(event.target.value)}>{versions.map((item, i) => <option value={item.id} key={item.id}>{i + 1}{i === versions.length - 1 ? " (latest)" : ""}</option>)}</select></label></div>
         {newest && newest.id !== image.id && <button type="button" className="image-preview-update" onClick={() => choose(newest.id)}>Newer version available · Show latest</button>}
-        {image.kind === "html" ? <HtmlPreviewCard key={image.id} document={image} /> : <>
+        {image.kind === "html" ? <HtmlPreview key={image.id} document={image} /> : <>
         <div className={`image-preview-stage ${scale > 1 ? "is-zoomed" : ""}`}>
           <div className="image-preview-picture" style={{ width: `${scale * 100}%`, height: `${scale * 100}%` }}><Picture key={image.id} image={image} /></div>
         </div>

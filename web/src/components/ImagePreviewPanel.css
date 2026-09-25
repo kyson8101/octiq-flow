@@ -34,10 +34,7 @@
   .image-preview-panel button { min-height: 40px; }
 }
 
-.html-preview-card { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: safe center; padding: 28px; text-align: center; background: var(--bg-sunken); }
-.html-preview-card strong { max-width: 100%; overflow-wrap: anywhere; font-size: 16px; }
-.html-preview-card p { max-width: 32ch; color: var(--fg-2); line-height: 1.6; font-size: 13px; }
-.html-preview-mark { margin-bottom: 18px; font: 32px var(--mono); color: var(--fg-2); }
-.html-preview-card button { padding: var(--space-3) var(--space-6); background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.html-preview-stage { flex: 1; min-height: 120px; display: flex; align-items: center; justify-content: center; color: var(--fg-2); background: var(--bg-sunken); }
+.html-preview-stage iframe { align-self: stretch; flex: 1; width: 100%; border: 0; background: #fff; }
 .image-preview-strip .html-preview-thumbnail { width: 84px; height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0; color: var(--fg-1); font: 22px var(--mono); }
 .html-preview-thumbnail small { font: 10px var(--font); color: var(--fg-2); }

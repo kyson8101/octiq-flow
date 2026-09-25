@@ -23,6 +23,7 @@ import { useImagePreviews } from "/src/lib/imagePreview.ts";
 import "/src/styles.css";
 window.images = { "chat:a": [], "chat:b": [] };
 window.htmlDocs = ${JSON.stringify([htmlFirst, htmlNext])};
+window.htmlSources = ${JSON.stringify({ [htmlFirst.path]: htmlSource, [htmlNext.path]: htmlSource.replace("HTML review", "HTML revision two") })};
 window.addHtml = revision => window.images["chat:a"].push(window.htmlDocs[revision]);
 window.addImage = (chat, id, slot = "hero") => window.images[chat].push({ id, slot, path: "/fixture/" + id + ".png", title: slot === "hero" ? "Home screen" : "Detail screen", createdAt: Date.now() });
 function App() {
@@ -36,7 +37,7 @@ const mock = `import { bridge as actualBridge } from "/src/lib/bridge.ts?actual"
 export const bridge = {
  openFileInBrowser: path => actualBridge.openFileInBrowser(path),
  invoke: async (command, args) => { if (command !== "image_preview_list") throw Error("Unexpected RPC: " + command); return [...window.images[args.key]]; },
- fetchFile: async path => { if (window.failImages) throw Error("Missing image"); return new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#c7d4d0"/><rect x="80" y="65" width="640" height="470" rx="24" fill="#f2f5f2"/><rect x="120" y="110" width="240" height="28" rx="6" fill="#405f58"/><rect x="120" y="180" width="560" height="240" rx="12" fill="#8ea8a0"/><circle cx="400" cy="300" r="62" fill="#dbe7df"/><text x="120" y="485" fill="#405f58" font-size="24">Preview fixture · ' + path.split('/').pop() + '</text></svg>'], {type:"image/svg+xml"}); }
+ fetchFile: async path => { const doc = window.htmlSources[path]; if (doc) return new Blob([doc], {type:"text/html"}); if (window.failImages) throw Error("Missing image"); return new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"><rect width="800" height="600" fill="#c7d4d0"/><rect x="80" y="65" width="640" height="470" rx="24" fill="#f2f5f2"/><rect x="120" y="110" width="240" height="28" rx="6" fill="#405f58"/><rect x="120" y="180" width="560" height="240" rx="12" fill="#8ea8a0"/><circle cx="400" cy="300" r="62" fill="#dbe7df"/><text x="120" y="485" fill="#405f58" font-size="24">Preview fixture · ' + path.split('/').pop() + '</text></svg>'], {type:"image/svg+xml"}); }
 };`;
 const server = await createServer({
  root: fileURLToPath(new URL("../web", import.meta.url)), configFile: fileURLToPath(new URL("../web/vite.config.ts", import.meta.url)), server: {host:"127.0.0.1",port:0,strictPort:false},
@@ -121,17 +122,22 @@ try {
  await page.getByRole("button",{name:"Detail screen, 1 version"}).waitFor();
  await page.getByRole("button",{name:"Detail screen, 1 version"}).click();
  await page.locator(".image-preview-picture").getByText("Image unavailable").waitFor();
- // HTML is a passive card until a click. Use the real bridge's POST opener
- // against the generated immutable snapshot and the backend's actual CSP.
+ // HTML renders inline in a sandboxed srcdoc frame with an opaque origin; the
+ // new-tab button still uses the real bridge's POST opener and backend CSP.
  await page.evaluate(() => window.addHtml(0));
  await page.getByRole("button", {name:"Review document, 1 version"}).click();
- await page.getByRole("button", {name:"Open HTML", exact:true}).waitFor();
+ const frame = page.frameLocator(".html-preview-stage iframe");
+ await frame.getByRole("heading", {name:"HTML review", exact:true}).waitFor();
+ const sandbox = await page.locator(".html-preview-stage iframe").getAttribute("sandbox");
+ assert.ok(sandbox.includes("allow-scripts") && !sandbox.includes("allow-same-origin"));
+ await frame.getByRole("button", {name:"0", exact:true}).click();
+ assert.equal(await frame.getByRole("button", {name:"1", exact:true}).count(), 1);
+ assert.equal(await frame.locator("body").getAttribute("data-isolated"), "yes");
  assert.equal(htmlPosts.length, 0);
- assert.equal(await page.locator("iframe").count(), 0);
  assert.equal(await page.getByRole("button", {name:"Zoom in", exact:true}).count(), 0);
  await page.screenshot({path:path.join(output,"html-mobile.png")});
  const firstOpened = context.waitForEvent("page");
- await page.getByRole("button", {name:"Open HTML", exact:true}).click();
+ await page.getByRole("button", {name:"Open in new tab", exact:true}).click();
  const documentPage = await firstOpened;
  await documentPage.getByRole("heading", {name:"HTML review", exact:true}).waitFor();
  await documentPage.getByRole("button", {name:"0", exact:true}).click();
@@ -147,7 +153,8 @@ try {
  assert.equal(await page.getByLabel("Preview version").inputValue(), htmlFirst.id);
  await page.getByRole("button", {name:/Newer version/}).click();
  const nextOpened = context.waitForEvent("page");
- await page.getByRole("button", {name:"Open HTML", exact:true}).click();
+ await page.getByRole("button", {name:"Open in new tab", exact:true}).click();
+ await frame.getByRole("heading", {name:"HTML revision two"}).waitFor();
  const revisionPage = await nextOpened;
  await revisionPage.getByRole("heading", {name:"HTML revision two"}).waitFor();
  assert.equal(htmlPosts[1], htmlNext.path);
@@ -155,6 +162,6 @@ try {
  await page.setViewportSize({width:1280,height:800});
  await page.screenshot({path:path.join(output,"html-desktop.png")});
  assert.deepEqual(errors,[]);
- console.log("PASS: HTML upload, passive cards, click-to-open authenticated POST, interactive script, opaque origin, no opener/token in URL, HTML revisions; first-image opening, stable selection, versions, multiple slots, zoom, fullscreen, dismiss persistence, conversation isolation, mobile bounds, draft preservation, reload and image failure.");
+ console.log("PASS: HTML upload, inline sandboxed frame, click-to-open authenticated POST, interactive script, opaque origin, no opener/token in URL, HTML revisions; first-image opening, stable selection, versions, multiple slots, zoom, fullscreen, dismiss persistence, conversation isolation, mobile bounds, draft preservation, reload and image failure.");
  console.log("Screenshots:", output);
 } finally { await browser?.close(); await server.close(); }

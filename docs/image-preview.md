@@ -48,13 +48,13 @@ up to 2 MB. Files must have a `.html` or `.htm` extension. Use self-contained
 HTML: inline CSS/JavaScript and embedded images. Neighbouring assets are not
 uploaded alongside the document.
 
-The panel shows an HTML document card. **Open HTML** opens the selected
-snapshot in a new tab through the existing authenticated form POST opener.
-The document does not execute when it is received or selected. Once opened,
-its inline scripts can run inside the backend's opaque-origin CSP sandbox;
-it cannot access the chat's localStorage, and its URL contains no auth token.
-This is origin isolation, not a network block: the existing HTML opener still
-permits external resources and links. Existing HTML-file behavior is unchanged.
+The panel renders the selected snapshot inline, in an `<iframe srcdoc>` whose
+`sandbox` grants the same permissions as the backend's `HTML_FILE_CSP` and
+never `allow-same-origin`. Its scripts run as soon as it is selected, in an
+opaque origin: it cannot read the chat's token or localStorage. This is origin
+isolation, not a network block, so external resources and links still load.
+**Open in new tab** opens the same snapshot full size through the existing
+authenticated form POST opener, with no auth token in its URL.
 Reusing `slot` retains earlier snapshots in the version selector.
 
 `create_artifact` outputs can be passed to `preview_html` using their returned
