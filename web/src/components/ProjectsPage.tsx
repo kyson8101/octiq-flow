@@ -6,7 +6,7 @@
 // too: New project, and the shelf — what was put away, and the way back.
 import { useEffect, useRef, useState } from "react";
 import { isChatDone } from "../lib/chatFilter";
-import { ordinaryChats } from "../lib/orchestration";
+import { EMPTY_ORCHESTRATION, ordinaryChats, type OrchestrationSnapshot } from "../lib/orchestration";
 import { projectTaskCounts, projectTasks } from "../lib/projectTasks";
 import type { Conversation } from "../lib/store";
 import { ProjectAvatar } from "./ProjectAvatar";
@@ -16,6 +16,7 @@ import "./ProjectsPage.css";
 
 export function ProjectsPage({
   projects, shelved, conversations: everyChat, selectedProjectId, busy, chatParents,
+  ledgerSnapshot = EMPTY_ORCHESTRATION, coordinatorChatKeys = new Set(), allowNewTask = true,
   onSelectProject, onOpenChat, onNewTask, onNewProject, onProjectSettings, onClose,
   onShowShelved, onRestoreProject,
 }: {
@@ -28,6 +29,10 @@ export function ProjectsPage({
   /** Which chats are run workers. They are neither listed nor counted here;
    *  their run's Tasks view in the main chat is the way to them. */
   chatParents: ReadonlyMap<string, string>;
+  ledgerSnapshot?: OrchestrationSnapshot | null;
+  coordinatorChatKeys?: ReadonlySet<string> | null;
+  /** Agents mode starts work by talking to the CTO, never from a project CTA. */
+  allowNewTask?: boolean;
   onSelectProject: (projectId: string | null) => void;
   onOpenChat: (chat: Conversation) => void;
   onNewTask: (projectId: string) => void;
@@ -56,7 +61,7 @@ export function ProjectsPage({
   const selected = selectedProjectId === null ? null : known.find((project) => project.id === selectedProjectId) ?? null;
 
   if (selectedProjectId !== null) {
-    const tasks = selected ? projectTasks(conversations, selected.id) : [];
+    const tasks = selected ? projectTasks(conversations, selected.id, ledgerSnapshot, coordinatorChatKeys ?? new Set()) : [];
     const isShelved = !!selected && shelved.some((project) => project.id === selected.id);
     return (
       <section className="projects-page" aria-label={selected ? `${selected.name} tasks` : "Project"}>
@@ -77,7 +82,7 @@ export function ProjectsPage({
               }}>
               <span>{restoring ? "Restoring…" : "Restore project"}</span>
             </button>}
-            {!isShelved && <button type="button" className="projects-page-primary" onClick={() => onNewTask(selected.id)}>
+            {allowNewTask && !isShelved && <button type="button" className="projects-page-primary" onClick={() => onNewTask(selected.id)}>
               <PlusIcon /><span>New task</span>
             </button>}
           </>} />
@@ -94,7 +99,7 @@ export function ProjectsPage({
           ) : tasks.length === 0 ? (
             <div className="projects-page-empty" role="status">
               <p>No tasks in {selected.name} yet.</p>
-              {!isShelved && <button type="button" onClick={() => onNewTask(selected.id)}>Start a task</button>}
+              {allowNewTask && !isShelved && <button type="button" onClick={() => onNewTask(selected.id)}>Start a task</button>}
             </div>
           ) : (
             <>
@@ -131,7 +136,7 @@ export function ProjectsPage({
     );
   }
 
-  const counts = projectTaskCounts(conversations);
+  const counts = projectTaskCounts(conversations, ledgerSnapshot, coordinatorChatKeys ?? new Set());
   const row = (project: Project) => {
     const count = counts.get(project.id) ?? 0;
     return (

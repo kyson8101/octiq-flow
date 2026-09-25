@@ -153,10 +153,10 @@ import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
 import { OrchestrationPanel } from "./components/OrchestrationPanel";
-import { isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
+import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
-import { useOrchestrationSnapshot } from "./lib/useOrchestrationSnapshot";
+import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
 import { FilesButton, SessionFilesPanel, useSessionPins } from "./components/SessionFiles";
@@ -508,7 +508,8 @@ export default function App() {
   // tick in the sheet has something to read.
   const [appSettings, setAppSettings] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const orchestration = useOrchestrationSnapshot();
+  const orchestrationState = useOrchestrationFeed();
+  const orchestration = orchestrationState.snapshot ?? EMPTY_ORCHESTRATION;
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
   /** Which chats the person opened the run surface for with Run, before the
@@ -637,10 +638,15 @@ export default function App() {
     setLite(on);
     remember(LITE_KEY, on ? "1" : "0");
   }, []);
-  // Agents mode (lib/agentsMode): New chat becomes New task, handed to a
-  // registered agent. Off, nothing below changes anything.
+  // Agents mode (lib/agentsMode): the primary entry opens the CTO conversation,
+  // which plans work and hands approved tasks to registered agents. Off,
+  // nothing below changes anything.
   const [agentsMode, setAgentsMode] = useState<boolean>(recallAgentsMode);
+  const [leadRecordsState, setLeadRecordsState] = useState<"loading" | "ready" | "error">(
+    () => agentsMode ? "loading" : "ready",
+  );
   const changeAgentsMode = useCallback((on: boolean) => {
+    setLeadRecordsState(on ? "loading" : "ready");
     setAgentsMode(on);
     rememberAgentsMode(on);
   }, []);
@@ -1806,8 +1812,10 @@ export default function App() {
     return () => { alive = false; };
   }, [agentsMode, teamProjectId, appSettings, conn]);
   useEffect(() => {
-    if (!agentsMode || conn !== "open" || appSettings) return;
+    if (!agentsMode) { setLeadRecordsState("ready"); return; }
+    if (conn !== "open" || appSettings) return;
     let alive = true;
+    setLeadRecordsState("loading");
     Promise.all([loadHead(), loadTeam(null, true), loadLeads(), loadHome().catch(() => null)])
       .then(([configured, everyone, handed, home]) => {
         if (!alive) return;
@@ -1815,10 +1823,17 @@ export default function App() {
         setRoster(everyone);
         setLeads(handed);
         setHomeId(home);
+        setLeadRecordsState("ready");
       })
-      .catch(() => undefined);
+      .catch(() => { if (alive) setLeadRecordsState("error"); });
     return () => { alive = false; };
   }, [agentsMode, appSettings, conn]);
+  const coordinatorChatKeys = useMemo<ReadonlySet<string> | null>(
+    () => leadRecordsState === "loading" ? null : new Set(leads.map((record) => record.chatKey)),
+    [leadRecordsState, leads],
+  );
+  const projectContextUnavailable = (!orchestrationState.snapshot && !!orchestrationState.error)
+    || leadRecordsState === "error";
   const headDraftOn = agentsMode && headDraft && !conversationId && !workerChat;
   const lead = agentsMode
     ? headDraftOn ? head : team.find((agent) => agent.id === leadId) ?? team[0] ?? null
@@ -1849,8 +1864,6 @@ export default function App() {
     }
     return lead ? agentIdentity(lead, lead.name, choice) : null;
   }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice]);
-  const onHeadConversation = agentsMode && !!head
-    && (headDraftOn || (!!chatLead?.crossProject && chatLead.leadId === head.id));
   // Agents mode: where a new task runs, chosen automatically (lib/agentExecution).
   // The head coordinates from home; a project lead gets a new worktree. Only
   // what the person changes under Advanced overrides it.
@@ -4004,7 +4017,7 @@ export default function App() {
       {/* The one way for the PERSON to start supervised multi-agent work
           from here. Opening it chooses nothing on its own: a run begins only
           when one is started in the surface it opens. */}
-      {!workerChat && <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
+      {!agentsMode && !workerChat && <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
         title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
         aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
         setRunOpened((before) => ({ ...before, [workflowKey]: true }));
@@ -4035,32 +4048,11 @@ export default function App() {
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
 
-      {agentsMode && (
-        <button
-          className={`icon-btn talk-to-head${onHeadConversation ? " is-on" : ""}`}
-          type="button"
-          aria-label={head ? `Talk to ${head.name}` : "Choose who you talk to"}
-          title={head
-            ? `Talk to ${head.name}${head.role ? ` · ${head.role}` : ""}, across every project`
-            : "Choose the lead you talk to across projects"}
-          aria-pressed={onHeadConversation}
-          onClick={() => void talkToHead()}
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
-          </svg>
-          <span className="topbar-action-label">{head ? `Talk to ${head.name}` : "Choose lead"}</span>
-        </button>
-      )}
-
-      {/* Settings and the Agents dashboard live in the sidebar. The global
-          cross-project lead remains a top-bar action because it is available
-          in every project. */}
-      <button
+      {!agentsMode && <button
           className="icon-btn new-chat"
           type="button"
-          aria-label={agentsMode ? "Start new task" : "Start new chat"}
-          title={agentsMode ? "Start new task" : "Start new chat"}
+          aria-label="Start new chat"
+          title="Start new chat"
           onClick={newChat}
         >
           <svg
@@ -4075,8 +4067,8 @@ export default function App() {
           >
             <path d="M12 5v14M5 12h14" />
           </svg>
-          <span className="topbar-action-label">{agentsMode ? "New task" : "New chat"}</span>
-        </button>
+          <span className="topbar-action-label">New chat</span>
+        </button>}
 
     </>
   );
@@ -4102,6 +4094,9 @@ export default function App() {
         conversations={taskList}
         chatParents={chatParents}
         orchestration={orchestration}
+        ledgerSnapshot={orchestrationState.snapshot}
+        ledgerUnavailable={projectContextUnavailable}
+        coordinatorChatKeys={coordinatorChatKeys}
         getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
         loadPreview={loadPreview}
         currentConversation={conversationId}
@@ -4113,8 +4108,9 @@ export default function App() {
         onPickConversation={(conversation) => {
           openConversation(conversation);
         }}
-        onNewChat={newChat}
-        newLabel={agentsMode ? "New task" : "New chat"}
+        onNewChat={agentsMode ? () => void talkToHead() : newChat}
+        newLabel={agentsMode ? (head ? `Talk to ${head.name}` : "Choose CTO") : "New chat"}
+        allowEmptyCreate={!agentsMode}
         onDelete={deleteConversation}
         onPin={togglePin}
         onToggleDone={toggleDone}
@@ -4197,7 +4193,7 @@ export default function App() {
           {!showingProjects && !mainPage && (
             <span className="topbar-chat" title={project?.primary_path}>
               {project && <ProjectAvatar project={project} size="small" className="topbar-project-avatar" />}
-              <span className="topbar-name">{project?.name ?? (conversationId ? "Chat" : agentsMode ? "New task" : "New chat")}</span>
+              <span className="topbar-name">{project?.name ?? (conversationId ? "Chat" : agentsMode ? (head?.name ?? "CTO") : "New chat")}</span>
             </span>
           )}
           {/* A chat's run line — its title and the Tasks/Chat views — renders
@@ -4270,6 +4266,9 @@ export default function App() {
             selectedProjectId={projectsPage.projectId}
             busy={busySet}
             chatParents={chatParents}
+            ledgerSnapshot={orchestrationState.snapshot}
+            coordinatorChatKeys={coordinatorChatKeys}
+            allowNewTask={!agentsMode}
             onSelectProject={(id) => setProjectsPage({ projectId: id })}
             onOpenChat={openConversation}
             onNewTask={(id) => {
@@ -4289,6 +4288,9 @@ export default function App() {
             conversations={taskList}
             chatParents={chatParents}
             projects={[...workspaces, ...shelved]}
+            ledgerSnapshot={orchestrationState.snapshot}
+            ledgerUnavailable={projectContextUnavailable}
+            coordinatorChatKeys={coordinatorChatKeys}
             searchChats={searchChats}
             onOpenChat={openConversation}
             onClose={() => setSearchPage(false)}
@@ -4346,6 +4348,7 @@ export default function App() {
             {workflowSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
+              allowManualRun={!agentsMode}
               projectName={(id) => [...workspaces, ...shelved].find((item) => item.id === id)?.name}
               onSelectedRunChange={onSelectedRunChange}
               coordinatorBusy={!workerChat && chat.busy && !cutOff}

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Message } from "../lib/chat";
 import type { Conversation } from "../lib/store";
+import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { Sidebar, type Project } from "./Sidebar";
 
 const projects: Project[] = [
@@ -15,6 +16,15 @@ const message = (id: string, role: "user" | "assistant", text: string): Message 
 
 const chat = (id: string, projectId = "p1", messages: Message[] = []): Conversation => ({
   id, projectId, title: `Task ${id}`, messages, createdAt: 1, updatedAt: 1,
+});
+
+const coordinatorLedger = (destinations: (string | null)[]): OrchestrationSnapshot => ({
+  runs: [{ id: "run", coordinatorChatKey: "chat:cto", objective: "Ship", workspaceId: "general", rootPath: "/General", status: "completed", maxConcurrent: 2, createdAt: 1, updatedAt: 2 }],
+  tasks: destinations.map((projectId, index) => ({
+    id: `task-${index}`, runId: "run", title: `Task ${index}`, spec: "Do it", dependsOn: [], status: "completed" as const, createdAt: index, updatedAt: index,
+    destination: projectId ? { projectId, projectName: projectId === "p1" ? "octiq-flow" : projectId === "p2" ? "starfall-social" : `Project ${projectId}`, repository: `/work/${projectId}` } : undefined,
+  })),
+  attempts: [], gates: [], messages: [],
 });
 
 function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
@@ -54,6 +64,41 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("You: Please fix it");
   });
 
+  it("shows authoritative coordinator destinations across runs instead of its General home", () => {
+    const ledger = coordinatorLedger(["p1", "p2", "p3", null]);
+    const out = html({
+      projects: [...projects, { id: "p3", name: "third-project" }],
+      conversations: [{ ...chat("cto", "general"), pinned: true }],
+      orchestration: ledger,
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(out).toContain(">starfall-social</span>");
+    expect(out).toContain("third-project, starfall-social, octiq-flow");
+    expect(out).toContain(">+1</span>");
+    expect(out).toContain(">+?</span>");
+    expect(out).toContain(">4 tasks</span>");
+    expect(out).not.toContain(">General</span>");
+    expect(out).toContain("pinned");
+  });
+
+  it("keeps no-task and ledger-loading coordinator states truthful", () => {
+    const discussion = html({
+      conversations: [chat("cto", "general")],
+      orchestration: { ...coordinatorLedger([]), runs: [] },
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(discussion).toContain("Discussion");
+    expect(discussion).not.toContain(">General</span>");
+
+    const loading = html({
+      conversations: [chat("cto", "general")],
+      ledgerSnapshot: null,
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(loading).toContain("Projects loading…");
+    expect(loading).not.toContain(">General</span>");
+  });
+
   it("shows the checked-out branch beside the project name", () => {
     const out = html({
       conversations: [chat("a"), chat("b", "p2")],
@@ -86,6 +131,12 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('class="sidebar-place sidebar-new-chat"');
     expect(out).toContain("New chat</span>");
     expect(out).not.toContain("Project settings:");
+  });
+
+  it("uses one primary CTO entry and omits the duplicate empty-state create action", () => {
+    const out = html({ newLabel: "Talk to Tofu Juice", allowEmptyCreate: false });
+    expect(out.match(/Talk to Tofu Juice/g)).toHaveLength(1);
+    expect(out).not.toContain("Start your first chat");
   });
 
   it("puts mobile navigation in the chat list scroller so it can leave and return without moving the list", () => {

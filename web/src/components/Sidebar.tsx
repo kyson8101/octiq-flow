@@ -6,6 +6,7 @@ import { buildChatTree, type ChatNode } from "../lib/chatTree";
 import { recall, remember } from "../lib/remember";
 import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
+import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
 import {
@@ -21,6 +22,7 @@ import { AgentAvatar } from "./AgentAvatar";
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
+import { ConversationProjects } from "./ConversationProjects";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
 import "./MobileSidebar.css";
@@ -59,14 +61,24 @@ function savedCollapsed(): Set<string> {
 
 export function Sidebar({
   orchestration = EMPTY_ORCHESTRATION,
+  ledgerSnapshot,
+  ledgerUnavailable = false,
+  coordinatorChatKeys = NONE,
   projects, shelved, deletedCount = 0, onShowDeleted,
   conversations: everyChat, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
-  loadPreview, onNewChat, newLabel = "New chat", onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
+  loadPreview, onNewChat, newLabel = "New chat", allowEmptyCreate = true, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
   onSearch, onSettings, onAgents, onProjects, activeView = null,
 }: {
   orchestration?: OrchestrationSnapshot;
+  /** Null while the first authoritative ledger read is pending. Undefined
+   *  keeps the supplied orchestration snapshot for static callers/tests. */
+  ledgerSnapshot?: OrchestrationSnapshot | null;
+  ledgerUnavailable?: boolean;
+  /** Null while lead records are loading; a Set once coordinator identities
+   *  are known. */
+  coordinatorChatKeys?: ReadonlySet<string> | null;
   projects: Project[];
   /** Only read to name a shelved project's chats; the shelf itself lives on
    *  the Projects page. */
@@ -84,8 +96,10 @@ export function Sidebar({
   deleteMs?: number;
   onPickConversation: (chat: Conversation) => void;
   onNewChat: () => void;
-  /** "New task" in agents mode. */
+  /** The one CTO conversation entry in agents mode. */
   newLabel?: string;
+  /** Agents mode uses the one primary CTO entry above, not a second empty CTA. */
+  allowEmptyCreate?: boolean;
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
   /** Tick a chat off by hand, or take the tick back. */
@@ -97,7 +111,7 @@ export function Sidebar({
   onResize?: (event: React.PointerEvent<HTMLElement>) => void;
   /** Put the column away. Only given where the sidebar is a column. */
   onCollapse?: () => void;
-  /** The app-level places, listed straight under New task. Each is drawn only
+  /** The app-level places, listed straight under the primary entry. Each is drawn only
    *  when it is given: Agents exists in agents mode alone. */
   onSearch?: () => void;
   onSettings?: () => void;
@@ -128,6 +142,7 @@ export function Sidebar({
   const badgeTap = useRef<{ chatId: string; at: number } | null>(null);
   const seenChatIds = useRef<ReadonlySet<string>>(new Set(conversations.map((chat) => chat.id)));
   const knownProjects = [...projects, ...shelved];
+  const projectLedger = ledgerSnapshot === undefined ? orchestration : ledgerSnapshot;
   const projectById = new Map(knownProjects.map((project) => [project.id, project]));
   const conversationById = new Map(conversations.map((conversation) => [conversation.id, conversation]));
   const archivedConversations = workerArchiveChatList(conversations, orchestration, true);
@@ -230,6 +245,11 @@ export function Sidebar({
     const unread = isUnread(chat, currentConversation);
     const done = isChatDone(chat);
     const project = projectById.get(chat.projectId);
+    const projectInfo = conversationProjectInfo(chat, projectLedger, coordinatorChatKeys, ledgerUnavailable);
+    const projectSummary = conversationProjectSummary(
+      projectInfo,
+      (id, fallback) => projectById.get(id)?.name ?? fallback ?? "Unknown project",
+    );
     const chatTintStyle = project
       ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
       : undefined;
@@ -249,7 +269,7 @@ export function Sidebar({
     const hasChildren = otherChildren.length > 0;
     const openWorker = ownsRun && runChatKeys.has(`chat:${currentConversation}`);
     const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? runSummary(workflow, run) : null;
-    const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
+    const branch = projectInfo.status === "home" ? (attempt?.branch || (parent ? "" : branches[chat.projectId])) : "";
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
     // Agents mode: a chat handed to a registered agent is named for the agent,
@@ -291,7 +311,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {
@@ -322,9 +342,9 @@ export function Sidebar({
                 <span className="chat-snippet">{snippet.replace(/\s+/g, " ")}</span>
                 {workflowLabel && <span className="chat-workflow-status">{workflowLabel}</span>}
                 <span className="chat-meta">
-                  <span className="chat-project">
+                  {projectInfo.status === "home" ? <span className="chat-project">
                     <span className="chat-project-name" title={projectContext}>{projectContext}</span>
-                  </span>
+                  </span> : <ConversationProjects info={projectInfo} projects={knownProjects} />}
                   {persona ? (
                     <span className="chat-model chat-persona" title={`${persona.name}${model ? ` · ${model.name} ${model.model}` : ""}`}>
                       <AgentAvatar name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} size={14} removed={persona.removed} decorative />
@@ -522,7 +542,7 @@ export function Sidebar({
             </section>
           </div>
         ) : (
-          <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
+          <div className="sidebar-empty"><span>No chats yet</span>{allowEmptyCreate && <button type="button" onClick={onNewChat}>Start your first chat</button>}</div>
         )}
       </div>
 

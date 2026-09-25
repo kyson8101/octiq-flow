@@ -8,15 +8,18 @@ import { useEffect, useRef, useState } from "react";
 import {
   chatSearchResults, isSearchable, type ChatSearchHit,
 } from "../lib/chatSearch";
-import { ordinaryChats } from "../lib/orchestration";
+import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
+import { EMPTY_ORCHESTRATION, ordinaryChats, type OrchestrationSnapshot } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { ProjectAvatar } from "./ProjectAvatar";
+import { ConversationProjects } from "./ConversationProjects";
 import { chatTime, type Project } from "./Sidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import "./ProjectsPage.css";
 import "./ChatSearchPage.css";
 
 const NO_PARENTS: ReadonlyMap<string, string> = new Map();
+const NO_COORDINATORS: ReadonlySet<string> = new Set();
 
 /** How many recently active chats the page offers before anything is typed. */
 const RECENT = 8;
@@ -25,6 +28,7 @@ export type ChatSearchState = "idle" | "searching" | "ready" | "error";
 
 export function ChatSearchPage({
   conversations: everyChat, chatParents = NO_PARENTS, projects, searchChats, onOpenChat, onClose,
+  ledgerSnapshot = EMPTY_ORCHESTRATION, ledgerUnavailable = false, coordinatorChatKeys = NO_COORDINATORS,
   deletedCount = 0, onShowDeleted, initialQuery = "", initialState, initialHits,
 }: {
   conversations: Conversation[];
@@ -32,6 +36,9 @@ export function ChatSearchPage({
    *  as a recent chat; a worker is reached through its run in the main chat. */
   chatParents?: ReadonlyMap<string, string>;
   projects: Project[];
+  ledgerSnapshot?: OrchestrationSnapshot | null;
+  ledgerUnavailable?: boolean;
+  coordinatorChatKeys?: ReadonlySet<string> | null;
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
   onOpenChat: (chat: Conversation) => void;
   onClose: () => void;
@@ -89,10 +96,15 @@ export function ChatSearchPage({
   const row = (chat: Conversation, excerpt: string) => {
     const project = projectById.get(chat.projectId);
     const projectName = project?.name ?? "Unknown project";
+    const projectInfo = conversationProjectInfo(chat, ledgerSnapshot, coordinatorChatKeys, ledgerUnavailable);
+    const projectSummary = conversationProjectSummary(
+      projectInfo,
+      (id, fallback) => projectById.get(id)?.name ?? fallback ?? "Unknown project",
+    );
     return (
       <li key={chat.id}>
         <button type="button" className="projects-task chat-search-result" onClick={() => onOpenChat(chat)}
-          aria-label={`${chat.title}, ${projectName}`}>
+          aria-label={`${chat.title}, ${projectSummary}`}>
           {project
             ? <ProjectAvatar project={project} size="medium" />
             : <span className="project-avatar is-medium" aria-hidden="true">?</span>}
@@ -102,7 +114,9 @@ export function ChatSearchPage({
               <time dateTime={new Date(chat.updatedAt).toISOString()}>{chatTime(chat.updatedAt)}</time>
             </span>
             <span className="chat-search-excerpt">{excerpt.replace(/\s+/g, " ")}</span>
-            <span className="chat-search-project">{projectName}</span>
+            {projectInfo.status === "home"
+              ? <span className="chat-search-project">{projectName}</span>
+              : <ConversationProjects info={projectInfo} projects={projects} />}
           </span>
         </button>
       </li>

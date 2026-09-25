@@ -9,6 +9,22 @@ export type ConversationProjectInfo = {
   homeProjectId?: string;
 };
 
+/** Plain-language project context for row labels and non-visual consumers. */
+export function conversationProjectSummary(
+  info: ConversationProjectInfo,
+  projectName: (projectId: string, fallback?: string) => string,
+): string {
+  if (info.status === "loading") return "work projects loading";
+  if (info.status === "discussion") return "discussion, no tasks yet";
+  if (info.status === "unknown") return "work project unknown";
+  if (info.status === "home") return projectName(info.homeProjectId ?? "", "Unknown project");
+  const names = info.destinations.map((destination) => projectName(destination.projectId, destination.projectName));
+  const unknown = info.unknownTaskCount
+    ? `, ${info.unknownTaskCount} ${info.unknownTaskCount === 1 ? "task has" : "tasks have"} no confirmed project`
+    : "";
+  return `${names.join(", ")}${unknown}, ${info.taskCount} ${info.taskCount === 1 ? "task" : "tasks"}`;
+}
+
 /**
  * The projects a conversation is actually doing work in.
  *
@@ -48,7 +64,7 @@ export function conversationProjectInfo(
 
   const runs = snapshot.runs.filter((run) => run.coordinatorChatKey === chatKey);
   if (runs.length === 0 && coordinatorChatKeys === null) {
-    return { status: "loading", destinations: [], taskCount: 0, unknownTaskCount: 0 };
+    return { status: ledgerUnavailable ? "unknown" : "loading", destinations: [], taskCount: 0, unknownTaskCount: 0 };
   }
   const coordinator = runs.length > 0 || !!coordinatorChatKeys?.has(chatKey);
   if (!coordinator) {

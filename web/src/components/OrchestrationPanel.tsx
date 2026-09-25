@@ -12,6 +12,7 @@ import { elapsedLabel } from "../lib/working";
 import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
 import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
+import { initialRunDisclosures, syncRunDisclosures, toggleRunDisclosure } from "../lib/runDisclosure";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
 import { useRosterAgent } from "../lib/agentRoster";
@@ -74,6 +75,7 @@ export function OrchestrationPanel({
   sharedHeading = false,
   onSelectedRunChange,
   projectName,
+  allowManualRun = true,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
@@ -98,12 +100,16 @@ export function OrchestrationPanel({
   /** A registered project's name, for plan rows that run in the run's own
    *  checkout. */
   projectName?: (id: string) => string | undefined;
+  /** Agents mode starts runs conversationally through its CTO. */
+  allowManualRun?: boolean;
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
   const snapshot = feed.snapshot ?? initialSnapshot;
-  const [selectedId, setSelectedId] = useState<string | null>((embedded ? chatSnapshot(initialSnapshot, coordinatorKey) : initialSnapshot).runs[0]?.id ?? null);
-  const [creating, setCreating] = useState((embedded ? chatSnapshot(initialSnapshot, coordinatorKey) : initialSnapshot).runs.length === 0 && !readOnly);
+  const initialRuns = embedded ? chatSnapshot(initialSnapshot, coordinatorKey).runs : initialSnapshot.runs;
+  const [selectedId, setSelectedId] = useState<string | null>(initialRuns[0]?.id ?? null);
+  const [disclosures, setDisclosures] = useState(() => initialRunDisclosures(initialRuns));
+  const [creating, setCreating] = useState(initialRuns.length === 0 && !readOnly && allowManualRun);
   const [objective, setObjective] = useState("");
   const [maxConcurrent, setMaxConcurrent] = useState(4);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("auto");
@@ -111,7 +117,7 @@ export function OrchestrationPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
-  const [confirmStop, setConfirmStop] = useState(false);
+  const [confirmStop, setConfirmStop] = useState<string | null>(null);
 
   // After an action: the action itself succeeded, and a failed read shows
   // through the feed's error.
@@ -122,13 +128,18 @@ export function OrchestrationPanel({
     () => embedded ? chatSnapshot(snapshot, coordinatorKey).runs : snapshot.runs.filter((run) => !project || run.workspaceId === project.id),
     [snapshot, project, embedded, coordinatorKey],
   );
+  const accordionMode = embedded && !allowManualRun;
 
   useEffect(() => {
     setSelectedId(null);
     setCreating(false);
     setError(null);
-    setConfirmStop(false);
+    setConfirmStop(null);
     setObjective("");
+    setDisclosures(initialRunDisclosures(runs));
+    // Runs are intentionally omitted: this reset follows coordinator identity,
+    // while the sync below handles ledger refreshes for the same coordinator.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coordinatorKey]);
 
   useEffect(() => {
@@ -136,8 +147,8 @@ export function OrchestrationPanel({
     if (selectedId && runs.some((run) => run.id === selectedId)) return;
     const next = runs.find((run) => ACTIVE_RUNS.has(run.status)) ?? runs[0];
     setSelectedId(next?.id ?? null);
-    setCreating(!next && runs.length === 0);
-  }, [runs, selectedId, creating, readOnly, embedded]);
+    setCreating(allowManualRun && !next && runs.length === 0);
+  }, [runs, selectedId, creating, readOnly, embedded, allowManualRun]);
 
   const selected = runs.find((run) => run.id === selectedId) ?? null;
   useEffect(() => {
@@ -149,16 +160,14 @@ export function OrchestrationPanel({
   const workerRunId = snapshot.attempts.find((item) => item.workerChatKey === currentChatKey)?.runId;
   const visibleWorkerRunId = runs.some((run) => run.id === workerRunId) ? workerRunId : null;
   useEffect(() => {
+    setDisclosures((before) => syncRunDisclosures(before, runs, visibleWorkerRunId));
+  }, [runs, visibleWorkerRunId]);
+  useEffect(() => {
     if (visibleWorkerRunId) {
       setSelectedId(visibleWorkerRunId);
       setCreating(false);
     }
   }, [currentChatKey, coordinatorKey, visibleWorkerRunId]);
-  const tasks = snapshot.tasks.filter((task) => task.runId === selected?.id);
-  const attempts = snapshot.attempts.filter((attempt) => attempt.runId === selected?.id);
-  const gates = snapshot.gates.filter((gate) => gate.runId === selected?.id);
-  const messages = snapshot.messages.filter((message) => message.runId === selected?.id);
-
   const startRun = async () => {
     if (readOnly || !project || (!coordinatorKey && !onEnsureCoordinator) || !objective.trim()) return;
     if (embedded && runs.some(isActiveRun)) { setCreating(false); return; }
@@ -189,12 +198,12 @@ export function OrchestrationPanel({
     }
   };
 
-  const resolveGate = async (gate: OrchestrationGate, resolution: string) => {
-    if (readOnly || !selected || !resolution.trim()) return;
+  const resolveGate = async (run: OrchestrationRun, gate: OrchestrationGate, resolution: string) => {
+    if (readOnly || !resolution.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      onOpenChat(selected.coordinatorChatKey,
+      onOpenChat(run.coordinatorChatKey,
         `For orchestration gate ${gate.id}:\n\n${gate.question}\n\nMy answer: ${resolution.trim()}\n\nReview this answer and coordinate the next step through orchestration_gate_resolve.`);
       setAnswers((current) => ({ ...current, [gate.id]: "" }));
       onClose();
@@ -205,13 +214,13 @@ export function OrchestrationPanel({
     }
   };
 
-  const retryTask = async (task: OrchestrationTask, attempt: OrchestrationAttempt) => {
-    if (readOnly || !selected) return;
+  const retryTask = async (run: OrchestrationRun, task: OrchestrationTask, attempt: OrchestrationAttempt) => {
+    if (readOnly) return;
     setBusy(true);
     setError(null);
     try {
       await bridge.invoke("orchestration_worker_start", {
-        actorChatKey: selected.coordinatorChatKey,
+        actorChatKey: run.coordinatorChatKey,
         ...retryLaunchArgs(task, attempt),
       });
       await read();
@@ -222,29 +231,29 @@ export function OrchestrationPanel({
     }
   };
 
-  const workspaceAction = async (command: string, args: Record<string, unknown>) => {
-    if (readOnly || !selected) return;
+  const workspaceAction = async (run: OrchestrationRun, command: string, args: Record<string, unknown>) => {
+    if (readOnly) return;
     setBusy(true);
     setError(null);
     try {
-      await bridge.invoke(command, { actorChatKey: selected.coordinatorChatKey, ...args });
+      await bridge.invoke(command, { actorChatKey: run.coordinatorChatKey, ...args });
       await read();
     } catch (problem) {
       setError(messageOf(problem));
     } finally { setBusy(false); }
   };
 
-  const stopRun = async () => {
-    if (readOnly || !selected) return;
+  const stopRun = async (run: OrchestrationRun) => {
+    if (readOnly) return;
     setBusy(true);
     setError(null);
     try {
       await bridge.invoke("orchestration_run_stop", {
-        actorChatKey: selected.coordinatorChatKey,
-        runId: selected.id,
+        actorChatKey: run.coordinatorChatKey,
+        runId: run.id,
         reason: "Stopped by the person from the Orchestrator panel.",
       });
-      setConfirmStop(false);
+      setConfirmStop(null);
       await read();
     } catch (problem) {
       setError(messageOf(problem));
@@ -253,36 +262,74 @@ export function OrchestrationPanel({
     }
   };
 
-  const newRunButton = (
+  const newRunButton = allowManualRun ? (
     <button
       className={`orch-new${creating ? " is-on" : ""}`}
       type="button"
       disabled={readOnly || busy || (embedded && runs.some(isActiveRun))}
       title={embedded && runs.some(isActiveRun) ? "Finish or stop the active run first" : undefined}
-      onClick={() => { setCreating(true); setConfirmStop(false); }}
+      onClick={() => { setCreating(true); setConfirmStop(null); }}
     >
       <PlusIcon />
       {embedded ? "New run" : "Start a run"}
     </button>
-  );
+  ) : null;
+
+  const runDetail = (run: OrchestrationRun) => {
+    const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
+    const runAttempts = snapshot.attempts.filter((attempt) => attempt.runId === run.id);
+    const runGates = snapshot.gates.filter((gate) => gate.runId === run.id);
+    const runMessages = snapshot.messages.filter((message) => message.runId === run.id);
+    return <RunDetail
+      key={run.id}
+      run={run}
+      snapshot={snapshot}
+      tasks={runTasks}
+      attempts={runAttempts}
+      gates={runGates}
+      messages={runMessages}
+      notifications={(snapshot.notifications ?? []).filter((notification) => notification.runId === run.id)}
+      answers={answers}
+      busy={busy}
+      readOnly={readOnly}
+      confirmStop={confirmStop === run.id}
+      onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
+      onResolve={(gate, answer) => void resolveGate(run, gate, answer)}
+      onRetry={(task, attempt) => void retryTask(run, task, attempt)}
+      onWorkspaceAction={(command, args) => void workspaceAction(run, command, args)}
+      onOpenChat={onOpenChat}
+      currentChatKey={currentChatKey}
+      coordinatorBusy={coordinatorBusy}
+      sharedHeading={sharedHeading || accordionMode}
+      compactControls={!allowManualRun}
+      projectName={projectName ?? ((id) => (id === project?.id ? project.name : undefined))}
+      onPlanApproved={() => void read()}
+      onRequestPlanChanges={(note) => {
+        onOpenChat(run.coordinatorChatKey,
+          `Before I approve the plan for run ${run.id}, change this:\n\n${note}\n\nRevise the tasks through the orchestration tools and ask for approval again.`);
+        onClose();
+      }}
+      onAskStop={() => setConfirmStop(run.id)}
+      onCancelStop={() => setConfirmStop(null)}
+      onStop={() => void stopRun(run)}
+      onStartMaster={onStartMaster ? async () => {
+        setBusy(true); setError(null);
+        try { await onStartMaster(run); }
+        catch (problem) { setError(messageOf(problem)); }
+        finally { setBusy(false); }
+      } : undefined}
+    />;
+  };
 
   return (
     <>
       {!embedded && <div className="panel-scrim" onClick={onClose} />}
       <aside className={embedded ? "orch-embedded" : "panel orch-page"} role={embedded ? "region" : "dialog"} aria-modal={embedded ? undefined : true} aria-label={embedded ? "Runs for this chat" : undefined} aria-labelledby={embedded ? undefined : "orch-title"}>
-        {/* One row: the coordinator's chat pinned first, and starting another
-            run as a small action beside it rather than a section of its own. */}
-        {embedded && <div className="orch-main-strip">
-          <nav className="orch-main-nav" aria-label="Main conversation">
-            <button type="button" className="orch-main-chat"
-              aria-current={coordinatorKey && currentChatKey === coordinatorKey ? "page" : undefined}
-              title="Coordinate the work with the main agent"
-              disabled={!coordinatorKey} onClick={() => coordinatorKey && onOpenChat(coordinatorKey)}>
-              <OrchestratorIcon />
-              <span><strong>Main chat</strong><small>Coordinate the work</small></span>
-            </button>
-          </nav>
-          {newRunButton}
+        {embedded && coordinatorKey && currentChatKey && currentChatKey !== coordinatorKey && <div className="orch-back-strip">
+          <button type="button" className="orch-back-main" title="Back to main chat" aria-label="Back to main chat"
+            onClick={() => onOpenChat(coordinatorKey)}>
+            <BackIcon />
+          </button>
         </div>}
         {!embedded && <>
         <header className="panel-head orch-page-head">
@@ -299,8 +346,8 @@ export function OrchestrationPanel({
         <div className="orch-layout">
           {/* One run needs no picker — and inside a chat that is the normal
               case, where the strip was costing a row above the fold. */}
-          {(!embedded || runs.length > 1 || (creating && runs.length > 0)) && <nav className="orch-runs" aria-label="Orchestration runs">
-            {!embedded && newRunButton}
+          {!accordionMode && (!embedded || runs.length > 1 || (creating && runs.length > 0) || (allowManualRun && runs.length > 0)) && <nav className="orch-runs" aria-label="Orchestration runs">
+            {newRunButton}
             <div className="orch-run-list">
               {runs.map((run) => {
                 const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
@@ -311,7 +358,7 @@ export function OrchestrationPanel({
                     className={`orch-run-pick${!creating && selectedId === run.id ? " is-on" : ""}`}
                     type="button"
                     key={run.id}
-                    onClick={() => { setSelectedId(run.id); setCreating(false); setConfirmStop(false); }}
+                    onClick={() => { setSelectedId(run.id); setCreating(false); setConfirmStop(null); }}
                   >
                     <StatusMark status={run.status} />
                     <span className="orch-run-copy">
@@ -331,7 +378,39 @@ export function OrchestrationPanel({
           <div className="orch-content">
             {shownError && <div className="orch-error" role="alert">{shownError}</div>}
             {readOnly && <p className="orch-empty">This agent chat is read-only. Send instructions and decisions in the main chat.</p>}
-            {creating && !readOnly ? (
+            {accordionMode ? (
+              runs.length ? <div className="orch-run-accordions" aria-label="Goals">
+                {runs.map((run) => {
+                  const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
+                  const done = runTasks.filter((task) => task.status === "completed").length;
+                  const openGates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open").length;
+                  const approval = run.planApproval?.status === "pending";
+                  const expanded = disclosures.expanded.has(run.id);
+                  const bodyId = `orch-goal-${run.id}`;
+                  return <section className={`orch-run-accordion${expanded ? " is-open" : ""}`} key={run.id}>
+                    <button type="button" className="orch-run-accordion-toggle" aria-expanded={expanded} aria-controls={bodyId}
+                      onClick={() => {
+                        setSelectedId(run.id);
+                        setConfirmStop(null);
+                        setDisclosures((before) => toggleRunDisclosure(before, run.id));
+                      }}>
+                      <StatusMark status={run.status} />
+                      <span className="orch-run-accordion-copy">
+                        <strong>{run.objective}</strong>
+                        <small>{done}/{runTasks.length} tasks · {statusLabel(run.status)}</small>
+                      </span>
+                      {(approval || openGates > 0) && <span className="orch-run-accordion-attention">
+                        {approval ? "Approval needed" : `${openGates} ${openGates === 1 ? "decision" : "decisions"} waiting`}
+                      </span>}
+                      <ChevronIcon open={expanded} />
+                    </button>
+                    <div className="orch-run-accordion-body" id={bodyId} hidden={!expanded}>
+                      {expanded && runDetail(run)}
+                    </div>
+                  </section>;
+                })}
+              </div> : <div className="orch-empty">No goals in this chat yet. Keep talking to the CTO to start work.</div>
+            ) : creating && !readOnly ? (
               <NewRun
                 project={project}
                 hasCoordinator={!!coordinatorKey || !!onEnsureCoordinator}
@@ -348,44 +427,7 @@ export function OrchestrationPanel({
                 onStart={() => void startRun()}
               />
             ) : selected ? (
-              <RunDetail
-                key={selected.id}
-                run={selected}
-                snapshot={snapshot}
-                tasks={tasks}
-                attempts={attempts}
-                gates={gates}
-                messages={messages}
-                notifications={(snapshot.notifications ?? []).filter((notification) => notification.runId === selected.id)}
-                answers={answers}
-                busy={busy}
-                readOnly={readOnly}
-                confirmStop={confirmStop}
-                onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
-                onResolve={(gate, answer) => void resolveGate(gate, answer)}
-                onRetry={(task, attempt) => void retryTask(task, attempt)}
-                onWorkspaceAction={(command, args) => void workspaceAction(command, args)}
-                onOpenChat={onOpenChat}
-                currentChatKey={currentChatKey}
-                coordinatorBusy={coordinatorBusy}
-                sharedHeading={sharedHeading}
-                projectName={projectName ?? ((id) => (id === project?.id ? project.name : undefined))}
-                onPlanApproved={() => void read()}
-                onRequestPlanChanges={(note) => {
-                  onOpenChat(selected.coordinatorChatKey,
-                    `Before I approve the plan for run ${selected.id}, change this:\n\n${note}\n\nRevise the tasks through the orchestration tools and ask for approval again.`);
-                  onClose();
-                }}
-                onAskStop={() => setConfirmStop(true)}
-                onCancelStop={() => setConfirmStop(false)}
-                onStop={() => void stopRun()}
-                onStartMaster={onStartMaster ? async () => {
-                  setBusy(true); setError(null);
-                  try { await onStartMaster(selected); }
-                  catch (problem) { setError(messageOf(problem)); }
-                  finally { setBusy(false); }
-                } : undefined}
-              />
+              runDetail(selected)
             ) : (
               <div className="orch-empty">{embedded ? "No runs in this chat yet." : "No runs in this project yet."}</div>
             )}
@@ -522,6 +564,7 @@ function RunDetail({
   onPlanApproved,
   onRequestPlanChanges,
   sharedHeading,
+  compactControls,
 }: {
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
@@ -549,14 +592,15 @@ function RunDetail({
   onPlanApproved: () => void;
   onRequestPlanChanges: (note: string) => void;
   sharedHeading: boolean;
+  compactControls: boolean;
 }) {
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsId = useId();
-  const settingsToggle = <button type="button" className="orch-settings-toggle" aria-expanded={settingsOpen} aria-controls={settingsId}
-    aria-label="Run settings" title={settingsOpen ? "Hide run settings" : "Run settings and controls"}
+  const settingsToggle = <button type="button" className={`orch-settings-toggle${compactControls ? " is-compact" : ""}`} aria-expanded={settingsOpen} aria-controls={settingsId}
+    aria-label={compactControls ? "Run options" : "Run settings"} title={settingsOpen ? "Hide run options" : "Run options and controls"}
     onClick={() => setSettingsOpen(!settingsOpen)}>
-    <SettingsIcon /><span>Settings</span>
+    {compactControls ? <MoreIcon /> : <SettingsIcon />}{!compactControls && <span>Settings</span>}
   </button>;
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
@@ -987,4 +1031,16 @@ function PlusIcon() {
 
 function CloseIcon() {
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>;
+}
+
+function BackIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>;
+}
+
+function MoreIcon() {
+  return <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>;
+}
+
+function ChevronIcon({ open }: { open: boolean }) {
+  return <svg className="orch-run-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={open ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>;
 }

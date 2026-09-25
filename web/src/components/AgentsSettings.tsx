@@ -143,7 +143,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
       <div className="settings-control-row">
         <div className="settings-control-copy">
           <h3>Agents mode</h3>
-          <p>New chat becomes New task. You pick which agent gets it. Off, chats work as they always have.</p>
+          <p>Work starts in one conversation with your CTO, who routes it to the right project and agent. Off, chats work as they always have.</p>
         </div>
         <button
           className={`set-switch${on ? " is-on" : ""}`}

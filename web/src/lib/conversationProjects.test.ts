@@ -100,4 +100,12 @@ describe("project conversation discovery", () => {
     expect(Object.fromEntries(counts)).toEqual({ alpha: 2, beta: 2 });
     expect(conversations[0].pinned).toBe(true);
   });
+
+  it("maps a restored index row by its stable chat id without copying its history", () => {
+    const restored = chat("cto", "general", { pinned: true, customTitle: true, messages: [{ id: "kept", role: "assistant", streaming: false, blocks: [{ kind: "text", text: "History stays here" }] }] });
+    const found = projectConversations([restored], "alpha", ledger, new Set(["chat:cto"]));
+    expect(found).toHaveLength(1);
+    expect(found[0]).toBe(restored);
+    expect(found[0].messages[0].id).toBe("kept");
+  });
 });

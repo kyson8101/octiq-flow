@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Conversation } from "../lib/store";
+import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { ChatSearchPage } from "./ChatSearchPage";
 import type { Project } from "./Sidebar";
 
@@ -9,6 +10,13 @@ const chat = (id: string, updatedAt: number, extra: Partial<Conversation> = {}):
   id, projectId: "p1", title: `Task ${id}`, messages: [], createdAt: 1, updatedAt, ...extra,
 });
 const conversations = [chat("old", 100, { latestResponse: "Older answer" }), chat("new", 900, { doneAt: 950 })];
+const coordinator: Conversation = { ...chat("cto", 700), projectId: "general", title: "Roadmap" };
+const ledger: OrchestrationSnapshot = {
+  runs: [{ id: "run", coordinatorChatKey: "chat:cto", objective: "Ship", workspaceId: "general", rootPath: "/General", status: "completed", maxConcurrent: 2, createdAt: 1, updatedAt: 2 }],
+  tasks: ["p1", "p2"].map((projectId, index) => ({ id: `task-${index}`, runId: "run", title: projectId, spec: projectId, dependsOn: [], status: "completed" as const, createdAt: 1, updatedAt: index,
+    destination: { projectId, projectName: projectId === "p1" ? "octiq-flow" : "starfall-social", repository: `/work/${projectId}` } })),
+  attempts: [], gates: [], messages: [],
+};
 
 function html(over: Partial<Parameters<typeof ChatSearchPage>[0]> = {}) {
   return renderToStaticMarkup(<ChatSearchPage
@@ -45,6 +53,30 @@ describe("ChatSearchPage", () => {
     expect(out).toContain("Claude: the routing issue");
     expect(out).toContain("1 chat");
     expect(out).not.toContain("Recently active");
+  });
+
+  it("shows all linked work projects for the canonical coordinator result", () => {
+    const out = html({
+      conversations: [...conversations, coordinator],
+      projects: [...projects, { id: "p2", name: "starfall-social" }],
+      ledgerSnapshot: ledger,
+      coordinatorChatKeys: new Set(["chat:cto"]),
+      initialQuery: "roadmap", initialState: "ready",
+      initialHits: [{ id: "cto", excerpt: "roadmap", speaker: "Tofu Juice", role: "assistant" }],
+    });
+    expect(out).toContain('aria-label="Roadmap, starfall-social, octiq-flow, 2 tasks"');
+    expect(out).toContain(">octiq-flow</span>");
+    expect(out).toContain(">starfall-social</span>");
+    expect(out).not.toContain(">General</span>");
+  });
+
+  it("does not invent General while a coordinator's ledger is loading", () => {
+    const out = html({
+      conversations: [coordinator], ledgerSnapshot: null,
+      coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(out).toContain("Projects loading…");
+    expect(out).not.toContain(">General</span>");
   });
 
   it("never lists a run's worker, as a hit or as a recent chat", () => {

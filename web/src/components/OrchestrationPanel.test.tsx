@@ -377,25 +377,26 @@ it("says where the work got to in plain words, and hides the machinery behind th
 
 
 describe("embedded chat runs", () => {
-  it.each([false, true])("pins Main chat outside run content, including plan review (%s)", (planning) => {
+  it.each([false, true])("uses the goal disclosure as the run heading, including plan review (%s)", (planning) => {
     const ledger = structuredClone(snapshot);
     if (planning) ledger.runs[0].planApproval = { status: "pending", requestedAt: 1 };
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      allowManualRun={false}
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
       initialSnapshot={ledger} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(html).toContain('class="orch-main-chat" aria-current="page"');
-    expect(html.indexOf("Main chat")).toBeLessThan(html.indexOf('class="orch-content"'));
+    expect(html).not.toContain("Back to main chat");
     expect(html).not.toContain('id="orch-run-title"');
     expect(html).toContain('aria-label="Ship orchestration"');
+    expect(html).toContain('class="orch-run-accordion-toggle" aria-expanded="true"');
+    if (planning) expect(html).toContain("Approval needed");
   });
 
-  it("keeps New run beside Main chat and run settings one click away, shut", () => {
+  it("keeps manual New run in regular coding mode and run settings one click away, shut", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
-    const strip = html.slice(html.indexOf('class="orch-main-strip"'), html.indexOf('class="orch-layout"'));
-    expect(strip).toContain("Main chat");
-    expect(strip).toContain("New run");
+    expect(html).not.toContain("Main chat");
+    expect(html).toContain("New run");
     const toggle = html.match(/<button type="button" class="orch-settings-toggle" aria-expanded="false" aria-controls="([^"]+)"/);
     expect(toggle).not.toBeNull();
     const region = html.slice(html.indexOf(`id="${toggle![1]}"`));
@@ -407,13 +408,14 @@ describe("embedded chat runs", () => {
     expect(html).toContain("<dt>Acceptance</dt>");
   });
 
-  it("marks the worker task current while keeping Main chat available", () => {
+  it("marks the worker task current and offers one compact way back to the main chat", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      allowManualRun={false}
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:worker"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(html).not.toContain('class="orch-main-chat" aria-current="page"');
     expect(html).toContain('aria-current="page" aria-label="Open task chat: Build the host ledger"');
-    expect(html).toContain("Main chat");
+    expect(html).toContain('class="orch-back-main" title="Back to main chat" aria-label="Back to main chat"');
+    expect(html.match(/Back to main chat/g)).toHaveLength(2);
   });
   it("scopes the ledger to the current chat and keeps the surrounding app visible", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:other"
@@ -424,11 +426,11 @@ describe("embedded chat runs", () => {
     expect(html).not.toContain('aria-modal="true"');
     expect(html).not.toContain('class="panel-scrim"');
   });
-  it("drops the run picker when the chat has only one run", () => {
+  it("keeps manual creation discoverable in regular mode and uses goal accordions in agents mode", () => {
     const one = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
     expect(one).toContain("New run");
-    expect(one).not.toContain("orch-run-list");
+    expect(one).toContain("orch-run-list");
 
     const two = {
       ...snapshot,
@@ -438,6 +440,28 @@ describe("embedded chat runs", () => {
       initialSnapshot={two} onOpenChat={() => {}} onClose={() => {}} />);
     expect(both).toContain("orch-run-list");
     expect(both).toContain("Second outcome");
+
+    const agents = renderToStaticMarkup(<OrchestrationPanel embedded allowManualRun={false}
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={two} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(agents).not.toContain("New run");
+    expect(agents).not.toContain("orch-run-list");
+    expect(agents.match(/<section class="orch-run-accordion/g)).toHaveLength(2);
+    expect(agents).toContain("Second outcome");
+  });
+
+  it("keeps approval attention visible on a collapsed goal and hides Settings behind options", () => {
+    const planning = { ...snapshot.runs[0], id: "run_2", objective: "Second goal", status: "planning" as const,
+      planApproval: { status: "pending" as const, requestedAt: 2 } };
+    const ledger = { ...snapshot, runs: [snapshot.runs[0], planning] };
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading allowManualRun={false}
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
+      initialSnapshot={ledger} onOpenChat={() => {}} onClose={() => {}} />);
+    const second = html.slice(html.indexOf("Second goal"));
+    expect(second).toContain("Approval needed");
+    expect(second).toContain('id="orch-goal-run_2" hidden=""');
+    expect(html).toContain('aria-label="Run options"');
+    expect(html).not.toContain(">Settings</span>");
   });
 
   it("keeps retry records inside the original task", () => {

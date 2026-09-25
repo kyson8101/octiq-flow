@@ -98,6 +98,27 @@ describe("ProjectsPage", () => {
     expect(out).toContain(">Projects</span>");
   });
 
+  it("finds the same canonical coordinator on each linked project page", () => {
+    const coordinator = chat("cto", "general", 500, { pinned: true, title: "Coordinate launch" });
+    const ledger: OrchestrationSnapshot = {
+      runs: [{ id: "run", coordinatorChatKey: "chat:cto", objective: "Launch", workspaceId: "general", rootPath: "/General", status: "completed", maxConcurrent: 2, createdAt: 1, updatedAt: 2 }],
+      tasks: ["p1", "p2"].map((projectId, index) => ({ id: `task-${index}`, runId: "run", title: projectId, spec: projectId, dependsOn: [], status: "completed" as const, createdAt: 1, updatedAt: index,
+        destination: { projectId, projectName: projectId, repository: `/work/${projectId}` } })),
+      attempts: [], gates: [], messages: [],
+    };
+    const shared = { conversations: [...conversations, coordinator], ledgerSnapshot: ledger, coordinatorChatKeys: new Set(["chat:cto"]) };
+    expect(html({ ...shared, selectedProjectId: "p1" })).toContain("Coordinate launch");
+    expect(html({ ...shared, selectedProjectId: "p2" })).toContain("Coordinate launch");
+    expect(html({ ...shared, selectedProjectId: "p1" }).match(/Coordinate launch/g)).toHaveLength(2);
+  });
+
+  it("removes project-level task creation in agents mode", () => {
+    const out = html({ selectedProjectId: "p2", conversations: [], allowNewTask: false });
+    expect(out).toContain("No tasks in starfall-social yet.");
+    expect(out).not.toContain("New task");
+    expect(out).not.toContain("Start a task");
+  });
+
   it("neither lists nor counts a run's workers, mapped or still loading", () => {
     const withWorkers = [
       ...conversations,

@@ -1,4 +1,4 @@
-import type { ConversationProjectInfo } from "../lib/conversationProjects";
+import { conversationProjectSummary, type ConversationProjectInfo } from "../lib/conversationProjects";
 import type { ProjectAppearance } from "./ProjectAvatar";
 import "./ConversationProjects.css";
 
@@ -29,14 +29,10 @@ export function ConversationProjects({ info, projects, limit = 2 }: {
   const shown = destinations.slice(0, Math.max(1, limit));
   const overflow = destinations.length - shown.length;
   const unknown = info.unknownTaskCount;
-  const names = destinations.map((project) => project.name);
-  const detail = [
-    ...names,
-    ...(unknown ? [`${unknown} ${unknown === 1 ? "task has" : "tasks have"} no confirmed project`] : []),
-  ].join(", ");
+  const detail = conversationProjectSummary(info, (id, fallback) => known.get(id)?.name ?? fallback ?? "Unknown project");
   const taskLabel = `${info.taskCount} ${info.taskCount === 1 ? "task" : "tasks"}`;
 
-  return <span className="conversation-projects" title={detail} aria-label={`Work projects: ${detail}; ${taskLabel}`}>
+  return <span className="conversation-projects" title={detail} aria-label={`Work projects: ${detail}`}>
     <span className="conversation-project-chips" aria-hidden="true">
       {shown.map((project) => <span className="conversation-project-chip" key={project.id}>{project.name}</span>)}
       {overflow > 0 && <span className="conversation-project-overflow">+{overflow}</span>}
