@@ -35,7 +35,9 @@
  *  3 — 2 is not trustworthy: it shipped while only one of the two caches was
  *      stamped, so a build carrying it could write the previous reader's work
  *      back out under a stamp of its own. */
-export const CACHE_SCHEMA = 3;
+// 4 — rerun the echoed-handback repair for rows already stamped 3 before
+// the migration stopped treating an echo as proof of human authorship.
+export const CACHE_SCHEMA = 4;
 
 /** What a cache WRITES. Required on purpose — a stamp a writer could leave off
  *  is worse than no stamp, because what it leaves behind reads as this

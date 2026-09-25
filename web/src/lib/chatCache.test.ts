@@ -111,7 +111,7 @@ it("redraws a checkpointed hand-back that carries nothing but an echo", async ()
   const state = staleChat();
   state.messages[0].echo = "u1";
   await saveChatCheckpoint({ id: "echoed", seq: 5, state, updatedAt: 1 });
-  await restamp("echoed", { schema: 1 });
+  await restamp("echoed", { schema: 3 });
 
   expect((await readChatCheckpoint("echoed"))?.state.messages[0]).toMatchObject({
     role: "assistant",

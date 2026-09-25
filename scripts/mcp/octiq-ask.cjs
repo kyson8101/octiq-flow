@@ -212,6 +212,32 @@ function speakerOf(event, fallback) {
   return typeof named === "string" ? oneLine(named, fallback) : fallback;
 }
 
+function userEntry(event, text) {
+  // A transport user role is not proof that the person authored this input.
+  // Believe provider metadata, never an agent-looking frame pasted by a user.
+  if (event.octiq_user_turn !== true) {
+    if (event.parent_tool_use_id) {
+      return { role: "assistant", speaker: "Subagent prompt", text: compactSkillPrompt(text) };
+    }
+    const origin = event.origin;
+    if (origin?.kind === "peer") {
+      const handback = origin.handback === true;
+      const name = handback ? origin.senderTaskId || origin.from : origin.name || origin.from;
+      let body = typeof origin.body === "string" && origin.body.trim() ? origin.body.trim() : text;
+      if (handback) body = body.replace(/^\[Subagent hand-back\][\s\S]*?The report follows:[ \t]*\n?/, "").trim();
+      return { role: "assistant", speaker: oneLine(`${handback ? "Subagent" : "Agent session"} ${name || ""}`), text: body };
+    }
+    if (event.isSynthetic === true && /^(?:<agent-message\b|(?:[^\n<]*\n)?<cross-session-message\b)/.test(text)) {
+      // Older streams omit origin. Keep all frames intact rather than risk
+      // dropping a second report; the label still removes user attribution.
+      return { role: "assistant", speaker: "Agent report", text };
+    }
+  }
+  const brief = text.indexOf("\n\n=== OctiqFlow agents mode ===\n");
+  return { role: "user", speaker: speakerOf(event, "User"),
+    text: compactSkillPrompt(brief >= 0 ? text.slice(0, brief) : text) };
+}
+
 /** Turn one provider event into the small set of things another agent needs.
  * Streaming deltas, hooks, token counters, and lifecycle chatter intentionally
  * have no entry. */
@@ -220,7 +246,7 @@ function conversationEntries(event, includeToolActivity) {
   const type = event?.type;
   if (type === "user") {
     const text = contentText(event?.message?.content);
-    if (text) out.push({ role: "user", speaker: speakerOf(event, "User"), text: compactSkillPrompt(text) });
+    if (text) out.push(userEntry(event, text));
 
     if (includeToolActivity && Array.isArray(event?.message?.content)) {
       for (const block of event.message.content) {

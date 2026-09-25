@@ -9,6 +9,7 @@ const path = require("node:path");
 
 const {
   compactSkillPrompt,
+  conversationEntries,
   conversationDetail,
   conversationSearch,
   conversationIdRef,
@@ -23,6 +24,28 @@ const OTHER_ID = "db2289e9-748b-4215-bd95-6df7c9b84f9a";
 const URL = `https://optiqflow.app/#/p/pandahrms/c/${ID}`;
 
 async function main() {
+  const report = '<agent-message from="a1">\n[Subagent hand-back] The report follows:\n  Review complete\n</agent-message>';
+  const peer = { type: "user", message: { content: report }, isSynthetic: true,
+    origin: { kind: "peer", handback: true, senderTaskId: "a1", body: "Review complete" } };
+  assert.deepStrictEqual(conversationEntries(peer, false), [
+    { role: "assistant", speaker: "Subagent a1", text: "Review complete" },
+  ]);
+  assert.strictEqual(conversationEntries({ ...peer, origin: undefined }, false)[0].role, "assistant");
+  assert.strictEqual(conversationEntries({ ...peer, origin: { ...peer.origin,
+    body: "[Subagent hand-back] Model output. The report follows:\n  Review complete" } }, false)[0].text, "Review complete");
+  assert.deepStrictEqual(conversationEntries({ ...peer, origin: { kind: "peer", name: "Reviewer", body: "Done" } }, false), [
+    { role: "assistant", speaker: "Agent session Reviewer", text: "Done" },
+  ]);
+  assert.deepStrictEqual(conversationEntries({ type: "user", message: { content: report } }, false), [
+    { role: "user", speaker: "User", text: report },
+  ]);
+  assert.strictEqual(conversationEntries({ ...peer, octiq_user_turn: true }, false)[0].role, "user");
+  assert.deepStrictEqual(conversationEntries({ type: "user", message: { content:
+    "Review the change\n\n=== OctiqFlow agents mode ===\nLead: Potato Juice\n\nInternal instructions" } }, false), [
+    { role: "user", speaker: "User", text: "Review the change" },
+  ]);
+  assert.strictEqual(conversationEntries({ type: "user", parent_tool_use_id: "task-1",
+    message: { content: "Review this PR" } }, false)[0].speaker, "Subagent prompt");
   assert.deepStrictEqual(conversationRef(URL), {
     project: "pandahrms",
     conversationId: ID,

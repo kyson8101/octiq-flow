@@ -91,7 +91,7 @@ it("redraws a hand-back that carries nothing but an echo", () => {
     { id: "m1", role: "user", streaming: false, echo: "u2", blocks: [{ kind: "text", text: FRAME }] },
   ];
   saveConversations([echoed]);
-  restamp({ schema: 1 });
+  restamp({ schema: 3 });
 
   const [back] = loadConversations();
   expect(back.messages[0]).toMatchObject({
