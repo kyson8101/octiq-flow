@@ -88,6 +88,16 @@ describe("task-oriented Sidebar", () => {
     expect(out).not.toContain("Project settings:");
   });
 
+  it("puts mobile navigation in the chat list scroller so it can leave and return without moving the list", () => {
+    const out = html({ conversations: [chat("a")], onSearch: () => {} });
+    const scroller = out.indexOf('class="task-chat-scroll"');
+    const navigation = out.indexOf('id="chats-navigation"');
+    const content = out.indexOf('class="task-chat-content"');
+    expect(scroller).toBeGreaterThan(0);
+    expect(navigation).toBeGreaterThan(scroller);
+    expect(content).toBeGreaterThan(navigation);
+  });
+
   it("has no search field, no Chats menu and no footer: they moved to pages", () => {
     const out = html({ onSearch: () => {}, onShowDeleted: () => {}, deletedCount: 2 });
     expect(out).not.toContain("<input");

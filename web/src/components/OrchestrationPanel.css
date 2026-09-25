@@ -350,6 +350,7 @@
 
 .orch-run-head h2 {
   max-width: 30ch;
+  overflow-wrap: anywhere;
   font-size: clamp(22px, 2.6vw, 32px);
 }
 

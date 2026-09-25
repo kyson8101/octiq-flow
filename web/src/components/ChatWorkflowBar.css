@@ -57,5 +57,7 @@
   .workflow-header { padding: 8px 12px; }
   .workflow-header .chat-workflow-bar { flex: 1 1 100%; flex-wrap: nowrap; gap: 6px; margin-left: 0; }
   .workflow-title { font-size: 14px; }
+  .workflow-heading.is-open .workflow-title { max-height: min(30dvh, 220px); }
+  .workflow-title-toggle { padding-inline: 4px; font-size: 11px; white-space: nowrap; }
   .workflow-header .chat-run-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }

@@ -4024,13 +4024,18 @@ export default function App() {
           {showingProjects ? (
             // A phone's chat list: the sidebar's head is hidden there, so the
             // app's mark is drawn here instead of twice.
-            <span className="topbar-title topbar-brand">
+            <button className="topbar-title topbar-brand" type="button" aria-label="Show Chats menu"
+              aria-controls="chats-navigation" title="Show Chats menu" onClick={() => {
+                const scroller = document.querySelector<HTMLElement>(".task-chat-scroll");
+                scroller?.scrollTo({ top: 0, behavior: "auto" });
+                requestAnimationFrame(() => document.querySelector<HTMLElement>(".sidebar-new-chat")?.focus({ preventScroll: true }));
+              }}>
               <img className="topbar-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />
               <span className="topbar-identity">
                 <span className="topbar-name">Chats</span>
                 <span className="topbar-version">OctiqFlow v{__APP_VERSION__}</span>
               </span>
-            </span>
+            </button>
           ) : (isMobile || navShut) && (
             // The way back to the chat list when it is not on screen: the
             // list's own screen on a phone, the put-away column on a desktop.
