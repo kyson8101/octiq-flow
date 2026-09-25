@@ -1442,7 +1442,7 @@ dependencies = [
 
 [[package]]
 name = "octiq-flow"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "axum",
  "base64 0.22.1",

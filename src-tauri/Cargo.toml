@@ -1,6 +1,6 @@
 [package]
 name = "octiq-flow"
-version = "0.2.3"
+version = "0.2.4"
 description = "Agent workflow orchestrator: run agents in real terminals, driven from a browser"
 authors = ["kyson"]
 edition = "2021"
