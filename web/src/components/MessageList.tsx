@@ -264,7 +264,6 @@ function BlockView({
   if (block.kind === "text") return <Prose text={block.text} animate={!!animate} />;
   if (block.kind === "compacted") return <Compacted block={block} />;
   if (block.kind === "notice") return <Notice text={block.text} />;
-  if (block.kind === "peer") return <PeerNote block={block} />;
   // Thinking is watched live above the composer and left out of the transcript;
   // `groupRows` drops it, so this is only ever the belt to that braces.
   if (block.kind === "thinking") return null;
@@ -429,72 +428,6 @@ function SubAgent({
  *  drawn as either it would claim a speaker that does not exist. */
 function Notice({ text }: { text: string }) {
   return <div className="cli-note">{text}</div>;
-}
-
-/** How much of somebody else's message is short enough to simply read.
- *
- *  A session asking a question is a paragraph and shutting it away would hide
- *  the whole point of it. A subagent's report is pages, and pages between two
- *  turns bury the conversation they belong to. One length tells them apart. */
-const AT_A_GLANCE = 400;
-
-/** The opening line, flattened to sit on one row beside the sender's name.
- *  List and heading marks come off: `**Verdict**` on a summary line reads as
- *  punctuation rather than as emphasis. */
-function opener(text: string): string {
-  const line = text.split("\n").find((l) => l.trim()) ?? "";
-  return line
-    .replace(/^\s*(?:#+|[-*+]|\d+[.)])\s+/, "")
-    .replace(/[*_`]/g, "")
-    .trim();
-}
-
-/** A subagent's task id is sixteen hex characters and nobody reads sixteen.
- *  Enough of it to tell two reports apart, which is all it is ever used for. */
-function shortId(id: string): string {
-  return id.length > 8 ? id.slice(0, 8) : id;
-}
-
-/** Somebody else's words, handed to this agent by the harness.
- *
- *  A subagent handing its final report back, or another Claude session on this
- *  machine talking to this one. The conversation has two sides and this belongs
- *  to neither: drawn on the user's side it was the reader pasting a wall of XML
- *  at their own agent, with "Sent" stamped underneath; drawn as a reply it
- *  would be this agent claiming work it did not do.
- *
- *  So it says WHO first — the one thing the turns around it cannot show — and
- *  opens onto what they said. See lib/peerMessage for the frame and the
- *  boilerplate that come off on the way in. */
-function PeerNote({ block }: { block: Extract<Block, { kind: "peer" }> }) {
-  const [open, setOpen] = useState(block.text.length <= AT_A_GLANCE);
-  const who =
-    block.source === "handback"
-      ? `subagent ${shortId(block.from)} reported back`
-      : `${block.from || "another session"} sent a message`;
-  const opening = opener(block.text);
-
-  return (
-    <div className={`peer-note ${open ? "is-open" : ""}`} data-peer={block.source}>
-      <button
-        type="button"
-        className="peer-note-head"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <Chevron open={open} />
-        <span className="peer-note-who">{who}</span>
-        {/* Only while it is shut. Open, the line is the first thing under it,
-            and the row would be saying it twice. */}
-        {!open && opening && <span className="peer-note-opening">{opening}</span>}
-      </button>
-      {open && (
-        <div className="peer-note-body">
-          <Prose text={block.text} animate={false} />
-        </div>
-      )}
-    </div>
-  );
 }
 
 /** Where the agent summarised its own history to make room.
@@ -838,13 +771,8 @@ function TurnView({
   // the CLI never reached Claude at all; a name over either one attributes it to
   // someone who did not do it. A reply with prose in it is still somebody
   // talking, event blocks beside the prose or not.
-  //
-  // A peer's message is the same rule a step further out: it is not even this
-  // machine's agent talking. Its own row says who said it, and "Claude" over
-  // the top of that names the one participant who did not.
   const allEvent =
-    blocks.length > 0 &&
-    blocks.every((b) => b.kind === "compacted" || b.kind === "notice" || b.kind === "peer");
+    blocks.length > 0 && blocks.every((b) => b.kind === "compacted" || b.kind === "notice");
 
   // What was attached to this turn. Taken across the messages the turn is made
   // of, and de-duplicated by path: the agent echoes a user turn back, so the
