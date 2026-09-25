@@ -72,6 +72,10 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.equal(taskTool.inputSchema.properties.project.type, "string");
   assert.equal(taskTool.inputSchema.properties.repository.type, "string");
   assert.deepEqual(taskTool.inputSchema.required, ["runId", "title", "spec"]);
+  // The standard plan card: optional, so older leads keep working.
+  assert.equal(taskTool.inputSchema.properties.problem.type, "string");
+  assert.equal(taskTool.inputSchema.properties.goal.type, "string");
+  assert.equal(taskTool.inputSchema.properties.acceptance.maxItems, 5);
   const orchestration = bound.result.tools
     .filter(tool => tool.name.startsWith("orchestration_"))
     .map(tool => tool.name);

@@ -223,7 +223,9 @@ describe("OrchestrationPanel", () => {
         tasks: [{ ...snapshot.tasks[0], worker: { agent: "claude", model: "sonnet", effort: "high", access: "auto" } }],
       }} onOpenChat={() => {}} onClose={() => {}} />);
     expect(html).toContain("Chosen per task by the main agent");
-    expect(html).toContain("Selected worker: Claude · Sonnet latest · high effort");
+    // The standard plan card carries the worker selection as facts.
+    expect(html).toMatch(/<dt>Model<\/dt><dd><span>Claude Sonnet latest<\/span>/);
+    expect(html).toMatch(/<dt>Effort<\/dt><dd><span>high<\/span>/);
     expect(html).not.toContain("Automatic · undefined");
   });
 

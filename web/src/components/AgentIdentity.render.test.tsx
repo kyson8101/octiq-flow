@@ -13,6 +13,7 @@ import { MessageList } from "./MessageList";
 import { ChatTaskBarView } from "./ChatTaskBar";
 import { AgentAvatarEditorView } from "./AgentAvatarEditor";
 import { AgentAvatar } from "./AgentAvatar";
+import { TaskPlanCard } from "./TaskPlanCard";
 
 const reply: Message = { id: "a1", role: "assistant", blocks: [{ kind: "text", text: "Done." }], streaming: false };
 
@@ -91,6 +92,37 @@ describe("the task panel's environment", () => {
     expect(html).toContain("Not verified yet");
     expect(html).not.toContain('data-evidence="confirmed"');
     expect(html).toContain('data-evidence="planned"');
+  });
+});
+
+describe("the plan card view", () => {
+  it("reads as facts, then problem, goal and acceptance", () => {
+    const html = renderToStaticMarkup(
+      <TaskPlanCard
+        run={{ workspaceId: "p", rootPath: "/code/General" }}
+        task={{
+          id: "t", runId: "r", title: "Badges", spec: "long brief", dependsOn: [], status: "pending", createdAt: 1, updatedAt: 1,
+          assignee: { id: "a", name: "Maya" },
+          card: { problem: "Chats hide their projects.", goal: "Show destination badges.", acceptance: ["Badges show", "Tests pass"] },
+        }}
+      />,
+    );
+    expect(html).toContain("Work directory");
+    expect(html).toContain("Pending, allocated when the task starts");
+    expect(html).toContain('data-state="pending"');
+    expect(html).toContain("Chats hide their projects.");
+    expect(html).toContain("Show destination badges.");
+    expect(html).toContain('aria-label="Acceptance criteria"');
+    expect(html).toContain("<li>Tests pass</li>");
+    expect(html).not.toContain("long brief");
+  });
+
+  it("says when the lead gave no card", () => {
+    const html = renderToStaticMarkup(
+      <TaskPlanCard run={{ workspaceId: "p", rootPath: "/x" }}
+        task={{ id: "t", runId: "r", title: "Old", spec: "s", dependsOn: [], status: "pending", createdAt: 1, updatedAt: 1 }} />,
+    );
+    expect(html).toContain("No problem, goal or acceptance criteria were given");
   });
 });
 

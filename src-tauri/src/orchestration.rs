@@ -170,6 +170,11 @@ pub struct Task {
     /// again, so new or re-routed work never rides an earlier approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_at: Option<i64>,
+    /// The task in the plan's standard shape: one line of problem, one line
+    /// of goal, and a few checkable acceptance criteria. Given by the lead
+    /// when it creates the task and fixed from then on, like the destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<TaskCard>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
     #[serde(default)]
@@ -183,6 +188,61 @@ pub struct Task {
     pub result: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// A task as a plan shows it: why, what, and how it is judged done.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCard {
+    #[serde(default)]
+    pub problem: String,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub acceptance: Vec<String>,
+}
+
+impl TaskCard {
+    /// Bounded, one line each, at most five criteria. `None` when nothing was
+    /// given, so a task created without a card is exactly what it always was.
+    pub fn checked(
+        problem: Option<String>,
+        goal: Option<String>,
+        acceptance: Option<Vec<String>>,
+    ) -> Result<Option<Self>, String> {
+        fn line(text: &str) -> String {
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        let problem = line(problem.as_deref().unwrap_or_default());
+        let goal = line(goal.as_deref().unwrap_or_default());
+        let acceptance: Vec<String> = acceptance
+            .unwrap_or_default()
+            .iter()
+            .map(|item| line(item))
+            .filter(|item| !item.is_empty())
+            .collect();
+        if problem.chars().count() > 300 || goal.chars().count() > 300 {
+            return Err(
+                "Keep the problem and the goal to one short sentence each (300 characters).".into(),
+            );
+        }
+        if acceptance.len() > 5 {
+            return Err("Give at most five acceptance criteria.".into());
+        }
+        if acceptance.iter().any(|item| item.chars().count() > 240) {
+            return Err(
+                "Keep each acceptance criterion to one checkable line (240 characters).".into(),
+            );
+        }
+        if problem.is_empty() && goal.is_empty() && acceptance.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            problem,
+            goal,
+            acceptance,
+        }))
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -772,6 +832,26 @@ impl OrchestrationStore {
         Ok(active_task_for_actor(&inner.data, chat_key))
     }
 
+    /// Attach the plan card a task was created with. Only once, and only by
+    /// the chat that created it: the card is part of the plan the person
+    /// approves, so it can no more change afterwards than the destination.
+    pub fn set_task_card(&self, task_id: &str, card: TaskCard) -> Result<Task, String> {
+        let updated = self.mutate(|data| {
+            let task = data
+                .tasks
+                .get_mut(task_id)
+                .ok_or("The task does not exist.")?;
+            if task.card.is_some() {
+                return Err("This task already has its plan card.".into());
+            }
+            task.card = Some(card);
+            task.updated_at = now_ms();
+            Ok(task.clone())
+        })?;
+        announce(&updated.run_id, "task_updated");
+        Ok(updated)
+    }
+
     /// Agents mode: the registered agent a worker chat is running as, from the
     /// task of its most recent attempt.
     pub fn assignee_for_worker(&self, chat_key: &str) -> Result<Option<String>, String> {
@@ -945,6 +1025,7 @@ impl OrchestrationStore {
                 assignee,
                 destination,
                 approved_at: None,
+                card: None,
                 workspace: None,
                 depends_on,
                 parent_task_id,
@@ -2385,6 +2466,40 @@ mod tests {
             }),
             None,
         )
+    }
+
+    #[test]
+    fn a_plan_card_is_one_line_each_bounded_and_set_once() {
+        let s = |text: &str| Some(text.to_string());
+        let card = TaskCard::checked(
+            s("  The chat\nlist hides   destinations. "),
+            s("Show them."),
+            Some(vec![
+                "Badges show".into(),
+                "  ".into(),
+                "Tests\npass".into(),
+            ]),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(card.problem, "The chat list hides destinations.");
+        assert_eq!(card.acceptance, vec!["Badges show", "Tests pass"]);
+        assert_eq!(TaskCard::checked(None, s(" "), Some(vec![])).unwrap(), None);
+        assert!(TaskCard::checked(s(&"x".repeat(301)), None, None).is_err());
+        assert!(TaskCard::checked(None, None, Some(vec!["a".into(); 6])).is_err());
+        assert!(TaskCard::checked(None, None, Some(vec!["a".repeat(241)])).is_err());
+
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let created = task(&store, &run, Vec::new());
+        assert_eq!(created.card, None);
+        let carded = store.set_task_card(&created.id, card.clone()).unwrap();
+        assert_eq!(carded.card.as_ref(), Some(&card));
+        // Part of the plan the person approves: it cannot be rewritten.
+        assert!(store
+            .set_task_card(&created.id, TaskCard::default())
+            .is_err());
+        assert!(store.set_task_card("task_missing", card).is_err());
     }
 
     #[test]

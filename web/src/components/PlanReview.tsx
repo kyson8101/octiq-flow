@@ -14,6 +14,7 @@ import {
 } from "../lib/planReview";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
+import { TaskPlanCard } from "./TaskPlanCard";
 import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
 
@@ -169,12 +170,18 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
   </>;
   return (
     <li className="plan-task">
-      {spec ? (
-        <details>
-          <summary>{summary}<span className="plan-task-chevron" aria-hidden="true" /></summary>
-          <div className="plan-task-spec">{spec}</div>
-        </details>
-      ) : <div className="plan-task-row">{summary}</div>}
+      {/* The standard plan card first; the lead's full brief stays one
+          disclosure further in, because it is written for the worker. */}
+      <details>
+        <summary>{summary}<span className="plan-task-chevron" aria-hidden="true" /></summary>
+        <TaskPlanCard task={task} run={run} projectName={projectName} />
+        {spec && (
+          <details className="plan-task-brief">
+            <summary>Full brief</summary>
+            <div className="plan-task-spec">{spec}</div>
+          </details>
+        )}
+      </details>
     </li>
   );
 }

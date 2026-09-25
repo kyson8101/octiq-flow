@@ -231,6 +231,18 @@ of the agent hook so no agent can approve its own plan. To change the plan,
 reply in the chat. The button stays disabled while the lead is still in its
 turn.
 
+Each task in the review, and in the Run panel's task details, opens to the
+**standard plan card** (`components/TaskPlanCard`, `lib/taskPlanCard.ts`).
+It shows the project, work directory, branch and base, worktree status, owner,
+model and effort as short facts. Then comes one line of **problem**, one line
+of **goal**, and 2–5 **acceptance** criteria. The lead supplies those three
+when it creates the task (`problem`, `goal`, `acceptance` on
+`orchestration_task_create`). They are checked by `TaskCard::checked` and fixed
+once created, like the destination. A work directory and branch the host has
+not allocated yet read **Pending**. The workspace plan reads **Planned**, and
+the attempt the host prepared reads **Confirmed**. A removed worktree reads
+**Removed**. The lead's full brief stays one disclosure further in.
+
 Approval is for exactly the plan you saw:
 
 - The browser sends the ids of the tasks it showed as awaiting approval; if the

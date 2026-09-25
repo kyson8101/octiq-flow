@@ -95,6 +95,15 @@
   transform: rotate(45deg); transition: transform 160ms ease-out;
 }
 .plan-task details[open] .plan-task-chevron { transform: translateY(2px) rotate(-135deg); }
+.plan-task > details > .plan-card { padding: 2px 12px 10px 40px; }
+.plan-task-brief > summary {
+  padding: 4px 12px 8px 40px; color: var(--fg-2); font-size: 12px;
+}
+.plan-task-brief > summary:hover { background: transparent; color: var(--fg-0); }
+@media (max-width: 520px) {
+  .plan-task > details > .plan-card,
+  .plan-task-brief > summary { padding-left: 12px; }
+}
 .plan-task-spec {
   padding: 2px 12px 12px 40px;
   color: var(--fg-1); font-size: 12.5px; line-height: 1.55;

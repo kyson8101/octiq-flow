@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
-import { AGENT_NAME, modelFromReported } from "../lib/agentProviders";
+import { AGENT_NAME } from "../lib/agentProviders";
 import {
   attemptIsExecuting, boardCounts, executionNeedsAttention, EXECUTION_LABELS, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
   sortTasksByActivity, taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
@@ -15,6 +15,7 @@ import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
 import { initialRunDisclosures, syncRunDisclosures, toggleRunDisclosure } from "../lib/runDisclosure";
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
+import { TaskPlanCard } from "./TaskPlanCard";
 import { useRosterAgent } from "../lib/agentRoster";
 import { PlanReview } from "./PlanReview";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
@@ -729,7 +730,8 @@ function RunDetail({
           <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates}
             taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
             archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
-            open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)} />
+            open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)}
+            projectName={projectName} />
         ))}
       </section>}
 
@@ -810,7 +812,8 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
 const ACCEPTANCE_NOTE = "OctiqFlow does not yet track acceptance results. Review the test evidence separately.";
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
-function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction, open }: {
+function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction, open, projectName }: {
+  projectName?: (id: string) => string | undefined;
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
   task: OrchestrationTask;
@@ -878,8 +881,9 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
         </button>
       </div>
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
-        {task.assignee && <p>Assigned to {task.assignee.name}</p>}
-        {task.worker && <p>Selected worker: {AGENT_NAME[task.worker.agent]} · {modelFromReported(task.worker.agent, task.worker.model ?? "")?.model ?? task.worker.model}{task.worker.effort ? ` · ${task.worker.effort} effort` : ""}</p>}
+        {/* The standard plan card: where it runs (planned until the host
+            prepares it), who owns it on which model, and what done means. */}
+        <TaskPlanCard task={task} run={run} attempt={attempt} projectName={projectName} />
         {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
           {report.steps.map((step, index) => <li key={index} data-state={step.state}>
             <span aria-label={step.state}>{step.state === "done" ? "✓" : step.state === "active" ? "◉" : "○"}</span>{step.title}

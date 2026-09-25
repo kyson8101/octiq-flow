@@ -875,6 +875,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     "Assign this task to one of your direct reports with `assignee`.".into(),
                 );
             }
+            // The plan card is checked before the task exists, so a bad card
+            // refuses the whole call rather than leaving a task without it.
+            let card = crate::orchestration::TaskCard::checked(
+                arg(&args, "problem")?,
+                arg(&args, "goal")?,
+                arg(&args, "acceptance")?,
+            )?;
             let project_arg: Option<String> = arg(&args, "project")?;
             let repository_arg: Option<String> = arg(&args, "repository")?;
             let routed = crate::orchestration::destination::route(
@@ -906,7 +913,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 }
                 None => None,
             };
-            to_value(svc.orchestrations.create_task_for(
+            let task = svc.orchestrations.create_task_for(
                 &actor,
                 run_id,
                 arg(&args, "title")?,
@@ -916,7 +923,11 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 worker,
                 assignee,
                 routed.destination,
-            ))
+            )?;
+            to_value(match card {
+                Some(card) => svc.orchestrations.set_task_card(&task.id, card),
+                None => Ok(task),
+            })
         }
         // Where the caller may send work: registered projects, their
         // repositories, and which of its direct reports can work in each.

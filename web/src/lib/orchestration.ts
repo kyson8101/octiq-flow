@@ -99,6 +99,10 @@ export type OrchestrationTask = {
   destination?: TaskDestination;
   /** Agents mode: when the person approved it. Absent: not yet approved. */
   approvedAt?: number;
+  /** The standard plan card: one line of problem, one of goal, and a few
+   *  checkable acceptance criteria. Fixed once the task is created. Absent on
+   *  tasks from leads that did not give one. */
+  card?: { problem: string; goal: string; acceptance: string[] };
   workspace?: TaskWorkspace;
   dependsOn: string[];
   parentTaskId?: string;
