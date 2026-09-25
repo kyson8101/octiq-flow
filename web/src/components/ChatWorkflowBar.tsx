@@ -75,8 +75,8 @@ function RunTitle({ text }: { text: string }) {
   }, [text, open]);
   return <div className={`workflow-heading${open ? " is-open" : ""}`}>
     <h1 className="workflow-title" id={id} ref={ref} tabIndex={open ? 0 : undefined}>{text}</h1>
-    {(clipped || open) && <button type="button" className="workflow-title-toggle" aria-expanded={open} aria-controls={id}
-      aria-label={open ? "Show less of the objective" : "Show the full objective"}
-      onClick={() => setOpen(!open)}>{open ? "Less" : "More"}</button>}
+    <button type="button" className="workflow-title-toggle" hidden={!clipped && !open} aria-expanded={open} aria-controls={id}
+      aria-label={open ? "Show less of the objective" : "Show full objective details"}
+      onClick={() => setOpen(!open)}>{open ? "Show less" : "Show details"}</button>
   </div>;
 }

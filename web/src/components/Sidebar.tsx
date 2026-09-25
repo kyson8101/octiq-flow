@@ -12,6 +12,7 @@ import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
 } from "../lib/chatFilter";
 import { workerArchiveChatList, workerArchiveDisabledReason } from "../lib/workerArchive";
+import { INITIAL_MOBILE_MENU_SCROLL, nextMobileMenuScroll } from "../lib/mobileMenuScroll";
 import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
@@ -116,6 +117,8 @@ export function Sidebar({
   const [showArchived, setShowArchived] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [menuScroll, setMenuScroll] = useState(INITIAL_MOBILE_MENU_SCROLL);
+  const toolbar = useRef<HTMLDivElement | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
   const held = useRef(false);
@@ -436,65 +439,81 @@ export function Sidebar({
 
   return (
     <nav className="sidebar task-sidebar" aria-label="Chats">
-      <div className="sidebar-toolbar">
-        {/* The column is the full height of the window, so its first row sits
-            level with the top bar beside it and carries the name of the app —
-            the one place it does. The top bar beside it names the page. */}
-        <div className="sidebar-head">
-          <img className="sidebar-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />
-          <span className="sidebar-title">OctiqFlow <span className="sidebar-version">v{__APP_VERSION__}</span></span>
-          {onCollapse && <button className="sidebar-collapse" type="button" onClick={onCollapse}
-            aria-label="Hide sidebar" title="Hide sidebar">
-            <CollapseIcon />
-          </button>}
+      <div className="task-chat-scroll" onScroll={(event) => {
+        const scroller = event.currentTarget;
+        const preserve = !!toolbar.current?.contains(document.activeElement);
+        setMenuScroll((state) => nextMobileMenuScroll(
+          state,
+          scroller.scrollTop,
+          toolbar.current?.offsetHeight ?? 0,
+          preserve,
+        ));
+      }}>
+        <div
+          ref={toolbar}
+          id="chats-navigation"
+          className={`sidebar-toolbar${menuScroll.floating ? " is-floating" : ""}${menuScroll.hidden ? " is-hidden" : ""}`}
+          onFocusCapture={() => setMenuScroll((state) => ({ ...state, hidden: false, direction: null, travel: 0 }))}
+        >
+          {/* The column is the full height of the window, so its first row sits
+              level with the top bar beside it and carries the name of the app —
+              the one place it does. The top bar beside it names the page. */}
+          <div className="sidebar-head">
+            <img className="sidebar-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />
+            <span className="sidebar-title">OctiqFlow <span className="sidebar-version">v{__APP_VERSION__}</span></span>
+            {onCollapse && <button className="sidebar-collapse" type="button" onClick={onCollapse}
+              aria-label="Hide sidebar" title="Hide sidebar">
+              <CollapseIcon />
+            </button>}
+          </div>
+          <ul className="sidebar-places" aria-label="App">
+            <li><button className="sidebar-place sidebar-new-chat" type="button" onClick={onNewChat}>
+              <NewChatIcon /><span>{newLabel}</span>
+            </button></li>
+            {onSearch && <li><button className="sidebar-place" type="button" onClick={onSearch}
+              aria-current={activeView === "search" ? "page" : undefined}>
+              <SearchIcon /><span>Search chats</span>
+            </button></li>}
+            {onProjects && <li><button className="sidebar-place" type="button" onClick={onProjects}
+              aria-current={activeView === "projects" ? "page" : undefined}>
+              <ProjectsIcon /><span>Projects</span>
+            </button></li>}
+            {onAgents && <li><button className="sidebar-place" type="button" onClick={onAgents}
+              aria-current={activeView === "agents" ? "page" : undefined}>
+              <AgentsIcon /><span>Agents</span>
+            </button></li>}
+            {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
+              aria-current={activeView === "settings" ? "page" : undefined}>
+              <SettingsIcon /><span>Settings</span>
+            </button></li>}
+          </ul>
         </div>
-        <ul className="sidebar-places" aria-label="App">
-          <li><button className="sidebar-place sidebar-new-chat" type="button" onClick={onNewChat}>
-            <NewChatIcon /><span>{newLabel}</span>
-          </button></li>
-          {onSearch && <li><button className="sidebar-place" type="button" onClick={onSearch}
-            aria-current={activeView === "search" ? "page" : undefined}>
-            <SearchIcon /><span>Search chats</span>
-          </button></li>}
-          {onProjects && <li><button className="sidebar-place" type="button" onClick={onProjects}
-            aria-current={activeView === "projects" ? "page" : undefined}>
-            <ProjectsIcon /><span>Projects</span>
-          </button></li>}
-          {onAgents && <li><button className="sidebar-place" type="button" onClick={onAgents}
-            aria-current={activeView === "agents" ? "page" : undefined}>
-            <AgentsIcon /><span>Agents</span>
-          </button></li>}
-          {onSettings && <li><button className="sidebar-place" type="button" onClick={onSettings}
-            aria-current={activeView === "settings" ? "page" : undefined}>
-            <SettingsIcon /><span>Settings</span>
-          </button></li>}
-        </ul>
-      </div>
 
-      {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
-      {conversations.length > 0 || showArchived ? (
-        <div className="task-chat-scroll">
-          {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
-            <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
-            <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
-          </section>}
-          {/* The heading stays whenever there are chats, even with nothing
-              under it: it carries the only way to change the view. */}
-          <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
-            <div className="sidebar-section-head">
-              <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived workers" : "Recent"}</h2>
-              <SidebarMenu className="sidebar-filter-trigger"
-                label={`Show chats: ${recentLabel}`}
-                open={filterOpen} onOpenChange={setFilterOpen}
-                icon={<><span>{recentLabel}</span><ChevronIcon /></>}
-                items={recentMenu} />
-            </div>
-            {recentNodes.length > 0 ? <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul> : emptyRecent()}
-          </section>
-        </div>
-      ) : (
-        <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
-      )}
+        {archiveError && <div className="sidebar-archive-error" role="alert">{archiveError}<button type="button" onClick={() => setArchiveError(null)}>Dismiss</button></div>}
+        {conversations.length > 0 || showArchived ? (
+          <div className="task-chat-content">
+            {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
+              <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
+              <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
+            </section>}
+            {/* The heading stays whenever there are chats, even with nothing
+                under it: it carries the only way to change the view. */}
+            <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
+              <div className="sidebar-section-head">
+                <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived workers" : "Recent"}</h2>
+                <SidebarMenu className="sidebar-filter-trigger"
+                  label={`Show chats: ${recentLabel}`}
+                  open={filterOpen} onOpenChange={setFilterOpen}
+                  icon={<><span>{recentLabel}</span><ChevronIcon /></>}
+                  items={recentMenu} />
+              </div>
+              {recentNodes.length > 0 ? <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul> : emptyRecent()}
+            </section>
+          </div>
+        ) : (
+          <div className="sidebar-empty"><span>No chats yet</span><button type="button" onClick={onNewChat}>Start your first chat</button></div>
+        )}
+      </div>
 
       {onResize && <span className="nav-resizer" onPointerDown={onResize} role="separator"
         aria-orientation="vertical" aria-label="Resize the chat column" />}

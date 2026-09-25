@@ -9,6 +9,8 @@ describe("ChatWorkflowBar", () => {
     const html = renderToStaticMarkup(<ChatWorkflowBar unified worker selectedRun={run}
       snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }} orchestrated view="chat" onView={() => {}} />);
     expect(html).toMatch(/<h1 class="workflow-title" id="[^"]+">Ship the unified workspace<\/h1>/);
+    expect(html).toMatch(/<button[^>]+workflow-title-toggle[^>]+hidden=""[^>]+aria-expanded="false"[^>]+aria-controls="[^"]+"[^>]+aria-label="Show full objective details"/);
+    expect(html).toContain("Show details</button>");
     expect(html).toContain('aria-pressed="false">Tasks');
     expect(html).toContain('aria-pressed="true">Chat');
     expect(html).not.toContain('aria-label="Execution mode"');
