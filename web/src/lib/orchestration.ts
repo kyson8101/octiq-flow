@@ -213,6 +213,16 @@ export function isWorkerChat(id: string | null, parents: ReadonlyMap<string, str
   return !!id && (id.startsWith("orch-") || parents.has(id));
 }
 
+/** The chats a person lists, searches and browses by project: every chat but
+ *  a run's workers. A worker is reached through its run's Tasks view in the
+ *  main chat, and its transcript is kept; listed on its own it was a
+ *  "Worker: …" row nobody had started. Identity is the ledger's mapping plus
+ *  the reserved `orch-` prefix, so a worker stays out while the ledger loads,
+ *  after its parent is filtered away, and when it is the chat on screen. */
+export function ordinaryChats<T extends { id: string }>(chats: readonly T[], parents: ReadonlyMap<string, string>): T[] {
+  return chats.filter((chat) => !isWorkerChat(chat.id, parents));
+}
+
 export function mainChatId(id: string | null, parents: ReadonlyMap<string, string>): string | null {
   if (!id || !parents.has(id)) return null;
   const seen = new Set([id]);

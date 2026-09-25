@@ -47,6 +47,26 @@ describe("ChatSearchPage", () => {
     expect(out).not.toContain("Recently active");
   });
 
+  it("never lists a run's worker, as a hit or as a recent chat", () => {
+    const withWorkers = [...conversations, chat("legacy-worker", 990), chat("orch-abc123", 980)];
+    const parents = new Map([["legacy-worker", "new"]]);
+    const found = html({
+      conversations: withWorkers, chatParents: parents,
+      initialQuery: "routing", initialState: "ready",
+      initialHits: [
+        { id: "orch-abc123", excerpt: "routing in a worker", speaker: "Claude", role: "assistant" },
+        { id: "legacy-worker", excerpt: "routing again", speaker: "Claude", role: "assistant" },
+        { id: "old", excerpt: "the routing issue", speaker: "Claude", role: "assistant" },
+      ],
+    });
+    expect(found).toContain("1 chat");
+    expect(found).not.toContain("worker");
+    const recent = html({ conversations: withWorkers, chatParents: parents });
+    expect(recent).not.toContain("Task legacy-worker");
+    expect(recent).not.toContain("Task orch-abc123");
+    expect(recent).toContain("Task new");
+  });
+
   it("says when nothing matched, and when search is unavailable", () => {
     expect(html({ initialQuery: "zebra", initialState: "ready", initialHits: [] }))
       .toContain("No chats found for “zebra”.");

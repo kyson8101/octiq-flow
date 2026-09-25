@@ -73,9 +73,19 @@ describe("ProjectsPage", () => {
     expect(out).toContain(">Projects</span>");
   });
 
-  it("marks an agent's chat as one", () => {
-    const out = html({ selectedProjectId: "p1", chatParents: new Map([["saved", "open"]]) });
-    expect(out).toContain('aria-label="Task saved, Pinned, Agent"');
+  it("neither lists nor counts a run's workers, mapped or still loading", () => {
+    const withWorkers = [
+      ...conversations,
+      chat("legacy-worker", "p1", 999, { pinned: true }), // mapped by the ledger, no orch- prefix
+      chat("orch-abc123", "p1", 998), // ledger not loaded yet: the reserved prefix alone
+    ];
+    const list = html({ conversations: withWorkers, chatParents: new Map([["legacy-worker", "open"]]) });
+    expect(list).toContain('aria-label="octiq-flow, 3 tasks"');
+    const tasks = html({ selectedProjectId: "p1", conversations: withWorkers, chatParents: new Map([["legacy-worker", "open"]]) });
+    expect(tasks).toContain("3 tasks</h2>");
+    expect(tasks).not.toContain("legacy-worker");
+    expect(tasks).not.toContain("orch-abc123");
+    expect(tasks).not.toContain("Agent");
   });
 
   it("says a project has no tasks yet and offers to start one", () => {

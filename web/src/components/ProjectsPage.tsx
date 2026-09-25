@@ -6,6 +6,7 @@
 // too: New project, and the shelf — what was put away, and the way back.
 import { useEffect, useRef, useState } from "react";
 import { isChatDone } from "../lib/chatFilter";
+import { ordinaryChats } from "../lib/orchestration";
 import { projectTaskCounts, projectTasks } from "../lib/projectTasks";
 import type { Conversation } from "../lib/store";
 import { ProjectAvatar } from "./ProjectAvatar";
@@ -14,7 +15,7 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
 import "./ProjectsPage.css";
 
 export function ProjectsPage({
-  projects, shelved, conversations, selectedProjectId, busy, chatParents,
+  projects, shelved, conversations: everyChat, selectedProjectId, busy, chatParents,
   onSelectProject, onOpenChat, onNewTask, onNewProject, onProjectSettings, onClose,
   onShowShelved, onRestoreProject,
 }: {
@@ -24,6 +25,8 @@ export function ProjectsPage({
   /** The project whose tasks are listed, or null for the project list. */
   selectedProjectId: string | null;
   busy: ReadonlySet<string>;
+  /** Which chats are run workers. They are neither listed nor counted here;
+   *  their run's Tasks view in the main chat is the way to them. */
   chatParents: ReadonlyMap<string, string>;
   onSelectProject: (projectId: string | null) => void;
   onOpenChat: (chat: Conversation) => void;
@@ -48,6 +51,7 @@ export function ProjectsPage({
     setRestoreError(null);
   }, [selectedProjectId]);
 
+  const conversations = ordinaryChats(everyChat, chatParents);
   const known = [...projects, ...shelved];
   const selected = selectedProjectId === null ? null : known.find((project) => project.id === selectedProjectId) ?? null;
 
@@ -99,8 +103,7 @@ export function ProjectsPage({
                 {tasks.map((chat) => {
                   const working = busy.has(chat.id);
                   const done = isChatDone(chat);
-                  const agent = chatParents.has(chat.id);
-                  const states = [working && "Working", done && "Done", chat.pinned && "Pinned", agent && "Agent"]
+                  const states = [working && "Working", done && "Done", chat.pinned && "Pinned"]
                     .filter((state): state is string => !!state);
                   return (
                     <li key={chat.id}>

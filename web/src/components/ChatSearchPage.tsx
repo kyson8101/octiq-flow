@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   chatSearchResults, isSearchable, type ChatSearchHit,
 } from "../lib/chatSearch";
+import { ordinaryChats } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { chatTime, type Project } from "./Sidebar";
@@ -15,16 +16,21 @@ import { WorkspaceHeader } from "./WorkspaceHeader";
 import "./ProjectsPage.css";
 import "./ChatSearchPage.css";
 
+const NO_PARENTS: ReadonlyMap<string, string> = new Map();
+
 /** How many recently active chats the page offers before anything is typed. */
 const RECENT = 8;
 
 export type ChatSearchState = "idle" | "searching" | "ready" | "error";
 
 export function ChatSearchPage({
-  conversations, projects, searchChats, onOpenChat, onClose,
+  conversations: everyChat, chatParents = NO_PARENTS, projects, searchChats, onOpenChat, onClose,
   deletedCount = 0, onShowDeleted, initialQuery = "", initialState, initialHits,
 }: {
   conversations: Conversation[];
+  /** Which chats are run workers. Search never lists one — not as a hit, not
+   *  as a recent chat; a worker is reached through its run in the main chat. */
+  chatParents?: ReadonlyMap<string, string>;
   projects: Project[];
   searchChats: (query: string) => Promise<ChatSearchHit[]>;
   onOpenChat: (chat: Conversation) => void;
@@ -74,6 +80,7 @@ export function ChatSearchPage({
   const projectById = new Map(projects.map((project) => [project.id, project]));
   // The last answer stays on screen while the next is fetched, so typing one
   // more letter does not blank the list between keystrokes.
+  const conversations = ordinaryChats(everyChat, chatParents);
   const results = searchable && state !== "error" ? chatSearchResults(hits, conversations) : [];
   const recent = trimmed ? [] : [...conversations]
     .sort((a, b) => b.updatedAt - a.updatedAt)

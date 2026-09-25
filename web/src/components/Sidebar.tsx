@@ -6,7 +6,7 @@ import { buildChatTree, type ChatNode } from "../lib/chatTree";
 import { recall, remember } from "../lib/remember";
 import { latestResponse } from "../lib/chatPreview";
 import { projectColor } from "../lib/projectColor";
-import { isWorkerChat, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
+import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
 import {
   CHAT_FILTER_LABELS, chatFilterList, chatFilterOptions, isChatDone, isChatFilter, type ChatFilter,
@@ -57,7 +57,7 @@ function savedCollapsed(): Set<string> {
 export function Sidebar({
   orchestration = EMPTY_ORCHESTRATION,
   projects, shelved, deletedCount = 0, onShowDeleted,
-  conversations, currentConversation, running, busy, deleting = NONE,
+  conversations: everyChat, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
   loadPreview, onNewChat, newLabel = "New chat", onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   branches = {}, chatParents = NO_PARENTS, onResize, onCollapse,
@@ -103,6 +103,10 @@ export function Sidebar({
   /** Which of those places the main area is showing, for `aria-current`. */
   activeView?: SidebarView | null;
 } & ChatPreviewSource) {
+  // Run workers are never rows here — not pinned, not in any Recent view, not
+  // archived, not even while one is the chat on screen. The main chat's row
+  // leads to them through its run (see lib/orchestration `ordinaryChats`).
+  const conversations = useMemo(() => ordinaryChats(everyChat, chatParents), [everyChat, chatParents]);
   const [collapsed, setCollapsed] = useState(savedCollapsed);
   const [filter, setFilter] = useState<ChatFilter>(savedFilter);
   const [keptMarked, setKeptMarked] = useState<ReadonlySet<string>>(() => new Set());

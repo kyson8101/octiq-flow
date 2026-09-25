@@ -4041,6 +4041,7 @@ export default function App() {
           />}
           {searchPage && <ChatSearchPage
             conversations={taskList}
+            chatParents={chatParents}
             projects={[...workspaces, ...shelved]}
             searchChats={searchChats}
             onOpenChat={openConversation}

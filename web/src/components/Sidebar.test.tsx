@@ -129,13 +129,15 @@ describe("task-oriented Sidebar", () => {
     expect(out.match(/class="chat-title">Task recent/g)).toHaveLength(1);
   });
 
-  it("keeps an agent group together when its child is pinned", () => {
+  it("never lists a pinned worker, and its main chat keeps its place", () => {
     const out = html({
       conversations: [chat("other"), chat("master"), { ...chat("worker"), pinned: true }],
       chatParents: new Map([["worker", "master"]]),
     });
-    expect(out.indexOf('class="sidebar-section-heading">Pinned')).toBeLessThan(out.indexOf('class="chat-title">Task master'));
-    expect(out.indexOf('class="chat-title">Task worker')).toBeLessThan(out.indexOf('class="sidebar-section-heading">Recent'));
+    expect(out).not.toContain("Task worker");
+    // The worker's pin does not drag its main chat into Pinned either.
+    expect(out).not.toContain('aria-labelledby="sidebar-pinned-heading"');
+    expect(out).toContain('class="chat-title">Task master</span>');
   });
 
   it("shows working state in the response row", () => {
@@ -169,26 +171,43 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain("4200ms");
   });
 
-  it("nests agents once under their master with activity and unread counts", () => {
-    const out = html({
-      conversations: [{ ...chat("worker"), updatedAt: 3 }, chat("master"), chat("other")],
-      chatParents: new Map([["worker", "master"]]),
-      busy: new Set(["worker"]),
-    });
-    expect(out).toContain('aria-label="Collapse agent chats for Task master" aria-expanded="true"');
-    expect(out).toContain('aria-label="Agent chats for Task master"');
-    expect(out).toContain('aria-description="Agent chat under Task master.');
-    expect(out).toContain('class="chat-children-working">1 working</span>');
-    expect(out).toContain('class="chat-children-unread">1 unread</span>');
-    expect(out.match(/class="chat-title">Task worker</g)).toHaveLength(1);
-    expect(out.indexOf('class="chat-title">Task master<')).toBeLessThan(out.indexOf('class="chat-title">Task worker<'));
-    expect(out.indexOf('class="chat-title">Task worker<')).toBeLessThan(out.indexOf('class="chat-title">Task other<'));
+  it("keeps run workers out of every view, by identity rather than title", () => {
+    const parents = new Map([["legacy-worker", "master"], ["worker", "master"]]);
+    const conversations = [
+      chat("master"), chat("other"),
+      { ...chat("worker"), title: "Refactor the router" }, // mapped by the ledger; its title says nothing
+      chat("legacy-worker"), // mapped, no reserved prefix
+      chat("orch-loading"), // ledger not loaded yet: the reserved prefix alone
+      { ...chat("orch-done"), doneAt: 5 },
+      chat("Worker: a person's chat"), // a title-like id is NOT a worker
+    ];
+    for (const over of [
+      {}, // Active
+      { currentConversation: "worker" }, // the worker on screen is still not a row
+      { currentConversation: "orch-loading" },
+    ]) {
+      const out = html({ conversations, chatParents: parents, ...over });
+      expect(out).not.toContain("Refactor the router");
+      expect(out).not.toContain("Task legacy-worker");
+      expect(out).not.toContain("Task orch-");
+      expect(out).toContain("Task Worker: a person&#x27;s chat");
+      expect(out).toContain('class="chat-title">Task master</span>');
+      expect(out).not.toContain('class="chat-children-toggle"');
+    }
+    // Before the ledger has loaded, the reserved prefix still keeps workers out.
+    const loading = html({ conversations, chatParents: new Map() });
+    expect(loading).not.toContain("Task orch-");
+    expect(loading).toContain('class="chat-title">Task master</span>');
   });
 
-  it("keeps an orphaned worker visible without an empty disclosure", () => {
-    const out = html({ conversations: [chat("worker")], chatParents: new Map([["worker", "deleted"]]) });
-    expect(out).toContain('class="chat-title">Task worker</span>');
-    expect(out).not.toContain('class="chat-children-toggle"');
+  it("does not list a worker whose main chat is filtered away", () => {
+    // master ticked off, Recent on Active: neither row, and no orphan either.
+    const out = html({
+      conversations: [{ ...chat("master"), doneAt: 5, updatedAt: 1 }, { ...chat("worker"), updatedAt: 9 }, chat("other")],
+      chatParents: new Map([["worker", "master"]]),
+    });
+    expect(out).not.toContain("Task worker");
+    expect(out).toContain('class="chat-title">Task other</span>');
   });
 
   describe("the unread mark", () => {
