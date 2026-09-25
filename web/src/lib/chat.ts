@@ -45,6 +45,7 @@ import { readCodexEvent } from "./codexEvents";
 import { readPiEvent, type PiContent, type PiRead } from "./piEvents";
 import { parseLocalOutput } from "./localCommand";
 import { parseTaskNotice, type TaskNotice } from "./taskNotice";
+import { parsePeerMessages, type PeerMessage } from "./peerMessage";
 import { readChatServiceResumed } from "./carryOn";
 import { readRelay } from "./relay";
 import { taskLabel, type BackgroundTask } from "./background";
@@ -92,6 +93,15 @@ export type Block =
    *  `<local-command-stdout>`. It is not a bubble: nobody typed it, and it is
    *  not the agent either — it is the tool the agent is running inside. */
   | { kind: "notice"; text: string }
+  /** Somebody else's words, handed to this agent by the harness: a subagent
+   *  handing back its final report, or another Claude session on this machine
+   *  talking to this one.
+   *
+   *  A third speaker, and the conversation has only ever had two — so it is
+   *  neither a bubble (nobody here typed it) nor a reply (this agent did not
+   *  write it). It says WHO, and opens onto what they said. See
+   *  lib/peerMessage for what is taken off it on the way in. */
+  | { kind: "peer"; source: PeerMessage["source"]; from: string; text: string }
   | { kind: "thinking"; text: string }
   | {
       kind: "tool";
@@ -1426,6 +1436,14 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     const reported = parseLocalOutput(spoken);
     if (reported !== null) return foldLocalOutput(state, reported);
 
+    // Somebody ELSE's words, handed over by the harness: a subagent's final
+    // report, or another Claude session on this machine. Read before the two
+    // rules below, because both of those go by `isSynthetic` — which every
+    // one of these carries — and a hand-back arriving while a Skill call was
+    // waiting for its prompt was taken for that prompt.
+    const peers = parsePeerMessages(spoken, e.origin);
+    if (peers.length) return foldPeerMessages(state, peers, uuid);
+
     if (isCompactSummary(spoken) || (state.awaitingSummary && e.isSynthetic === true)) {
       const folded = foldCompactSummary(state, spoken);
       if (folded) return folded;
@@ -1701,6 +1719,41 @@ function foldLocalOutput(state: ChatState, reported: string): ChatState {
         id: `local-${state.messages.length}`,
         role: "assistant",
         blocks: [{ kind: "notice", text: reported }],
+        streaming: false,
+      },
+    ],
+  };
+}
+
+/** Put somebody else's words into the conversation as theirs.
+ *
+ *  A line of its own rather than a bubble. The turn is addressed TO this agent
+ *  and arrives on the user's side of the stream, so read literally it is the
+ *  reader talking — which is how a subagent's report came to sit under the
+ *  reader's name with "Sent" stamped beneath it.
+ *
+ *  Keyed on the harness's uuid, because a catch-up that overlaps what was
+ *  already seen live delivers the same turn twice and two reports of one piece
+ *  of work read as two pieces of work. */
+function foldPeerMessages(state: ChatState, peers: PeerMessage[], uuid: string): ChatState {
+  const id = uuid ? `peer-${uuid}` : `peer-${state.messages.length}`;
+  if (state.messages.some((m) => m.id === id)) return state;
+  return {
+    ...state,
+    messages: [
+      ...state.messages,
+      {
+        id,
+        role: "assistant",
+        // One block each. Two subagents reporting in the same turn are two
+        // voices, and running them together would read as one long report
+        // nobody wrote.
+        blocks: peers.map((peer) => ({
+          kind: "peer" as const,
+          source: peer.source,
+          from: peer.from,
+          text: peer.text,
+        })),
         streaming: false,
       },
     ],
