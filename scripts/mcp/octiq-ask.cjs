@@ -1242,8 +1242,26 @@ const ORCHESTRATION_TASK_CREATE = {
       parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency." },
       worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent and no assignee is given. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
       assignee: { type: "string", description: "Agents mode only: the id of one of your direct reports, as listed in your brief. The host applies that agent's provider, model, effort and access; do not also pass worker. A worker that manages agents splits its own task by passing its task id as parentTaskId." },
+      project: { type: "string", description: "Where the task runs: a registered project's id or name, from orchestration_destinations. Required in the cross-project lead conversation unless the assignee works in only one project. Omit to use the run's own checkout (or the parent task's destination for a subtask)." },
+      repository: { type: "string", description: "A repository registered on that project: its path or folder name, from orchestration_destinations. Required when the project has more than one. An unregistered path is refused; the host never falls back to another checkout." },
     },
     required: ["runId", "title", "spec"],
+  },
+};
+
+const ORCHESTRATION_DESTINATIONS = {
+  name: "orchestration_destinations",
+  description:
+    "Agents mode: list where you may send work. Returns every registered project you may route to, " +
+    "its registered repositories, and which of your direct reports may work there (a report scoped to one " +
+    "project works only in it). Pass the chosen project and repository to orchestration_task_create.",
+  inputSchema: { type: "object", properties: {} },
+  annotations: {
+    title: "List task destinations",
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   },
 };
 
@@ -1396,6 +1414,7 @@ const ORCHESTRATION_TOOLS = [
   },
   ORCHESTRATION_RUN_CREATE,
   ORCHESTRATION_TASK_CREATE,
+  ORCHESTRATION_DESTINATIONS,
   ORCHESTRATION_SNAPSHOT,
   ORCHESTRATION_WORKER_START,
   ORCHESTRATION_WORKER_REPORT,

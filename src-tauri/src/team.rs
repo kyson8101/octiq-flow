@@ -93,6 +93,11 @@ pub struct LeadRecord {
     pub lead_id: String,
     pub lead_name: String,
     pub project_id: String,
+    /// The conversation with the person's configured head (the CTO): it is
+    /// not bound to its own project, and every task it hands out names its
+    /// destination. Absent on every task handed out from a project.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cross_project: bool,
     pub created_at: i64,
 }
 
@@ -102,6 +107,10 @@ struct Stored {
     agents: Vec<TeamAgent>,
     #[serde(default)]
     leads: Vec<LeadRecord>,
+    /// The global agent the person talks to across projects (their CTO).
+    /// Configured, never inferred; `None` until the person picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    head: Option<String>,
 }
 
 /// Serializes read-modify-write of the file; the store is small enough to be
@@ -249,6 +258,13 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
             }
         }
     }
+    if let (Some(me), Some(_)) = (&id, &project_id) {
+        if stored.head.as_deref() == Some(me.as_str()) {
+            return Err(format!(
+                "{name} is the lead you talk to across projects, so it stays global. Choose another lead first."
+            ));
+        }
+    }
     if let Some(me) = &id {
         // Moving an agent into one project must not strand a report that is
         // visible somewhere the manager no longer is.
@@ -332,6 +348,9 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
         .cloned()
         .ok_or("That agent no longer exists.")?;
     stored.agents.retain(|a| a.id != id);
+    if stored.head.as_deref() == Some(id) {
+        stored.head = None;
+    }
     for agent in &mut stored.agents {
         if agent.reports_to.as_deref() == Some(id) {
             agent.reports_to = gone.reports_to.clone();
@@ -341,23 +360,79 @@ pub fn delete(path: &Path, id: &str) -> Result<(), String> {
 }
 
 /// Remember that `chat_key` was handed a task with `lead_id` as its lead.
+///
+/// A chat keeps the lead it was first handed to. Handing the same chat to
+/// someone else would put one agent's name over another's history, so it is
+/// refused rather than silently retargeted.
 pub fn record_lead(
     path: &Path,
     chat_key: &str,
     lead: &TeamAgent,
     project_id: &str,
+    cross_project: bool,
 ) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
+    if let Some(existing) = stored.leads.iter().find(|r| r.chat_key == chat_key) {
+        if existing.lead_id != lead.id || existing.cross_project != cross_project {
+            return Err(format!(
+                "This conversation belongs to {}. Start a new one to talk to {}.",
+                existing.lead_name, lead.name
+            ));
+        }
+    }
     stored.leads.retain(|record| record.chat_key != chat_key);
     stored.leads.push(LeadRecord {
         chat_key: chat_key.to_owned(),
         lead_id: lead.id.clone(),
         lead_name: lead.name.clone(),
         project_id: project_id.to_owned(),
+        cross_project,
         created_at: now_ms(),
     });
     write(path, &stored)
+}
+
+/// The person's configured head: the global agent behind "Talk to …". `None`
+/// when none is configured, or the configured one was removed.
+pub fn head(path: &Path) -> Result<Option<TeamAgent>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let stored = read(path)?;
+    Ok(stored.head.as_deref().and_then(|id| {
+        stored
+            .agents
+            .iter()
+            .find(|a| a.id == id && a.project_id.is_none())
+            .cloned()
+    }))
+}
+
+/// Configure (or clear, with `None`) the head. It must be a global agent:
+/// the conversation with it spans every project.
+pub fn set_head(path: &Path, id: Option<&str>) -> Result<Option<TeamAgent>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    let chosen = match id.map(str::trim).filter(|id| !id.is_empty()) {
+        None => None,
+        Some(id) => {
+            let agent = stored
+                .agents
+                .iter()
+                .find(|a| a.id == id)
+                .cloned()
+                .ok_or("That agent no longer exists.")?;
+            if agent.project_id.is_some() {
+                return Err(format!(
+                    "{} belongs to one project. The lead you talk to across projects must be available in every project.",
+                    agent.name
+                ));
+            }
+            Some(agent)
+        }
+    };
+    stored.head = chosen.as_ref().map(|a| a.id.clone());
+    write(path, &stored)?;
+    Ok(chosen)
 }
 
 pub fn leads(path: &Path) -> Result<Vec<LeadRecord>, String> {
@@ -373,24 +448,58 @@ pub fn lead_for_chat(path: &Path, chat_key: &str) -> Result<Option<LeadRecord>, 
 }
 
 /// The registered agent named as a task's assignee, by id or by exact
-/// (case-insensitive) name, among those the run's project can see. With a
-/// `manager`, the assignee must report directly to it.
+/// (case-insensitive) name, among those the destination project can see. With
+/// a `manager`, the assignee must report directly to it.
+#[cfg(test)]
 pub fn resolve(
     path: &Path,
     project_id: &str,
     who: &str,
     manager: Option<&str>,
 ) -> Result<TeamAgent, String> {
+    resolve_in(&list(path, None, true)?, project_id, who, manager, &|_| {
+        None
+    })
+}
+
+/// [`resolve`] over an already-read team. `project_name` names a project in an
+/// error, so an agent that works elsewhere is told where.
+pub fn resolve_in(
+    team: &[TeamAgent],
+    project_id: &str,
+    who: &str,
+    manager: Option<&str>,
+    project_name: &dyn Fn(&str) -> Option<String>,
+) -> Result<TeamAgent, String> {
     let who = who.trim();
-    let visible = list(path, Some(project_id), false)?;
+    let visible: Vec<TeamAgent> = team
+        .iter()
+        .filter(|a| a.visible_in(Some(project_id)))
+        .cloned()
+        .collect();
     let found = visible
         .iter()
         .find(|a| a.id == who)
         .or_else(|| visible.iter().find(|a| a.name.eq_ignore_ascii_case(who)))
-        .cloned()
-        .ok_or_else(|| {
-            format!("No registered agent called {who} in this project. Assign to one of the agents listed in your brief.")
-        })?;
+        .cloned();
+    let Some(found) = found else {
+        // Named correctly, but scoped to another project: say which.
+        let elsewhere = team
+            .iter()
+            .find(|a| a.id == who || a.name.eq_ignore_ascii_case(who))
+            .and_then(|a| {
+                a.project_id
+                    .as_deref()
+                    .map(|p| (a.name.clone(), p.to_owned()))
+            });
+        return Err(match elsewhere {
+            Some((name, project)) => format!(
+                "{name} works only in {}. Route the task to that project, or assign someone who works in this one.",
+                project_name(&project).unwrap_or_else(|| "another project".into())
+            ),
+            None => format!("No registered agent called {who} in this project. Assign to one of the agents listed in your brief."),
+        });
+    };
     if let Some(manager) = manager {
         if found.reports_to.as_deref() != Some(manager) {
             let reports = direct_reports(&visible, manager)
@@ -418,6 +527,12 @@ pub fn resolve(
         ));
     }
     Ok(found)
+}
+
+/// Whether `agent` may send work into `project_id`: a global agent anywhere, a
+/// project agent only into its own project.
+pub fn may_work_in(agent: &TeamAgent, project_id: &str) -> bool {
+    agent.visible_in(Some(project_id))
 }
 
 /// Where agents' memory notes live in the vault. The vault's own schema
@@ -685,13 +800,18 @@ pub fn memory_append(
     Ok(serde_json::json!({ "agent": me.name, "path": path, "receipt": receipt }))
 }
 
-fn direct_reports<'a>(team: &'a [TeamAgent], manager: &str) -> Vec<&'a TeamAgent> {
+pub fn direct_reports<'a>(team: &'a [TeamAgent], manager: &str) -> Vec<&'a TeamAgent> {
     team.iter()
         .filter(|a| a.reports_to.as_deref() == Some(manager))
         .collect()
 }
 
-fn describe(agent: &TeamAgent, team: &[TeamAgent], may_split: bool) -> String {
+fn describe(
+    agent: &TeamAgent,
+    team: &[TeamAgent],
+    may_split: bool,
+    project_name: Option<&dyn Fn(&str) -> Option<String>>,
+) -> String {
     let provider = match agent.agent {
         ChatAgent::Claude => "Claude",
         ChatAgent::Codex => "Codex",
@@ -725,26 +845,54 @@ fn describe(agent: &TeamAgent, team: &[TeamAgent], may_split: bool) -> String {
     } else {
         String::new()
     };
+    // Cross-project briefs say where each report may work.
+    let scope = match (project_name, agent.project_id.as_deref()) {
+        (None, _) => String::new(),
+        (Some(_), None) => " [works in any project]".to_owned(),
+        (Some(name), Some(project)) => format!(
+            " [works only in project {} (id `{project}`)]",
+            name(project).unwrap_or_else(|| "that no longer exists".into())
+        ),
+    };
     format!(
-        "- id `{}` · {} — {} · {provider} {}{effort}{lead_only}{manages}",
+        "- id `{}` · {} — {} · {provider} {}{effort}{lead_only}{manages}{scope}",
         agent.id, agent.name, role, agent.model
     )
 }
 
 /// The first message of a task: the person's words, then the lead's brief.
 /// Records `chat_key` as this lead's task.
+///
+/// `cross_project` is the conversation with the configured head: its reports
+/// are listed from every project, and every task it creates names where it
+/// runs. `projects` is every registered project as (id, name).
 pub fn brief(
     path: &Path,
     chat_key: &str,
     project_id: &str,
     lead_id: &str,
     task: &str,
+    cross_project: bool,
+    projects: &[(String, String)],
 ) -> Result<String, String> {
     let task = task.trim();
     if task.is_empty() {
         return Err("Describe the task first.".into());
     }
-    let team = list(path, Some(project_id), false)?;
+    let team = if cross_project {
+        let head = head(path)?.ok_or(
+            "No lead is configured to talk to across projects. Choose one in Settings, Agents.",
+        )?;
+        if head.id != lead_id {
+            return Err(format!(
+                "{} is no longer the lead you talk to across projects. Start a new conversation.",
+                head.name
+            ));
+        }
+        list(path, None, true)?
+    } else {
+        list(path, Some(project_id), false)?
+    };
     let lead = team
         .iter()
         .find(|a| a.id == lead_id)
@@ -754,17 +902,42 @@ pub fn brief(
     } else {
         format!(" Your role: {}.", lead.role.replace('\n', " "))
     };
+    let name_of = |id: &str| {
+        projects
+            .iter()
+            .find(|(pid, _)| pid == id)
+            .map(|(_, name)| name.clone())
+    };
     let reports = direct_reports(&team, &lead.id);
-    let head = format!(
-        "{task}{BRIEF_MARK}Lead: {name}\n\nYou are {name}, a registered agent in this OctiqFlow project.{role} The person handed you the task above. You lead it.",
-        name = lead.name
-    );
+    let head = if cross_project {
+        format!(
+            "{task}{BRIEF_MARK}Lead: {name}\n\nYou are {name}, the person's lead across every OctiqFlow project.{role} The person brought you the request above. You lead it.",
+            name = lead.name
+        )
+    } else {
+        format!(
+            "{task}{BRIEF_MARK}Lead: {name}\n\nYou are {name}, a registered agent in this OctiqFlow project.{role} The person handed you the task above. You lead it.",
+            name = lead.name
+        )
+    };
+    let routing = if cross_project {
+        "\n\nThis conversation is not tied to one project. Before planning, call orchestration_destinations: it lists every registered project, its repositories, and which of your direct reports may work there. Give EVERY task a destination with orchestration_task_create's `project` (id or name) and, when the project has more than one repository, `repository` (path or name). One objective may span several projects and repositories; create one task per destination. A report scoped to one project can only work in that project. The host refuses an unregistered project or repository and never falls back to another checkout. Ask the person only when the destination is genuinely ambiguous: the request fits more than one project or repository and nothing in it tells them apart. Otherwise choose and say which you chose."
+    } else {
+        "\n\nTasks run in this chat's project by default. To send one to another registered repository or project, call orchestration_destinations and pass `project` and `repository` to orchestration_task_create; the host refuses anything unregistered."
+    };
     let text = if reports.is_empty() {
         format!("{head} No agent reports to you, so do the task yourself, directly in this chat. Do not create an orchestration run.")
     } else {
         let roster = reports
             .iter()
-            .map(|a| describe(a, &team, true))
+            .map(|a| {
+                describe(
+                    a,
+                    &team,
+                    true,
+                    if cross_project { Some(&name_of) } else { None },
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         format!(
@@ -772,12 +945,12 @@ pub fn brief(
 1. Do it yourself: it fits your role and is one coherent piece of work. Do it directly in this chat. Do not create an orchestration run.\n\
 2. Pass it on: one of your direct reports fits it clearly better. Delegate the whole task to them as one task.\n\
 3. Split it: it has separable parts. Split it into tasks and give each to the best-suited direct report. You may keep a part for yourself and do it in this chat, but never write in a checkout a worker has.\n\n\
-To pass on or split, call orchestration_run_create once with objective = the task, workspaceMode \"auto\" and workerDefaults {{\"access\": \"auto\"}}, then follow the masterBrief it returns. Create each task with orchestration_task_create and set `assignee` to the agent's id. The host applies that agent's provider, model, effort and access, so do not also pass `worker`. You can assign only to your direct reports, listed below; the host refuses anyone else. A report that manages agents of its own may split its task once more among them; nothing goes deeper than that.\n\n\
-The person approves your plan before any worker starts. Create every task first, then reply with the plan as one short list (task, who, why) and end your turn. The host starts the workers once the person approves. If they ask for changes, adjust the plan and end your turn again. After that, the host tells you when work reports. When every task is complete, check the results and tell the person the outcome.\n\n\
+To pass on or split, call orchestration_run_create once with objective = the task, workspaceMode \"auto\" and workerDefaults {{\"access\": \"auto\"}}, then follow the masterBrief it returns. Create each task with orchestration_task_create and set `assignee` to the agent's id. The host applies that agent's provider, model, effort and access, so do not also pass `worker`. You can assign only to your direct reports, listed below; the host refuses anyone else. A report that manages agents of its own may split its task once more among them; nothing goes deeper than that.{routing}\n\n\
+The person approves your plan before any worker starts. Create every task first, then reply with the plan as one short list (task, who, project and repository, why) and end your turn. The host starts the workers once the person approves. If they ask for changes, adjust the plan and end your turn again; a task added after approval waits for the person to approve it too. After that, the host tells you when work reports. When every task is complete, check the results and tell the person the outcome.\n\n\
 Your direct reports:\n{roster}"
         )
     };
-    record_lead(path, chat_key, lead, project_id)?;
+    record_lead(path, chat_key, lead, project_id, cross_project)?;
     Ok(format!("{text}\n\n{}", memory_brief(lead, &team)))
 }
 
@@ -797,11 +970,11 @@ pub fn manager_brief(
     }
     let roster = reports
         .iter()
-        .map(|a| describe(a, &team, false))
+        .map(|a| describe(a, &team, false, None))
         .collect::<Vec<_>>()
         .join("\n");
     Ok(Some(format!(
-        "You manage agents in OctiqFlow's org chart. If this task is one coherent piece of work you can do, do it yourself. If it has separable parts that your reports fit better, split it: call orchestration_task_create with runId '{run_id}', parentTaskId '{task_id}', and `assignee` set to a direct report's id, once per part. Do not pass `worker`; the host applies the agent's settings. Subtasks start without further approval and cannot be split again. After creating the subtasks, call orchestration_worker_report with outcome completed and a summary of the split. The host makes anything that waits on your task wait for your subtasks too.\n\nYour direct reports:\n{roster}"
+        "You manage agents in OctiqFlow's org chart. If this task is one coherent piece of work you can do, do it yourself. If it has separable parts that your reports fit better, split it: call orchestration_task_create with runId '{run_id}', parentTaskId '{task_id}', and `assignee` set to a direct report's id, once per part. Do not pass `worker`; the host applies the agent's settings. Subtasks start without further approval and cannot be split again. A subtask runs in your task's project and repository unless you pass `project` and `repository`; you can route only to where you and the report may both work. After creating the subtasks, call orchestration_worker_report with outcome completed and a summary of the split. The host makes anything that waits on your task wait for your subtasks too.\n\nYour direct reports:\n{roster}"
     )))
 }
 
@@ -962,7 +1135,16 @@ mod tests {
         let ada = save(&path, under("Ada", None, &ceo)).unwrap();
         save(&path, under("Dev", None, &ada)).unwrap();
         save(&path, draft("Zed", Some("p2"))).unwrap();
-        let text = brief(&path, "chat:1", "p1", &ceo.id, "  Fix the login bug  ").unwrap();
+        let text = brief(
+            &path,
+            "chat:1",
+            "p1",
+            &ceo.id,
+            "  Fix the login bug  ",
+            false,
+            &[],
+        )
+        .unwrap();
         let (task, rest) = text.split_once(BRIEF_MARK).unwrap();
         assert_eq!(task, "Fix the login bug");
         assert!(rest.starts_with("Lead: Ceo\n"));
@@ -980,7 +1162,16 @@ mod tests {
     fn a_lead_with_no_reports_does_it_itself() {
         let path = temp();
         let solo = save(&path, draft("Solo", None)).unwrap();
-        let text = brief(&path, "chat:2", "p1", &solo.id, "Tidy the README").unwrap();
+        let text = brief(
+            &path,
+            "chat:2",
+            "p1",
+            &solo.id,
+            "Tidy the README",
+            false,
+            &[],
+        )
+        .unwrap();
         assert!(text.contains("do the task yourself"));
         assert!(!text.contains("orchestration_task_create"));
     }
@@ -1032,7 +1223,7 @@ mod tests {
         let ceo = save(&path, draft("Ceo", None)).unwrap();
         let ada = save(&path, under("Ada", None, &ceo)).unwrap();
         let dev = save(&path, under("Dev", None, &ada)).unwrap();
-        brief(&path, "chat:lead", "p1", &ceo.id, "Do it").unwrap();
+        brief(&path, "chat:lead", "p1", &ceo.id, "Do it", false, &[]).unwrap();
         assert_eq!(identity(&path, "chat:lead", None).unwrap().0.id, ceo.id);
         assert_eq!(
             identity(&path, "chat:worker", Some(dev.id.clone()))
@@ -1058,9 +1249,76 @@ mod tests {
         let path = temp();
         let ceo = save(&path, draft("Ceo", None)).unwrap();
         save(&path, under("Ada", None, &ceo)).unwrap();
-        let text = brief(&path, "chat:1", "p1", &ceo.id, "Ship it").unwrap();
+        let text = brief(&path, "chat:1", "p1", &ceo.id, "Ship it", false, &[]).unwrap();
         assert!(text.contains("vault_agent_memory_read"));
         assert!(text.contains("direct reports' memories"));
         assert!(text.contains("Ada"));
+    }
+
+    #[test]
+    fn the_head_is_one_configured_global_agent() {
+        let path = temp();
+        assert!(head(&path).unwrap().is_none());
+        let ryan = save(&path, draft("Ryan", None)).unwrap();
+        let local = save(&path, draft("Local", Some("p1"))).unwrap();
+        assert!(set_head(&path, Some(&local.id))
+            .unwrap_err()
+            .contains("every project"));
+        set_head(&path, Some(&ryan.id)).unwrap();
+        assert_eq!(head(&path).unwrap().unwrap().id, ryan.id);
+        // The head cannot quietly become a project agent.
+        let mut moved = draft("Ryan", Some("p1"));
+        moved.id = Some(ryan.id.clone());
+        assert!(save(&path, moved).unwrap_err().contains("stays global"));
+        // Removing it leaves no head rather than a dangling one.
+        delete(&path, &ryan.id).unwrap();
+        assert!(head(&path).unwrap().is_none());
+        assert!(set_head(&path, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn the_head_brief_spans_projects_and_asks_for_destinations() {
+        let path = temp();
+        let ryan = save(&path, draft("Ryan", None)).unwrap();
+        let maya = save(&path, under("Maya", None, &ryan)).unwrap();
+        let sam = save(&path, under("Sam", Some("p2"), &ryan)).unwrap();
+        save(&path, draft("Zed", Some("p3"))).unwrap();
+        let projects = [
+            ("p1".to_owned(), "General".to_owned()),
+            ("p2".to_owned(), "Shop".to_owned()),
+        ];
+        // Not the configured head: refused.
+        assert!(brief(&path, "chat:cto", "p1", &ryan.id, "Ship", true, &projects).is_err());
+        set_head(&path, Some(&ryan.id)).unwrap();
+        let text = brief(
+            &path,
+            "chat:cto",
+            "p1",
+            &ryan.id,
+            "Ship checkout",
+            true,
+            &projects,
+        )
+        .unwrap();
+        let (_, rest) = text.split_once(BRIEF_MARK).unwrap();
+        // Sam works only in Shop, yet is still Ryan's report from General.
+        assert!(rest.contains(&format!("id `{}`", maya.id)));
+        assert!(rest.contains(&format!("id `{}`", sam.id)));
+        assert!(rest.contains("works only in project Shop"));
+        assert!(rest.contains("works in any project"));
+        assert!(rest.contains("orchestration_destinations"));
+        assert!(rest.contains("genuinely ambiguous"));
+        assert!(!rest.contains("Zed"));
+        let record = lead_for_chat(&path, "chat:cto").unwrap().unwrap();
+        assert!(record.cross_project);
+        // Reopening keeps the lead; another agent never takes over its history.
+        assert!(brief(&path, "chat:cto", "p1", &ryan.id, "More", true, &projects).is_ok());
+        set_head(&path, Some(&maya.id)).unwrap();
+        let err = brief(&path, "chat:cto", "p1", &maya.id, "Hi", true, &projects).unwrap_err();
+        assert!(err.contains("belongs to Ryan"), "{err}");
+        assert_eq!(
+            lead_for_chat(&path, "chat:cto").unwrap().unwrap().lead_id,
+            ryan.id
+        );
     }
 }

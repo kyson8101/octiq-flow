@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planNumbers, planOwner, planStages } from "./planReview";
+import { awaitingApproval, planDestination, planNumbers, planOwner, planStages } from "./planReview";
 import type { OrchestrationTask } from "./orchestration";
 
 const task = (id: string, dependsOn: string[] = [], extra: Partial<OrchestrationTask> = {}): OrchestrationTask => ({
@@ -35,5 +35,24 @@ describe("planOwner", () => {
     expect(planOwner(task("a", [], { assignee: { id: "m", name: "Maya" }, worker: { agent: "codex", access: "auto" } }))).toEqual({ agent: "codex", label: "Maya" });
     expect(planOwner(task("a", [], { worker: { agent: "claude", access: "auto", model: "claude-sonnet-5" } }))).toEqual({ agent: "claude", label: "claude-sonnet-5" });
     expect(planOwner(task("a")).label).toBe("Chosen at dispatch");
+  });
+});
+
+describe("planDestination", () => {
+  const run = { workspaceId: "p1", rootPath: "/repos/octiq/" };
+  it("reads the task's own destination first", () => {
+    const routed = task("a", [], { destination: { projectId: "shop", projectName: "Shop", repository: "/repos/shop/api" } });
+    expect(planDestination(routed, run)).toEqual({ project: "Shop", repository: "api", path: "/repos/shop/api" });
+  });
+  it("falls back to the run's own checkout for a task without one", () => {
+    expect(planDestination(task("a"), run, () => "OctiqFlow")).toEqual({ project: "OctiqFlow", repository: "octiq", path: "/repos/octiq/" });
+    expect(planDestination(task("a"), run).project).toBe("This project");
+  });
+});
+
+describe("awaitingApproval", () => {
+  it("is the lead's own unapproved tasks, never a manager's subtasks", () => {
+    const tasks = [task("a", [], { approvedAt: 1 }), task("b"), task("c", [], { parentTaskId: "a" })];
+    expect(awaitingApproval(tasks)).toEqual(["b"]);
   });
 });

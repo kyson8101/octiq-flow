@@ -78,6 +78,15 @@ export type OrchestrationRun = {
   stoppedReason?: string;
 };
 
+/** A registered project and one repository registered on it
+ *  (`orchestration/destination.rs`). */
+export type TaskDestination = {
+  projectId: string;
+  projectName: string;
+  /** Absolute path of the repository. */
+  repository: string;
+};
+
 export type OrchestrationTask = {
   id: string;
   runId: string;
@@ -86,6 +95,10 @@ export type OrchestrationTask = {
   worker?: WorkerSettings;
   /** Agents mode: the registered agent this task was handed to. */
   assignee?: { id: string; name: string };
+  /** Where the task runs. Absent: the run's own checkout. */
+  destination?: TaskDestination;
+  /** Agents mode: when the person approved it. Absent: not yet approved. */
+  approvedAt?: number;
   workspace?: TaskWorkspace;
   dependsOn: string[];
   parentTaskId?: string;

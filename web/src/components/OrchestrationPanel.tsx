@@ -69,6 +69,7 @@ export function OrchestrationPanel({
   onEnsureCoordinator,
   onStartMaster,
   coordinatorBusy = false,
+  projectName,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
@@ -87,6 +88,9 @@ export function OrchestrationPanel({
   /** The main agent is mid-turn, so a plan waiting for approval may not be
    *  finished yet. */
   coordinatorBusy?: boolean;
+  /** A registered project's name, for plan rows that run in the run's own
+   *  checkout. */
+  projectName?: (id: string) => string | undefined;
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
@@ -324,6 +328,7 @@ export function OrchestrationPanel({
                 onOpenChat={onOpenChat}
                 currentChatKey={currentChatKey}
                 coordinatorBusy={coordinatorBusy}
+                projectName={projectName ?? ((id) => (id === project?.id ? project.name : undefined))}
                 onPlanApproved={() => void read()}
                 onRequestPlanChanges={(note) => {
                   onOpenChat(selected.coordinatorChatKey,
@@ -472,6 +477,7 @@ function RunDetail({
   onStop,
   onStartMaster,
   coordinatorBusy,
+  projectName,
   onPlanApproved,
   onRequestPlanChanges,
 }: {
@@ -497,6 +503,7 @@ function RunDetail({
   onStop: () => void;
   onStartMaster?: () => Promise<void>;
   coordinatorBusy: boolean;
+  projectName?: (id: string) => string | undefined;
   onPlanApproved: () => void;
   onRequestPlanChanges: (note: string) => void;
 }) {
@@ -538,7 +545,7 @@ function RunDetail({
       </header>
 
       {planPending && (
-        <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
+        <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} projectName={projectName} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
       )}
 
       {openGates.length > 0 && (

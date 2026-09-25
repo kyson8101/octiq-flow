@@ -9,6 +9,8 @@ export type LeadRecord = {
   leadId: string;
   leadName: string;
   projectId: string;
+  /** The conversation with the configured head, across projects. */
+  crossProject?: boolean;
   createdAt: number;
 };
 

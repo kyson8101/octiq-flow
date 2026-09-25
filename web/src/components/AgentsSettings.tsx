@@ -8,7 +8,7 @@ import {
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
 import {
-  deleteTeamAgent, leadOnly, loadTeam, saveTeamAgent, teamModels,
+  deleteTeamAgent, leadOnly, loadHead, loadTeam, saveHead, saveTeamAgent, teamModels,
   type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
 import { orgChart } from "../lib/agentsDashboard";
@@ -32,15 +32,32 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [error, setError] = useState("");
   const [draft, setDraft] = useState<TeamDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [headId, setHeadId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    loadTeam(null, true)
-      .then((agents) => { if (alive) setTeam(agents); })
+    Promise.all([loadTeam(null, true), loadHead()])
+      .then(([agents, head]) => {
+        if (!alive) return;
+        setTeam(agents);
+        setHeadId(head?.id ?? null);
+      })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []);
+
+  // Only a global agent can be talked to from every project.
+  const globalAgents = useMemo(() => team.filter((agent) => !agent.projectId), [team]);
+  const pickHead = async (id: string | null) => {
+    setError("");
+    try {
+      const head = await saveHead(id);
+      setHeadId(head?.id ?? null);
+    } catch (reason) {
+      setError(String((reason as Error).message ?? reason));
+    }
+  };
 
   const projectName = useMemo(
     () => new Map(projects.map((p) => [p.id, p.name])),
@@ -70,8 +87,10 @@ export function AgentsSettings({ on, onToggle, projects }: {
     setError("");
     try {
       await deleteTeamAgent(agent.id);
-      // Its reports now report to its manager.
+      // Its reports now report to its manager, and a removed lead is no
+      // longer the one you talk to.
       setTeam(await loadTeam(null, true));
+      setHeadId((await loadHead())?.id ?? null);
       if (draft?.id === agent.id) setDraft(null);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
@@ -122,6 +141,25 @@ export function AgentsSettings({ on, onToggle, projects }: {
           <span className="set-switch-track" aria-hidden="true" />
           <span className="set-switch-text">{on ? "On" : "Off"}</span>
         </button>
+      </div>
+
+      <div className="settings-control-row">
+        <div className="settings-control-copy">
+          <h3>Talk to</h3>
+          <p>The lead you talk to from any project. It picks the project, repository and teammate for each part of the work, and you approve the plan first.</p>
+        </div>
+        <select
+          className="team-head-select"
+          aria-label="Lead you talk to across projects"
+          value={headId ?? ""}
+          disabled={loading || globalAgents.length === 0}
+          onChange={(event) => void pickHead(event.target.value || null)}
+        >
+          <option value="">{globalAgents.length === 0 ? "Add an agent for every project first" : "No one"}</option>
+          {globalAgents.map((agent) => (
+            <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${agent.role}` : ""}</option>
+          ))}
+        </select>
       </div>
 
       <div className="team-head">

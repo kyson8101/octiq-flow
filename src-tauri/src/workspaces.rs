@@ -157,6 +157,19 @@ impl WorkspaceState {
         }
     }
 
+    /// A store holding exactly these projects, saved nowhere that matters.
+    #[cfg(test)]
+    pub fn with_projects(workspaces: Vec<Workspace>) -> Self {
+        Self {
+            data: Mutex::new(WorkspaceData {
+                workspaces,
+                global_actions: Vec::new(),
+            }),
+            file: std::env::temp_dir()
+                .join(format!("octiq-workspaces-{}.json", uuid::Uuid::new_v4())),
+        }
+    }
+
     /// Write the current state back to disk as pretty JSON.
     fn save(&self, data: &WorkspaceData) -> Result<(), String> {
         let raw = serde_json::to_string_pretty(data).map_err(|e| e.to_string())?;

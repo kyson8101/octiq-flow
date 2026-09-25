@@ -14,10 +14,80 @@ When it is on:
   The brief names the lead, gives its role, and lists its direct reports. The
   chat shows only what you typed, plus a "task for <name>" label. The brief is
   kept in the transcript, so a resumed chat still knows its team.
-- The top bar gets an **Agents** button that opens the dashboard.
+- The top bar gets **Talk to <name>** (see below) and an **Agents** button
+  that opens the dashboard.
+- The composer of a conversation with an agent shows **who it is with** — the
+  agent's name, role and model — where an ordinary chat has its provider,
+  model, access and effort pickers. The agent's registration owns those
+  settings; change them in Settings → Agents. A new conversation starts on the
+  registered settings; an existing one keeps the model it was recorded with,
+  so reopening it never moves its history to another model. If the agent was
+  removed, the name is struck through and the conversation keeps its last
+  settings. Ordinary chats, and every chat when agents mode is off, keep the
+  pickers.
 
 The switch is stored per browser (`octiq.agentsMode`). Registered agents are
 stored on the server, so every browser sees the same team.
+
+## Talk to your lead (the CTO conversation)
+
+**Settings → Agents → Talk to** picks one **global** agent as the lead you talk
+to across projects — typically a CTO. It is configured, never inferred from a
+name, and stored in `team.json` (`head`). Only a global agent qualifies; the
+host refuses to move it into one project while it is the head, and removing it
+clears the setting. With none configured, the top-bar button reads **Choose
+lead** and opens Settings.
+
+**Talk to <name>** is in the top bar, so it is there whatever project is on
+screen. It reopens the newest conversation handed to *that* agent, or starts a
+new one. The conversation lives in the General project and is recorded as a
+cross-project lead record (`crossProject: true`). A conversation keeps the lead
+it was first handed to: when you configure a different head, the button starts
+a new conversation with it, and the host refuses to hand an existing
+conversation to anyone else (`team::record_lead`), so no history is silently
+retargeted.
+
+The head's brief lists its direct reports from every project, each marked
+"works in any project" or "works only in project X", and tells it to:
+
+1. call `orchestration_destinations` for the registered projects, their
+   repositories, and which of its reports may work in each;
+2. give every task a destination — `project` and, when the project has more
+   than one repository, `repository` — on `orchestration_task_create`; one
+   objective may span several projects and repositories, one task per
+   destination;
+3. ask you only when the destination is genuinely ambiguous, and otherwise say
+   which it chose.
+
+## Task destinations and scope
+
+The host resolves every destination (`orchestration/destination.rs`); the
+agent's word is never taken:
+
+- Only a **registered project**, and only a **repository registered on it**
+  (its main folder or one of its other folders), is a destination. Any other
+  path is refused.
+- A **global** agent may route anywhere. A **project** agent — manager or
+  assignee — works only in its own project. So the head may give a
+  project-scoped report work in that report's project and nowhere else, and a
+  project-scoped lead cannot send work out of its project.
+- The assignee must still be a **direct report** of whoever is assigning.
+- An explicit destination that does not resolve is an error listing what is
+  registered. Nothing falls back to the coordinator's checkout.
+- In the head's conversation a task must have a destination. Naming a report
+  who works in only one project is enough to name that project; a project with
+  several repositories still needs `repository`.
+- A task created in an ordinary project-bound lead chat without a destination
+  runs in the run's own checkout, exactly as before destinations existed.
+- A manager's subtask runs where its parent does unless it names another
+  destination within its own scope.
+
+The destination is stored on the task and carried through the worker chat
+(which belongs to the destination project and gets its environment), the task
+workspace and lease, execution, retries and review. It is checked again before
+every worker start; a destination deleted since approval stops the task.
+Worker provider, model, effort and access still come from the assignee's
+registration.
 
 ## Registered agents and the org chart
 
@@ -35,8 +105,10 @@ Fable and Astra agents are marked **lead only**. They can receive a task, but
 orchestration rejects them as workers, so they cannot be assigned one.
 
 Stored in `<profile dir>/team.json` (`team.rs`), together with a record of
-which chats were handed a task and to whom (`leads`). Commands: `team_list`,
-`team_save`, `team_delete`, `team_brief`, `team_leads`.
+which chats were handed a task and to whom (`leads`), and the configured head
+(`head`). Commands: `team_list`, `team_save`, `team_delete`, `team_brief`
+(`crossProject` for the head's conversation), `team_leads`, `team_head`,
+`team_head_set`.
 
 ## Chain of command
 
@@ -53,7 +125,9 @@ Delegation follows the chart, at most **three levels**: lead → manager → wor
 3. Everyone else only does their own task.
 
 The host enforces each rule. In `dispatch.rs`, `orchestration_task_create`
-resolves `assignee` through `team::resolve` against the right manager: the lead
+resolves `assignee` and the destination together through
+`orchestration::destination::route` (which uses `team::resolve_in` against the
+destination project) and the right manager: the lead
 when the coordinator of an agents-mode run creates the task, or the parent
 task's assignee when a worker splits its own task. A task with no assignee in
 an agents-mode run is refused. The store accepts a task from a non-coordinator
@@ -66,12 +140,25 @@ access become the task's worker settings, so a lead cannot misquote a teammate.
 Every run a lead opens waits for you (`run.planApproval`, always required).
 Until you approve it, the host refuses every worker start, manual or automatic,
 and the scheduler skips the run. The lead creates all its tasks, replies with
-the plan as a short list, and ends its turn. A **Plan ready for your approval**
-card above the composer lists each task and who it goes to. **Approve plan**
-calls the browser-only `orchestration_plan_approve`, which is deliberately left
-out of the agent hook so no agent can approve its own plan. To change the plan,
+the plan as a short list, and ends its turn. The run's **Plan ready for
+review** view lists each task with who it goes to and **where it runs** —
+project and repository, the full path in its tooltip; a task without a
+destination shows the run's own project and checkout. **Approve plan** calls
+the browser-only `orchestration_plan_approve`, which is deliberately left out
+of the agent hook so no agent can approve its own plan. To change the plan,
 reply in the chat. The button stays disabled while the lead is still in its
 turn.
+
+Approval is for exactly the plan you saw:
+
+- The browser sends the ids of the tasks it showed as awaiting approval; if the
+  lead added a task in the meantime the host refuses ("The plan changed while
+  you were reviewing it").
+- Approving stamps each task `approvedAt`. A task's destination and assignee
+  cannot be changed after creation — re-routing means a new task.
+- A task the lead adds **after** approval puts the whole run back to waiting
+  for you; it is marked **New** in the review, and no worker starts (retries
+  included) until you approve again. Running workers carry on.
 
 Only the top plan needs you. Managers split their tasks further without asking.
 
