@@ -1240,7 +1240,8 @@ const ORCHESTRATION_TASK_CREATE = {
       spec: { type: "string", description: "Bounded worker assignment with outcome and checks." },
       dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first. Defaults to none." },
       parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency." },
-      worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
+      worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent and no assignee is given. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
+      assignee: { type: "string", description: "Agents mode only: the id of one of your direct reports, as listed in your brief. The host applies that agent's provider, model, effort and access; do not also pass worker. A worker that manages agents splits its own task by passing its task id as parentTaskId." },
     },
     required: ["runId", "title", "spec"],
   },
@@ -1482,7 +1483,7 @@ const BASE_SERVER_INSTRUCTIONS =
   "<OctiqFlow conversation URL>`, call read_conversation with that URL before any other " +
   "action; do not open it in Browser or infer its history from workspace files. " +
   "Use orchestration tools only when the person explicitly asks for supervised multi-agent " +
-  "work or a task DAG. The master creates one run, creates a shallow dependency graph, " +
+  "work or a task DAG, or an OctiqFlow agents-mode brief tells you to delegate. The master creates one run, creates a shallow dependency graph, " +
   "chooses a suitable provider, model and effort for each task in its worker settings, " +
   "starts the full ready wave before waiting, and reads orchestration_snapshot as truth. " +
   "Fable and Astra are reserved for main agents orchestrating other agents, never execution workers. " +

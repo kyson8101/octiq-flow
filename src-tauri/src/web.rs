@@ -994,6 +994,9 @@ async fn orchestration_handler(
         }
     };
     args.insert("actorChatKey".into(), Value::String(request.chat_key));
+    if command == "orchestration_run_create" {
+        args.insert("withBrief".into(), Value::Bool(true));
+    }
     match run_command(&ctx, command.into(), Value::Object(args)).await {
         Ok(result) => axum::Json(json!({ "result": result })).into_response(),
         Err(error) => (

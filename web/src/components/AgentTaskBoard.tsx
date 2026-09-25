@@ -82,7 +82,7 @@ function TaskRow({ snapshot, conversations, currentConversation, onOpenChat, tas
         {unread && <span className="agent-task-unread" title="Unread activity" />}
         <span className="agent-task-percent" title={task.status === "completed" ? "Task completed" : progress.total ? `${progress.done} of ${progress.total} reported steps done` : "No checklist reported"}>{progress.percent === null ? "—" : `${progress.percent}%`}</span>
       </span>
-      <span className="agent-task-meta"><span className="agent-task-stage" title={attempt?.execution?.latestError?.message || stage}>{stage}</span></span>
+      <span className="agent-task-meta">{task.assignee && <span className="agent-task-assignee">{task.assignee.name}</span>}<span className="agent-task-stage" title={attempt?.execution?.latestError?.message || stage}>{stage}</span></span>
     </span>
   </>;
   // A task with no transcript yet is not navigation, so it is not a button —

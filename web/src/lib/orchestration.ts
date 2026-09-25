@@ -58,7 +58,7 @@ export function deliveryTone(workspace: TaskWorkspace): "ok" | "warn" | "quiet" 
 }
 
 export type RunStatus = "planning" | "running" | "waiting" | "completed" | "failed" | "stopped";
-type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
+export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 type AttemptStatus = "preparing" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 
 export type OrchestrationRun = {
@@ -71,6 +71,8 @@ export type OrchestrationRun = {
   maxConcurrent: number;
   workspaceMode?: WorkspaceMode;
   workerDefaults?: WorkerDefaults | null;
+  /** Agents mode: the lead's plan waits for the person before workers start. */
+  planApproval?: { status: "pending" | "approved"; requestedAt: number; decidedAt?: number };
   createdAt: number;
   updatedAt: number;
   stoppedReason?: string;
@@ -82,6 +84,8 @@ export type OrchestrationTask = {
   title: string;
   spec: string;
   worker?: WorkerSettings;
+  /** Agents mode: the registered agent this task was handed to. */
+  assignee?: { id: string; name: string };
   workspace?: TaskWorkspace;
   dependsOn: string[];
   parentTaskId?: string;

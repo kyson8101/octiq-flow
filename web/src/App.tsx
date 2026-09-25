@@ -130,7 +130,13 @@ import { DeletedChats } from "./components/DeletedChats";
 import { FeedbackInbox } from "./components/FeedbackInbox";
 import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectAvatar } from "./components/ProjectAvatar";
-import { Settings } from "./components/Settings";
+import { Settings, type SettingsSection } from "./components/Settings";
+import { LeadPicker } from "./components/AgentsSettings";
+import { AgentsDashboard, PlanApproval } from "./components/AgentsDashboard";
+import { pendingPlan } from "./lib/agentsDashboard";
+import {
+  leadSettings, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
+} from "./lib/agentsMode";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
@@ -284,6 +290,7 @@ const EFFORT_KEY = "octiq.v2.effort";
 /** Whether new chats start clean. Kept here rather than per project: it is a
  *  way of working, not a property of the code you are working on. */
 const LITE_KEY = "octiq.v2.lite";
+const LEAD_KEY = "octiq.agentsLead";
 const TERM_KEY = "octiq.v2.terminalOpen";
 /** What the address bar says you are looking at.
  *
@@ -574,6 +581,17 @@ export default function App() {
     setLite(on);
     remember(LITE_KEY, on ? "1" : "0");
   }, []);
+  // Agents mode (lib/agentsMode): New chat becomes New task, handed to a
+  // registered agent. Off, nothing below changes anything.
+  const [agentsMode, setAgentsMode] = useState<boolean>(recallAgentsMode);
+  const changeAgentsMode = useCallback((on: boolean) => {
+    setAgentsMode(on);
+    rememberAgentsMode(on);
+  }, []);
+  const [team, setTeam] = useState<TeamAgent[]>([]);
+  const [leadId, setLeadId] = useState<string | null>(() => recall(LEAD_KEY));
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
+  const [agentsDashboard, setAgentsDashboard] = useState(false);
 
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
@@ -1681,6 +1699,44 @@ export default function App() {
 
   /** The chat on screen. Everything else is still running behind it. */
   const chat = (conversationId && chats[conversationId]) || EMPTY;
+
+  // Agents mode: the agents this project can hand a task to, and which one a
+  // new task goes to. Re-read when Settings closes, where they are edited.
+  const teamProjectId = project?.id ?? null;
+  useEffect(() => {
+    if (!agentsMode || conn !== "open" || appSettings) return;
+    let alive = true;
+    loadTeam(teamProjectId)
+      .then((agents) => { if (alive) setTeam(agents); })
+      .catch(() => { if (alive) setTeam([]); });
+    return () => { alive = false; };
+  }, [agentsMode, teamProjectId, appSettings, conn]);
+  const lead = agentsMode ? team.find((agent) => agent.id === leadId) ?? team[0] ?? null : null;
+  // Only a chat that does not exist yet is a new task. An existing one keeps
+  // the model it was recorded with, empty-while-loading or not.
+  const newTask = agentsMode && !conversationId && !workerChat;
+  useEffect(() => {
+    if (!newTask || !lead) return;
+    const settings = leadSettings(lead);
+    if (!settings) return;
+    setChoice(settings.choice);
+    setEffort(settings.effort);
+    setAccess(settings.access);
+  }, [newTask, lead]);
+  const pickLead = useCallback((agent: TeamAgent) => {
+    setLeadId(agent.id);
+    remember(LEAD_KEY, agent.id);
+  }, []);
+  const openAgentsSettings = useCallback(() => {
+    setAgentsDashboard(false);
+    setSettingsSection("agents");
+    setAppSettings(true);
+  }, []);
+  // A lead's plan waiting for the person, shown above its composer.
+  const plan = useMemo(
+    () => (workerChat ? null : pendingPlan(orchestration, conversationId ? keyFor(conversationId) : null)),
+    [orchestration, conversationId, workerChat],
+  );
   const openRecord = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationId),
     [conversations, conversationId],
@@ -2783,6 +2839,20 @@ export default function App() {
         text = `${text}\n\nFiles to look at:\n${files.map((f) => `- ${f}`).join("\n")}`.trim();
       }
       const id = conversationId ?? crypto.randomUUID();
+      // Agents mode: the first message of a new task goes to its lead with the
+      // brief behind it. What the person typed still names the chat.
+      const taskLead = agentsMode && !conversationId && text.trim() !== "/clear" ? lead : null;
+      const typed = text;
+      if (taskLead) {
+        try {
+          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text);
+        } catch (error) {
+          setNewChatError(
+            `Could not hand the task to ${taskLead.name}: ${String((error as Error).message ?? error)}`,
+          );
+          return;
+        }
+      }
       if (!conversationId) setConversationId(id);
 
       /* `/clear` empties the conversation here as well as in the agent.
@@ -2888,7 +2958,7 @@ export default function App() {
                 path: project.primary_path ?? "",
                 branch,
                 newWorktree,
-                prompt: text,
+                prompt: typed,
                 chatId: id,
               },
             );
@@ -2925,7 +2995,7 @@ export default function App() {
           projectId: targetProject.id,
           // A chat is named after the FIRST thing asked in it, so an existing one
           // keeps the name it already has.
-          title: held?.title ?? shortTitle(text),
+          title: held?.title ?? shortTitle(typed),
           latestResponse: held?.latestResponse,
           customTitle: held?.customTitle,
           sessionId: chatsRef.current[id]?.sessionId ?? held?.sessionId,
@@ -3073,6 +3143,8 @@ export default function App() {
       patch,
       catchUpChat,
       syncQueue,
+      agentsMode,
+      lead,
       workerChat,
     ],
   );
@@ -3663,6 +3735,23 @@ export default function App() {
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
 
+      {agentsMode && (
+        <button
+          className={`icon-btn${agentsDashboard ? " is-on" : ""}`}
+          type="button"
+          aria-label="Agents"
+          title="Agents"
+          aria-pressed={agentsDashboard}
+          onClick={() => setAgentsDashboard((open) => !open)}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="9" y="3" width="6" height="5" rx="1" /><rect x="3" y="16" width="6" height="5" rx="1" /><rect x="15" y="16" width="6" height="5" rx="1" />
+            <path d="M12 8v4M6 16v-2h12v2" />
+          </svg>
+          <span className="topbar-action-label">Agents</span>
+        </button>
+      )}
+
       <button
         className="icon-btn"
         type="button"
@@ -3690,8 +3779,8 @@ export default function App() {
       <button
           className="icon-btn new-chat"
           type="button"
-          aria-label="Start new chat"
-          title="Start new chat"
+          aria-label={agentsMode ? "Start new task" : "Start new chat"}
+          title={agentsMode ? "Start new task" : "Start new chat"}
           onClick={newChat}
         >
           <svg
@@ -3706,7 +3795,7 @@ export default function App() {
           >
             <path d="M12 5v14M5 12h14" />
           </svg>
-          <span className="topbar-action-label">New chat</span>
+          <span className="topbar-action-label">{agentsMode ? "New task" : "New chat"}</span>
         </button>
 
       {topbarReadouts && readouts}
@@ -3833,6 +3922,7 @@ export default function App() {
             openConversation(conversation);
           }}
           onNewChat={newChat}
+          newLabel={agentsMode ? "New task" : "New chat"}
           onDelete={deleteConversation}
           onPin={togglePin}
           onToggleDone={toggleDone}
@@ -3905,9 +3995,14 @@ export default function App() {
             <div className="hero"><h1 className="hero-title">{currentWorkflow.runs[0].objective}</h1><p className="hero-sub">Talk with the main agent here. Open Run for tasks, workers, and delivery status.</p></div>
           ) : chat.messages.length === 0 ? (
             <div className={`hero ${project ? "" : "hero-start"}`}>
-              <h1 className="hero-title">{project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
-              {!project && (
+              <h1 className="hero-title">{newTask
+                ? (project ? `What's the task in ${project.name}?` : "What's the task?")
+                : project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
+              {(!project || newTask) && (
                 newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>
+              )}
+              {newTask && (
+                <LeadPicker team={team} leadId={lead?.id ?? null} onPick={pickLead} onManage={openAgentsSettings} />
               )}
               {chat.sessionId &&
                 (conversationId && resumed[conversationId] ? (
@@ -4119,6 +4214,10 @@ export default function App() {
             </section>
           ))}
 
+          {plan && (
+            <PlanApproval run={plan.run} tasks={plan.tasks} drafting={chat.busy && !cutOff} />
+          )}
+
           {workerChat ? <WorkerChatNotice
             busy={chat.busy && !cutOff}
             onOpenMain={coordinatorConversation ? () => openWorkflowChat(keyFor(coordinatorConversation.id)) : undefined}
@@ -4300,7 +4399,28 @@ export default function App() {
           }}
           projects={[...workspaces, ...shelved]}
           onProject={setSettingsFor}
-          onClose={() => setAppSettings(false)}
+          agentsMode={agentsMode}
+          onAgentsMode={changeAgentsMode}
+          initialSection={settingsSection}
+          onClose={() => { setAppSettings(false); setSettingsSection("projects"); }}
+        />
+      )}
+
+      {agentsDashboard && agentsMode && (
+        <AgentsDashboard
+          projectId={project?.id ?? null}
+          snapshot={orchestration}
+          chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
+          onOpenChat={(chatKey) => {
+            try {
+              openWorkflowChat(chatKey);
+              setAgentsDashboard(false);
+            } catch {
+              /* not in this browser's list yet; the row stays put */
+            }
+          }}
+          onManage={openAgentsSettings}
+          onClose={() => setAgentsDashboard(false)}
         />
       )}
 

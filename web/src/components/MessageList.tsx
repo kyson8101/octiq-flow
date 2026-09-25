@@ -11,6 +11,7 @@
 // are lifted out of the conversation here and kept by that call's id. The
 // alternative is a reply where a subagent's thinking, tool calls and prose all
 // read as the main agent's own.
+import { readTaskBrief } from "../lib/taskBrief";
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import Markdown, { type Components } from "react-markdown";
@@ -750,9 +751,15 @@ function TurnView({
   // here for the same reason, it is not the answer — and so are tool calls,
   // whose arguments and results are machinery rather than something you would
   // paste anywhere.
+  // Agents mode: a task's first message carries the lead's brief after the
+  // person's words. Only the words are drawn; the brief is for the agent.
+  const shown = (text: string) => (role === "user" ? readTaskBrief(text)?.task ?? text : text);
+  const handedTo = role === "user"
+    ? blocks.map((b) => b.kind === "text" ? readTaskBrief(b.text)?.lead : undefined).find(Boolean)
+    : undefined;
   const answer = blocks
     .filter((b) => b.kind === "text")
-    .map((b) => (b as { text: string }).text)
+    .map((b) => shown((b as { text: string }).text))
     .join("\n\n")
     .trim();
 
@@ -808,6 +815,7 @@ function TurnView({
       {/* Above your own words, because it changes how they read: "check this"
           means something different said to the room than said to one agent. */}
       {role === "user" && to && <div className="msg-to">to {to.name}</div>}
+      {handedTo && <div className="msg-to">task for {handedTo}</div>}
       {role === "user" && ranSkill && (
         <div className="msg-ran" title="The skill this command resolved to">
           {ranSkill}
@@ -857,7 +865,7 @@ function TurnView({
             Anything else in a user turn (there is nothing today) still goes the
             ordinary way. */}
         {role === "user" && blocks.every((b) => b.kind === "text") ? (
-          blocks.map((b, i) => <UserText key={i} text={(b as { text: string }).text} />)
+          blocks.map((b, i) => <UserText key={i} text={shown((b as { text: string }).text)} />)
         ) : (
           <Blocks
             blocks={blocks}

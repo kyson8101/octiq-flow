@@ -47,6 +47,7 @@ mod question_store;
 mod record_trim;
 mod sandbox;
 mod safety_block;
+mod team;
 mod transcript;
 mod usage_limits;
 mod web;

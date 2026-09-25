@@ -102,10 +102,48 @@ pub struct Run {
     pub workspace_mode: WorkspaceMode,
     #[serde(default)]
     pub worker_defaults: Option<automation::WorkerDefaults>,
+    /// Agents mode: the lead's plan waits for the person before any worker
+    /// starts. Absent on every other run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_approval: Option<PlanApproval>,
     pub created_at: i64,
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanStatus {
+    Pending,
+    Approved,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanApproval {
+    pub status: PlanStatus,
+    pub requested_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<i64>,
+}
+
+impl Run {
+    /// No worker may start while this is true.
+    pub fn awaiting_plan_approval(&self) -> bool {
+        self.plan_approval
+            .as_ref()
+            .is_some_and(|plan| plan.status == PlanStatus::Pending)
+    }
+}
+
+/// Who a task was handed to in agents mode. A copy, not a reference: the
+/// registered agent can be renamed or removed while the ledger keeps its word.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAssignee {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -117,6 +155,9 @@ pub struct Task {
     pub spec: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<automation::WorkerSettings>,
+    /// Agents mode: the registered agent this task was handed to (team.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<TaskAssignee>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
     #[serde(default)]
@@ -639,6 +680,7 @@ impl OrchestrationStore {
             max_concurrent,
             workspace_mode,
             worker_defaults: None,
+            plan_approval: None,
             created_at: now,
             updated_at: now,
             stopped_reason: None,
@@ -661,6 +703,7 @@ impl OrchestrationStore {
         .inspect(|run| announce(&run.id, "run_created"))
     }
 
+    #[cfg(test)]
     pub fn create_task(
         &self,
         actor_chat_key: &str,
@@ -671,14 +714,131 @@ impl OrchestrationStore {
         parent_task_id: Option<String>,
         worker: Option<automation::WorkerSettings>,
     ) -> Result<Task, String> {
+        self.create_task_for(
+            actor_chat_key,
+            run_id,
+            title,
+            spec,
+            depends_on,
+            parent_task_id,
+            worker,
+            None,
+        )
+    }
+
+    /// The run's project and coordinator, for resolving an agents-mode
+    /// assignee against the agents that project can see.
+    pub fn run_owner(&self, run_id: &str) -> Result<(String, String), String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        inner
+            .data
+            .runs
+            .get(run_id)
+            .map(|run| (run.workspace_id.clone(), run.coordinator_chat_key.clone()))
+            .ok_or_else(|| "That run does not exist.".into())
+    }
+
+    /// A task's assignee and parent, for checking an agents-mode split.
+    pub fn task_assignment(
+        &self,
+        task_id: &str,
+    ) -> Result<(Option<TaskAssignee>, Option<String>), String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        inner
+            .data
+            .tasks
+            .get(task_id)
+            .map(|task| (task.assignee.clone(), task.parent_task_id.clone()))
+            .ok_or_else(|| "The parent task does not exist.".into())
+    }
+
+    /// Agents mode: hold this run's workers until the person approves.
+    pub fn require_plan_approval(&self, run_id: &str) -> Result<Run, String> {
+        self.mutate(|data| {
+            let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
+            run.plan_approval = Some(PlanApproval {
+                status: PlanStatus::Pending,
+                requested_at: now_ms(),
+                decided_at: None,
+            });
+            Ok(run.clone())
+        })
+        .inspect(|run| announce(&run.id, "plan_pending"))
+    }
+
+    /// The person approves the lead's plan; the scheduler starts the ready
+    /// wave on its next pass.
+    pub fn approve_plan(&self, actor_chat_key: &str, run_id: &str) -> Result<Run, String> {
+        self.mutate(|data| {
+            coordinator(data, run_id, actor_chat_key)?;
+            let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
+            if matches!(
+                run.status,
+                RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed
+            ) {
+                return Err("This run has ended.".into());
+            }
+            let plan = run
+                .plan_approval
+                .as_mut()
+                .ok_or("This run has no plan waiting for approval.")?;
+            if plan.status == PlanStatus::Approved {
+                return Err("This plan is already approved.".into());
+            }
+            if !data.tasks.values().any(|task| task.run_id == run_id) {
+                return Err("The plan has no tasks yet.".into());
+            }
+            plan.status = PlanStatus::Approved;
+            plan.decided_at = Some(now_ms());
+            run.updated_at = now_ms();
+            Ok(run.clone())
+        })
+        .inspect(|run| announce(&run.id, "plan_approved"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_task_for(
+        &self,
+        actor_chat_key: &str,
+        run_id: String,
+        title: String,
+        spec: String,
+        depends_on: Vec<String>,
+        parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
+        assignee: Option<TaskAssignee>,
+    ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
         let worker = worker
             .map(automation::WorkerSettings::normalized)
             .transpose()?;
         let run_id_for_event = run_id.clone();
+        let mut created_under: Option<String> = None;
         self.mutate(|data| {
-            let run = coordinator(data, &run_id, actor_chat_key)?;
+            let run = match coordinator(data, &run_id, actor_chat_key) {
+                Ok(run) => run,
+                // Agents mode: a manager may split its OWN task, once.
+                Err(not_coordinator) => {
+                    let Some(parent) = parent_task_id.as_deref() else {
+                        return Err(not_coordinator);
+                    };
+                    let mine = active_task_for_actor(data, actor_chat_key)
+                        .is_some_and(|task| task.id == parent);
+                    let parent_task = data.tasks.get(parent).ok_or("The parent task does not exist.")?;
+                    if !mine || parent_task.assignee.is_none() {
+                        return Err(not_coordinator);
+                    }
+                    if parent_task.parent_task_id.is_some() {
+                        return Err("This task is already a subtask. Delegation goes no deeper; do it yourself.".into());
+                    }
+                    if assignee.is_none() {
+                        return Err("Give each subtask an `assignee`: one of your direct reports.".into());
+                    }
+                    created_under = Some(parent.to_owned());
+                    data.runs.get(&run_id).ok_or("The run does not exist.")?
+                }
+            };
             if worker.is_none() && run.worker_defaults.as_ref().is_some_and(|d| d.agent.is_none()) {
                 return Err("Choose a suitable worker for this task: provide worker.agent, worker.model, worker.access, and optional worker.effort.".into());
             }
@@ -716,6 +876,7 @@ impl OrchestrationStore {
                 title,
                 spec,
                 worker,
+                assignee,
                 workspace: None,
                 depends_on,
                 parent_task_id,
@@ -730,6 +891,20 @@ impl OrchestrationStore {
                 updated_at: now,
             };
             let created = task.clone();
+            // Anything still waiting on the manager's task waits for its
+            // subtasks too, so the manager may settle as soon as it has split.
+            if let Some(parent) = &created_under {
+                for other in data.tasks.values_mut() {
+                    if other.run_id == run_id
+                        && other.depends_on.contains(parent)
+                        && matches!(other.status, TaskStatus::Pending | TaskStatus::Ready)
+                    {
+                        other.depends_on.push(created.id.clone());
+                        other.status = TaskStatus::Pending;
+                        other.updated_at = now;
+                    }
+                }
+            }
             data.tasks.insert(task.id.clone(), task);
             if let Some(run) = data.runs.get_mut(&run_id) {
                 run.status = RunStatus::Running;
@@ -770,6 +945,11 @@ impl OrchestrationStore {
                 .cloned()
                 .ok_or("The task does not exist.")?;
             let run = coordinator(data, &task.run_id, actor_chat_key)?.clone();
+            if run.awaiting_plan_approval() {
+                return Err(
+                    "The person has not approved this plan yet. Workers start once they do.".into(),
+                );
+            }
             worker.recovery = task
                 .worker
                 .as_ref()
@@ -1060,6 +1240,19 @@ impl OrchestrationStore {
             prepared.is_worktree,
         )?;
         let mut prompt = worker_prompt(&run, &task, &active);
+        // Agents mode: a second-level assignee that manages agents may split.
+        if let (Some(assignee), None) = (&task.assignee, &task.parent_task_id) {
+            if let Ok(Some(brief)) = crate::team::manager_brief(
+                &crate::team::default_path(),
+                &run.workspace_id,
+                &assignee.id,
+                &task.id,
+                &run.id,
+            ) {
+                prompt.push_str("\n\n");
+                prompt.push_str(&brief);
+            }
+        }
         if let Some(previous) = &previous {
             let reports = crate::chat_task::reports_for_chat_keys(std::iter::once(
                 previous.worker_chat_key.as_str(),
@@ -1797,6 +1990,11 @@ pub fn master_prompt(run: &Run) -> String {
     );
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
     let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
+    let brief = if run.awaiting_plan_approval() {
+        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval.")
+    } else {
+        brief
+    };
     if run.worker_defaults.is_some() {
         format!("{brief}\n\nAutomatic dispatch is enabled. Create all tasks with their dependencies and chosen worker settings; the host starts each task with its own selection and starts subsequent waves automatically. Do not also start those tasks manually. Legacy tasks without a worker selection can be started explicitly with orchestration_worker_start. Host-detected transient provider failures have bounded automatic recovery. Inspect attempt.execution and nextRetryAt before retrying; do not duplicate a scheduled recovery. Worker-reported failures and blocks still require an explicit retry decision. Workspace mode: {:?}.", run.workspace_mode)
     } else {
@@ -1962,6 +2160,107 @@ mod tests {
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
             .unwrap()
+    }
+
+    fn launch_for(task_id: &str) -> WorkerLaunch {
+        WorkerLaunch {
+            task_id: task_id.into(),
+            agent: ChatAgent::Codex,
+            model: None,
+            effort: None,
+            access: Access::Auto,
+            new_worktree: Some(true),
+            base_branch: String::new(),
+        }
+    }
+
+    fn assigned(
+        store: &OrchestrationStore,
+        run: &Run,
+        actor: &str,
+        parent: Option<String>,
+        depends_on: Vec<String>,
+    ) -> Result<Task, String> {
+        store.create_task_for(
+            actor,
+            run.id.clone(),
+            "Part".into(),
+            "Do the part".into(),
+            depends_on,
+            parent,
+            None,
+            Some(TaskAssignee {
+                id: "agent_ada".into(),
+                name: "Ada".into(),
+            }),
+        )
+    }
+
+    #[test]
+    fn a_pending_plan_holds_every_worker_until_the_person_approves() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        store.require_plan_approval(&run.id).unwrap();
+        // Nothing to approve before the lead has made a plan.
+        assert!(store.approve_plan("chat:master", &run.id).is_err());
+        let first = task(&store, &run, Vec::new());
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap_err()
+            .contains("not approved"));
+        assert!(store.approve_plan("chat:worker", &run.id).is_err());
+        let approved = store.approve_plan("chat:master", &run.id).unwrap();
+        assert!(!approved.awaiting_plan_approval());
+        assert!(store.approve_plan("chat:master", &run.id).is_err());
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .is_ok());
+    }
+
+    #[test]
+    fn a_manager_splits_its_own_task_once_and_dependents_wait_for_the_parts() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let managed = assigned(&store, &run, "chat:master", None, Vec::new()).unwrap();
+        let after = assigned(&store, &run, "chat:master", None, vec![managed.id.clone()]).unwrap();
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&managed.id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+            .unwrap();
+        let manager = attempt.worker_chat_key.as_str();
+
+        let part = assigned(&store, &run, manager, Some(managed.id.clone()), Vec::new()).unwrap();
+        assert_eq!(part.parent_task_id.as_deref(), Some(managed.id.as_str()));
+        let snapshot = store.snapshot(None).unwrap();
+        let waiting = snapshot.tasks.iter().find(|t| t.id == after.id).unwrap();
+        assert!(waiting.depends_on.contains(&part.id));
+
+        // Only with an assignee, only under its own task, and no deeper.
+        let mut bare = assigned(&store, &run, manager, Some(managed.id.clone()), Vec::new());
+        assert!(bare.is_ok());
+        bare = store.create_task_for(
+            manager,
+            run.id.clone(),
+            "Part".into(),
+            "Do it".into(),
+            Vec::new(),
+            Some(managed.id.clone()),
+            None,
+            None,
+        );
+        assert!(bare.unwrap_err().contains("assignee"));
+        assert!(assigned(&store, &run, manager, None, Vec::new()).is_err());
+        assert!(assigned(
+            &store,
+            &run,
+            "chat:someone",
+            Some(managed.id.clone()),
+            Vec::new()
+        )
+        .is_err());
+        assert!(assigned(&store, &run, manager, Some(part.id.clone()), Vec::new()).is_err());
     }
 
     #[test]

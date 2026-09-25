@@ -13,10 +13,11 @@ import { applyTheme, preview, THEMES } from "../lib/themeStore";
 import type { ProjectDetail } from "./ProjectSettings";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { MemoryVaultSettings } from "./MemoryVaultSettings";
+import { AgentsSettings } from "./AgentsSettings";
 
 import { SandboxSettings } from "./SandboxSettings";
 
-type SettingsSection = "projects" | "notifications" | "appearance" | "memory" | "sandbox";
+export type SettingsSection = "projects" | "agents" | "notifications" | "appearance" | "memory" | "sandbox";
 
 const projectNameCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -29,7 +30,7 @@ function compareProjectNames(left: ProjectDetail, right: ProjectDetail): number 
     || left.id.localeCompare(right.id);
 }
 
-export function Settings({ current, onPick, notify, onNotify, projects, onProject, onClose }: {
+export function Settings({ current, onPick, notify, onNotify, projects, onProject, agentsMode = false, onAgentsMode, initialSection = "projects", onClose }: {
   /** The chosen theme's id. Held by App so the sheet can close and reopen
    *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
   current: string;
@@ -44,6 +45,10 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
    *  the chat menus. Shelved projects stay reachable too. */
   projects: ProjectDetail[];
   onProject: (id: string | "new") => void;
+  /** Agents mode: New chat becomes New task, handed to a registered agent. */
+  agentsMode?: boolean;
+  onAgentsMode?: (on: boolean) => void;
+  initialSection?: SettingsSection;
   onClose: () => void;
 }) {
   const choose = (id: string) => {
@@ -60,7 +65,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
   // rather than nagging about a browser on the way in.
   const [why, setWhy] = useState<"" | "denied" | "needs-install" | "failed">("");
   const [busy, setBusy] = useState(false);
-  const [section, setSection] = useState<SettingsSection>("projects");
+  const [section, setSection] = useState<SettingsSection>(initialSection);
   const canNotify = supported() || push.supported() || push.isIOS();
 
   /** Turning it ON is the gesture that asks the browser. `requestPermission`
@@ -145,6 +150,15 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 active={section === "projects"}
                 onPick={setSection}
               />
+              {onAgentsMode && (
+                <SettingsNavButton
+                  section="agents"
+                  label="Agents"
+                  detail={agentsMode ? "Agents mode on" : "Agents mode off"}
+                  active={section === "agents"}
+                  onPick={setSection}
+                />
+              )}
               {canNotify && (
                 <SettingsNavButton
                   section="notifications"
@@ -170,6 +184,9 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
           <main className="settings-content">
             {section === "sandbox" && <SandboxSettings />}
             {section === "memory" && <MemoryVaultSettings />}
+            {section === "agents" && onAgentsMode && (
+              <AgentsSettings on={agentsMode} onToggle={onAgentsMode} projects={orderedProjects} />
+            )}
             {section === "projects" && (
               <section className="settings-section" aria-labelledby="settings-projects-title">
                 <header className="settings-section-head">
@@ -342,6 +359,9 @@ function SettingsNavButton({ section, label, detail, active, onPick }: {
 }
 
 function SettingsIcon({ section }: { section: SettingsSection }) {
+  if (section === "agents") {
+    return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" /><circle cx="17" cy="9" r="2.4" /><path d="M16 14.2c2.9.3 5 2.6 5 5.8" /></svg>;
+  }
   if (section === "memory") {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5c-3-2-6-2-9-1v15c3-1 6-1 9 1 3-2 6-2 9-1V4c-3-1-6-1-9 1Z" /><path d="M12 5v15" /></svg>;
   }
