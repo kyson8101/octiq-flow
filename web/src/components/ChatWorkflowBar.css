@@ -3,7 +3,6 @@
 .workflow-title { margin: 0; color: var(--fg-0); font-size: 20px; font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
 .workflow-header .chat-workflow-bar { padding: 10px 0 12px; border-bottom: 0; }
 .chat-workflow-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex: 0 0 auto; padding: 10px 20px; border-bottom: 1px solid var(--border); color: var(--fg-2); font-size: 12px; }
-.chat-execution { display: flex; align-items: center; gap: 8px; }
 .chat-workflow-bar select, .workflow-setup-context select { border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg-1); color: var(--fg-0); font: inherit; padding: 5px 8px; max-width: 100%; }
 .chat-workflow-views { display: flex; gap: 2px; }
 .chat-workflow-views button, .chat-run-summary { border: 0; background: transparent; color: var(--fg-2); font: inherit; padding: 5px 10px; border-radius: var(--r-sm); cursor: pointer; }

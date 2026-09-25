@@ -52,4 +52,22 @@ describe("Settings", () => {
     // A section owns its content instead of mounting every setting in one scroller.
     expect(out).not.toContain("Candyland");
   });
+
+  it("keeps the feedback inbox under Settings, as an entry that opens it", () => {
+    const out = renderToStaticMarkup(
+      <Settings current="dark" onPick={() => {}} notify={false} onNotify={() => {}}
+        projects={[]} onProject={() => {}} onFeedback={() => {}} onClose={() => {}} />,
+    );
+    const nav = out.slice(out.indexOf('aria-label="Settings sections"'), out.indexOf("</nav>"));
+    expect(nav).toContain("Feedback inbox</span>");
+    expect(nav).toContain('aria-haspopup="dialog"');
+  });
+
+  it("leaves the feedback entry out when there is nothing to open it", () => {
+    const out = renderToStaticMarkup(
+      <Settings current="dark" onPick={() => {}} notify={false} onNotify={() => {}}
+        projects={[]} onProject={() => {}} onClose={() => {}} />,
+    );
+    expect(out).not.toContain("Feedback inbox");
+  });
 });

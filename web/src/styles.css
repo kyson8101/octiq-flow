@@ -491,20 +491,20 @@ body {
   color: var(--danger);
 }
 
-/* Where live readouts go when the top bar has no room. */
-.sidebar-slot {
-  flex: 0 0 auto;
-  padding: 8px 10px 4px;
+/* ---- Shell: sidebar + workspace --------------------------------------
+   Two columns on a desktop: the sidebar the full height of the window, and a
+   workspace column holding the top bar over the body. On a phone the
+   workspace column dissolves, so the top bar and the body are rows of `.app`
+   again, and the sidebar is ordered between them — the screen it becomes on
+   `.projects-screen` sits under the top bar, as it always has. */
+.shell-main {
+  display: contents;
 }
 
-.sidebar-slot.is-foot {
-  padding: 2px 4px calc(8px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
-}
-
-.sidebar-slot .usage-btn {
-  width: 100%;
-  justify-content: space-between;
+@media (max-width: 859.98px) {
+  .app > .sidebar { order: 1; }
+  .shell-main > .topbar { order: 0; }
+  .shell-main > .body { order: 2; }
 }
 
 /* ---- Body: drawer + main --------------------------------------------- */
@@ -559,8 +559,14 @@ body {
     border-right: 0;
   }
 
-  /* Includes file/git panels portalled into the dock: none can cover the list. */
-  .app.projects-screen .body > :not(.sidebar) {
+  /* The whole body, file/git panels portalled into the dock included: none
+     can cover the list. */
+  .app.projects-screen .body {
+    display: none;
+  }
+
+  /* The top bar already says where this is ("Chats") on a phone. */
+  .app .task-sidebar .sidebar-head {
     display: none;
   }
 
@@ -573,128 +579,83 @@ body {
    Projects are execution context now, not folders in the primary hierarchy.
    Every row therefore spends its three lines on the task title, the latest
    agent response, and the project that owns the workspace. */
+/* The column runs the full height of the window, so its first row sits level
+   with the workspace's top bar (48px plus the same safe-area inset) and names
+   the app. Everything under it is spent on chats: the places are one tight
+   list of small rows, and the chat list takes all the height that is left. */
 .task-sidebar .sidebar-head {
-  min-height: 58px;
-  padding: 10px 12px 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: calc(48px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 6px 0 14px;
 }
+.sidebar-logo { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 5px; }
 .task-sidebar .sidebar-title {
-  color: var(--fg-0);
-  font-size: 18px;
-  font-weight: 650;
-}
-
-.sidebar-new-chat {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  width: calc(100% - 16px);
-  min-height: 44px;
-  margin: 0 8px 10px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-1);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 550;
-  text-align: left;
-  cursor: pointer;
-}
-
-.sidebar-new-chat svg { flex: 0 0 20px; }
-.sidebar-new-chat:hover { background: var(--bg-2); color: var(--fg-0); }
-.sidebar-new-chat:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-.sidebar-search-wrap {
-  padding: 0 8px 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-.sidebar-search {
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 0 7px 0 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--bg-1);
-  color: var(--fg-3);
-}
-
-.sidebar-search:focus-within {
-  border-color: var(--accent);
-  color: var(--fg-2);
-}
-
-.sidebar-search > svg { flex: 0 0 auto; }
-
-.sidebar-search input {
   flex: 1 1 auto;
   min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
   color: var(--fg-0);
-  font: inherit;
-  font-size: 12.5px;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
-
-.sidebar-search input::placeholder { color: var(--fg-3); }
-.sidebar-search input::-webkit-search-cancel-button { display: none; }
-
-.sidebar-search button {
-  width: 26px;
-  height: 26px;
+.sidebar-collapse {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-3);
   cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    color 140ms ease-out;
 }
+.sidebar-collapse:hover { background: var(--bg-2); color: var(--fg-0); }
+.sidebar-collapse:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
-.sidebar-search button:hover { background: var(--bg-2); color: var(--fg-0); }
-.sidebar-search button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-
-/* The app-level places, straight under New task. Quieter than New task
-   itself: a row of the same height would make four primary actions. */
-.sidebar-new-chat:has(+ .sidebar-places) { margin-bottom: 2px; }
+/* New task, Search chats, Projects, Agents, Settings: one list of 30px rows
+   with no gap between them. New task leads it and is the only one drawn in
+   the primary ink; the rest are quieter so there is still one obvious action. */
 .sidebar-places {
   display: grid;
-  gap: 1px;
+  gap: 0;
   margin: 0;
-  padding: 0 8px 10px;
+  padding: 2px 6px 8px;
   list-style: none;
+  border-bottom: 1px solid var(--border);
 }
 .sidebar-place {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   width: 100%;
-  min-height: 34px;
-  padding: 0 14px;
+  min-height: 30px;
+  padding: 0 8px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg-2);
   font: inherit;
   font-size: 13px;
+  line-height: 1.2;
   text-align: left;
   cursor: pointer;
   transition:
     background 140ms ease-out,
     color 140ms ease-out;
 }
-.sidebar-place svg { flex: 0 0 20px; width: 18px; height: 18px; }
+.sidebar-place svg { flex: 0 0 16px; width: 16px; height: 16px; }
+.sidebar-place > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-place:hover { background: var(--bg-2); color: var(--fg-0); }
 .sidebar-place[aria-current="page"] { background: var(--accent-tint); color: var(--fg-0); }
 .sidebar-place:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sidebar-place.sidebar-new-chat { color: var(--fg-0); font-weight: 550; }
 
 /* Recent's heading carries the view picker on its own line, so the list
    below never moves when the view changes or the first chat is ticked. */
@@ -730,6 +691,16 @@ body {
   background: transparent;
 }
 .sidebar-dropdown button[aria-checked="true"] { color: var(--fg-0); }
+.sidebar-dropdown button.has-separator { position: relative; margin-top: 9px; }
+.sidebar-dropdown button.has-separator::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  right: 6px;
+  left: 6px;
+  height: 1px;
+  background: var(--border);
+}
 .sidebar-dropdown button[aria-checked="true"]::after { background: var(--accent); }
 .sidebar-chat-section > .sidebar-empty { margin-top: 4px; }
 
@@ -742,9 +713,9 @@ body {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px 8px 14px;
+  padding: 8px 6px 12px;
 }
-.sidebar-chat-section + .sidebar-chat-section { margin-top: 18px; }
+.sidebar-chat-section + .sidebar-chat-section { margin-top: 12px; }
 .sidebar-section-heading {
   margin: 0 8px 6px;
   color: var(--fg-3);
@@ -1083,11 +1054,9 @@ body {
 }
 
 @media (max-width: 859.98px), (pointer: coarse) {
-  .sidebar-new-chat { min-height: 40px; }
   .sidebar-place { min-height: 40px; }
+  .sidebar-collapse { width: 40px; height: 40px; }
   .sidebar .sidebar-section-head .sidebar-filter-trigger { width: auto; height: 36px; }
-  .sidebar-search { min-height: 40px; }
-  .sidebar-search button { width: 32px; height: 32px; }
   .task-chat-list .chat { grid-template-columns: minmax(0, 1fr) 44px; }
   .task-chat-list .chat-btn { height: 82px; }
   .task-chat-list .chat-rename { height: 82px; }
@@ -5585,6 +5554,18 @@ body.is-ultra .eff {
 
 /* ---- Wider screens: the drawer becomes a column ----------------------- */
 @media (min-width: 860px) {
+  .app {
+    flex-direction: row;
+  }
+
+  .shell-main {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
   .menu {
     display: none;
   }
@@ -6982,7 +6963,7 @@ body.is-ultra .eff {
    the column layout has the same thumb a phone does, and a phone turned
    sideways still has it. */
 @media (pointer: coarse) {
-  .sidebar-slot .usage-btn {
+  .usage-btn {
     min-height: 44px;
   }
 
@@ -9027,59 +9008,48 @@ body.is-ultra .eff {
 }
 
 /* ---- Plan usage (top right) -------------------------------------------
-   Two small meters, one per agent, each showing the reported window with the
-   highest usage. Hovering opens the full breakdown — every window that agent
-   reports, with when it resets — and a tap does the same where there is no
-   pointer to hover with. */
+   One small entry at every width: a gauge and the fullest window across both
+   agents, coloured by how close it is. Hovering opens the full breakdown —
+   every window each agent reports, with when it resets — and a tap does the
+   same where there is no pointer to hover with. */
 .usage {
   position: relative;
   flex: 0 0 auto;
 }
 
-/* An agent reporting nothing draws as "CX —", which costs 30px to say it has
-   no numbers. On a phone that space is the project's name. */
-@media (max-width: 700px) {
-  .usage-pill.is-empty {
-    display: none;
-  }
-}
-
 .usage-btn {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 10px;
-  padding: 4px 8px;
+  gap: 5px;
+  height: 32px;
+  padding: 0 8px;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
+  color: var(--fg-3);
   font: inherit;
   cursor: pointer;
+  transition:
+    background 140ms ease-out,
+    opacity 140ms ease-out;
 }
 
-.usage-btn:hover {
+.usage-btn:hover,
+.usage-btn[aria-expanded="true"] {
   background: var(--bg-1);
+  color: var(--fg-2);
 }
-
-.usage-pill {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
+.usage-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* Faded when the number could not be refreshed: still the best we have, but
    no longer a claim about right now. */
-.usage-pill.is-stale {
+.usage-btn.is-stale {
   opacity: 0.55;
 }
 
-.usage-tag {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--fg-3);
-}
+.usage-icon { flex: 0 0 auto; }
 
-/* Only the popup draws bars now; the top bar is numbers. */
+/* Only the popup draws bars; the top bar is one number. */
 .usage-track {
   position: relative;
   display: block;
@@ -9106,19 +9076,6 @@ body.is-ultra .eff {
   background: var(--danger);
 }
 
-/* One window: its short label, then the percent. The colour is on the NUMBER,
-   since there is no bar left to carry it. */
-.usage-num {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-}
-
-.usage-num-label {
-  font-size: 10px;
-  color: var(--fg-3);
-}
-
 .usage-val {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -9134,21 +9091,9 @@ body.is-ultra .eff {
   color: var(--danger);
 }
 
-/* Tighter on a phone, where this shares the bar with the project name. */
 @media (max-width: 560px) {
-  .usage-btn {
-    gap: 7px;
-    padding: 4px 2px;
-  }
-  .usage-pill {
-    gap: 5px;
-  }
-  .usage-num {
-    gap: 2px;
-  }
-  .usage-val {
-    font-size: 11px;
-  }
+  .usage-btn { padding: 0 6px; }
+  .usage-val { font-size: 11px; }
 }
 
 .usage-scrim {
@@ -9163,6 +9108,10 @@ body.is-ultra .eff {
   top: calc(100% + 6px);
   right: 0;
   width: min(340px, calc(100vw - 20px));
+  /* A short window scrolls the card, never the app shell. */
+  max-height: calc(100dvh - 64px - env(safe-area-inset-top));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -9171,27 +9120,6 @@ body.is-ultra .eff {
   border-radius: var(--r-md);
   background: var(--bg-1);
   box-shadow: var(--shadow);
-}
-
-/* Whenever the meter lives in the sidebar footer, open its detail card up into
-   the workspace. Opening down would put it beyond the viewport; right-aligning
-   a 340px card to the 260px desktop sidebar would put part of it off the left
-   edge. A short viewport can scroll the card without scrolling the app shell. */
-.sidebar-slot.is-foot .usage-pop {
-  inset: auto auto calc(100% + 6px) 0;
-  width: min(340px, calc(100vw - 20px));
-  max-height: calc(100dvh - 96px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-@media (max-width: 700px) {
-  .sidebar-slot.is-foot .usage-pop {
-    right: 0;
-    left: 0;
-    width: auto;
-  }
 }
 
 .usage-block {

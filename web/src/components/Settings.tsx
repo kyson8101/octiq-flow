@@ -30,7 +30,7 @@ function compareProjectNames(left: ProjectDetail, right: ProjectDetail): number 
     || left.id.localeCompare(right.id);
 }
 
-export function Settings({ current, onPick, notify, onNotify, projects, onProject, agentsMode = false, onAgentsMode, initialSection = "projects", onClose }: {
+export function Settings({ current, onPick, notify, onNotify, projects, onProject, agentsMode = false, onAgentsMode, onFeedback, initialSection = "projects", onClose }: {
   /** The chosen theme's id. Held by App so the sheet can close and reopen
    *  without forgetting, and so nothing re-reads localStorage to draw a tick. */
   current: string;
@@ -48,6 +48,9 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
   /** Agents mode: New chat becomes New task, handed to a registered agent. */
   agentsMode?: boolean;
   onAgentsMode?: (on: boolean) => void;
+  /** Open the feedback inbox: the OctiqFlow bugs agents reported. It opens
+   *  over this sheet, and closing it comes back here. */
+  onFeedback?: () => void;
   initialSection?: SettingsSection;
   onClose: () => void;
 }) {
@@ -177,6 +180,15 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 active={section === "appearance"}
                 onPick={setSection}
               />
+              {onFeedback && (
+                <button className="settings-nav-item" type="button" aria-haspopup="dialog" onClick={onFeedback}>
+                  <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 4h16v13H9l-5 4V4Z" /><path d="M8 8h8M8 12h5" /></svg>
+                  <span className="settings-nav-copy">
+                    <span>Feedback inbox</span>
+                    <small>Reports from your agents</small>
+                  </span>
+                </button>
+              )}
             </div>
             <p className="settings-nav-foot">Switches apply automatically.</p>
           </nav>

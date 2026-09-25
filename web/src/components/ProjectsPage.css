@@ -98,7 +98,35 @@
   font-weight: 600;
   line-height: 20px;
 }
-.projects-list + .projects-page-count { margin-top: 22px; }
+.projects-list + .projects-page-count,
+.projects-list + .projects-page-subhead { margin-top: 22px; }
+.projects-page-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.projects-page-subhead .projects-page-count { margin: 0; }
+.projects-page-link {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.projects-page-link:hover { background: var(--bg-2); }
+.projects-page-primary:disabled { opacity: 0.6; cursor: default; }
+.projects-page-error {
+  margin: 0;
+  padding: 8px var(--space-4);
+  border-bottom: 1px solid var(--border);
+  color: var(--danger);
+  font-size: 12.5px;
+}
 
 .projects-list,
 .projects-task-list {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Message } from "../lib/chat";
 import type { Conversation } from "../lib/store";
@@ -19,11 +19,10 @@ const chat = (id: string, projectId = "p1", messages: Message[] = []): Conversat
 
 function html(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
   return renderToStaticMarkup(<Sidebar
-    projects={projects} shelved={[]} onShowShelved={() => {}}
+    projects={projects} shelved={[]}
     conversations={[]} currentConversation={null} running={new Set()} busy={new Set()}
     onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}}
-    onPin={() => {}} onToggleDone={() => {}} onRename={() => {}} onNewProject={() => {}}
-    searchChats={async () => []}
+    onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
     {...over}
   />);
 }
@@ -78,27 +77,37 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('class="chat-snippet">Saved on the other device.</span>');
   });
 
-  it("offers global chat and list actions without duplicating project settings", () => {
-    const out = html();
-    expect(out).toContain('class="sidebar-new-chat"');
+  it("heads the full-height column with the app's name, then one compact list of places", () => {
+    const out = html({ onCollapse: () => {} });
+    expect(out.indexOf('class="sidebar-head"')).toBeLessThan(out.indexOf('class="sidebar-places"'));
+    expect(out).toContain('class="sidebar-title">OctiqFlow</span>');
+    expect(out).toContain('aria-label="Hide sidebar"');
+    expect(out).toContain('class="sidebar-place sidebar-new-chat"');
     expect(out).toContain("New chat</span>");
-    expect(out.indexOf('class="sidebar-head"')).toBeLessThan(out.indexOf('class="sidebar-new-chat"'));
-    expect(out.indexOf('class="sidebar-new-chat"')).toBeLessThan(out.indexOf('class="sidebar-search-wrap"'));
-    expect(out).toContain('aria-label="Chat list actions"');
-    expect(out).toContain('aria-label="Search chats"');
     expect(out).not.toContain("Project settings:");
   });
 
-  it("lists Settings, Agents and Projects straight under New task", () => {
-    const out = html({ onSettings: () => {}, onAgents: () => {}, onProjects: () => {}, activeView: "projects" });
+  it("has no search field, no Chats menu and no footer: they moved to pages", () => {
+    const out = html({ onSearch: () => {}, onShowDeleted: () => {}, deletedCount: 2 });
+    expect(out).not.toContain("<input");
+    expect(out).not.toContain('aria-label="Chat list actions"');
+    expect(out).not.toContain("New project");
+    expect(out).not.toContain("Shelved projects");
+    expect(out).not.toContain("Feedback inbox");
+    expect(out).not.toContain("sidebar-slot");
+    expect(out).toContain("Search chats</span>");
+  });
+
+  it("lists New task, Search chats, Projects, Agents and Settings in that order", () => {
+    const out = html({ onSearch: () => {}, onSettings: () => {}, onAgents: () => {}, onProjects: () => {}, activeView: "search" });
     const places = out.indexOf('class="sidebar-places"');
-    expect(out.indexOf('class="sidebar-new-chat"')).toBeLessThan(places);
-    expect(places).toBeLessThan(out.indexOf('class="sidebar-search-wrap"'));
-    const list = out.slice(places, out.indexOf('class="sidebar-search-wrap"'));
-    expect(list.indexOf("Settings</span>")).toBeLessThan(list.indexOf("Agents</span>"));
-    expect(list.indexOf("Agents</span>")).toBeLessThan(list.indexOf("Projects</span>"));
-    expect(list).toContain('aria-current="page"><svg');
+    const list = out.slice(places, out.indexOf("</ul>", places));
+    const order = ["New chat</span>", "Search chats</span>", "Projects</span>", "Agents</span>", "Settings</span>"]
+      .map((label) => list.indexOf(label));
+    expect(order.every((at) => at > 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(list.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(list.slice(list.indexOf('aria-current="page"'))).toContain("Search chats</span>");
   });
 
   it("leaves Agents out when agents mode is off", () => {
@@ -272,6 +281,50 @@ describe("task-oriented Sidebar", () => {
     it("says a filter emptied the list rather than offering a first chat", () => {
       const out = html({ conversations: [ticked("b", 500)] });
       expect(out).toContain("Every chat is ticked off.");
+      expect(out).not.toContain("Start your first chat");
+    });
+
+    it("keeps a pinned chat listed under Pinned whatever Recent is showing", () => {
+      // Pins are not a view. A pinned chat that is also ticked off stays in
+      // Pinned under Active, and a pinned active chat stays there under Done.
+      const ticked = (id: string) => ({ ...chat(id), updatedAt: 100, doneAt: 500 });
+      const underActive = html({ conversations: [{ ...ticked("kept"), pinned: true }, chat("open")] });
+      expect(underActive).toContain('class="chat-title">Task kept</span>');
+      expect(underActive.indexOf('class="chat-title">Task kept')).toBeLessThan(underActive.indexOf('class="sidebar-section-heading">Recent'));
+      expect(underActive.match(/class="chat-title">Task kept/g)).toHaveLength(1);
+    });
+
+    describe("with a saved Recent view", () => {
+      afterEach(() => { vi.unstubAllGlobals(); });
+      const savedView = (view: string) => {
+        const store = new Map([["octiq.chat.filter", view]]);
+        vi.stubGlobal("localStorage", {
+          getItem: (key: string) => store.get(key) ?? null,
+          setItem: (key: string, value: string) => { store.set(key, value); },
+          removeItem: (key: string) => { store.delete(key); },
+        });
+      };
+
+      it("keeps a pinned active chat under Pinned while Recent shows Done", () => {
+        savedView("done");
+        const out = html({ conversations: [{ ...chat("saved"), pinned: true }, ticked("finished", 500), chat("open")] });
+        expect(out).toContain('aria-label="Show chats: Done"');
+        expect(out.indexOf('class="chat-title">Task saved')).toBeLessThan(out.indexOf('class="sidebar-section-heading">Recent'));
+        expect(out.indexOf('class="sidebar-section-heading">Recent')).toBeLessThan(out.indexOf('class="chat-title">Task finished'));
+        expect(out).not.toContain("Task open");
+      });
+
+      it("reads the retired Pinned view back as Active", () => {
+        savedView("pinned");
+        const out = html({ conversations: [chat("open")] });
+        expect(out).toContain('aria-label="Show chats: Active"');
+        expect(out).toContain('class="chat-title">Task open</span>');
+      });
+    });
+
+    it("says Recent is empty because every active chat is pinned, not that there are no chats", () => {
+      const out = html({ conversations: [{ ...chat("a"), pinned: true }] });
+      expect(out).toContain("Every active chat is pinned.");
       expect(out).not.toContain("Start your first chat");
     });
 

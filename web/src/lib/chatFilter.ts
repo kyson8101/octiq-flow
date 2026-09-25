@@ -16,14 +16,16 @@
 // next tick is a new one, made by hand, with a newer stamp.
 import type { Conversation } from "./store";
 
-/** Which chats the list is showing.
+/** Which chats the Recent list is showing.
  *
- *  `active` is the default. `done` and `pinned` are the two states a row can
- *  be put INTO by hand, each with a view of its own, and `all` is the way back
- *  from either — a ticked chat must never be somewhere you cannot get to. */
-export type ChatFilter = "active" | "pinned" | "done" | "all";
+ *  `active` is the default and `done` holds what was ticked off by hand; `all`
+ *  is the way back from either — a ticked chat must never be somewhere you
+ *  cannot get to. Pins are not a view: the Pinned section above Recent always
+ *  lists every pinned chat, whichever view Recent is on. A browser that saved
+ *  the retired `pinned` view reads back as `active`. */
+export type ChatFilter = "active" | "done" | "all";
 
-export const CHAT_FILTERS: readonly ChatFilter[] = ["active", "pinned", "done", "all"];
+export const CHAT_FILTERS: readonly ChatFilter[] = ["active", "done", "all"];
 
 export function isChatFilter(value: unknown): value is ChatFilter {
   return typeof value === "string" && (CHAT_FILTERS as readonly string[]).includes(value);
@@ -58,32 +60,27 @@ export function chatFilterList(
   keepMarked?: ReadonlySet<string>,
 ): Conversation[] {
   if (filter === "all") return [...chats];
-  // Pinned is read literally: a pinned chat you have also ticked off is still
-  // pinned, and hiding it here would mean a row nothing in this menu lists.
-  if (filter === "pinned") return chats.filter((chat) => chat.id === keep || !!chat.pinned);
   const want = filter === "done";
   return chats.filter((chat) => chat.id === keep || !!keepMarked?.has(chat.id) || isChatDone(chat) === want);
 }
 
-/** How many chats a view would show. Drives whether that view is offered at
- *  all: a chip reading zero is a control explaining that it has nothing to do,
- *  and nobody who has never ticked or pinned anything needs the row. */
+/** How many chats a view would show, for the count on its menu item. */
 export function chatFilterCount(chats: readonly Conversation[], filter: ChatFilter): number {
   return chatFilterList(chats, filter).length;
 }
 
 export const CHAT_FILTER_LABELS: Record<ChatFilter, string> = {
-  active: "Active", pinned: "Pinned", done: "Done", all: "All",
+  active: "Active", done: "Done", all: "All",
 };
 
-/** The views as the Recent dropdown offers them: all four, always, with a
- *  count on the two a chat is put into by hand once they hold anything. */
+/** The views as the Recent dropdown offers them: all three, always, with a
+ *  count on Done once it holds anything. */
 export function chatFilterOptions(
   chats: readonly Conversation[],
   current: ChatFilter,
 ): { filter: ChatFilter; label: string; checked: boolean }[] {
   return CHAT_FILTERS.map((filter) => {
-    const total = filter === "done" || filter === "pinned" ? chatFilterCount(chats, filter) : 0;
+    const total = filter === "done" ? chatFilterCount(chats, filter) : 0;
     return {
       filter,
       label: total > 0 ? `${CHAT_FILTER_LABELS[filter]} (${total})` : CHAT_FILTER_LABELS[filter],

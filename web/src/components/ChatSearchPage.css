@@ -1,0 +1,91 @@
+/* Search chats: the Projects page's frame, with one field at the top of it. */
+.chat-search-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  margin-bottom: 14px;
+  padding: 0 8px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-1);
+  color: var(--fg-3);
+  transition: border-color 140ms ease-out;
+}
+.chat-search-form:focus-within { border-color: var(--accent); color: var(--fg-2); }
+.chat-search-form > svg { flex: 0 0 auto; }
+.chat-search-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg-0);
+  font: inherit;
+  font-size: 15px;
+}
+.chat-search-form input::placeholder { color: var(--fg-3); }
+.chat-search-form input::-webkit-search-cancel-button { display: none; }
+.chat-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-3);
+  cursor: pointer;
+}
+.chat-search-clear:hover { background: var(--bg-2); color: var(--fg-0); }
+.chat-search-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.chat-search-status:empty { display: none; }
+
+.projects-task.chat-search-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.chat-search-result .project-avatar { flex: 0 0 auto; margin-top: 2px; }
+.chat-search-result-text { display: grid; flex: 1 1 auto; gap: 3px; min-width: 0; }
+.chat-search-excerpt {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
+}
+.chat-search-project {
+  overflow: hidden;
+  color: var(--fg-3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-search-deleted {
+  margin-top: 18px;
+  padding: 0 4px;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.chat-search-deleted button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+@media (max-width: 859.98px), (pointer: coarse) {
+  .chat-search-form { min-height: 48px; }
+  .chat-search-clear { width: 40px; height: 40px; }
+}

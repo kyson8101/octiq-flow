@@ -96,7 +96,7 @@ import { ProjectsPage } from "./components/ProjectsPage";
 import { BackgroundProvider } from "./components/Background";
 import { ChatNotices } from "./components/ChatNotices";
 import { backgroundCalls } from "./lib/background";
-import { MOBILE, TOPBAR_ACTIONS, TOPBAR_READOUTS, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
+import { MOBILE, TOPBAR_ACTIONS, useMedia, WIDE, WORKFLOW_SPLIT } from "./lib/media";
 import { useDrawerSwipe } from "./lib/swipe";
 import { useDockWidth, type Sizes } from "./lib/dockWidth";
 import { MessageList } from "./components/MessageList";
@@ -124,7 +124,9 @@ import { ChatTaskBar } from "./components/ChatTaskBar";
 import { SessionSearch } from "./components/SessionSearch";
 import { isUnder, readSession, replaySession, type HistorySession } from "./lib/history";
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
-import { Sidebar, type ChatSearchHit, type Project } from "./components/Sidebar";
+import { Sidebar, type Project } from "./components/Sidebar";
+import { ChatSearchPage } from "./components/ChatSearchPage";
+import type { ChatSearchHit } from "./lib/chatSearch";
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
 import { DeletedChats } from "./components/DeletedChats";
@@ -383,7 +385,9 @@ export default function App() {
   /** The Projects page, the same kind of main-area view: null when closed,
    *  otherwise the project whose tasks it lists, or null for the list. */
   const [projectsPage, setProjectsPage] = useState<{ projectId: string | null } | null>(null);
-  const mainPage = prDashboardOpen || projectsPage !== null;
+  /** Search chats, the third main-area view. */
+  const [searchPage, setSearchPage] = useState(false);
+  const mainPage = prDashboardOpen || projectsPage !== null || searchPage;
   // The stored list, minus everything this browser has deleted. The two are
   // written at different moments — a save already on its way when the × was
   // clicked lands after it — so the copy on disk can still carry a chat whose
@@ -412,7 +416,6 @@ export default function App() {
    *  into the projects screen; actions and readouts use wider thresholds. */
   const wide = useMedia(WIDE);
   const expandedTopbarActions = useMedia(TOPBAR_ACTIONS);
-  const topbarReadouts = useMedia(TOPBAR_READOUTS);
   const roomToSplit = useMedia(WORKFLOW_SPLIT);
   /** A temporary focus view for the tablet layout. On a desktop each column
    *  already has its own control on the bar — the project name, the Git
@@ -484,11 +487,16 @@ export default function App() {
   const orchestration = useOrchestrationSnapshot();
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
-  const [workflowModes, setWorkflowModes] = useState<Record<string, boolean>>({});
+  /** Which chats the person opened the run surface for with Run, before the
+   *  chat has a run of its own. View state only, held in memory: there is no
+   *  execution mode. A regular agent decides for itself how to work, and a run
+   *  only exists once somebody explicitly starts one — the person from this
+   *  surface, or an agent the person asked to delegate. */
+  const [runOpened, setRunOpened] = useState<Record<string, boolean>>({});
   const [workflowViews, setWorkflowViews] = useState<Record<string, "chat" | "run">>({});
   const workflowKey = conversationId ?? "new";
   const currentWorkflow = useMemo(() => chatSnapshot(orchestration, conversationId ? keyFor(conversationId) : null), [orchestration, conversationId]);
-  const orchestrated = currentWorkflow.runs.some(isActiveRun) || !!workflowModes[workflowKey];
+  const orchestrated = currentWorkflow.runs.some(isActiveRun) || !!runOpened[workflowKey];
   const workflowView = workflowViews[workflowKey] ?? "chat";
   // Wide enough, and this chat has work to show: the conversation and its
   // tasks sit side by side instead of taking turns behind a tab. Focus mode is
@@ -496,7 +504,12 @@ export default function App() {
   // The tail of this is exactly what decides whether the run surface renders
   // at all, and has to stay that way: a split with nothing in the second
   // column is a border down the middle of the transcript.
-  const showWorkflowView = (view: "chat" | "run") => setWorkflowViews((before) => ({ ...before, [workflowKey]: view }));
+  const showWorkflowView = (view: "chat" | "run") => {
+    setWorkflowViews((before) => ({ ...before, [workflowKey]: view }));
+    // Going back to the chat before any run was started puts the surface away
+    // again, rather than leaving Tasks/Chat tabs over a chat with no tasks.
+    if (view === "chat" && runWorkflow.runs.length === 0) setRunOpened((before) => ({ ...before, [workflowKey]: false }));
+  };
   const [pendingGateDecision, setPendingGateDecision] = useState<{ id: string; text: string } | null>(null);
   const coordinatorId = mainChatId(conversationId, chatParents);
   // The task list belongs to the main chat, and stays up while one of its
@@ -2025,12 +2038,13 @@ export default function App() {
     setBranches(NO_BRANCHES);
     setNewWorktree(false);
     setSandboxChoice(null);
-    setWorkflowModes((before) => ({ ...before, new: false }));
+    setRunOpened((before) => ({ ...before, new: false }));
     setWorkflowViews((before) => ({ ...before, new: "chat" }));
     remember(LAST_KEY, "");
     setProjectsScreen(false);
     setPrDashboardOpen(false);
     setProjectsPage(null);
+    setSearchPage(false);
     setFocusBox((n) => n + 1);
   }, []);
 
@@ -2205,6 +2219,7 @@ export default function App() {
     setProjectsScreen(false);
     setPrDashboardOpen(false);
     setProjectsPage(null);
+    setSearchPage(false);
   }, [catchUpChat, writeChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
@@ -3637,7 +3652,7 @@ export default function App() {
     setConversations(next); saveConversations(next);
     if (!held) catchUp.current.own(keyFor(id));
     patch(id, (state) => ({ ...state, cwd: activity.cwd }));
-    setWorkflowModes((before) => ({ ...before, [id]: true }));
+    setRunOpened((before) => ({ ...before, [id]: true }));
     setWorkflowViews((before) => ({ ...before, [id]: "run" }));
     setConversationId(id);
     return keyFor(id);
@@ -3690,10 +3705,6 @@ export default function App() {
 
   if (conn === "unauthorized") return <Connect />;
 
-  /* Built once and placed once — on a wide screen in the top bar, otherwise
-     in the project list footer — because the plan readout polls a rate-limited
-     endpoint, and a second copy would duplicate that traffic. */
-  const readouts = <Usage />;
 
   const topbarActions = (
     <>
@@ -3719,7 +3730,7 @@ export default function App() {
         aria-label="Pull requests"
         title="Pull requests"
         aria-pressed={prDashboardOpen}
-        onClick={() => { setProjectsPage(null); setPrDashboardOpen((open) => !open); }}
+        onClick={() => { setProjectsPage(null); setSearchPage(false); setPrDashboardOpen((open) => !open); }}
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" />
@@ -3728,8 +3739,13 @@ export default function App() {
         <span className="topbar-action-label">Pull requests</span>
       </button>
 
-      {!workerChat && <button className={`orch-toggle${workflowView === "run" ? " is-on" : ""}`} type="button" title="Run" aria-label="Open this chat's run" onClick={() => {
-        setWorkflowModes((before) => ({ ...before, [workflowKey]: true }));
+      {/* The one way for the PERSON to start supervised multi-agent work
+          from here. Opening it chooses nothing on its own: a run begins only
+          when one is started in the surface it opens. */}
+      {!workerChat && <button className={`orch-toggle${workflowView === "run" && workflowVisible ? " is-on" : ""}`} type="button"
+        title={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"}
+        aria-label={runWorkflow.runs.length ? "Open this chat's runs" : "Start a supervised run"} onClick={() => {
+        setRunOpened((before) => ({ ...before, [workflowKey]: true }));
         showWorkflowView("run");
       }}>Run</button>}
 
@@ -3779,7 +3795,6 @@ export default function App() {
           <span className="topbar-action-label">{agentsMode ? "New task" : "New chat"}</span>
         </button>
 
-      {topbarReadouts && readouts}
     </>
   );
 
@@ -3789,6 +3804,63 @@ export default function App() {
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
     >
       {focusMode && <FocusModeButton active onClick={exitFocus} />}
+      {/* Two columns: the chat list runs the full height of the window on the
+          left, and the top bar belongs to the workspace on the right. On a
+          phone `.shell-main` dissolves (display: contents) and the list is a
+          screen of its own again — see `.app.projects-screen`. */}
+      <Sidebar
+        projects={workspaces}
+        shelved={shelved}
+        deletedCount={deletedChats.length}
+        onShowDeleted={() => setTrashOpen(true)}
+        conversations={taskList}
+        chatParents={chatParents}
+        orchestration={orchestration}
+        getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
+        loadPreview={loadPreview}
+        currentConversation={conversationId}
+        running={running}
+        busy={busySet}
+        deleting={deleting}
+        leaving={leaving}
+        deleteMs={UNDO_MS}
+        onPickConversation={(conversation) => {
+          openConversation(conversation);
+        }}
+        onNewChat={newChat}
+        newLabel={agentsMode ? "New task" : "New chat"}
+        onDelete={deleteConversation}
+        onPin={togglePin}
+        onToggleDone={toggleDone}
+        onRename={renameConversation}
+        onArchiveWorker={async (attemptId, archived) => {
+          const attempt = orchestration.attempts.find((item) => item.id === attemptId);
+          const run = orchestration.runs.find((item) => item.id === attempt?.runId);
+          if (!run) throw new Error("This worker's run is unavailable. Reconnect and try again.");
+          await bridge.invoke("orchestration_worker_archive", {
+            actorChatKey: run.coordinatorChatKey, attemptId, archived,
+          });
+        }}
+        branches={projectBranches}
+        onResize={isMobile ? undefined : nav.startDrag}
+        onCollapse={isMobile ? undefined : () => showNav(false)}
+        onSearch={() => {
+          setPrDashboardOpen(false);
+          setProjectsPage(null);
+          setProjectsScreen(false);
+          setSearchPage(true);
+        }}
+        onSettings={() => setAppSettings(true)}
+        onAgents={agentsMode ? () => setAgentsDashboard(true) : undefined}
+        onProjects={() => {
+          setPrDashboardOpen(false);
+          setSearchPage(false);
+          setProjectsScreen(false);
+          setProjectsPage({ projectId: null });
+        }}
+        activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents" : appSettings ? "settings" : null}
+      />
+      <div className="shell-main">
       <header className="topbar">
         <div className="topbar-leading">
           {/* One consistent doorway for the chat list: it opens the projects
@@ -3873,6 +3945,10 @@ export default function App() {
               </svg>
             </button>
           ) : expandedTopbarActions ? topbarActions : <TopbarActionsMenu>{topbarActions}</TopbarActionsMenu>}
+          {/* Plan usage, at every width: one small number that opens the full
+              breakdown. Mounted once, outside the actions menu, because it
+              polls a rate-limited endpoint and a second copy would double it. */}
+          {!showingProjects && <Usage />}
         </div>
       </header>
 
@@ -3881,55 +3957,6 @@ export default function App() {
           to be a sibling of the views to take width from them, and nothing that
           opens a file is anywhere near them in the tree. */}
       <div className="body" id="dock">
-        <Sidebar
-          projects={workspaces}
-          shelved={shelved}
-          onShowShelved={() => setShelfOpen(true)}
-          deletedCount={deletedChats.length}
-          onShowDeleted={() => setTrashOpen(true)}
-          onFeedback={() => setFeedbackOpen(true)}
-          conversations={taskList}
-          chatParents={chatParents}
-          orchestration={orchestration}
-          getPreviewMessages={(id) => catchUp.current.holds(keyFor(id)) ? chats[id]?.messages : undefined}
-          loadPreview={loadPreview}
-          currentConversation={conversationId}
-          running={running}
-          busy={busySet}
-          deleting={deleting}
-          leaving={leaving}
-          deleteMs={UNDO_MS}
-          onPickConversation={(conversation) => {
-            openConversation(conversation);
-          }}
-          onNewChat={newChat}
-          newLabel={agentsMode ? "New task" : "New chat"}
-          onDelete={deleteConversation}
-          onPin={togglePin}
-          onToggleDone={toggleDone}
-          onRename={renameConversation}
-          onArchiveWorker={async (attemptId, archived) => {
-            const attempt = orchestration.attempts.find((item) => item.id === attemptId);
-            const run = orchestration.runs.find((item) => item.id === attempt?.runId);
-            if (!run) throw new Error("This worker's run is unavailable. Reconnect and try again.");
-            await bridge.invoke("orchestration_worker_archive", {
-              actorChatKey: run.coordinatorChatKey, attemptId, archived,
-            });
-          }}
-          onNewProject={() => setSettingsFor("new")}
-          searchChats={searchChats}
-          branches={projectBranches}
-          onResize={isMobile ? undefined : nav.startDrag}
-          foot={topbarReadouts ? undefined : readouts}
-          onSettings={() => setAppSettings(true)}
-          onAgents={agentsMode ? () => setAgentsDashboard(true) : undefined}
-          onProjects={() => {
-            setPrDashboardOpen(false);
-            setProjectsScreen(false);
-            setProjectsPage({ projectId: null });
-          }}
-          activeView={projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents" : appSettings ? "settings" : null}
-        />
 
         <main className="main" hidden={showingProjects} ref={pane}>
           {prDashboardOpen && <PullRequestsDashboard
@@ -3961,7 +3988,21 @@ export default function App() {
             }}
             onNewProject={() => setSettingsFor("new")}
             onProjectSettings={setSettingsFor}
+            onShowShelved={() => setShelfOpen(true)}
+            onRestoreProject={async (id) => {
+              await bridge.invoke("set_workspace_shelved", { id, shelved: false });
+              await loadWorkspaces();
+            }}
             onClose={() => setProjectsPage(null)}
+          />}
+          {searchPage && <ChatSearchPage
+            conversations={taskList}
+            projects={[...workspaces, ...shelved]}
+            searchChats={searchChats}
+            onOpenChat={openConversation}
+            onClose={() => setSearchPage(false)}
+            deletedCount={deletedChats.length}
+            onShowDeleted={() => setTrashOpen(true)}
           />}
           <div className="chat-app-surface" hidden={mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
@@ -3969,10 +4010,7 @@ export default function App() {
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
             planPending={!!plan}
             pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
-            onView={showWorkflowView} onMode={(enabled) => {
-              setWorkflowModes((before) => ({ ...before, [workflowKey]: enabled }));
-              showWorkflowView(enabled ? "run" : "chat");
-            }} />}
+            onView={showWorkflowView} />}
           <div className={`workflow-surfaces${workflowSplit ? " is-split" : ""}`}>
           {workflowVisible && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}
             style={{ "--run-w": `${runDock.width}px` } as React.CSSProperties}>
@@ -4373,6 +4411,7 @@ export default function App() {
           />
         )}
       </div>
+      </div>
 
       {shelfOpen && (
         <ShelvedProjects
@@ -4395,7 +4434,7 @@ export default function App() {
         availableChatIds={new Set(conversations.map(chat => chat.id))}
         onOpenChat={id => {
           const source = conversations.find(chat => chat.id === id);
-          if (source) { setFeedbackOpen(false); openConversation(source); }
+          if (source) { setFeedbackOpen(false); setAppSettings(false); openConversation(source); }
         }} />}
 
       {appSettings && !settingsFor && (
@@ -4411,6 +4450,7 @@ export default function App() {
           onProject={setSettingsFor}
           agentsMode={agentsMode}
           onAgentsMode={changeAgentsMode}
+          onFeedback={() => setFeedbackOpen(true)}
           initialSection={settingsSection}
           onClose={() => { setAppSettings(false); setSettingsSection("projects"); }}
         />

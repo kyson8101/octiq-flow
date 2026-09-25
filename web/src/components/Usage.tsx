@@ -1,5 +1,10 @@
 // How much of your plan is gone, for both agents, in the top right.
 //
+// One small entry in the top bar at every width: a gauge and the single
+// fullest window across both agents. It used to be two labelled meters that
+// only fitted the bar above 1500px and otherwise lived in the sidebar's foot,
+// costing the chat list a row. The full breakdown is one hover or tap away.
+//
 // The backend (usage_limits.rs, `usage_summary`) does all the real work and both
 // the desktop app and this share it: Claude's numbers come from its OAuth usage
 // endpoint, Codex's from the last rate-limit snapshot written into its session
@@ -156,6 +161,7 @@ export function Usage() {
   }, [refresh]);
 
   if (!data.claude && !data.codex) return null;
+  const summary = usageSummary(data);
 
   return (
     <div
@@ -179,17 +185,22 @@ export function Usage() {
       }}
     >
       <button
-        className="usage-btn"
+        className={`usage-btn${summary && stale[summary.provider] ? " is-stale" : ""}`}
         type="button"
-        title="Highest plan usage — hover or tap for every window"
+        aria-label={usageLabel(data)}
+        aria-haspopup="dialog"
+        aria-expanded={open !== null}
+        title="Plan usage — hover or tap for every window"
         onClick={() => {
           cancelClose();
           setOpen((v) => (v === "pin" ? null : "pin"));
           void refresh(true);
         }}
       >
-        <Pill label="CL" provider={data.claude} stale={stale.claude} />
-        <Pill label="CX" provider={data.codex} stale={stale.codex} />
+        <GaugeIcon />
+        <span className={`usage-val ${summary ? severity(summary.percent) : ""}`}>
+          {summary ? <RollingText>{`${Math.round(summary.percent)}%`}</RollingText> : "—"}
+        </span>
       </button>
 
       {open && (
@@ -207,7 +218,7 @@ export function Usage() {
   );
 }
 
-/** One agent in the top bar: its tag, then the fullest reported usage window.
+/** One agent's fullest reported usage window.
  *
  *  A provider can report five-hour, weekly, and model-specific windows. Only
  *  one number fits at a glance, so show whichever percentage is highest and
@@ -227,33 +238,38 @@ export function barWindow(p: Provider | null): { label: string; window: Window }
   );
 }
 
-function Pill({
-  label,
-  provider,
-  stale,
-}: {
-  label: string;
-  provider: Provider | null;
-  stale: boolean;
-}) {
-  const shown = barWindow(provider);
-  const percent = shown ? Math.min(100, Math.max(0, shown.window.percent)) : 0;
+const PROVIDER_NAMES = { claude: "Claude", codex: "Codex" } as const;
 
-  return (
-    <span className={`usage-pill ${stale ? "is-stale" : ""} ${shown ? "" : "is-empty"}`}>
-      <span className="usage-tag">{label}</span>
-      {!shown ? (
-        <span className="usage-val">—</span>
-      ) : (
-        <span className="usage-num">
-          {shown.label && <span className="usage-num-label">{shown.label}</span>}
-          <span className={`usage-val ${severity(percent)}`}>
-            <RollingText>{`${Math.round(percent)}%`}</RollingText>
-          </span>
-        </span>
-      )}
-    </span>
-  );
+/** The fullest window across both agents: the one number the top bar shows. */
+export function usageSummary(data: {
+  claude: Provider | null;
+  codex: Provider | null;
+}): { provider: "claude" | "codex"; label: string; percent: number } | null {
+  let best: { provider: "claude" | "codex"; label: string; percent: number } | null = null;
+  for (const provider of ["claude", "codex"] as const) {
+    const shown = barWindow(data[provider]);
+    if (!shown) continue;
+    const percent = Math.min(100, Math.max(0, shown.window.percent));
+    if (!best || percent > best.percent) best = { provider, label: shown.label, percent };
+  }
+  return best;
+}
+
+/** What the entry says to a screen reader: every agent's fullest window, not
+ *  only the one number drawn. */
+export function usageLabel(data: { claude: Provider | null; codex: Provider | null }): string {
+  const parts = (["claude", "codex"] as const).flatMap((provider) => {
+    const shown = barWindow(data[provider]);
+    return shown ? [`${PROVIDER_NAMES[provider]} ${shown.label} ${Math.round(Math.min(100, Math.max(0, shown.window.percent)))}%`] : [];
+  });
+  return parts.length ? `Plan usage: ${parts.join(", ")}` : "Plan usage: no reading yet";
+}
+
+function GaugeIcon() {
+  return <svg className="usage-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4.5 18a9 9 0 1 1 15 0" /><path d="m12 13 3.5-4" /><circle cx="12" cy="13" r="1" />
+  </svg>;
 }
 
 /** The full breakdown for one agent: every window it reports. */

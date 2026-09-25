@@ -2,8 +2,9 @@
 //
 // A main-area view like the pull request desk — the chat stays mounted behind
 // it. The task list is the project's whole history, never the sidebar's Recent
-// view (see lib/projectTasks).
-import { useEffect, useRef } from "react";
+// view (see lib/projectTasks). Everything about projects as such lives here
+// too: New project, and the shelf — what was put away, and the way back.
+import { useEffect, useRef, useState } from "react";
 import { isChatDone } from "../lib/chatFilter";
 import { projectTaskCounts, projectTasks } from "../lib/projectTasks";
 import type { Conversation } from "../lib/store";
@@ -14,6 +15,7 @@ import "./ProjectsPage.css";
 export function ProjectsPage({
   projects, shelved, conversations, selectedProjectId, busy, chatParents,
   onSelectProject, onOpenChat, onNewTask, onNewProject, onProjectSettings, onClose,
+  onShowShelved, onRestoreProject,
 }: {
   projects: Project[];
   shelved: Project[];
@@ -28,14 +30,21 @@ export function ProjectsPage({
   onNewProject: () => void;
   onProjectSettings: (projectId: string) => void;
   onClose: () => void;
+  /** The shelf sheet, to bring several projects back at once. */
+  onShowShelved?: () => void;
+  /** Take one project off the shelf. */
+  onRestoreProject?: (projectId: string) => Promise<void>;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const firstRender = useRef(true);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   // Moving between the list and a project replaces the whole page, so focus
   // follows to its heading instead of falling back to <body>.
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
     heading.current?.focus({ preventScroll: true });
+    setRestoreError(null);
   }, [selectedProjectId]);
 
   const known = [...projects, ...shelved];
@@ -57,11 +66,22 @@ export function ProjectsPage({
           </div>
           {selected && <div className="projects-page-actions">
             <button type="button" className="projects-page-secondary" onClick={() => onProjectSettings(selected.id)}>Project settings</button>
+            {isShelved && onRestoreProject && <button type="button" className="projects-page-primary" disabled={restoring}
+              onClick={async () => {
+                setRestoring(true);
+                setRestoreError(null);
+                try { await onRestoreProject(selected.id); }
+                catch (error) { setRestoreError(error instanceof Error ? error.message : String(error)); }
+                finally { setRestoring(false); }
+              }}>
+              <span>{restoring ? "Restoring…" : "Restore project"}</span>
+            </button>}
             {!isShelved && <button type="button" className="projects-page-primary" onClick={() => onNewTask(selected.id)}>
               <PlusIcon /><span>New task</span>
             </button>}
           </div>}
         </header>
+        {restoreError && <p className="projects-page-error" role="alert">{restoreError}</p>}
         <div className="projects-page-body">
           {!selected ? (
             <div className="projects-page-empty" role="status">
@@ -153,7 +173,12 @@ export function ProjectsPage({
         ) : <>
           {projects.length > 0 && <ul className="projects-list" aria-label="Projects">{projects.map(row)}</ul>}
           {shelved.length > 0 && <>
-            <h2 className="projects-page-count">Shelved</h2>
+            <div className="projects-page-subhead">
+              <h2 className="projects-page-count">Shelved</h2>
+              {onShowShelved && <button type="button" className="projects-page-link" onClick={onShowShelved}>
+                Restore shelved projects
+              </button>}
+            </div>
             <ul className="projects-list" aria-label="Shelved projects">{shelved.map(row)}</ul>
           </>}
         </>}

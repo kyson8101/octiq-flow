@@ -51,10 +51,10 @@ describe("worker archive controls", () => {
   it("hides archived workers from the chat list while keeping the run's totals", () => {
     const snapshot = mergedWorkers();
     snapshot.attempts.forEach(attempt => { attempt.archivedAt = 3; });
-    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
+    const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation="worker" running={new Set()} busy={new Set()}
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
-      onArchiveWorker={async () => {}} onNewProject={() => {}} searchChats={async () => []} />);
+      onArchiveWorker={async () => {}} />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
     expect(out).not.toContain('class="agent-task');
     expect(out).toContain("Completed · 1/1");

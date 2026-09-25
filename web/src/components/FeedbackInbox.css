@@ -1,6 +1,4 @@
 /* Existing OctiqFlow palette/type; a report list beside its evidence and triage. */
-.feedback-launch { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 16px; background: transparent; color: var(--fg-2); border: 0; border-top: 1px solid var(--border); text-align: left; cursor: pointer; font-size: 12px; }
-.feedback-launch:hover { background: var(--bg-2); color: var(--fg-0); }
 .feedback-inbox { width: min(1060px, calc(100vw - 48px)); height: min(800px, calc(100dvh - 64px)); max-width: none; max-height: none; margin: auto; padding: 0; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-0); color: var(--fg-0); box-shadow: var(--shadow); }
 .feedback-inbox::backdrop { background: rgb(0 0 0 / 55%); }
 .feedback-shell { display: flex; flex-direction: column; height: 100%; min-height: 0; }
