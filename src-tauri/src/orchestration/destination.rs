@@ -348,9 +348,9 @@ pub fn directory(team: &[TeamAgent], projects: &[Workspace], manager: Option<&st
         .map(|project| {
             let reports: Vec<Value> = manager
                 .map(|m| {
-                    team::direct_reports(team, &m.id)
+                    team::eligible_direct_reports(team, &m.id)
                         .into_iter()
-                        .filter(|a| a.can_work() && team::may_work_in(a, &project.id))
+                        .filter(|a| team::may_work_in(a, &project.id))
                         .map(|a| {
                             json!({
                                 "id": a.id,

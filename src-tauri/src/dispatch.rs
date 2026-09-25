@@ -116,6 +116,23 @@ fn to_value<T: serde::Serialize>(r: Result<T, String>) -> Result<Value, String> 
     r.and_then(|x| serde_json::to_value(x).map_err(|e| e.to_string()))
 }
 
+/// Refresh a registered lead's roster on every person-authored turn. The
+/// first task already carries the full brief; later live and resumed turns get
+/// a compact current roster so edits to the org chart supersede stale history.
+fn refresh_lead_turn(svc: &Services, key: &str, text: String) -> Result<String, String> {
+    if text.contains(crate::team::BRIEF_MARK)
+        || text.trim_start().starts_with('/')
+        || crate::team::lead_for_chat(&crate::team::default_path(), key)?.is_none()
+    {
+        return Ok(text);
+    }
+    let projects = crate::workspaces::list_workspaces_impl(&svc.workspaces)?
+        .into_iter()
+        .map(|project| (project.id, project.name))
+        .collect::<Vec<_>>();
+    crate::team::refresh_turn_brief(&crate::team::default_path(), key, text, &projects)
+}
+
 /// Run one command. `Err` is the message the client shows, so it is written for
 /// a person rather than a log.
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
@@ -373,20 +390,24 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             ))
         }
         "chat_start" => {
+            let key: String = arg(&args, "key")?;
             crate::sandbox::Store::profile().select(
-                &arg::<String>(&args, "key")?,
+                &key,
                 &arg::<String>(&args, "cwd")?,
                 arg(&args, "useSandbox")?,
                 arg::<Option<String>>(&args, "resume")?.is_some(),
             )?;
+            let prompt = arg::<Option<String>>(&args, "prompt")?
+                .map(|text| refresh_lead_turn(svc, &key, text))
+                .transpose()?;
             unit(crate::agent_chat::chat_start_user_impl(
                 svc.chats.clone(),
-                arg(&args, "key")?,
+                key,
                 arg(&args, "cwd")?,
                 arg(&args, "agent")?,
                 arg(&args, "model")?,
                 arg(&args, "access")?,
-                arg(&args, "prompt")?,
+                prompt,
                 arg(&args, "handoff")?,
                 arg(&args, "resume")?,
                 arg(&args, "extraDirs")?,
@@ -397,15 +418,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "turnId")?,
             ))
         }
-        "chat_send" => unit(crate::agent_chat::chat_send_user_impl(
-            svc.chats.clone(),
-            arg(&args, "key")?,
-            arg(&args, "text")?,
-            arg(&args, "images")?,
-            arg(&args, "to")?,
-            arg(&args, "turnId")?,
-            arg(&args, "recordUser")?,
-        )),
+        "chat_send" => {
+            let key: String = arg(&args, "key")?;
+            let text = refresh_lead_turn(svc, &key, arg(&args, "text")?)?;
+            unit(crate::agent_chat::chat_send_user_impl(
+                svc.chats.clone(),
+                key,
+                text,
+                arg(&args, "images")?,
+                arg(&args, "to")?,
+                arg(&args, "turnId")?,
+                arg(&args, "recordUser")?,
+            ))
+        }
         "chat_cancel_auto_resume" => to_value(crate::agent_chat::chat_cancel_auto_resume_impl(
             &svc.chats,
             arg(&args, "key")?,

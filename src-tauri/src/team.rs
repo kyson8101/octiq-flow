@@ -846,6 +846,37 @@ pub fn direct_reports<'a>(team: &'a [TeamAgent], manager: &str) -> Vec<&'a TeamA
         .collect()
 }
 
+/// Direct reports the host can actually assign work to. Lead-only models may
+/// still appear in the org chart and memory permissions, but they are not an
+/// available worker and must not make a manager's brief claim it can delegate.
+pub fn eligible_direct_reports<'a>(team: &'a [TeamAgent], manager: &str) -> Vec<&'a TeamAgent> {
+    direct_reports(team, manager)
+        .into_iter()
+        .filter(|agent| agent.can_work())
+        .collect()
+}
+
+/// Reports a lead can be briefed to assign somewhere that still exists. A
+/// project-scoped lead's `team` has already been narrowed to its project; a
+/// global lead may also see project agents, whose project must still be
+/// registered before they are useful assignment choices.
+fn brief_reports<'a>(
+    team: &'a [TeamAgent],
+    lead: &TeamAgent,
+    projects: &[(String, String)],
+) -> Vec<&'a TeamAgent> {
+    eligible_direct_reports(team, &lead.id)
+        .into_iter()
+        .filter(|agent| {
+            lead.project_id.is_some()
+                || agent
+                    .project_id
+                    .as_ref()
+                    .is_none_or(|project_id| projects.iter().any(|(id, _)| id == project_id))
+        })
+        .collect()
+}
+
 fn describe(
     agent: &TeamAgent,
     team: &[TeamAgent],
@@ -885,7 +916,7 @@ fn describe(
     } else {
         String::new()
     };
-    // Cross-project briefs say where each report may work.
+    // A global lead's brief says where each report may work.
     let scope = match (project_name, agent.project_id.as_deref()) {
         (None, _) => String::new(),
         (Some(_), None) => " [works in any project]".to_owned(),
@@ -903,9 +934,10 @@ fn describe(
 /// The first message of a task: the person's words, then the lead's brief.
 /// Records `chat_key` as this lead's task.
 ///
-/// `cross_project` is the conversation with the configured head: its reports
-/// are listed from every project, and every task it creates names where it
-/// runs. `projects` is every registered project as (id, name).
+/// `cross_project` is the conversation with the configured head, where every
+/// task must name where it runs. Any global lead gets its authorized reports
+/// from every registered project; project-scoped leads stay in their project.
+/// `projects` is every registered project as (id, name).
 pub fn brief(
     path: &Path,
     chat_key: &str,
@@ -919,7 +951,8 @@ pub fn brief(
     if task.is_empty() {
         return Err("Describe the task first.".into());
     }
-    let team = if cross_project {
+    let mut team = list(path, None, true)?;
+    if cross_project {
         let head = head(path)?.ok_or(
             "No lead is configured to talk to across projects. Choose one in Settings, Agents.",
         )?;
@@ -929,14 +962,23 @@ pub fn brief(
                 head.name
             ));
         }
-        list(path, None, true)?
-    } else {
-        list(path, Some(project_id), false)?
-    };
+    }
     let lead = team
         .iter()
         .find(|a| a.id == lead_id)
+        .cloned()
         .ok_or("The chosen agent no longer exists. Pick another one.")?;
+    if !lead.visible_in(Some(project_id)) {
+        return Err("The chosen agent no longer works in this project. Pick another one.".into());
+    }
+    // A global manager is authorized to route to registered projects, even
+    // when the conversation was opened from one project's lead picker rather
+    // than the cross-project shortcut. Keep its roster consistent with the
+    // destination directory. A project-scoped manager remains confined to the
+    // globals and agents visible in its own project.
+    if lead.project_id.is_some() {
+        team.retain(|agent| agent.visible_in(Some(project_id)));
+    }
     let role = if lead.role.is_empty() {
         String::new()
     } else {
@@ -948,7 +990,7 @@ pub fn brief(
             .find(|(pid, _)| pid == id)
             .map(|(_, name)| name.clone())
     };
-    let reports = direct_reports(&team, &lead.id);
+    let reports = brief_reports(&team, &lead, projects);
     let head = if cross_project {
         format!(
             "{task}{BRIEF_MARK}Lead: {name}\n\nYou are {name}, the person's lead across every OctiqFlow project.{role} The person brought you the request above. You lead it.",
@@ -966,7 +1008,7 @@ pub fn brief(
         "\n\nTasks run in this chat's project by default. To send one to another registered repository or project, call orchestration_destinations and pass `project` and `repository` to orchestration_task_create; the host refuses anything unregistered."
     };
     let text = if reports.is_empty() {
-        format!("{head} No agent reports to you, so do the task yourself, directly in this chat. Do not create an orchestration run.")
+        format!("{head} No eligible agent currently reports to you, so do the task yourself, directly in this chat. Do not create an orchestration run.")
     } else {
         let roster = reports
             .iter()
@@ -975,7 +1017,11 @@ pub fn brief(
                     a,
                     &team,
                     true,
-                    if cross_project { Some(&name_of) } else { None },
+                    if lead.project_id.is_none() {
+                        Some(&name_of)
+                    } else {
+                        None
+                    },
                 )
             })
             .collect::<Vec<_>>()
@@ -990,8 +1036,72 @@ The person approves your plan before any worker starts. Create every task first,
 Your direct reports:\n{roster}"
         )
     };
-    record_lead(path, chat_key, lead, project_id, cross_project)?;
-    Ok(format!("{text}\n\n{}", memory_brief(lead, &team)))
+    record_lead(path, chat_key, &lead, project_id, cross_project)?;
+    Ok(format!("{text}\n\n{}", memory_brief(&lead, &team)))
+}
+
+/// Append current host-authorized roster context to a lead's later turn. The
+/// original brief is part of the provider's conversation history, so a roster
+/// edit after that first message otherwise leaves a resumed or long-lived chat
+/// obeying stale instructions. The same marker as the initial brief keeps this
+/// host context out of the person-visible bubble.
+pub fn refresh_turn_brief(
+    path: &Path,
+    chat_key: &str,
+    text: String,
+    projects: &[(String, String)],
+) -> Result<String, String> {
+    if text.contains(BRIEF_MARK) {
+        return Ok(text);
+    }
+    let Some(record) = lead_for_chat(path, chat_key)? else {
+        return Ok(text);
+    };
+    let mut team = list(path, None, true)?;
+    let Some(lead) = team
+        .iter()
+        .find(|agent| agent.id == record.lead_id)
+        .cloned()
+    else {
+        return Ok(text);
+    };
+    if lead.project_id.is_some() {
+        team.retain(|agent| agent.visible_in(Some(&record.project_id)));
+    }
+    let name_of = |id: &str| {
+        projects
+            .iter()
+            .find(|(project_id, _)| project_id == id)
+            .map(|(_, name)| name.clone())
+    };
+    let reports = brief_reports(&team, &lead, projects);
+    let roster = if reports.is_empty() {
+        "No eligible agent currently reports to you. Do the task yourself in this chat and do not create an orchestration run. This supersedes any older roster in this conversation.".to_owned()
+    } else {
+        let rows = reports
+            .iter()
+            .map(|agent| {
+                describe(
+                    agent,
+                    &team,
+                    true,
+                    if lead.project_id.is_none() {
+                        Some(&name_of)
+                    } else {
+                        None
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "Your currently eligible direct reports are listed below. This host-authorized roster supersedes any older roster or instruction saying that no agent reports to you. You may create an orchestration run when passing on or splitting the person's task; the host still validates every direct-report edge and project destination.\n\n{rows}"
+        )
+    };
+    Ok(format!(
+        "{text}{BRIEF_MARK}Current roster for {}\n\n{roster}",
+        lead.name
+    ))
 }
 
 /// Appended to a worker's brief when its assignee manages agents and the task
@@ -1004,7 +1114,7 @@ pub fn manager_brief(
     run_id: &str,
 ) -> Result<Option<String>, String> {
     let team = list(path, Some(project_id), false)?;
-    let reports = direct_reports(&team, assignee_id);
+    let reports = eligible_direct_reports(&team, assignee_id);
     if reports.is_empty() {
         return Ok(None);
     }
@@ -1280,6 +1390,22 @@ mod tests {
         .unwrap();
         assert!(text.contains("do the task yourself"));
         assert!(!text.contains("orchestration_task_create"));
+
+        let mut lead_only = under("Lead only", None, &solo);
+        lead_only.model = "fable".into();
+        let lead_only = save(&path, lead_only).unwrap();
+        let text = brief(
+            &path,
+            "chat:lead-only-report",
+            "p1",
+            &solo.id,
+            "Tidy it again",
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(text.contains("No eligible agent currently reports to you"));
+        assert!(!text.contains(&format!("id `{}`", lead_only.id)));
     }
 
     #[test]
@@ -1426,5 +1552,130 @@ mod tests {
             lead_for_chat(&path, "chat:cto").unwrap().unwrap().lead_id,
             ryan.id
         );
+    }
+
+    #[test]
+    fn a_global_lead_in_a_project_chat_sees_cross_project_reports() {
+        let path = temp();
+        let ryan = save(&path, draft("Ryan", None)).unwrap();
+        let maya = save(&path, under("Maya", Some("p2"), &ryan)).unwrap();
+        let projects = [
+            ("p1".to_owned(), "General".to_owned()),
+            ("p2".to_owned(), "OctiqFlow".to_owned()),
+        ];
+
+        let text = brief(
+            &path,
+            "chat:project-lead",
+            "p1",
+            &ryan.id,
+            "Fix the roster",
+            false,
+            &projects,
+        )
+        .unwrap();
+
+        assert!(text.contains(&format!("id `{}`", maya.id)), "{text}");
+        assert!(text.contains("works only in project OctiqFlow"), "{text}");
+        assert!(!text.contains("No agent reports to you"), "{text}");
+    }
+
+    #[test]
+    fn later_turns_refresh_added_removed_and_reassigned_reports() {
+        let path = temp();
+        let ryan = save(&path, draft("Ryan", None)).unwrap();
+        let projects = [
+            ("p1".to_owned(), "General".to_owned()),
+            ("p2".to_owned(), "OctiqFlow".to_owned()),
+        ];
+        let first = brief(
+            &path,
+            "chat:changing-roster",
+            "p1",
+            &ryan.id,
+            "Start",
+            false,
+            &projects,
+        )
+        .unwrap();
+        assert!(
+            first.contains("No eligible agent currently reports to you"),
+            "{first}"
+        );
+
+        let maya = save(&path, under("Maya", Some("p2"), &ryan)).unwrap();
+        let added = refresh_turn_brief(&path, "chat:changing-roster", "Continue".into(), &projects)
+            .unwrap();
+        assert_eq!(added.split_once(BRIEF_MARK).unwrap().0, "Continue");
+        assert!(added.contains(&format!("id `{}`", maya.id)), "{added}");
+        assert!(added.contains("works only in project OctiqFlow"), "{added}");
+        assert!(added.contains("supersedes any older roster"), "{added}");
+
+        let mut reassigned = draft("Maya", Some("p2"));
+        reassigned.id = Some(maya.id);
+        save(&path, reassigned).unwrap();
+        let removed = refresh_turn_brief(
+            &path,
+            "chat:changing-roster",
+            "Continue again".into(),
+            &projects,
+        )
+        .unwrap();
+        assert!(
+            removed.contains("No eligible agent currently reports to you"),
+            "{removed}"
+        );
+        assert!(!removed.contains("id `"), "{removed}");
+    }
+
+    #[test]
+    fn roster_refresh_leaves_non_lead_and_initial_brief_text_alone() {
+        let path = temp();
+        let ryan = save(&path, draft("Ryan", None)).unwrap();
+        let initial = brief(&path, "chat:lead", "p1", &ryan.id, "Start", false, &[]).unwrap();
+        assert_eq!(
+            refresh_turn_brief(&path, "chat:other", "Hello".into(), &[]).unwrap(),
+            "Hello"
+        );
+        assert_eq!(
+            refresh_turn_brief(&path, "chat:lead", initial.clone(), &[]).unwrap(),
+            initial
+        );
+    }
+
+    #[test]
+    fn project_scoped_managers_keep_project_scoped_rosters() {
+        let path = temp();
+        let ceo = save(&path, draft("Ceo", None)).unwrap();
+        let local = save(&path, under("Local lead", Some("p1"), &ceo)).unwrap();
+        let local_dev = save(&path, under("Local dev", Some("p1"), &local)).unwrap();
+        let foreign = save(&path, under("Foreign lead", Some("p2"), &ceo)).unwrap();
+        let foreign_dev = save(&path, under("Foreign dev", Some("p2"), &foreign)).unwrap();
+
+        let text = brief(
+            &path,
+            "chat:local",
+            "p1",
+            &local.id,
+            "Local work",
+            false,
+            &[("p1".into(), "One".into()), ("p2".into(), "Two".into())],
+        )
+        .unwrap();
+
+        assert!(text.contains(&format!("id `{}`", local_dev.id)), "{text}");
+        assert!(!text.contains(&foreign.id), "{text}");
+        assert!(!text.contains(&foreign_dev.id), "{text}");
+        assert!(brief(
+            &path,
+            "chat:wrong-project",
+            "p2",
+            &local.id,
+            "Wrong project",
+            false,
+            &[]
+        )
+        .unwrap_err()
+        .contains("no longer works in this project"));
     }
 }
