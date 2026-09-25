@@ -414,34 +414,41 @@
 
 .orch-stop-confirm button.is-danger { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); color: var(--danger); }
 
-.orch-progress { --meter-height: 6px; margin: 20px 0 24px; }
-.orch-progress-label { margin-bottom: 4px; color: var(--fg-2); font-size: 12px; }
-.orch-progress-acceptance { margin: 8px 0 0; color: var(--fg-2); font-size: 12px; }
+/* The run's state in one band: done of total, what is still owed, how long,
+   and the meter under it. Settings sits at its end, shut. */
+.orch-summary { display: flex; justify-content: flex-end; margin: 0 0 8px; }
+.orch-progress { --meter-height: 4px; margin: 0 0 12px; }
+.orch-progress-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; }
+.orch-progress-acceptance { color: var(--fg-2); font-size: 11px; }
 
 .orch-progress-head {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-height: 26px;
+  margin-bottom: 7px;
   color: var(--fg-0);
   font-variant-numeric: tabular-nums;
 }
 
-.orch-progress-head strong { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
-.orch-progress-head strong span { color: var(--fg-3); font-size: 14px; font-weight: 400; }
-.orch-progress-percent { color: var(--fg-2); font-size: 14px; }
-.orch-progress-elapsed { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--fg-3); font-size: 11.5px; }
-.orch-progress-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.orch-progress-head strong { font-size: 15px; font-weight: 620; }
+.orch-progress-head strong span { color: var(--fg-3); font-size: 12px; font-weight: 400; }
+.orch-progress-percent { color: var(--fg-2); font-size: 12px; }
+.orch-progress-elapsed { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
+.orch-progress-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
 
 /* A count of zero is left out rather than printed, so every chip on screen is
    something still owed. Colour says which kind, never how important. */
 .orch-chip {
-  padding: 3px 9px;
+  padding: 1px 7px;
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   color: var(--fg-2);
-  font-size: 11px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
 .orch-chip[data-tone="working"] { border-color: color-mix(in srgb, var(--link) 45%, var(--border)); color: var(--link); }
@@ -449,11 +456,20 @@
 .orch-chip[data-tone="blocked"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
 
 /* Configuration, and the controls that change it, are not status. */
-.orch-run-settings { margin-bottom: 24px; border-bottom: 1px solid var(--border); }
-.orch-run-settings > summary { padding: 9px 0; color: var(--fg-3); font-size: 11.5px; cursor: pointer; }
-.orch-run-settings > summary:hover { color: var(--fg-1); }
-.orch-run-settings-body { padding: 2px 0 14px; }
-.orch-run-settings dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; margin: 0 0 12px; font-size: 11.5px; }
+.orch-settings-toggle {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  min-height: 26px; padding: 0 8px;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-3);
+  font: inherit; font-size: 11.5px; cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+.orch-settings-toggle:hover { background: var(--bg-2); color: var(--fg-0); }
+.orch-settings-toggle[aria-expanded="true"] { border-color: var(--border); background: var(--bg-2); color: var(--fg-0); }
+.orch-settings-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.orch-run-settings { margin: -4px 0 14px; padding: 10px 12px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1); }
+.orch-run-settings[hidden] { display: none; }
+.orch-run-settings dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 14px; margin: 0 0 10px; font-size: 11.5px; }
 .orch-run-settings dt { color: var(--fg-3); }
 .orch-run-settings dd { min-width: 0; overflow: hidden; margin: 0; color: var(--fg-1); text-overflow: ellipsis; white-space: nowrap; }
 .orch-run-actions { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -461,8 +477,8 @@
 .orch-run-actions .orch-stop-confirm span { text-align: left; }
 
 .orch-decisions {
-  margin-bottom: 34px;
-  padding: 18px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--warn) 42%, var(--border));
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--warn) 7%, transparent);
@@ -476,9 +492,10 @@
   font-weight: 650;
 }
 
-.orch-gate + .orch-gate { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
-.orch-gate-task { margin: 9px 0 2px; color: var(--fg-3); font-size: 10.5px; }
-.orch-gate > p { margin: 2px 0 12px; color: var(--fg-1); font-size: 13px; line-height: 1.5; }
+.orch-gate + .orch-gate { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+/* The task a decision belongs to is a label, not a second paragraph. */
+.orch-gate > .orch-gate-task { margin: 6px 0 2px; overflow: hidden; color: var(--fg-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.orch-gate > p { margin: 2px 0 10px; color: var(--fg-1); font-size: 13px; line-height: 1.5; }
 .orch-gate-options { display: flex; flex-wrap: wrap; gap: 7px; }
 .orch-gate-options button,
 .orch-gate-write button {
@@ -498,12 +515,18 @@
 .orch-gate-write input { min-width: 0; flex: 1 1 150px; height: 34px; padding: 0 10px; font-size: 12px; }
 .orch-gate-write button:disabled { cursor: default; opacity: 0.45; }
 
+/* The list's heading and filters stay in reach while a long list scrolls. */
 .orch-section-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
-  align-items: baseline;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
+  gap: 4px 16px;
+  padding: 4px 0;
+  background: var(--bg-0);
 }
 
 .orch-section-head span { color: var(--fg-3); font-size: 10.5px; }
@@ -523,7 +546,7 @@
    its chevron, with room inside the edge, rather than hugging the text. */
 .orch-task-heading {
   display: flex; align-items: center; gap: 6px;
-  margin: 4px 0; padding: 0 6px 0 12px;
+  margin: 3px 0; padding: 0 6px 0 12px;
   border-radius: var(--r-md);
   transition: background 130ms ease-out;
 }
@@ -535,7 +558,7 @@
   align-items: center;
   column-gap: 12px;
   row-gap: 4px;
-  padding: 12px 0;
+  padding: 9px 0;
   border: 0;
   border-radius: var(--r-sm);
   background: transparent;
@@ -671,7 +694,6 @@
   .orch-launch-copy { order: 3; width: 100%; flex-basis: 100%; }
   .orch-primary { margin-left: auto; }
   .orch-run-head h2 { font-size: 23px; }
-  .orch-progress-head strong { font-size: 22px; }
   .orch-task-summary { column-gap: 8px; }
   .orch-task-detail { padding-left: 14px; }
 }
@@ -710,22 +732,33 @@
 
 /* Embedded runs share the chat navigation instead of covering the application. */
 .orch-embedded { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; background: var(--bg-0); }
-.orch-main-nav { flex: 0 0 auto; padding: 10px 14px; border-bottom: 1px solid var(--border); }
-.orch-main-chat { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 8px 10px; border: 1px solid transparent; border-radius: var(--r-md); background: transparent; color: var(--fg-2); text-align: left; font: inherit; cursor: pointer; }
-.orch-main-chat > svg { width: 18px; height: 18px; flex: 0 0 auto; }
-.orch-main-chat > span { display: grid; gap: 3px; }
+/* Main chat first, New run at the end: one row, never a section each. */
+.orch-main-strip { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.orch-main-nav { flex: 1 1 auto; min-width: 0; }
+.orch-main-chat { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid transparent; border-radius: var(--r-md); background: transparent; color: var(--fg-2); text-align: left; font: inherit; cursor: pointer; }
+.orch-main-chat > svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.orch-main-chat > span { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .orch-main-chat strong { color: var(--fg-0); font-size: 13px; font-weight: 600; }
-.orch-main-chat small { font-size: 11px; color: var(--fg-3); }
+.orch-main-chat small { overflow: hidden; color: var(--fg-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .orch-main-chat:hover { background: var(--bg-2); }
 .orch-main-chat[aria-current="page"] { border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); background: var(--accent-tint); color: var(--accent); }
 .orch-main-chat[aria-current="page"] strong { color: var(--accent); }
 .orch-main-chat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .orch-embedded .orch-layout { width: 100%; flex-direction: column; }
-.orch-embedded .orch-runs { width: 100%; flex: 0 0 auto; padding: 10px 20px; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; gap: 10px; align-items: center; }
-.orch-embedded .orch-new { flex-shrink: 0; }
-.orch-embedded .orch-run-list { display: flex; flex: 1; margin: 0; overflow-x: auto; }
-.orch-embedded .orch-run-pick { width: 220px; min-width: 160px; min-height: 40px; }
-.orch-embedded .orch-content { padding: 24px clamp(16px, 4vw, 48px) 48px; }
+.orch-embedded .orch-runs { width: 100%; flex: 0 0 auto; padding: 6px 12px; border-right: 0; border-bottom: 1px solid var(--border); flex-direction: row; gap: 10px; align-items: center; }
+.orch-embedded .orch-new { flex: 0 0 auto; min-height: 30px; padding: 0 10px; border-style: solid; border-color: var(--border); font-size: 12px; font-weight: 550; }
+.orch-embedded .orch-new:disabled { opacity: .45; }
+.orch-embedded .orch-new:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.orch-embedded .orch-run-list { display: flex; gap: 4px; flex: 1; margin: 0; overflow-x: auto; }
+.orch-embedded .orch-run-pick { width: 220px; min-width: 160px; min-height: 34px; align-items: center; padding: 5px 9px; }
+.orch-embedded .orch-run-pick > .orch-status { margin-top: 0; }
+.orch-embedded .orch-run-copy { flex-direction: row; align-items: baseline; gap: 8px; }
+.orch-embedded .orch-run-copy > span { flex: 1 1 auto; min-width: 0; -webkit-line-clamp: 1; }
+.orch-embedded .orch-run-copy small { flex: 0 0 auto; white-space: nowrap; }
+/* No top padding on the scroller itself: the sticky task heading pins to its
+   edge, and padding there would leave a strip of rows showing above it. */
+.orch-embedded .orch-content { padding: 0 clamp(12px, 3vw, 32px) 36px; }
+.orch-embedded .orch-content > :first-child { margin-top: 12px; }
 .orch-embedded .orch-start { padding-top: 12px; }
 .orch-embedded .orch-start-intro { margin-bottom: 22px; }
 .orch-embedded .orch-start-intro h2 { font-size: 23px; }
@@ -735,7 +768,7 @@
 .orch-attempt-history button { background: transparent; color: var(--accent); border: 0; padding: 0; margin-right: 12px; font: inherit; cursor: pointer; }
 .orch-attempt-history p { margin: 6px 0 0; }
 .orch-embedded button:disabled { opacity: .5; cursor: default; }
-@media (max-width: 600px) { .orch-embedded .orch-runs { padding: 8px 12px; } .orch-embedded .orch-start-intro { align-items: flex-start; gap: 12px; } .orch-embedded .orch-glyph { display: none; } }
+@media (max-width: 600px) { .orch-main-chat small { display: none; } .orch-embedded .orch-start-intro { align-items: flex-start; gap: 12px; } .orch-embedded .orch-glyph { display: none; } }
 
 .orch-setup-context { margin: 0; padding: 0; border: 0; min-width: 0; }
 
@@ -751,8 +784,10 @@
 @media (max-width: 859.98px), (pointer: coarse) {
   .orch-task-summary { padding-block: 13px; }
   .orch-task-expand { flex-basis: 44px; width: 44px; height: 44px; }
-  .orch-task-filters button { min-height: 32px; }
-  .orch-run-settings > summary,
+  .orch-task-filters button,
+  .orch-settings-toggle,
+  .orch-embedded .orch-new { min-height: 36px; }
+  .orch-main-chat { min-height: 40px; }
   .orch-task-brief > summary,
   .orch-task-more > summary,
   .orch-attempt-history > summary,

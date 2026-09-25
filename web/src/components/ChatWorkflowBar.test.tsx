@@ -8,7 +8,7 @@ describe("ChatWorkflowBar", () => {
     const run = { id: "run", coordinatorChatKey: "chat:main", objective: "Ship the unified workspace", status: "running" as const, workspaceId: "project", rootPath: "/repo", createdAt: 1, updatedAt: 1, maxConcurrent: 2 };
     const html = renderToStaticMarkup(<ChatWorkflowBar unified worker selectedRun={run}
       snapshot={{ ...EMPTY_ORCHESTRATION, runs: [run] }} orchestrated view="chat" onView={() => {}} />);
-    expect(html).toContain('<h1 class="workflow-title">Ship the unified workspace</h1>');
+    expect(html).toMatch(/<h1 class="workflow-title" id="[^"]+">Ship the unified workspace<\/h1>/);
     expect(html).toContain('aria-pressed="false">Tasks');
     expect(html).toContain('aria-pressed="true">Chat');
     expect(html).not.toContain('aria-label="Execution mode"');

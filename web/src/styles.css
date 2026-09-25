@@ -292,27 +292,39 @@ body {
   font-weight: 600;
 }
 
-.topbar-context { flex: 0 1 auto; }
+.topbar-context { flex: 1 1 auto; }
 .topbar-workflow {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   min-width: 0;
 }
 .topbar-crumb-sep { flex: 0 0 auto; color: var(--fg-3); font-size: 14px; }
-.topbar-workflow .workflow-title {
-  flex: 0 1 auto;
+.topbar-workflow .workflow-heading {
+  align-items: center;
+  flex: 1 1 240px;
   min-width: 0;
-  max-width: 38vw;
+}
+.topbar-workflow .workflow-title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   font-size: 14px;
   font-weight: 600;
   line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  overflow-wrap: normal;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.topbar-workflow .workflow-heading.is-open .workflow-title {
+  max-height: min(40vh, 360px);
+  overflow-y: auto;
+  -webkit-line-clamp: unset;
 }
 .topbar-workflow .chat-workflow-bar {
+  flex: 0 0 auto;
   flex-wrap: nowrap;
   gap: 6px;
   padding: 0;
@@ -321,6 +333,38 @@ body {
 .topbar-workflow .chat-workflow-views button,
 .topbar-workflow .chat-run-summary { padding: 4px 9px; white-space: nowrap; }
 .topbar-workflow .chat-run-summary { margin-left: 0; }
+
+/* Expanding a long run title is the one time the shared top bar grows. It is
+   deliberate and reversible; the default two-line clamp keeps the work below
+   it visible, while Less remains beside the expanded objective. */
+.topbar:has(.topbar-workflow .workflow-heading.is-open) {
+  height: auto;
+  min-height: calc(48px + env(safe-area-inset-top));
+  align-items: flex-start;
+  padding-top: calc(env(safe-area-inset-top) + 8px);
+  padding-bottom: 8px;
+}
+
+@media (max-width: 700px) {
+  .topbar:has(.topbar-workflow) { height: auto; min-height: calc(48px + env(safe-area-inset-top)); }
+  .topbar:has(.topbar-workflow) .topbar-chat { flex: 0 0 auto; padding-inline: 2px; }
+  .topbar:has(.topbar-workflow) .topbar-chat .topbar-name { display: none; }
+  .topbar-context { flex: 1 1 0; }
+  .topbar-workflow { flex-wrap: wrap; gap: 1px 4px; }
+  .topbar-crumb-sep { display: none; }
+  .topbar-workflow .workflow-heading { flex: 1 1 100%; }
+  .topbar-workflow .workflow-title { font-size: 12px; line-height: 1.15; }
+  .topbar-workflow .workflow-title-toggle { padding-inline: 3px; font-size: 11px; }
+  .topbar-workflow .chat-workflow-bar { flex: 1 1 100%; gap: 2px; min-width: 0; }
+  .topbar-workflow .chat-workflow-views button { padding-inline: 5px; }
+  .topbar-workflow .chat-run-summary {
+    flex: 1 1 60px;
+    min-width: 0;
+    overflow: hidden;
+    padding-inline: 3px;
+    text-overflow: ellipsis;
+  }
+}
 
 .icon-btn {
   display: inline-flex;
