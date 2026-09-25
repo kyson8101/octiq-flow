@@ -104,6 +104,60 @@ pub struct ChatMeta {
     /// so a delayed retry from before a restore cannot bury the chat again.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub generation: u64,
+    /// Where the chat was PLANNED to run, as decided before its first turn —
+    /// automatically, by the person's Advanced choices, or by the person in
+    /// an ordinary chat. What actually happened is verified separately with
+    /// git (`chat_task.rs`); the two are kept apart so a plan is never shown
+    /// as a fact. Written once: later saves cannot rewrite the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<LaunchPlan>,
+}
+
+/// The execution environment a chat was planned to start in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchPlan {
+    pub project_id: String,
+    #[serde(default)]
+    pub project_name: String,
+    /// The folder the plan started from, before any worktree was made.
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub base_branch: String,
+    #[serde(default)]
+    pub new_worktree: bool,
+    #[serde(default)]
+    pub use_sandbox: bool,
+    /// Whether OctiqFlow was asked to prepare git (branch, worktree) first.
+    #[serde(default)]
+    pub prepare: bool,
+    /// `auto`, `advanced` or `person`.
+    pub chosen_by: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub decided_at: i64,
+}
+
+impl LaunchPlan {
+    /// Bounded, and only the three known deciders.
+    fn checked(mut self) -> Option<Self> {
+        if !matches!(self.chosen_by.as_str(), "auto" | "advanced" | "person") {
+            return None;
+        }
+        let clip = |text: &mut String, max: usize| {
+            if text.chars().count() > max {
+                *text = text.chars().take(max).collect();
+            }
+        };
+        clip(&mut self.project_id, 200);
+        clip(&mut self.project_name, 200);
+        clip(&mut self.path, 4096);
+        clip(&mut self.base_branch, 255);
+        clip(&mut self.reason, 300);
+        Some(self)
+    }
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -267,7 +321,13 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             // the activity this save carries retires the tick by itself,
             // through `is_done`.
             let done_at = existing.done_at;
+            // The plan is history: the first one recorded stands.
+            let launch = existing
+                .launch
+                .clone()
+                .or_else(|| meta.launch.take().and_then(LaunchPlan::checked));
             *existing = meta;
+            existing.launch = launch;
             existing.created_at = created;
             existing.done_at = done_at;
             // Only the lifecycle commands below may change these. In
@@ -284,6 +344,7 @@ pub fn upsert(mut meta: ChatMeta) -> Result<(), String> {
             meta.generation = 0;
             meta.agent_title = false;
             meta.done_at = None;
+            meta.launch = meta.launch.take().and_then(LaunchPlan::checked);
             index.chats.push(meta);
         }
     }
@@ -668,7 +729,55 @@ mod tests {
             done_at: None,
             deleted_at: None,
             generation: 0,
+            launch: None,
         }
+    }
+
+    #[test]
+    fn a_launch_plan_is_written_once_and_checked() {
+        let _guard = LIFECYCLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let id = "launch-plan-once";
+        cleanup(&[id]);
+        let plan = |by: &str, branch: &str| LaunchPlan {
+            project_id: "p1".into(),
+            project_name: "Flow".into(),
+            path: "/repo".into(),
+            base_branch: branch.into(),
+            new_worktree: true,
+            use_sandbox: false,
+            prepare: true,
+            chosen_by: by.into(),
+            reason: "auto".into(),
+            decided_at: 1,
+        };
+        upsert(ChatMeta {
+            launch: Some(plan("robot", "main")),
+            ..meta(id, 1)
+        })
+        .unwrap();
+        let found = || list().into_iter().find(|c| c.id == id).unwrap();
+        assert_eq!(found().launch, None, "an unknown decider is not recorded");
+        upsert(ChatMeta {
+            launch: Some(plan("auto", "develop")),
+            ..meta(id, 1)
+        })
+        .unwrap();
+        assert_eq!(found().launch.unwrap().base_branch, "develop");
+        // A stale browser save without it, or with another plan, changes nothing.
+        upsert(meta(id, 1)).unwrap();
+        upsert(ChatMeta {
+            launch: Some(plan("advanced", "main")),
+            ..meta(id, 1)
+        })
+        .unwrap();
+        let kept = found().launch.unwrap();
+        assert_eq!(
+            (kept.chosen_by.as_str(), kept.base_branch.as_str()),
+            ("auto", "develop")
+        );
+        cleanup(&[id]);
     }
 
     /// These share one real profile directory, so each test cleans up after

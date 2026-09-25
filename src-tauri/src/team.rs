@@ -46,6 +46,11 @@ pub struct TeamAgent {
     /// assigned, so renaming an agent does not orphan what it remembers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_note: Option<String>,
+    /// Its picture, as a checked PNG/JPEG/WebP `data:` URL
+    /// (`agent_avatar::checked_data_url`). Absent: the client draws initials.
+    /// Kept on the agent, so it survives a change of provider or model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -81,6 +86,9 @@ pub struct TeamDraft {
     pub project_id: Option<String>,
     #[serde(default)]
     pub reports_to: Option<String>,
+    /// Absent keeps the current avatar, `""` removes it, a data URL sets it.
+    #[serde(default)]
+    pub avatar: Option<String>,
 }
 
 /// A chat a task was handed to: the host needs it to know that a run the chat
@@ -111,6 +119,11 @@ struct Stored {
     /// Configured, never inferred; `None` until the person picks one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     head: Option<String>,
+    /// The workspace the head's conversations live in — the person's
+    /// coordination home. A workspace id, configured, never a path; `None`
+    /// falls back to the project named General.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    home: Option<String>,
 }
 
 /// Serializes read-modify-write of the file; the store is small enough to be
@@ -204,6 +217,11 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
     let project_id = draft.project_id.filter(|p| !p.trim().is_empty());
     let reports_to = draft.reports_to.filter(|m| !m.trim().is_empty());
     let access = draft.access.unwrap_or(Access::Auto);
+    let avatar = match draft.avatar.as_deref().map(str::trim) {
+        None => None,
+        Some("") => Some(None),
+        Some(url) => Some(Some(crate::agent_avatar::checked_data_url(url)?)),
+    };
 
     let _guard = LOCK.lock().map_err(|e| e.to_string())?;
     let mut stored = read(path)?;
@@ -297,6 +315,7 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 project_id,
                 reports_to,
                 memory_note: existing.memory_note.clone(),
+                avatar: avatar.unwrap_or_else(|| existing.avatar.clone()),
                 created_at: existing.created_at,
                 updated_at: now,
             };
@@ -314,6 +333,7 @@ pub fn save(path: &Path, draft: TeamDraft) -> Result<TeamAgent, String> {
                 project_id,
                 reports_to,
                 memory_note: None,
+                avatar: avatar.flatten(),
                 created_at: now,
                 updated_at: now,
             };
@@ -433,6 +453,26 @@ pub fn set_head(path: &Path, id: Option<&str>) -> Result<Option<TeamAgent>, Stri
     stored.head = chosen.as_ref().map(|a| a.id.clone());
     write(path, &stored)?;
     Ok(chosen)
+}
+
+/// The configured coordination home: a workspace id, or `None` when the
+/// person has not chosen one (the client then uses the project named General).
+pub fn home(path: &Path) -> Result<Option<String>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    Ok(read(path)?.home)
+}
+
+/// Choose (or clear) the coordination home. The caller has checked that the
+/// id names a registered workspace; this store only keeps it.
+pub fn set_home(path: &Path, id: Option<&str>) -> Result<Option<String>, String> {
+    let _guard = LOCK.lock().map_err(|e| e.to_string())?;
+    let mut stored = read(path)?;
+    stored.home = id
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned);
+    write(path, &stored)?;
+    Ok(stored.home)
 }
 
 pub fn leads(path: &Path) -> Result<Vec<LeadRecord>, String> {
@@ -993,6 +1033,7 @@ mod tests {
             access: None,
             project_id: project.map(Into::into),
             reports_to: None,
+            avatar: None,
         }
     }
 
@@ -1007,6 +1048,71 @@ mod tests {
         std::env::temp_dir()
             .join(format!("octiq-team-{}", uuid::Uuid::new_v4()))
             .join("team.json")
+    }
+
+    const PNG_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+
+    #[test]
+    fn an_avatar_is_checked_kept_across_edits_and_removable() {
+        let path = temp();
+        let bad = save(
+            &path,
+            TeamDraft {
+                avatar: Some("data:image/png;base64,PHN2Zz4=".into()),
+                ..draft("Ada", None)
+            },
+        );
+        assert!(bad.is_err(), "an SVG declared as PNG is refused");
+        let ada = save(
+            &path,
+            TeamDraft {
+                avatar: Some(PNG_URL.into()),
+                ..draft("Ada", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(ada.avatar.as_deref(), Some(PNG_URL));
+        // A later edit that says nothing about the avatar keeps it, and a
+        // change of model keeps the identity whole.
+        let edited = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id.clone()),
+                model: "opus".into(),
+                ..draft("Ada", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(edited.avatar.as_deref(), Some(PNG_URL));
+        assert_eq!(
+            list(&path, None, true).unwrap()[0].avatar.as_deref(),
+            Some(PNG_URL)
+        );
+        let cleared = save(
+            &path,
+            TeamDraft {
+                id: Some(ada.id),
+                avatar: Some(String::new()),
+                ..draft("Ada", None)
+            },
+        )
+        .unwrap();
+        assert_eq!(cleared.avatar, None);
+    }
+
+    #[test]
+    fn the_coordination_home_is_a_configured_workspace_id() {
+        let path = temp();
+        assert_eq!(home(&path).unwrap(), None);
+        assert_eq!(
+            set_home(&path, Some(" ws-general ")).unwrap().as_deref(),
+            Some("ws-general")
+        );
+        assert_eq!(home(&path).unwrap().as_deref(), Some("ws-general"));
+        // The head and the team are untouched by it.
+        save(&path, draft("Ada", None)).unwrap();
+        assert_eq!(home(&path).unwrap().as_deref(), Some("ws-general"));
+        assert_eq!(set_home(&path, Some("")).unwrap(), None);
     }
 
     #[test]

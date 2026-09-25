@@ -417,6 +417,7 @@ mod tests {
             project_id: project.map(Into::into),
             reports_to: reports_to.map(Into::into),
             memory_note: None,
+            avatar: None,
             created_at: 0,
             updated_at: 0,
         }

@@ -1077,6 +1077,7 @@ mod tests {
             done_at: None,
             deleted_at: None,
             generation: 0,
+            launch: None,
         })
         .expect("add chat");
     }

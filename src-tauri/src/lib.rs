@@ -9,6 +9,7 @@
 // window went; what is left is the part that did the work.
 
 mod access;
+mod agent_avatar;
 mod agent_chat;
 mod agent_history;
 mod agent_provider;

@@ -162,7 +162,46 @@ fn banner_title(project: &str, chat: &str) -> String {
 /// the title is the bold line, and which piece of work this is about is what
 /// you need first.
 pub fn notice_for(chat_key: Option<&str>, kind: &str, detail: &str) -> Option<Notice> {
-    let id = conversation_of(chat_key?)?;
+    let key = chat_key?;
+    let id = conversation_of(key)?;
+    let agent = agent_name(key);
+    let body = body_for(kind, detail, agent.as_deref());
+    // One lookup for all three: the chat's own half of the title, the project
+    // that names the other half, and the project the tap has to land in.
+    let meta = crate::chat_index::list().into_iter().find(|c| c.id == id);
+    let chat_title = meta.as_ref().map(|c| c.title.as_str()).unwrap_or_default();
+    let project_id = meta
+        .as_ref()
+        .map(|c| c.project_id.clone())
+        .unwrap_or_default();
+    let title = banner_title(&project_name(&project_id).unwrap_or_default(), chat_title);
+
+    Some(Notice {
+        kind: kind.to_string(),
+        conversation_id: id.to_string(),
+        project_id,
+        title,
+        body,
+        tag: format!("octiq:{id}:{kind}"),
+    })
+}
+
+/// Agents mode: the registered agent a chat was handed to, by its CURRENT
+/// name (a rename shows at once). `None` for an ordinary chat.
+fn agent_name(chat_key: &str) -> Option<String> {
+    let path = crate::team::default_path();
+    let record = crate::team::lead_for_chat(&path, chat_key).ok()??;
+    let current = crate::team::list(&path, None, true)
+        .ok()
+        .and_then(|team| team.into_iter().find(|a| a.id == record.lead_id))
+        .map(|a| a.name);
+    Some(current.unwrap_or(record.lead_name))
+}
+
+/// The banner's second line. Worded exactly as `noticeFor` in
+/// `web/src/lib/notify.ts`; an agent's chat says who, an ordinary one does
+/// not name its provider.
+pub fn body_for(kind: &str, detail: &str, agent: Option<&str>) -> String {
     let detail = preview(detail);
     let body = match kind {
         "permission" => format!(
@@ -184,24 +223,10 @@ pub fn notice_for(chat_key: Option<&str>, kind: &str, detail: &str) -> Option<No
         _ if detail.is_empty() => "Finished.".to_string(),
         _ => detail,
     };
-    // One lookup for all three: the chat's own half of the title, the project
-    // that names the other half, and the project the tap has to land in.
-    let meta = crate::chat_index::list().into_iter().find(|c| c.id == id);
-    let chat_title = meta.as_ref().map(|c| c.title.as_str()).unwrap_or_default();
-    let project_id = meta
-        .as_ref()
-        .map(|c| c.project_id.clone())
-        .unwrap_or_default();
-    let title = banner_title(&project_name(&project_id).unwrap_or_default(), chat_title);
-
-    Some(Notice {
-        kind: kind.to_string(),
-        conversation_id: id.to_string(),
-        project_id,
-        title,
-        body,
-        tag: format!("octiq:{id}:{kind}"),
-    })
+    match agent.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{name}: {body}"),
+        None => body,
+    }
 }
 
 /// Send the banner for one moment, if the chat key names a conversation.
@@ -524,6 +549,20 @@ mod tests {
         assert_eq!(blank("done"), "Finished.");
         assert_eq!(blank("permission"), "Needs permission: a tool call");
         assert_eq!(blank("question"), "Asked: a question");
+    }
+
+    #[test]
+    fn an_agents_banner_says_who() {
+        assert_eq!(
+            body_for("done", "All green.", Some("Maya")),
+            "Maya: All green."
+        );
+        assert_eq!(
+            body_for("permission", "Bash", Some("Maya")),
+            "Maya: Needs permission: Bash"
+        );
+        assert_eq!(body_for("question", "", None), "Asked: a question");
+        assert_eq!(body_for("done", "", Some("  ")), "Finished.");
     }
 
     #[test]

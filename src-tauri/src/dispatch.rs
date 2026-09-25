@@ -973,6 +973,34 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &crate::team::default_path(),
             arg::<Option<String>>(&args, "id")?.as_deref(),
         )),
+        // The coordination home: the workspace the head's conversations live
+        // in. Only a registered workspace may be chosen.
+        "team_home" => to_value(crate::team::home(&crate::team::default_path())),
+        "team_home_set" => {
+            let id: Option<String> = arg(&args, "id")?;
+            if let Some(id) = id.as_deref().filter(|id| !id.trim().is_empty()) {
+                let known = crate::workspaces::list_workspaces_impl(&svc.workspaces)?
+                    .iter()
+                    .any(|w| w.id == id.trim());
+                if !known {
+                    return Err("That project is not registered.".into());
+                }
+            }
+            to_value(crate::team::set_home(
+                &crate::team::default_path(),
+                id.as_deref(),
+            ))
+        }
+        // Avatar generation through the person's own Codex (ChatGPT) sign-in.
+        // Browser-only, like the rest of the team store.
+        "agent_avatar_status" => to_value(Ok::<_, String>(crate::agent_avatar::generation_status(
+            arg::<Option<bool>>(&args, "refresh")?.unwrap_or(false),
+        ))),
+        "agent_avatar_generate" => to_value(crate::agent_avatar::start(&arg(&args, "request")?)),
+        "agent_avatar_job" => to_value(crate::agent_avatar::job(&arg::<String>(&args, "id")?)),
+        "agent_avatar_cancel" => {
+            to_value(crate::agent_avatar::cancel(&arg::<String>(&args, "id")?))
+        }
         "team_list" => {
             let project: Option<String> = arg(&args, "projectId")?;
             let all = arg::<Option<bool>>(&args, "all")?.unwrap_or(false);

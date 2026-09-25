@@ -251,7 +251,7 @@ pub fn provider_for(kind: AgentKind) -> &'static dyn AgentProvider {
 }
 
 /// Single-quote a value for the login shell that launches an agent.
-fn sh_quote(s: &str) -> String {
+pub(crate) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 

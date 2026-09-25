@@ -1348,6 +1348,7 @@ impl OrchestrationStore {
             done_at: None,
             deleted_at: None,
             generation: 0,
+            launch: None,
         };
         if let Err(error) = crate::agent_chat::chat_index_save(meta.clone()) {
             let _ = self.fail_preparation(
