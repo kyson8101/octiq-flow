@@ -79,7 +79,15 @@ The profile stores `orchestrations.json` atomically. A snapshot contains:
 - **Run** — objective, coordinator chat, project root, status, and concurrency
   limit.
 - **Task** — bounded specification, dependencies, current state, and the one
-  authoritative attempt.
+  authoritative attempt. A task may carry a **destination**: a registered
+  project and a repository registered on it (`orchestration/destination.rs`).
+  Its workspace is planned from that repository, its worker chat belongs to
+  that project and gets that project's environment, and every retry and review
+  attempt reuses the same workspace. A task without a destination (every task
+  created before destinations existed, and ordinary runs that name none) runs
+  in the run's own root, as before. The destination is checked again before
+  each worker starts: a project deleted or a repository unregistered since
+  creation stops the task with an error; the host never redirects it.
 - **Attempt** — worker chat, provider, access, worktree, branch, report, and
   changed files, plus a separate host-owned `execution` record.
 - **Gate** — a blocking decision with optional known choices. Resolving it
@@ -192,7 +200,9 @@ normal chat index, so their transcript and worktree remain inspectable.
 The bundled chat-bound MCP exposes:
 
 - `orchestration_run_create`
-- `orchestration_task_create`
+- `orchestration_task_create` (with optional `project` and `repository`)
+- `orchestration_destinations` — registered projects, their repositories, and
+  (in agents mode) which direct reports may work in each
 - `orchestration_snapshot`
 - `orchestration_worker_start`
 - `orchestration_worker_report`
@@ -203,6 +213,12 @@ The bundled chat-bound MCP exposes:
 The authenticated local `/hook/orchestration` endpoint injects the calling chat
 identity; callers cannot claim another worker's attempt. Browser actions use
 the same dispatch commands as the MCP path.
+
+A `rootPath` passed to `orchestration_run_create` must be the chat's own folder
+or lie inside a folder registered on the run's project; any other folder is
+refused. A task `project` is a registered project's id or name, and
+`repository` a path registered on it (or that folder's name). Anything else is
+an error that says what to pass instead.
 
 ## Workspace and delivery lifecycle
 

@@ -68,6 +68,10 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
   assert.equal(recovery.maxRetries.maximum, 5);
   assert.equal(recovery.maxRetries.minimum, 0);
   assert.equal(recovery.fallbackModel.type, "string");
+  // Agents mode: a task names where it runs; the host resolves it.
+  assert.equal(taskTool.inputSchema.properties.project.type, "string");
+  assert.equal(taskTool.inputSchema.properties.repository.type, "string");
+  assert.deepEqual(taskTool.inputSchema.required, ["runId", "title", "spec"]);
   const orchestration = bound.result.tools
     .filter(tool => tool.name.startsWith("orchestration_"))
     .map(tool => tool.name);
@@ -75,6 +79,7 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_service_register",
     "orchestration_run_create",
     "orchestration_task_create",
+    "orchestration_destinations",
     "orchestration_snapshot",
     "orchestration_worker_start",
     "orchestration_worker_report",

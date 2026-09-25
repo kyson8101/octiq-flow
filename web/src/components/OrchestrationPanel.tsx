@@ -71,6 +71,7 @@ export function OrchestrationPanel({
   coordinatorBusy = false,
   sharedHeading = false,
   onSelectedRunChange,
+  projectName,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
@@ -92,6 +93,9 @@ export function OrchestrationPanel({
   /** The workspace above both columns owns the run title. */
   sharedHeading?: boolean;
   onSelectedRunChange?: (runId: string | null) => void;
+  /** A registered project's name, for plan rows that run in the run's own
+   *  checkout. */
+  projectName?: (id: string) => string | undefined;
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
@@ -363,6 +367,7 @@ export function OrchestrationPanel({
                 currentChatKey={currentChatKey}
                 coordinatorBusy={coordinatorBusy}
                 sharedHeading={sharedHeading}
+                projectName={projectName ?? ((id) => (id === project?.id ? project.name : undefined))}
                 onPlanApproved={() => void read()}
                 onRequestPlanChanges={(note) => {
                   onOpenChat(selected.coordinatorChatKey,
@@ -511,6 +516,7 @@ function RunDetail({
   onStop,
   onStartMaster,
   coordinatorBusy,
+  projectName,
   onPlanApproved,
   onRequestPlanChanges,
   sharedHeading,
@@ -537,6 +543,7 @@ function RunDetail({
   onStop: () => void;
   onStartMaster?: () => Promise<void>;
   coordinatorBusy: boolean;
+  projectName?: (id: string) => string | undefined;
   onPlanApproved: () => void;
   onRequestPlanChanges: (note: string) => void;
   sharedHeading: boolean;
@@ -586,7 +593,7 @@ function RunDetail({
       </header>}
 
       {planPending && (
-        <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
+        <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} projectName={projectName} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
       )}
 
       {openGates.length > 0 && (

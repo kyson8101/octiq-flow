@@ -7,7 +7,7 @@
 // not this plan's to order), and a cycle is not solved: whatever is left over
 // lands in one final stage flagged `blocked`, because as written it never
 // starts.
-import type { OrchestrationTask } from "./orchestration";
+import type { OrchestrationRun, OrchestrationTask } from "./orchestration";
 
 export type PlanStage = { tasks: OrchestrationTask[]; blocked: boolean };
 
@@ -39,4 +39,30 @@ export function planOwner(task: OrchestrationTask): { agent?: "claude" | "codex"
   if (task.assignee) return { agent: task.worker?.agent, label: task.assignee.name };
   if (task.worker) return { agent: task.worker.agent, label: task.worker.model ?? "" };
   return { label: "Chosen at dispatch" };
+}
+
+/** Where a task runs: its own destination, else the run's checkout (every
+ *  task made before destinations existed). `repository` is a folder name,
+ *  `path` the full one for a tooltip. */
+export function planDestination(
+  task: OrchestrationTask,
+  run: Pick<OrchestrationRun, "workspaceId" | "rootPath">,
+  projectName?: (id: string) => string | undefined,
+): { project: string; repository: string; path: string } {
+  const path = task.destination?.repository ?? run.rootPath;
+  const project = task.destination?.projectName
+    ?? projectName?.(run.workspaceId)
+    ?? "This project";
+  return { project, repository: folderName(path), path };
+}
+
+/** The tasks the person is approving now: the lead's own, not yet approved.
+ *  A manager's subtasks never wait for the person. Mirrors the host's check,
+ *  which refuses an approval of any other set. */
+export function awaitingApproval(tasks: OrchestrationTask[]): string[] {
+  return tasks.filter((task) => !task.parentTaskId && !task.approvedAt).map((task) => task.id);
+}
+
+function folderName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 }

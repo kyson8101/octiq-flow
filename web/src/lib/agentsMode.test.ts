@@ -4,7 +4,7 @@ vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { readTaskBrief } from "./taskBrief";
-import { leadOnly, leadSettings, teamModels, type TeamAgent } from "./agentsMode";
+import { headConversation, leadOnly, leadSettings, teamModels, type TeamAgent } from "./agentsMode";
 import { titleFrom } from "./store";
 import { LeadPicker } from "../components/AgentsSettings";
 import type { Message } from "./chat";
@@ -33,6 +33,24 @@ describe("agents mode", () => {
     expect(settings?.effort).toBe("high");
     expect(settings?.access).toBe("auto");
     expect(leadSettings({ ...ada, model: "not-a-model" })).toBeNull();
+  });
+
+  it("reopens only the head's own conversation, newest first", () => {
+    const record = (chatKey: string, leadId: string, createdAt: number, crossProject = true) =>
+      ({ chatKey, leadId, leadName: leadId, projectId: "general", crossProject, createdAt });
+    const leads = [
+      record("chat:old", "ryan", 1),
+      record("chat:new", "ryan", 3),
+      record("chat:gone", "ryan", 9),
+      record("chat:task", "ryan", 5, false),
+      record("chat:maya", "maya", 7),
+    ];
+    const exists = (key: string) => key !== "chat:gone";
+    expect(headConversation(leads, "ryan", exists)?.chatKey).toBe("chat:new");
+    // A new head never inherits the old head's history.
+    expect(headConversation(leads, "maya", exists)?.chatKey).toBe("chat:maya");
+    expect(headConversation(leads, "zed", exists)).toBeNull();
+    expect(headConversation(leads, null, exists)).toBeNull();
   });
 
   it("keeps Fable and Astra as leads only, and never offers Default", () => {

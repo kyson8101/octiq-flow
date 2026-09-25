@@ -26,12 +26,14 @@ use crate::workspaces::{Workspace, WorkspaceState};
 pub mod agent_view;
 mod archive;
 pub mod automation;
+pub mod destination;
 pub mod execution;
 pub mod inbox;
 pub mod lifecycle;
 mod retention;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
+pub use destination::TaskDestination;
 use workspaces::TaskWorkspace;
 
 const STORE_VERSION: u32 = 4;
@@ -158,6 +160,16 @@ pub struct Task {
     /// Agents mode: the registered agent this task was handed to (team.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<TaskAssignee>,
+    /// Where the task runs: a registered project and repository
+    /// (`destination.rs`). Absent means the run's own root, which is what
+    /// every task created before destinations existed has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<TaskDestination>,
+    /// Agents mode: when the person approved this task as part of the plan.
+    /// A coordinator task added after approval has none until they approve
+    /// again, so new or re-routed work never rides an earlier approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
     #[serde(default)]
@@ -723,6 +735,7 @@ impl OrchestrationStore {
             parent_task_id,
             worker,
             None,
+            None,
         )
     }
 
@@ -738,18 +751,25 @@ impl OrchestrationStore {
             .ok_or_else(|| "That run does not exist.".into())
     }
 
-    /// A task's assignee and parent, for checking an agents-mode split.
-    pub fn task_assignment(
+    /// A task's assignee and destination, for routing a subtask.
+    pub fn task_route(
         &self,
         task_id: &str,
-    ) -> Result<(Option<TaskAssignee>, Option<String>), String> {
+    ) -> Result<(Option<TaskAssignee>, Option<TaskDestination>), String> {
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         inner
             .data
             .tasks
             .get(task_id)
-            .map(|task| (task.assignee.clone(), task.parent_task_id.clone()))
+            .map(|task| (task.assignee.clone(), task.destination.clone()))
             .ok_or_else(|| "The parent task does not exist.".into())
+    }
+
+    /// Agents mode: the task a worker chat is running now, for routing its
+    /// own split and listing where it may send work.
+    pub fn active_task(&self, chat_key: &str) -> Result<Option<Task>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        Ok(active_task_for_actor(&inner.data, chat_key))
     }
 
     /// Agents mode: the registered agent a worker chat is running as, from the
@@ -783,7 +803,16 @@ impl OrchestrationStore {
 
     /// The person approves the lead's plan; the scheduler starts the ready
     /// wave on its next pass.
-    pub fn approve_plan(&self, actor_chat_key: &str, run_id: &str) -> Result<Run, String> {
+    ///
+    /// `seen` is the plan the person was looking at: the ids of the tasks
+    /// awaiting approval. When the lead added a task in the meantime, the
+    /// approval is refused rather than stretched over work nobody reviewed.
+    pub fn approve_plan(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        seen: Option<&[String]>,
+    ) -> Result<Run, String> {
         self.mutate(|data| {
             coordinator(data, run_id, actor_chat_key)?;
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
@@ -803,10 +832,30 @@ impl OrchestrationStore {
             if !data.tasks.values().any(|task| task.run_id == run_id) {
                 return Err("The plan has no tasks yet.".into());
             }
+            let waiting: BTreeSet<&str> = data
+                .tasks
+                .values()
+                .filter(|task| task.run_id == run_id && task.approved_at.is_none())
+                .filter(|task| task.parent_task_id.is_none())
+                .map(|task| task.id.as_str())
+                .collect();
+            if let Some(seen) = seen {
+                let seen: BTreeSet<&str> = seen.iter().map(String::as_str).collect();
+                if seen != waiting {
+                    return Err("The plan changed while you were reviewing it. Look it over again, then approve.".into());
+                }
+            }
+            let now = now_ms();
             plan.status = PlanStatus::Approved;
-            plan.decided_at = Some(now_ms());
-            run.updated_at = now_ms();
-            Ok(run.clone())
+            plan.decided_at = Some(now);
+            run.updated_at = now;
+            let approved = run.clone();
+            for task in data.tasks.values_mut() {
+                if task.run_id == run_id && task.approved_at.is_none() {
+                    task.approved_at = Some(now);
+                }
+            }
+            Ok(approved)
         })
         .inspect(|run| announce(&run.id, "plan_approved"))
     }
@@ -822,6 +871,7 @@ impl OrchestrationStore {
         parent_task_id: Option<String>,
         worker: Option<automation::WorkerSettings>,
         assignee: Option<TaskAssignee>,
+        destination: Option<TaskDestination>,
     ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
@@ -830,6 +880,7 @@ impl OrchestrationStore {
             .transpose()?;
         let run_id_for_event = run_id.clone();
         let mut created_under: Option<String> = None;
+        let mut reopened_plan = false;
         self.mutate(|data| {
             let run = match coordinator(data, &run_id, actor_chat_key) {
                 Ok(run) => run,
@@ -892,6 +943,8 @@ impl OrchestrationStore {
                 spec,
                 worker,
                 assignee,
+                destination,
+                approved_at: None,
                 workspace: None,
                 depends_on,
                 parent_task_id,
@@ -924,10 +977,30 @@ impl OrchestrationStore {
             if let Some(run) = data.runs.get_mut(&run_id) {
                 run.status = RunStatus::Running;
                 run.updated_at = now;
+                // Agents mode: the lead adding work after the person approved
+                // puts the plan back in front of them. A manager's split is
+                // exempt: only the top plan needs the person.
+                if created_under.is_none() {
+                    if let Some(plan) = run
+                        .plan_approval
+                        .as_mut()
+                        .filter(|plan| plan.status == PlanStatus::Approved)
+                    {
+                        plan.status = PlanStatus::Pending;
+                        plan.requested_at = now;
+                        plan.decided_at = None;
+                        reopened_plan = true;
+                    }
+                }
             }
             Ok(created)
         })
-        .inspect(|_| announce(&run_id_for_event, "task_created"))
+        .inspect(|_| {
+            announce(&run_id_for_event, "task_created");
+            if reopened_plan {
+                announce(&run_id_for_event, "plan_pending");
+            }
+        })
     }
 
     #[cfg(test)]
@@ -1183,11 +1256,46 @@ impl OrchestrationStore {
         )?);
         let _operation = self.workspace_ops.lock().map_err(|e| e.to_string())?;
         // Validate project before reserving a concurrency slot.
-        let (owning_run, _) = self.owned_task(actor_chat_key, &launch.task_id)?;
-        let workspace = workspace(workspaces, &owning_run.workspace_id)?;
+        let (owning_run, owned) = self.owned_task(actor_chat_key, &launch.task_id)?;
+        let run_project = match owned.destination {
+            None => Some(workspace(workspaces, &owning_run.workspace_id)?),
+            Some(_) => None,
+        };
         let (run, task, reserved, previous) =
             self.reserve_attempt_for(actor_chat_key, &launch, recovery_of)?;
         announce(&run.id, "worker_preparing");
+        // A routed task runs in its destination project, which must still be
+        // registered with that repository on it. Checked after reserving, so
+        // a destination removed since approval fails this attempt visibly and
+        // tells the coordinator, instead of being retried in silence; nothing
+        // falls back to the run's root.
+        let workspace = match (run_project, &task.destination) {
+            (Some(project), _) => project,
+            (None, destination) => {
+                let verified =
+                    crate::workspaces::list_workspaces_impl(workspaces).and_then(|projects| {
+                        match destination {
+                            Some(destination) => {
+                                destination::verify(&projects, destination).cloned()
+                            }
+                            None => workspace(workspaces, &run.workspace_id),
+                        }
+                    });
+                match verified {
+                    Ok(project) => project,
+                    Err(error) => {
+                        self.fail_preparation(
+                            &reserved.id,
+                            error.clone(),
+                            String::new(),
+                            String::new(),
+                            false,
+                        )?;
+                        return Err(error);
+                    }
+                }
+            }
+        };
         let prepared = match self.prepare_task_workspace(
             &chats,
             &run,
@@ -1218,7 +1326,7 @@ impl OrchestrationStore {
         let now = now_ms();
         let meta = crate::chat_index::ChatMeta {
             id: chat_id.clone(),
-            project_id: run.workspace_id.clone(),
+            project_id: workspace.id.clone(),
             title: format!("Worker: {}", task.title),
             latest_response: None,
             custom_title: true,
@@ -1274,7 +1382,7 @@ impl OrchestrationStore {
         if let (Some(assignee), None) = (&task.assignee, &task.parent_task_id) {
             if let Ok(Some(brief)) = crate::team::manager_brief(
                 &crate::team::default_path(),
-                &run.workspace_id,
+                &workspace.id,
                 &assignee.id,
                 &task.id,
                 &run.id,
@@ -1786,19 +1894,54 @@ pub fn infer_context(
     let meta = crate::chat_index::list()
         .into_iter()
         .find(|meta| meta.id == chat_id);
+    let workspace_id = workspace_id.filter(|id| !id.trim().is_empty());
+    // A saved chat's run belongs to that chat's project. Naming another one
+    // would put its workers under a project the coordinator is not in.
+    if let (Some(requested), Some(meta)) = (&workspace_id, &meta) {
+        if requested != &meta.project_id {
+            return Err("A run belongs to its coordinator chat's project.".into());
+        }
+    }
     let workspace_id = workspace_id
-        .filter(|id| !id.trim().is_empty())
         .or_else(|| meta.as_ref().map(|meta| meta.project_id.clone()))
         .ok_or("The coordinator chat is not attached to a project.")?;
     let workspace = workspace(workspaces, &workspace_id)?;
-    let root_path = root_path
-        .filter(|path| !path.trim().is_empty())
-        .or_else(|| meta.and_then(|meta| meta.cwd))
-        .unwrap_or_else(|| workspace.primary_path.clone());
+    let chat_cwd = meta.and_then(|meta| meta.cwd);
+    let root_path = match root_path.filter(|path| !path.trim().is_empty()) {
+        // A root named in the request must be the chat's own folder or lie in
+        // one the project registers. Any other folder is refused, not adopted.
+        Some(root) => {
+            if !root_allowed(&workspace, chat_cwd.as_deref(), &root) {
+                return Err(format!(
+                    "{root} is not this chat's folder or a folder registered on project {}.",
+                    workspace.name
+                ));
+            }
+            root
+        }
+        None => chat_cwd.unwrap_or_else(|| workspace.primary_path.clone()),
+    };
     if !Path::new(&root_path).is_dir() {
         return Err("The coordinator's project folder does not exist.".into());
     }
     Ok((workspace_id, root_path))
+}
+
+/// A run root is the chat's own folder, or inside a repository registered on
+/// the run's project.
+fn root_allowed(workspace: &Workspace, chat_cwd: Option<&str>, root: &str) -> bool {
+    let root = Path::new(root.trim());
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
+        return false;
+    }
+    chat_cwd.is_some_and(|cwd| Path::new(cwd) == root)
+        || destination::repositories(workspace)
+            .iter()
+            .any(|repo| root.starts_with(repo))
 }
 
 fn coordinator<'a>(
@@ -2006,11 +2149,21 @@ fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
         task.spec,
         attempt.id
     );
+    let destination = task
+        .destination
+        .as_ref()
+        .map(|d| {
+            format!(
+                "\nDestination: project {} ({}), repository {}",
+                d.project_name, d.project_id, d.repository
+            )
+        })
+        .unwrap_or_default();
     let workspace = task.workspace.as_ref().map(|w| format!(
         "\n\nAssigned workspace: {}\nBranch: {}\nMode: {:?}\nBase SHA: {}\nExisting changes to preserve:\n{}\nThe host owns this workspace lifecycle. Do not switch branches, create replacement worktrees, or remove this directory. Stop all source changes after reporting. Use orchestration validation workspaces for isolated commit checks.",
         w.plan.cwd, w.plan.branch, w.plan.mode, w.plan.base_sha, w.plan.initial_status
     )).unwrap_or_default();
-    format!("{brief}{workspace}\n\nIf you start a local service that downstream work needs, register its loopback host, port, and precise source/recovery guidance with orchestration_service_register before settling. A completed startup task is not live service readiness; application health still needs verification. Never include credentials in recovery guidance.")
+    format!("{brief}{destination}{workspace}\n\nIf you start a local service that downstream work needs, register its loopback host, port, and precise source/recovery guidance with orchestration_service_register before settling. A completed startup task is not live service readiness; application health still needs verification. Never include credentials in recovery guidance.")
 }
 
 pub fn master_prompt(run: &Run) -> String {
@@ -2223,6 +2376,7 @@ mod tests {
                 id: "agent_ada".into(),
                 name: "Ada".into(),
             }),
+            None,
         )
     }
 
@@ -2232,19 +2386,128 @@ mod tests {
         let run = run(&store);
         store.require_plan_approval(&run.id).unwrap();
         // Nothing to approve before the lead has made a plan.
-        assert!(store.approve_plan("chat:master", &run.id).is_err());
+        assert!(store.approve_plan("chat:master", &run.id, None).is_err());
         let first = task(&store, &run, Vec::new());
         assert!(store
             .reserve_attempt("chat:master", &launch_for(&first.id))
             .unwrap_err()
             .contains("not approved"));
-        assert!(store.approve_plan("chat:worker", &run.id).is_err());
-        let approved = store.approve_plan("chat:master", &run.id).unwrap();
+        assert!(store.approve_plan("chat:worker", &run.id, None).is_err());
+        let approved = store.approve_plan("chat:master", &run.id, None).unwrap();
         assert!(!approved.awaiting_plan_approval());
-        assert!(store.approve_plan("chat:master", &run.id).is_err());
+        assert!(store.approve_plan("chat:master", &run.id, None).is_err());
         assert!(store
             .reserve_attempt("chat:master", &launch_for(&first.id))
             .is_ok());
+    }
+
+    #[test]
+    fn approval_covers_the_plan_seen_and_new_lead_work_needs_it_again() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        store.require_plan_approval(&run.id).unwrap();
+        let destination = TaskDestination {
+            project_id: "shop".into(),
+            project_name: "Shop".into(),
+            repository: "/repos/api".into(),
+        };
+        let first = store
+            .create_task_for(
+                "chat:master",
+                run.id.clone(),
+                "API".into(),
+                "Build the API".into(),
+                Vec::new(),
+                None,
+                None,
+                Some(TaskAssignee {
+                    id: "agent_ada".into(),
+                    name: "Ada".into(),
+                }),
+                Some(destination.clone()),
+            )
+            .unwrap();
+        // The destination is part of the persisted task.
+        let stored = store.snapshot(None).unwrap().tasks.remove(0);
+        assert_eq!(stored.destination.as_ref(), Some(&destination));
+        assert!(stored.approved_at.is_none());
+        // The person approves exactly what they saw, nothing else.
+        let stale = [first.id.clone(), "task_other".into()];
+        assert!(store
+            .approve_plan("chat:master", &run.id, Some(&stale))
+            .unwrap_err()
+            .contains("changed"));
+        store
+            .approve_plan("chat:master", &run.id, Some(&[first.id.clone()]))
+            .unwrap();
+        assert!(store.snapshot(None).unwrap().tasks[0].approved_at.is_some());
+
+        // The lead adds a task after approval: it waits for the person, and
+        // the approved destination of the first task is untouched.
+        let (_, _, attempt, _) = store
+            .reserve_attempt("chat:master", &launch_for(&first.id))
+            .unwrap();
+        let attempt = store
+            .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
+            .unwrap();
+        let second = assigned(&store, &run, "chat:master", None, Vec::new()).unwrap();
+        let snapshot = store.snapshot(None).unwrap();
+        assert!(snapshot.runs[0].awaiting_plan_approval());
+        let first_now = snapshot.tasks.iter().find(|t| t.id == first.id).unwrap();
+        assert_eq!(first_now.destination.as_ref(), Some(&destination));
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&second.id))
+            .unwrap_err()
+            .contains("not approved"));
+        // Only the new task is awaiting approval now.
+        assert!(store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[first.id.clone(), second.id.clone()])
+            )
+            .is_err());
+        store
+            .approve_plan("chat:master", &run.id, Some(&[second.id.clone()]))
+            .unwrap();
+
+        // A manager's own split is not the top plan and needs no approval.
+        let part = assigned(
+            &store,
+            &run,
+            &attempt.worker_chat_key,
+            Some(first.id.clone()),
+            Vec::new(),
+        );
+        assert!(part.is_ok());
+        assert!(!store.snapshot(None).unwrap().runs[0].awaiting_plan_approval());
+    }
+
+    #[test]
+    fn a_legacy_task_without_destination_or_approval_still_loads() {
+        let task: Task = serde_json::from_value(json!({
+            "id": "task_old", "runId": "run_old", "title": "Old", "spec": "Old work",
+            "dependsOn": [], "status": "pending", "createdAt": 1, "updatedAt": 1,
+        }))
+        .unwrap();
+        assert!(task.destination.is_none());
+        assert!(task.approved_at.is_none());
+        let value = serde_json::to_value(&task).unwrap();
+        assert!(value.get("destination").is_none());
+    }
+
+    #[test]
+    fn a_run_root_must_be_the_chat_folder_or_registered() {
+        let project: Workspace = serde_json::from_value(json!({
+            "id": "p", "name": "P", "primary_path": "/repos/app", "paths": ["/repos/lib"],
+        }))
+        .unwrap();
+        assert!(root_allowed(&project, None, "/repos/app"));
+        assert!(root_allowed(&project, None, "/repos/lib/sub"));
+        assert!(root_allowed(&project, Some("/wt/feature"), "/wt/feature"));
+        assert!(!root_allowed(&project, Some("/wt/feature"), "/etc"));
+        assert!(!root_allowed(&project, None, "/repos/app/../../etc"));
+        assert!(!root_allowed(&project, None, "relative/app"));
     }
 
     #[test]
@@ -2277,6 +2540,7 @@ mod tests {
             "Do it".into(),
             Vec::new(),
             Some(managed.id.clone()),
+            None,
             None,
             None,
         );

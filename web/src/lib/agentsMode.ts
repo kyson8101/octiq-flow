@@ -70,18 +70,77 @@ export async function deleteTeamAgent(id: string): Promise<void> {
 }
 
 /** The first message of a task: the task, then the lead's brief. Also records
- *  the chat as this lead's, which is what holds its plan for approval. */
-export async function taskBrief(chatKey: string, projectId: string, leadId: string, task: string): Promise<string> {
-  return await bridge.invoke<string>("team_brief", { chatKey, projectId, leadId, task });
+ *  the chat as this lead's, which is what holds its plan for approval.
+ *  `crossProject` is the conversation with the configured head: its brief
+ *  spans every project and each task it creates names its destination. */
+export async function taskBrief(
+  chatKey: string, projectId: string, leadId: string, task: string, crossProject = false,
+): Promise<string> {
+  return await bridge.invoke<string>("team_brief", { chatKey, projectId, leadId, task, crossProject });
 }
 
 export async function loadLeads(): Promise<LeadRecord[]> {
   return await bridge.invoke<LeadRecord[]>("team_leads", {});
 }
 
-/** The person approves a lead's plan; workers start on the next pass. */
-export async function approvePlan(chatKey: string, runId: string): Promise<void> {
-  await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId });
+/** The lead the person talks to across projects, or null when none is
+ *  configured (or the configured one was removed). */
+export async function loadHead(): Promise<TeamAgent | null> {
+  return await bridge.invoke<TeamAgent | null>("team_head", {});
+}
+
+export async function saveHead(id: string | null): Promise<TeamAgent | null> {
+  return await bridge.invoke<TeamAgent | null>("team_head_set", { id });
+}
+
+/** The person approves a lead's plan; workers start on the next pass.
+ *  `taskIds` is the plan they were shown: the host refuses the approval when
+ *  the lead has changed it since. */
+export async function approvePlan(chatKey: string, runId: string, taskIds: string[]): Promise<void> {
+  await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId, taskIds });
+}
+
+/** The conversation to reopen for "Talk to <head>": the newest one handed to
+ *  THIS head that still exists. A conversation handed to an earlier head is
+ *  never offered under a new one's name. */
+export function headConversation(
+  leads: readonly LeadRecord[],
+  headId: string | null | undefined,
+  exists: (chatKey: string) => boolean,
+): LeadRecord | null {
+  if (!headId) return null;
+  return leads
+    .filter((record) => record.crossProject && record.leadId === headId && exists(record.chatKey))
+    .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+}
+
+/** What the composer shows in place of the model controls for an agents-mode
+ *  conversation: who you are talking to, not which model to pick. */
+export type AgentIdentity = {
+  name: string;
+  role: string;
+  provider: Provider;
+  /** The model's display name. */
+  model: string;
+  /** The registered agent is gone; the conversation keeps its last settings. */
+  removed?: boolean;
+};
+
+/** `current` is the model the conversation actually runs on: the agent's
+ *  registered one for a new conversation, the recorded one for an existing
+ *  conversation (reopening never moves its history to another model). */
+export function agentIdentity(
+  agent: TeamAgent | null | undefined,
+  fallbackName: string,
+  current: Pick<ModelChoice, "agent" | "model">,
+): AgentIdentity {
+  return {
+    name: agent?.name ?? fallbackName,
+    role: agent?.role ?? "",
+    provider: current.agent,
+    model: current.model,
+    ...(agent ? {} : { removed: true }),
+  };
 }
 
 /** Fable and Astra only lead; the host refuses them as workers. */

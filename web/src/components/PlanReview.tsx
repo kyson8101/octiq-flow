@@ -9,15 +9,19 @@ import { useMemo, useState } from "react";
 import { approvePlan } from "../lib/agentsMode";
 import { modelFromReported } from "../lib/agentProviders";
 import type { OrchestrationRun, OrchestrationTask } from "../lib/orchestration";
-import { planNumbers, planOwner, planStages, type PlanStage } from "../lib/planReview";
+import {
+  awaitingApproval, planDestination, planNumbers, planOwner, planStages, type PlanStage,
+} from "../lib/planReview";
 import { AgentLogo } from "./AgentLogo";
 import "./PlanReview.css";
 
-export function PlanReview({ run, tasks, drafting, onApproved, onRequestChanges }: {
+export function PlanReview({ run, tasks, drafting, projectName, onApproved, onRequestChanges }: {
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
   /** The main agent is still in its turn: the plan may not be finished. */
   drafting: boolean;
+  /** Names the run's own project for tasks without a destination. */
+  projectName?: (id: string) => string | undefined;
   onApproved?: () => void;
   /** Sends the note to the main agent's chat. */
   onRequestChanges: (note: string) => void;
@@ -27,6 +31,9 @@ export function PlanReview({ run, tasks, drafting, onApproved, onRequestChanges 
   const [note, setNote] = useState("");
   const stages = useMemo(() => planStages(tasks), [tasks]);
   const numbers = useMemo(() => planNumbers(stages), [stages]);
+  const waiting = useMemo(() => awaitingApproval(tasks), [tasks]);
+  // Some of the plan was approved before: mark what is new since.
+  const amended = waiting.length > 0 && waiting.length < tasks.filter((task) => !task.parentTaskId).length;
   const blocked = stages.some((stage) => stage.blocked);
   const empty = tasks.length === 0;
 
@@ -34,7 +41,7 @@ export function PlanReview({ run, tasks, drafting, onApproved, onRequestChanges 
     setBusy(true);
     setError("");
     try {
-      await approvePlan(run.coordinatorChatKey, run.id);
+      await approvePlan(run.coordinatorChatKey, run.id, waiting);
       onApproved?.();
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
@@ -82,7 +89,11 @@ export function PlanReview({ run, tasks, drafting, onApproved, onRequestChanges 
                 {!stage.blocked && stage.tasks.length > 1 && <span className="plan-stage-note">{stage.tasks.length} side by side</span>}
               </div>
               <ul className="plan-stage-tasks">
-                {stage.tasks.map((task) => <PlanTask key={task.id} task={task} number={numbers.get(task.id) ?? 0} numbers={numbers} />)}
+                {stage.tasks.map((task) => (
+                  <PlanTask key={task.id} task={task} run={run} projectName={projectName}
+                    added={amended && waiting.includes(task.id)}
+                    number={numbers.get(task.id) ?? 0} numbers={numbers} />
+                ))}
               </ul>
             </li>
           ))}
@@ -119,14 +130,32 @@ export function PlanReview({ run, tasks, drafting, onApproved, onRequestChanges 
   );
 }
 
-function PlanTask({ task, number, numbers }: { task: OrchestrationTask; number: number; numbers: Map<string, number> }) {
+function PlanTask({ task, run, projectName, added, number, numbers }: {
+  task: OrchestrationTask;
+  run: OrchestrationRun;
+  projectName?: (id: string) => string | undefined;
+  /** Added since the person last approved this plan. */
+  added: boolean;
+  number: number;
+  numbers: Map<string, number>;
+}) {
   const owner = planOwner(task);
   const model = owner.agent && task.worker?.model ? modelFromReported(owner.agent, task.worker.model)?.name : undefined;
   const after = task.dependsOn.flatMap((id) => numbers.has(id) ? [numbers.get(id)!] : []);
+  const where = planDestination(task, run, projectName);
   const spec = task.spec.trim();
   const summary = <>
     <span className="plan-task-num">{number}</span>
-    <span className="plan-task-title">{task.title}</span>
+    <span className="plan-task-main">
+      <span className="plan-task-title">{task.title}</span>
+      <span className="plan-task-where" title={`${where.project} · ${where.path}`}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        <span><span className="plan-task-project">{where.project}</span>{" · "}<span className="plan-task-repo">{where.repository}</span></span>
+      </span>
+    </span>
+    {added && <span className="plan-task-new">New</span>}
     <span className="plan-task-owner" title={[owner.label, model].filter(Boolean).join(" · ")}>
       {owner.agent && <AgentLogo agent={owner.agent} size={13} />}
       <span>{task.assignee ? owner.label : model ?? owner.label}</span>

@@ -4414,7 +4414,49 @@ body {
   display: none;
 }
 
+/* Agents mode: who you are talking to, where an ordinary chat has its model
+   pickers. Not a control — the agent's registration owns its settings — so it
+   reads as a label: no caret, no hover. */
+.composer-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 52%;
+  padding: 4px 2px;
+  color: var(--fg-2);
+  font-size: 12px;
+  cursor: default;
+}
+.composer-identity > svg { flex: 0 0 auto; }
+.composer-identity-name {
+  flex: 0 0 auto;
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.composer-identity-role,
+.composer-identity-model {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.composer-identity-role { flex: 0 1 auto; }
+.composer-identity-model {
+  flex: 0 0 auto;
+  max-width: 12ch;
+  color: var(--fg-3);
+}
+.composer-identity[data-removed] .composer-identity-name {
+  color: var(--fg-2);
+  text-decoration: line-through;
+  text-decoration-color: var(--fg-3);
+}
+
 @media (max-width: 700px) {
+  .composer-identity { max-width: 60%; }
+  .composer-identity-role { display: none; }
   /* At 360px the three pickers, the attach button and Send needed 358px in a
      334px box, and the overflow landed on Send — the one control that must
      never move. The pickers collapse into one button here. */

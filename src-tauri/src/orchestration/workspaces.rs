@@ -93,7 +93,13 @@ impl OrchestrationStore {
                 }
                 mode => mode,
             };
-            workflow::plan(&run.root_path, &launch.base_branch, &task.id, mode)?
+            // A routed task starts from its destination repository; one
+            // without a destination from the run's root, as it always has.
+            let root = task
+                .destination
+                .as_ref()
+                .map_or(run.root_path.as_str(), |d| d.repository.as_str());
+            workflow::plan(root, &launch.base_branch, &task.id, mode)?
         };
         if writable
             && run.workspace_mode == WorkspaceMode::Auto
@@ -622,6 +628,61 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn a_destination_removed_after_approval_fails_the_attempt_instead_of_redirecting() {
+        let (coordinator, api) = (Repo::new(), Repo::new());
+        let (store, run, _) = setup(&coordinator, WorkspaceMode::Auto);
+        let task = store
+            .create_task_for(
+                "chat:master",
+                run.id.clone(),
+                "API".into(),
+                "Change the API".into(),
+                vec![],
+                None,
+                None,
+                None,
+                Some(TaskDestination {
+                    project_id: "shop".into(),
+                    project_name: "Shop".into(),
+                    repository: api.root.clone(),
+                }),
+            )
+            .unwrap();
+        // The run's own project is still registered; the destination is not.
+        let projects: Vec<crate::workspaces::Workspace> = serde_json::from_value(json!([
+            { "id": "project", "name": "Coordinator", "primary_path": coordinator.root },
+        ]))
+        .unwrap();
+        let err = store
+            .start_worker(
+                Arc::new(ChatManager::default()),
+                &crate::workspaces::WorkspaceState::with_projects(projects),
+                "chat:master",
+                WorkerLaunch {
+                    task_id: task.id.clone(),
+                    agent: ChatAgent::Codex,
+                    access: Access::Auto,
+                    model: None,
+                    effort: None,
+                    new_worktree: None,
+                    base_branch: String::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(err.contains("Shop is no longer registered"), "{err}");
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let attempt = snapshot
+            .attempts
+            .iter()
+            .find(|a| a.task_id == task.id)
+            .unwrap();
+        assert_eq!(attempt.status, AttemptStatus::Failed);
+        // Nothing was prepared anywhere, least of all in the coordinator's repo.
+        assert!(attempt.cwd.is_empty());
+        let task = snapshot.tasks.iter().find(|t| t.id == task.id).unwrap();
+        assert!(task.workspace.is_none());
+    }
+    #[test]
     fn capacity_recovery_reuses_the_lease_branch_and_uncommitted_work() {
         let repo = Repo::new();
         let (store, _, task) = setup(&repo, WorkspaceMode::Auto);
@@ -682,6 +743,68 @@ mod tests {
             task.workspace.unwrap().lease_attempt_id.as_deref(),
             Some(reserved.id.as_str())
         );
+    }
+
+    #[test]
+    fn a_routed_task_works_in_its_destination_repository_and_retries_there() {
+        let (coordinator, api) = (Repo::new(), Repo::new());
+        let (store, run, _) = setup(&coordinator, WorkspaceMode::Auto);
+        let task = store
+            .create_task_for(
+                "chat:master",
+                run.id.clone(),
+                "API".into(),
+                "Change the API".into(),
+                vec![],
+                None,
+                None,
+                None,
+                Some(TaskDestination {
+                    project_id: "shop".into(),
+                    project_name: "Shop".into(),
+                    repository: api.root.clone(),
+                }),
+            )
+            .unwrap();
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        assert!(first.is_worktree);
+        let plan = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .tasks
+            .into_iter()
+            .find(|t| t.id == task.id)
+            .and_then(|t| t.workspace)
+            .unwrap()
+            .plan;
+        assert_eq!(plan.repository_root, api.root);
+        assert_ne!(plan.repository_root, coordinator.root);
+        assert!(api
+            .git(&["branch", "--list", &first.branch])
+            .contains(&first.branch));
+        assert!(!coordinator
+            .git(&["branch", "--list", &first.branch])
+            .contains(&first.branch));
+        std::fs::write(Path::new(&first.cwd).join("pending.txt"), "kept").unwrap();
+        report(&store, &first, WorkerOutcome::Failed);
+        let retry = prepare(&store, &task, Access::Auto).unwrap();
+        assert_ne!(retry.id, first.id);
+        assert_eq!(
+            (retry.cwd.as_str(), retry.branch.as_str()),
+            (first.cwd.as_str(), first.branch.as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&retry.cwd).join("pending.txt")).unwrap(),
+            "kept"
+        );
+        let task = store
+            .snapshot(Some(&run.id))
+            .unwrap()
+            .tasks
+            .into_iter()
+            .find(|t| t.id == task.id)
+            .unwrap();
+        assert_eq!(task.destination.unwrap().repository, api.root);
     }
 
     #[test]

@@ -854,13 +854,19 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             // Whose direct reports this task may go to: the lead's when the
             // coordinator of an agents-mode run creates it, the manager's when
             // a second-level worker splits its own task.
-            let manager = if actor != coordinator {
+            let (manager, cross_project, parent_destination) = if actor != coordinator {
                 match parent.as_deref() {
-                    Some(parent) => svc.orchestrations.task_assignment(parent)?.0.map(|a| a.id),
-                    None => None,
+                    Some(parent) => {
+                        let (assignee, destination) = svc.orchestrations.task_route(parent)?;
+                        (assignee.map(|a| a.id), false, destination)
+                    }
+                    None => (None, false, None),
                 }
             } else {
-                crate::team::lead_for_chat(&team_path, &actor)?.map(|lead| lead.lead_id)
+                match crate::team::lead_for_chat(&team_path, &actor)? {
+                    Some(lead) => (Some(lead.lead_id), lead.cross_project, None),
+                    None => (None, false, None),
+                }
             };
             let requested =
                 arg::<Option<String>>(&args, "assignee")?.filter(|who| !who.trim().is_empty());
@@ -869,10 +875,23 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     "Assign this task to one of your direct reports with `assignee`.".into(),
                 );
             }
-            let assignee = match requested {
-                Some(who) => {
-                    let agent =
-                        crate::team::resolve(&team_path, &project, &who, manager.as_deref())?;
+            let project_arg: Option<String> = arg(&args, "project")?;
+            let repository_arg: Option<String> = arg(&args, "repository")?;
+            let routed = crate::orchestration::destination::route(
+                &crate::team::list(&team_path, None, true)?,
+                &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
+                &crate::orchestration::destination::Route {
+                    who: requested.as_deref(),
+                    project: project_arg.as_deref(),
+                    repository: repository_arg.as_deref(),
+                    manager: manager.as_deref(),
+                    cross_project,
+                    run_project: &project,
+                    parent: parent_destination.as_ref(),
+                },
+            )?;
+            let assignee = match routed.assignee {
+                Some(agent) => {
                     worker = Some(crate::orchestration::automation::WorkerSettings {
                         agent: agent.agent,
                         access: agent.access,
@@ -896,6 +915,27 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 parent,
                 worker,
                 assignee,
+                routed.destination,
+            ))
+        }
+        // Where the caller may send work: registered projects, their
+        // repositories, and which of its direct reports can work in each.
+        // Identity comes from the chat, never from the arguments.
+        "orchestration_destinations" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let team_path = crate::team::default_path();
+            let manager = match crate::team::lead_for_chat(&team_path, &actor)? {
+                Some(lead) => Some(lead.lead_id),
+                None => svc
+                    .orchestrations
+                    .active_task(&actor)?
+                    .and_then(|task| task.assignee)
+                    .map(|a| a.id),
+            };
+            Ok(crate::orchestration::destination::directory(
+                &crate::team::list(&team_path, None, true)?,
+                &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
+                manager.as_deref(),
             ))
         }
         // Browser-only: the person approves an agents-mode lead's plan. Not in
@@ -903,6 +943,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan(
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
+            arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
         )),
         "team_leads" => to_value(crate::team::leads(&crate::team::default_path())),
         "team_brief" => {
@@ -910,14 +951,28 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             if !chat_key.starts_with("chat:") || chat_key.starts_with("chat:orch-") {
                 return Err("A task can only be handed out from a main chat.".into());
             }
+            let projects: Vec<(String, String)> =
+                crate::workspaces::list_workspaces_impl(&svc.workspaces)?
+                    .into_iter()
+                    .map(|p| (p.id, p.name))
+                    .collect();
             to_value(crate::team::brief(
                 &crate::team::default_path(),
                 &chat_key,
                 &arg::<String>(&args, "projectId")?,
                 &arg::<String>(&args, "leadId")?,
                 &arg::<String>(&args, "task")?,
+                arg::<Option<bool>>(&args, "crossProject")?.unwrap_or(false),
+                &projects,
             ))
         }
+        // The lead the person talks to across projects. Browser-only, like the
+        // rest of the team store.
+        "team_head" => to_value(crate::team::head(&crate::team::default_path())),
+        "team_head_set" => to_value(crate::team::set_head(
+            &crate::team::default_path(),
+            arg::<Option<String>>(&args, "id")?.as_deref(),
+        )),
         "team_list" => {
             let project: Option<String> = arg(&args, "projectId")?;
             let all = arg::<Option<bool>>(&args, "all")?.unwrap_or(false);

@@ -137,9 +137,10 @@ import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { LeadPicker } from "./components/AgentsSettings";
 import { AgentsDashboard } from "./components/AgentsDashboard";
-import { pendingPlan } from "./lib/agentsDashboard";
+import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
-  leadSettings, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
+  agentIdentity, headConversation, leadSettings, loadHead, loadLeads, loadTeam,
+  recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
@@ -638,6 +639,14 @@ export default function App() {
   }, []);
   const [team, setTeam] = useState<TeamAgent[]>([]);
   const [leadId, setLeadId] = useState<string | null>(() => recall(LEAD_KEY));
+  // The lead the person talks to across projects (Settings, Agents), every
+  // registered agent (to name the lead of a conversation from any project),
+  // and which chats were handed to whom.
+  const [head, setHead] = useState<TeamAgent | null>(null);
+  const [roster, setRoster] = useState<TeamAgent[]>([]);
+  const [leads, setLeads] = useState<LeadRecord[]>([]);
+  // The empty page is a new conversation with the head, not a project task.
+  const [headDraft, setHeadDraft] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
   const [agentsDashboard, setAgentsDashboard] = useState(false);
   /** A main-area page is open in place of the chat. Settings and the Agents
@@ -1764,7 +1773,23 @@ export default function App() {
       .catch(() => { if (alive) setTeam([]); });
     return () => { alive = false; };
   }, [agentsMode, teamProjectId, appSettings, conn]);
-  const lead = agentsMode ? team.find((agent) => agent.id === leadId) ?? team[0] ?? null : null;
+  useEffect(() => {
+    if (!agentsMode || conn !== "open" || appSettings) return;
+    let alive = true;
+    Promise.all([loadHead(), loadTeam(null, true), loadLeads()])
+      .then(([configured, everyone, handed]) => {
+        if (!alive) return;
+        setHead(configured);
+        setRoster(everyone);
+        setLeads(handed);
+      })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [agentsMode, appSettings, conn]);
+  const headDraftOn = agentsMode && headDraft && !conversationId && !workerChat;
+  const lead = agentsMode
+    ? headDraftOn ? head : team.find((agent) => agent.id === leadId) ?? team[0] ?? null
+    : null;
   // Only a chat that does not exist yet is a new task. An existing one keeps
   // the model it was recorded with, empty-while-loading or not.
   const newTask = agentsMode && !conversationId && !workerChat;
@@ -1776,6 +1801,23 @@ export default function App() {
     setEffort(settings.effort);
     setAccess(settings.access);
   }, [newTask, lead]);
+  // Agents mode: who the composer says this conversation is with. A
+  // conversation handed to a lead keeps that lead — and the model it was
+  // recorded with — for as long as it exists.
+  const chatLead = useMemo(
+    () => (conversationId ? leads.find((record) => record.chatKey === keyFor(conversationId)) ?? null : null),
+    [leads, conversationId],
+  );
+  const composerIdentity = useMemo(() => {
+    if (!agentsMode || workerChat) return null;
+    if (conversationId) {
+      if (!chatLead) return null;
+      return agentIdentity(roster.find((agent) => agent.id === chatLead.leadId), chatLead.leadName, choice);
+    }
+    return lead ? agentIdentity(lead, lead.name, choice) : null;
+  }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice]);
+  const onHeadConversation = agentsMode && !!head
+    && (headDraftOn || (!!chatLead?.crossProject && chatLead.leadId === head.id));
   const pickLead = useCallback((agent: TeamAgent) => {
     setLeadId(agent.id);
     remember(LEAD_KEY, agent.id);
@@ -1874,6 +1916,9 @@ export default function App() {
 
   const chooseProject = useCallback((id: string | null) => {
     if (conversationId) return;
+    // Choosing a project makes this a task in it, not the conversation with
+    // the head, which belongs to no one project.
+    setHeadDraft(false);
     setProjectId(id);
     setBranch("");
     setBranches(id ? { ...NO_BRANCHES, loading: true } : NO_BRANCHES);
@@ -2055,6 +2100,7 @@ export default function App() {
   const newChat = useCallback(() => {
     setUnavailableChat(null);
     setNewChatError(null);
+    setHeadDraft(false);
     awaited.current = null;
     setProjectId(null);
     setConversationId(null);
@@ -2877,7 +2923,14 @@ export default function App() {
       attachments: Attachment[] = [],
     ) => {
       if (workerChat) return;
-      let targetProject = project;
+      // The conversation with the head belongs to no one project: it lives in
+      // General, whichever project is on screen, and its lead routes each task.
+      const toHead = agentsMode && headDraft && !conversationId && text.trim() !== "/clear";
+      if (toHead && !head) {
+        setNewChatError("No lead is set up to talk to across projects. Choose one in Settings, Agents.");
+        return;
+      }
+      let targetProject = toHead ? null : project;
       if (!targetProject) {
         // General is a visible, deliberate default. The prompt is content for
         // the agent, never a hidden routing surface: `@octiqflow` stays in the
@@ -2905,17 +2958,24 @@ export default function App() {
       const id = conversationId ?? crypto.randomUUID();
       // Agents mode: the first message of a new task goes to its lead with the
       // brief behind it. What the person typed still names the chat.
-      const taskLead = agentsMode && !conversationId && text.trim() !== "/clear" ? lead : null;
+      const taskLead = toHead ? head : agentsMode && !conversationId && text.trim() !== "/clear" ? lead : null;
       const typed = text;
       if (taskLead) {
         try {
-          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text);
+          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text, toHead);
         } catch (error) {
           setNewChatError(
             `Could not hand the task to ${taskLead.name}: ${String((error as Error).message ?? error)}`,
           );
           return;
         }
+        // Known at once, so the composer never flashes the model pickers
+        // between the send and the next read of the record.
+        const record: LeadRecord = {
+          chatKey: keyFor(id), leadId: taskLead.id, leadName: taskLead.name,
+          projectId: targetProject.id, crossProject: toHead || undefined, createdAt: Date.now(),
+        };
+        setLeads((current) => [...current.filter((item) => item.chatKey !== record.chatKey), record]);
       }
       if (!conversationId) setConversationId(id);
 
@@ -3014,7 +3074,7 @@ export default function App() {
         // comes through here again instead of silently starting in the parent
         // checkout. Once preparation succeeds its exact cwd makes this a
         // one-time operation, including when provider startup later fails.
-        if (!recordedCwd && project && projectSlug(project.name) !== "general") {
+        if (!recordedCwd && project && project.id === targetProject.id && projectSlug(project.name) !== "general") {
           try {
             const prepared = await bridge.invoke<PreparedWorkspace>(
               "git_prepare_chat_workspace",
@@ -3209,6 +3269,8 @@ export default function App() {
       syncQueue,
       agentsMode,
       lead,
+      head,
+      headDraft,
       workerChat,
     ],
   );
@@ -3712,6 +3774,37 @@ export default function App() {
     openConversation(conversation);
   };
 
+  // Agents mode: "Talk to <head>". Reopens the newest conversation handed to
+  // THIS head, from whichever project is on screen; with none, starts one.
+  // A conversation handed to an earlier head is never reopened under a new
+  // one's name — its history stays with the lead it was written with.
+  const talkToHead = async () => {
+    // Re-read both: the head may have been changed, or its conversation
+    // started, on another device since this page last looked.
+    const [configured, current] = await Promise.all([
+      loadHead().catch(() => head),
+      loadLeads().catch(() => leads),
+    ]);
+    setHead(configured);
+    setLeads(current);
+    if (!configured) {
+      openAgentsSettings();
+      return;
+    }
+    const known = headConversation(current, configured.id, (chatKey) =>
+      conversationsRef.current.some((item) => keyFor(item.id) === chatKey));
+    if (known) {
+      try {
+        openWorkflowChat(known.chatKey);
+        return;
+      } catch {
+        /* not in this browser's list yet: start a fresh one below */
+      }
+    }
+    newChat();
+    setHeadDraft(true);
+  };
+
   const prDashboardChats = useMemo<PrDashboardChat[]>(
     () => conversations
       .filter((conversation) => !isWorkerChat(conversation.id, chatParents))
@@ -3817,7 +3910,27 @@ export default function App() {
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
 
-      {/* Settings and Agents live in the sidebar, under New task. */}
+      {agentsMode && (
+        <button
+          className={`icon-btn talk-to-head${onHeadConversation ? " is-on" : ""}`}
+          type="button"
+          aria-label={head ? `Talk to ${head.name}` : "Choose who you talk to"}
+          title={head
+            ? `Talk to ${head.name}${head.role ? ` · ${head.role}` : ""}, across every project`
+            : "Choose the lead you talk to across projects"}
+          aria-pressed={onHeadConversation}
+          onClick={() => void talkToHead()}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z" />
+          </svg>
+          <span className="topbar-action-label">{head ? `Talk to ${head.name}` : "Choose lead"}</span>
+        </button>
+      )}
+
+      {/* Settings and the Agents dashboard live in the sidebar. The global
+          cross-project lead remains a top-bar action because it is available
+          in every project. */}
       <button
           className="icon-btn new-chat"
           type="button"
@@ -4100,6 +4213,7 @@ export default function App() {
             {workflowSplit && <div className="workflow-run-resizer" role="separator" aria-orientation="vertical"
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
+              projectName={(id) => [...workspaces, ...shelved].find((item) => item.id === id)?.name}
               onSelectedRunChange={onSelectedRunChange}
               coordinatorBusy={!workerChat && chat.busy && !cutOff}
               currentChatKey={conversationId ? keyFor(conversationId) : null}
@@ -4149,13 +4263,24 @@ export default function App() {
             <div className="hero"><h2 className="hero-title">Main chat</h2><p className="hero-sub">Talk with the main agent here. Select a task to follow its conversation.</p></div>
           ) : chat.messages.length === 0 ? (
             <div className={`hero ${project ? "" : "hero-start"}`}>
-              <h1 className="hero-title">{newTask
+              <h1 className="hero-title">{headDraftOn
+                ? (head ? `Talk to ${head.name}` : "Choose who you talk to")
+                : newTask
                 ? (project ? `What's the task in ${project.name}?` : "What's the task?")
                 : project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
+              {headDraftOn && (head ? (
+                <p className="hero-sub">
+                  {head.role ? `${head.role}. ` : ""}Works across every project: picks the project, repository and teammate for each part, and you approve the plan before anyone starts.
+                </p>
+              ) : (
+                <p className="hero-sub">
+                  No lead is set up to talk to across projects. <button type="button" className="hero-link" onClick={openAgentsSettings}>Choose one in Settings</button>
+                </p>
+              ))}
               {(!project || newTask) && (
                 newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>
               )}
-              {newTask && (
+              {newTask && !headDraftOn && (
                 <LeadPicker team={team} leadId={lead?.id ?? null} onPick={pickLead} onManage={openAgentsSettings} />
               )}
               {chat.sessionId &&
@@ -4422,13 +4547,14 @@ export default function App() {
             onUseSandbox={setSandboxChoice}
             newWorktree={newWorktree}
             onNewWorktree={setNewWorktree}
-            showWorkLocation={!conversationId}
+            showWorkLocation={!conversationId && !headDraftOn}
             cwd={effectiveCwd}
             /* The last turn's receipt. It had a row of its own under the box
                until now; it rides on the composer's own eyebrow instead. */
             model={chat.model}
             lastDurationMs={chat.lastDurationMs}
             lastCostUsd={chat.lastCostUsd}
+            identity={composerIdentity}
             terminalOpen={termOpen}
             onTerminal={
               project && !focusMode
@@ -4442,7 +4568,6 @@ export default function App() {
           />}
 
           </div>
-
           </div>
           </>}
           </div>

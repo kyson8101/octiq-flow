@@ -961,6 +961,7 @@ async fn orchestration_handler(
     let command = match request.action.as_str() {
         "run_create" => "orchestration_run_create",
         "task_create" => "orchestration_task_create",
+        "destinations" => "orchestration_destinations",
         "snapshot" => "orchestration_snapshot",
         "worker_start" => "orchestration_worker_start",
         "worker_report" => "orchestration_worker_report",

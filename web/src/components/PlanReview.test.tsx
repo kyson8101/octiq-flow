@@ -44,6 +44,27 @@ describe("PlanReview", () => {
     expect(empty).toMatch(/<button[^>]*disabled=""[^>]*>Approve plan/);
   });
 
+  it("shows where each task runs: its destination, else the run's own checkout", () => {
+    const html = renderToStaticMarkup(
+      <PlanReview run={run} tasks={[
+        task("a", [], {
+          assignee: { id: "maya", name: "Maya" },
+          destination: { projectId: "shop", projectName: "Shop", repository: "/src/shop/api" },
+        }),
+        task("b", [], { assignee: { id: "sam", name: "Sam" } }),
+      ]} drafting={false} projectName={(id) => (id === "p1" ? "OctiqFlow" : undefined)} onRequestChanges={() => {}} />);
+    expect(html).toMatch(/Task a.*Shop.*api.*Maya/s);
+    expect(html).toContain('title="Shop · /src/shop/api"');
+    expect(html).toMatch(/Task b.*OctiqFlow.*r<\/span>.*Sam/s);
+  });
+
+  it("marks what was added since the plan was last approved", () => {
+    const html = render([task("a", [], { approvedAt: 5 }), task("b")]);
+    expect(html.match(/plan-task-new/g)).toHaveLength(1);
+    expect(html).toMatch(/Task b.*New/s);
+    expect(render([task("a"), task("b")])).not.toContain("plan-task-new");
+  });
+
   it("warns about tasks that wait on each other", () => {
     const html = render([task("a", ["b"]), task("b", ["a"])]);
     expect(html).toContain("Waits on each other");

@@ -20,6 +20,7 @@ import { Mascot } from "./Mascot";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
+import type { AgentIdentity } from "../lib/agentsMode";
 import {
   WorkLocation,
   type WorkLocationBranches,
@@ -364,7 +365,12 @@ export function Composer({
   model,
   lastDurationMs,
   lastCostUsd,
+  identity,
 }: {
+  /** Agents mode: who this conversation is with. The agent's registration owns
+   *  its provider, model, effort and access, so the pickers give way to a
+   *  read-only name and role. Absent in an ordinary chat, which keeps them. */
+  identity?: AgentIdentity | null;
   /** Quiet presentation only: the same mounted input retains its draft. */
   focusMode?: boolean;
   /** Which chat this is, so Up walks back through ITS input and no one else's.
@@ -1291,6 +1297,7 @@ export function Composer({
               them as direct flex children on a wide screen, so wrapping them
               costs the desktop layout nothing; the phone rule hides the lot and
               shows `settings-toggle` in their place. */}
+          {identity ? <AgentIdentityChip identity={identity} /> : <>
           <div className="composer-settings">
           <div className="picker">
             <button
@@ -1434,6 +1441,7 @@ export function Composer({
               ▾
             </span>
           </button>
+          </>}
 
           {/* A shell in this project, for the things you would rather run than
               ask for. Next to the agent's own settings because it is the same
@@ -1559,6 +1567,26 @@ export function Composer({
           onNewWorktree={onNewWorktree ?? (() => undefined)}
         />
       )}
+    </div>
+  );
+}
+
+/** Agents mode: the agent this conversation is with, in the place the model,
+ *  access and effort pickers take in an ordinary chat. Read-only on purpose:
+ *  the agent's registration (Settings, Agents) owns those settings. */
+export function AgentIdentityChip({ identity }: { identity: AgentIdentity }) {
+  const tip = [
+    identity.name,
+    identity.role,
+    `${identity.model} · set in Settings, Agents`,
+    identity.removed ? "No longer registered: this conversation keeps its last settings" : "",
+  ].filter(Boolean).join("\n");
+  return (
+    <div className="composer-identity" title={tip} data-removed={identity.removed || undefined}>
+      <AgentLogo agent={identity.provider} />
+      <span className="composer-identity-name">{identity.name}</span>
+      {identity.role && <span className="composer-identity-role">{identity.role}</span>}
+      <span className="composer-identity-model">{identity.model}</span>
     </div>
   );
 }
