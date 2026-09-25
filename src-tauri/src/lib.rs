@@ -44,6 +44,8 @@ mod pty;
 mod push;
 mod question;
 mod question_store;
+mod record_trim;
+mod sandbox;
 mod safety_block;
 mod transcript;
 mod usage_limits;
@@ -66,6 +68,9 @@ pub async fn run_headless() {
     // points at any more.
     chat_index::reconcile();
     agent_chat::start_deleted_chat_reaper();
+    // Once per profile, off the startup path: old records lose the snapshot
+    // reads they were recorded with (see record_trim.rs).
+    std::thread::spawn(record_trim::prune_old_records);
 
     let cfg = web::load_config();
     let services = dispatch::Services::load();

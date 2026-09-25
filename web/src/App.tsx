@@ -16,6 +16,8 @@
 // Chats run in PARALLEL. Switching to another one does not stop the one you
 // leave — its answer arrives, folds into its own transcript, and is saved,
 // whether or not it is the chat on screen.
+import { useSandboxes } from "./lib/sandbox";
+import { SandboxStatus } from "./components/SandboxStatus";
 import {
   useCallback,
   useEffect,
@@ -379,6 +381,9 @@ export default function App() {
   const [branch, setBranch] = useState("");
   const [branches, setBranches] = useState<WorkLocationBranches>(NO_BRANCHES);
   const [newWorktree, setNewWorktree] = useState(false);
+  const sandboxes = useSandboxes();
+  const [sandboxChoice, setSandboxChoice] = useState<boolean | null>(null);
+  const useSandbox = sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? false;
   const [indexReady, setIndexReady] = useState(false);
   const [unavailableChat, setUnavailableChat] = useState<string | null>(null);
   const [newChatError, setNewChatError] = useState<string | null>(null);
@@ -1944,6 +1949,7 @@ export default function App() {
     setBranch("");
     setBranches(NO_BRANCHES);
     setNewWorktree(false);
+    setSandboxChoice(null);
     setWorkflowModes((before) => ({ ...before, new: false }));
     setWorkflowViews((before) => ({ ...before, new: "chat" }));
     remember(LAST_KEY, "");
@@ -3003,6 +3009,7 @@ export default function App() {
           await bridge.invoke("chat_start", {
             key: keyFor(id),
             cwd: launchCwd,
+            useSandbox: held ? false : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? null),
             // A project can group several folders, and the chat starts in only
             // one of them. The rest are named here so the agent can reach the
             // whole project, the same way a terminal in it can.
@@ -3056,6 +3063,8 @@ export default function App() {
       ensureGeneralWorkspace,
       branch,
       newWorktree,
+      sandboxChoice,
+      sandboxes.snapshot?.defaultEnabled,
       choice,
       access,
       effort,
@@ -4080,6 +4089,10 @@ export default function App() {
             />
           )}
 
+          {conversationId && sandboxes.snapshot?.environments[keyFor(conversationId)]?.enabled &&
+            <SandboxStatus key={conversationId} environment={sandboxes.snapshot.environments[keyFor(conversationId)]}
+              running={chat.busy} onRefresh={sandboxes.refresh} />}
+
           {/* Keyed by project: switching project gets that project's own
               terminals, and coming back reattaches to them rather than
               starting a second set. */}
@@ -4156,6 +4169,8 @@ export default function App() {
             branch={branch}
             branches={branches}
             onBranch={setBranch}
+            useSandbox={useSandbox}
+            onUseSandbox={setSandboxChoice}
             newWorktree={newWorktree}
             onNewWorktree={setNewWorktree}
             showWorkLocation={!conversationId}

@@ -1,0 +1,118 @@
+services:
+  seed-copy:
+    image: alpine:3.22
+    network_mode: none
+    volumes:
+      - ${SEED_FILE:?Set SEED_FILE}:/input/seed.bak:ro
+      - database:/data
+    command: [sh, -c, 'set -eu; if ! test -f /data/seed.bak; then cp /input/seed.bak /data/seed.tmp; mv /data/seed.tmp /data/seed.bak; fi; chown 10001:0 /data /data/seed.bak; chmod 600 /data/seed.bak']
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment:
+      ACCEPT_EULA: Y
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${OCTIQ_SANDBOX_DB_PASSWORD:?Set OCTIQ_SANDBOX_DB_PASSWORD}
+    volumes: [database:/var/opt/mssql]
+    depends_on:
+      seed-copy: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD-SHELL, 'SQLCMDPASSWORD="$$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -S 127.0.0.1 -U sa -C -b -Q "SELECT 1" >/dev/null']
+      interval: 3s
+      timeout: 10s
+      retries: 40
+  restore:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment: {SQLCMDPASSWORD: '${OCTIQ_SANDBOX_DB_PASSWORD}'}
+    depends_on:
+      db: {condition: service_healthy}
+    entrypoint: [/opt/mssql-tools18/bin/sqlcmd, -S, db, -U, sa, -C, -b, -Q]
+    command:
+      - "IF DB_ID('ihrms_tomei') IS NULL BEGIN RESTORE DATABASE ihrms_tomei FROM DISK='/var/opt/mssql/seed.bak' WITH MOVE 'octiq_fixture' TO '/var/opt/mssql/data/tomei.mdf', MOVE 'octiq_fixture_log' TO '/var/opt/mssql/data/tomei_log.ldf', CHECKSUM; END;"
+  core:
+    build:
+      context: ${CORE_SOURCE:?Set CORE_SOURCE}
+      dockerfile: ${KIT_DIR}/dotnet.Dockerfile
+      args: {PROJECT: PandaHRMS_Api/PandaHRMS_Api.csproj}
+    environment:
+      APP_DLL: PandaHRMS_Api.dll
+      ASPNETCORE_ENVIRONMENT: Sandbox
+      ASPNETCORE_HTTP_PORTS: 8080
+      ConnectionStrings__Default: 'Server=db;Database=ihrms_tomei;User Id=sa;Password=${OCTIQ_SANDBOX_DB_PASSWORD};TrustServerCertificate=True'
+      AppSettings__Token: ${OCTIQ_SANDBOX_JWT_KEY}
+      AppSettings__TokenLifeSpanInMinute: 120
+      AppSettings__RefreshTokenLifeSpanInDay: 1
+      AppSettings__AllowedUserTypes: admin,ess
+      AppSettings__EnableSelfServiceRegistration: false
+      AllowedOrigins__0: http://gateway
+    depends_on:
+      restore: {condition: service_completed_successfully}
+  api:
+    build:
+      context: ${API_SOURCE:?Set API_SOURCE}
+      dockerfile: ${KIT_DIR}/dotnet.Dockerfile
+      args: {PROJECT: Pandahrms.Performance.Api/Pandahrms.Performance.Api.csproj}
+      secrets: [nuget_token]
+    environment:
+      APP_DLL: Pandahrms.Performance.Api.dll
+      ASPNETCORE_ENVIRONMENT: Sandbox
+      ASPNETCORE_HTTP_PORTS: 8080
+      ConnectionStrings__PerformanceConnectionString: 'Server=db;Database=ihrms_tomei;User Id=sa;Password=${OCTIQ_SANDBOX_DB_PASSWORD};TrustServerCertificate=True'
+      JwtSettings__Key: ${OCTIQ_SANDBOX_JWT_KEY}
+      Services__CustomApiBaseUrl: http://core:8080/api/
+      RateLimiting__Global__PermitLimit: 1000
+      RateLimiting__Global__Window: '00:01:00'
+      RateLimiting__Global__QueueProcessingOrder: OldestFirst
+      RateLimiting__Global__QueueLimit: 0
+      RateLimiting__EndpointPolicies__SpecificEndpointPolicy__PermitLimit: 100
+      RateLimiting__EndpointPolicies__SpecificEndpointPolicy__Window: '00:01:00'
+      RateLimiting__EndpointPolicies__SpecificEndpointPolicy__QueueProcessingOrder: OldestFirst
+      RateLimiting__EndpointPolicies__SpecificEndpointPolicy__QueueLimit: 0
+    depends_on:
+      restore: {condition: service_completed_successfully}
+  frontend:
+    build:
+      context: ${FRONTEND_SOURCE:?Set FRONTEND_SOURCE}
+      dockerfile: ${KIT_DIR}/frontend.Dockerfile
+      additional_contexts:
+        sandbox-kit: ${KIT_DIR}
+      secrets: [nuget_token]
+    environment:
+      VITE_API_BASE_URL: ''
+      VITE_SSO_BASE_URL: /sso
+      VITE_SIGNALR_BASE_URL: /core
+  sso:
+    build:
+      context: ${SSO_SOURCE:?Set SSO_SOURCE}
+      dockerfile: ${KIT_DIR}/sso.Dockerfile
+    environment:
+      CORE_API_BASE_URL: http://core:8080
+      NEXT_PUBLIC_CORE_API_BASE_URL: /core
+      USE_SECURE_COOKIES: false
+      ACCESS_CONTROL_ALLOW_ORIGINS: ''
+  gateway:
+    image: nginx:1.27-alpine
+    volumes: ['${KIT_DIR}/gateway.conf:/etc/nginx/conf.d/default.conf:ro']
+    ports: ['127.0.0.1::80']
+    networks: [default, browser]
+    depends_on: [core, api, frontend, sso]
+    healthcheck:
+      test: [CMD-SHELL, 'wget -q -O /dev/null http://127.0.0.1/performanceV2/']
+      interval: 3s
+      timeout: 10s
+      retries: 40
+  verify:
+    image: node:22-alpine
+    profiles: [check]
+    volumes:
+      - ${KIT_DIR}/verify.mjs:/verify.mjs:ro
+      - ${FIXTURE_FILE:?Set FIXTURE_FILE}:/fixture.json:ro
+    command: [node, /verify.mjs]
+volumes:
+  database: {}
+networks:
+  default: {internal: true}
+  browser: {}
+secrets:
+  nuget_token: {file: '${NUGET_TOKEN_FILE:?Set NUGET_TOKEN_FILE}'}

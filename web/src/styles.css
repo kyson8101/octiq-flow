@@ -12983,3 +12983,5 @@ body.is-ultra .eff {
   .projects-screen .proj-btn { height: 44px; }
   .projects-screen .proj-node { --sib-mid: 22px; }
 }
+
+.work-location { flex-wrap: wrap; }

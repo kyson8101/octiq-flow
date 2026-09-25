@@ -21,8 +21,8 @@
 //! dropped on read), and can be read with `tail` when something looks wrong.
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -273,6 +273,51 @@ pub fn forget(key: &str) {
     let mut guard = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(counts) = guard.as_mut() {
         counts.remove(key);
+    }
+}
+
+/// Rewrite a record line by line. `edit` returns a replacement for a line, or
+/// `None` to keep it as it is. Every line stays one line in its place, because
+/// a line's position is its `seq`; a line that is not UTF-8, or a replacement
+/// that would split into two lines, is kept byte for byte.
+///
+/// Holds the append lock throughout, so a chat writing meanwhile waits rather
+/// than landing a line in the file being replaced. True when anything changed.
+pub(crate) fn rewrite_lines(
+    path: &Path,
+    mut edit: impl FnMut(&str) -> Option<String>,
+) -> std::io::Result<bool> {
+    let _appending = NEXT_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+    let temp = path.with_extension("jsonl.rewrite");
+    let written = (|| {
+        let mut reader = BufReader::new(File::open(path)?);
+        let mut out = BufWriter::new(File::create(&temp)?);
+        let mut changed = false;
+        let mut line = Vec::new();
+        while reader.read_until(b'\n', &mut line)? > 0 {
+            let ended = line.last() == Some(&b'\n');
+            let body = &line[..line.len() - usize::from(ended)];
+            match std::str::from_utf8(body).ok().and_then(&mut edit) {
+                Some(text) if !text.contains('\n') => {
+                    out.write_all(text.as_bytes())?;
+                    if ended {
+                        out.write_all(b"\n")?;
+                    }
+                    changed = true;
+                }
+                _ => out.write_all(&line)?,
+            }
+            line.clear();
+        }
+        out.into_inner().map_err(|e| e.into_error())?.sync_all()?;
+        Ok(changed)
+    })();
+    match written {
+        Ok(true) => fs::rename(&temp, path).map(|_| true),
+        other => {
+            let _ = fs::remove_file(&temp);
+            other
+        }
     }
 }
 

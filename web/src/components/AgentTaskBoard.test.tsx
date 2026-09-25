@@ -10,6 +10,15 @@ const conversation = (id: string): Conversation => ({ id, projectId: "project", 
 const chats = [conversation("main"), conversation("w-auth"), conversation("w-reader"), conversation("w-export")];
 
 describe("compact agent task board", () => {
+  it("labels task completion separately from unverified product acceptance", () => {
+    const snapshot = taskBoardFixture();
+    snapshot.tasks.forEach(task => { task.status = "completed"; task.result = "NOT RELEASE-READY"; });
+    const out = renderToStaticMarkup(<AgentTaskBoard snapshot={snapshot} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />);
+    expect(out).toContain("Tasks completed");
+    expect(out).toContain("100%");
+    expect(out).toContain("Acceptance: unverified");
+  });
+
   it("puts attention and active work above settled tasks without changing ledger order", () => {
     const snapshot = taskBoardFixture();
     const statuses = ["completed", "pending", "running", "cancelled", "ready", "blocked", "running", "failed", "completed"] as const;

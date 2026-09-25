@@ -29,6 +29,7 @@ pub mod automation;
 pub mod execution;
 pub mod inbox;
 pub mod lifecycle;
+mod retention;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 use workspaces::TaskWorkspace;
@@ -313,6 +314,7 @@ impl OrchestrationStore {
                     recovered |= recover_interrupted_workers(&mut data);
                     recovered |= workspaces::recover_workspaces(&mut data);
                     recovered |= lifecycle::recover(&mut data);
+                    recovered |= retention::prune_finished_runs(&mut data);
                     inner.data = data;
                 }
                 Ok(data) => {
@@ -1534,6 +1536,7 @@ impl OrchestrationStore {
             run.status = RunStatus::Stopped;
             run.stopped_reason = Some(reason);
             run.updated_at = now;
+            retention::prune_run(data, &run_id);
             Ok(workers)
         })
         .inspect(|_| announce(&run_id_for_event, "run_stopped"))
@@ -1670,6 +1673,7 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
             run.updated_at = now_ms();
         }
     }
+    retention::prune_run(data, run_id);
 }
 
 /// Agent processes are children of the server and cannot survive its restart.

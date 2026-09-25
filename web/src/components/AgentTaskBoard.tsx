@@ -44,8 +44,10 @@ export function AgentTaskBoard(props: Props) {
       {snapshot.runs.map((item) => <option key={item.id} value={item.id}>{item.objective}</option>)}
     </select>}
     <div className="agent-board-overview">
-      <div className="agent-board-totals"><strong>{counts.done}<span> / {counts.total} done</span></strong><strong>{counts.percent}%</strong></div>
+      <div className="agent-board-progress-label">Tasks completed</div>
+      <div className="agent-board-totals"><strong>{counts.done}<span> / {counts.total} tasks</span></strong><strong>{counts.percent}%</strong></div>
       <TaskMeter tasks={tasks} done={counts.done} />
+      <div className="agent-board-acceptance" title="OctiqFlow does not yet track acceptance results. Review the test evidence separately.">Acceptance: unverified</div>
       <div className="agent-board-counts">
         <span>{counts.todo} to do</span>
         {counts.running > 0 && <span className="agent-board-working">{counts.running} working</span>}

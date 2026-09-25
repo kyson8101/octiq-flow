@@ -1,0 +1,8 @@
+password-tool/bin/
+password-tool/obj/
+*.bak
+*.env
+fixture.json
+artifacts/
+
+__pycache__/

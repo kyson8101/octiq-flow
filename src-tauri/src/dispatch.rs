@@ -138,6 +138,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
     // implementations directly, without a client-controlled bypass flag.
     match cmd {
         "chat_start"
+        | "sandbox_action"
         | "chat_send"
         | "chat_cancel_auto_resume"
         | "chat_cancel_queued"
@@ -322,23 +323,46 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         )),
 
         // ---- chats --------------------------------------------------------
-        "chat_start" => unit(crate::agent_chat::chat_start_user_impl(
-            svc.chats.clone(),
-            arg(&args, "key")?,
-            arg(&args, "cwd")?,
-            arg(&args, "agent")?,
-            arg(&args, "model")?,
-            arg(&args, "access")?,
-            arg(&args, "prompt")?,
-            arg(&args, "handoff")?,
-            arg(&args, "resume")?,
-            arg(&args, "extraDirs")?,
-            arg(&args, "env")?,
-            arg(&args, "effort")?,
-            arg(&args, "images")?,
-            arg(&args, "lite")?,
-            arg(&args, "turnId")?,
-        )),
+        "sandbox_snapshot" => to_value(crate::sandbox::Store::profile().snapshot()),
+        "sandbox_configure" => {
+            to_value(crate::sandbox::Store::profile().configure(arg(&args, "enabled")?))
+        }
+        "sandbox_action" => {
+            let key: String = arg(&args, "key")?;
+            let action: String = arg(&args, "action")?;
+            let confirmation: Option<String> = arg(&args, "confirmation")?;
+            to_value(crate::sandbox::Store::profile().action_when_idle(
+                &key,
+                &action,
+                confirmation.as_deref(),
+                || crate::agent_chat::end_idle_for_sandbox(&svc.chats, &key),
+            ))
+        }
+        "chat_start" => {
+            crate::sandbox::Store::profile().select(
+                &arg::<String>(&args, "key")?,
+                &arg::<String>(&args, "cwd")?,
+                arg(&args, "useSandbox")?,
+                arg::<Option<String>>(&args, "resume")?.is_some(),
+            )?;
+            unit(crate::agent_chat::chat_start_user_impl(
+                svc.chats.clone(),
+                arg(&args, "key")?,
+                arg(&args, "cwd")?,
+                arg(&args, "agent")?,
+                arg(&args, "model")?,
+                arg(&args, "access")?,
+                arg(&args, "prompt")?,
+                arg(&args, "handoff")?,
+                arg(&args, "resume")?,
+                arg(&args, "extraDirs")?,
+                arg(&args, "env")?,
+                arg(&args, "effort")?,
+                arg(&args, "images")?,
+                arg(&args, "lite")?,
+                arg(&args, "turnId")?,
+            ))
+        }
         "chat_send" => unit(crate::agent_chat::chat_send_user_impl(
             svc.chats.clone(),
             arg(&args, "key")?,

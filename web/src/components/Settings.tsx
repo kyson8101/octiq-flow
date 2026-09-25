@@ -14,7 +14,9 @@ import type { ProjectDetail } from "./ProjectSettings";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { MemoryVaultSettings } from "./MemoryVaultSettings";
 
-type SettingsSection = "projects" | "notifications" | "appearance" | "memory";
+import { SandboxSettings } from "./SandboxSettings";
+
+type SettingsSection = "projects" | "notifications" | "appearance" | "memory" | "sandbox";
 
 const projectNameCollator = new Intl.Collator(undefined, {
   numeric: true,
@@ -152,6 +154,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                   onPick={setSection}
                 />
               )}
+              <SettingsNavButton section="sandbox" label="Sandbox" detail="Local test environments" active={section === "sandbox"} onPick={setSection} />
               <SettingsNavButton section="memory" label="Memory Vault" detail="Shared agent knowledge" active={section === "memory"} onPick={setSection} />
               <SettingsNavButton
                 section="appearance"
@@ -165,6 +168,7 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
           </nav>
 
           <main className="settings-content">
+            {section === "sandbox" && <SandboxSettings />}
             {section === "memory" && <MemoryVaultSettings />}
             {section === "projects" && (
               <section className="settings-section" aria-labelledby="settings-projects-title">

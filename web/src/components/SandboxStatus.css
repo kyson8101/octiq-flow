@@ -1,0 +1,12 @@
+.sandbox-status { margin: 8px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; color: var(--fg-2); }
+.sandbox-status summary { padding: 9px 12px; cursor: pointer; color: var(--fg-1); }
+.sandbox-status summary span { margin-left: 12px; color: var(--fg-3); }
+.sandbox-status-body { padding: 0 12px 12px; overflow-wrap: anywhere; }
+.sandbox-status-body p { margin: 8px 0; }
+.sandbox-links, .sandbox-actions, .sandbox-reset { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.sandbox-links a { color: var(--accent); }
+.sandbox-actions button, .sandbox-reset button { padding: 6px 9px; color: var(--fg-1); background: var(--bg-2); border: 1px solid var(--border); border-radius: 5px; cursor: pointer; }
+.sandbox-actions button:disabled, .sandbox-reset button:disabled { opacity: .5; cursor: default; }
+.sandbox-reset { border-top: 1px solid var(--border); padding-top: 8px; }
+.sandbox-reset p { width: 100%; }
+.sandbox-reset button:first-of-type { color: var(--danger); }

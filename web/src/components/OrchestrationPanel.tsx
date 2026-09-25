@@ -653,7 +653,8 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
   ].filter((chip): chip is { key: string; tone: string; label: string } => chip !== null);
 
   return (
-    <div className="orch-progress" aria-label="Run progress">
+    <div className="orch-progress" aria-label="Task completion">
+      <div className="orch-progress-label">Tasks completed</div>
       <div className="orch-progress-head">
         <strong><RollingNumber value={counts.done} /><span> / {counts.total} tasks</span></strong>
         <span className="orch-progress-percent"><RollingNumber value={counts.percent} />%</span>
@@ -661,6 +662,7 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
           title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
       </div>
       <TaskMeter tasks={tasks} done={counts.done} />
+      <p className="orch-progress-acceptance" title="OctiqFlow does not yet track acceptance results. Review the test evidence separately.">Acceptance: unverified</p>
       {chips.length > 0 && <div className="orch-progress-chips">
         {chips.map((chip) => <span className="orch-chip" data-tone={chip.tone} key={chip.key}>{chip.label}</span>)}
       </div>}

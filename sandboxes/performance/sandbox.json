@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "composeFile": "performance/compose.yaml",
+  "envFile": "sandbox.env",
+  "checkService": "verify",
+  "fixtureVersion": "ihrms-tomei-v1",
+  "endpoints": {
+    "Performance": {"service": "gateway", "port": 80, "path": "/performanceV2/"},
+    "Sign in": {"service": "gateway", "port": 80, "path": "/sso/auth/signin"}
+  }
+}

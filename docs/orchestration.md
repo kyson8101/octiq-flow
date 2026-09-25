@@ -41,6 +41,10 @@ its assignment, reported checklist, branch, full working folder, worktree mode,
 and delivery state, or choose **Open activity** to read its worker conversation.
 
 Overall completion is the fraction of tasks recorded as completed by the host.
+Both task boards label this metric **Tasks completed** and show **Acceptance:
+unverified** separately. The host does not yet record product acceptance results;
+even a completed review can report failing checks. Consult the test evidence
+before treating a completed run as ready to release.
 Individual progress comes from completed steps in the worker's `task_status`
 report; a running task without a reported plan has no percentage. The current
 stage comes from its active step, and reports include their timestamp. New

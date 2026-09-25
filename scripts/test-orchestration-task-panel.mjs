@@ -40,11 +40,14 @@ const fixture = `
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { OrchestrationPanel } from "/src/components/OrchestrationPanel.tsx";
+import { AgentTaskBoard } from "/src/components/AgentTaskBoard.tsx";
 import "/src/design-system.css";
 import "/src/styles.css";
 window.picks = [];
 createRoot(document.getElementById("root")).render(
-  <aside style={{ width: "min(480px, 100vw)", height: "100vh", display: "flex", marginLeft: "auto", borderLeft: "1px solid var(--border)" }}>
+  location.search === "?board" ? <div style={{ width: "min(260px, 100vw)" }}>
+    <AgentTaskBoard snapshot={${JSON.stringify(snapshot)}} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />
+  </div> : <aside style={{ width: "min(480px, 100vw)", height: "100vh", display: "flex", marginLeft: "auto", borderLeft: "1px solid var(--border)" }}>
     <OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={${JSON.stringify(snapshot)}} onOpenChat={key => window.picks.push(key)} onClose={() => {}} />
   </aside>
@@ -74,7 +77,7 @@ let browser;
 const errors = [];
 try {
   await server.listen();
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || undefined });
   for (const mobile of [false, true]) {
     const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 1000 }, isMobile: mobile, hasTouch: mobile });
     await context.route("**/token", route => route.fulfill({ body: "mock-token" }));
@@ -92,6 +95,8 @@ try {
     const collapse = page.getByRole("button", { name: `Collapse task progress: ${task.title}`, exact: true });
     const checklist = page.getByRole("list", { name: "Reported checklist" });
     await row.waitFor();
+    await page.getByText("Tasks completed", { exact: true }).waitFor();
+    await page.getByText("Acceptance: unverified", { exact: true }).waitFor();
     assert.equal(await checklist.isVisible(), false);
     if (mobile) await row.tap(); else await row.click();
     assert.deepEqual(await page.evaluate(() => window.picks), ["chat:current-worker"]);
@@ -129,6 +134,11 @@ try {
       await page.getByText("Task details", { exact: true }).first().click();
       await page.getByRole("button", { name: "codex worker #2", exact: true }).waitFor();
     }
+    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/__task-panel-test?board`);
+    await page.getByText("Tasks completed", { exact: true }).waitFor();
+    await page.getByText("Acceptance: unverified", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: join(artifacts, mobile ? "mobile-board.png" : "desktop-board.png") });
     await context.close();
   }
   assert.deepEqual(errors, []);

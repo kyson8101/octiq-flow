@@ -1,6 +1,8 @@
 .agent-board { margin: 4px 2px 10px 12px; padding: 9px 0 0 9px; border-left: 1px solid var(--border-strong); color: var(--fg-2); font-size: 11px; min-width: 0; }
 .agent-board-runs { width: 100%; padding: 6px; margin-bottom: 8px; border: 1px solid var(--border); border-radius: var(--r-sm); color: var(--fg-1); background: var(--bg-1); font: inherit; }
 .agent-board-overview { padding: 0 8px 9px; }
+.agent-board-progress-label { margin-bottom: 4px; }
+.agent-board-acceptance { margin-bottom: 8px; }
 .agent-board-totals { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; color: var(--fg-0); font-variant-numeric: tabular-nums; font-size: 13px; }
 .agent-board-totals strong { font-weight: 650; }
 .agent-board-totals strong span { font-weight: 400; color: var(--fg-2); font-size: 11px; }

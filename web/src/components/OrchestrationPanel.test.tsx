@@ -107,6 +107,19 @@ describe("host execution evidence", () => {
 });
 
 describe("OrchestrationPanel", () => {
+  it("keeps acceptance unverified even when every task has completed", () => {
+    const current = structuredClone(snapshot);
+    current.runs[0].status = "completed";
+    current.tasks[0].status = "completed";
+    current.tasks[0].result = "Review completed: NOT RELEASE-READY";
+    current.attempts[0].status = "completed";
+    current.gates = [];
+    const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
+      initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).toContain("Tasks completed");
+    expect(html).toContain("Acceptance: unverified");
+  });
+
   it.each([false, true])("keeps attention and ongoing work above settled tasks (embedded: %s)", (embedded) => {
     const statuses = ["completed", "pending", "running", "cancelled", "ready", "blocked", "running", "failed", "completed"] as const;
     const current: OrchestrationSnapshot = {

@@ -1615,6 +1615,38 @@ pub(crate) fn start_session(
         session_key,
         stream_key: key,
     } = voice;
+    if manager
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(&session_key)
+    {
+        return Err(format!("chat '{session_key}' is already running"));
+    }
+    manager.orchestrations.require_workspace_access(
+        &session_key,
+        &cwd,
+        access != Some(Access::Read),
+    )?;
+    // Hold ownership through launch: reset/stop cannot race preparation.
+    let sandbox = crate::sandbox::prepare_for_start(&key, &cwd)?;
+    let mut env = env;
+    let (prompt, visible_prompt) = if let Some(sandbox) = &sandbox {
+        let vars = env.get_or_insert_with(Default::default);
+        vars.insert("OCTIQ_SANDBOX_ID".into(), sandbox.id.clone());
+        vars.insert(
+            "OCTIQ_SANDBOX_HANDOFF".into(),
+            sandbox.handoff.to_string_lossy().into(),
+        );
+        let visible = visible_prompt.or_else(|| prompt.clone());
+        let context = format!("OctiqFlow prepared this chat's local test services. Read {} for URLs and readiness evidence. Use these services for testing; preserve this chat's database on resume. Task completion alone does not verify the application.", sandbox.handoff.display());
+        (
+            Some(format!("{context}\n\n{}", prompt.unwrap_or_default())),
+            visible,
+        )
+    } else {
+        (prompt, visible_prompt)
+    };
     let manager_for_exit = manager.clone();
     let session_key_for_exit = session_key.clone();
     // Keep creation and insertion atomic with other starts and sends.
@@ -1940,6 +1972,7 @@ pub(crate) fn start_session(
             // cleared the moment it is handed over. One turn's words must never
             // be read as the next one's answer.
             let mut carried = String::new();
+            let mut snapshot_reads = crate::record_trim::SnapshotResults::default();
             let prelude = app_server_prelude
                 .into_iter()
                 .map(|message| Ok(message.to_string()));
@@ -2245,6 +2278,9 @@ pub(crate) fn start_session(
                                 &mut session.user_turn_id,
                             );
                         }
+                        // The agent has its ledger read already; the record and
+                        // every tab get a note instead.
+                        snapshot_reads.trim(&mut event, crate::record_trim::RECORD_MIN_BYTES);
                         let notification_receipt = event
                             .get("octiq_orchestration_notification_id")
                             .and_then(Value::as_str)
@@ -3641,6 +3677,26 @@ pub fn chat_retarget_impl(manager: &ChatManager, key: String) -> Result<(), Stri
 /// Answers how many processes went, which is 0 for a chat already stopped.
 pub fn chat_restart_impl(manager: &ChatManager, key: String) -> Result<usize, String> {
     Ok(usize::from(end_process(manager, &key)?))
+}
+
+/// Called while sandbox ownership is held, so no replacement process can start.
+pub fn end_idle_for_sandbox(manager: &ChatManager, key: &str) -> Result<(), String> {
+    if manager.has_queued_turns(key) {
+        return Err("Wait for this chat's queued messages before changing its sandbox.".into());
+    }
+    end_process_when(manager, key, Some(Duration::ZERO))?;
+    if manager
+        .sessions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .contains_key(key)
+    {
+        return Err(
+            "Wait for this chat's current turn and background work before changing its sandbox."
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// End one chat process while preserving its transcript and remembered settings.

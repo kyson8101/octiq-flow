@@ -415,6 +415,8 @@
 .orch-stop-confirm button.is-danger { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); color: var(--danger); }
 
 .orch-progress { --meter-height: 6px; margin: 20px 0 24px; }
+.orch-progress-label { margin-bottom: 4px; color: var(--fg-2); font-size: 12px; }
+.orch-progress-acceptance { margin: 8px 0 0; color: var(--fg-2); font-size: 12px; }
 
 .orch-progress-head {
   display: flex;
