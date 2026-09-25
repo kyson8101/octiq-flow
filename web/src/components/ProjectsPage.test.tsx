@@ -4,6 +4,7 @@ import { projectTaskCounts, projectTasks } from "../lib/projectTasks";
 import type { Conversation } from "../lib/store";
 import { ProjectsPage } from "./ProjectsPage";
 import type { Project } from "./Sidebar";
+import type { OrchestrationSnapshot } from "../lib/orchestration";
 
 const projects: Project[] = [
   { id: "p1", name: "octiq-flow", primary_path: "/work/octiq-flow" },
@@ -43,6 +44,30 @@ describe("projectTasks", () => {
     expect(counts.get("p1")).toBe(3);
     expect(counts.get("p2")).toBe(1);
     expect(counts.get("p3")).toBeUndefined();
+  });
+
+  it("discovers one pinned coordinator through every completed task destination", () => {
+    const coordinator = chat("cto", "general", 400, { pinned: true, customTitle: true });
+    const ledger: OrchestrationSnapshot = {
+      runs: [
+        { id: "old", coordinatorChatKey: "chat:cto", objective: "Old", workspaceId: "general", rootPath: "/General", status: "completed", maxConcurrent: 2, createdAt: 1, updatedAt: 2 },
+        { id: "new", coordinatorChatKey: "chat:cto", objective: "New", workspaceId: "general", rootPath: "/General", status: "completed", maxConcurrent: 2, createdAt: 3, updatedAt: 4 },
+      ],
+      tasks: [
+        { id: "a", runId: "old", title: "A", spec: "A", destination: { projectId: "p1", projectName: "octiq-flow", repository: "/p1" }, dependsOn: [], status: "completed", createdAt: 1, updatedAt: 2 },
+        { id: "b", runId: "new", title: "B", spec: "B", destination: { projectId: "p2", projectName: "starfall-social", repository: "/p2" }, dependsOn: [], status: "completed", createdAt: 3, updatedAt: 4 },
+      ],
+      attempts: [], gates: [], messages: [],
+    };
+    const keys = new Set(["chat:cto"]);
+    expect(projectTasks([...conversations, coordinator], "p1", ledger, keys).map((item) => item.id))
+      .toEqual(["cto", "open", "saved", "ticked"]);
+    expect(projectTasks([...conversations, coordinator], "p2", ledger, keys).map((item) => item.id))
+      .toEqual(["elsewhere", "cto"]);
+    expect(projectTasks([...conversations, coordinator], "general", ledger, keys)).toEqual([]);
+    expect(projectTaskCounts([...conversations, coordinator], ledger, keys).get("p1")).toBe(4);
+    expect(coordinator.pinned).toBe(true);
+    expect(coordinator.customTitle).toBe(true);
   });
 });
 
