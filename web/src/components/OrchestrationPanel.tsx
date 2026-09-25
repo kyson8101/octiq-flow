@@ -724,6 +724,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
         </button>
       </div>
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
+        {task.assignee && <p>Assigned to {task.assignee.name}</p>}
         {task.worker && <p>Selected worker: {AGENT_NAME[task.worker.agent]} · {modelFromReported(task.worker.agent, task.worker.model ?? "")?.model ?? task.worker.model}{task.worker.effort ? ` · ${task.worker.effort} effort` : ""}</p>}
         {report?.steps.length ? <ol className="orch-task-steps" aria-label="Reported checklist">
           {report.steps.map((step, index) => <li key={index} data-state={step.state}>

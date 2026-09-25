@@ -1,0 +1,66 @@
+/* Settings → Agents, and the lead picker on a new task. Token colours only. */
+.team-settings { display: grid; gap: 16px; }
+.team-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.team-head h3 { margin: 0; color: var(--fg-0); font-size: 14px; font-weight: 600; }
+.team-settings button:disabled { opacity: .5; cursor: default; }
+
+.team-group { display: grid; gap: 6px; }
+.team-group h4 { margin: 0; color: var(--fg-3); font-size: 11.5px; font-weight: 600; letter-spacing: .02em; }
+.team-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.team-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 11px 0; border-bottom: 1px solid var(--border);
+}
+.team-row > svg, .team-row > span:first-child { margin-top: 2px; flex: 0 0 auto; }
+.team-row-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
+.team-row-name { display: flex; align-items: center; gap: 8px; color: var(--fg-0); font-size: 13.5px; font-weight: 600; }
+.team-row-meta { color: var(--fg-2); font-size: 12px; }
+.team-row-role { color: var(--fg-2); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.team-tag {
+  padding: 1px 6px; border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg-1); font-size: 10.5px; font-weight: 500;
+}
+
+.team-form {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;
+  padding: 14px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-1);
+}
+.team-form label { display: grid; gap: 5px; color: var(--fg-2); font-size: 12px; }
+.team-form :is(input, select, textarea) {
+  width: 100%; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px;
+}
+.team-form textarea { resize: vertical; }
+.team-form :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.team-form-wide { grid-column: 1 / -1; }
+.team-form .settings-note { margin: 0; }
+.team-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+@media (max-width: 520px) {
+  .team-form { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The new-task hero: who gets it. */
+.lead-picker { display: grid; gap: 8px; width: min(560px, 100%); margin: 14px auto 0; }
+.lead-picker-label { color: var(--fg-2); font-size: 12.5px; text-align: center; }
+.lead-picker-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.lead-chip {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+  padding: 7px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-1); color: var(--fg-1); font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+}
+.lead-chip:hover { background: var(--bg-2); }
+.lead-chip.is-on {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-1));
+}
+.lead-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lead-chip-name { font-weight: 600; }
+.lead-chip-meta { color: var(--fg-3); font-size: 11.5px; }
+.lead-picker-note { color: var(--fg-3); font-size: 12px; text-align: center; }
+.lead-picker-note button {
+  padding: 0; border: 0; background: none; color: var(--fg-1);
+  font: inherit; text-decoration: underline; cursor: pointer;
+}

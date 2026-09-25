@@ -15,6 +15,7 @@
 // opened on the phone is not the one on the laptop. A server-side store is the
 // obvious next step, and the shape here (id, projectId, sessionId, messages)
 // is what it would hold.
+import { readTaskBrief } from "./taskBrief";
 import type { Message } from "./chat";
 
 export type Conversation = {
@@ -199,7 +200,9 @@ export function shortTitle(text: string): string {
 /** A short name for the conversation, from the first thing the user asked. */
 export function titleFrom(messages: Message[]): string {
   const first = messages.find((m) => m.role === "user");
-  return shortTitle(first?.blocks.map((b) => ("text" in b ? b.text : "")).join(" ") ?? "");
+  return shortTitle(
+    first?.blocks.map((b) => ("text" in b ? readTaskBrief(b.text)?.task ?? b.text : "")).join(" ") ?? "",
+  );
 }
 
 /** The name a chat keeps: the one it already has, or one derived from what is

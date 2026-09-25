@@ -45,6 +45,7 @@ mod push;
 mod question;
 mod question_store;
 mod safety_block;
+mod team;
 mod transcript;
 mod usage_limits;
 mod web;

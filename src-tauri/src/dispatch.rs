@@ -714,6 +714,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     crate::orchestration::master_prompt(&run),
                 )?;
             }
+            // An agent that opened its own run (the MCP hook sets this) gets the
+            // master brief back in the answer, since nothing else delivers it.
+            if arg::<Option<bool>>(&args, "withBrief")?.unwrap_or(false) && !start_master {
+                let brief = crate::orchestration::master_prompt(&run);
+                let mut value = serde_json::to_value(&run).map_err(|e| e.to_string())?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("masterBrief".into(), Value::String(brief));
+                }
+                return Ok(value);
+            }
             to_value(Ok(run))
         }
         // Browser-only entry point: a chat need not have a live start context
@@ -766,14 +776,65 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "lite")?,
             ))
         }
-        "orchestration_task_create" => to_value(svc.orchestrations.create_task(
-            &arg::<String>(&args, "actorChatKey")?,
-            arg(&args, "runId")?,
-            arg(&args, "title")?,
-            arg(&args, "spec")?,
-            arg(&args, "dependsOn")?,
-            arg(&args, "parentTaskId")?,
-            arg(&args, "worker")?,
+        "orchestration_task_create" => {
+            let run_id: String = arg(&args, "runId")?;
+            let mut worker: Option<crate::orchestration::automation::WorkerSettings> =
+                arg(&args, "worker")?;
+            // Agents mode: a lead names a registered agent and the host, not
+            // the lead, turns it into worker settings.
+            let assignee = match arg::<Option<String>>(&args, "assignee")?
+                .filter(|who| !who.trim().is_empty())
+            {
+                Some(who) => {
+                    let project = svc.orchestrations.run_workspace_id(&run_id)?;
+                    let agent = crate::team::resolve(&crate::team::default_path(), &project, &who)?;
+                    worker = Some(crate::orchestration::automation::WorkerSettings {
+                        agent: agent.agent,
+                        access: agent.access,
+                        model: Some(agent.model.clone()),
+                        effort: agent.effort.clone(),
+                        recovery: worker.and_then(|w| w.recovery),
+                    });
+                    Some(crate::orchestration::TaskAssignee {
+                        id: agent.id,
+                        name: agent.name,
+                    })
+                }
+                None => None,
+            };
+            to_value(svc.orchestrations.create_task_for(
+                &arg::<String>(&args, "actorChatKey")?,
+                run_id,
+                arg(&args, "title")?,
+                arg(&args, "spec")?,
+                arg(&args, "dependsOn")?,
+                arg(&args, "parentTaskId")?,
+                worker,
+                assignee,
+            ))
+        }
+        "team_list" => {
+            let project: Option<String> = arg(&args, "projectId")?;
+            let all = arg::<Option<bool>>(&args, "all")?.unwrap_or(false);
+            to_value(crate::team::list(
+                &crate::team::default_path(),
+                project.as_deref(),
+                all,
+            ))
+        }
+        "team_save" => to_value(crate::team::save(
+            &crate::team::default_path(),
+            arg(&args, "agent")?,
+        )),
+        "team_delete" => unit(crate::team::delete(
+            &crate::team::default_path(),
+            &arg::<String>(&args, "id")?,
+        )),
+        "team_brief" => to_value(crate::team::brief(
+            &crate::team::default_path(),
+            &arg::<String>(&args, "projectId")?,
+            &arg::<String>(&args, "leadId")?,
+            &arg::<String>(&args, "task")?,
         )),
         "orchestration_worker_start" => {
             let actor: String = arg(&args, "actorChatKey")?;

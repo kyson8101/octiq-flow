@@ -64,7 +64,7 @@ export function Sidebar({
   projects, shelved, onShowShelved, deletedCount = 0, onShowDeleted, onFeedback,
   conversations, currentConversation, running, busy, deleting = NONE,
   leaving = NONE, deleteMs = 2000, onPickConversation, getPreviewMessages,
-  loadPreview, onNewChat, onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
+  loadPreview, onNewChat, newLabel = "New chat", onDelete, onPin, onToggleDone, onRename, onArchiveWorker,
   onNewProject, searchChats, branches = {}, chatParents = NO_PARENTS, onResize, foot,
 }: {
   orchestration?: OrchestrationSnapshot;
@@ -83,6 +83,8 @@ export function Sidebar({
   deleteMs?: number;
   onPickConversation: (chat: Conversation) => void;
   onNewChat: () => void;
+  /** "New task" in agents mode. */
+  newLabel?: string;
   onDelete: (id: string) => void;
   onPin: (id: string) => void;
   /** Tick a chat off by hand, or take the tick back. */
@@ -457,7 +459,7 @@ export function Sidebar({
         <div className="sidebar-head">
           <span className="sidebar-title">Chats</span>
           <button className="sidebar-new-chat" type="button" onClick={onNewChat}>
-            <PlusIcon /><span>New chat</span>
+            <PlusIcon /><span>{newLabel}</span>
           </button>
           <SidebarMenu
             label="Chat list actions"

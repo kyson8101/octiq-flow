@@ -107,6 +107,15 @@ pub struct Run {
     pub stopped_reason: Option<String>,
 }
 
+/// Who a task was handed to in agents mode. A copy, not a reference: the
+/// registered agent can be renamed or removed while the ledger keeps its word.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAssignee {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Task {
@@ -116,6 +125,9 @@ pub struct Task {
     pub spec: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<automation::WorkerSettings>,
+    /// Agents mode: the registered agent this task was handed to (team.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<TaskAssignee>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
     #[serde(default)]
@@ -669,6 +681,42 @@ impl OrchestrationStore {
         parent_task_id: Option<String>,
         worker: Option<automation::WorkerSettings>,
     ) -> Result<Task, String> {
+        self.create_task_for(
+            actor_chat_key,
+            run_id,
+            title,
+            spec,
+            depends_on,
+            parent_task_id,
+            worker,
+            None,
+        )
+    }
+
+    /// The run's project, for resolving an agents-mode assignee against the
+    /// agents that project can see.
+    pub fn run_workspace_id(&self, run_id: &str) -> Result<String, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        inner
+            .data
+            .runs
+            .get(run_id)
+            .map(|run| run.workspace_id.clone())
+            .ok_or_else(|| "That run does not exist.".into())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_task_for(
+        &self,
+        actor_chat_key: &str,
+        run_id: String,
+        title: String,
+        spec: String,
+        depends_on: Vec<String>,
+        parent_task_id: Option<String>,
+        worker: Option<automation::WorkerSettings>,
+        assignee: Option<TaskAssignee>,
+    ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
         let worker = worker
@@ -714,6 +762,7 @@ impl OrchestrationStore {
                 title,
                 spec,
                 worker,
+                assignee,
                 workspace: None,
                 depends_on,
                 parent_task_id,

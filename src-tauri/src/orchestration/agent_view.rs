@@ -230,7 +230,14 @@ fn compact(
                     // settings only steer work still to come.
                     let done = matches!(task.status, TaskStatus::Completed | TaskStatus::Cancelled);
                     let keys: &[&str] = if done {
-                        &["id", "runId", "title", "status", "activeAttemptId"]
+                        &[
+                            "id",
+                            "runId",
+                            "title",
+                            "status",
+                            "assignee",
+                            "activeAttemptId",
+                        ]
                     } else {
                         &[
                             "id",
@@ -241,6 +248,7 @@ fn compact(
                             "parentTaskId",
                             "activeAttemptId",
                             "worker",
+                            "assignee",
                             "updatedAt",
                         ]
                     };

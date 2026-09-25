@@ -82,6 +82,8 @@ export type OrchestrationTask = {
   title: string;
   spec: string;
   worker?: WorkerSettings;
+  /** Agents mode: the registered agent this task was handed to. */
+  assignee?: { id: string; name: string };
   workspace?: TaskWorkspace;
   dependsOn: string[];
   parentTaskId?: string;
