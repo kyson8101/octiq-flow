@@ -16,15 +16,97 @@ When it is on:
   kept in the transcript, so a resumed chat still knows its team.
 - The top bar gets **Talk to <name>** (see below) and an **Agents** button
   that opens the dashboard.
-- The composer of a conversation with an agent shows **who it is with** — the
-  agent's name, role and model — where an ordinary chat has its provider,
-  model, access and effort pickers. The agent's registration owns those
-  settings; change them in Settings → Agents. A new conversation starts on the
+- The composer of a conversation with an agent is **compact**: the message
+  box, attachments, the agent's avatar and name, and Send. It reads
+  "Message <name>…". Role, provider and model are in the chip's tooltip and
+  in Settings → Agents, which owns those settings. A new conversation starts on the
   registered settings; an existing one keeps the model it was recorded with,
   so reopening it never moves its history to another model. If the agent was
   removed, the name is struck through and the conversation keeps its last
   settings. Ordinary chats, and every chat when agents mode is off, keep the
-  pickers.
+  pickers and the location shelf exactly as before.
+
+## Where a new task runs (automatic, with Advanced overrides)
+
+The project, branch, worktree and sandbox controls are hidden on a new task.
+They are still decided: `lib/agentExecution.ts` (`autoExecution`) chooses them,
+and the send path applies exactly that plan:
+
+- **The head** coordinates from the home workspace (below). No git is
+  prepared and no sandbox is started for the conversation. Every task it hands
+  out gets its own destination and environment from the host.
+- **A lead in a project** starts in a **new worktree** of that project, based
+  on the branch the project is on. The host resolves the base and creates the
+  worktree (`git_prepare_chat_workspace`). A folder that is not a repository
+  runs in place. The primary checkout is where the person and other chats work,
+  so a lead doing the work itself does not write there.
+- **No code project** → the home workspace, no git.
+
+The sliders button next to the agent opens **Advanced**, which is the
+ordinary location shelf. Only the fields the person changes there override the
+automatic plan, and the button is tinted while they do. The chosen plan is
+recorded on the chat once, before its first turn (`ChatMeta.launch`,
+write-once in `chat_index::upsert`). It is shown as the **planned**
+environment and never as a verified fact.
+
+## Home workspace
+
+The head's conversations live in the **home workspace**, a registered workspace
+chosen in **Settings → Agents → Home workspace** and stored as an id in
+`team.json` (`home`, `team_home` / `team_home_set`; only a registered
+workspace is accepted). With none chosen, or the chosen one removed, it is the
+project named **General**, created lazily as before. No machine path is
+hard-coded: on this machine General is simply the registered project at
+whatever folder the person gave it. Entering the conversation never asks for a
+project or a Git setup.
+
+## Environment details (planned vs verified)
+
+The task panel behind the status line (`ChatTaskBar`) has an **Environment**
+section: the agent (avatar, name, state, provider/model), project, repository,
+working directory, branch, base branch, target, checkout (primary checkout or
+task worktree, and its path), sandbox and git state. Each path has a Copy
+button. `lib/taskEnvironment.ts` merges two sources and labels every row:
+
+- **Planned**: the chat's `launch` plan, or, for a worker chat, its orchestration
+  task's destination and workspace plan (latest attempt, so retries show the
+  one running).
+- **Verified**: `chat_task`'s git verification of the chat's own directory,
+  with when it was checked. The sandbox is reported by its own state.
+
+**Stale** (the directory is gone and git was read from the primary checkout),
+**Removed** (a cleaned or deleted worktree) and **Not verified** are never
+drawn as verified. A base branch is always Planned, because git keeps no record
+of it.
+
+## Persona: names and avatars
+
+A chat handed to a registered agent speaks as that agent: its name and avatar
+sign replies, the composer and its working indicator, the sidebar row, the task
+board, the plan review and the Run panel. Web and push notifications say
+"<name>: …". Identity is the registration id (`lib/agentPersona.ts`), so a
+rename or a model change updates every label, and a removed agent keeps the
+name the work was handed to. Ordinary chats keep the provider's name. A title
+the person or the agent chose is never replaced.
+
+Each agent can have an **avatar** (`team.json` `avatar`, a PNG/JPEG/WebP
+`data:` URL that `agent_avatar::checked_data_url` checks by magic bytes, under
+512 KB). Without one, initials on a stable tint are drawn, with an accessible
+label. In the hire/edit form:
+
+- **Upload image**: PNG, JPEG or WebP up to 8 MB. The browser crops it to a
+  256px square (`lib/avatarImage.ts`) before it is stored.
+- **Generate with ChatGPT**: runs `codex exec` with Codex's built-in image
+  generation (`$imagegen`, gpt-image) through the person's own Codex CLI
+  **ChatGPT sign-in**. It counts toward that account's Codex usage. There is no
+  API key and no reading of credentials. `agent_avatar_status` says honestly
+  when it is unavailable: Codex missing, not signed in, signed in with an API
+  key, or the feature off. It also gives the fix, and upload still works. A job
+  runs in its own folder with a 5-minute deadline. At most two run at once, and
+  one can be cancelled. Leaving the form cancels it. The output is re-checked:
+  a regular file, not a symlink, and a real image. The picture is previewed
+  beside the current one. **Use this**, **Regenerate** or **Discard**; nothing
+  is saved until **Save**.
 
 The switch is stored per browser (`octiq.agentsMode`). Registered agents are
 stored on the server, so every browser sees the same team.

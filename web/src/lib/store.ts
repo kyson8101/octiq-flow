@@ -19,6 +19,7 @@ import { readTaskBrief } from "./taskBrief";
 import type { Message } from "./chat";
 import { BUILD_STAMP, ourBuild } from "./buildStamp";
 import { migrateMessages } from "./cacheMigration";
+import type { LaunchPlan } from "./taskEnvironment";
 
 export type Conversation = {
   id: string;
@@ -78,6 +79,10 @@ export type Conversation = {
    *  `updatedAt`, so the next message retires it by itself. Server-owned —
    *  only `setChatDone` moves it, never an ordinary save. */
   doneAt?: number | null;
+  /** Where the chat was PLANNED to run, recorded once before its first turn
+   *  (`ChatMeta.launch`). A plan, never a verified fact — see
+   *  lib/taskEnvironment. */
+  launch?: LaunchPlan;
   /** Server-owned lifecycle generation. Incremented when a deleted chat is
    *  restored, so an older delete retry cannot hide it again. */
   generation?: number;
@@ -336,6 +341,7 @@ export function sameIndex(a: Conversation[], b: Conversation[]): boolean {
       !!held.pinned === !!c.pinned &&
       (held.doneAt ?? null) === (c.doneAt ?? null) &&
       (held.generation ?? 0) === (c.generation ?? 0) &&
+      !!held.launch === !!c.launch &&
       !!held.synced === !!c.synced
     );
   });

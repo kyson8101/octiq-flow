@@ -33,6 +33,8 @@ pub const MAX_AVATAR_DATA_URL_CHARS: usize = 512 * 1024;
 const MAX_GENERATED_BYTES: u64 = 16 * 1024 * 1024;
 /// Long enough for the slow end of a generation (a live one took ~60s).
 const JOB_DEADLINE: Duration = Duration::from_secs(300);
+/// Generations allowed at once, across every browser.
+const MAX_RUNNING: usize = 2;
 
 const TYPES: [(&str, &str); 3] = [
     ("image/png", "png"),
@@ -347,6 +349,18 @@ pub fn start(request: &AvatarRequest) -> Result<AvatarJob, String> {
     let status = generation_status(false);
     if !status.available {
         return Err(status.reason);
+    }
+    // Each one spends the person's Codex usage; a stuck button or a second
+    // tab must not start a pile of them.
+    let running = with_jobs(|jobs| {
+        jobs.values()
+            .filter(|r| r.job.state == JobState::Running)
+            .count()
+    });
+    if running >= MAX_RUNNING {
+        return Err(
+            "Another avatar is already being drawn. Wait for it, or cancel it first.".into(),
+        );
     }
     let id = format!("avatar_{}", uuid::Uuid::new_v4().simple());
     let dir = jobs_dir().join(&id);

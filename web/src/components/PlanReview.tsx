@@ -13,6 +13,8 @@ import {
   awaitingApproval, planDestination, planNumbers, planOwner, planStages, type PlanStage,
 } from "../lib/planReview";
 import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
+import { useRosterAgent } from "../lib/agentRoster";
 import "./PlanReview.css";
 
 export function PlanReview({ run, tasks, drafting, projectName, onApproved, onRequestChanges }: {
@@ -140,6 +142,7 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
   numbers: Map<string, number>;
 }) {
   const owner = planOwner(task);
+  const assigneeFace = useRosterAgent(task.assignee?.id);
   const model = owner.agent && task.worker?.model ? modelFromReported(owner.agent, task.worker.model)?.name : undefined;
   const after = task.dependsOn.flatMap((id) => numbers.has(id) ? [numbers.get(id)!] : []);
   const where = planDestination(task, run, projectName);
@@ -157,7 +160,9 @@ function PlanTask({ task, run, projectName, added, number, numbers }: {
     </span>
     {added && <span className="plan-task-new">New</span>}
     <span className="plan-task-owner" title={[owner.label, model].filter(Boolean).join(" · ")}>
-      {owner.agent && <AgentLogo agent={owner.agent} size={13} />}
+      {task.assignee
+        ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={16} decorative />
+        : owner.agent && <AgentLogo agent={owner.agent} size={13} />}
       <span>{task.assignee ? owner.label : model ?? owner.label}</span>
     </span>
     {after.length > 0 && <span className="plan-task-after">after {after.map((n) => `#${n}`).join(", ")}</span>}

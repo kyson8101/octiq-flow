@@ -8,11 +8,12 @@ import {
   type AccessLevel, type Effort, type Provider,
 } from "../lib/agentProviders";
 import {
-  deleteTeamAgent, leadOnly, loadHead, loadTeam, saveHead, saveTeamAgent, teamModels,
+  deleteTeamAgent, leadOnly, loadHead, loadHome, loadTeam, saveHead, saveHome, saveTeamAgent, teamModels,
   type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
 import { orgChart } from "../lib/agentsDashboard";
-import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
+import { AgentAvatarEditor } from "./AgentAvatarEditor";
 
 type ProjectRef = { id: string; name: string };
 
@@ -33,14 +34,16 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const [draft, setDraft] = useState<TeamDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [headId, setHeadId] = useState<string | null>(null);
+  const [homeId, setHomeId] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
-    Promise.all([loadTeam(null, true), loadHead()])
-      .then(([agents, head]) => {
+    Promise.all([loadTeam(null, true), loadHead(), loadHome().catch(() => null)])
+      .then(([agents, head, home]) => {
         if (!alive) return;
         setTeam(agents);
         setHeadId(head?.id ?? null);
+        setHomeId(home);
       })
       .catch((reason) => { if (alive) setError(String((reason as Error).message ?? reason)); })
       .finally(() => { if (alive) setLoading(false); });
@@ -58,6 +61,17 @@ export function AgentsSettings({ on, onToggle, projects }: {
       setError(String((reason as Error).message ?? reason));
     }
   };
+
+  const pickHome = async (id: string | null) => {
+    setError("");
+    try {
+      setHomeId(await saveHome(id));
+    } catch (reason) {
+      setError(String((reason as Error).message ?? reason));
+    }
+  };
+  // A configured home that was since removed reads as the default.
+  const homeKnown = !!homeId && projects.some((p) => p.id === homeId);
 
   const projectName = useMemo(
     () => new Map(projects.map((p) => [p.id, p.name])),
@@ -100,7 +114,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
   const row = ({ agent, depth }: { agent: TeamAgent; depth: number }) => (
     <li className="team-row" key={agent.id} style={{ paddingInlineStart: `${depth * 22}px` }}>
       {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
-      <AgentLogo agent={agent.agent === "codex" ? "codex" : "claude"} size={16} />
+      <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
       <span className="team-row-copy">
         <span className="team-row-name">
           {agent.name}
@@ -158,6 +172,25 @@ export function AgentsSettings({ on, onToggle, projects }: {
           <option value="">{globalAgents.length === 0 ? "Add an agent for every project first" : "No one"}</option>
           {globalAgents.map((agent) => (
             <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${agent.role}` : ""}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="settings-control-row">
+        <div className="settings-control-copy">
+          <h3>Home workspace</h3>
+          <p>Where conversations with your lead live. It needs no code project or Git setup; the lead routes each task to a registered project.</p>
+        </div>
+        <select
+          className="team-head-select"
+          aria-label="Home workspace for your lead"
+          value={homeKnown ? homeId ?? "" : ""}
+          disabled={loading}
+          onChange={(event) => void pickHome(event.target.value || null)}
+        >
+          <option value="">General (default)</option>
+          {projects.map((project) => (
+            <option key={project.id} value={project.id}>{project.name}</option>
           ))}
         </select>
       </div>
@@ -228,12 +261,11 @@ export function LeadPicker({ team, leadId, onPick, onManage }: {
             type="button"
             role="radio"
             aria-checked={agent.id === leadId}
-            title={agent.role || undefined}
+            title={[agent.role, `${AGENT_NAME[agent.agent]} ${modelLabel(agent)}`].filter(Boolean).join("\n")}
             onClick={() => onPick(agent)}
           >
-            <AgentLogo agent={agent.agent === "codex" ? "codex" : "claude"} size={13} />
+            <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={20} decorative />
             <span className="lead-chip-name">{agent.name}</span>
-            <span className="lead-chip-meta">{modelLabel(agent)}</span>
           </button>
         ))}
       </div>
@@ -294,6 +326,14 @@ function TeamForm({ draft, team, projects, saving, onChange, onSave, onCancel }:
         <input value={draft.name} maxLength={60} placeholder="e.g. Reviewer" autoFocus
           onChange={(event) => set({ name: event.target.value })} />
       </label>
+      <AgentAvatarEditor
+        key={draft.id ?? "new"}
+        name={draft.name}
+        role={draft.role}
+        avatar={draft.avatar}
+        agentId={draft.id}
+        onChange={(avatar) => set({ avatar })}
+      />
       <label className="team-form-wide">
         <span>Role</span>
         <textarea value={draft.role} maxLength={2000} rows={3}

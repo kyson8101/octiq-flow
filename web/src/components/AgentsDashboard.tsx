@@ -10,7 +10,7 @@ import { loadLeads, loadTeam, type TeamAgent } from "../lib/agentsMode";
 import { orgChart, workFor, type LeadRecord } from "../lib/agentsDashboard";
 import { TASK_LABELS } from "../lib/agentTaskBoard";
 import type { OrchestrationSnapshot, OrchestrationTask } from "../lib/orchestration";
-import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
 import { TaskStatusIcon } from "./TaskMeter";
 
 export function AgentsDashboard({ projectId, snapshot, chatTitle, onOpenChat, onManage, onClose }: {
@@ -73,7 +73,7 @@ export function AgentsDashboard({ projectId, snapshot, chatTitle, onOpenChat, on
                     onClick={() => setOpen(expanded ? null : agent.id)}
                   >
                     {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
-                    <AgentLogo agent={agent.agent === "codex" ? "codex" : "claude"} size={16} />
+                    <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={24} decorative />
                     <span className="team-row-copy">
                       <span className="team-row-name">{agent.name}</span>
                       <span className="team-row-meta">{agent.role || `${AGENT_NAME[agent.agent]} ${agent.model}`}</span>

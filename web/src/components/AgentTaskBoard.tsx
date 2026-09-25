@@ -13,6 +13,8 @@ import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
 import { elapsedLabel } from "../lib/working";
 import { ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
+import { AgentAvatar } from "./AgentAvatar";
+import { useRosterAgent } from "../lib/agentRoster";
 import "./AgentTaskBoard.css";
 
 type Props = {
@@ -82,7 +84,7 @@ function TaskRow({ snapshot, conversations, currentConversation, onOpenChat, tas
         {unread && <span className="agent-task-unread" title="Unread activity" />}
         <span className="agent-task-percent" title={task.status === "completed" ? "Task completed" : progress.total ? `${progress.done} of ${progress.total} reported steps done` : "No checklist reported"}>{progress.percent === null ? "—" : `${progress.percent}%`}</span>
       </span>
-      <span className="agent-task-meta">{task.assignee && <span className="agent-task-assignee">{task.assignee.name}</span>}<span className="agent-task-stage" title={attempt?.execution?.latestError?.message || stage}>{stage}</span></span>
+      <span className="agent-task-meta">{task.assignee && <Assignee id={task.assignee.id} name={task.assignee.name} />}<span className="agent-task-stage" title={attempt?.execution?.latestError?.message || stage}>{stage}</span></span>
     </span>
   </>;
   // A task with no transcript yet is not navigation, so it is not a button —
@@ -94,4 +96,13 @@ function TaskRow({ snapshot, conversations, currentConversation, onOpenChat, tas
           onClick={() => onOpenChat(chat)}>{body}</button>
       : <span className="agent-task-row is-static">{body}</span>}
   </li>;
+}
+
+/** Who the task went to: their face and name, as registered. */
+function Assignee({ id, name }: { id: string; name: string }) {
+  const agent = useRosterAgent(id);
+  return <span className="agent-task-assignee">
+    <AgentAvatar name={agent?.name ?? name} avatar={agent?.avatar} id={id} size={14} decorative />
+    {agent?.name ?? name}
+  </span>;
 }

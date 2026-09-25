@@ -89,6 +89,14 @@ describe("bannerTitle", () => {
   });
 });
 
+describe("noticeFor, in agents mode", () => {
+  it("says which agent the banner is about, worded as the push banner is", () => {
+    const n = noticeFor({ kind: "permission", conversationId: "c1", projectName: "General", chatTitle: "Plan", detail: "Bash", agentName: "Maya" });
+    expect(n.body).toBe("Maya: Needs permission: Bash");
+    expect(noticeFor({ kind: "done", conversationId: "c1", projectName: "", chatTitle: "", detail: "", agentName: " " }).body).toBe("Finished.");
+  });
+});
+
 describe("noticeFor", () => {
   it("titles every notice after the project and the chat, so the banner names the work", () => {
     const n = noticeFor({ kind: "done", conversationId: "c1", projectName: "OctiqFlow", chatTitle: "Fix the top bar", detail: "All three tests pass." });

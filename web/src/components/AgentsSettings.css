@@ -34,6 +34,28 @@
   background: var(--bg-0); color: var(--fg-1); font: inherit; font-size: 13px;
 }
 .team-form textarea { resize: vertical; }
+
+/* The avatar: current face, the generated one beside it while it waits to be
+   accepted, and the few actions that change it. */
+.avatar-editor { margin: 0; padding: 0; border: 0; min-width: 0; }
+.avatar-editor legend { padding: 0; margin-bottom: 6px; color: var(--fg-2); font-size: 12px; }
+.avatar-editor-row { display: flex; align-items: flex-start; gap: 14px; }
+.avatar-editor-now { display: grid; justify-items: center; gap: 4px; flex: 0 0 auto; }
+.avatar-editor-now.is-candidate { animation: avatar-candidate-in 180ms ease-out; }
+@keyframes avatar-candidate-in { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .avatar-editor-now.is-candidate { animation: none; } }
+.avatar-editor-caption { color: var(--fg-3); font-size: 11px; }
+.avatar-editor-actions { display: grid; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.avatar-editor-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.avatar-editor-buttons .vault-button, .avatar-editor-buttons .settings-primary { padding: 6px 11px; font-size: 12.5px; }
+.team-form .avatar-editor-description { padding: 7px 10px; font-size: 12.5px; }
+.avatar-editor-status { margin: 0; min-height: 1.4em; color: var(--fg-2); font-size: 12px; line-height: 1.45; }
+.avatar-editor-status:empty { display: none; }
+.avatar-editor-error { color: var(--danger); }
+.avatar-editor-file { display: none; }
+@media (max-width: 520px) {
+  .avatar-editor-row { flex-wrap: wrap; }
+}
 .team-head-select {
   flex: 0 1 240px; min-width: 0; max-width: 240px; padding: 7px 10px;
   border: 1px solid var(--border); border-radius: 6px;

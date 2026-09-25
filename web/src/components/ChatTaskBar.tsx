@@ -27,16 +27,29 @@ import {
   type ReleaseCheck,
   type TaskStatus,
 } from "../lib/chatTask";
+import { EVIDENCE_LABEL, taskEnvironment, type EnvironmentInput } from "../lib/taskEnvironment";
+import type { Persona } from "../lib/agentPersona";
+import { copyText } from "../lib/clipboard";
+import { AgentAvatar } from "./AgentAvatar";
 import "./ChatTaskBar.css";
 
 type Live = { busy?: boolean; waiting?: boolean };
+
+/** What the panel knows beyond `chat_task`: the plan the chat was started
+ *  with, the orchestration task a worker runs, its sandbox, and who it is. */
+export type PanelContext = Omit<EnvironmentInput, "status"> & {
+  persona?: Persona | null;
+  /** The agent's provider and model, for the details only. */
+  runsOn?: string;
+};
 
 export function ChatTaskBar({
   chatId,
   connected,
   busy,
   waiting,
-}: { chatId: string; connected: boolean } & Live) {
+  context,
+}: { chatId: string; connected: boolean; context?: PanelContext } & Live) {
   const [status, setStatus] = useState<TaskStatus>();
   const [open, setOpen] = useState(false);
   /** True once the backend has said it does not know this command. The two
@@ -132,6 +145,7 @@ export function ChatTaskBar({
       }}
       onTarget={setTarget}
       onReleaseCheck={setReleaseCheck}
+      context={context}
     />
   );
 }
@@ -147,8 +161,10 @@ export function ChatTaskBarView({
   onToggle,
   onTarget,
   onReleaseCheck,
+  context,
 }: {
   status?: TaskStatus;
+  context?: PanelContext;
   open: boolean;
   now: number;
   onToggle: () => void;
@@ -188,6 +204,8 @@ export function ChatTaskBarView({
           onClose={onToggle}
           onTarget={onTarget}
           onReleaseCheck={onReleaseCheck}
+          context={context}
+          phase={phase.label}
         />
       )}
     </div>
@@ -200,8 +218,12 @@ function ChatTaskPanel({
   onClose,
   onTarget,
   onReleaseCheck,
+  context,
+  phase,
 }: {
   status?: TaskStatus;
+  context?: PanelContext;
+  phase?: string;
   now: number;
   onClose: () => void;
   onTarget?: (branch: string) => void;
@@ -209,14 +231,25 @@ function ChatTaskPanel({
 }) {
   const report = status?.report;
   const delivery = status?.delivery;
-  const workspace = status?.workspace;
   const stage = phaseOf(status).stage;
+  const environment = taskEnvironment({ ...context, status });
+  const persona = context?.persona;
   return (
     <div className="chat-task-panel" role="dialog" aria-label="Task and workspace">
       <div className="chat-task-head">
         <strong>Task &amp; workspace</strong>
         <button type="button" className="chat-task-close" aria-label="Close" onClick={onClose}>×</button>
       </div>
+
+      {persona && (
+        <div className="chat-task-agent" title={[persona.role, context?.runsOn].filter(Boolean).join("\n") || undefined}>
+          <AgentAvatar name={persona.name} avatar={persona.avatar} id={persona.id} size={28} removed={persona.removed} decorative />
+          <span className="chat-task-agent-copy">
+            <strong>{persona.name}</strong>
+            <span>{[persona.removed ? "No longer registered" : "", phase, context?.runsOn].filter(Boolean).join(" · ")}</span>
+          </span>
+        </div>
+      )}
 
       <p className={`chat-task-objective ${report ? "" : "is-missing"}`}>
         {report?.objective || NOT_REPORTED}
@@ -290,24 +323,56 @@ function ChatTaskPanel({
         </p>
       )}
 
-      <h2>Workspace</h2>
-      <dl className="chat-task-fields">
-        <dt>Branch</dt>
-        <dd>{workspace?.branch || "Unknown"}</dd>
-        <dt>Location</dt>
-        <dd>{locationOf(workspace)}</dd>
+      <div className="chat-task-section-head">
+        <h2>Environment</h2>
+        <span className="chat-task-stage">
+          {environment.stale ? "Stale" : environment.checkedAt ? `Checked ${agoLabel(environment.checkedAt, now)}` : "Not verified yet"}
+        </span>
+      </div>
+      <dl className="chat-task-fields chat-task-env">
+        {environment.rows.map((row) => (
+          <EnvField key={row.key} row={row} />
+        ))}
         <dt>Git state</dt>
-        <dd>{gitStateOf(workspace)}</dd>
-        <dt>Chat path</dt>
-        <dd className="chat-task-path">{workspace?.cwd || "Not recorded"}</dd>
-        {workspace?.primaryRoot && workspace.primaryRoot !== workspace.repoRoot && (
-          <>
-            <dt>Repository</dt>
-            <dd className="chat-task-path">{workspace.primaryRoot}</dd>
-          </>
-        )}
+        <dd>{gitStateOf(status?.workspace)}</dd>
       </dl>
+      {context?.launch && (
+        <p className="chat-task-source">
+          {context.launch.chosenBy === "auto" ? "Chosen automatically" : context.launch.chosenBy === "advanced" ? "Chosen under Advanced" : "Chosen when the chat started"}
+          {context.launch.reason ? `: ${context.launch.reason}` : "."}
+        </p>
+      )}
     </div>
+  );
+}
+
+function EnvField({ row }: { row: ReturnType<typeof taskEnvironment>["rows"][number] }) {
+  const [copied, setCopied] = useState<"idle" | "done" | "failed">("idle");
+  return (
+    <>
+      <dt>{row.label}</dt>
+      <dd className={row.path && row.value === row.path ? "chat-task-path" : undefined}>
+        <span className="chat-task-env-value">
+          <span>{row.value}</span>
+          <span className="chat-task-evidence" data-evidence={row.evidence}>{EVIDENCE_LABEL[row.evidence]}</span>
+          {row.path && (
+            <button
+              type="button"
+              className="chat-task-copy"
+              aria-label={`Copy ${row.label.toLowerCase()} path`}
+              title={copied === "failed" ? "Could not copy" : copied === "done" ? "Copied" : `Copy ${row.path}`}
+              onClick={async () => {
+                setCopied((await copyText(row.path ?? "")) ? "done" : "failed");
+                setTimeout(() => setCopied("idle"), 1600);
+              }}
+            >
+              {copied === "done" ? "Copied" : "Copy"}
+            </button>
+          )}
+        </span>
+        {row.planned && <span className="chat-task-note">Planned: {row.planned}</span>}
+      </dd>
+    </>
   );
 }
 

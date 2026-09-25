@@ -20,7 +20,9 @@ import { Mascot } from "./Mascot";
 import { FolderPicker } from "./FolderPicker";
 import { AttachList } from "./AttachMenu";
 import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
 import type { AgentIdentity } from "../lib/agentsMode";
+import { composerPlaceholder } from "../lib/agentPersona";
 import {
   WorkLocation,
   type WorkLocationBranches,
@@ -366,7 +368,13 @@ export function Composer({
   lastDurationMs,
   lastCostUsd,
   identity,
+  advanced,
 }: {
+  /** Agents mode, new task: where it will run is chosen automatically, and
+   *  the location controls stay out of sight behind this toggle. `summary` is
+   *  the automatic choice in words, for the toggle's tooltip. Absent: the
+   *  controls show exactly as they always did. */
+  advanced?: { open: boolean; onToggle: () => void; summary: string; overridden: boolean };
   /** Agents mode: who this conversation is with. The agent's registration owns
    *  its provider, model, effort and access, so the pickers give way to a
    *  read-only name and role. Absent in an ordinary chat, which keeps them. */
@@ -954,11 +962,15 @@ export function Composer({
             effort={eff.label.toLowerCase()}
             background={(background ?? []).length > 0}
             robot={choice.composerStyle}
+            persona={identity}
           />
         ) : (
           <>
-            {/* Idle companions dance in the same full-body slot used during work. */}
-            <Mascot robot={choice.composerStyle} mood="idle" />
+            {/* Idle companions dance in the same full-body slot used during work.
+                A registered agent is its own face instead. */}
+            {identity
+              ? <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={18} removed={identity.removed} className="composer-hint-avatar" />
+              : <Mascot robot={choice.composerStyle} mood="idle" />}
             {activity ?? (TYPES_ON_GLASS ? "Enter for a new line" : "Enter to send · Shift+Enter for a new line")}
           </>
         )}
@@ -1121,7 +1133,7 @@ export function Composer({
             aria-label="Message"
             rows={2}
             value={text}
-            placeholder={disabled ? "Chat unavailable" : `Ask ${choice.name} to…`}
+            placeholder={disabled ? "Chat unavailable" : composerPlaceholder(identity, choice.name)}
             disabled={disabled}
             onChange={(e) => {
               // Input events are the reliable signal on a software keyboard;
@@ -1297,6 +1309,18 @@ export function Composer({
               them as direct flex children on a wide screen, so wrapping them
               costs the desktop layout nothing; the phone rule hides the lot and
               shows `settings-toggle` in their place. */}
+          {identity && advanced && (
+            <button
+              className={`picker-btn composer-advanced${advanced.open ? " is-open" : ""}${advanced.overridden ? " is-overridden" : ""}`}
+              type="button"
+              aria-expanded={advanced.open}
+              aria-label={advanced.open ? "Hide where this task runs" : "Where this task runs (Advanced)"}
+              title={`${advanced.overridden ? "Changed under Advanced" : "Automatic"}: ${advanced.summary}`}
+              onClick={advanced.onToggle}
+            >
+              <SlidersIcon />
+            </button>
+          )}
           {identity ? <AgentIdentityChip identity={identity} /> : <>
           <div className="composer-settings">
           <div className="picker">
@@ -1553,7 +1577,7 @@ export function Composer({
           </>
         )}
       </div>
-      {showWorkLocation && (
+      {showWorkLocation && (!advanced || advanced.open) && (
         <WorkLocation
           projects={projects ?? []}
           projectId={projectId ?? null}
@@ -1575,19 +1599,31 @@ export function Composer({
  *  access and effort pickers take in an ordinary chat. Read-only on purpose:
  *  the agent's registration (Settings, Agents) owns those settings. */
 export function AgentIdentityChip({ identity }: { identity: AgentIdentity }) {
+  // The face and the name are the whole chip. Role, provider and model are
+  // the agent's settings, not its voice: they stay in the tooltip and in
+  // Settings, Agents, where they are changed.
+  const provider = identity.provider === "codex" ? "Codex" : identity.provider === "claude" ? "Claude" : "pi.dev";
   const tip = [
     identity.name,
     identity.role,
-    `${identity.model} · set in Settings, Agents`,
+    `${provider} ${identity.model} · set in Settings, Agents`,
     identity.removed ? "No longer registered: this conversation keeps its last settings" : "",
   ].filter(Boolean).join("\n");
   return (
     <div className="composer-identity" title={tip} data-removed={identity.removed || undefined}>
-      <AgentLogo agent={identity.provider} />
+      <AgentAvatar name={identity.name} avatar={identity.avatar} id={identity.id ?? identity.name} size={22} removed={identity.removed} decorative />
       <span className="composer-identity-name">{identity.name}</span>
-      {identity.role && <span className="composer-identity-role">{identity.role}</span>}
-      <span className="composer-identity-model">{identity.model}</span>
     </div>
+  );
+}
+
+function SlidersIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 7h10M18 7h2M4 17h4M12 17h8" />
+      <circle cx="16" cy="7" r="2" />
+      <circle cx="10" cy="17" r="2" />
+    </svg>
   );
 }
 
@@ -2491,7 +2527,10 @@ function Working({
   effort,
   background,
   robot,
+  persona,
 }: {
+  /** A registered agent works under its own face, not a model's robot. */
+  persona?: AgentIdentity | null;
   since?: number;
   tokens?: number;
   approx?: boolean;
@@ -2523,7 +2562,9 @@ function Working({
   return (
     <>
       {/* A turn switches the same companion from dancing to thinking or typing. */}
-      <Mascot robot={robot} alert={background} mood={thinking ? "think" : "work"} />
+      {persona
+        ? <AgentAvatar name={persona.name} label={`${persona.name} is working`} avatar={persona.avatar} id={persona.id ?? persona.name} size={18} className="composer-hint-avatar is-working" />
+        : <Mascot robot={robot} alert={background} mood={thinking ? "think" : "work"} />}
       {since !== undefined && (
         <>
           <span className="working-clock">{elapsedLabel(Date.now() - since)}</span>

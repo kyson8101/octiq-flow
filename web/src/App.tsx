@@ -139,9 +139,16 @@ import { LeadPicker } from "./components/AgentsSettings";
 import { AgentsDashboard } from "./components/AgentsDashboard";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
-  agentIdentity, headConversation, leadSettings, loadHead, loadLeads, loadTeam,
+  agentIdentity, headConversation, leadSettings, loadHead, loadHome, loadLeads, loadTeam,
   recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
+import { autoExecution, type ExecutionOverrides } from "./lib/agentExecution";
+import { personaFor, senderName } from "./lib/agentPersona";
+import type { LaunchPlan } from "./lib/taskEnvironment";
+import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
+
+/** Outside agents mode nothing is drawn as a registered agent. */
+const NO_ROSTER: readonly TeamAgent[] = [];
 import { savedThemeId } from "./lib/themeStore";
 import { Usage } from "./components/Usage";
 import { GitButton, GitPanel } from "./components/GitPanel";
@@ -647,6 +654,13 @@ export default function App() {
   const [leads, setLeads] = useState<LeadRecord[]>([]);
   // The empty page is a new conversation with the head, not a project task.
   const [headDraft, setHeadDraft] = useState(false);
+  /** The configured coordination home (Settings, Agents), or null for the
+   *  project named General. */
+  const [homeId, setHomeId] = useState<string | null>(null);
+  /** Agents mode: the location controls are hidden until Advanced is opened,
+   *  and only what the person changes there overrides the automatic plan. */
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [overrides, setOverrides] = useState<ExecutionOverrides>({});
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
   const [agentsDashboard, setAgentsDashboard] = useState(false);
   /** A main-area page is open in place of the chat. Settings and the Agents
@@ -894,6 +908,7 @@ export default function App() {
     list: conversations,
     projects: workspaces,
     shelved,
+    agentFor: (_chatKey: string): string | undefined => undefined,
   });
   notifying.current = {
     on: notifyOn,
@@ -902,6 +917,10 @@ export default function App() {
     list: conversations,
     projects: workspaces,
     shelved,
+    // Agents mode: a banner says which agent it is about. An ordinary chat
+    // has no persona and its banner is unchanged.
+    agentFor: (chatKey: string) =>
+      agentsMode ? personaFor(chatKey, leads, roster)?.name : undefined,
   };
   // Set long before `openConversation` exists, like `onAccessRefused` below.
   const onOpenChat = useRef<(id: string) => void>(() => {});
@@ -918,7 +937,7 @@ export default function App() {
 
   /** Put one moment on the desktop, unless it is already in front of you. */
   const announce = useCallback((kind: NoticeKind, id: string, detail: string) => {
-    const { on, push: viaPush, reading, list, projects, shelved: away } = notifying.current;
+    const { on, push: viaPush, reading, list, projects, shelved: away, agentFor } = notifying.current;
     // The server has this covered, and its banner arrives whether or not this
     // page is still here. Raising one too would only double it.
     if (viaPush) return;
@@ -931,6 +950,7 @@ export default function App() {
       projectName: [...projects, ...away].find((w) => w.id === chat?.projectId)?.name ?? "",
       chatTitle: chat?.title ?? "",
       detail,
+      agentName: agentFor(keyFor(id)),
     });
     showNotice(notice, (open) => onOpenChat.current(open));
   }, []);
@@ -1031,6 +1051,18 @@ export default function App() {
    * that was shelved is brought back because it is now the explicit fallback
    * destination for new tasks. */
   const ensureGeneralWorkspace = useCallback(async (): Promise<Workspace> => {
+    // A configured home wins; General is the fallback when there is none, or
+    // when the one configured has since been removed.
+    const configured = homeId ? workspaces.find((workspace) => workspace.id === homeId) : undefined;
+    if (configured) return configured;
+    const away = homeId ? shelved.find((workspace) => workspace.id === homeId) : undefined;
+    if (away) {
+      await bridge.invoke("set_workspace_shelved", { id: away.id, shelved: false });
+      const restored = { ...away, shelved: false };
+      setWorkspaces((current) => [...current.filter((workspace) => workspace.id !== away.id), restored]);
+      setShelved((current) => current.filter((workspace) => workspace.id !== away.id));
+      return restored;
+    }
     const result = await ensureGeneralProject(
       workspaces,
       shelved,
@@ -1039,7 +1071,7 @@ export default function App() {
     setWorkspaces(result.active);
     setShelved(result.shelved);
     return result.project;
-  }, [workspaces, shelved]);
+  }, [workspaces, shelved, homeId]);
 
   /** Ask the backend which agent CLIs resolve on this machine.
    *
@@ -1776,12 +1808,13 @@ export default function App() {
   useEffect(() => {
     if (!agentsMode || conn !== "open" || appSettings) return;
     let alive = true;
-    Promise.all([loadHead(), loadTeam(null, true), loadLeads()])
-      .then(([configured, everyone, handed]) => {
+    Promise.all([loadHead(), loadTeam(null, true), loadLeads(), loadHome().catch(() => null)])
+      .then(([configured, everyone, handed, home]) => {
         if (!alive) return;
         setHead(configured);
         setRoster(everyone);
         setLeads(handed);
+        setHomeId(home);
       })
       .catch(() => undefined);
     return () => { alive = false; };
@@ -1818,6 +1851,68 @@ export default function App() {
   }, [agentsMode, workerChat, conversationId, chatLead, roster, lead, choice]);
   const onHeadConversation = agentsMode && !!head
     && (headDraftOn || (!!chatLead?.crossProject && chatLead.leadId === head.id));
+  // Agents mode: where a new task runs, chosen automatically (lib/agentExecution).
+  // The head coordinates from home; a project lead gets a new worktree. Only
+  // what the person changes under Advanced overrides it.
+  const executionPlan = useMemo(
+    () => newTask
+      ? autoExecution({
+        toHead: headDraftOn,
+        project: project ?? null,
+        homeId,
+        repo: branches,
+        sandboxDefault: sandboxes.snapshot?.defaultEnabled ?? false,
+        overrides,
+      })
+      : null,
+    [newTask, headDraftOn, project, homeId, branches, sandboxes.snapshot?.defaultEnabled, overrides],
+  );
+  // The registered agent a chat belongs to — its lead, or the assignee of the
+  // task a worker chat runs. It is the voice of every reply in that chat.
+  const workerAssignees = useMemo(() => {
+    const byChat = new Map<string, { id: string; name: string }>();
+    const tasks = new Map(orchestration.tasks.map((task) => [task.id, task]));
+    for (const attempt of orchestration.attempts) {
+      const assignee = tasks.get(attempt.taskId)?.assignee;
+      if (assignee) byChat.set(attempt.workerChatKey, assignee);
+    }
+    return byChat;
+  }, [orchestration]);
+  const personaForChat = useCallback(
+    (chatKey: string) => (agentsMode ? personaFor(chatKey, leads, roster, workerAssignees) : null),
+    [agentsMode, leads, roster, workerAssignees],
+  );
+  const persona = useMemo(
+    () => agentsMode && conversationId
+      ? personaFor(keyFor(conversationId), leads, roster, workerAssignees)
+      : agentsMode && composerIdentity
+        ? { id: composerIdentity.id, name: composerIdentity.name, avatar: composerIdentity.avatar }
+        : null,
+    [agentsMode, conversationId, leads, roster, workerAssignees, composerIdentity],
+  );
+  // What the task panel knows beyond git: the plan this chat was started
+  // with, the orchestration task a worker chat runs (its destination and
+  // workspace plan, latest attempt), its sandbox, and who it is.
+  const panelContext = useMemo(() => {
+    if (!conversationId) return undefined;
+    const key = keyFor(conversationId);
+    const attempt = orchestration.attempts
+      .filter((candidate) => candidate.workerChatKey === key)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const task = attempt ? orchestration.tasks.find((candidate) => candidate.id === attempt.taskId) : undefined;
+    const held = conversations.find((conversation) => conversation.id === conversationId);
+    const sandbox = Object.values(sandboxes.snapshot?.environments ?? {})
+      .find((environment) => environment.chatKey === key) ?? null;
+    const names = new Map([...workspaces, ...shelved].map((workspace) => [workspace.id, workspace.name]));
+    return {
+      launch: held?.launch ?? null,
+      worker: task ? { task, attempt } : null,
+      sandbox,
+      projectName: (id: string) => names.get(id),
+      persona,
+      runsOn: persona ? `${providerFor(choice.agent).name} ${choice.model}` : undefined,
+    };
+  }, [conversationId, orchestration, conversations, sandboxes.snapshot, workspaces, shelved, persona, choice]);
   const pickLead = useCallback((agent: TeamAgent) => {
     setLeadId(agent.id);
     remember(LEAD_KEY, agent.id);
@@ -1923,6 +2018,7 @@ export default function App() {
     setBranch("");
     setBranches(id ? { ...NO_BRANCHES, loading: true } : NO_BRANCHES);
     setNewWorktree(false);
+    setOverrides({});
     setNewChatError(null);
   }, [conversationId]);
   // A page can hot-reload while an old internal record is already in state.
@@ -2108,6 +2204,8 @@ export default function App() {
     setBranches(NO_BRANCHES);
     setNewWorktree(false);
     setSandboxChoice(null);
+    setOverrides({});
+    setAdvancedOpen(false);
     setRunOpened((before) => ({ ...before, new: false }));
     setWorkflowViews((before) => ({ ...before, new: "chat" }));
     remember(LAST_KEY, "");
@@ -2930,7 +3028,10 @@ export default function App() {
         setNewChatError("No lead is set up to talk to across projects. Choose one in Settings, Agents.");
         return;
       }
-      let targetProject = toHead ? null : project;
+      // Agents mode: the automatic plan decides where a new task runs. It is
+      // captured here, at the send, so what runs is exactly what was planned.
+      const plan = !conversationId && agentsMode ? executionPlan : null;
+      let targetProject = toHead || plan?.target === "home" ? null : project;
       if (!targetProject) {
         // General is a visible, deliberate default. The prompt is content for
         // the agent, never a hidden routing surface: `@octiqflow` stays in the
@@ -3074,14 +3175,34 @@ export default function App() {
         // comes through here again instead of silently starting in the parent
         // checkout. Once preparation succeeds its exact cwd makes this a
         // one-time operation, including when provider startup later fails.
-        if (!recordedCwd && project && project.id === targetProject.id && projectSlug(project.name) !== "general") {
+        const prepareGit = !recordedCwd && !!project && project.id === targetProject.id && (
+          plan ? plan.prepare && plan.target === "project" : projectSlug(project.name) !== "general"
+        );
+        const prepBranch = plan ? plan.branch : branch;
+        const prepWorktree = plan ? plan.newWorktree : newWorktree;
+        const sandboxPlanned = plan ? plan.useSandbox : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? false);
+        // What was planned, recorded once on the chat so its details can tell
+        // the plan apart from what git later confirms (lib/taskEnvironment).
+        const launch: LaunchPlan | undefined = held ? undefined : {
+          projectId: targetProject.id,
+          projectName: targetProject.name,
+          path: targetProject.primary_path ?? "",
+          baseBranch: prepareGit ? prepBranch || (project?.id === targetProject.id ? branches.current : "") : "",
+          newWorktree: prepareGit && prepWorktree,
+          useSandbox: sandboxPlanned,
+          prepare: prepareGit,
+          chosenBy: plan ? plan.chosenBy : "person",
+          reason: plan?.reason ?? "",
+          decidedAt: Date.now(),
+        };
+        if (prepareGit && project) {
           try {
             const prepared = await bridge.invoke<PreparedWorkspace>(
               "git_prepare_chat_workspace",
               {
                 path: project.primary_path ?? "",
-                branch,
-                newWorktree,
+                branch: prepBranch,
+                newWorktree: prepWorktree,
                 prompt: typed,
                 chatId: id,
               },
@@ -3131,6 +3252,7 @@ export default function App() {
           updatedAt: startedAt,
           pinned: held?.pinned ?? false,
           generation: held?.generation,
+          launch: held?.launch ?? launch,
         });
         // A user send is meaningful activity and moves the row immediately.
         // The later streaming transcript saves preserve this timestamp until
@@ -3154,6 +3276,7 @@ export default function App() {
           updatedAt: activity.updatedAt,
           pinned: activity.pinned ?? false,
           generation: activity.generation,
+          launch: activity.launch,
         });
 
         if (preparationError) {
@@ -3203,7 +3326,7 @@ export default function App() {
           await bridge.invoke("chat_start", {
             key: keyFor(id),
             cwd: launchCwd,
-            useSandbox: held ? false : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? null),
+            useSandbox: held ? false : plan ? plan.useSandbox : (sandboxChoice ?? sandboxes.snapshot?.defaultEnabled ?? null),
             // A project can group several folders, and the chat starts in only
             // one of them. The rest are named here so the agent can reach the
             // whole project, the same way a terminal in it can.
@@ -3272,6 +3395,8 @@ export default function App() {
       head,
       headDraft,
       workerChat,
+      executionPlan,
+      branches,
     ],
   );
 
@@ -3958,6 +4083,8 @@ export default function App() {
 
   return (
     <WorkspaceSlotsContext.Provider value={workspaceSlots}>
+    <AgentRosterContext.Provider value={agentsMode ? roster : NO_ROSTER}>
+    <ChatPersonaContext.Provider value={personaForChat}>
     <div
       ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
@@ -4083,6 +4210,7 @@ export default function App() {
             <ChatTaskBar
               chatId={conversationId}
               connected={conn === "open"}
+              context={panelContext}
               busy={chat.busy && !cutOff}
               waiting={
                 (questions[conversationId]?.length ?? 0) +
@@ -4345,7 +4473,8 @@ export default function App() {
                       // opening a chat sets it from the stored model, resuming
                       // sets it from the session, and changing provider cannot
                       // happen in place — it opens a new chat.
-                      hostName={providerFor(choice.agent).name}
+                      hostName={senderName(persona, providerFor(choice.agent).name)}
+                      hostPersona={persona}
                       onCancelQueued={!workerChat && conn === "open" ? cancelQueued : undefined}
                       onStartQueued={!workerChat && conn === "open" ? startQueued : undefined}
                       onRestoreUnsent={workerChat ? undefined : restoreUnsent}
@@ -4545,14 +4674,20 @@ export default function App() {
             projects={workspaces}
             projectId={project && projectSlug(project.name) !== "general" ? project.id : null}
             onProject={chooseProject}
-            branch={branch}
+            branch={executionPlan ? executionPlan.branch : branch}
             branches={branches}
-            onBranch={setBranch}
-            useSandbox={useSandbox}
-            onUseSandbox={setSandboxChoice}
-            newWorktree={newWorktree}
-            onNewWorktree={setNewWorktree}
+            onBranch={executionPlan ? (value) => setOverrides((o) => ({ ...o, branch: value })) : setBranch}
+            useSandbox={executionPlan ? executionPlan.useSandbox : useSandbox}
+            onUseSandbox={executionPlan ? (value) => setOverrides((o) => ({ ...o, useSandbox: value })) : setSandboxChoice}
+            newWorktree={executionPlan ? executionPlan.newWorktree : newWorktree}
+            onNewWorktree={executionPlan ? (value) => setOverrides((o) => ({ ...o, newWorktree: value })) : setNewWorktree}
             showWorkLocation={!conversationId && !headDraftOn}
+            advanced={executionPlan && composerIdentity && !headDraftOn ? {
+              open: advancedOpen,
+              onToggle: () => setAdvancedOpen((open) => !open),
+              summary: executionPlan.reason,
+              overridden: executionPlan.chosenBy === "advanced",
+            } : undefined}
             cwd={effectiveCwd}
             /* The last turn's receipt. It had a row of its own under the box
                until now; it rides on the composer's own eyebrow instead. */
@@ -4675,6 +4810,8 @@ export default function App() {
       )}
 
     </div>
+    </ChatPersonaContext.Provider>
+    </AgentRosterContext.Provider>
     </WorkspaceSlotsContext.Provider>
   );
 }

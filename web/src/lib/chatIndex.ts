@@ -21,6 +21,7 @@
 // that never settles cannot be caught — under a deadline of their own.
 import { bridge } from "./bridge";
 import type { Conversation } from "./store";
+import type { LaunchPlan } from "./taskEnvironment";
 
 /** A chat as the index holds it. Metadata only; the messages live in the
  *  chat's own transcript. */
@@ -49,6 +50,9 @@ export type IndexEntry = {
   /** Server-owned lifecycle generation. It changes only when Trash restores a
    *  chat, so an older delete retry cannot hide that restored row again. */
   generation?: number;
+  /** The planned launch environment. Written once by the server: a save
+   *  that omits it, or carries another, leaves the recorded plan alone. */
+  launch?: LaunchPlan;
 };
 
 export type DeletedIndexEntry = IndexEntry & { deletedAt: number };
@@ -70,6 +74,7 @@ function entryFromConversation(chat: Conversation): IndexEntry {
     readAt: chat.readAt,
     pinned: chat.pinned ?? false,
     generation: chat.generation,
+    launch: chat.launch,
   };
 }
 

@@ -40,6 +40,8 @@ export type TeamAgent = {
   memoryNote?: string;
   /** Set on a save whose memory note could not be created. */
   memoryError?: string;
+  /** Its picture: a checked PNG/JPEG/WebP data URL. Absent draws initials. */
+  avatar?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -54,6 +56,8 @@ export type TeamDraft = {
   access: AccessLevel;
   projectId?: string | null;
   reportsTo?: string | null;
+  /** Absent keeps the avatar, "" removes it, a data URL sets it. */
+  avatar?: string;
 };
 
 /** Global agents plus the project's own; every agent with `all`. */
@@ -93,6 +97,16 @@ export async function saveHead(id: string | null): Promise<TeamAgent | null> {
   return await bridge.invoke<TeamAgent | null>("team_head_set", { id });
 }
 
+/** The coordination home: the workspace the head's conversations live in.
+ *  `null` means none is configured, and the project named General is used. */
+export async function loadHome(): Promise<string | null> {
+  return await bridge.invoke<string | null>("team_home", {});
+}
+
+export async function saveHome(id: string | null): Promise<string | null> {
+  return await bridge.invoke<string | null>("team_home_set", { id });
+}
+
 /** The person approves a lead's plan; workers start on the next pass.
  *  `taskIds` is the plan they were shown: the host refuses the approval when
  *  the lead has changed it since. */
@@ -117,7 +131,11 @@ export function headConversation(
 /** What the composer shows in place of the model controls for an agents-mode
  *  conversation: who you are talking to, not which model to pick. */
 export type AgentIdentity = {
+  /** The registration, so the face stays the same across renames. */
+  id?: string;
   name: string;
+  /** Its checked picture; absent draws initials. */
+  avatar?: string;
   role: string;
   provider: Provider;
   /** The model's display name. */
@@ -135,6 +153,8 @@ export function agentIdentity(
   current: Pick<ModelChoice, "agent" | "model">,
 ): AgentIdentity {
   return {
+    ...(agent ? { id: agent.id } : {}),
+    ...(agent?.avatar ? { avatar: agent.avatar } : {}),
     name: agent?.name ?? fallbackName,
     role: agent?.role ?? "",
     provider: current.agent,

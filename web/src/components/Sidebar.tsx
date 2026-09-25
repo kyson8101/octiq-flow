@@ -1,5 +1,5 @@
 // Task-first navigation: one global list of chats, with project as context.
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
 import { buildChatTree, type ChatNode } from "../lib/chatTree";
@@ -17,6 +17,8 @@ import "./ChatWorkflowBar.css";
 import type { Conversation } from "../lib/store";
 import { isUnread } from "../lib/unread";
 import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
+import { ChatPersonaContext } from "../lib/agentRoster";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
@@ -118,6 +120,7 @@ export function Sidebar({
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [menuScroll, setMenuScroll] = useState(INITIAL_MOBILE_MENU_SCROLL);
+  const personaOf = useContext(ChatPersonaContext);
   const toolbar = useRef<HTMLDivElement | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
@@ -249,6 +252,9 @@ export function Sidebar({
     const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
+    // Agents mode: a chat handed to a registered agent is named for the agent,
+    // not the model it runs on; the model stays in the tooltip.
+    const persona = personaOf(`chat:${chat.id}`);
     const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
     const snippet = going ? "Deleting…"
       : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
@@ -285,7 +291,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectName}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {
@@ -319,7 +325,12 @@ export function Sidebar({
                   <span className="chat-project">
                     <span className="chat-project-name" title={projectContext}>{projectContext}</span>
                   </span>
-                  {model && (
+                  {persona ? (
+                    <span className="chat-model chat-persona" title={`${persona.name}${model ? ` · ${model.name} ${model.model}` : ""}`}>
+                      <AgentAvatar name={persona.name} avatar={persona.avatar} id={persona.id ?? persona.name} size={14} removed={persona.removed} decorative />
+                      <span>{persona.name}</span>
+                    </span>
+                  ) : model && (
                     <span className="chat-model" title={`Active model: ${model.name} · ${model.model}`}>
                       <AgentLogo agent={model.agent} size={10} />
                       <span>{model.model}</span>

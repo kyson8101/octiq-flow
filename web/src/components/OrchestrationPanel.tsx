@@ -13,6 +13,8 @@ import { workerArchiveDisabledReason } from "../lib/workerArchive";
 import { orchestrationFeed } from "../lib/orchestrationFeed";
 import { useOrchestrationFeed } from "../lib/useOrchestrationSnapshot";
 import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
+import { useRosterAgent } from "../lib/agentRoster";
 import { PlanReview } from "./PlanReview";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
@@ -783,6 +785,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
 }) {
   const [expanded, setExpanded] = useState(false);
   const detailId = useId();
+  const assigneeFace = useRosterAgent(task.assignee?.id);
   const mine = attempts.filter((candidate) => candidate.taskId === task.id).sort((a, b) => b.number - a.number);
   const attempt = attempts.find((candidate) => candidate.id === task.activeAttemptId) ?? mine[0];
   const history = mine.filter((candidate) => candidate.id !== attempt?.id);
@@ -817,7 +820,9 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
             {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
-            {attempt && <span className="orch-task-agent" title={`${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}><AgentLogo agent={attempt.agent} size={10} /></span>}
+            {attempt && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee
+              ? <AgentAvatar name={assigneeFace?.name ?? task.assignee.name} avatar={assigneeFace?.avatar} id={task.assignee.id} size={14} decorative />
+              : <AgentLogo agent={attempt.agent} size={10} />}</span>}
             {branch && <span className="orch-task-branch" title={branch}><BranchIcon />{shortBranch(branch)}</span>}
           </span>
         </button>

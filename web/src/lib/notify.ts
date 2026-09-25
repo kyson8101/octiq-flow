@@ -100,14 +100,20 @@ export function noticeFor(input: {
   projectName: string;
   chatTitle: string;
   detail: string;
+  /** Agents mode: the registered agent the chat belongs to. An ordinary chat
+   *  has none, and its banner never names a provider. Worded as `body_for`
+   *  in push.rs words it. */
+  agentName?: string;
 }): Notice {
   const detail = preview(input.detail);
-  const body =
+  const said =
     input.kind === "permission"
       ? `Needs permission: ${detail || "a tool call"}`
       : input.kind === "question"
         ? `Asked: ${detail || "a question"}`
         : detail || "Finished.";
+  const who = input.agentName?.trim();
+  const body = who ? `${who}: ${said}` : said;
   return {
     kind: input.kind,
     conversationId: input.conversationId,

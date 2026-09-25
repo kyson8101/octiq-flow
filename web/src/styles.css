@@ -2122,6 +2122,7 @@ body {
   color: var(--fg-0);
 }
 
+.msg-role .agent-avatar { margin-inline-end: 6px; }
 .msg-role {
   margin-bottom: 4px;
   font-size: 11px;

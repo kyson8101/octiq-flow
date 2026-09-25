@@ -57,6 +57,24 @@
 .chat-task-path { font-family: var(--mono, ui-monospace, Menlo, monospace); font-size: 11px; color: var(--fg-2); }
 .chat-task-note { display: block; margin-top: 2px; font-size: 11px; color: var(--fg-3); }
 
+/* Who the chat is with — one line, face first. */
+.chat-task-agent { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--r-md); background: var(--bg-2); }
+.chat-task-agent-copy { display: grid; min-width: 0; }
+.chat-task-agent-copy strong { font-size: var(--text-sm); color: var(--fg-0); }
+.chat-task-agent-copy span { font-size: 11px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Environment: every value says how far it can be trusted. Only Verified
+   gets colour, and only as a tint; a plan or an unknown stays quiet. */
+.chat-task-env { grid-template-columns: 96px minmax(0, 1fr); }
+.chat-task-env-value { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); }
+.chat-task-env-value > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.chat-task-evidence { flex: 0 0 auto; padding: 0 6px; border-radius: 999px; font-family: var(--font-sans, inherit); font-size: 10px; line-height: 16px; color: var(--fg-2); background: var(--bg-2); }
+.chat-task-evidence[data-evidence="confirmed"] { color: color-mix(in oklab, var(--ok) 80%, var(--fg-1)); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.chat-task-evidence[data-evidence="stale"],
+.chat-task-evidence[data-evidence="removed"] { color: color-mix(in oklab, var(--warn, #ff9f0a) 80%, var(--fg-1)); background: color-mix(in srgb, var(--warn, #ff9f0a) 14%, transparent); }
+.chat-task-copy { flex: 0 0 auto; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--r-sm); background: transparent; color: var(--fg-2); font-family: var(--font-sans, inherit); font-size: 10px; line-height: 16px; cursor: pointer; transition: background 150ms ease-out, color 150ms ease-out; }
+.chat-task-copy:hover { background: var(--bg-2); color: var(--fg-0); }
+
 .chat-task-target { display: inline-flex; align-items: baseline; gap: var(--space-2); padding: 1px 5px; margin: -1px -5px; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font: inherit; cursor: pointer; }
 .chat-task-target:hover { background: var(--bg-2); }
 .chat-task-target .chat-task-note { display: inline; }

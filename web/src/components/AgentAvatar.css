@@ -1,0 +1,62 @@
+/* A registered agent's face. Round, so it never reads as a project tile
+   (those are rounded squares), and tinted rather than filled — see the zen
+   design language: the hue tells two agents apart, it does not shout. */
+.agent-avatar {
+  --agent-avatar-tone: hsl(var(--agent-avatar-hue, 210) 62% 52%);
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--agent-avatar-size, 20px);
+  height: var(--agent-avatar-size, 20px);
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--agent-avatar-tone) 20%, var(--bg-1));
+  color: color-mix(in oklab, var(--agent-avatar-tone) 72%, var(--fg-1));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--agent-avatar-tone) 28%, transparent);
+  vertical-align: middle;
+  user-select: none;
+}
+
+.agent-avatar.has-image {
+  background: var(--bg-2);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg-1) 10%, transparent);
+}
+
+.agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.agent-avatar-initials {
+  font-size: calc(var(--agent-avatar-size, 20px) * 0.42);
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+.agent-avatar.is-removed {
+  opacity: 0.55;
+  filter: grayscale(1);
+}
+
+/* In the composer's hint line, where a model's robot stands in an ordinary
+   chat. Working is a slow breath, never a spin: one quiet moving thing. */
+.composer-hint-avatar { margin-inline-end: 6px; }
+.composer-hint-avatar.is-working { animation: agent-avatar-breathe 1.8s ease-in-out infinite; }
+@keyframes agent-avatar-breathe {
+  0%, 100% { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--agent-avatar-tone) 28%, transparent), 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--agent-avatar-tone) 28%, transparent), 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-hint-avatar.is-working { animation: none; }
+}
+
+/* Advanced: where a new task runs. A ghost icon until it matters; tinted
+   when the person has changed the automatic choice. */
+.composer-advanced.is-open,
+.composer-advanced.is-overridden {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}

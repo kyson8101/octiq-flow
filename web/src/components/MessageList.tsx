@@ -18,6 +18,8 @@ import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Attached, Block, Message } from "../lib/chat";
 import { AgentLogo } from "./AgentLogo";
+import { AgentAvatar } from "./AgentAvatar";
+import type { Persona } from "../lib/agentPersona";
 import { ToolCard } from "./ToolCard";
 import { ToolGroup } from "./ToolGroup";
 import { useRunningCalls } from "./Background";
@@ -760,6 +762,7 @@ function TurnView({
   fresh,
   mapTurnId,
   hostName,
+  hostPersona,
   onCancelQueued,
   onStartQueued,
   onRestoreUnsent,
@@ -778,6 +781,7 @@ function TurnView({
   /** What to call the host — the provider this conversation is running, in its
    *  own name. See the same prop on `MessageList`. */
   hostName?: string;
+  hostPersona?: Persona | null;
   /** Arrived while the transcript was already on screen, rather than having
    *  been there when it opened. Only these animate in — see `justArrived`. */
   fresh?: boolean;
@@ -909,6 +913,11 @@ function TurnView({
               <AgentLogo agent={speaker.agent === "claude" ? "claude" : "codex"} size={13} />
               {speaker.name}
             </>
+          ) : hostPersona ? (
+            <>
+              <AgentAvatar name={hostPersona.name} avatar={hostPersona.avatar} id={hostPersona.id ?? hostPersona.name} size={16} removed={hostPersona.removed} decorative />
+              {hostPersona.name}
+            </>
           ) : (
             hostName ?? "Claude"
           )}
@@ -947,7 +956,9 @@ function TurnView({
             onOpenAgent={onOpenAgent}
           />
         )}
-        {streaming && blocks.length === 0 && <div className="dots" aria-label="working" />}
+        {streaming && blocks.length === 0 && (
+          <div className="dots" aria-label={hostPersona ? `${hostPersona.name} is working` : "working"} />
+        )}
         {/* Copy, once the turn is over and there is prose worth taking.
             (The files the turn touched used to sit on this row too. They are a
             whole-session question now — see components/SessionFiles.)
@@ -1228,6 +1239,7 @@ const MessageListBody = function MessageList({
   agentByTool,
   onOpenAgent,
   hostName,
+  hostPersona,
   onCancelQueued,
   onStartQueued,
   onRestoreUnsent,
@@ -1256,6 +1268,10 @@ const MessageListBody = function MessageList({
    *  Defaults to "Claude" for a caller that does not know — which is only the
    *  tests; the app always passes it. */
   hostName?: string;
+  /** Agents mode: the registered agent this conversation is with. Its name
+   *  and face sign every reply the host writes, in place of the provider's
+   *  word; the provider stays in the details. Absent in an ordinary chat. */
+  hostPersona?: Persona | null;
   /** Take back a message the agent has not been given yet, by the id it was
    *  sent under. Absent where nothing can be sent in the first place (the agent
    *  rail's read-only transcript), and a queued message there is then only a
@@ -1765,6 +1781,7 @@ const MessageListBody = function MessageList({
               fresh={fresh.has(turn[0].id)}
               mapTurnId={turn[0].role === "user" ? turn[0].id : undefined}
               hostName={hostName}
+              hostPersona={hostPersona}
               onCancelQueued={onCancelQueued}
               onStartQueued={onStartQueued}
               onRestoreUnsent={onRestoreUnsent}
