@@ -1317,6 +1317,12 @@ impl OrchestrationStore {
                 return Err(error);
             }
         };
+        if let Some(previous) = previous.as_ref() {
+            // A settled chat must not wake after a replacement becomes
+            // authoritative. This is essential when the retry reuses its
+            // checkout, where two processes could otherwise mutate one tree.
+            let _ = crate::agent_chat::chat_stop_impl(&chats, previous.worker_chat_key.clone());
+        }
 
         let chat_id = reserved
             .worker_chat_key
