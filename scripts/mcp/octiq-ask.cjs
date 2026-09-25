@@ -1241,7 +1241,7 @@ const ORCHESTRATION_TASK_CREATE = {
       dependsOn: { type: "array", items: { type: "string" }, description: "Task IDs that must complete first. Defaults to none." },
       parentTaskId: { type: "string", description: "Optional decomposition parent; not an execution dependency." },
       worker: { type: "object", description: "The main agent's selection for this task, used by automatic dispatch. Required when workerDefaults has no agent and no assignee is given. Explain the choice briefly in spec.", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
-      assignee: { type: "string", description: "Agents mode only: the id of a registered agent from your brief. The host applies that agent's provider, model, effort and access; do not also pass worker." },
+      assignee: { type: "string", description: "Agents mode only: the id of one of your direct reports, as listed in your brief. The host applies that agent's provider, model, effort and access; do not also pass worker. A worker that manages agents splits its own task by passing its task id as parentTaskId." },
     },
     required: ["runId", "title", "spec"],
   },

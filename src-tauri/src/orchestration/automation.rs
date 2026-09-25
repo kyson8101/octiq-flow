@@ -177,7 +177,9 @@ impl OrchestrationStore {
 }
 
 fn ready_wave(snapshot: &Snapshot, run: &Run) -> Vec<Task> {
-    if matches!(run.status, RunStatus::Stopped | RunStatus::Completed) {
+    if matches!(run.status, RunStatus::Stopped | RunStatus::Completed)
+        || run.awaiting_plan_approval()
+    {
         return Vec::new();
     }
     // A run-level decision pauses new work. Task gates keep only their own

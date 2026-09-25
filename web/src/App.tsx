@@ -130,6 +130,8 @@ import { ProjectSettings } from "./components/ProjectSettings";
 import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { LeadPicker } from "./components/AgentsSettings";
+import { AgentsDashboard, PlanApproval } from "./components/AgentsDashboard";
+import { pendingPlan } from "./lib/agentsDashboard";
 import {
   leadSettings, loadTeam, recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
@@ -578,6 +580,7 @@ export default function App() {
   const [team, setTeam] = useState<TeamAgent[]>([]);
   const [leadId, setLeadId] = useState<string | null>(() => recall(LEAD_KEY));
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
+  const [agentsDashboard, setAgentsDashboard] = useState(false);
 
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
@@ -1714,9 +1717,15 @@ export default function App() {
     remember(LEAD_KEY, agent.id);
   }, []);
   const openAgentsSettings = useCallback(() => {
+    setAgentsDashboard(false);
     setSettingsSection("agents");
     setAppSettings(true);
   }, []);
+  // A lead's plan waiting for the person, shown above its composer.
+  const plan = useMemo(
+    () => (workerChat ? null : pendingPlan(orchestration, conversationId ? keyFor(conversationId) : null)),
+    [orchestration, conversationId, workerChat],
+  );
   const openRecord = useMemo(
     () => conversations.find((conversation) => conversation.id === conversationId),
     [conversations, conversationId],
@@ -2824,7 +2833,7 @@ export default function App() {
       const typed = text;
       if (taskLead) {
         try {
-          text = await taskBrief(targetProject.id, taskLead.id, text);
+          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text);
         } catch (error) {
           setNewChatError(
             `Could not hand the task to ${taskLead.name}: ${String((error as Error).message ?? error)}`,
@@ -3711,6 +3720,23 @@ export default function App() {
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
 
+      {agentsMode && (
+        <button
+          className={`icon-btn${agentsDashboard ? " is-on" : ""}`}
+          type="button"
+          aria-label="Agents"
+          title="Agents"
+          aria-pressed={agentsDashboard}
+          onClick={() => setAgentsDashboard((open) => !open)}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="9" y="3" width="6" height="5" rx="1" /><rect x="3" y="16" width="6" height="5" rx="1" /><rect x="15" y="16" width="6" height="5" rx="1" />
+            <path d="M12 8v4M6 16v-2h12v2" />
+          </svg>
+          <span className="topbar-action-label">Agents</span>
+        </button>
+      )}
+
       <button
         className="icon-btn"
         type="button"
@@ -4169,6 +4195,10 @@ export default function App() {
             </section>
           ))}
 
+          {plan && (
+            <PlanApproval run={plan.run} tasks={plan.tasks} drafting={chat.busy && !cutOff} />
+          )}
+
           {workerChat ? <WorkerChatNotice
             busy={chat.busy && !cutOff}
             onOpenMain={coordinatorConversation ? () => openWorkflowChat(keyFor(coordinatorConversation.id)) : undefined}
@@ -4351,6 +4381,24 @@ export default function App() {
           onAgentsMode={changeAgentsMode}
           initialSection={settingsSection}
           onClose={() => { setAppSettings(false); setSettingsSection("projects"); }}
+        />
+      )}
+
+      {agentsDashboard && agentsMode && (
+        <AgentsDashboard
+          projectId={project?.id ?? null}
+          snapshot={orchestration}
+          chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
+          onOpenChat={(chatKey) => {
+            try {
+              openWorkflowChat(chatKey);
+              setAgentsDashboard(false);
+            } catch {
+              /* not in this browser's list yet; the row stays put */
+            }
+          }}
+          onManage={openAgentsSettings}
+          onClose={() => setAgentsDashboard(false)}
         />
       )}
 

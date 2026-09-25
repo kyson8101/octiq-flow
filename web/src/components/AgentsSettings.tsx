@@ -11,6 +11,7 @@ import {
   deleteTeamAgent, leadOnly, loadTeam, saveTeamAgent, teamModels,
   type TeamAgent, type TeamDraft,
 } from "../lib/agentsMode";
+import { orgChart } from "../lib/agentsDashboard";
 import { AgentLogo } from "./AgentLogo";
 
 type ProjectRef = { id: string; name: string };
@@ -18,7 +19,7 @@ type ProjectRef = { id: string; name: string };
 const PROVIDERS: Provider[] = ["claude", "codex"];
 
 function blank(projectId: string | null): TeamDraft {
-  return { name: "", role: "", agent: "claude", model: "sonnet", effort: "medium", access: "auto", projectId };
+  return { name: "", role: "", agent: "claude", model: "sonnet", effort: "medium", access: "auto", projectId, reportsTo: null };
 }
 
 export function AgentsSettings({ on, onToggle, projects }: {
@@ -45,25 +46,17 @@ export function AgentsSettings({ on, onToggle, projects }: {
     () => new Map(projects.map((p) => [p.id, p.name])),
     [projects],
   );
-  const groups = useMemo(() => {
-    const global = team.filter((a) => !a.projectId);
-    const byProject = new Map<string, TeamAgent[]>();
-    for (const agent of team) {
-      if (!agent.projectId) continue;
-      byProject.set(agent.projectId, [...(byProject.get(agent.projectId) ?? []), agent]);
-    }
-    return { global, byProject };
-  }, [team]);
+  const chart = useMemo(() => orgChart(team), [team]);
 
   const save = async () => {
     if (!draft) return;
     setSaving(true);
     setError("");
     try {
-      const saved = await saveTeamAgent({ ...draft, projectId: draft.projectId || null });
-      setTeam((before) => before.some((a) => a.id === saved.id)
-        ? before.map((a) => (a.id === saved.id ? saved : a))
-        : [...before, saved]);
+      await saveTeamAgent({ ...draft, projectId: draft.projectId || null, reportsTo: draft.reportsTo || null });
+      // Re-read: a save can move nothing else today, but a delete moves
+      // reports up, and one source of truth is simpler than two.
+      setTeam(await loadTeam(null, true));
       setDraft(null);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
@@ -76,15 +69,17 @@ export function AgentsSettings({ on, onToggle, projects }: {
     setError("");
     try {
       await deleteTeamAgent(agent.id);
-      setTeam((before) => before.filter((a) => a.id !== agent.id));
+      // Its reports now report to its manager.
+      setTeam(await loadTeam(null, true));
       if (draft?.id === agent.id) setDraft(null);
     } catch (reason) {
       setError(String((reason as Error).message ?? reason));
     }
   };
 
-  const row = (agent: TeamAgent) => (
-    <li className="team-row" key={agent.id}>
+  const row = ({ agent, depth }: { agent: TeamAgent; depth: number }) => (
+    <li className="team-row" key={agent.id} style={{ paddingInlineStart: `${depth * 22}px` }}>
+      {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
       <AgentLogo agent={agent.agent === "codex" ? "codex" : "claude"} size={16} />
       <span className="team-row-copy">
         <span className="team-row-name">
@@ -93,10 +88,11 @@ export function AgentsSettings({ on, onToggle, projects }: {
         </span>
         <span className="team-row-meta">
           {AGENT_NAME[agent.agent]} {modelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
+          {" · "}{agent.projectId ? projectName.get(agent.projectId) ?? "Removed project" : "Every project"}
         </span>
         {agent.role && <span className="team-row-role">{agent.role}</span>}
       </span>
-      <button className="vault-button" type="button" onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null })}>Edit</button>
+      <button className="vault-button" type="button" onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null })}>Edit</button>
       <button className="vault-button" type="button" aria-label={`Remove ${agent.name}`} onClick={() => void remove(agent)}>Remove</button>
     </li>
   );
@@ -139,6 +135,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
       {draft && (
         <TeamForm
           draft={draft}
+          team={team}
           projects={projects}
           saving={saving}
           onChange={setDraft}
@@ -155,20 +152,10 @@ export function AgentsSettings({ on, onToggle, projects }: {
           <span>Add one with a name, a role and the model it runs on.</span>
         </div>
       ) : (
-        <>
-          {groups.global.length > 0 && (
-            <div className="team-group">
-              <h4>Global · every project</h4>
-              <ul className="team-list">{groups.global.map(row)}</ul>
-            </div>
-          )}
-          {[...groups.byProject].map(([projectId, agents]) => (
-            <div className="team-group" key={projectId}>
-              <h4>{projectName.get(projectId) ?? "Removed project"}</h4>
-              <ul className="team-list">{agents.map(row)}</ul>
-            </div>
-          ))}
-        </>
+        <div className="team-group">
+          <h4>Org chart · agents at the top report to you</h4>
+          <ul className="team-list">{chart.map(row)}</ul>
+        </div>
       )}
     </section>
   );
@@ -222,8 +209,9 @@ function modelLabel(agent: Pick<TeamAgent, "agent" | "model">): string {
   return teamModels(agent.agent).find((m) => m.flag === agent.model)?.model ?? agent.model;
 }
 
-function TeamForm({ draft, projects, saving, onChange, onSave, onCancel }: {
+function TeamForm({ draft, team, projects, saving, onChange, onSave, onCancel }: {
   draft: TeamDraft;
+  team: TeamAgent[];
   projects: ProjectRef[];
   saving: boolean;
   onChange: (draft: TeamDraft) => void;
@@ -241,6 +229,24 @@ function TeamForm({ draft, projects, saving, onChange, onSave, onCancel }: {
     onChange({ ...draft, agent, model, effort, access: level });
   };
   const lead = leadOnly(draft);
+  // A manager must be visible wherever this agent is, and must not already
+  // report to it (a loop). The host checks both too.
+  const below = new Set<string>();
+  if (draft.id) {
+    let grew = true;
+    below.add(draft.id);
+    while (grew) {
+      grew = false;
+      for (const agent of team) {
+        if (agent.reportsTo && below.has(agent.reportsTo) && !below.has(agent.id)) {
+          below.add(agent.id);
+          grew = true;
+        }
+      }
+    }
+  }
+  const managers = team.filter((agent) =>
+    !below.has(agent.id) && (!agent.projectId || agent.projectId === (draft.projectId || undefined)));
 
   return (
     <form className="team-form" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
@@ -277,6 +283,13 @@ function TeamForm({ draft, projects, saving, onChange, onSave, onCancel }: {
         <span>Access</span>
         <select value={draft.access} onChange={(event) => set({ access: event.target.value as AccessLevel })}>
           {access.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}
+        </select>
+      </label>
+      <label>
+        <span>Reports to</span>
+        <select value={draft.reportsTo ?? ""} onChange={(event) => set({ reportsTo: event.target.value || null })}>
+          <option value="">You</option>
+          {managers.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
       </label>
       <label>

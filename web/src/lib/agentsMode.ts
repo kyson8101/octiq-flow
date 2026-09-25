@@ -5,6 +5,7 @@
 // server (team.rs) so the lead's brief and the host's task assignment read one
 // list; the on/off switch is this browser's own preference.
 import { bridge } from "./bridge";
+import type { LeadRecord } from "./agentsDashboard";
 import { recall, remember } from "./remember";
 import {
   MODELS, effortFor, accessFor,
@@ -33,6 +34,8 @@ export type TeamAgent = {
   access: AccessLevel;
   /** Absent for a global agent. */
   projectId?: string;
+  /** The agent this one reports to; absent reports to the person. */
+  reportsTo?: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -46,6 +49,7 @@ export type TeamDraft = {
   effort?: Effort;
   access: AccessLevel;
   projectId?: string | null;
+  reportsTo?: string | null;
 };
 
 /** Global agents plus the project's own; every agent with `all`. */
@@ -61,9 +65,19 @@ export async function deleteTeamAgent(id: string): Promise<void> {
   await bridge.invoke("team_delete", { id });
 }
 
-/** The first message of a task: the task, then the lead's brief. */
-export async function taskBrief(projectId: string, leadId: string, task: string): Promise<string> {
-  return await bridge.invoke<string>("team_brief", { projectId, leadId, task });
+/** The first message of a task: the task, then the lead's brief. Also records
+ *  the chat as this lead's, which is what holds its plan for approval. */
+export async function taskBrief(chatKey: string, projectId: string, leadId: string, task: string): Promise<string> {
+  return await bridge.invoke<string>("team_brief", { chatKey, projectId, leadId, task });
+}
+
+export async function loadLeads(): Promise<LeadRecord[]> {
+  return await bridge.invoke<LeadRecord[]>("team_leads", {});
+}
+
+/** The person approves a lead's plan; workers start on the next pass. */
+export async function approvePlan(chatKey: string, runId: string): Promise<void> {
+  await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId });
 }
 
 /** Fable and Astra only lead; the host refuses them as workers. */

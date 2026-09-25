@@ -706,6 +706,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             } else {
                 run
             };
+            // Agents mode: a lead's plan always waits for the person.
+            let run = if crate::team::lead_for_chat(&crate::team::default_path(), &actor)?.is_some()
+            {
+                svc.orchestrations.require_plan_approval(&run.id)?
+            } else {
+                run
+            };
             svc.chats.persist_orchestration_context(&actor)?;
             if start_master {
                 crate::agent_chat::chat_continue_internal_impl(
@@ -782,12 +789,32 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "worker")?;
             // Agents mode: a lead names a registered agent and the host, not
             // the lead, turns it into worker settings.
-            let assignee = match arg::<Option<String>>(&args, "assignee")?
-                .filter(|who| !who.trim().is_empty())
-            {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let parent: Option<String> = arg(&args, "parentTaskId")?;
+            let team_path = crate::team::default_path();
+            let (project, coordinator) = svc.orchestrations.run_owner(&run_id)?;
+            // Whose direct reports this task may go to: the lead's when the
+            // coordinator of an agents-mode run creates it, the manager's when
+            // a second-level worker splits its own task.
+            let manager = if actor != coordinator {
+                match parent.as_deref() {
+                    Some(parent) => svc.orchestrations.task_assignment(parent)?.0.map(|a| a.id),
+                    None => None,
+                }
+            } else {
+                crate::team::lead_for_chat(&team_path, &actor)?.map(|lead| lead.lead_id)
+            };
+            let requested =
+                arg::<Option<String>>(&args, "assignee")?.filter(|who| !who.trim().is_empty());
+            if manager.is_some() && requested.is_none() {
+                return Err(
+                    "Assign this task to one of your direct reports with `assignee`.".into(),
+                );
+            }
+            let assignee = match requested {
                 Some(who) => {
-                    let project = svc.orchestrations.run_workspace_id(&run_id)?;
-                    let agent = crate::team::resolve(&crate::team::default_path(), &project, &who)?;
+                    let agent =
+                        crate::team::resolve(&team_path, &project, &who, manager.as_deref())?;
                     worker = Some(crate::orchestration::automation::WorkerSettings {
                         agent: agent.agent,
                         access: agent.access,
@@ -803,14 +830,34 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 None => None,
             };
             to_value(svc.orchestrations.create_task_for(
-                &arg::<String>(&args, "actorChatKey")?,
+                &actor,
                 run_id,
                 arg(&args, "title")?,
                 arg(&args, "spec")?,
                 arg(&args, "dependsOn")?,
-                arg(&args, "parentTaskId")?,
+                parent,
                 worker,
                 assignee,
+            ))
+        }
+        // Browser-only: the person approves an agents-mode lead's plan. Not in
+        // the agent hook's whitelist, so no agent can approve its own plan.
+        "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+        )),
+        "team_leads" => to_value(crate::team::leads(&crate::team::default_path())),
+        "team_brief" => {
+            let chat_key: String = arg(&args, "chatKey")?;
+            if !chat_key.starts_with("chat:") || chat_key.starts_with("chat:orch-") {
+                return Err("A task can only be handed out from a main chat.".into());
+            }
+            to_value(crate::team::brief(
+                &crate::team::default_path(),
+                &chat_key,
+                &arg::<String>(&args, "projectId")?,
+                &arg::<String>(&args, "leadId")?,
+                &arg::<String>(&args, "task")?,
             ))
         }
         "team_list" => {
@@ -830,12 +877,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &crate::team::default_path(),
             &arg::<String>(&args, "id")?,
         )),
-        "team_brief" => to_value(crate::team::brief(
-            &crate::team::default_path(),
-            &arg::<String>(&args, "projectId")?,
-            &arg::<String>(&args, "leadId")?,
-            &arg::<String>(&args, "task")?,
-        )),
+
         "orchestration_worker_start" => {
             let actor: String = arg(&args, "actorChatKey")?;
             let launch = crate::orchestration::WorkerLaunch {
