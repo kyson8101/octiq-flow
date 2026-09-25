@@ -142,7 +142,7 @@ import {
   agentIdentity, headConversation, leadSettings, loadHead, loadHome, loadLeads, loadTeam,
   recallAgentsMode, rememberAgentsMode, taskBrief, type TeamAgent,
 } from "./lib/agentsMode";
-import { autoExecution, type ExecutionOverrides } from "./lib/agentExecution";
+import { autoExecution, headCoordination, type ExecutionOverrides } from "./lib/agentExecution";
 import { personaFor, senderName } from "./lib/agentPersona";
 import type { LaunchPlan } from "./lib/taskEnvironment";
 import { AgentRosterContext, ChatPersonaContext } from "./lib/agentRoster";
@@ -1867,10 +1867,15 @@ export default function App() {
   // Agents mode: where a new task runs, chosen automatically (lib/agentExecution).
   // The head coordinates from home; a project lead gets a new worktree. Only
   // what the person changes under Advanced overrides it.
+  // The head picked from the lead chips with no code project in front of it
+  // is the same coordination conversation "Talk to" opens.
+  const headAtHome = newTask && headCoordination({
+    headDraft: headDraftOn, leadId: lead?.id, headId: head?.id, project: project ?? null, homeId,
+  });
   const executionPlan = useMemo(
     () => newTask
       ? autoExecution({
-        toHead: headDraftOn,
+        toHead: headAtHome,
         project: project ?? null,
         homeId,
         repo: branches,
@@ -1878,7 +1883,7 @@ export default function App() {
         overrides,
       })
       : null,
-    [newTask, headDraftOn, project, homeId, branches, sandboxes.snapshot?.defaultEnabled, overrides],
+    [newTask, headAtHome, project, homeId, branches, sandboxes.snapshot?.defaultEnabled, overrides],
   );
   // The registered agent a chat belongs to — its lead, or the assignee of the
   // task a worker chat runs. It is the voice of every reply in that chat.
@@ -3073,10 +3078,14 @@ export default function App() {
       // Agents mode: the first message of a new task goes to its lead with the
       // brief behind it. What the person typed still names the chat.
       const taskLead = toHead ? head : agentsMode && !conversationId && text.trim() !== "/clear" ? lead : null;
+      // The head's coordination conversation is cross-project however it was
+      // opened: through "Talk to", or picked as the lead at home. Its brief
+      // then spans every project, and its tasks name their destinations.
+      const crossProject = toHead || (!!plan?.crossProject && !!head && taskLead?.id === head.id);
       const typed = text;
       if (taskLead) {
         try {
-          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text, toHead);
+          text = await taskBrief(keyFor(id), targetProject.id, taskLead.id, text, crossProject);
         } catch (error) {
           setNewChatError(
             `Could not hand the task to ${taskLead.name}: ${String((error as Error).message ?? error)}`,
@@ -3087,7 +3096,7 @@ export default function App() {
         // between the send and the next read of the record.
         const record: LeadRecord = {
           chatKey: keyFor(id), leadId: taskLead.id, leadName: taskLead.name,
-          projectId: targetProject.id, crossProject: toHead || undefined, createdAt: Date.now(),
+          projectId: targetProject.id, crossProject: crossProject || undefined, createdAt: Date.now(),
         };
         setLeads((current) => [...current.filter((item) => item.chatKey !== record.chatKey), record]);
       }
@@ -4684,8 +4693,8 @@ export default function App() {
             onUseSandbox={executionPlan ? (value) => setOverrides((o) => ({ ...o, useSandbox: value })) : setSandboxChoice}
             newWorktree={executionPlan ? executionPlan.newWorktree : newWorktree}
             onNewWorktree={executionPlan ? (value) => setOverrides((o) => ({ ...o, newWorktree: value })) : setNewWorktree}
-            showWorkLocation={!conversationId && !headDraftOn}
-            advanced={executionPlan && composerIdentity && !headDraftOn ? {
+            showWorkLocation={!conversationId && !headDraftOn && !executionPlan?.crossProject}
+            advanced={executionPlan && composerIdentity && !executionPlan.crossProject ? {
               open: advancedOpen,
               onToggle: () => setAdvancedOpen((open) => !open),
               summary: executionPlan.reason,

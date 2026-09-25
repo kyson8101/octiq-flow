@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoExecution } from "./agentExecution";
+import { autoExecution, headCoordination } from "./agentExecution";
 
 const flow = { id: "p-flow", name: "octiq-flow", primary_path: "/code/octiq-flow" };
 const general = { id: "p-general", name: "General", primary_path: "/code/General" };
@@ -34,6 +34,24 @@ describe("autoExecution", () => {
       .toMatchObject({ target: "home", projectId: "p-general", prepare: false, useSandbox: false });
     expect(autoExecution({ toHead: false, project: general, sandboxDefault: true }))
       .toMatchObject({ target: "home", prepare: false });
+  });
+
+  it("marks only the head's conversation as cross-project", () => {
+    expect(autoExecution({ toHead: true, project: null, sandboxDefault: false }).crossProject).toBe(true);
+    expect(autoExecution({ toHead: false, project: null, sandboxDefault: false }).crossProject).toBe(false);
+    expect(autoExecution({ toHead: false, project: flow, repo, sandboxDefault: false }).crossProject).toBe(false);
+  });
+
+  it("treats the head picked at home as the coordination conversation", () => {
+    const base = { headDraft: false, leadId: "pj", headId: "pj", homeId: "p-general" };
+    expect(headCoordination({ ...base, project: null })).toBe(true);
+    expect(headCoordination({ ...base, project: general })).toBe(true);
+    // Picked inside a code project, the head stays that project's lead.
+    expect(headCoordination({ ...base, project: flow })).toBe(false);
+    // Another lead at home is an ordinary lead.
+    expect(headCoordination({ ...base, leadId: "maya", project: null })).toBe(false);
+    expect(headCoordination({ ...base, headId: null, project: null })).toBe(false);
+    expect(headCoordination({ ...base, headDraft: true, leadId: "maya", project: flow })).toBe(true);
   });
 
   it("lets Advanced overrides win and says so", () => {

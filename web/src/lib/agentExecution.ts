@@ -53,7 +53,28 @@ export type ExecutionPlan = {
   chosenBy: "auto" | "advanced";
   /** One line for the details, in the person's words. */
   reason: string;
+  /** The conversation is the head's cross-project coordination, whichever
+   *  way it was started: its lead record and brief must say so, or the head
+   *  is briefed as a project lead of General with no one to route to. */
+  crossProject: boolean;
 };
+
+/** Is a new task the head's coordination conversation? Either it was opened
+ *  with "Talk to", or the head was picked as the lead with no code project in
+ *  front of it (so it would land in the home workspace anyway). A head picked
+ *  inside a code project stays that project's lead, as before. */
+export function headCoordination(input: {
+  headDraft: boolean;
+  leadId: string | null | undefined;
+  headId: string | null | undefined;
+  project: ExecutionProject | null;
+  homeId?: string | null;
+}): boolean {
+  if (input.headDraft) return true;
+  if (!input.headId || input.leadId !== input.headId) return false;
+  const project = input.project;
+  return !project || project.id === input.homeId || isHomeName(project.name);
+}
 
 export function isHomeName(name: string | undefined): boolean {
   return (name ?? "").trim().toLowerCase() === "general";
@@ -84,6 +105,7 @@ export function autoExecution(input: {
       useSandbox: false,
       chosenBy: "auto",
       reason: "Coordinates from your home workspace. Each task it hands out runs where the host routes it.",
+      crossProject: true,
     };
   }
 
@@ -100,6 +122,7 @@ export function autoExecution(input: {
       useSandbox: overrides.useSandbox ?? false,
       chosenBy: overridden ? "advanced" : "auto",
       reason: "No code project: works from your home workspace.",
+      crossProject: false,
     };
   }
 
@@ -122,5 +145,6 @@ export function autoExecution(input: {
     useSandbox,
     chosenBy: overridden ? "advanced" : "auto",
     reason,
+    crossProject: false,
   };
 }
