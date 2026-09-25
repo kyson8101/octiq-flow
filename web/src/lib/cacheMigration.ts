@@ -31,10 +31,17 @@ function spoken(message: Message): string {
  *  had typed, frame and all. The frame is still there in the cached text,
  *  which is what makes this readable without the original events.
  *
- *  A message that was SENT (`turnId`) or ECHOED back (`echo`) is left as it
- *  is: either one is the record of the person typing it, and a frame they
- *  pasted is still their words. The cache kept no `isSynthetic`, so what is
- *  left — a user message nothing claims was typed — is the nearest it has.
+ *  A message that was SENT (`turnId`) is left as it is: that is a prompt
+ *  OctiqFlow itself sent for the person, and a frame they pasted is still
+ *  their words. An ECHO (`echo`) is NOT taken as the same proof: every turn
+ *  rebuilt from the record is stamped with one, a subagent's hand-back
+ *  included, so skipping on it left every report cached before 6ea80b0 as a
+ *  raw-XML bubble — the very thing this migration exists to redraw. The cache
+ *  kept no `isSynthetic`, so "not sent by us" is the nearest it has.
+ *
+ *  The trade-off, accepted: an old message the person typed that is nothing
+ *  but a well-formed frame, and that carries only an echo, is redrawn as a
+ *  peer's. Rare, and only the drawing changes — the words stay.
  *
  *  Idempotent: a message already redrawn holds a `peer` block rather than
  *  text, so it no longer matches. That matters because this runs on every load
@@ -42,7 +49,7 @@ function spoken(message: Message): string {
 export function migrateMessages(messages: Message[]): Message[] {
   let changed = false;
   const drawn = messages.map((message) => {
-    if (message.role !== "user" || message.turnId || message.echo) return message;
+    if (message.role !== "user" || message.turnId) return message;
     const text = spoken(message);
     if (!text) return message;
     const peers = parsePeerMessages(text, undefined, { synthetic: true });

@@ -68,20 +68,37 @@ it("redraws a peer's words an earlier reader drew as a bubble", () => {
   });
 });
 
-it("leaves a frame the person sent or saw echoed as their own message", () => {
-  // Sent (`turnId`) or echoed back (`echo`) is the record of a person typing.
-  // A frame pasted into the composer is still their words.
+it("leaves a frame the person sent as their own message", () => {
+  // Sent (`turnId`) is the record of OctiqFlow sending a prompt the person
+  // typed. A frame pasted into the composer is still their words.
   const typed = chat();
   typed.messages = [
     { id: "m1", role: "user", streaming: false, turnId: "t1", blocks: [{ kind: "text", text: FRAME }] },
-    { id: "m2", role: "user", streaming: false, echo: "u2", blocks: [{ kind: "text", text: FRAME }] },
   ];
   saveConversations([typed]);
   restamp({ schema: 1 });
 
   const [back] = loadConversations();
-  expect(back.messages.map((m) => m.role)).toEqual(["user", "user"]);
-  expect(back.messages[1].blocks).toEqual([{ kind: "text", text: FRAME }]);
+  expect(back.messages[0]).toMatchObject({ role: "user", blocks: [{ kind: "text", text: FRAME }] });
+});
+
+it("redraws a hand-back that carries nothing but an echo", () => {
+  // Every turn rebuilt from the record is stamped `echo`, a subagent's
+  // hand-back included, so an echo proves nothing about who typed it. Before
+  // 6ea80b0 this is exactly how a report was cached: a user bubble, echoed.
+  const echoed = chat();
+  echoed.messages = [
+    { id: "m1", role: "user", streaming: false, echo: "u2", blocks: [{ kind: "text", text: FRAME }] },
+  ];
+  saveConversations([echoed]);
+  restamp({ schema: 1 });
+
+  const [back] = loadConversations();
+  expect(back.messages[0]).toMatchObject({
+    id: "m1",
+    role: "assistant",
+    blocks: [{ kind: "peer", source: "handback", from: "ac73ceeede1748538" }],
+  });
 });
 
 it("keeps `seq`, so the chat still resumes where it did", () => {
