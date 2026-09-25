@@ -1,8 +1,10 @@
-// Agents mode's dashboard, from the top bar: the org chart, and for each agent
+// Agents mode's dashboard, a main-area page opened from the sidebar: the org chart, and for each agent
 // the tasks it leads and the tasks it was given. A lead's plan waiting for
 // approval is reviewed in its Run panel (`PlanReview`), not here.
 import { useEffect, useMemo, useState } from "react";
 import "./AgentsSettings.css";
+import "./ProjectsPage.css";
+import { WorkspaceHeader } from "./WorkspaceHeader";
 import { AGENT_NAME } from "../lib/agentProviders";
 import { loadLeads, loadTeam, type TeamAgent } from "../lib/agentsMode";
 import { orgChart, workFor, type LeadRecord } from "../lib/agentsDashboard";
@@ -42,16 +44,12 @@ export function AgentsDashboard({ projectId, snapshot, chatTitle, onOpenChat, on
     snapshot.attempts.find((attempt) => attempt.id === task.activeAttemptId);
 
   return (
-    <>
-      <div className="panel-scrim" onClick={onClose} />
-      <aside className="panel agents-dashboard" role="dialog" aria-label="Agents">
-        <header className="panel-head">
-          <div className="panel-id">
-            <div className="panel-name">Agents</div>
-            <div className="shelf-sub">who is doing what</div>
-          </div>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">×</button>
-        </header>
+    <section className="projects-page agents-dashboard" aria-label="Agents">
+      <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
+        title={<h1>Agents</h1>}
+        actions={<button type="button" className="projects-page-secondary" onClick={onManage}>Manage agents</button>} />
+      <div className="projects-page-body">
+        <p className="projects-page-meta">Who is doing what</p>
 
         {error && <p className="set-warn" role="alert">{error}</p>}
 
@@ -121,10 +119,7 @@ export function AgentsDashboard({ projectId, snapshot, chatTitle, onOpenChat, on
             })}
           </ul>
         )}
-        <div className="agent-foot">
-          <button className="agent-recheck" type="button" onClick={onManage}>Manage agents</button>
-        </div>
-      </aside>
-    </>
+      </div>
+    </section>
   );
 }

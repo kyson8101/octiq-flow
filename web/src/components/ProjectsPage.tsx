@@ -10,6 +10,7 @@ import { projectTaskCounts, projectTasks } from "../lib/projectTasks";
 import type { Conversation } from "../lib/store";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { chatTime, type Project } from "./Sidebar";
+import { WorkspaceHeader } from "./WorkspaceHeader";
 import "./ProjectsPage.css";
 
 export function ProjectsPage({
@@ -55,16 +56,12 @@ export function ProjectsPage({
     const isShelved = !!selected && shelved.some((project) => project.id === selected.id);
     return (
       <section className="projects-page" aria-label={selected ? `${selected.name} tasks` : "Project"}>
-        <header className="projects-page-head">
-          <button type="button" className="projects-page-back" onClick={() => onSelectProject(null)}>
-            <BackIcon /><span>Projects</span>
-          </button>
-          {selected && <ProjectAvatar project={selected} size="medium" />}
-          <div className="projects-page-heading">
+        <WorkspaceHeader back={{ label: "Projects", ariaLabel: "Back to projects", onClick: () => onSelectProject(null) }}
+          title={<>
+            {selected && <ProjectAvatar project={selected} size="small" />}
             <h1 ref={heading} tabIndex={-1}>{selected?.name ?? "Project unavailable"}</h1>
-            {selected && <span title={selected.primary_path}>{selected.primary_path ?? (isShelved ? "Shelved" : "")}</span>}
-          </div>
-          {selected && <div className="projects-page-actions">
+          </>}
+          actions={selected && <>
             <button type="button" className="projects-page-secondary" onClick={() => onProjectSettings(selected.id)}>Project settings</button>
             {isShelved && onRestoreProject && <button type="button" className="projects-page-primary" disabled={restoring}
               onClick={async () => {
@@ -79,10 +76,12 @@ export function ProjectsPage({
             {!isShelved && <button type="button" className="projects-page-primary" onClick={() => onNewTask(selected.id)}>
               <PlusIcon /><span>New task</span>
             </button>}
-          </div>}
-        </header>
+          </>} />
         {restoreError && <p className="projects-page-error" role="alert">{restoreError}</p>}
         <div className="projects-page-body">
+          {selected && (selected.primary_path || isShelved) && <p className="projects-page-meta" title={selected.primary_path}>
+            {selected.primary_path ?? "Shelved"}{selected.primary_path && isShelved ? " · Shelved" : ""}
+          </p>}
           {!selected ? (
             <div className="projects-page-empty" role="status">
               <p>This project was removed or is no longer in this profile.</p>
@@ -150,20 +149,11 @@ export function ProjectsPage({
 
   return (
     <section className="projects-page" aria-label="Projects">
-      <header className="projects-page-head">
-        <button type="button" className="projects-page-back" onClick={onClose} aria-label="Back to chat">
-          <BackIcon /><span>Chat</span>
-        </button>
-        <div className="projects-page-heading">
-          <h1 ref={heading} tabIndex={-1}>Projects</h1>
-          <span>{projects.length === 1 ? "1 project" : `${projects.length} projects`}</span>
-        </div>
-        <div className="projects-page-actions">
-          <button type="button" className="projects-page-primary" onClick={onNewProject}>
-            <PlusIcon /><span>New project</span>
-          </button>
-        </div>
-      </header>
+      <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
+        title={<h1 ref={heading} tabIndex={-1}>Projects</h1>}
+        actions={<button type="button" className="projects-page-primary" onClick={onNewProject}>
+          <PlusIcon /><span>New project</span>
+        </button>} />
       <div className="projects-page-body">
         {known.length === 0 ? (
           <div className="projects-page-empty" role="status">
@@ -171,6 +161,7 @@ export function ProjectsPage({
             <button type="button" onClick={onNewProject}>Add a project</button>
           </div>
         ) : <>
+          {projects.length > 0 && <h2 className="projects-page-count">{projects.length === 1 ? "1 project" : `${projects.length} projects`}</h2>}
           {projects.length > 0 && <ul className="projects-list" aria-label="Projects">{projects.map(row)}</ul>}
           {shelved.length > 0 && <>
             <div className="projects-page-subhead">
@@ -187,6 +178,5 @@ export function ProjectsPage({
   );
 }
 
-function BackIcon() { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>; }
 function ForwardIcon() { return <svg className="projects-row-go" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>; }
 function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>; }

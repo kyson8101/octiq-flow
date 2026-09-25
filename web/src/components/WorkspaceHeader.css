@@ -1,0 +1,80 @@
+/* ---- A page's heading, in the workspace's one top bar ------------------
+   The same markup renders into the top bar's slots (`.topbar-page`,
+   `.topbar-page-actions`) or, where there is no top bar to borrow, as a
+   row of its own (`.workspace-header`) with the same height and fill. */
+.workspace-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  min-height: 48px;
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+.workspace-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 8px 0 5px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 140ms ease-out, color 140ms ease-out;
+}
+.workspace-back:hover { background: var(--bg-2); color: var(--fg-0); }
+.workspace-back:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The label gives the way back its destination; the chevron after it is what
+   separates it from the title, the way a breadcrumb reads. */
+.workspace-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.workspace-heading h1 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workspace-heading h1:focus { outline: none; }
+.workspace-heading h1:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+
+.workspace-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+.workspace-header .workspace-actions { margin-left: auto; }
+.workspace-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* A phone: the page's buttons lead its content instead of crowding the bar.
+   No fill and no rule under them — they are the page's first line, not a
+   second header. */
+.workspace-actions.is-inline {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  padding: 10px 12px 0;
+}
+
+@media (max-width: 859.98px) {
+  /* A phone's navigation button already leads back; a top-level page keeps
+     its chevron as the one-tap way to the chat, without the word. */
+  .workspace-back.is-root { padding: 0 6px; }
+  .workspace-back.is-root span { display: none; }
+}

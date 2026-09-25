@@ -137,32 +137,17 @@ body {
   }
 }
 
-/* The project name, which is also the way into the drawer. It shrinks before
-   anything else on the bar does, and it is the only thing here that is allowed
-   to. */
+/* The phone chat list's name: the app's mark, "Chats" and the version. It
+   shrinks before anything else on the bar does. */
 .topbar-title {
   display: flex;
   align-items: center;
   gap: 7px;
   flex: 0 1 auto;
   min-width: 0;
-  padding: 5px 6px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
+  padding: 5px 2px;
   color: var(--fg-0);
-  font: inherit;
   font-weight: 600;
-  cursor: pointer;
-}
-
-.topbar-title:disabled {
-  padding-left: 2px;
-  cursor: default;
-}
-
-.topbar-title:not(:disabled):hover {
-  background: var(--bg-1);
 }
 
 .topbar-logo {
@@ -239,16 +224,103 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.topbar-caret {
+.topbar-brand { cursor: default; }
+
+/* The way back to the chat list while it is off screen. On a desktop the
+   put-away column's mark rides on it — the app is named once, wherever the
+   sidebar is — and turns into the sidebar glyph under the pointer or focus,
+   so what it does is shown the moment it matters. */
+.topbar-nav {
+  position: relative;
   display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: 0 0 auto;
-  color: var(--fg-3);
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background 140ms ease-out, color 140ms ease-out;
+}
+.topbar-nav:hover { background: var(--bg-2); color: var(--fg-0); }
+.topbar-nav:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.topbar-nav:disabled { opacity: 0.45; cursor: default; }
+.topbar-nav-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  transition: opacity 140ms ease-out;
+}
+.topbar-nav.is-brand .topbar-nav-icon {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 140ms ease-out;
+}
+.topbar-nav.is-brand:not(:disabled):is(:hover, :focus-visible) .topbar-nav-logo { opacity: 0; }
+.topbar-nav.is-brand:not(:disabled):is(:hover, :focus-visible) .topbar-nav-icon { opacity: 1; }
+
+/* What is on screen: a page's heading (filled by WorkspaceHeader), or the
+   chat's project and, after it, its run. Each shrinks before the actions. */
+.topbar-page,
+.topbar-context,
+.topbar-page-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.topbar-page { flex: 0 1 auto; gap: 4px; }
+.topbar-page[hidden],
+.topbar-context[hidden],
+.topbar-page-actions[hidden],
+.topbar-context:empty,
+.topbar-page-actions:empty { display: none; }
+.topbar-page-actions { flex: 0 0 auto; }
+
+.topbar-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 6px;
+  color: var(--fg-0);
+  font-size: 14px;
+  font-weight: 600;
 }
 
-/* No caret when the drawer is not a drawer. */
-.topbar-title:disabled .topbar-caret {
-  display: none;
+.topbar-context { flex: 0 1 auto; }
+.topbar-workflow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
+.topbar-crumb-sep { flex: 0 0 auto; color: var(--fg-3); font-size: 14px; }
+.topbar-workflow .workflow-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 38vw;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.topbar-workflow .chat-workflow-bar {
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 0;
+  border-bottom: 0;
+}
+.topbar-workflow .chat-workflow-views button,
+.topbar-workflow .chat-run-summary { padding: 4px 9px; white-space: nowrap; }
+.topbar-workflow .chat-run-summary { margin-left: 0; }
 
 .icon-btn {
   display: inline-flex;
@@ -550,7 +622,6 @@ body {
 .projects-return:hover { background: var(--bg-1); }
 .projects-return-icon { display: none; }
 .sidebar-toolbar { flex: 0 0 auto; }
-.topbar-back { flex: 0 0 auto; }
 
 @media (max-width: 859.98px) {
   .app.projects-screen .sidebar {
@@ -598,6 +669,15 @@ body {
   font-size: 14px;
   font-weight: 650;
   letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.task-sidebar .sidebar-version {
+  margin-left: 3px;
+  color: var(--fg-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
 }
 .sidebar-collapse {
   display: inline-flex;
@@ -8087,24 +8167,22 @@ body.is-ultra .eff {
 
 /* ---- App settings ------------------------------------------------------
    A real settings workspace rather than another long drawer. The navigation
-   owns the categories; the content side only scrolls the page being edited. */
-.panel.settings-page {
-  left: 0;
-  width: 100vw;
-  border-left: 0;
+   owns the categories; the content side only scrolls the page being edited.
+   It is a page of the workspace column, like Projects: the sidebar stays
+   where it is and the title sits in the one top bar (WorkspaceHeader). */
+.settings-page {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
   background: var(--bg-0);
 }
 
-.settings-page-head {
-  min-height: 58px;
-  padding-right: max(var(--space-5), calc((100vw - 1120px) / 2));
-  padding-left: max(var(--space-5), calc((100vw - 1120px) / 2));
-  background: var(--bg-0);
-}
-
-.settings-page-head .panel-path {
-  direction: ltr;
-  text-align: left;
+.settings-version {
+  display: block;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
 }
 
 .settings-layout {
@@ -8351,12 +8429,6 @@ body.is-ultra .eff {
 }
 
 @media (max-width: 700px) {
-  .settings-page-head {
-    min-height: 54px;
-    padding-right: var(--space-3);
-    padding-left: var(--space-4);
-  }
-
   .settings-layout {
     flex-direction: column;
   }

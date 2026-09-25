@@ -68,7 +68,9 @@
 
 
 /* The Agents dashboard. */
-.agents-dashboard-list { padding: 0 16px; }
+.agents-dashboard-list { padding: 0; }
+/* On its page it shares the Projects page's reading column. */
+.agents-dashboard .agents-dashboard-list { width: 100%; max-width: 860px; margin-inline: auto; }
 .dash-agent { border-bottom: 1px solid var(--border); }
 .dash-agent-row {
   width: 100%; display: flex; align-items: flex-start; gap: 10px; padding: 11px 0;

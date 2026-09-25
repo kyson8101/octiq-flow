@@ -434,10 +434,11 @@ export function Sidebar({
     <nav className="sidebar task-sidebar" aria-label="Chats">
       <div className="sidebar-toolbar">
         {/* The column is the full height of the window, so its first row sits
-            level with the top bar beside it and carries the name of the app. */}
+            level with the top bar beside it and carries the name of the app —
+            the one place it does. The top bar beside it names the page. */}
         <div className="sidebar-head">
           <img className="sidebar-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />
-          <span className="sidebar-title">OctiqFlow</span>
+          <span className="sidebar-title">OctiqFlow <span className="sidebar-version">v{__APP_VERSION__}</span></span>
           {onCollapse && <button className="sidebar-collapse" type="button" onClick={onCollapse}
             aria-label="Hide sidebar" title="Hide sidebar">
             <CollapseIcon />

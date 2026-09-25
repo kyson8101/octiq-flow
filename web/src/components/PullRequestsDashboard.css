@@ -13,35 +13,6 @@
 .pr-dashboard-toggle { border: 1px solid transparent; }
 .pr-dashboard-toggle.is-on { border-color: var(--border); background: var(--bg-2); color: var(--fg-0); }
 
-.pr-dashboard-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: 64px;
-  padding: 10px var(--space-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-1);
-}
-
-.pr-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 34px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--fg-2);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.pr-back:hover { background: var(--bg-2); color: var(--fg-0); }
-.pr-heading { min-width: 0; }
-.pr-heading h1 { margin: 0; color: var(--fg-0); font-size: 18px; font-weight: 650; letter-spacing: -0.025em; }
-.pr-heading > span { display: block; margin-top: 2px; color: var(--fg-3); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
 .pr-agent-setting {
   display: grid;
   grid-template-columns: auto auto;
@@ -359,8 +330,7 @@
 }
 
 @media (max-width: 760px) {
-  .pr-dashboard-head { min-height: 56px; padding: 8px 10px; }
-  .pr-heading > span, .pr-agent-setting small { display: none; }
+  .pr-agent-setting small { display: none; }
   .pr-agent-setting { max-width: 44vw; display: flex; overflow: hidden; }
   .pr-agent-setting span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pr-toolbar { padding: 8px 10px; }
@@ -388,8 +358,6 @@
 }
 
 @media (max-width: 440px) {
-  .pr-back span { display: none; }
-  .pr-heading h1 { font-size: 16px; }
   .pr-agent-setting { max-width: 48vw; padding: 4px 7px; }
   .pr-toolbar label:first-child, .pr-toolbar label:nth-child(2) { flex-basis: 100%; }
   .pr-agent-actions button, .pr-agent-actions a { flex: 1 1 auto; }

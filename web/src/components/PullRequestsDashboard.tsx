@@ -26,6 +26,7 @@ import {
   type PrTicketLaunch,
   type PrWorkflow,
 } from "../lib/pullRequests";
+import { WorkspaceHeader } from "./WorkspaceHeader";
 import "./PullRequestsDashboard.css";
 
 export type PrDashboardProject = {
@@ -482,21 +483,8 @@ export function PullRequestsDashboard({
 
   return (
     <section className={`pr-dashboard${mobileDetail ? " show-detail" : ""}`} aria-label="Pull requests dashboard">
-      <header className="pr-dashboard-head">
-        <button type="button" className="pr-back" onClick={onClose} aria-label="Back to chat">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-          <span>Chat</span>
-        </button>
-        <div className="pr-heading">
-          <h1>Pull requests</h1>
-          <span>{repository ? repository.name : "Review local and GitHub work"}</span>
-        </div>
-        <div className="pr-agent-setting" title="Publication and ticket chats use the current settings; study and review are read-only">
-          <span className="pr-agent-dot" aria-hidden="true" />
-          <span>{agent.provider} · {agent.model}</span>
-          <small>Publish &amp; ticket · {agent.access}</small>
-        </div>
-      </header>
+      <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
+        title={<h1>Pull requests</h1>} />
 
       <div className="pr-toolbar">
         <label>
@@ -538,6 +526,11 @@ export function PullRequestsDashboard({
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
           <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search title, branch, author…" />
         </label>
+        <div className="pr-agent-setting" title="Publication and ticket chats use the current settings; study and review are read-only">
+          <span className="pr-agent-dot" aria-hidden="true" />
+          <span>{agent.provider} · {agent.model}</span>
+          <small>Publish &amp; ticket · {agent.access}</small>
+        </div>
       </div>
 
       {repositoriesError && <div className="pr-banner is-error" role="alert"><span>Could not list repositories: {repositoriesError}</span><button type="button" onClick={() => setRepositoriesRefresh((value) => value + 1)}>Retry</button></div>}

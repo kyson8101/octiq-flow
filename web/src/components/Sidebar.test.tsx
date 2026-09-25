@@ -80,7 +80,8 @@ describe("task-oriented Sidebar", () => {
   it("heads the full-height column with the app's name, then one compact list of places", () => {
     const out = html({ onCollapse: () => {} });
     expect(out.indexOf('class="sidebar-head"')).toBeLessThan(out.indexOf('class="sidebar-places"'));
-    expect(out).toContain('class="sidebar-title">OctiqFlow</span>');
+    // The app's name and version live here, and only here (the top bar names the page).
+    expect(out).toContain(`class="sidebar-title">OctiqFlow <span class="sidebar-version">v${__APP_VERSION__}</span></span>`);
     expect(out).toContain('aria-label="Hide sidebar"');
     expect(out).toContain('class="sidebar-place sidebar-new-chat"');
     expect(out).toContain("New chat</span>");

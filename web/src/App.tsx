@@ -126,6 +126,7 @@ import { isUnder, readSession, replaySession, type HistorySession } from "./lib/
 import { latestResponse as latestAgentResponse, readChatPreview } from "./lib/chatPreview";
 import { Sidebar, type Project } from "./components/Sidebar";
 import { ChatSearchPage } from "./components/ChatSearchPage";
+import { WorkspaceSlotsContext, type WorkspaceSlots } from "./components/WorkspaceHeader";
 import type { ChatSearchHit } from "./lib/chatSearch";
 import { loadAgents, type AgentInstall } from "./components/AgentsPage";
 import { ShelvedProjects } from "./components/ShelvedProjects";
@@ -387,7 +388,12 @@ export default function App() {
   const [projectsPage, setProjectsPage] = useState<{ projectId: string | null } | null>(null);
   /** Search chats, the third main-area view. */
   const [searchPage, setSearchPage] = useState(false);
-  const mainPage = prDashboardOpen || projectsPage !== null || searchPage;
+  /** The top bar's slots a page renders its title and actions into
+   *  (components/WorkspaceHeader). State, not refs, so a page mounted in the
+   *  same commit as the bar re-renders into it before anything is painted. */
+  const [headingSlot, setHeadingSlot] = useState<HTMLElement | null>(null);
+  const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
+  const [contextSlot, setContextSlot] = useState<HTMLElement | null>(null);
   // The stored list, minus everything this browser has deleted. The two are
   // written at different moments — a save already on its way when the × was
   // clicked lands after it — so the copy on disk can still carry a chat whose
@@ -431,6 +437,16 @@ export default function App() {
    *  column layout does not imply that every control fits in one header row. */
   const isMobile = useMedia(MOBILE);
   const { focusMode, enterFocus, exitFocus } = useFocusMode(!(isMobile && projectsScreen));
+  /** What the top bar offers a page. A phone's bar has no room for a page's
+   *  buttons or a run's line, and focus mode hides the bar, so those render
+   *  in the page instead. */
+  const workspaceSlots = useMemo<WorkspaceSlots>(() => ({
+    heading: headingSlot,
+    actions: isMobile ? null : actionsSlot,
+    context: isMobile || focusMode ? null : contextSlot,
+  }), [headingSlot, actionsSlot, contextSlot, isMobile, focusMode]);
+  /** The top bar's way back to a put-away sidebar, focused when it is put away. */
+  const navButton = useRef<HTMLButtonElement | null>(null);
   /** The width of that column, dragged by its right edge and remembered. Only
    *  read on desktop, where the sidebar is a column; the mobile list
    *  is the width of the screen. */
@@ -624,6 +640,11 @@ export default function App() {
   const [leadId, setLeadId] = useState<string | null>(() => recall(LEAD_KEY));
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("projects");
   const [agentsDashboard, setAgentsDashboard] = useState(false);
+  /** A main-area page is open in place of the chat. Settings and the Agents
+   *  dashboard are pages like Projects and Search: the sidebar stays, and the
+   *  page's title sits in the one top bar. */
+  const mainPage = prDashboardOpen || projectsPage !== null || searchPage || appSettings
+    || (agentsDashboard && agentsMode);
 
   // Chats that were picked up from an agent's own history, by conversation id.
   // Only so the empty page can say WHICH session it is about to continue —
@@ -1761,6 +1782,9 @@ export default function App() {
   }, []);
   const openAgentsSettings = useCallback(() => {
     setAgentsDashboard(false);
+    setPrDashboardOpen(false);
+    setProjectsPage(null);
+    setSearchPage(false);
     setSettingsSection("agents");
     setAppSettings(true);
   }, []);
@@ -2045,6 +2069,8 @@ export default function App() {
     setPrDashboardOpen(false);
     setProjectsPage(null);
     setSearchPage(false);
+    setAppSettings(false);
+    setAgentsDashboard(false);
     setFocusBox((n) => n + 1);
   }, []);
 
@@ -2220,6 +2246,8 @@ export default function App() {
     setPrDashboardOpen(false);
     setProjectsPage(null);
     setSearchPage(false);
+    setAppSettings(false);
+    setAgentsDashboard(false);
   }, [catchUpChat, writeChats]);
 
   // The half that opens a chat a banner asked for lives further down, with the
@@ -3706,8 +3734,22 @@ export default function App() {
   if (conn === "unauthorized") return <Connect />;
 
 
+  /** Opens one main-area page in place of the chat, closing any other. */
+  const showPage = (page: "search" | "projects" | "settings" | "agents" | "pulls") => {
+    setProjectsScreen(false);
+    setPrDashboardOpen(page === "pulls");
+    setProjectsPage(page === "projects" ? { projectId: null } : null);
+    setSearchPage(page === "search");
+    setAppSettings(page === "settings");
+    setAgentsDashboard(page === "agents");
+  };
+
+  // A page's own controls come from the page (WorkspaceHeader). The chat's —
+  // its panels, Run, focus, its id and delete — act on a surface a page
+  // hides, so they leave the bar while one is open rather than doing nothing.
   const topbarActions = (
     <>
+      {!mainPage && <>
       <RailButton
         count={chat.agents.length}
         open={!railShut && !previewVisible}
@@ -3723,6 +3765,7 @@ export default function App() {
 
       {/* The way in and out of the changes column at every width. */}
       <GitButton project={sessionProject} open={gitOpen && !previewVisible} onToggle={() => { previews.setOpen(false); showGit(previewVisible || !gitOpen); }} />
+      </>}
 
       <button
         className={`icon-btn pr-dashboard-toggle${prDashboardOpen ? " is-on" : ""}`}
@@ -3730,7 +3773,7 @@ export default function App() {
         aria-label="Pull requests"
         title="Pull requests"
         aria-pressed={prDashboardOpen}
-        onClick={() => { setProjectsPage(null); setSearchPage(false); setPrDashboardOpen((open) => !open); }}
+        onClick={() => { if (prDashboardOpen) setPrDashboardOpen(false); else showPage("pulls"); }}
       >
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="6" cy="5" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="19" r="2" />
@@ -3739,6 +3782,7 @@ export default function App() {
         <span className="topbar-action-label">Pull requests</span>
       </button>
 
+      {!mainPage && <>
       {/* The one way for the PERSON to start supervised multi-agent work
           from here. Opening it chooses nothing on its own: a run begins only
           when one is started in the surface it opens. */}
@@ -3768,6 +3812,7 @@ export default function App() {
           />}
         </>
       )}
+      </>}
 
       {/* Only drawn for a home-screen app, which has no browser chrome. */}
       <InstalledReload />
@@ -3799,6 +3844,7 @@ export default function App() {
   );
 
   return (
+    <WorkspaceSlotsContext.Provider value={workspaceSlots}>
     <div
       ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
@@ -3843,78 +3889,75 @@ export default function App() {
         }}
         branches={projectBranches}
         onResize={isMobile ? undefined : nav.startDrag}
-        onCollapse={isMobile ? undefined : () => showNav(false)}
-        onSearch={() => {
-          setPrDashboardOpen(false);
-          setProjectsPage(null);
-          setProjectsScreen(false);
-          setSearchPage(true);
+        onCollapse={isMobile ? undefined : () => {
+          showNav(false);
+          // The button that was pressed is leaving; keep keyboard focus on
+          // the one that brings it back.
+          requestAnimationFrame(() => navButton.current?.focus());
         }}
-        onSettings={() => setAppSettings(true)}
-        onAgents={agentsMode ? () => setAgentsDashboard(true) : undefined}
-        onProjects={() => {
-          setPrDashboardOpen(false);
-          setSearchPage(false);
-          setProjectsScreen(false);
-          setProjectsPage({ projectId: null });
-        }}
+        onSearch={() => showPage("search")}
+        onSettings={() => showPage("settings")}
+        onAgents={agentsMode ? () => showPage("agents") : undefined}
+        onProjects={() => showPage("projects")}
         activeView={searchPage ? "search" : projectsPage ? "projects" : agentsDashboard && agentsMode ? "agents" : appSettings ? "settings" : null}
       />
       <div className="shell-main">
+      {/* The workspace's ONE top bar. The app's name and logo belong to the
+          sidebar's head; this bar names the page — a page's title and way
+          back come from the page itself (WorkspaceHeader), a chat's from its
+          project and run — and carries the actions for what is on screen. */}
       <header className="topbar">
         <div className="topbar-leading">
-          {/* One consistent doorway for the chat list: it opens the projects
-              screen on mobile and toggles the persistent column on desktop. */}
-          <button
-            className="topbar-title"
-            type="button"
-            aria-label={isMobile
-              ? (!showingProjects ? "Back to chats" : "Chats")
-              : (navShut ? "Show chats" : "Hide chats")}
-            title={isMobile ? undefined : (navShut ? "Show chats" : "Hide chats")}
-            aria-expanded={isMobile ? undefined : !navShut}
-            onClick={() => {
-              if (isMobile) {
-                setChatWide(false);
-                setProjectsScreen(true);
-              } else if (!chatExpanded) showNav(navShut);
-            }}
-            disabled={isMobile ? showingProjects : chatExpanded}
-          >
-            {isMobile && !showingProjects && (
-              <svg className="topbar-back" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="m15 18-6-6 6-6" />
-              </svg>
-            )}
-            {!showingProjects && project ? (
-              <ProjectAvatar project={project} size="medium" className="topbar-project-avatar" />
-            ) : (
-              <img
-                className="topbar-logo"
-                src={`${import.meta.env.BASE_URL}icon-192.png`}
-                alt=""
-                aria-hidden="true"
-              />
-            )}
-            <span className="topbar-identity">
-              <span className="topbar-name">{showingProjects ? "Chats" : project?.name ?? "OctiqFlow"}</span>
-              <span className="topbar-version">v{__APP_VERSION__}</span>
+          {showingProjects ? (
+            // A phone's chat list: the sidebar's head is hidden there, so the
+            // app's mark is drawn here instead of twice.
+            <span className="topbar-title topbar-brand">
+              <img className="topbar-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />
+              <span className="topbar-identity">
+                <span className="topbar-name">Chats</span>
+                <span className="topbar-version">OctiqFlow v{__APP_VERSION__}</span>
+              </span>
             </span>
-            {!isMobile && <span className="topbar-caret" aria-hidden="true">
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.4"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="m6 9 6 6 6-6" />
+          ) : (isMobile || navShut) && (
+            // The way back to the chat list when it is not on screen: the
+            // list's own screen on a phone, the put-away column on a desktop.
+            // The column's mark rides on this button while it is away, so the
+            // app is named once whichever way the sidebar is.
+            <button
+              ref={navButton}
+              className={`topbar-nav${isMobile ? "" : " is-brand"}`}
+              type="button"
+              aria-label={isMobile ? "Show chats" : "Show sidebar"}
+              title={isMobile ? "Show chats" : `Show sidebar · OctiqFlow v${__APP_VERSION__}`}
+              aria-expanded={false}
+              disabled={!isMobile && chatExpanded}
+              onClick={() => {
+                if (isMobile) {
+                  setChatWide(false);
+                  setProjectsScreen(true);
+                } else {
+                  showNav(true);
+                  requestAnimationFrame(() => document.querySelector<HTMLElement>(".sidebar-collapse")?.focus());
+                }
+              }}
+            >
+              {!isMobile && <img className="topbar-nav-logo" src={`${import.meta.env.BASE_URL}icon-192.png`} alt="" aria-hidden="true" />}
+              <svg className="topbar-nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M13 10l2 2-2 2" />
               </svg>
-            </span>}
-          </button>
+            </button>
+          )}
+          {/* A page's heading renders into this (components/WorkspaceHeader). */}
+          <div className="topbar-page" ref={setHeadingSlot} hidden={!mainPage || showingProjects} />
+          {!showingProjects && !mainPage && (
+            <span className="topbar-chat" title={project?.primary_path}>
+              {project && <ProjectAvatar project={project} size="small" className="topbar-project-avatar" />}
+              <span className="topbar-name">{project?.name ?? (conversationId ? "Chat" : agentsMode ? "New task" : "New chat")}</span>
+            </span>
+          )}
+          {/* A chat's run line — its title and the Tasks/Chat views — renders
+              into this on wider screens (components/ChatWorkflowBar). */}
+          <div className="topbar-context" ref={setContextSlot} hidden={mainPage || showingProjects} />
           <ConnectionStatus state={conn} />
           {/* Where this chat is, next to what it is — the two questions a
               chat picked up an hour later cannot answer for itself. */}
@@ -3934,6 +3977,7 @@ export default function App() {
         </div>
 
         <div className="topbar-actions">
+          {!isMobile && <div className="topbar-page-actions" ref={setActionsSlot} hidden={!mainPage} />}
           {showingProjects ? (
             <button className="projects-return" type="button"
               aria-label="Return to chat"
@@ -4004,6 +4048,44 @@ export default function App() {
             deletedCount={deletedChats.length}
             onShowDeleted={() => setTrashOpen(true)}
           />}
+          {/* Settings and the Agents dashboard are pages like the ones above.
+              A project's own sheet (ProjectSettings) still opens over them. */}
+          {appSettings && (
+            <Settings
+              current={themeId}
+              onPick={setThemeId}
+              notify={notifyOn}
+              onNotify={(on, viaPush) => {
+                setNotifyOn(on);
+                setPushOn(on && viaPush);
+              }}
+              projects={[...workspaces, ...shelved]}
+              onProject={setSettingsFor}
+              agentsMode={agentsMode}
+              onAgentsMode={changeAgentsMode}
+              onFeedback={() => setFeedbackOpen(true)}
+              initialSection={settingsSection}
+              onClose={() => { setAppSettings(false); setSettingsSection("projects"); }}
+            />
+          )}
+
+          {agentsDashboard && agentsMode && (
+            <AgentsDashboard
+              projectId={project?.id ?? null}
+              snapshot={orchestration}
+              chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
+              onOpenChat={(chatKey) => {
+                try {
+                  openWorkflowChat(chatKey);
+                  setAgentsDashboard(false);
+                } catch {
+                  /* not in this browser's list yet; the row stays put */
+                }
+              }}
+              onManage={openAgentsSettings}
+              onClose={() => setAgentsDashboard(false)}
+            />
+          )}
           <div className="chat-app-surface" hidden={mainPage}>
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
@@ -4437,43 +4519,6 @@ export default function App() {
           if (source) { setFeedbackOpen(false); setAppSettings(false); openConversation(source); }
         }} />}
 
-      {appSettings && !settingsFor && (
-        <Settings
-          current={themeId}
-          onPick={setThemeId}
-          notify={notifyOn}
-          onNotify={(on, viaPush) => {
-            setNotifyOn(on);
-            setPushOn(on && viaPush);
-          }}
-          projects={[...workspaces, ...shelved]}
-          onProject={setSettingsFor}
-          agentsMode={agentsMode}
-          onAgentsMode={changeAgentsMode}
-          onFeedback={() => setFeedbackOpen(true)}
-          initialSection={settingsSection}
-          onClose={() => { setAppSettings(false); setSettingsSection("projects"); }}
-        />
-      )}
-
-      {agentsDashboard && agentsMode && (
-        <AgentsDashboard
-          projectId={project?.id ?? null}
-          snapshot={orchestration}
-          chatTitle={(chatKey) => conversations.find((c) => keyFor(c.id) === chatKey)?.title}
-          onOpenChat={(chatKey) => {
-            try {
-              openWorkflowChat(chatKey);
-              setAgentsDashboard(false);
-            } catch {
-              /* not in this browser's list yet; the row stays put */
-            }
-          }}
-          onManage={openAgentsSettings}
-          onClose={() => setAgentsDashboard(false)}
-        />
-      )}
-
       {settingsFor && (
         <ProjectSettings
           project={
@@ -4499,5 +4544,6 @@ export default function App() {
       )}
 
     </div>
+    </WorkspaceSlotsContext.Provider>
   );
 }

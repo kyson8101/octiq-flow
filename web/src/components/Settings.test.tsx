@@ -31,7 +31,12 @@ describe("Settings", () => {
       />,
     );
 
-    expect(out).toContain('class="panel settings-page"');
+    // A workspace page with its title in the shared header, not a dialog.
+    expect(out).toContain('class="settings-page"');
+    expect(out).not.toContain('role="dialog"');
+    expect(out).toContain('id="settings-title">Settings</h1>');
+    expect(out).toContain('aria-label="Back to chat"');
+    expect(out).toContain(`OctiqFlow v${__APP_VERSION__}`);
     expect(out).toContain('aria-label="Settings sections"');
     expect(out).toContain('aria-current="page"');
     expect(out).toContain("Projects</span>");

@@ -14,6 +14,7 @@ import type { ProjectDetail } from "./ProjectSettings";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { MemoryVaultSettings } from "./MemoryVaultSettings";
 import { AgentsSettings } from "./AgentsSettings";
+import { WorkspaceHeader } from "./WorkspaceHeader";
 
 import { SandboxSettings } from "./SandboxSettings";
 
@@ -128,20 +129,11 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
   const orderedProjects = [...projects].sort(compareProjectNames);
 
   return (
-    <>
-      <div className="panel-scrim" onClick={onClose} />
-      <aside className="panel settings-page" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <header className="panel-head settings-page-head">
-          <div className="panel-id">
-            <div className="panel-name" id="settings-title">Settings</div>
-            <div className="panel-path">OctiqFlow preferences</div>
-          </div>
-          <button className="panel-close" type="button" onClick={onClose} aria-label="Close">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </header>
+    <section className="settings-page" aria-labelledby="settings-title">
+        {/* A page of the workspace, like Projects: the sidebar stays, and its
+            title and the way back are in the one top bar. */}
+        <WorkspaceHeader root back={{ label: "Chat", ariaLabel: "Back to chat", onClick: onClose }}
+          title={<h1 id="settings-title">Settings</h1>} />
 
         <div className="settings-layout">
           <nav className="settings-nav" aria-label="Settings sections">
@@ -190,10 +182,13 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 </button>
               )}
             </div>
-            <p className="settings-nav-foot">Switches apply automatically.</p>
+            <p className="settings-nav-foot">
+              Switches apply automatically.
+              <span className="settings-version">OctiqFlow v{__APP_VERSION__}</span>
+            </p>
           </nav>
 
-          <main className="settings-content">
+          <div className="settings-content">
             {section === "sandbox" && <SandboxSettings />}
             {section === "memory" && <MemoryVaultSettings />}
             {section === "agents" && onAgentsMode && (
@@ -340,10 +335,9 @@ export function Settings({ current, onPick, notify, onNotify, projects, onProjec
                 </div>
               </section>
             )}
-          </main>
+          </div>
         </div>
-      </aside>
-    </>
+    </section>
   );
 }
 
