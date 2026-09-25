@@ -82,9 +82,31 @@ describe("task-oriented Sidebar", () => {
     const out = html();
     expect(out).toContain('class="sidebar-new-chat"');
     expect(out).toContain("New chat</span>");
+    expect(out.indexOf('class="sidebar-head"')).toBeLessThan(out.indexOf('class="sidebar-new-chat"'));
+    expect(out.indexOf('class="sidebar-new-chat"')).toBeLessThan(out.indexOf('class="sidebar-search-wrap"'));
     expect(out).toContain('aria-label="Chat list actions"');
     expect(out).toContain('aria-label="Search chats"');
     expect(out).not.toContain("Project settings:");
+  });
+
+  it("groups pinned chats above recent chats without duplicating either row", () => {
+    const out = html({ conversations: [chat("recent"), { ...chat("saved"), pinned: true }] });
+    expect(out).toContain('aria-labelledby="sidebar-pinned-heading"');
+    expect(out).toContain('aria-labelledby="sidebar-recent-heading"');
+    expect(out.indexOf('class="sidebar-section-heading">Pinned')).toBeLessThan(out.indexOf('class="chat-title">Task saved'));
+    expect(out.indexOf('class="chat-title">Task saved')).toBeLessThan(out.indexOf('class="sidebar-section-heading">Recent'));
+    expect(out.indexOf('class="sidebar-section-heading">Recent')).toBeLessThan(out.indexOf('class="chat-title">Task recent'));
+    expect(out.match(/class="chat-title">Task saved/g)).toHaveLength(1);
+    expect(out.match(/class="chat-title">Task recent/g)).toHaveLength(1);
+  });
+
+  it("keeps an agent group together when its child is pinned", () => {
+    const out = html({
+      conversations: [chat("other"), chat("master"), { ...chat("worker"), pinned: true }],
+      chatParents: new Map([["worker", "master"]]),
+    });
+    expect(out.indexOf('class="sidebar-section-heading">Pinned')).toBeLessThan(out.indexOf('class="chat-title">Task master'));
+    expect(out.indexOf('class="chat-title">Task worker')).toBeLessThan(out.indexOf('class="sidebar-section-heading">Recent'));
   });
 
   it("shows working state in the response row", () => {

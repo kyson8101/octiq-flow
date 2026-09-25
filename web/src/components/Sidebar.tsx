@@ -172,6 +172,8 @@ export function Sidebar({
   const visibleNodes = searchActive || showArchived
     ? visibleConversations.map((chat): ChatNode => ({ chat, children: [], descendants: [] }))
     : tree;
+  const pinnedNodes = visibleNodes.filter((node) => node.chat.pinned || node.descendants.some((chat) => chat.pinned));
+  const recentNodes = visibleNodes.filter((node) => !node.chat.pinned && !node.descendants.some((chat) => chat.pinned));
   const ancestors = new Set<string>();
   let ancestor = currentConversation ? chatParents.get(currentConversation) : undefined;
   while (ancestor && !ancestors.has(ancestor)) {
@@ -456,9 +458,6 @@ export function Sidebar({
       <div className="sidebar-toolbar">
         <div className="sidebar-head">
           <span className="sidebar-title">Chats</span>
-          <button className="sidebar-new-chat" type="button" onClick={onNewChat}>
-            <PlusIcon /><span>New chat</span>
-          </button>
           <SidebarMenu
             label="Chat list actions"
             open={menuOpen}
@@ -472,6 +471,9 @@ export function Sidebar({
             ]}
           />
         </div>
+        <button className="sidebar-new-chat" type="button" onClick={onNewChat}>
+          <NewChatIcon /><span>New chat</span>
+        </button>
         <div className="sidebar-search-wrap">
           <label className="sidebar-search">
             <SearchIcon />
@@ -542,9 +544,16 @@ export function Sidebar({
           {searchState === "error" && <button type="button" onClick={() => setQuery("")}>Clear search</button>}
         </div>
       ) : visibleConversations.length ? (
-        <ul className="chat-list task-chat-list">
-          {visibleNodes.map(renderChat)}
-        </ul>
+        <div className="task-chat-scroll">
+          {pinnedNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-pinned-heading">
+            <h2 id="sidebar-pinned-heading" className="sidebar-section-heading">Pinned</h2>
+            <ul className="chat-list task-chat-list">{pinnedNodes.map(renderChat)}</ul>
+          </section>}
+          {recentNodes.length > 0 && <section className="sidebar-chat-section" aria-labelledby="sidebar-recent-heading">
+            <h2 id="sidebar-recent-heading" className="sidebar-section-heading">{showArchived ? "Archived" : filter === "done" ? "Done" : "Recent"}</h2>
+            <ul className="chat-list task-chat-list">{recentNodes.map(renderChat)}</ul>
+          </section>}
+        </div>
       ) : (
         <div className="sidebar-empty" role="status" aria-live="polite">
           <span>No chats found for “{trimmedQuery}”.</span>
@@ -610,6 +619,7 @@ function AnimatedChatRow({ entering, leaving, children }: { entering: boolean; l
 function SearchIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>; }
 function ClearIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>; }
 function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>; }
+function NewChatIcon() { return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12.5V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h5.5" /><path d="m12 12 7.5-7.5a2.12 2.12 0 0 1 3 3L15 15l-4 1 1-4Z" /></svg>; }
 function ArchiveIcon() { return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M6 7v12h12V7" /><path d="M3 4h18v3H3z" /><path d="M10 11h4" /></svg>; }
 function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="m6 6 1 14h10l1-14" /><path d="M10 10v6M14 10v6" /></svg>; }
 function PinIcon() { return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 17v5" /><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" /></svg>; }
