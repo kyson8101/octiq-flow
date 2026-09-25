@@ -473,11 +473,17 @@ export default function App() {
   // The tail of this is exactly what decides whether the run surface renders
   // at all, and has to stay that way: a split with nothing in the second
   // column is a border down the middle of the transcript.
-  const workflowSplit = roomToSplit && !workerChat && !focusMode
-    && (orchestrated || currentWorkflow.runs.length > 0);
   const showWorkflowView = (view: "chat" | "run") => setWorkflowViews((before) => ({ ...before, [workflowKey]: view }));
   const [pendingGateDecision, setPendingGateDecision] = useState<{ id: string; text: string } | null>(null);
   const coordinatorId = mainChatId(conversationId, chatParents);
+  // The task list belongs to the main chat, and stays up while one of its
+  // workers is open: tapping a task swaps the conversation, not the list, and
+  // the task you are in is the one lit up in it.
+  const runChatKey = workerChat ? (coordinatorId ? keyFor(coordinatorId) : null) : conversationId ? keyFor(conversationId) : null;
+  const runWorkflow = useMemo(() => workerChat ? chatSnapshot(orchestration, runChatKey) : currentWorkflow,
+    [workerChat, orchestration, runChatKey, currentWorkflow]);
+  const workflowSplit = roomToSplit && !focusMode
+    && (workerChat ? runWorkflow.runs.length > 0 : orchestrated || currentWorkflow.runs.length > 0);
   const coordinatorConversation = conversations.find((chat) => chat.id === coordinatorId);
   const workerRequestIds = useMemo(() => conversationId && !workerChat
     ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
@@ -4172,8 +4178,9 @@ export default function App() {
           />}
 
           </div>
-          {!workerChat && (orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}>
-            <OrchestrationPanel embedded project={project} coordinatorKey={conversationId ? keyFor(conversationId) : null}
+          {(workerChat ? workflowSplit : orchestrated || currentWorkflow.runs.length > 0) && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}>
+            <OrchestrationPanel embedded project={project} coordinatorKey={runChatKey}
+              currentChatKey={conversationId ? keyFor(conversationId) : null}
               initialSnapshot={orchestration} currentCwd={effectiveCwd}
               onEnsureCoordinator={ensureCoordinator} onStartMaster={startWorkflowMaster}
               onOpenChat={openWorkflowChat} onClose={() => showWorkflowView("chat")}

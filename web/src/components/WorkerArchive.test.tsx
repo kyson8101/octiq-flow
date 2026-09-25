@@ -39,7 +39,16 @@ describe("worker archive controls", () => {
     expect(readonly).not.toContain("Restore worker");
   });
 
-  it("hides archived task rows while retaining completion totals", () => {
+  it("marks the task whose worker chat is open", () => {
+    const snapshot = mergedWorkers();
+    const open = renderToStaticMarkup(<OrchestrationPanel initialSnapshot={snapshot} coordinatorKey="chat:main" currentChatKey="chat:worker"
+      project={{ id: "project", name: "Project" }} onOpenChat={() => {}} onClose={() => {}} embedded />);
+    expect(open.match(/orch-task is-[a-z]+ is-open/g)).toHaveLength(1);
+    expect(open).toContain('aria-current="page"');
+    expect(panel(snapshot)).not.toContain(" is-open");
+  });
+
+  it("hides archived workers from the chat list while keeping the run's totals", () => {
     const snapshot = mergedWorkers();
     snapshot.attempts.forEach(attempt => { attempt.archivedAt = 3; });
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
@@ -48,8 +57,7 @@ describe("worker archive controls", () => {
       onArchiveWorker={async () => {}} onNewProject={() => {}} searchChats={async () => []} />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
     expect(out).not.toContain('class="agent-task');
-    expect(out).toContain('aria-valuetext="1 of 1 tasks completed"');
-    expect(out).toContain("1 task has archived workers");
+    expect(out).toContain("Completed · 1/1");
   });
 
   it("keeps a task with a restored worker in the board, and archiving in the Run column", () => {

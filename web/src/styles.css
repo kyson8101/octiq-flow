@@ -747,6 +747,11 @@ body {
   );
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-project-color) 30%, var(--border));
 }
+/* One of this run's workers is on screen: the run's own row keeps the outline
+   without the wash, so you can still see which main chat the task list is. */
+.task-chat-list .chat.is-worker-on {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--chat-project-color) 30%, var(--border));
+}
 .task-chat-list .chat::after { left: 45px; right: 14px; }
 /* The left gutter holds the tick as well as the state dot now, and holds it at
    a fixed width whether or not the tick is showing: a control that appears on

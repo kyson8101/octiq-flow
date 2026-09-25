@@ -57,6 +57,7 @@ export function OrchestrationButton({ open, onToggle, snapshot }: {
 export function OrchestrationPanel({
   project,
   coordinatorKey,
+  currentChatKey = null,
   currentCwd,
   onOpenChat,
   onClose,
@@ -69,6 +70,9 @@ export function OrchestrationPanel({
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
+  /** The chat on screen. When it is one of this run's workers, its task is
+   *  the one marked as open. */
+  currentChatKey?: string | null;
   currentCwd?: string;
   onOpenChat: (chatKey: string, message?: string) => void;
   onClose: () => void;
@@ -313,6 +317,7 @@ export function OrchestrationPanel({
                 onRetry={(task, attempt) => void retryTask(task, attempt)}
                 onWorkspaceAction={(command, args) => void workspaceAction(command, args)}
                 onOpenChat={onOpenChat}
+                currentChatKey={currentChatKey}
                 onAskStop={() => setConfirmStop(true)}
                 onCancelStop={() => setConfirmStop(false)}
                 onStop={() => void stopRun()}
@@ -449,6 +454,7 @@ function RunDetail({
   onRetry,
   onWorkspaceAction,
   onOpenChat,
+  currentChatKey,
   onAskStop,
   onCancelStop,
   onStop,
@@ -470,6 +476,7 @@ function RunDetail({
   onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
   onOpenChat: (chatKey: string) => void;
+  currentChatKey: string | null;
   onAskStop: () => void;
   onCancelStop: () => void;
   onStop: () => void;
@@ -591,7 +598,8 @@ function RunDetail({
         ) : visible.map((task) => (
           <RunTask key={task.id} run={run} snapshot={snapshot} task={task} attempts={attempts} gates={gates}
             taskNames={taskNames} gateBlockedTasks={gateBlockedTasks} now={now} busy={busy} readOnly={readOnly}
-            archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction} />
+            archiveControl={archiveControl} onOpenChat={onOpenChat} onRetry={onRetry} onWorkspaceAction={onWorkspaceAction}
+            open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)} />
         ))}
       </section>
 
@@ -661,7 +669,7 @@ function RunProgress({ run, tasks, counts, working, attention, decisions, elapse
 }
 
 /** The row opens the worker chat; the separate disclosure shows its checklist. */
-function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction }: {
+function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedTasks, now, busy, readOnly, archiveControl, onOpenChat, onRetry, onWorkspaceAction, open }: {
   run: OrchestrationRun;
   snapshot: OrchestrationSnapshot;
   task: OrchestrationTask;
@@ -676,6 +684,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
   onOpenChat: (chatKey: string) => void;
   onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
   onWorkspaceAction: (command: string, args: Record<string, unknown>) => void;
+  open: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const detailId = useId();
@@ -699,9 +708,10 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
     && !gateBlockedTasks.has(task.id);
 
   return (
-    <article className={`orch-task is-${task.status}`} data-status={task.status}>
+    <article className={`orch-task is-${task.status}${open ? " is-open" : ""}`} data-status={task.status}>
       <div className="orch-task-heading">
         <button type="button" className="orch-task-summary" disabled={!attempt}
+          aria-current={open ? "page" : undefined}
           aria-label={`Open task chat: ${task.title}`}
           title={attempt ? `Open task chat: ${task.title}` : "No worker chat yet"}
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>

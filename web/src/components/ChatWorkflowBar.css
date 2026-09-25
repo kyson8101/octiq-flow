@@ -17,14 +17,15 @@
 /* Two columns: the conversation with the main agent, and the run its workers
    are doing. The transcript keeps the larger share and a floor under it, so
    the task column can never squeeze it into a gutter. The run column comes
-   LAST in the DOM — keyboard order is conversation then tasks — and is placed
-   on the right here. */
+   LAST in the DOM — keyboard order is conversation then tasks — but is placed
+   on the LEFT, against the chat list: you pick the orchestrator chat there and
+   its task list opens right beside it, not across the window. */
 .workflow-surfaces.is-split { flex-direction: row; }
 /* Neither column gets a hard floor. A git or files panel can open beside these
    at any moment, and a column that refuses to shrink puts a horizontal scroll
    bar under the whole app — worse than a cramped run column. */
 .workflow-surfaces.is-split > .workflow-chat-surface { flex: 1 1 auto; min-width: 0; }
-.workflow-surfaces.is-split > .workflow-run-surface { flex: 0 1 380px; min-width: 0; max-width: 440px; border-left: 1px solid var(--border); }
+.workflow-surfaces.is-split > .workflow-run-surface { order: -1; flex: 0 1 380px; min-width: 0; max-width: 440px; border-right: 1px solid var(--border); }
 .workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-content { padding: 20px 18px 40px; }
 .workflow-surfaces.is-split > .workflow-run-surface .orch-embedded .orch-runs { padding: 10px 14px; }
 /* The objective sizes itself from the viewport everywhere else; in a 380px

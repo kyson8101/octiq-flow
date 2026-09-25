@@ -537,6 +537,9 @@
 }
 
 .orch-task-summary:not(:disabled):hover { background: var(--bg-1); }
+/* The worker chat on screen. A tint, never a fill. */
+.orch-task.is-open .orch-task-summary { background: var(--accent-tint); }
+.orch-task.is-open .orch-task-title { color: var(--fg-0); }
 .orch-task-summary:disabled { opacity: 1; cursor: default; }
 .orch-task-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .orch-task-expand { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-3); cursor: pointer; }

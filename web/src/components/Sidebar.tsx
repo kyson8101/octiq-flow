@@ -20,7 +20,6 @@ import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
-import { AgentTaskBoard } from "./AgentTaskBoard";
 import "./MobileSidebar.css";
 import "./SidebarArchive.css";
 
@@ -267,15 +266,14 @@ export function Sidebar({
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
     const run = workflow.runs[0];
     const ownsRun = !searchActive && !showArchived && workflow.runs.length > 0;
-    // Worker chats stay folded into this compact status board even when the
-    // full run dashboard is visible beside the conversation. The two answer
-    // different questions: this is navigation and at-a-glance status; the
-    // dashboard owns checklists, briefs and workspace detail.
-    const hasTaskBoard = ownsRun;
-    const boardChatKeys = new Set(workflow.attempts.map((item) => item.workerChatKey));
-    const otherChildren = ownsRun ? children.filter((child) => !boardChatKeys.has(`chat:${child.chat.id}`)) : children;
-    const hasChildren = otherChildren.length > 0 || hasTaskBoard;
-    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run && !hasTaskBoard ? runSummary(workflow, run) : null;
+    // A run's worker chats are not listed here. Its task list opens beside the
+    // chat list when this row is picked, and stays while a worker is open, so
+    // that list IS the way to them; a second copy here was the same tasks twice.
+    const runChatKeys = new Set(workflow.attempts.map((item) => item.workerChatKey));
+    const otherChildren = ownsRun ? children.filter((child) => !runChatKeys.has(`chat:${child.chat.id}`)) : children;
+    const hasChildren = otherChildren.length > 0;
+    const openWorker = ownsRun && runChatKeys.has(`chat:${currentConversation}`);
+    const workflowLabel = task ? `${task.title} · ${archived ? "archived" : attempt?.status}` : run ? runSummary(workflow, run) : null;
     const branch = attempt?.branch || (parent ? "" : branches[chat.projectId]);
     const projectContext = branch ? `${projectName} | ${branch}` : projectName;
     const model = modelFromId(chat.modelId ?? null);
@@ -292,7 +290,7 @@ export function Sidebar({
           running.has(chat.id) ? "is-live" : "", busy.has(chat.id) ? "is-busy" : "",
           going ? "is-going" : "", isLeaving ? "is-leaving" : "",
           chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
-          unread ? "is-unread" : "", done ? "is-done" : "",
+          unread ? "is-unread" : "", done ? "is-done" : "", openWorker ? "is-worker-on" : "",
         ].filter(Boolean).join(" ")} style={chatTintStyle}>
           {renaming === chat.id ? (
             <form className="chat-rename" onSubmit={(event) => {
@@ -424,7 +422,7 @@ export function Sidebar({
             ]} />}
           {hasChildren && (
             <button className="chat-children-toggle" type="button"
-              aria-label={`${expanded ? "Collapse" : "Expand"} ${hasTaskBoard ? "task board" : "agent chats"} for ${chat.title}`}
+              aria-label={`${expanded ? "Collapse" : "Expand"} agent chats for ${chat.title}`}
               aria-expanded={expanded} aria-controls={childListId}
               disabled={isLeaving}
               onClick={() => setCollapsed((before) => {
@@ -434,7 +432,7 @@ export function Sidebar({
                 return next;
               })}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-              <span>{hasTaskBoard ? `${workflow.tasks.length} tasks` : `${descendants.length} ${descendants.length === 1 ? "agent" : "agents"}`}</span>
+              <span>{`${otherChildren.length} ${otherChildren.length === 1 ? "agent" : "agents"}`}</span>
               {workingCount > 0 && <span className="chat-children-working">{workingCount} working</span>}
               {unreadCount > 0 && <span className="chat-children-unread">{unreadCount} unread</span>}
             </button>
@@ -442,8 +440,6 @@ export function Sidebar({
         </div>
         {hasChildren && (
           <div id={childListId} hidden={!expanded}>
-            {expanded && hasTaskBoard && <AgentTaskBoard snapshot={workflow} conversations={conversationById}
-              currentConversation={currentConversation} onOpenChat={onPickConversation} />}
             {expanded && otherChildren.length > 0 && <ul className="chat-children" aria-label={`Agent chats for ${chat.title}`}>
               {otherChildren.map(renderChat)}
             </ul>}

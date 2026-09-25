@@ -62,29 +62,29 @@ describe("compact agent task board", () => {
     expect(out).toContain('title="2 of 4 reported steps done"');
     expect(out).toContain('aria-current="page"');
   });
-  it("replaces nested worker conversations with one row per task, including undispatched tasks", () => {
+  it("leaves a run's tasks to the run column and keeps one summary row in the chat list", () => {
+    // The task list opens beside the chat list, so the sidebar no longer
+    // carries a second copy of it: one row for the main chat, with the run's
+    // one-line summary, and no worker transcripts or task rows under it.
     const snapshot = taskBoardFixture();
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
       conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
       onNewProject={() => {}} searchChats={async () => []} />);
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
-    expect(out.match(/class="agent-task"/g)).toHaveLength(4);
-    expect(out).toContain("Document the access rules");
-    expect(out).toContain("4 tasks");
+    expect(out).not.toContain('class="agent-task');
+    expect(out).not.toContain("chat-children-toggle");
+    expect(out).toContain('class="chat-workflow-status"');
+    expect(out).not.toContain("is-worker-on");
   });
-  it("keeps compact subagent status in the chat list beside the run column", () => {
+  it("outlines the main chat while one of its workers is open", () => {
     const snapshot = taskBoardFixture();
     const out = renderToStaticMarkup(<Sidebar orchestration={snapshot} projects={[]} shelved={[]} onShowShelved={() => {}}
-      conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation={null} running={new Set()} busy={new Set()}
+      conversations={chats} chatParents={workerChatParents(snapshot)} currentConversation="w-reader" running={new Set()} busy={new Set()}
       onPickConversation={() => {}} onNewChat={() => {}} onDelete={() => {}} onPin={() => {}} onToggleDone={() => {}} onRename={() => {}}
       onNewProject={() => {}} searchChats={async () => []} />);
-    // Worker transcripts stay folded away, while their status rows remain a
-    // useful navigation index beside the detailed run dashboard.
     expect(out.match(/class="chat-title"/g)).toHaveLength(1);
-    expect(out.match(/class="agent-task"/g)).toHaveLength(4);
-    expect(out).toContain("Document the access rules");
-    expect(out).toContain("Run focused tests");
+    expect(out).toContain("is-worker-on");
   });
   it("keeps an undispatched task from becoming a dead navigation button", () => {
     const out = renderToStaticMarkup(<AgentTaskBoard snapshot={taskBoardFixture()} conversations={new Map()} currentConversation={null} onOpenChat={() => {}} />);
