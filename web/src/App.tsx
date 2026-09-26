@@ -4039,7 +4039,8 @@ export default function App() {
     [workspaces, shelved],
   );
   const planTail = useMemo(
-    () => (plansHere.length ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : undefined),
+    () => (plansHere.some((plan) => plan.pending)
+      ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : undefined),
     [plansHere, planDrafting, planProjectName],
   );
 

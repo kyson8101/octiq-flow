@@ -539,6 +539,9 @@
 .orch-run-settings.is-compact .orch-run-actions { justify-content: flex-end; }
 .orch-run-actions .orch-stop-confirm { max-width: 34ch; justify-content: flex-start; }
 
+/* How the plan was approved: one quiet line, the plan behind it. */
+.orch-plan-record { margin-bottom: 14px; min-width: 0; }
+
 .orch-decisions {
   margin-bottom: 14px;
   padding: 12px 14px;

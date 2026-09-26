@@ -22,6 +22,8 @@ import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard } from "./TaskPlanCard";
 import { AgentRosterContext, useRosterAgent } from "../lib/agentRoster";
 import { PlanReview } from "./PlanReview";
+import { ApprovedPlan } from "./ChatPlanCards";
+import { planHandle } from "../lib/chatPlans";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
@@ -816,6 +818,16 @@ function RunDetail({
       {planPending && (
         <div className="orch-attention-target" data-attention tabIndex={-1}>
           <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} projectName={projectName} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
+        </div>
+      )}
+
+      {/* The record of how the plan was approved. It left the chat once the
+          host confirmed it; the run keeps it. */}
+      {run.planApproval?.status === "approved" && (
+        <div className="orch-plan-record">
+          <ApprovedPlan projectName={projectName} plan={{
+            run, tasks, handle: planHandle(run.id), revision: run.planApproval.revision ?? 0, pending: false,
+          }} />
         </div>
       )}
 
