@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { OrchestrationRun, OrchestrationSnapshot, OrchestrationTask } from "./orchestration";
-import { conversationProjectInfo, projectConversationCounts, projectConversations } from "./conversationProjects";
+import {
+  conversationColorProjectId, conversationProjectInfo, projectConversationCounts, projectConversations,
+} from "./conversationProjects";
 import type { Conversation } from "./store";
 
 const chat = (id: string, projectId = "general", extra: Partial<Conversation> = {}): Conversation => ({
@@ -72,6 +74,34 @@ describe("conversationProjectInfo", () => {
     expect(conversationProjectInfo(chat("plain", "alpha"), snapshot([], []), coordinators)).toMatchObject({
       status: "home", homeProjectId: "alpha", taskCount: 0,
     });
+  });
+});
+
+describe("conversationColorProjectId", () => {
+  const registered = (id: string) => ["general", "alpha", "beta"].includes(id);
+  const coordinators = new Set(["chat:cto"]);
+  const colourOf = (tasks: OrchestrationTask[], ledger: OrchestrationSnapshot | null = snapshot([run("r")], tasks)) =>
+    conversationColorProjectId(conversationProjectInfo(chat("cto"), ledger, coordinators), registered);
+
+  it("takes a coordinator's one work project, never its General home", () => {
+    expect(colourOf([task("t1", "r", "alpha"), task("t2", "r", "alpha")])).toBe("alpha");
+    // A task with no recorded destination is shown as "+?", not a reason to drop the known one.
+    expect(colourOf([task("t1", "r", "alpha"), task("t2", "r")])).toBe("alpha");
+  });
+
+  it("stays neutral across several projects and while the destination is not known", () => {
+    expect(colourOf([task("t1", "r", "alpha"), task("t2", "r", "beta")])).toBeNull();
+    expect(colourOf([task("t1", "r")])).toBeNull();
+    expect(colourOf([], snapshot([run("r")], []))).toBeNull();
+    expect(colourOf([], null)).toBeNull();
+    expect(colourOf([task("t1", "r", "removed")])).toBeNull();
+  });
+
+  it("keeps an ordinary chat's own registered project", () => {
+    const info = conversationProjectInfo(chat("plain", "beta"), snapshot([], []), coordinators);
+    expect(conversationColorProjectId(info, registered)).toBe("beta");
+    const gone = conversationProjectInfo(chat("plain", "removed"), snapshot([], []), coordinators);
+    expect(conversationColorProjectId(gone, registered)).toBeNull();
   });
 });
 

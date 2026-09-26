@@ -70,6 +70,19 @@ describe("ChatSearchPage", () => {
     expect(out).not.toContain(">General</span>");
   });
 
+  it("marks a coordinator result by its work project, not General", () => {
+    const single: OrchestrationSnapshot = { ...ledger, tasks: ledger.tasks.slice(0, 1) };
+    const withGeneral = [...projects, { id: "general", name: "General", initial: "G" }];
+    const out = (snapshot: OrchestrationSnapshot) => html({
+      conversations: [coordinator], projects: [...withGeneral, { id: "p2", name: "starfall-social" }],
+      ledgerSnapshot: snapshot, coordinatorChatKeys: new Set(["chat:cto"]),
+    });
+    expect(out(single)).toContain('project-avatar-text">OF</span>');
+    expect(out(single)).not.toContain('project-avatar-text">G</span>');
+    expect(out(ledger)).toContain("project-avatar is-medium is-neutral is-several");
+    expect(out(ledger)).not.toContain('project-avatar-text">G</span>');
+  });
+
   it("does not invent General while a coordinator's ledger is loading", () => {
     const out = html({
       conversations: [coordinator], ledgerSnapshot: null,

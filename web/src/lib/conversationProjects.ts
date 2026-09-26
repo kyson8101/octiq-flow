@@ -26,6 +26,29 @@ export function conversationProjectSummary(
 }
 
 /**
+ * The registered project a conversation row takes its colour from, or null
+ * for a neutral row.
+ *
+ * An ordinary chat keeps its own project. A coordinator takes the project its
+ * tasks work in, never the home it was started from: one destination colours
+ * the row, several leave it neutral (each project badge carries its own
+ * colour), and a ledger still loading, a discussion with no tasks yet,
+ * destinations nobody recorded and a project since removed all stay neutral
+ * rather than borrow one. Tasks with no recorded destination already show as
+ * "+?" beside the badge, so they do not stop the one known destination from
+ * colouring the row.
+ */
+export function conversationColorProjectId(
+  info: ConversationProjectInfo,
+  isRegistered: (projectId: string) => boolean,
+): string | null {
+  const projectId = info.status === "home" ? info.homeProjectId
+    : info.status === "projects" && info.destinations.length === 1 ? info.destinations[0].projectId
+      : undefined;
+  return projectId && isRegistered(projectId) ? projectId : null;
+}
+
+/**
  * The projects a conversation is actually doing work in.
  *
  * A coordinator chat may live in General, but that is its conversation home,

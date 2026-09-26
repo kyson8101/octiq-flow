@@ -115,6 +115,64 @@ describe("task-oriented Sidebar", () => {
     expect(out).toContain('class="chat" style="--chat-project-color:#12ab34"');
   });
 
+  describe("a coordinator row's colour follows where its work is, not its General home", () => {
+    const withGeneral: Project[] = [...projects, { id: "general", name: "General", initial: "G", color: "#aa00ff" }];
+    const coordinatorRow = (destinations: (string | null)[] | null, runs = true) => {
+      const ledger = destinations === null ? null
+        : runs ? coordinatorLedger(destinations) : { ...coordinatorLedger([]), runs: [] };
+      return html({
+        projects: withGeneral,
+        conversations: [{ ...chat("cto", "general"), pinned: true }],
+        orchestration: ledger ?? undefined, ledgerSnapshot: ledger,
+        coordinatorChatKeys: new Set(["chat:cto"]),
+      });
+    };
+    const rowStyle = (out: string) => /<div class="chat(?: [^"]*)?"( style="[^"]*")?/.exec(out)?.[1] ?? "";
+
+    it("takes the one destination's colour and mark", () => {
+      const out = coordinatorRow(["p1"]);
+      expect(rowStyle(out)).toBe(' style="--chat-project-color:#12ab34"');
+      expect(out).toContain('project-avatar-text">OF</span>');
+      expect(out).not.toContain("#aa00ff");
+      expect(out).not.toContain('project-avatar-text">G</span>');
+      expect(out).toContain("is-pinned");
+    });
+
+    it("goes neutral across several projects, each project badge keeping its own colour", () => {
+      const out = coordinatorRow(["p1", "p2"]);
+      expect(rowStyle(out)).toBe("");
+      expect(out).toContain("project-avatar is-medium is-neutral is-several");
+      expect(out).toContain('class="conversation-project-chip is-registered" style="--conversation-project-color:#12ab34">octiq-flow</span>');
+      expect(out).toMatch(/class="conversation-project-chip is-registered" style="--conversation-project-color:#[0-9a-f]{6}">starfall-social<\/span>/);
+      expect(out).not.toContain("#aa00ff");
+    });
+
+    it("stays neutral while loading, in discussion, unknown or pointing at a removed project", () => {
+      for (const out of [coordinatorRow(null), coordinatorRow([], false), coordinatorRow([null]), coordinatorRow(["gone"])]) {
+        expect(rowStyle(out)).toBe("");
+        expect(out).toContain("project-avatar is-medium is-neutral");
+        expect(out).not.toContain("#aa00ff");
+        expect(out).not.toContain('project-avatar-text">G</span>');
+      }
+      expect(coordinatorRow([null])).toContain('is-neutral" aria-hidden="true">?</span>');
+      expect(coordinatorRow(["gone"])).toContain('class="conversation-project-chip">Project gone</span>');
+    });
+
+    it("follows the destinations as the ledger changes", () => {
+      expect(rowStyle(coordinatorRow([]))).toBe("");
+      expect(rowStyle(coordinatorRow(["p1"]))).toContain("#12ab34");
+      expect(rowStyle(coordinatorRow(["p1", "p2"]))).toBe("");
+      expect(rowStyle(coordinatorRow(["p2"]))).toMatch(/--chat-project-color:#[0-9a-f]{6}/);
+      expect(rowStyle(coordinatorRow(["p2"]))).not.toContain("#12ab34");
+    });
+
+    it("leaves an ordinary chat in General coloured by General", () => {
+      const out = html({ projects: withGeneral, conversations: [chat("plain", "general")], coordinatorChatKeys: new Set(["chat:cto"]) });
+      expect(rowStyle(out)).toBe(' style="--chat-project-color:#aa00ff"');
+      expect(out).toContain('project-avatar-text">G</span>');
+    });
+  });
+
   it("uses the indexed latest response before a remote transcript is opened", () => {
     const out = html({
       conversations: [{ ...chat("a"), sessionId: "remote-session", latestResponse: "Saved on the other device." }],

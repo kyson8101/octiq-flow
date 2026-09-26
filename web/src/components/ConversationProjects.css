@@ -34,6 +34,14 @@
   white-space: nowrap;
 }
 
+/* Each registered project keeps its own colour here, so a chat working in
+   several reads as several without the row borrowing any one of them. */
+.conversation-project-chip.is-registered {
+  border-color: color-mix(in srgb, var(--conversation-project-color) 46%, var(--border));
+  background: color-mix(in srgb, var(--conversation-project-color) 14%, var(--bg-2));
+  color: color-mix(in srgb, var(--conversation-project-color) 36%, var(--fg-1));
+}
+
 .conversation-project-overflow,
 .conversation-project-unknown {
   flex: none;

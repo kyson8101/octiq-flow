@@ -11,8 +11,7 @@ import {
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { EMPTY_ORCHESTRATION, ordinaryChats, type OrchestrationSnapshot } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
-import { ProjectAvatar } from "./ProjectAvatar";
-import { ConversationProjects } from "./ConversationProjects";
+import { ConversationProjectAvatar, ConversationProjects } from "./ConversationProjects";
 import { chatTime, type Project } from "./Sidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 import "./ProjectsPage.css";
@@ -105,9 +104,7 @@ export function ChatSearchPage({
       <li key={chat.id}>
         <button type="button" className="projects-task chat-search-result" onClick={() => onOpenChat(chat)}
           aria-label={`${chat.title}, ${projectSummary}`}>
-          {project
-            ? <ProjectAvatar project={project} size="medium" />
-            : <span className="project-avatar is-medium" aria-hidden="true">?</span>}
+          <ConversationProjectAvatar info={projectInfo} projects={projects} />
           <span className="chat-search-result-text">
             <span className="projects-task-line">
               <span className="projects-task-title">{chat.title}</span>

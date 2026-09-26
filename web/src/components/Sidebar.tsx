@@ -1,11 +1,10 @@
 // Task-first navigation: one global list of chats, with project as context.
-import { useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type React from "react";
 import { modelFromId } from "../lib/agentProviders";
 import { buildChatTree, type ChatNode } from "../lib/chatTree";
 import { recall, remember } from "../lib/remember";
 import { latestResponse } from "../lib/chatPreview";
-import { projectColor } from "../lib/projectColor";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { isWorkerChat, ordinaryChats, EMPTY_ORCHESTRATION, type OrchestrationSnapshot } from "../lib/orchestration";
 import { chatSnapshot, runSummary, workflowChatList } from "../lib/chatWorkflow";
@@ -22,8 +21,8 @@ import { AgentAvatar } from "./AgentAvatar";
 import { ChatPersonaContext } from "../lib/agentRoster";
 import { DeleteCountdownIcon } from "./ChatDeleteButton";
 import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
-import { ConversationProjects } from "./ConversationProjects";
-import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
+import { ConversationProjectAvatar, ConversationProjects, conversationTintStyle } from "./ConversationProjects";
+import type { ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
 import "./MobileSidebar.css";
 import "./SidebarArchive.css";
@@ -250,9 +249,9 @@ export function Sidebar({
       projectInfo,
       (id, fallback) => projectById.get(id)?.name ?? fallback ?? "Unknown project",
     );
-    const chatTintStyle = project
-      ? ({ "--chat-project-color": projectColor(project) } as CSSProperties)
-      : undefined;
+    // Coloured by where the work is, not where the chat was started: a
+    // coordinator homed in General takes its tasks' project.
+    const chatTintStyle = conversationTintStyle(projectInfo, knownProjects);
     const projectName = project?.name ?? "Unknown project";
     const attempt = orchestration.attempts.find((item) => item.workerChatKey === `chat:${chat.id}`);
     const task = attempt && orchestration.tasks.find((item) => item.id === attempt.taskId);
@@ -391,9 +390,7 @@ export function Sidebar({
                 badgeTap.current = { chatId: chat.id, at: event.timeStamp };
               }
             }}>
-            {project
-              ? <ProjectAvatar project={project} size="medium" />
-              : <span className="project-avatar is-medium" aria-hidden="true">?</span>}
+            <ConversationProjectAvatar info={projectInfo} projects={knownProjects} />
             {/* Three strokes on one path, all of them always rendered and
                 transparent at rest: a ring that appeared by mounting would
                 arrive a frame late and jump. The track is the still ring; the
