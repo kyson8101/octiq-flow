@@ -1126,6 +1126,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 &arg::<String>(&args, "runId")?,
             ))
         }
+        // Browser-only: the person hides a finished run, or restores it. Not
+        // an MCP tool — an agent never decides what the person sees.
+        "orchestration_run_archive" => to_value(svc.orchestrations.set_run_archived(
+            &arg::<String>(&args, "actorChatKey")?,
+            &arg::<String>(&args, "runId")?,
+            arg(&args, "archived")?,
+        )),
         "orchestration_workspace_cleanup" => to_value(svc.orchestrations.cleanup_workspace(
             &svc.chats,
             &arg::<String>(&args, "actorChatKey")?,

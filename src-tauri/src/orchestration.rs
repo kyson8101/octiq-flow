@@ -112,6 +112,10 @@ pub struct Run {
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_reason: Option<String>,
+    /// Hidden from the run list by the person. Only a finished run may be
+    /// archived; everything it recorded stays, and restoring clears this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<i64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -756,6 +760,7 @@ impl OrchestrationStore {
             created_at: now,
             updated_at: now,
             stopped_reason: None,
+            archived_at: None,
         };
         let created = run.clone();
         self.mutate(|data| {
@@ -999,6 +1004,9 @@ impl OrchestrationStore {
                     data.runs.get(&run_id).ok_or("The run does not exist.")?
                 }
             };
+            if run.archived_at.is_some() {
+                return Err("This run is archived. Restore it before adding work.".into());
+            }
             if worker.is_none() && run.worker_defaults.as_ref().is_some_and(|d| d.agent.is_none()) {
                 return Err("Choose a suitable worker for this task: provide worker.agent, worker.model, worker.access, and optional worker.effort.".into());
             }

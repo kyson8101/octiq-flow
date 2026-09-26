@@ -76,6 +76,9 @@ export type OrchestrationRun = {
   createdAt: number;
   updatedAt: number;
   stoppedReason?: string;
+  /** Hidden from the run list by the person; every record is kept, and
+   *  restoring clears it. Only a finished run is archived. */
+  archivedAt?: number;
 };
 
 /** A registered project and one repository registered on it

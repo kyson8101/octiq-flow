@@ -258,7 +258,8 @@ export function Sidebar({
     const archived = attempt?.archivedAt != null;
     const archiveReason = attempt && !archived ? workerArchiveDisabledReason(orchestration, attempt) : null;
     const workflow = chatSnapshot(orchestration, `chat:${chat.id}`);
-    const run = workflow.runs[0];
+    // An archived run was put away by the person; it does not speak for the row.
+    const run = workflow.runs.find((item) => item.archivedAt == null) ?? workflow.runs[0];
     const ownsRun = !showArchived && workflow.runs.length > 0;
     // A run's worker chats are not listed here. Its task list opens beside the
     // chat list when this row is picked, and stays while a worker is open, so

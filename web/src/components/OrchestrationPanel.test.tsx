@@ -113,13 +113,14 @@ describe("OrchestrationPanel", () => {
     const render = (current: OrchestrationSnapshot) => renderToStaticMarkup(<OrchestrationPanel embedded
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey={current.runs[0].coordinatorChatKey}
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
-    // Plan mode: the review stands in for the progress bar and task list.
+    // Plan mode: the review stands in for the task list.
     expect(render(pending)).toContain("Approve plan");
-    expect(render(pending)).not.toContain("Tasks completed");
+    expect(render(pending)).toContain("The tasks start once the plan above is approved.");
+    expect(render(pending)).not.toContain('<span class="orch-task-title">');
     const approved = structuredClone(pending);
     approved.runs[0].planApproval = { status: "approved", requestedAt: 1 };
     expect(render(approved)).not.toContain("Approve plan");
-    expect(render(approved)).toContain("Tasks completed");
+    expect(render(approved)).toContain('<span class="orch-task-title">Build the host ledger</span>');
   });
 
   it("keeps acceptance unverified even when every task has completed", () => {
@@ -131,7 +132,7 @@ describe("OrchestrationPanel", () => {
     current.gates = [];
     const html = renderToStaticMarkup(<OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={current} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(html).toContain("Tasks completed");
+    expect(html).toContain("1/1 tasks · Completed");
     expect(html).toContain("Acceptance: unverified");
   });
 
@@ -190,7 +191,7 @@ describe("OrchestrationPanel", () => {
     expect(html).toContain("Use the durable schema?");
     expect(html).not.toContain("<input");
     expect(html).not.toContain("<textarea");
-    expect(html).not.toContain(">Stop run<");
+    expect(html).not.toContain(">Stop<");
     expect(html).not.toContain(">Yes<");
   });
   it("starts a master from the current chat", () => {
@@ -281,10 +282,12 @@ describe("OrchestrationPanel", () => {
         initialSnapshot={settled} onOpenChat={() => {}} onClose={() => {}} />,
     );
 
-    expect(html).toContain("<strong>1<span> / 1 tasks</span></strong>");
-    expect(html).toContain("100%");
-    // Nothing is owed, so no chip row at all — rather than five reading zero.
-    expect(html).not.toContain("orch-progress-chips");
+    // One line, and no percentage: done of total is what the ledger knows.
+    expect(html).toContain("<span>1/1 tasks · Completed</span>");
+    expect(html).not.toMatch(/(>\s*\d+|<\/span>)\s*%/);
+    expect(html).not.toContain('role="progressbar"');
+    // Nothing is owed, so no attention count — rather than five reading zero.
+    expect(html).not.toContain('class="orch-attention"');
     for (const gone of ["working", "decision waiting", "needs attention", "queued", "cancelled"]) {
       expect(html).not.toContain(gone);
     }
@@ -307,7 +310,8 @@ describe("OrchestrationPanel", () => {
       <OrchestrationPanel project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
         initialSnapshot={{ ...snapshot, gates: [] }} onOpenChat={() => {}} onClose={() => {}} />,
     );
-    expect(stuck).toContain("1 needs attention");
+    expect(stuck).toContain("1 task needs attention");
+    expect(stuck).toContain(">1 blocked</button>");
   });
 
   it("offers a new authoritative attempt for a settled block", () => {
@@ -390,21 +394,23 @@ describe("embedded chat runs", () => {
     expect(html).not.toContain('id="orch-run-title"');
     expect(html).toContain('aria-label="Ship orchestration"');
     expect(html).toContain('class="orch-run-accordion-toggle" aria-expanded="true"');
-    if (planning) expect(html).toContain("Approval needed");
+    // The plan and the open decision are one count, beside the disclosure.
+    if (planning) expect(html).toMatch(/<\/button><button type="button" class="orch-attention" data-tone="decision" aria-label="2 decisions waiting. Show"/);
   });
 
   it("keeps manual New run in regular coding mode and run settings one click away, shut", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
       project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
-    expect(html).not.toContain("Main chat");
+    expect(html).toContain("<span>Main agent chat</span>");
     expect(html).toContain("New run");
     const toggle = html.match(/<button type="button" class="orch-settings-toggle" aria-expanded="false" aria-controls="([^"]+)"/);
     expect(toggle).not.toBeNull();
     const region = html.slice(html.indexOf(`id="${toggle![1]}"`));
     expect(html).toContain(`class="orch-run-settings" id="${toggle![1]}" role="region" aria-label="Run settings" hidden=""`);
     // The controls moved with the configuration; they are shut, not gone.
-    expect(region.slice(0, region.indexOf('class="orch-tasks"'))).toContain(">Stop run<");
+    expect(region.slice(0, region.indexOf('role="tabpanel"'))).toContain(">Stop<");
+    expect(html).not.toContain("Pause automatic dispatch");
     // Not every task is done, so the acceptance caveat waits in Settings.
     expect(html).not.toContain("Acceptance: unverified");
     expect(html).toContain("<dt>Acceptance</dt>");
@@ -487,4 +493,75 @@ it("distinguishes notification receipt from completed work and shows retry error
   expect(html).toContain("Queued");
   expect(html).toContain("Provider unavailable");
   expect(html.match(/Delivery will retry automatically/g)).toHaveLength(1);
+});
+
+describe("compact run panel", () => {
+  const agents = (ledger: OrchestrationSnapshot, currentChatKey = "chat:master") => renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+    allowManualRun={false} project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey={currentChatKey}
+    initialSnapshot={ledger} onOpenChat={() => {}} onClose={() => {}} />);
+
+  it("keeps Main agent chat outside every goal, so it is there with them collapsed", () => {
+    const html = agents(snapshot, "chat:worker");
+    const toolbar = html.indexOf('role="toolbar"');
+    expect(toolbar).toBeGreaterThan(-1);
+    expect(toolbar).toBeLessThan(html.indexOf('class="orch-content"'));
+    expect(html.slice(toolbar, html.indexOf('class="orch-content"'))).toContain("<span>Main agent chat</span>");
+    // Only the main chat itself is marked as the page you are on.
+    expect(html).not.toContain('aria-current="page" aria-label="Main agent chat"');
+    expect(agents(snapshot)).toContain('aria-current="page" aria-label="Main agent chat"');
+    expect(html).not.toContain("Back to main chat");
+  });
+
+  it("carries waiting approvals on the way to the main chat", () => {
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading allowManualRun={false} pendingApprovals={2}
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
+      initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);
+    expect(html).toContain('aria-label="Main agent chat, 2 approvals waiting"');
+  });
+
+  it("shows Tasks, Notifications and the coordination log as tabs, with decisions above them", () => {
+    const note = { id: "note", runId: "run_1", fromChatKey: "w", targetChatKey: "chat:master", source: "s", kind: "progress", body: "b",
+      state: "pending" as const, attempts: 1, coalesced: 0, createdAt: 1, updatedAt: 2 };
+    const message = { id: "m", runId: "run_1", fromChatKey: "chat:worker", toChatKey: "chat:master", kind: "status", subject: "Started", body: "On it", createdAt: 1 };
+    const html = agents({ ...snapshot, notifications: [note], messages: [message] } as OrchestrationSnapshot);
+    expect(html).toContain('role="tablist" aria-label="Run details"');
+    expect(html).toMatch(/role="tab" id="[^"]+-tasks" aria-selected="true"[^>]+tabindex="0" aria-label="Tasks, 1"/);
+    expect(html).toMatch(/role="tab" id="[^"]+-notifications" aria-selected="false"[^>]+tabindex="-1" aria-label="Notifications, 1, 1 awaiting receipt"/);
+    expect(html).toContain('aria-label="Coordination log, 1 message"');
+    // Inactive tabs keep their content, shut.
+    expect(html).toMatch(/role="tabpanel" id="[^"]+-log-panel" aria-labelledby="[^"]+-log" hidden="">.*Started/);
+    expect(html.indexOf("Needs you")).toBeLessThan(html.indexOf('role="tablist"'));
+    expect(html).not.toContain('<details class="orch-notifications"');
+  });
+
+  it("offers Stop without Pause, and never a percentage or a full-width bar", () => {
+    const automatic = { ...snapshot, runs: [{ ...snapshot.runs[0], workerDefaults: { access: "auto" } }] };
+    const html = agents(automatic);
+    expect(html).toContain(">Stop</button>");
+    expect(html).not.toContain("Stop run");
+    expect(html).not.toContain("Pause automatic dispatch");
+    expect(html).not.toContain("task-meter");
+    // The header carries count and state once.
+    expect(html.match(/0\/1 tasks/g)).toHaveLength(1);
+  });
+
+  it("hides archived runs behind Archived, where each can be restored", () => {
+    const archived = { ...snapshot.runs[0], id: "run_old", objective: "Old goal", status: "stopped" as const, archivedAt: 9 };
+    const html = agents({ ...snapshot, runs: [snapshot.runs[0], archived] });
+    expect(html).not.toContain("Old goal");
+    expect(html).toMatch(/aria-pressed="false"[^>]*>.*<span>Archived<\/span><span class="orch-tool-count is-quiet">1<\/span>/);
+    // With only archived runs, the list is empty but the way back is not.
+    const only = agents({ ...snapshot, runs: [archived] });
+    expect(only).not.toContain("Old goal");
+    expect(only).toContain("<span>Archived</span>");
+    expect(only).toContain("<span>Main agent chat</span>");
+  });
+
+  it("offers to archive a finished run behind a confirmation, never by default", () => {
+    const done = { ...snapshot, runs: [{ ...snapshot.runs[0], status: "stopped" as const }], gates: [] };
+    const html = agents(done);
+    expect(html).toContain(">Archive run</button>");
+    expect(html).not.toContain(">Stop</button>");
+    expect(html).not.toContain('type="checkbox"');
+  });
 });

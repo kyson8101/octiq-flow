@@ -551,8 +551,18 @@ export default function App() {
   }, [displayedRunKey]);
   const displayedRunId = displayedRuns[displayedRunKey];
   const displayedRun = displayedRunId === null ? null
-    : runWorkflow.runs.find((run) => run.id === displayedRunId) ?? runWorkflow.runs[0];
+    : runWorkflow.runs.find((run) => run.id === displayedRunId)
+      ?? runWorkflow.runs.find((run) => run.archivedAt == null) ?? runWorkflow.runs[0];
   const coordinatorConversation = conversations.find((chat) => chat.id === coordinatorId);
+  // The coordinator the ledger names for this worker's own run. The chat tree
+  // walks to the top-most head, which for a delegated run is not the chat
+  // that coordinates it.
+  const workerCoordinatorKey = useMemo(() => {
+    if (!workerChat || !conversationId) return null;
+    const key = keyFor(conversationId);
+    const runId = orchestration.attempts.find((attempt) => attempt.workerChatKey === key)?.runId;
+    return orchestration.runs.find((run) => run.id === runId)?.coordinatorChatKey ?? null;
+  }, [workerChat, conversationId, orchestration]);
   const workerRequestIds = useMemo(() => conversationId && !workerChat
     ? [...chatParents.keys()].filter((id) => mainChatId(id, chatParents) === conversationId)
     : [], [conversationId, workerChat, chatParents]);
@@ -4044,6 +4054,9 @@ export default function App() {
     </>
   );
 
+  const pendingApprovals = [conversationId, ...workerRequestIds].reduce((count, id) =>
+    count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0);
+
   return (
     <WorkspaceSlotsContext.Provider value={workspaceSlots}>
     <AgentRosterContext.Provider value={agentsMode ? roster : NO_ROSTER}>
@@ -4294,9 +4307,12 @@ export default function App() {
           {unavailableChat ? <div className="hero" role="status"><h1 className="hero-title">Chat unavailable</h1><p>This chat was deleted or is no longer in this profile. Choose another chat from the chat list.</p></div> : <>
           {(!workerChat || workflowVisible) && <ChatWorkflowBar snapshot={runWorkflow} orchestrated={workflowVisible} view={workflowView} focusMode={focusMode} split={workflowSplit}
             unified={workflowVisible} selectedRun={displayedRun} worker={workerChat}
-            onBackToMain={workerChat && runChatKey ? () => openWorkflowChat(runChatKey) : undefined}
+            // One way back at a time: while the run panel is on screen its
+            // Main agent chat button is that way, so the bar does not repeat it.
+            onBackToMain={workerChat && (workerCoordinatorKey ?? runChatKey) && !(workflowVisible && (workflowSplit || workflowView === "run"))
+              ? () => openWorkflowChat((workerCoordinatorKey ?? runChatKey)!) : undefined}
             planPending={!!plan}
-            pendingApprovals={[conversationId, ...workerRequestIds].reduce((count, id) => count + (id ? (asks[id]?.length ?? 0) + (safetyBlocks[id]?.length ?? 0) + (questions[id]?.length ?? 0) : 0), 0)}
+            pendingApprovals={pendingApprovals}
             onView={showWorkflowView} />}
           <div className={`workflow-surfaces${workflowSplit ? " is-split" : ""}`}>
           {workflowVisible && <div className="workflow-run-surface" hidden={!workflowSplit && workflowView !== "run"}
@@ -4305,6 +4321,9 @@ export default function App() {
               aria-label="Resize the run column" onPointerDown={runDock.startDrag} />}
             <OrchestrationPanel embedded sharedHeading project={project} coordinatorKey={runChatKey}
               allowManualRun={!agentsMode}
+              // Cards for the main chat and its workers render in the main
+              // chat, so only there does its button carry them.
+              pendingApprovals={workerChat ? 0 : pendingApprovals}
               projectName={(id) => [...workspaces, ...shelved].find((item) => item.id === id)?.name}
               onSelectedRunChange={onSelectedRunChange}
               coordinatorBusy={!workerChat && chat.busy && !cutOff}

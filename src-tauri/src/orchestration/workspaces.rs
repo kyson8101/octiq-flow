@@ -372,6 +372,7 @@ impl OrchestrationStore {
             let task = data.tasks.get(task_id).ok_or("Task does not exist.")?.clone();
             let run = coordinator(data, &task.run_id, actor)?;
             if run.status == RunStatus::Stopped { return Err("A stopped run cannot be reopened.".into()); }
+            if run.archived_at.is_some() { return Err("This run is archived. Restore it before reopening a task.".into()); }
             if task.status != TaskStatus::Completed { return Err("Only a completed task can be reopened for review fixes. Use retry for failed or blocked tasks.".into()); }
             let ws = task.workspace.as_ref().ok_or("This task has no retained workspace.")?;
             if ws.state == WorkspaceState::Cleaned || ws.abandoned || ws.delivery.as_ref().is_some_and(|d| d.merged) {

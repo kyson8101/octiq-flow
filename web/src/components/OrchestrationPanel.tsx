@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
@@ -6,6 +6,10 @@ import {
   attemptIsExecuting, boardCounts, executionNeedsAttention, EXECUTION_LABELS, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
   sortTasksByActivity, taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
 } from "../lib/agentTaskBoard";
+import {
+  attentionLabel, mainChatTarget, nextRunTab, runAttention, RUN_TABS, setRunArchived, splitArchived, stopRun,
+  type RunAttention, type RunTab,
+} from "../lib/runPanel";
 import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
 import { elapsedLabel } from "../lib/working";
@@ -20,8 +24,7 @@ import { useRosterAgent } from "../lib/agentRoster";
 import { PlanReview } from "./PlanReview";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
-import { RollingNumber } from "./RollingNumber";
-import { BranchIcon, ClockIcon, TaskMeter, TaskStatusIcon } from "./TaskMeter";
+import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
 
 import {
   deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
@@ -77,6 +80,7 @@ export function OrchestrationPanel({
   onSelectedRunChange,
   projectName,
   allowManualRun = true,
+  pendingApprovals = 0,
 }: {
   project: ProjectRef | null;
   coordinatorKey: string | null;
@@ -103,11 +107,14 @@ export function OrchestrationPanel({
   projectName?: (id: string) => string | undefined;
   /** Agents mode starts runs conversationally through its CTO. */
   allowManualRun?: boolean;
+  /** Permission and safety cards waiting in the main chat, for it and its
+   *  workers. They are answered there, so the way there carries the count. */
+  pendingApprovals?: number;
 }) {
   // The tab's shared ledger; `initialSnapshot` stands in until its first read.
   const feed = useOrchestrationFeed();
   const snapshot = feed.snapshot ?? initialSnapshot;
-  const initialRuns = embedded ? chatSnapshot(initialSnapshot, coordinatorKey).runs : initialSnapshot.runs;
+  const initialRuns = splitArchived(embedded ? chatSnapshot(initialSnapshot, coordinatorKey).runs : initialSnapshot.runs).live;
   const [selectedId, setSelectedId] = useState<string | null>(initialRuns[0]?.id ?? null);
   const [disclosures, setDisclosures] = useState(() => initialRunDisclosures(initialRuns));
   const [creating, setCreating] = useState(initialRuns.length === 0 && !readOnly && allowManualRun);
@@ -119,16 +126,27 @@ export function OrchestrationPanel({
   const [error, setError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [confirmStop, setConfirmStop] = useState<string | null>(null);
+  /** A stop or archive that did not go through, said beside the control that
+   *  asked for it rather than at the top of a scrolled panel. */
+  const [runError, setRunError] = useState<{ runId: string; text: string } | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  // Each run's open tab lives here, not in its detail, so a ledger refresh or
+  // a collapse and re-open lands on the same tab.
+  const [runTabs, setRunTabs] = useState<Record<string, RunTab>>({});
+  const [attentionFocus, setAttentionFocus] = useState<{ runId: string; nonce: number } | null>(null);
 
   // After an action: the action itself succeeded, and a failed read shows
   // through the feed's error.
   const read = () => orchestrationFeed.refresh().catch(() => {});
+  const invoke = (command: string, args: Record<string, unknown>) => bridge.invoke(command, args);
   const shownError = error ?? feed.error;
 
-  const runs = useMemo(
+  const scopedRuns = useMemo(
     () => embedded ? chatSnapshot(snapshot, coordinatorKey).runs : snapshot.runs.filter((run) => !project || run.workspaceId === project.id),
     [snapshot, project, embedded, coordinatorKey],
   );
+  const { live: liveRuns, archived: archivedRuns } = useMemo(() => splitArchived(scopedRuns), [scopedRuns]);
+  const runs = showArchived ? archivedRuns : liveRuns;
   const accordionMode = embedded && !allowManualRun;
 
   useEffect(() => {
@@ -136,12 +154,21 @@ export function OrchestrationPanel({
     setCreating(false);
     setError(null);
     setConfirmStop(null);
+    setRunError(null);
+    setShowArchived(false);
+    setRunTabs({});
+    setAttentionFocus(null);
     setObjective("");
-    setDisclosures(initialRunDisclosures(runs));
+    setDisclosures(initialRunDisclosures(liveRuns));
     // Runs are intentionally omitted: this reset follows coordinator identity,
     // while the sync below handles ledger refreshes for the same coordinator.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coordinatorKey]);
+
+  // Restoring the last archived run leaves nothing to look at in that list.
+  useEffect(() => {
+    if (showArchived && archivedRuns.length === 0) setShowArchived(false);
+  }, [showArchived, archivedRuns.length]);
 
   useEffect(() => {
     if (creating && !readOnly && !(embedded && runs.some(isActiveRun))) return;
@@ -159,6 +186,10 @@ export function OrchestrationPanel({
   // Opening a historical worker from the sidebar selects its own run. Moving
   // back to the main chat keeps the run and task navigation in place.
   const workerRunId = snapshot.attempts.find((item) => item.workerChatKey === currentChatKey)?.runId;
+  const workerRunArchived = !!workerRunId && archivedRuns.some((run) => run.id === workerRunId);
+  useEffect(() => {
+    if (workerRunArchived) setShowArchived(true);
+  }, [workerRunArchived, currentChatKey]);
   const visibleWorkerRunId = runs.some((run) => run.id === workerRunId) ? workerRunId : null;
   useEffect(() => {
     setDisclosures((before) => syncRunDisclosures(before, runs, visibleWorkerRunId));
@@ -244,24 +275,65 @@ export function OrchestrationPanel({
     } finally { setBusy(false); }
   };
 
-  const stopRun = async (run: OrchestrationRun) => {
+  const stop = async (run: OrchestrationRun, archive: boolean) => {
     if (readOnly) return;
     setBusy(true);
-    setError(null);
+    setRunError(null);
+    const outcome = await stopRun(invoke, run, archive);
+    // A stop that landed closes the question even when the archive after it
+    // failed: asking again would offer to stop a stopped run.
+    if (outcome.ok || outcome.stopped) setConfirmStop(null);
+    if (!outcome.ok) setRunError({ runId: run.id, text: outcome.error });
+    await read();
+    setBusy(false);
+  };
+
+  const archiveRun = async (run: OrchestrationRun, archived: boolean) => {
+    if (readOnly) return;
+    setBusy(true);
+    setRunError(null);
     try {
-      await bridge.invoke("orchestration_run_stop", {
-        actorChatKey: run.coordinatorChatKey,
-        runId: run.id,
-        reason: "Stopped by the person from the Orchestrator panel.",
-      });
+      await setRunArchived(invoke, run, archived);
       setConfirmStop(null);
       await read();
     } catch (problem) {
-      setError(messageOf(problem));
+      setRunError({ runId: run.id, text: `${archived ? "Could not archive" : "Could not restore"} this run: ${messageOf(problem)}` });
     } finally {
       setBusy(false);
     }
   };
+
+  const setRunTab = (runId: string, tab: RunTab) => setRunTabs((before) => before[runId] === tab ? before : { ...before, [runId]: tab });
+
+  /** A collapsed run's attention count opens it on Tasks and puts focus on
+   *  the first thing owed: the decision, the plan, or the stuck task. */
+  const showAttention = (run: OrchestrationRun) => {
+    setSelectedId(run.id);
+    setCreating(false);
+    setRunTab(run.id, "tasks");
+    setDisclosures((before) => before.expanded.has(run.id) ? before : toggleRunDisclosure(before, run.id));
+    setAttentionFocus({ runId: run.id, nonce: Date.now() });
+  };
+
+  const mainKey = scopedRuns.length ? mainChatTarget(runs, selectedId, coordinatorKey) : null;
+  const openMain = () => {
+    if (!mainKey) return;
+    try { onOpenChat(mainKey); } catch (problem) { setError(messageOf(problem)); }
+  };
+  const toolbar = embedded && (mainKey || archivedRuns.length > 0) ? <div className="orch-toolbar" role="toolbar" aria-label="Run panel">
+    {mainKey && <button type="button" className="orch-tool" onClick={openMain}
+      aria-current={currentChatKey === mainKey ? "page" : undefined}
+      aria-label={`Main agent chat${pendingApprovals ? `, ${pendingApprovals} ${pendingApprovals === 1 ? "approval" : "approvals"} waiting` : ""}`}
+      title="Open the main agent's chat for this run">
+      <ChatIcon /><span>Main agent chat</span>
+      {pendingApprovals > 0 && <span className="orch-tool-count" aria-hidden="true">{pendingApprovals}</span>}
+    </button>}
+    {archivedRuns.length > 0 && <button type="button" className="orch-tool is-quiet" aria-pressed={showArchived}
+      title={showArchived ? "Back to the runs in progress" : "Show archived runs; they can be restored"}
+      onClick={() => { setShowArchived(!showArchived); setSelectedId(null); setConfirmStop(null); setRunError(null); }}>
+      <ArchiveIcon /><span>Archived</span><span className="orch-tool-count is-quiet">{archivedRuns.length}</span>
+    </button>}
+  </div> : null;
 
   const newRunButton = allowManualRun ? (
     <button
@@ -269,12 +341,14 @@ export function OrchestrationPanel({
       type="button"
       disabled={readOnly || busy || (embedded && runs.some(isActiveRun))}
       title={embedded && runs.some(isActiveRun) ? "Finish or stop the active run first" : undefined}
-      onClick={() => { setCreating(true); setConfirmStop(null); }}
+      onClick={() => { setCreating(true); setConfirmStop(null); setShowArchived(false); }}
     >
       <PlusIcon />
       {embedded ? "New run" : "Start a run"}
     </button>
   ) : null;
+
+  const showNav = !accordionMode && (!embedded || runs.length > 1 || (creating && runs.length > 0) || (allowManualRun && runs.length > 0));
 
   const runDetail = (run: OrchestrationRun) => {
     const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
@@ -294,6 +368,13 @@ export function OrchestrationPanel({
       busy={busy}
       readOnly={readOnly}
       confirmStop={confirmStop === run.id}
+      runError={runError?.runId === run.id ? runError.text : null}
+      tab={runTabs[run.id] ?? "tasks"}
+      onTab={(tab) => setRunTab(run.id, tab)}
+      attentionFocus={attentionFocus?.runId === run.id ? attentionFocus.nonce : 0}
+      inAccordion={accordionMode}
+      onShowAttention={() => showAttention(run)}
+      onArchive={(archived) => void archiveRun(run, archived)}
       onAnswer={(gateId, answer) => setAnswers((current) => ({ ...current, [gateId]: answer }))}
       onResolve={(gate, answer) => void resolveGate(run, gate, answer)}
       onRetry={(task, attempt) => void retryTask(run, task, attempt)}
@@ -310,9 +391,9 @@ export function OrchestrationPanel({
           `Before I approve the plan for run ${run.id}, change this:\n\n${note}\n\nRevise the tasks through the orchestration tools and ask for approval again.`);
         onClose();
       }}
-      onAskStop={() => setConfirmStop(run.id)}
+      onAskStop={() => { setConfirmStop(run.id); setRunError(null); }}
       onCancelStop={() => setConfirmStop(null)}
-      onStop={() => void stopRun(run)}
+      onStop={(archive) => void stop(run, archive)}
       onStartMaster={onStartMaster ? async () => {
         setBusy(true); setError(null);
         try { await onStartMaster(run); }
@@ -341,7 +422,7 @@ export function OrchestrationPanel({
         <div className="orch-layout">
           {/* One run needs no picker — and inside a chat that is the normal
               case, where the strip was costing a row above the fold. */}
-          {!accordionMode && (!embedded || runs.length > 1 || (creating && runs.length > 0) || (allowManualRun && runs.length > 0)) && <nav className="orch-runs" aria-label="Orchestration runs">
+          {showNav && <nav className="orch-runs" aria-label="Orchestration runs">
             {newRunButton}
             <div className="orch-run-list">
               {runs.map((run) => {
@@ -353,7 +434,8 @@ export function OrchestrationPanel({
                     className={`orch-run-pick${!creating && selectedId === run.id ? " is-on" : ""}`}
                     type="button"
                     key={run.id}
-                    onClick={() => { setSelectedId(run.id); setCreating(false); setConfirmStop(null); }}
+                    // A different run starts on its Tasks tab.
+                    onClick={() => { setSelectedId(run.id); setCreating(false); setConfirmStop(null); setRunError(null); setRunTabs({}); }}
                   >
                     <StatusMark status={run.status} />
                     <span className="orch-run-copy">
@@ -367,38 +449,45 @@ export function OrchestrationPanel({
                 );
               })}
             </div>
+            {toolbar}
             {!embedded && <p className="orch-runs-note">The host owns task state. Agents report into it.</p>}
           </nav>}
+          {/* Outside every run's disclosure and outside the scroller, so the
+              way to the main chat is there with every run collapsed. */}
+          {!showNav && toolbar}
 
           <div className="orch-content">
             {shownError && <div className="orch-error" role="alert">{shownError}</div>}
             {readOnly && <p className="orch-empty">This agent chat is read-only. Send instructions and decisions in the main chat.</p>}
             {accordionMode ? (
-              runs.length ? <div className="orch-run-accordions" aria-label="Goals">
+              runs.length ? <div className="orch-run-accordions" aria-label={showArchived ? "Archived goals" : "Goals"}>
                 {runs.map((run) => {
                   const runTasks = snapshot.tasks.filter((task) => task.runId === run.id);
-                  const done = runTasks.filter((task) => task.status === "completed").length;
-                  const openGates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open").length;
-                  const approval = run.planApproval?.status === "pending";
+                  const runAttempts = snapshot.attempts.filter((attempt) => attempt.runId === run.id);
+                  const attention = runAttention(run, runTasks, runAttempts, snapshot.gates);
+                  const planPending = run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
                   const expanded = disclosures.expanded.has(run.id);
                   const bodyId = `orch-goal-${run.id}`;
                   return <section className={`orch-run-accordion${expanded ? " is-open" : ""}`} key={run.id}>
-                    <button type="button" className="orch-run-accordion-toggle" aria-expanded={expanded} aria-controls={bodyId}
-                      onClick={() => {
-                        setSelectedId(run.id);
-                        setConfirmStop(null);
-                        setDisclosures((before) => toggleRunDisclosure(before, run.id));
-                      }}>
-                      <StatusMark status={run.status} />
-                      <span className="orch-run-accordion-copy">
-                        <strong>{run.objective}</strong>
-                        <small>{done}/{runTasks.length} tasks · {statusLabel(run.status)}</small>
-                      </span>
-                      {(approval || openGates > 0) && <span className="orch-run-accordion-attention">
-                        {approval ? "Approval needed" : `${openGates} ${openGates === 1 ? "decision" : "decisions"} waiting`}
-                      </span>}
-                      <ChevronIcon open={expanded} />
-                    </button>
+                    <div className="orch-run-accordion-head">
+                      <button type="button" className="orch-run-accordion-toggle" aria-expanded={expanded} aria-controls={bodyId}
+                        onClick={() => {
+                          setSelectedId(run.id);
+                          setConfirmStop(null);
+                          setDisclosures((before) => toggleRunDisclosure(before, run.id));
+                        }}>
+                        <ChevronIcon open={expanded} />
+                        <StatusMark status={run.status} />
+                        <span className="orch-run-accordion-copy">
+                          <strong>{run.objective}</strong>
+                          <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts} />
+                        </span>
+                      </button>
+                      {run.archivedAt != null
+                        ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy}
+                          onClick={() => void archiveRun(run, false)}>Restore</button>
+                        : <AttentionButton attention={attention} planPending={planPending} onShow={() => showAttention(run)} />}
+                    </div>
                     <div className="orch-run-accordion-body" id={bodyId} hidden={!expanded}>
                       {expanded && runDetail(run)}
                     </div>
@@ -532,6 +621,13 @@ const TASK_FILTERS: { key: TaskFilter; label: string; match: (task: Orchestratio
  *  appears once the list is long enough to need one. */
 const FILTERS_WORTH_SHOWING = 4;
 
+const TAB_LABELS: Record<RunTab, string> = { tasks: "Tasks", notifications: "Notifications", log: "Coordination log" };
+
+/** How much of each history the tabs keep on screen. The ledger keeps more
+ *  for a live run and prunes a finished one to its latest six messages. */
+const NOTIFICATIONS_SHOWN = 20;
+const MESSAGES_SHOWN = 20;
+
 function RunDetail({
   run,
   snapshot,
@@ -544,6 +640,13 @@ function RunDetail({
   busy,
   readOnly,
   confirmStop,
+  runError,
+  tab,
+  onTab,
+  attentionFocus,
+  inAccordion,
+  onShowAttention,
+  onArchive,
   onAnswer,
   onResolve,
   onRetry,
@@ -572,6 +675,15 @@ function RunDetail({
   busy: boolean;
   readOnly: boolean;
   confirmStop: boolean;
+  runError: string | null;
+  tab: RunTab;
+  onTab: (tab: RunTab) => void;
+  /** Changes each time the person asks to be shown what this run owes. */
+  attentionFocus: number;
+  /** The goal's own header already carries its line and attention count. */
+  inAccordion: boolean;
+  onShowAttention: () => void;
+  onArchive: (archived: boolean) => void;
   onAnswer: (gateId: string, answer: string) => void;
   onResolve: (gate: OrchestrationGate, answer: string) => void;
   onRetry: (task: OrchestrationTask, attempt: OrchestrationAttempt) => void;
@@ -580,7 +692,7 @@ function RunDetail({
   currentChatKey: string | null;
   onAskStop: () => void;
   onCancelStop: () => void;
-  onStop: () => void;
+  onStop: (archive: boolean) => void;
   onStartMaster?: () => Promise<void>;
   coordinatorBusy: boolean;
   projectName?: (id: string) => string | undefined;
@@ -591,33 +703,29 @@ function RunDetail({
 }) {
   const [filter, setFilter] = useState<TaskFilter>("all");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const settingsId = useId();
-  const settingsToggle = <button type="button" className={`orch-settings-toggle${compactControls ? " is-compact" : ""}`} aria-expanded={settingsOpen} aria-controls={settingsId}
-    aria-label={compactControls ? "Run options" : "Run settings"} title={settingsOpen ? "Hide run options" : "Run options and controls"}
-    onClick={() => setSettingsOpen(!settingsOpen)}>
-    {compactControls ? <MoreIcon /> : <SettingsIcon />}{!compactControls && <span>Settings</span>}
-  </button>;
+  const tabsId = useId();
+  const detailRef = useRef<HTMLElement>(null);
+  const tabRefs = useRef<Partial<Record<RunTab, HTMLButtonElement | null>>>({});
+  const archived = run.archivedAt != null;
   // Plan mode: until the person approves, the plan IS the run.
   const planPending = !readOnly && run.planApproval?.status === "pending" && ACTIVE_RUNS.has(run.status);
   const now = useElapsedTick(runIsLive(snapshot, run.id));
   const openGates = gates.filter((gate) => gate.status === "open");
   const gateBlockedTasks = new Set(openGates.flatMap((gate) => gate.taskId ? [gate.taskId] : []));
-  const counts = boardCounts(tasks, snapshot);
-  const working = attempts.filter(attemptIsExecuting).length;
-  // A task blocked BY a decision is already named by the decision chip. Saying
-  // it twice reads as two problems when there is one.
-  const attention = tasks.filter((task) => (task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempts.find((a) => a.id === task.activeAttemptId))) && !gateBlockedTasks.has(task.id)).length;
+  const attention = runAttention(run, tasks, attempts, gates);
   const taskNames = new Map(tasks.map((task) => [task.id, task.title]));
   const archiveSnapshot = { runs: [run], tasks, attempts, gates, messages };
   const archivable = attempts.filter((attempt) => attempt.archivedAt == null && !workerArchiveDisabledReason(archiveSnapshot, attempt));
   const archiveControl = (attempt: OrchestrationAttempt) => {
     if (readOnly) return null;
-    const archived = attempt.archivedAt != null;
-    const reason = archived ? null : workerArchiveDisabledReason(archiveSnapshot, attempt);
+    const archivedWorker = attempt.archivedAt != null;
+    const reason = archivedWorker ? null : workerArchiveDisabledReason(archiveSnapshot, attempt);
     return <button type="button" disabled={busy || !!reason}
-      title={reason ?? (archived ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept.")}
-      onClick={() => onWorkspaceAction("orchestration_worker_archive", { attemptId: attempt.id, archived: !archived })}>
-      {archived ? "Restore worker" : "Archive worker"}
+      title={reason ?? (archivedWorker ? "Return this worker to the chat list." : "Hide this worker; its chat and task history are kept.")}
+      onClick={() => onWorkspaceAction("orchestration_worker_archive", { attemptId: attempt.id, archived: !archivedWorker })}>
+      {archivedWorker ? "Restore worker" : "Archive worker"}
     </button>;
   };
   const active = TASK_FILTERS.find((option) => option.key === filter) ?? TASK_FILTERS[0];
@@ -625,21 +733,78 @@ function RunDetail({
     tasks.filter((task) => active.match(task, attempts.find((attempt) => attempt.id === task.activeAttemptId))),
     attempts,
   );
+  const awaitingReceipt = notifications.filter((item) => item.state === "pending" || item.state === "delivering").length;
+
+  // Asked to show what is owed: every task, and focus on the first owed thing
+  // — a decision, the plan, or a stuck row — so a keyboard lands on it too.
+  useEffect(() => {
+    if (!attentionFocus) return;
+    setFilter("all");
+    const frame = requestAnimationFrame(() => {
+      const target = detailRef.current?.querySelector<HTMLElement>("[data-attention]");
+      target?.scrollIntoView?.({ block: "nearest" });
+      target?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [attentionFocus]);
+
+  // Opening Stop puts focus on its safe answer; Escape is Cancel.
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirmStop) { setSettingsOpen(true); requestAnimationFrame(() => cancelRef.current?.focus()); }
+  }, [confirmStop]);
+
+  const onTabKey = (event: KeyboardEvent<HTMLDivElement>) => {
+    const next = nextRunTab(tab, event.key);
+    if (!next) return;
+    event.preventDefault();
+    onTab(next);
+    tabRefs.current[next]?.focus();
+  };
+
+  const tabCount: Record<RunTab, ReactNode> = {
+    tasks: tasks.length ? <span className="orch-tab-count">{tasks.length}</span> : null,
+    notifications: notifications.length ? <span className="orch-tab-count" data-tone={awaitingReceipt ? "pending" : undefined}>{notifications.length}</span> : null,
+    log: messages.length ? <span className="orch-tab-count">{messages.length}</span> : null,
+  };
+  const tabLabel: Record<RunTab, string> = {
+    tasks: `Tasks, ${tasks.length}`,
+    notifications: `Notifications, ${notifications.length}${awaitingReceipt ? `, ${awaitingReceipt} awaiting receipt` : ""}`,
+    log: `Coordination log, ${messages.length} ${messages.length === 1 ? "message" : "messages"}`,
+  };
+
+  const settingsToggle = <button type="button" className={`orch-settings-toggle${compactControls ? " is-compact" : ""}`} aria-expanded={settingsOpen} aria-controls={settingsId}
+    aria-label={compactControls ? "Run options" : "Run settings"} title={settingsOpen ? "Hide run options" : "Run options and controls"}
+    onClick={() => { if (settingsOpen) onCancelStop(); setSettingsOpen(!settingsOpen); setConfirmArchive(false); }}>
+    {compactControls ? <MoreIcon /> : <SettingsIcon />}{!compactControls && <span>Settings</span>}
+  </button>;
 
   return (
-    <section className="orch-run-detail" aria-label={sharedHeading ? run.objective : undefined} aria-labelledby={sharedHeading ? undefined : "orch-run-title"}>
+    <section ref={detailRef} className="orch-run-detail" aria-label={sharedHeading ? run.objective : undefined} aria-labelledby={sharedHeading ? undefined : "orch-run-title"}>
       {!sharedHeading && <header className="orch-run-head">
         <div className="orch-status-line"><StatusMark status={run.status} />{statusLabel(run.status)}</div>
         <h2 id="orch-run-title">{run.objective}</h2>
       </header>}
 
+      {/* Without a goal header, the run's one line of state lives here. */}
+      {!inAccordion && <div className="orch-summary">
+        <RunLine snapshot={snapshot} run={run} tasks={tasks} attempts={attempts} />
+        {archived
+          ? !readOnly && <button type="button" className="orch-run-restore" disabled={busy} onClick={() => onArchive(false)}>Restore</button>
+          : <AttentionButton attention={attention} planPending={planPending} onShow={onShowAttention} />}
+      </div>}
+
+      {/* Owed to the person, so above every tab: switching tabs never hides a
+          decision or a plan waiting for approval. */}
       {planPending && (
-        <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} projectName={projectName} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
+        <div className="orch-attention-target" data-attention tabIndex={-1}>
+          <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} projectName={projectName} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
+        </div>
       )}
 
       {openGates.length > 0 && (
-        <section className="orch-decisions" aria-labelledby="orch-decisions-title">
-          <h3 id="orch-decisions-title">Needs you</h3>
+        <section className="orch-decisions" aria-labelledby={`${tabsId}-decisions`} data-attention tabIndex={-1}>
+          <h3 id={`${tabsId}-decisions`}>Needs you</h3>
           {openGates.map((gate) => (
             <article className="orch-gate" key={gate.id}>
               <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This run"}</p>
@@ -665,13 +830,18 @@ function RunDetail({
         </section>
       )}
 
-      {/* Status in one dense band, and the run's configuration one click
-          behind it: the folder, the limits and the controls that change them
-          are looked at once a run, and were costing every glance a section. */}
-      {!planPending && tasks.length > 0
-        ? <RunProgress run={run} tasks={tasks} counts={counts} working={working} attention={attention}
-          decisions={openGates.length} elapsed={runElapsed(snapshot, run.id, now)} action={settingsToggle} />
-        : <div className="orch-summary">{settingsToggle}</div>}
+      <div className="orch-tabs-row">
+        <div className="orch-tabs" role="tablist" aria-label="Run details" onKeyDown={onTabKey}>
+          {RUN_TABS.map((key) => <button key={key} type="button" role="tab" id={`${tabsId}-${key}`}
+            ref={(node) => { tabRefs.current[key] = node; }}
+            aria-selected={tab === key} aria-controls={`${tabsId}-${key}-panel`} tabIndex={tab === key ? 0 : -1}
+            aria-label={tabLabel[key]} onClick={() => onTab(key)}>
+            <span>{key === "log" ? <><span className="orch-tab-long">Coordination log</span><span className="orch-tab-short" aria-hidden="true">Log</span></> : TAB_LABELS[key]}</span>
+            {tabCount[key]}
+          </button>)}
+        </div>
+        {settingsToggle}
+      </div>
 
       <div className={`orch-run-settings${compactControls ? " is-compact" : ""}`} id={settingsId} role="region" aria-label={compactControls ? "Run options" : "Run settings"} hidden={!settingsOpen}>
         <div className="orch-run-settings-body">
@@ -684,39 +854,54 @@ function RunDetail({
             <dt>Acceptance</dt><dd title={ACCEPTANCE_NOTE}>Unverified</dd>
           </dl>}
           <div className="orch-run-actions">
-            {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
-            {!readOnly && run.status === "completed" && archivable.length > 0 && <button className="orch-quiet" type="button" disabled={busy}
+            {onStartMaster && !readOnly && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy} onClick={() => void onStartMaster()}>Continue main agent</button>}
+            {!readOnly && run.status === "completed" && archivable.length > 0 && !confirmStop && <button className="orch-quiet" type="button" disabled={busy}
               title="Hide merged workers from the chat list. Chats, reports, and workspaces are kept."
               onClick={() => onWorkspaceAction("orchestration_workers_archive_merged", { runId: run.id })}>Archive all merged workers ({archivable.length})</button>}
-            {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
+            {!readOnly && !run.workerDefaults && ACTIVE_RUNS.has(run.status) && !confirmStop && <button className="orch-quiet" type="button" disabled={busy}
               onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id,
                 workerDefaults: { access: "auto" } })}>Enable automatic dispatch</button>}
-            {!readOnly && run.workerDefaults && ACTIVE_RUNS.has(run.status) && <button className="orch-quiet" type="button" disabled={busy}
-              onClick={() => onWorkspaceAction("orchestration_automation_configure", { runId: run.id, workerDefaults: null })}>Pause automatic dispatch</button>}
             {!readOnly && ACTIVE_RUNS.has(run.status) && (
               confirmStop ? (
-                <div className="orch-stop-confirm">
-                  <span>Stop workers and cancel open tasks?</span>
-                  <button type="button" onClick={onCancelStop}>Keep running</button>
-                  <button className="is-danger" type="button" disabled={busy} onClick={onStop}>Stop run</button>
+                <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-stop`}
+                  onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onCancelStop(); } }}>
+                  <p id={`${tabsId}-stop`}>Stop this run? Workers stop and open tasks are cancelled. Archiving also hides it; its history and worktrees are kept.</p>
+                  <button ref={cancelRef} type="button" disabled={busy} onClick={onCancelStop}>Cancel</button>
+                  <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(false)}>Stop</button>
+                  <button className="is-danger" type="button" disabled={busy} onClick={() => onStop(true)}>Stop and archive</button>
                 </div>
               ) : (
-                <button className="orch-quiet" type="button" onClick={onAskStop}>Stop run</button>
+                <button className="orch-quiet" type="button" disabled={busy} onClick={onAskStop}>Stop</button>
               )
             )}
+            {!readOnly && !archived && !ACTIVE_RUNS.has(run.status) && (
+              confirmArchive ? (
+                <div className="orch-stop-confirm" role="group" aria-labelledby={`${tabsId}-archive`}
+                  onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setConfirmArchive(false); } }}>
+                  <p id={`${tabsId}-archive`}>Archive this run? It leaves the list; its history and worktrees are kept, and it can be restored.</p>
+                  <button type="button" disabled={busy} autoFocus onClick={() => setConfirmArchive(false)}>Cancel</button>
+                  <button type="button" disabled={busy} onClick={() => { setConfirmArchive(false); onArchive(true); }}>Archive</button>
+                </div>
+              ) : (
+                <button className="orch-quiet" type="button" disabled={busy} onClick={() => setConfirmArchive(true)}>Archive run</button>
+              )
+            )}
+            {!readOnly && archived && <button className="orch-quiet" type="button" disabled={busy} onClick={() => onArchive(false)}>Restore run</button>}
           </div>
+          {runError && <p className="orch-run-error" role="alert">{runError}</p>}
         </div>
       </div>
+      {/* A failure after the options were put away still has to be seen. */}
+      {runError && !settingsOpen && <p className="orch-run-error" role="alert">{runError}</p>}
 
-      {!planPending && <section className="orch-tasks" aria-labelledby="orch-tasks-title">
-        <div className="orch-section-head">
-          <h3 id="orch-tasks-title">Tasks</h3>
-          {tasks.length > FILTERS_WORTH_SHOWING && <div className="orch-task-filters" role="group" aria-label="Filter tasks">
-            {TASK_FILTERS.map((option) => <button key={option.key} type="button" className={option.key === filter ? "is-on" : ""}
-              aria-pressed={option.key === filter} onClick={() => setFilter(option.key)}>{option.label}</button>)}
-          </div>}
-        </div>
-        {tasks.length === 0 ? (
+      <div className="orch-tab-panel" role="tabpanel" id={`${tabsId}-tasks-panel`} aria-labelledby={`${tabsId}-tasks`} hidden={tab !== "tasks"}>
+        {tasks.length > FILTERS_WORTH_SHOWING && !planPending && <div className="orch-task-filters" role="group" aria-label="Filter tasks">
+          {TASK_FILTERS.map((option) => <button key={option.key} type="button" className={option.key === filter ? "is-on" : ""}
+            aria-pressed={option.key === filter} onClick={() => setFilter(option.key)}>{option.label}</button>)}
+        </div>}
+        {planPending ? (
+          <p className="orch-task-none">The tasks start once the plan above is approved.</p>
+        ) : tasks.length === 0 ? (
           <div className="orch-planning"><span className="orch-pulse" />The main agent is planning the tasks.</div>
         ) : visible.length === 0 ? (
           <p className="orch-task-none">Nothing is {active.label.toLowerCase()} right now.</p>
@@ -727,80 +912,78 @@ function RunDetail({
             open={!!currentChatKey && attempts.some((attempt) => attempt.taskId === task.id && attempt.workerChatKey === currentChatKey)}
             projectName={projectName} />
         ))}
-      </section>}
+      </div>
 
-      {notifications.length > 0 && <details className="orch-notifications">
-        <summary>Notifications · {notifications.filter((item) => item.state === "pending" || item.state === "delivering").length} awaiting receipt</summary>
-        <p>Delivery waits while the main agent is busy or user messages are queued. Receipt confirms delivery, not completion of the requested action.</p>
-        {[...notifications].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 12).map((item) => <article key={item.id}>
-          <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : "Agent message"}</strong>
-          <span>{({ pending: "Queued", delivering: "Awaiting receipt", acknowledged: "Received by agent", cancelled: "No longer needed" })[item.state]}</span>
-          {["capacity", "provider", "disconnected", "stalled"].includes(item.kind) && <p>{item.body}</p>}
-          {item.coalesced > 0 && <small>{item.coalesced + 1} updates combined</small>}
-          {item.lastError && (item.state === "pending" || item.state === "delivering") && <p className="orch-workspace-warning">{item.lastError} Delivery will retry automatically.</p>}
-        </article>)}
-      </details>}
+      <div className="orch-tab-panel orch-notifications" role="tabpanel" id={`${tabsId}-notifications-panel`} aria-labelledby={`${tabsId}-notifications`} hidden={tab !== "notifications"}>
+        {notifications.length === 0 ? <p className="orch-task-none">No notifications for this run.</p> : <>
+          <p>{awaitingReceipt} awaiting receipt. Delivery waits while the main agent is busy or user messages are queued. Receipt confirms delivery, not completion of the requested action.</p>
+          {[...notifications].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, NOTIFICATIONS_SHOWN).map((item) => <article key={item.id}>
+            <strong>{item.kind === "progress" ? "Progress update" : item.kind === "decision" ? "Decision needed" : item.kind === "report" ? "Worker report" : item.kind === "resolution" ? "Decision reply" : item.kind === "capacity" ? "Capacity error" : item.kind === "disconnected" ? "Worker disconnected" : item.kind === "stalled" ? "Worker stalled" : item.kind === "provider" ? "Provider error" : "Agent message"}</strong>
+            <span>{({ pending: "Queued", delivering: "Awaiting receipt", acknowledged: "Received by agent", cancelled: "No longer needed" })[item.state]}</span>
+            {["capacity", "provider", "disconnected", "stalled"].includes(item.kind) && <p>{item.body}</p>}
+            {item.coalesced > 0 && <small>{item.coalesced + 1} updates combined</small>}
+            {item.lastError && (item.state === "pending" || item.state === "delivering") && <p className="orch-workspace-warning">{item.lastError} Delivery will retry automatically.</p>}
+          </article>)}
+        </>}
+      </div>
 
-      {messages.length > 0 && (
-        <details className="orch-messages">
-          <summary>Coordination log · latest {Math.min(messages.length, 6)}</summary>
-          {messages.slice(-6).reverse().map((message) => (
+      <div className="orch-tab-panel orch-messages" role="tabpanel" id={`${tabsId}-log-panel`} aria-labelledby={`${tabsId}-log`} hidden={tab !== "log"}>
+        {messages.length === 0 ? <p className="orch-task-none">No coordination messages yet.</p>
+          : messages.slice(-MESSAGES_SHOWN).reverse().map((message) => (
             <article key={message.id}>
               <div><strong>{message.subject}</strong><span>{message.kind} · {timeLabel(message.createdAt)}</span></div>
               <p>{message.body}</p>
             </article>
           ))}
-        </details>
-      )}
+      </div>
     </section>
   );
 }
 
-/** The whole run in three lines: how many are done, the shape of the rest, and
- *  the states that still owe something. A count of zero is left out rather
- *  than printed — four tiles reading 0 is how the old screen managed to fill
- *  a phone while saying nothing. */
-function RunProgress({ run, tasks, counts, working, attention, decisions, elapsed, action }: {
+/** The whole run in one line: done of total, its state, what is still owed
+ *  besides a decision, and how long. A count of zero is left out rather than
+ *  printed — four tiles reading 0 is how the old screen managed to fill a
+ *  phone while saying nothing. Nothing here is a percentage: done of total is
+ *  what the ledger knows. */
+function RunLine({ snapshot, run, tasks, attempts }: {
+  snapshot: OrchestrationSnapshot;
   run: OrchestrationRun;
   tasks: OrchestrationTask[];
-  counts: ReturnType<typeof boardCounts>;
-  working: number;
-  attention: number;
-  decisions: number;
-  elapsed: number | null;
-  /** Ends the first line, so the meter under it keeps the column's width. */
-  action?: ReactNode;
+  attempts: OrchestrationAttempt[];
 }) {
-  if (!tasks.length) return null;
-  const chips = [
-    working > 0 ? { key: "working", tone: "working", label: `${working} of ${run.maxConcurrent} working` } : null,
-    decisions > 0 ? { key: "decisions", tone: "decision", label: `${decisions} ${decisions === 1 ? "decision" : "decisions"} waiting` } : null,
-    attention > 0 ? { key: "blocked", tone: "blocked", label: `${attention} ${attention === 1 ? "needs" : "need"} attention` } : null,
-    counts.todo > 0 ? { key: "todo", tone: "quiet", label: `${counts.todo} queued` } : null,
-    counts.cancelled > 0 ? { key: "cancelled", tone: "quiet", label: `${counts.cancelled} cancelled` } : null,
-  ].filter((chip): chip is { key: string; tone: string; label: string } => chip !== null);
-
-  // Every task done reads as "finished", which is exactly when it needs saying
-  // that nothing checked the outcome. Before that, it waits in Settings.
+  const now = useElapsedTick(runIsLive(snapshot, run.id));
+  const counts = boardCounts(tasks, snapshot);
+  const working = attempts.filter(attemptIsExecuting).length;
+  const elapsed = runElapsed(snapshot, run.id, now);
   const settled = counts.total > 0 && counts.done === counts.total;
-  return (
-    <div className="orch-progress" role="group" aria-label="Tasks completed">
-      <div className="orch-progress-head">
-        <strong><RollingNumber value={counts.done} /><span> / {counts.total} tasks</span></strong>
-        <span className="orch-progress-percent"><RollingNumber value={counts.percent} />%</span>
-        {elapsed !== null && <span className="orch-progress-elapsed"
-          title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
-        {action}
-      </div>
-      <TaskMeter tasks={tasks} done={counts.done} />
-      {(chips.length > 0 || settled) && <div className="orch-progress-foot">
-        {chips.length > 0 && <span className="orch-progress-chips">
-          {chips.map((chip) => <span className="orch-chip" data-tone={chip.tone} key={chip.key}>{chip.label}</span>)}
-        </span>}
-        {settled && <span className="orch-progress-acceptance" title={ACCEPTANCE_NOTE}>Acceptance: unverified</span>}
-      </div>}
-    </div>
-  );
+  const parts = [
+    `${counts.done}/${counts.total} tasks`,
+    run.archivedAt != null ? `${statusLabel(run.status)} · archived` : statusLabel(run.status),
+    working > 0 ? `${working} of ${run.maxConcurrent} working` : null,
+    counts.todo > 0 ? `${counts.todo} queued` : null,
+    counts.cancelled > 0 ? `${counts.cancelled} cancelled` : null,
+  ].filter(Boolean);
+  return <small className="orch-run-line">
+    <span>{parts.join(" · ")}</span>
+    {elapsed !== null && <span className="orch-run-elapsed" title="Wall time from the first dispatch to the latest settlement. Overlapping workers are counted once."><ClockIcon />{elapsedLabel(elapsed)}</span>}
+    {/* Every task done reads as "finished", which is exactly when it needs
+        saying that nothing checked the outcome. */}
+    {settled && <span className="orch-progress-acceptance" title={ACCEPTANCE_NOTE}>Acceptance: unverified</span>}
+  </small>;
+}
+
+/** The one count of what a run owes, and the way to it. */
+function AttentionButton({ attention, planPending, onShow }: { attention: RunAttention; planPending: boolean; onShow: () => void }) {
+  const label = attentionLabel(attention, planPending);
+  if (!label) return null;
+  const parts = [
+    attention.decisions ? `${attention.decisions} ${attention.decisions === 1 ? "decision" : "decisions"} waiting` : null,
+    attention.blocked ? `${attention.blocked} ${attention.blocked === 1 ? "task needs" : "tasks need"} attention` : null,
+  ].filter(Boolean).join(", ");
+  return <button type="button" className="orch-attention" data-tone={attention.decisions ? "decision" : "blocked"}
+    aria-label={`${parts}. Show`} title={`${parts}. Show`} onClick={onShow}>
+    <AlertIcon />{label}
+  </button>;
 }
 
 const ACCEPTANCE_NOTE = "OctiqFlow does not yet track acceptance results. Review the test evidence separately.";
@@ -845,11 +1028,14 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
     && ["blocked", "failed"].includes(task.status)
     && ["blocked", "failed"].includes(attempt.status)
     && !gateBlockedTasks.has(task.id);
+  // What the run's attention count pointed at; a decision names its own task.
+  const owed = !gateBlockedTasks.has(task.id)
+    && (task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt));
 
   return (
     <article className={`orch-task is-${task.status}${open ? " is-open" : ""}`} data-status={task.status}>
       <div className="orch-task-heading">
-        <button type="button" className="orch-task-summary" disabled={!attempt}
+        <button type="button" className="orch-task-summary" disabled={!attempt} data-attention={owed || undefined}
           aria-current={open ? "page" : undefined}
           aria-label={`Open task chat: ${task.title}`}
           title={attempt ? `Open task chat: ${task.title}` : "No worker chat yet"}
@@ -1036,5 +1222,17 @@ function MoreIcon() {
 }
 
 function ChevronIcon({ open }: { open: boolean }) {
-  return <svg className="orch-run-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={open ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>;
+  return <svg className="orch-run-accordion-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={open ? "m6 9 6 6 6-6" : "m9 6 6 6-6 6"} /></svg>;
+}
+
+function ChatIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 14a3 3 0 0 1-3 3H9l-5 4V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3z" /></svg>;
+}
+
+function ArchiveIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1" /><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4" /></svg>;
+}
+
+function AlertIcon() {
+  return <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 7v6" /><circle cx="12" cy="17" r=".9" /></svg>;
 }

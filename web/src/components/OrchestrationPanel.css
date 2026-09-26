@@ -406,55 +406,115 @@
   gap: 7px;
 }
 
-.orch-stop-confirm span {
+.orch-stop-confirm p {
   width: 100%;
-  color: var(--fg-2);
-  font-size: 11px;
-  text-align: right;
+  margin: 0;
+  color: var(--fg-1);
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 
 .orch-stop-confirm button.is-danger { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); color: var(--danger); }
 
-/* The run's state in one band: done of total, what is still owed, how long,
-   and the meter under it. Settings sits at its end, shut. */
-.orch-summary { display: flex; justify-content: flex-end; margin: 0 0 8px; }
-.orch-progress { --meter-height: 4px; margin: 0 0 12px; }
-.orch-progress-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 8px; }
+/* The run's state in one line: done of total, its state, what is still owed
+   and how long. No percentage and no bar — done of total is what the ledger
+   knows, and a full-width meter was saying it a third time. */
+.orch-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; }
+.orch-summary > .orch-run-line { flex: 1 1 auto; }
+.orch-run-line {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; min-width: 0;
+  color: var(--fg-3); font-size: 11px; font-variant-numeric: tabular-nums; line-height: 1.45;
+}
+.orch-run-elapsed { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .orch-progress-acceptance { color: var(--fg-2); font-size: 11px; }
 
-.orch-progress-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  min-height: 26px;
-  margin-bottom: 7px;
-  color: var(--fg-0);
-  font-variant-numeric: tabular-nums;
+/* The one count of what a run owes. It is a button: it opens the run on the
+   thing owed. Colour says which kind, never how important. */
+.orch-attention {
+  display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto;
+  min-height: 24px; padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: var(--r-pill);
+  background: transparent; color: var(--warn);
+  font: inherit; font-size: 10.5px; font-variant-numeric: tabular-nums; white-space: nowrap; cursor: pointer;
+  transition: background 130ms ease-out;
 }
+.orch-attention:hover { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.orch-attention:focus-visible,
+.orch-run-restore:focus-visible,
+.orch-tool:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.orch-attention-target:focus,
+.orch-decisions:focus { outline: none; }
+.orch-attention-target:focus-visible,
+.orch-decisions:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 
-.orch-progress-head strong { font-size: 15px; font-weight: 620; }
-.orch-progress-head strong span { color: var(--fg-3); font-size: 12px; font-weight: 400; }
-.orch-progress-percent { color: var(--fg-2); font-size: 12px; }
-.orch-progress-elapsed { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--fg-3); font-size: 11px; white-space: nowrap; }
-.orch-progress-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
-
-/* A count of zero is left out rather than printed, so every chip on screen is
-   something still owed. Colour says which kind, never how important. */
-.orch-chip {
-  padding: 1px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
-  color: var(--fg-2);
-  font-size: 10.5px;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.5;
-  white-space: nowrap;
+.orch-run-restore {
+  flex: 0 0 auto; min-height: 26px; padding: 0 9px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm);
+  background: var(--bg-1); color: var(--fg-1);
+  font: inherit; font-size: 11px; cursor: pointer;
 }
+.orch-run-restore:hover:not(:disabled) { background: var(--bg-2); color: var(--fg-0); }
 
-.orch-chip[data-tone="working"] { border-color: color-mix(in srgb, var(--link) 45%, var(--border)); color: var(--link); }
-.orch-chip[data-tone="decision"],
-.orch-chip[data-tone="blocked"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); color: var(--warn); }
+/* The panel's own row: the way to the main chat and to archived runs. It sits
+   outside every run and outside the scroller, so it is there collapsed. */
+.orch-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 0 0 auto; }
+.orch-embedded .orch-layout > .orch-toolbar { padding: 8px clamp(12px, 3vw, 32px); border-bottom: 1px solid var(--border); }
+.orch-runs .orch-toolbar { margin-left: auto; }
+.orch-tool {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 30px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-1); color: var(--fg-1);
+  font: inherit; font-size: 12px; font-weight: 550; white-space: nowrap; cursor: pointer;
+  transition: background 130ms ease-out, color 130ms ease-out;
+}
+.orch-tool:hover { background: var(--bg-2); color: var(--fg-0); }
+.orch-tool.is-quiet { border-color: transparent; background: transparent; color: var(--fg-2); font-weight: 450; }
+.orch-tool.is-quiet:hover { background: var(--bg-2); }
+.orch-tool[aria-pressed="true"] { border-color: var(--border); background: var(--bg-2); color: var(--fg-0); }
+.orch-tool-count {
+  min-width: 17px; padding: 0 5px; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn);
+  font-size: 10.5px; font-variant-numeric: tabular-nums; line-height: 17px; text-align: center;
+}
+.orch-tool-count.is-quiet { background: var(--bg-2); color: var(--fg-3); }
+
+/* Tasks, Notifications and the coordination log are three views of one run,
+   so they share one row with the run's options at its end. */
+.orch-tabs-row {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 4px; border-bottom: 1px solid var(--border);
+  background: var(--bg-0);
+}
+.orch-tabs { display: flex; flex: 1 1 auto; min-width: 0; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.orch-tabs [role="tab"] {
+  position: relative; display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+  min-height: 34px; padding: 0 9px;
+  border: 0; background: transparent; color: var(--fg-3);
+  font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer;
+  transition: color 130ms ease-out;
+}
+.orch-tabs [role="tab"]:hover { color: var(--fg-1); }
+.orch-tabs [role="tab"][aria-selected="true"] { color: var(--fg-0); font-weight: 600; }
+.orch-tabs [role="tab"]::after {
+  content: ""; position: absolute; right: 8px; bottom: -1px; left: 8px; height: 2px;
+  border-radius: 2px; background: var(--accent); transform: scaleX(0); transition: transform 160ms ease-out;
+}
+.orch-tabs [role="tab"][aria-selected="true"]::after { transform: scaleX(1); }
+.orch-tabs [role="tab"]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; border-radius: var(--r-sm); }
+.orch-tab-count { color: var(--fg-3); font-size: 10.5px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.orch-tab-count[data-tone="pending"] { color: var(--warn); }
+.orch-tab-short { display: none; }
+.orch-tab-panel[hidden] { display: none; }
+.orch-tab-panel > .orch-task-filters { margin: 8px 0 4px; }
+/* The tab row's rule already sits over the first row. */
+.orch-tab-panel > .orch-task:first-child { border-top: 0; }
+.orch-run-error { margin: 8px 0 0; color: var(--danger); font-size: 11.5px; line-height: 1.45; }
+.orch-run-detail > .orch-run-error { margin: 0 0 10px; }
+@media (prefers-reduced-motion: reduce) {
+  .orch-tabs [role="tab"]::after { transition: none; }
+}
 
 /* Configuration, and the controls that change it, are not status. */
 .orch-settings-toggle {
@@ -477,8 +537,7 @@
 .orch-run-settings dd { min-width: 0; overflow: hidden; margin: 0; color: var(--fg-1); text-overflow: ellipsis; white-space: nowrap; }
 .orch-run-actions { display: flex; flex-wrap: wrap; gap: 7px; }
 .orch-run-settings.is-compact .orch-run-actions { justify-content: flex-end; }
-.orch-run-actions .orch-stop-confirm { max-width: none; justify-content: flex-start; }
-.orch-run-actions .orch-stop-confirm span { text-align: left; }
+.orch-run-actions .orch-stop-confirm { max-width: 34ch; justify-content: flex-start; }
 
 .orch-decisions {
   margin-bottom: 14px;
@@ -670,9 +729,7 @@
 .orch-attempt-retry button { flex: none; padding: 5px 9px; border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border)); border-radius: var(--r-md); background: var(--bg-1); font-weight: 650; }
 .orch-attempt-retry button:disabled { opacity: .45; cursor: default; }
 
-.orch-messages { margin-top: 30px; padding-top: 16px; border-top: 1px solid var(--border); }
-.orch-messages > summary { color: var(--fg-0); font-size: 12px; cursor: pointer; }
-.orch-messages article { padding: 12px 0; border-top: 1px solid var(--border); }
+.orch-messages article { padding: 10px 0; border-bottom: 1px solid var(--border); }
 .orch-messages article > div { display: flex; justify-content: space-between; gap: 12px; }
 .orch-messages strong { color: var(--fg-1); font-size: 12px; }
 .orch-messages span { color: var(--fg-3); font-size: 10px; }
@@ -778,46 +835,41 @@
 
 .orch-run-accordion.is-open { border-color: var(--border-strong); }
 
+/* The goal's header: the disclosure, then — beside it, not inside it — the
+   one action a collapsed goal still offers: what it owes, or Restore. */
+.orch-run-accordion-head { display: flex; align-items: center; gap: 8px; padding-right: 10px; background: var(--bg-1); }
 .orch-run-accordion-toggle {
-  width: 100%;
-  min-height: 54px;
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 48px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 7px 4px 7px 10px;
   border: 0;
-  background: var(--bg-1);
+  background: transparent;
   color: var(--fg-1);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.orch-run-accordion-toggle:hover { background: var(--bg-2); }
+.orch-run-accordion-head:hover { background: var(--bg-2); }
 .orch-run-accordion-toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .orch-run-accordion-copy { min-width: 0; flex: 1 1 auto; display: grid; gap: 2px; }
 .orch-run-accordion-copy strong { overflow: hidden; color: var(--fg-0); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
-.orch-run-accordion-copy small { color: var(--fg-3); font-size: 10.5px; }
-.orch-run-accordion-attention {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
-  border-radius: var(--r-pill);
-  color: var(--warn);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
+.orch-run-accordion-copy .orch-run-line { font-size: 10.5px; }
 .orch-run-accordion-chevron { flex: 0 0 auto; color: var(--fg-3); }
-.orch-run-accordion-body { padding: 14px 12px 22px; border-top: 1px solid var(--border); }
+.orch-run-accordion-body { padding: 10px 12px 18px; border-top: 1px solid var(--border); }
 .orch-run-accordion-body[hidden] { display: none; }
 .orch-run-accordion-body .orch-run-detail { width: 100%; }
 
 .orch-setup-context { margin: 0; padding: 0; border: 0; min-width: 0; }
 
-.orch-notifications { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--fg-2); }
-.orch-notifications summary { cursor: pointer; color: var(--fg-0); }
-.orch-notifications > p { line-height: 1.6; max-width: 65ch; }
-.orch-notifications article { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; padding: 10px 0; border-top: 1px solid var(--border); }
+.orch-notifications { font-size: 12px; color: var(--fg-2); }
+.orch-notifications > p { margin: 10px 0 6px; font-size: 11.5px; line-height: 1.55; max-width: 65ch; }
+.orch-notifications > p.orch-task-none { margin: 0; }
+.orch-notifications article { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; padding: 9px 0; border-top: 1px solid var(--border); }
 .orch-notifications article span { margin-left: auto; }
 .orch-notifications article p { flex-basis: 100%; margin: 0; }
 .orch-notifications article small { color: var(--fg-3); }
@@ -828,22 +880,25 @@
   .orch-task-expand { flex-basis: 44px; width: 44px; height: 44px; }
   .orch-task-filters button,
   .orch-settings-toggle,
-  .orch-embedded .orch-new { min-height: 36px; }
-  .orch-run-accordion-toggle { min-height: 60px; }
+  .orch-tool,
+  .orch-tabs [role="tab"],
+  .orch-embedded .orch-new { min-height: 40px; }
+  .orch-attention,
+  .orch-run-restore { min-height: 32px; }
+  .orch-stop-confirm button { min-height: 40px; }
+  .orch-run-accordion-toggle { min-height: 56px; }
   .orch-task-brief > summary,
   .orch-task-more > summary,
   .orch-attempt-history > summary,
-  .orch-messages > summary,
-  .orch-notifications > summary,
   .orch-workspace > summary { padding-block: 8px; }
 }
 
 @media (max-width: 520px) {
-  .orch-run-accordion-toggle { align-items: flex-start; flex-wrap: wrap; }
-  .orch-run-accordion-copy { max-width: calc(100% - 42px); }
-  .orch-run-accordion-attention { order: 3; margin-left: 20px; }
-  .orch-run-accordion-chevron { margin-left: auto; }
   .orch-run-accordion-body { padding-inline: 9px; }
+  .orch-tab-long { display: none; }
+  .orch-tab-short { display: inline; }
+  .orch-tabs [role="tab"] { padding-inline: 7px; }
+  .orch-run-actions .orch-stop-confirm { max-width: none; }
 }
 
 .orch-execution { margin-block: 12px; font-size: 12px; color: var(--fg-2); }
