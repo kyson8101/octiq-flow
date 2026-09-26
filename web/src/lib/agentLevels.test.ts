@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("./bridge", () => ({ bridge: { invoke: async () => [] } }));
-import { canAccept, compactTokens, levelFraction, taskSizeState, toNextLevel } from "./agentLevels";
+import { canAccept, compactTokens, historyXp, levelFraction, taskSizeState, toNextLevel } from "./agentLevels";
 
 describe("level progress", () => {
   it("is the share of the current level done, as the host reports it", () => {
@@ -41,5 +41,14 @@ describe("canAccept", () => {
     expect(canAccept({ ...done, acceptance: { attemptId: "a1", at: 1, by: { kind: "person" } } })).toBe(true);
     expect(canAccept({ ...done, status: "running" })).toBe(false);
     expect(canAccept({ ...done, assignee: undefined })).toBe(false);
+  });
+});
+
+describe("historyXp", () => {
+  it("says what each acceptance paid, and why when it paid nothing", () => {
+    expect(historyXp({ xp: 75, size: "medium" })).toEqual({ amount: "+75 XP" });
+    expect(historyXp({ xp: 0, unpaid: "unsized" })).toEqual({ amount: "0 XP", why: "No size recorded" });
+    expect(historyXp({ xp: 0, size: "large", unpaid: "already_paid" }))
+      .toEqual({ amount: "0 XP", why: "Accepted again · paid the first time" });
   });
 });

@@ -482,6 +482,10 @@ struct Stored {
     /// ever (`levels.rs`).
     #[serde(default)]
     xp_awards: BTreeMap<String, XpAward>,
+    /// Every explicit acceptance, paid or not, oldest first. Appended, never
+    /// edited: a reopened task's earlier acceptance stays here (`levels.rs`).
+    #[serde(default)]
+    acceptances: Vec<levels::AcceptanceRecord>,
     /// When this ledger started paying XP. Nothing before it is scored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scoring_since: Option<i64>,
@@ -505,6 +509,7 @@ impl Default for Stored {
             native_decisions: BTreeMap::new(),
             services: BTreeMap::new(),
             xp_awards: BTreeMap::new(),
+            acceptances: Vec::new(),
             scoring_since: None,
         }
     }
@@ -565,6 +570,9 @@ impl OrchestrationStore {
                     recovered |= recover_interrupted_workers(&mut data);
                     recovered |= workspaces::recover_workspaces(&mut data);
                     recovered |= lifecycle::recover(&mut data);
+                    // Before pruning, which drops old tasks and the
+                    // acceptance they carry.
+                    recovered |= levels::backfill_acceptances(&mut data);
                     recovered |= retention::prune_finished_runs(&mut data);
                     recovered |= refresh_plan_revisions(&mut data);
                     recovered |= levels::stamp_scoring_since(&mut data, now_ms());
@@ -2987,10 +2995,10 @@ fn announce(run_id: &str, change: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    pub(super) fn run(store: &OrchestrationStore) -> Run {
+    pub(crate) fn run(store: &OrchestrationStore) -> Run {
         store
             .create_run(
                 "chat:master".into(),

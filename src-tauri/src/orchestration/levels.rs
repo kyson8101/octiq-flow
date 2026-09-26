@@ -3,9 +3,16 @@
 //! A worker saying "completed" is a claim. XP is paid only when the person, or
 //! the lead responsible for the task, looks at that result and accepts it —
 //! an explicit action recorded on the task (`TaskAcceptance`) and, in the same
-//! write, in the award ledger (`Stored::xp_awards`). The ledger is keyed by the
-//! task id, so one task pays once however often it is reopened, retried or
-//! accepted again, and two accepts racing each other still pay once.
+//! write, in two ledgers:
+//!
+//! - `Stored::acceptances`, every acceptance as it was made, paid or not.
+//!   Appended once per accepted attempt and never edited, so reopening a task
+//!   and accepting a later result adds a line rather than overwriting the
+//!   first. An agent's accepted-task count and history come from here, which
+//!   is why a task that earned nothing still counts as accepted.
+//! - `Stored::xp_awards`, what was paid, keyed by the task id, so one task
+//!   pays once however often it is reopened, retried or accepted again, and
+//!   two accepts racing each other still pay once. XP totals come from here.
 //!
 //! What a task is worth is its size, chosen before it starts and locked from
 //! its first attempt on, so nobody resizes work after seeing how it went. A
@@ -120,6 +127,54 @@ pub struct XpAward {
     pub accepted_by: Acceptor,
 }
 
+/// Why an acceptance paid nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unpaid {
+    /// The task started before sizes were recorded: its worth was never agreed.
+    Unsized,
+    /// An earlier acceptance of this task already paid it.
+    AlreadyPaid,
+    /// No registered agent ran the accepted attempt.
+    NoAgent,
+}
+
+impl Unpaid {
+    pub fn note(self) -> &'static str {
+        match self {
+            Unpaid::Unsized => "This task started before sizes were recorded, so it earns no XP.",
+            Unpaid::AlreadyPaid => "XP for this task was already paid; a task pays once.",
+            Unpaid::NoAgent => "No registered agent owns this task, so no XP is paid.",
+        }
+    }
+}
+
+/// One explicit acceptance of one attempt's result, exactly as it was made.
+/// A copy, like `XpAward`: it outlives the task, the run and the agent's name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptanceRecord {
+    pub task_id: String,
+    pub run_id: String,
+    pub title: String,
+    /// The result that was accepted.
+    pub attempt_id: String,
+    /// The registered agent that attempt ran as, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// The task's size when it was accepted; none on a task from before sizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<TaskSize>,
+    /// What this acceptance paid: the size's XP, or 0.
+    pub xp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpaid: Option<Unpaid>,
+    pub accepted_at: i64,
+    pub accepted_by: Acceptor,
+}
+
 /// Who is asking to accept. The browser is the person; a chat is only ever a
 /// lead after the host has checked which chat it is.
 pub enum AcceptActor<'a> {
@@ -171,11 +226,13 @@ pub struct AwaitingAcceptance {
     pub unscored: bool,
 }
 
+/// One line of an agent's accepted work, newest first: every acceptance of a
+/// result it produced, including those that paid nothing.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
     #[serde(flatten)]
-    pub award: XpAward,
+    pub record: AcceptanceRecord,
     /// The run's main chat, while the run is still in the ledger.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinator_chat_key: Option<String>,
@@ -187,8 +244,9 @@ pub struct LevelProfile {
     pub agent_id: String,
     #[serde(flatten)]
     pub progress: LevelProgress,
+    /// Distinct tasks accepted for this agent, paid or not, for good.
     pub accepted_tasks: u64,
-    /// Newest first, one page.
+    /// Every acceptance of this agent's work, newest first, one page.
     pub history: Vec<HistoryEntry>,
     pub history_total: usize,
     pub history_offset: usize,
@@ -228,19 +286,103 @@ pub(super) fn stamp_scoring_since(data: &mut Stored, now: i64) -> bool {
     true
 }
 
-fn awarded_to(data: &Stored, agent_id: &str) -> Vec<XpAward> {
-    let mut awards: Vec<XpAward> = data
-        .xp_awards
-        .values()
-        .filter(|award| award.agent_id == agent_id)
-        .cloned()
+/// This agent's acceptances, newest first.
+fn accepted_for<'a>(data: &'a Stored, agent_id: &str) -> Vec<&'a AcceptanceRecord> {
+    let mut records: Vec<&AcceptanceRecord> = data
+        .acceptances
+        .iter()
+        .filter(|record| record.agent_id.as_deref() == Some(agent_id))
         .collect();
-    awards.sort_by(|a, b| {
-        b.accepted_at
-            .cmp(&a.accepted_at)
-            .then_with(|| b.task_id.cmp(&a.task_id))
-    });
-    awards
+    // Appended in order; reversing keeps two in the same millisecond in the
+    // order they were made.
+    records.reverse();
+    records.sort_by_key(|record| std::cmp::Reverse(record.accepted_at));
+    records
+}
+
+fn distinct_tasks<'a>(records: impl IntoIterator<Item = &'a AcceptanceRecord>) -> u64 {
+    records
+        .into_iter()
+        .map(|record| record.task_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len() as u64
+}
+
+/// Give a store written before the acceptance ledger one line for each
+/// acceptance it can still prove: every award, and every task's current
+/// acceptance. True when anything was added.
+pub(super) fn backfill_acceptances(data: &mut Stored) -> bool {
+    let known = |data: &Stored, task_id: &str, attempt_id: &str| {
+        data.acceptances
+            .iter()
+            .any(|r| r.task_id == task_id && r.attempt_id == attempt_id)
+    };
+    let mut added = Vec::new();
+    for award in data.xp_awards.values() {
+        if !known(data, &award.task_id, &award.attempt_id) {
+            added.push(AcceptanceRecord {
+                task_id: award.task_id.clone(),
+                run_id: award.run_id.clone(),
+                title: award.title.clone(),
+                attempt_id: award.attempt_id.clone(),
+                agent_id: Some(award.agent_id.clone()),
+                agent_name: Some(award.agent_name.clone()),
+                size: Some(award.size),
+                xp: award.xp,
+                unpaid: None,
+                accepted_at: award.accepted_at,
+                accepted_by: award.accepted_by.clone(),
+            });
+        }
+    }
+    for task in data.tasks.values() {
+        let Some(acceptance) = task.acceptance.as_ref() else {
+            continue;
+        };
+        if known(data, &task.id, &acceptance.attempt_id)
+            || added.iter().any(|r: &AcceptanceRecord| {
+                r.task_id == task.id && r.attempt_id == acceptance.attempt_id
+            })
+        {
+            continue;
+        }
+        let owner = data
+            .attempts
+            .get(&acceptance.attempt_id)
+            .and_then(|attempt| attempt.assignee.clone())
+            .or_else(|| task.assignee.clone());
+        let paid_here = data
+            .xp_awards
+            .get(&task.id)
+            .is_some_and(|award| award.attempt_id == acceptance.attempt_id);
+        added.push(AcceptanceRecord {
+            task_id: task.id.clone(),
+            run_id: task.run_id.clone(),
+            title: task.title.clone(),
+            attempt_id: acceptance.attempt_id.clone(),
+            agent_id: owner.as_ref().map(|a| a.id.clone()),
+            agent_name: owner.as_ref().map(|a| a.name.clone()),
+            size: task.size,
+            xp: 0,
+            unpaid: (!paid_here).then(|| {
+                if owner.is_none() {
+                    Unpaid::NoAgent
+                } else if data.xp_awards.contains_key(&task.id) {
+                    Unpaid::AlreadyPaid
+                } else {
+                    Unpaid::Unsized
+                }
+            }),
+            accepted_at: acceptance.at,
+            accepted_by: acceptance.by.clone(),
+        });
+    }
+    if added.is_empty() {
+        return false;
+    }
+    data.acceptances.extend(added);
+    data.acceptances.sort_by_key(|record| record.accepted_at);
+    true
 }
 
 impl OrchestrationStore {
@@ -407,8 +549,8 @@ impl OrchestrationStore {
             }
 
             let mut awarded = false;
-            let note = if data.xp_awards.contains_key(task_id) {
-                Some("XP for this task was already paid; a task pays once.".to_string())
+            let unpaid = if data.xp_awards.contains_key(task_id) {
+                Some(Unpaid::AlreadyPaid)
             } else if let Some(assignee) = owner.as_ref() {
                 match task.size {
                     Some(size) => {
@@ -430,13 +572,29 @@ impl OrchestrationStore {
                         awarded = true;
                         None
                     }
-                    None => Some(
-                        "This task started before sizes were recorded, so it earns no XP.".to_string(),
-                    ),
+                    None => Some(Unpaid::Unsized),
                 }
             } else {
-                Some("No registered agent owns this task, so no XP is paid.".to_string())
+                Some(Unpaid::NoAgent)
             };
+            // One line per accepted result, written once, in the same write
+            // as the acceptance and any award.
+            if !already {
+                data.acceptances.push(AcceptanceRecord {
+                    task_id: task_id.to_owned(),
+                    run_id: task.run_id.clone(),
+                    title: task.title.clone(),
+                    attempt_id: attempt.id.clone(),
+                    agent_id: owner.as_ref().map(|a| a.id.clone()),
+                    agent_name: owner.as_ref().map(|a| a.name.clone()),
+                    size: task.size,
+                    xp: if awarded { task.size.map_or(0, TaskSize::xp) } else { 0 },
+                    unpaid: if awarded { None } else { unpaid },
+                    accepted_at: now,
+                    accepted_by: by.clone(),
+                });
+            }
+            let note = unpaid.map(|why| why.note().to_string());
             Ok(Accepted {
                 task: data.tasks[task_id].clone(),
                 award: data.xp_awards.get(task_id).cloned(),
@@ -450,24 +608,35 @@ impl OrchestrationStore {
         result
     }
 
-    /// Level, XP and accepted count for every agent that has been paid.
+    /// Level, XP and accepted count for every agent with accepted work,
+    /// paid or not.
     pub fn level_summaries(&self) -> Result<Vec<LevelSummary>, String> {
         let inner = self.inner.lock().map_err(|error| error.to_string())?;
         if let Some(error) = &inner.load_error {
             return Err(error.clone());
         }
-        let mut totals: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
-        for award in inner.data.xp_awards.values() {
-            let entry = totals.entry(award.agent_id.as_str()).or_default();
-            entry.0 += award.xp;
-            entry.1 += 1;
+        let data = &inner.data;
+        let mut xp: BTreeMap<&str, u64> = BTreeMap::new();
+        for award in data.xp_awards.values() {
+            *xp.entry(award.agent_id.as_str()).or_default() += award.xp;
         }
-        Ok(totals
+        let mut tasks: BTreeMap<&str, std::collections::BTreeSet<&str>> = BTreeMap::new();
+        for record in &data.acceptances {
+            if let Some(agent_id) = record.agent_id.as_deref() {
+                tasks
+                    .entry(agent_id)
+                    .or_default()
+                    .insert(record.task_id.as_str());
+            }
+        }
+        let agents: std::collections::BTreeSet<&str> =
+            xp.keys().chain(tasks.keys()).copied().collect();
+        Ok(agents
             .into_iter()
-            .map(|(agent_id, (xp, accepted))| LevelSummary {
+            .map(|agent_id| LevelSummary {
                 agent_id: agent_id.to_owned(),
-                progress: level_for(xp),
-                accepted_tasks: accepted,
+                progress: level_for(xp.get(agent_id).copied().unwrap_or(0)),
+                accepted_tasks: tasks.get(agent_id).map_or(0, |set| set.len() as u64),
             })
             .collect())
     }
@@ -480,17 +649,22 @@ impl OrchestrationStore {
             return Err(error.clone());
         }
         let data = &inner.data;
-        let awards = awarded_to(data, agent_id);
-        let xp = awards.iter().map(|award| award.xp).sum();
-        let history = awards
+        let xp = data
+            .xp_awards
+            .values()
+            .filter(|award| award.agent_id == agent_id)
+            .map(|award| award.xp)
+            .sum();
+        let records = accepted_for(data, agent_id);
+        let history = records
             .iter()
             .skip(offset)
             .take(HISTORY_PAGE)
-            .map(|award| HistoryEntry {
-                award: award.clone(),
+            .map(|record| HistoryEntry {
+                record: (*record).clone(),
                 coordinator_chat_key: data
                     .runs
-                    .get(&award.run_id)
+                    .get(&record.run_id)
                     .map(|run| run.coordinator_chat_key.clone()),
             })
             .collect();
@@ -531,8 +705,8 @@ impl OrchestrationStore {
         Ok(LevelProfile {
             agent_id: agent_id.to_owned(),
             progress: level_for(xp),
-            accepted_tasks: awards.len() as u64,
-            history_total: awards.len(),
+            accepted_tasks: distinct_tasks(records.iter().copied()),
+            history_total: records.len(),
             history_offset: offset,
             history,
             awaiting,
@@ -543,18 +717,18 @@ impl OrchestrationStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::orchestration::tests::run;
 
-    fn ada() -> TaskAssignee {
+    pub(crate) fn ada() -> TaskAssignee {
         TaskAssignee {
             id: "agent_ada".into(),
             name: "Ada".into(),
         }
     }
 
-    fn assigned(
+    pub(crate) fn assigned(
         store: &OrchestrationStore,
         run: &Run,
         actor: &str,
@@ -588,14 +762,14 @@ mod tests {
         }
     }
 
-    fn start(store: &OrchestrationStore, actor: &str, task: &Task) -> Attempt {
+    pub(crate) fn start(store: &OrchestrationStore, actor: &str, task: &Task) -> Attempt {
         let (_, _, attempt, _) = store.reserve_attempt(actor, &launch(task)).unwrap();
         store
             .activate_attempt(&attempt.id, "/tmp".into(), "test".into(), true)
             .unwrap()
     }
 
-    fn settle(store: &OrchestrationStore, attempt: &Attempt, outcome: WorkerOutcome) {
+    pub(crate) fn settle(store: &OrchestrationStore, attempt: &Attempt, outcome: WorkerOutcome) {
         store
             .report_worker(
                 &attempt.worker_chat_key,
@@ -999,15 +1173,18 @@ mod tests {
         assert_eq!(profile.accepted_tasks, 2);
         assert_eq!(profile.scoring_since, since, "stamped once");
         // Newest first, each linked to its run's main chat.
-        assert_eq!(profile.history[0].award.task_id, second.id);
-        assert_eq!(profile.history[0].award.agent_name, "Ada Lovelace");
-        assert_eq!(profile.history[1].award.agent_name, "Ada");
+        assert_eq!(profile.history[0].record.task_id, second.id);
+        assert_eq!(
+            profile.history[0].record.agent_name.as_deref(),
+            Some("Ada Lovelace")
+        );
+        assert_eq!(profile.history[1].record.agent_name.as_deref(), Some("Ada"));
         assert_eq!(
             profile.history[0].coordinator_chat_key.as_deref(),
             Some("chat:master")
         );
         // Accepted again after the restart: still paid once.
-        let first_attempt = profile.history[1].award.attempt_id.clone();
+        let first_attempt = profile.history[1].record.attempt_id.clone();
         assert!(
             !reloaded
                 .accept_task(AcceptActor::Person, &task.id, &first_attempt)
@@ -1153,5 +1330,196 @@ mod tests {
         assert_eq!(revision(&store), before + 1);
         store.set_task_size(&task.id, TaskSize::Small).unwrap();
         assert_eq!(revision(&store), before + 2);
+    }
+
+    /// What `reopen_task` does to the task itself, without the retained
+    /// workspace it also insists on.
+    fn reopen(store: &OrchestrationStore, task: &Task) {
+        store
+            .mutate(|data| {
+                let task = data.tasks.get_mut(&task.id).unwrap();
+                task.status = TaskStatus::Ready;
+                task.result = None;
+                let run_id = task.run_id.clone();
+                recompute_run(data, &run_id);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn an_unscored_acceptance_counts_and_keeps_its_record_through_a_reopen() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        // A task from before sizes: started with none recorded.
+        let legacy = assigned(&store, &run, "chat:master", ada(), None);
+        let first = start(&store, "chat:master", &legacy);
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&legacy.id).unwrap().size = None;
+                Ok(())
+            })
+            .unwrap();
+        settle(&store, &first, WorkerOutcome::Completed);
+        let accepted = store
+            .accept_task(AcceptActor::Person, &legacy.id, &first.id)
+            .unwrap();
+        assert!(!accepted.awarded);
+
+        let profile = store.level_profile("agent_ada", 0).unwrap();
+        assert_eq!(
+            profile.accepted_tasks, 1,
+            "accepted, though it paid nothing"
+        );
+        assert_eq!(profile.progress.xp, 0);
+        assert_eq!(profile.history_total, 1);
+        let original = profile.history[0].record.clone();
+        assert_eq!(
+            (original.attempt_id.as_str(), original.xp, original.unpaid),
+            (first.id.as_str(), 0, Some(Unpaid::Unsized))
+        );
+        assert_eq!(original.accepted_by.kind, AcceptorKind::Person);
+        assert_eq!(original.agent_id.as_deref(), Some("agent_ada"));
+        let summary = store.level_summaries().unwrap();
+        assert_eq!(
+            (
+                summary.len(),
+                summary[0].accepted_tasks,
+                summary[0].progress.xp
+            ),
+            (1, 1, 0),
+            "the roster agrees with the profile"
+        );
+
+        // Reopened, redone, accepted again by the lead.
+        reopen(&store, &legacy);
+        let second = start(&store, "chat:master", &legacy);
+        settle(&store, &second, WorkerOutcome::Completed);
+        let again = store
+            .accept_task(
+                AcceptActor::Chat {
+                    chat_key: "chat:master",
+                    lead: lead("agent_lead"),
+                },
+                &legacy.id,
+                &second.id,
+            )
+            .unwrap();
+        assert!(!again.awarded, "still unsized, still nothing");
+        assert_eq!(again.task.acceptance.unwrap().attempt_id, second.id);
+
+        let profile = store.level_profile("agent_ada", 0).unwrap();
+        assert_eq!(profile.accepted_tasks, 1, "one task, counted once");
+        assert_eq!(profile.progress.xp, 0);
+        assert_eq!(profile.history_total, 2, "both acceptances are on record");
+        let newest = &profile.history[0].record;
+        assert_eq!(newest.attempt_id, second.id);
+        assert_eq!(newest.accepted_by.agent_id.as_deref(), Some("agent_lead"));
+        assert_eq!(
+            profile.history[1].record, original,
+            "the first is untouched"
+        );
+
+        // Accepting the current result once more writes nothing new.
+        store
+            .accept_task(AcceptActor::Person, &legacy.id, &second.id)
+            .unwrap();
+        assert_eq!(
+            store.level_profile("agent_ada", 0).unwrap().history_total,
+            2
+        );
+    }
+
+    #[test]
+    fn a_paid_task_reaccepted_after_a_reopen_keeps_both_records_and_pays_once() {
+        let store = OrchestrationStore::default();
+        let run = run(&store);
+        let (task, first) = finished(&store, &run);
+        store
+            .accept_task(AcceptActor::Person, &task.id, &first.id)
+            .unwrap();
+        reopen(&store, &task);
+        let second = start(&store, "chat:master", &task);
+        settle(&store, &second, WorkerOutcome::Completed);
+        let again = store
+            .accept_task(AcceptActor::Person, &task.id, &second.id)
+            .unwrap();
+        assert!(!again.awarded);
+        assert_eq!(
+            again.award.unwrap().attempt_id,
+            first.id,
+            "the award stands"
+        );
+
+        let profile = store.level_profile("agent_ada", 0).unwrap();
+        assert_eq!((profile.accepted_tasks, profile.progress.xp), (1, 75));
+        let records: Vec<_> = profile
+            .history
+            .iter()
+            .map(|entry| {
+                (
+                    entry.record.attempt_id.clone(),
+                    entry.record.xp,
+                    entry.record.unpaid,
+                )
+            })
+            .collect();
+        assert_eq!(
+            records,
+            vec![
+                (second.id.clone(), 0, Some(Unpaid::AlreadyPaid)),
+                (first.id.clone(), 75, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_store_from_before_the_ledger_gets_its_acceptances_back_once() {
+        let root = std::env::temp_dir().join(format!("octiq-ledger-{}", compact_id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("orchestrations.json");
+        let store = OrchestrationStore::load(file.clone());
+        let run = run(&store);
+        let (paid, paid_attempt) = finished(&store, &run);
+        store
+            .accept_task(AcceptActor::Person, &paid.id, &paid_attempt.id)
+            .unwrap();
+        let legacy = assigned(&store, &run, "chat:master", ada(), None);
+        let early = start(&store, "chat:master", &legacy);
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&legacy.id).unwrap().size = None;
+                Ok(())
+            })
+            .unwrap();
+        settle(&store, &early, WorkerOutcome::Completed);
+        store
+            .accept_task(AcceptActor::Person, &legacy.id, &early.id)
+            .unwrap();
+        drop(store);
+
+        // As the earlier build wrote it: awards and task acceptances, no ledger.
+        let mut raw: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        raw.as_object_mut().unwrap().remove("acceptances");
+        fs::write(&file, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+        let reloaded = OrchestrationStore::load(file.clone());
+        let profile = reloaded.level_profile("agent_ada", 0).unwrap();
+        assert_eq!((profile.accepted_tasks, profile.progress.xp), (2, 75));
+        let mut unpaid: Vec<_> = profile
+            .history
+            .iter()
+            .map(|e| (e.record.xp, e.record.unpaid))
+            .collect();
+        unpaid.sort_by_key(|(xp, _)| *xp);
+        assert_eq!(unpaid, vec![(0, Some(Unpaid::Unsized)), (75, None)]);
+        drop(reloaded);
+        // Loading again adds nothing.
+        let again = OrchestrationStore::load(file);
+        assert_eq!(
+            again.level_profile("agent_ada", 0).unwrap().history_total,
+            2
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

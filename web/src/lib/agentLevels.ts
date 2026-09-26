@@ -26,6 +26,7 @@ export type LevelSummary = LevelProgress & { agentId: string; acceptedTasks: num
 
 export type Acceptor = { kind: "person" | "lead"; agentId?: string; agentName?: string };
 
+/** What was paid for a task: one per task, ever. */
 export type XpAward = {
   taskId: string;
   runId: string;
@@ -35,6 +36,25 @@ export type XpAward = {
   size: TaskSize;
   xp: number;
   attemptId: string;
+  acceptedAt: number;
+  acceptedBy: Acceptor;
+};
+
+/** Why an acceptance paid nothing. */
+export type Unpaid = "unsized" | "already_paid" | "no_agent";
+
+/** One explicit acceptance of one result, paid or not, as the host recorded
+ *  it. A task reopened and accepted again has one of these per acceptance. */
+export type AcceptanceRecord = {
+  taskId: string;
+  runId: string;
+  title: string;
+  attemptId: string;
+  agentId?: string;
+  agentName?: string;
+  size?: TaskSize;
+  xp: number;
+  unpaid?: Unpaid;
   acceptedAt: number;
   acceptedBy: Acceptor;
   /** The run's main chat, while the run is still in the ledger. */
@@ -69,8 +89,10 @@ export type AgentUsage = {
 
 export type LevelProfile = LevelProgress & {
   agentId: string;
+  /** Distinct tasks accepted for this agent, paid or not, for good. */
   acceptedTasks: number;
-  history: XpAward[];
+  /** Every acceptance of its work, newest first, one page. */
+  history: AcceptanceRecord[];
   historyTotal: number;
   historyOffset: number;
   awaiting: AwaitingAcceptance[];
@@ -142,6 +164,17 @@ export function taskSizeState(task: Pick<OrchestrationTask, "size" | "activeAtte
   const size = task.size ?? (started ? undefined : "medium");
   if (!size) return { editable: false, label: "Not recorded · earns no XP" };
   return { size, editable, label: `${SIZE_LABEL[size]} · ${SIZE_XP[size]} XP` };
+}
+
+/** What one line of history paid, and when it paid nothing, why. */
+export function historyXp(record: Pick<AcceptanceRecord, "xp" | "unpaid" | "size">): { amount: string; why?: string } {
+  if (record.xp > 0) return { amount: `+${record.xp} XP` };
+  switch (record.unpaid) {
+    case "already_paid": return { amount: "0 XP", why: "Accepted again · paid the first time" };
+    case "unsized": return { amount: "0 XP", why: "No size recorded" };
+    case "no_agent": return { amount: "0 XP", why: "No registered agent" };
+    default: return { amount: "0 XP" };
+  }
 }
 
 /** Who accepted, in a few words. */

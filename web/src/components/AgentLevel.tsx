@@ -5,8 +5,8 @@
 // Every number comes from the host (`agent_level_profile`).
 import { useEffect, useState } from "react";
 import {
-  acceptTask, acceptorLabel, compactTokens, levelFraction, loadLevelProfile, shortDate, SIZE_LABEL, toNextLevel,
-  type LevelProfile, type LevelProgress, type XpAward,
+  acceptTask, acceptorLabel, compactTokens, historyXp, levelFraction, loadLevelProfile, shortDate, SIZE_LABEL, toNextLevel,
+  type AcceptanceRecord, type LevelProfile, type LevelProgress,
 } from "../lib/agentLevels";
 import { AgentAvatar } from "./AgentAvatar";
 import "./AgentLevel.css";
@@ -52,6 +52,24 @@ function chatsLabel(usage: { chats: number; leadChats: number; workerChats: numb
   return `${usage.chats} of its own: ${parts.join(", ")}`;
 }
 
+/** One acceptance of the agent's work: what it paid, or why nothing. */
+export function XpHistoryRow({ record, onOpen }: { record: AcceptanceRecord; onOpen: () => void }) {
+  const paid = historyXp(record);
+  return (
+    <li className="xp-row">
+      <button type="button" className="xp-row-open" disabled={!record.coordinatorChatKey} onClick={onOpen}
+        aria-label={`${record.title}: ${paid.amount}${paid.why ? `, ${paid.why}` : ""}. Open task`}>
+        <span className="dash-item-title">{record.title}</span>
+        <span className="dash-item-meta">
+          {paid.why ?? (record.size ? SIZE_LABEL[record.size] : "No size recorded")}
+          {" · accepted by "}{acceptorLabel(record.acceptedBy)}{" · "}{shortDate(record.acceptedAt)}
+        </span>
+      </button>
+      <span className={record.xp > 0 ? "xp-gain" : "xp-gain is-zero"}>{paid.amount}</span>
+    </li>
+  );
+}
+
 export type ProfileAgent = { id: string; name: string; avatar?: string; removed?: boolean; detail?: string };
 
 export function AgentProfile({ agent, connected, onOpenRun, onChanged }: {
@@ -64,7 +82,7 @@ export function AgentProfile({ agent, connected, onOpenRun, onChanged }: {
   onChanged: () => void;
 }) {
   const [profile, setProfile] = useState<LevelProfile | null>(null);
-  const [more, setMore] = useState<XpAward[]>([]);
+  const [more, setMore] = useState<AcceptanceRecord[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
@@ -144,7 +162,10 @@ export function AgentProfile({ agent, connected, onOpenRun, onChanged }: {
           <dl className="agent-profile-stats">
             <div>
               <dt>Accepted tasks</dt>
-              <dd>{profile.acceptedTasks.toLocaleString("en-US")}</dd>
+              <dd title="Every task accepted for this agent, counted once for good, including those that earned no XP">
+                {profile.acceptedTasks.toLocaleString("en-US")}
+                <span className="agent-profile-stat-note">lifetime</span>
+              </dd>
             </div>
             <div>
               <dt>Tokens used</dt>
@@ -185,18 +206,9 @@ export function AgentProfile({ agent, connected, onOpenRun, onChanged }: {
               <p className="projects-page-meta">No accepted tasks yet.</p>
             ) : (
               <ul className="agent-profile-list">
-                {history.map((award) => (
-                  <li key={award.taskId} className="xp-row">
-                    <button type="button" className="xp-row-open" disabled={!award.coordinatorChatKey}
-                      onClick={() => open(award.coordinatorChatKey, award.runId)}
-                      aria-label={`${award.title}: ${award.xp} XP. Open task`}>
-                      <span className="dash-item-title">{award.title}</span>
-                      <span className="dash-item-meta">
-                        {SIZE_LABEL[award.size]}{" · accepted by "}{acceptorLabel(award.acceptedBy)}{" · "}{shortDate(award.acceptedAt)}
-                      </span>
-                    </button>
-                    <span className="xp-gain">+{award.xp} XP</span>
-                  </li>
+                {history.map((record) => (
+                  <XpHistoryRow key={`${record.taskId}:${record.attemptId}`} record={record}
+                    onOpen={() => open(record.coordinatorChatKey, record.runId)} />
                 ))}
               </ul>
             )}
@@ -243,7 +255,7 @@ export function AgentProfile({ agent, connected, onOpenRun, onChanged }: {
               <li>XP is paid when you or the responsible lead accept a finished task:{" "}
                 {profile.rules.sizes.map(([size, xp]) => `${SIZE_LABEL[size].toLowerCase()} ${xp}`).join(", ")}.</li>
               <li>The size is chosen before the task starts and cannot change after. Each task pays once, however often it is reopened or retried.</li>
-              <li>Accepted tasks counts each paid task once, for good. Reopening a task later does not remove it.</li>
+              <li>Accepted tasks counts every task you or a lead accepted, once and for good, including tasks that earned no XP. A task reopened and accepted again shows in the history again, but is counted once.</li>
               <li>Level 1 starts at 0 XP. Going from level L to L+1 takes {profile.rules.levelStep} × L XP.</li>
               <li>Only accepted tasks in runs count. Work in ordinary chats is not scored.</li>
               <li>Scoring began {shortDate(profile.scoringSince)}. Tasks finished before then are not scored.</li>

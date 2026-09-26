@@ -46,6 +46,7 @@
 .agent-profile-stats > div { padding: 8px 10px; border-radius: var(--r-sm); background: var(--bg-2); min-width: 0; }
 .agent-profile-stats dt { font-size: 11.5px; color: var(--fg-3); }
 .agent-profile-stats dd { margin: 2px 0 0; font-size: 16px; font-weight: 600; color: var(--fg-0); font-variant-numeric: tabular-nums; }
+.agent-profile-stat-note { margin-left: 6px; font-size: 11.5px; font-weight: 400; color: var(--fg-3); }
 
 .agent-profile-section { display: grid; gap: 4px; min-width: 0; }
 .agent-profile-section h3 { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; color: var(--fg-2); }
@@ -63,6 +64,7 @@
 }
 .xp-row-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .xp-gain { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: var(--fg-1); font-variant-numeric: tabular-nums; }
+.xp-gain.is-zero { font-weight: 400; color: var(--fg-3); }
 .xp-accept { flex: 0 0 auto; padding: 5px 11px; font-size: 12.5px; }
 
 .agent-profile-details { border-top: 1px solid var(--border); padding-top: 10px; font-size: 12.5px; }

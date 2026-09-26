@@ -789,7 +789,11 @@ function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = 
     } catch {
       return reject(new Error("OctiqFlow is not reachable."));
     }
-    const body = JSON.stringify({ chatKey: CHAT_KEY, action, args });
+    // An additional agent in a chat runs under its own process key, which is
+    // what its orchestration capability was issued to.
+    const sessionKey = process.env.OCTIQ_SESSION_KEY || CHAT_KEY;
+    const session = route === "orchestration" && sessionKey !== CHAT_KEY ? { sessionKey } : {};
+    const body = JSON.stringify({ chatKey: CHAT_KEY, ...session, action, args });
     const req = http.request(
       {
         host: "127.0.0.1",
@@ -799,6 +803,9 @@ function callHook(route, action, args = {}, timeoutMs = 30 * 60 * 1000, label = 
         headers: {
           "content-type": "application/json",
           "content-length": Buffer.byteLength(body),
+          // Which chat this is, as the host checks it: the secret this launch
+          // was started with. The chatKey above is only a claim.
+          "x-octiq-chat-capability": process.env.OCTIQ_CHAT_CAPABILITY || "",
         },
       },
       (res) => {

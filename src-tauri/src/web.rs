@@ -310,20 +310,7 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
 
     let token = cfg.token.clone();
     Some(async move {
-        let router = Router::new()
-            .route("/healthz", get(health_handler))
-            .route("/ws", get(ws_handler))
-            .route("/auth", get(auth_handler))
-            .route("/token", get(token_handler))
-            .route("/file", get(file_handler).post(file_post_handler))
-            .route("/hook/permission", post(permission_handler))
-            .route("/hook/ask", post(ask_handler))
-            .route("/hook/orchestration", post(orchestration_handler))
-            .route("/hook/task", post(task_handler))
-            .route("/hook/feedback", post(feedback_handler))
-            .route("/hook/vault", post(vault_handler))
-            .fallback(get(asset_handler))
-            .with_state(ctx.clone());
+        let router = router(ctx.clone());
 
         let listener = match tokio::net::TcpListener::bind(addr).await {
             Ok(l) => l,
@@ -348,6 +335,24 @@ fn serve(ctx: Ctx, cfg: WebConfig) -> Option<impl std::future::Future<Output = (
             eprintln!("[web] server stopped: {e}");
         }
     })
+}
+
+/// Every route the server answers.
+fn router(ctx: Ctx) -> Router {
+    Router::new()
+        .route("/healthz", get(health_handler))
+        .route("/ws", get(ws_handler))
+        .route("/auth", get(auth_handler))
+        .route("/token", get(token_handler))
+        .route("/file", get(file_handler).post(file_post_handler))
+        .route("/hook/permission", post(permission_handler))
+        .route("/hook/ask", post(ask_handler))
+        .route("/hook/orchestration", post(orchestration_handler))
+        .route("/hook/task", post(task_handler))
+        .route("/hook/feedback", post(feedback_handler))
+        .route("/hook/vault", post(vault_handler))
+        .fallback(get(asset_handler))
+        .with_state(ctx)
 }
 
 /// Where the built client lives. Tried in order:
@@ -944,20 +949,80 @@ async fn ask_handler(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OrchestrationHook {
-    chat_key: String,
+    /// What the caller says it is. Only ever checked against what its
+    /// capability proves; never believed on its own.
+    #[serde(default)]
+    chat_key: Option<String>,
+    /// Which of the chat's processes is calling, when it is not the chat's
+    /// own (`OCTIQ_SESSION_KEY`). Defaults to `chat_key`.
+    #[serde(default)]
+    session_key: Option<String>,
     action: String,
     #[serde(default)]
     args: Value,
 }
 
+/// The header an agent's MCP proves its chat with (`OCTIQ_CHAT_CAPABILITY`).
+const CHAT_CAPABILITY_HEADER: &str = "x-octiq-chat-capability";
+
+/// Which chat is calling `/hook/orchestration`, from the capability the host
+/// gave that chat's current launch, or why the call is refused.
+///
+/// Every agent can read the server token, so it cannot tell one chat from
+/// another: with the token alone, a worker could name its run's coordinator
+/// in the body and act as it — accept its own work, approve, stop the run.
+/// The body's `chatKey` is therefore only a claim, and one that disagrees
+/// with the capability is refused rather than silently corrected.
+fn orchestration_caller(
+    chats: &crate::agent_chat::ChatManager,
+    headers: &axum::http::HeaderMap,
+    request: &OrchestrationHook,
+) -> Result<String, (StatusCode, &'static str)> {
+    let secret = headers
+        .get(CHAT_CAPABILITY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if secret.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "This call has no chat capability. Orchestration tools work only from a chat OctiqFlow started.",
+        ));
+    }
+    let claimed = request.chat_key.as_deref().filter(|key| !key.is_empty());
+    let session_key = request
+        .session_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .or(claimed)
+        .ok_or((StatusCode::BAD_REQUEST, "This call names no chat."))?;
+    let chat_key = chats.chat_for_capability(session_key, secret).ok_or((
+        StatusCode::UNAUTHORIZED,
+        "This chat capability is not current: its agent is no longer running, or it was issued to another chat.",
+    ))?;
+    if claimed.is_some_and(|claimed| claimed != chat_key) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "The chat named in this call is not the chat its capability belongs to.",
+        ));
+    }
+    Ok(chat_key)
+}
+
 async fn orchestration_handler(
     AxumState(ctx): AxumState<Ctx>,
     Query(q): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<OrchestrationHook>,
 ) -> Response {
     if !token_ok(&ctx, q.token.as_deref().unwrap_or_default()) {
         return (StatusCode::UNAUTHORIZED, "bad token").into_response();
     }
+    let actor = match orchestration_caller(&ctx.services.chats, &headers, &request) {
+        Ok(actor) => actor,
+        Err((status, error)) => {
+            return (status, axum::Json(json!({ "error": error }))).into_response()
+        }
+    };
     let command = match request.action.as_str() {
         "run_create" => "orchestration_run_create",
         "task_create" => "orchestration_task_create",
@@ -1000,7 +1065,7 @@ async fn orchestration_handler(
                 .into_response()
         }
     };
-    args.insert("actorChatKey".into(), Value::String(request.chat_key));
+    args.insert("actorChatKey".into(), Value::String(actor));
     if command == "orchestration_run_create" {
         args.insert("withBrief".into(), Value::Bool(true));
     }
@@ -1487,5 +1552,296 @@ mod tests {
         assert!(HTML_FILE_CSP.starts_with("sandbox"));
         assert!(!HTML_FILE_CSP.contains("allow-same-origin"));
         assert!(HTML_FILE_CSP.contains("allow-popups-to-escape-sandbox"));
+    }
+
+    // ---- /hook/orchestration: the caller is its capability, not its body ---
+
+    /// POST to the running server as an agent's MCP would, token and all.
+    async fn hook(base: &str, capability: Option<&str>, body: Value) -> (u16, Value) {
+        let url = format!("{base}/hook/orchestration?token=hook-token");
+        let capability = capability.map(str::to_owned);
+        tokio::task::spawn_blocking(move || {
+            let mut request = ureq::post(&url);
+            if let Some(capability) = &capability {
+                request = request.set(CHAT_CAPABILITY_HEADER, capability);
+            }
+            match request.send_json(body) {
+                Ok(response) => (
+                    response.status(),
+                    response.into_json().unwrap_or(Value::Null),
+                ),
+                Err(ureq::Error::Status(code, response)) => {
+                    (code, response.into_json().unwrap_or(Value::Null))
+                }
+                Err(error) => panic!("the hook could not be reached: {error}"),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    fn accept(chat_key: &str, session_key: Option<&str>, task: &str, attempt: &str) -> Value {
+        let mut body = json!({
+            "chatKey": chat_key,
+            "action": "task_accept",
+            "args": { "taskId": task, "attemptId": attempt },
+        });
+        if let Some(session_key) = session_key {
+            body["sessionKey"] = json!(session_key);
+        }
+        body
+    }
+
+    fn agent(id: &str) -> crate::team::TeamAgent {
+        crate::team::TeamAgent {
+            id: id.into(),
+            name: id.to_uppercase(),
+            role: String::new(),
+            agent: crate::agent_chat::ChatAgent::Claude,
+            model: "opus".into(),
+            effort: None,
+            access: crate::agent_provider::Access::Auto,
+            project_id: None,
+            reports_to: None,
+            memory_note: None,
+            avatar: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_a_chats_own_capability_can_accept_and_only_as_that_chat() {
+        use crate::orchestration::levels::tests::{ada, assigned, settle, start};
+        use crate::orchestration::{OrchestrationStore, TaskAssignee, WorkerOutcome};
+
+        // Leads live in team.json; this test's are in a throwaway one.
+        let root =
+            std::env::temp_dir().join(format!("octiq-hook-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&root).unwrap();
+        let team = root.join("team.json");
+        let _team = crate::team::use_test_path(team.clone());
+        crate::team::record_lead(&team, "chat:master", &agent("agent_lead"), "project", false)
+            .unwrap();
+        crate::team::record_lead(&team, "chat:other", &agent("agent_other"), "project", false)
+            .unwrap();
+
+        let store = Arc::new(OrchestrationStore::default());
+        let run = crate::orchestration::tests::run(&store);
+        store
+            .create_run(
+                "chat:other".into(),
+                "Another run".into(),
+                "workspace".into(),
+                "/tmp".into(),
+                Some(1),
+            )
+            .unwrap();
+        // Ada's finished task, and one the coordinator's own lead did.
+        let task = assigned(&store, &run, "chat:master", ada(), None);
+        let attempt = start(&store, "chat:master", &task);
+        settle(&store, &attempt, WorkerOutcome::Completed);
+        let lead_self = TaskAssignee {
+            id: "agent_lead".into(),
+            name: "Lead".into(),
+        };
+        let own = assigned(&store, &run, "chat:master", lead_self, None);
+        let own_attempt = start(&store, "chat:master", &own);
+        settle(&store, &own_attempt, WorkerOutcome::Completed);
+        let for_person = assigned(&store, &run, "chat:master", ada(), None);
+        let person_attempt = start(&store, "chat:master", &for_person);
+        settle(&store, &person_attempt, WorkerOutcome::Completed);
+
+        let mut chats = crate::agent_chat::ChatManager::default();
+        chats.orchestrations = store.clone();
+        let chats = Arc::new(chats);
+        let worker = attempt.worker_chat_key.clone();
+        let worker_cap = chats.test_launch(&worker);
+        let stale_cap = chats.test_launch("chat:master");
+        let other_cap = chats.test_launch("chat:other");
+        let ctx = Ctx {
+            state: Arc::new(WebState::new(WebConfig {
+                token: "hook-token".into(),
+                ..WebConfig::default()
+            })),
+            services: crate::dispatch::Services {
+                workspaces: Arc::new(crate::workspaces::WorkspaceState::load()),
+                chats: chats.clone(),
+                watch: Arc::new(crate::file_watch::FileWatchState::default()),
+                git_watch: Arc::new(crate::git_watch::GitWatchState::default()),
+                orchestrations: store.clone(),
+                ptys: Arc::new(crate::pty::PtyManager::default()),
+            },
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let service = router(ctx.clone()).into_make_service_with_connect_info::<SocketAddr>();
+        tokio::spawn(async move { axum::serve(listener, service).await });
+
+        let nothing_accepted = |store: &OrchestrationStore| {
+            let snapshot = store.snapshot(None).unwrap();
+            assert!(snapshot.tasks.iter().all(|t| t.acceptance.is_none()));
+            assert!(store.level_summaries().unwrap().is_empty());
+        };
+
+        // The worker names its coordinator, with its own capability: the
+        // capability is not the coordinator's, whichever key it is read under.
+        let (status, _) = hook(
+            &base,
+            Some(&worker_cap),
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(
+            status, 401,
+            "forged coordinator, looked up as the coordinator"
+        );
+        let (status, answer) = hook(
+            &base,
+            Some(&worker_cap),
+            accept("chat:master", Some(&worker), &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(
+            status, 403,
+            "forged coordinator, looked up as itself: {answer}"
+        );
+        // The shared token alone, naming the coordinator.
+        let (status, _) = hook(
+            &base,
+            None,
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 401, "no capability");
+        // A made-up capability.
+        let (status, _) = hook(
+            &base,
+            Some("0123456789abcdef"),
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 401);
+        // Its own capability, as itself: the hook lets it through and the
+        // store says no — a worker is not the lead.
+        let (status, answer) = hook(
+            &base,
+            Some(&worker_cap),
+            accept(&worker, None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("Only the person"),
+            "{answer}"
+        );
+        // The other run's coordinator, a real lead, but not this run's.
+        let (status, answer) = hook(
+            &base,
+            Some(&other_cap),
+            accept("chat:other", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 400, "wrong run");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("Only the person"),
+            "{answer}"
+        );
+        // The coordinator's lead did the work itself.
+        let (status, answer) = hook(
+            &base,
+            Some(&stale_cap),
+            accept("chat:master", None, &own.id, &own_attempt.id),
+        )
+        .await;
+        assert_eq!(status, 400, "self");
+        assert!(
+            answer["error"].as_str().unwrap().contains("own work"),
+            "{answer}"
+        );
+        // The person's own command is not on the hook at all.
+        let (status, _) = hook(
+            &base,
+            Some(&stale_cap),
+            json!({ "chatKey": "chat:master", "action": "orchestration_task_accept",
+                    "args": { "taskId": task.id, "attemptId": attempt.id } }),
+        )
+        .await;
+        assert_eq!(status, 400, "no person acceptance through the hook");
+        nothing_accepted(&store);
+
+        // The coordinator's process ends and it is started again: the old
+        // launch's capability is dead, the new one works.
+        chats.test_end("chat:master");
+        let (status, _) = hook(
+            &base,
+            Some(&stale_cap),
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 401, "an ended launch's capability");
+        let master_cap = chats.test_launch("chat:master");
+        assert_ne!(master_cap, stale_cap);
+        let (status, _) = hook(
+            &base,
+            Some(&stale_cap),
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 401, "a replaced launch's capability");
+        nothing_accepted(&store);
+
+        let (status, answer) = hook(
+            &base,
+            Some(&master_cap),
+            accept("chat:master", None, &task.id, &attempt.id),
+        )
+        .await;
+        assert_eq!(status, 200, "the scoped lead: {answer}");
+        assert_eq!(answer["result"]["awarded"], json!(true));
+        assert_eq!(
+            answer["result"]["award"]["acceptedBy"]["agentId"],
+            json!("agent_lead")
+        );
+        // The token is still required with a good capability.
+        let (status, _) = tokio::task::spawn_blocking({
+            let url = format!("{base}/hook/orchestration?token=wrong");
+            let cap = master_cap.clone();
+            let body = accept("chat:master", None, &task.id, &attempt.id);
+            move || match ureq::post(&url)
+                .set(CHAT_CAPABILITY_HEADER, &cap)
+                .send_json(body)
+            {
+                Ok(r) => (r.status(), ()),
+                Err(ureq::Error::Status(code, _)) => (code, ()),
+                Err(error) => panic!("{error}"),
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 401);
+
+        // The person, through the command the browser's socket runs.
+        let accepted = run_command(
+            &ctx,
+            "orchestration_task_accept".into(),
+            json!({ "taskId": for_person.id, "attemptId": person_attempt.id }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted["award"]["acceptedBy"]["kind"], json!("person"));
+        let profile = store.level_profile("agent_ada", 0).unwrap();
+        assert_eq!((profile.accepted_tasks, profile.history_total), (2, 2));
+
+        for key in [worker.as_str(), "chat:master", "chat:other"] {
+            chats.test_end(key);
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

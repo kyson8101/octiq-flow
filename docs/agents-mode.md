@@ -407,12 +407,31 @@ words them.
   subtask, from a worker chat of the parent task, where the manager is the
   parent's assignee. Nobody accepts their own work. Every accept names the
   completed attempt it reviewed; a newer result refuses it.
-- **Ledger.** The award goes into `xp_awards` in `orchestrations.json`, keyed
-  by task id, in the same write as the acceptance. One task pays once: a
-  repeated or racing accept, a retry, or a reopen never pays again. Reopening
-  keeps the earlier acceptance on record. The new result must be accepted
-  again, and the award stays. "Accepted tasks" counts paid tasks, once each,
-  for good. XP goes to the agent the accepted attempt ran as, recorded on the
+- **Who is calling.** Which chat a hook call comes from is decided by the
+  host, never by the request body. Each launch of a chat's agent gets a fresh
+  secret, `OCTIQ_CHAT_CAPABILITY`, and the MCP sends it as the
+  `x-octiq-chat-capability` header on every hook call. `/hook/orchestration`
+  refuses a call without a current one (401) and one whose body names a
+  different chat (403), and uses the chat the capability belongs to as the
+  actor. The capability dies with its process and is replaced on relaunch.
+  The server token is still required as well; every agent can read it, so on
+  its own it proves nothing about which chat is calling. Limits: the secret
+  sits in the agent's process environment, so another process of the same OS
+  user that inspects it can read it, and the server token itself opens the
+  browser's socket, where every command acts as the person. Neither is a
+  boundary against an agent with unrestricted shell access.
+- **Ledgers.** Two, in `orchestrations.json`, both written in the same write
+  as the acceptance. `acceptances` records every acceptance as it was made:
+  task, accepted attempt, the agent it ran as, who accepted and when, the size,
+  and what it paid (0 with the reason when nothing). It is appended once per
+  accepted attempt and never edited. `xp_awards` records what was paid, keyed
+  by task id. One task pays once: a repeated or racing accept, a retry, or a
+  reopen never pays again. A reopened task's new result must be accepted
+  again; that adds a line to `acceptances` with 0 XP, and the award stays.
+  "Accepted tasks" counts distinct task ids in the agent's acceptances, paid
+  or not, for good, and the XP history lists every acceptance. A store
+  written before `acceptances` existed has it rebuilt on load from its awards
+  and each task's current acceptance. XP goes to the agent the accepted attempt ran as, recorded on the
   attempt when it started. A manager is never paid for its reports' subtasks. Awards copy the
   agent id, name, title and size, so renames, model changes and deleted runs
   change nothing. `scoring_since` records when scoring began. Nothing earlier
