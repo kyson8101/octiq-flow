@@ -74,6 +74,10 @@ pub async fn run_headless() {
     // reads they were recorded with (see record_trim.rs).
     std::thread::spawn(record_trim::prune_old_records);
 
+    // Before anything can start a chat: the orchestration scheduler starts
+    // workers from a plain thread, and their permission questions are waited
+    // on here.
+    agent_chat::remember_runtime(tokio::runtime::Handle::current());
     let cfg = web::load_config();
     let services = dispatch::Services::load();
     println!("[server] OctiqFlow backend — no window, agents run here");

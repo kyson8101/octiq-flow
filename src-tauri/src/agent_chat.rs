@@ -2225,9 +2225,11 @@ pub(crate) fn start_session(
         // The runtime the answer will be waited on. Captured HERE, on the thread
         // that still has one: `chat_start` is called from an async handler, the
         // reader below is a plain thread, and `Handle::current()` panics there.
-        // Absent only on the desktop build, which has no server runtime — see
-        // `answer_permission`.
-        let rt = tokio::runtime::Handle::try_current().ok();
+        // A chat started by the orchestration scheduler (an auto-dispatched
+        // worker, a coordinator resumed by a notice) is started from a plain
+        // thread too, so it falls back to the server's own runtime — without
+        // it every permission such a chat asked for was refused unasked.
+        let rt = answer_runtime();
         // The reader is where a chat learns its own session id.
         let reading = manager.clone();
         thread::spawn(move || {
@@ -3787,6 +3789,23 @@ pub(crate) fn route_worker_questions(
     )))
 }
 
+/// The server's runtime, recorded once at startup by `remember_runtime`.
+static SERVER_RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Record the runtime permission and question answers are waited on, for
+/// chats started from threads that have none of their own.
+pub fn remember_runtime(handle: tokio::runtime::Handle) {
+    let _ = SERVER_RUNTIME.set(handle);
+}
+
+/// The runtime a chat's questions are answered on: the caller's own when it
+/// has one, else the server's. None only when neither exists.
+fn answer_runtime() -> Option<tokio::runtime::Handle> {
+    tokio::runtime::Handle::try_current()
+        .ok()
+        .or_else(|| SERVER_RUNTIME.get().cloned())
+}
+
 /// Put the question to the person, then write the answer back to the agent.
 ///
 /// The agent is BLOCKED until that answer arrives, so nothing here may be
@@ -4602,6 +4621,23 @@ mod tests {
 
     const CONVERSATION_URL: &str =
         "https://optiqflow.app/#/p/workspace/c/1a735592-37d3-40ed-a0d4-c49665cbacaf";
+
+    /// Feedback 467a6314: the orchestration scheduler starts workers from a
+    /// plain thread, where `Handle::try_current` finds nothing, and every
+    /// permission such a worker asked for was denied with "OctiqFlow could not
+    /// ask anyone". A chat started there must still find a runtime.
+    #[test]
+    fn a_chat_started_off_the_runtime_can_still_ask_the_person() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        remember_runtime(runtime.handle().clone());
+        let found = std::thread::spawn(|| {
+            assert!(tokio::runtime::Handle::try_current().is_err());
+            answer_runtime().is_some()
+        })
+        .join()
+        .unwrap();
+        assert!(found, "a scheduler-started chat has a runtime to wait on");
+    }
 
     #[test]
     fn a_model_handoff_keeps_history_separate_from_the_new_user_message() {

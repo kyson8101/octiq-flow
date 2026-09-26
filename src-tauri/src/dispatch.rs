@@ -106,6 +106,13 @@ fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
     serde_json::from_value(value).map_err(|e| format!("bad argument '{name}': {e}"))
 }
 
+/// An optional list argument: omitted or null is an empty list. The agent
+/// tools advertise such lists (`dependsOn`) as optional with none by default,
+/// and a plain `arg::<Vec<_>>` turned the omission into "expected a sequence".
+fn list_arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<Vec<T>, String> {
+    Ok(arg::<Option<Vec<T>>>(args, name)?.unwrap_or_default())
+}
+
 /// A command that answers with nothing.
 fn unit(r: Result<(), String>) -> Result<Value, String> {
     r.map(|_| Value::Null)
@@ -995,7 +1002,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 run_id,
                 arg(&args, "title")?,
                 arg(&args, "spec")?,
-                arg(&args, "dependsOn")?,
+                list_arg(&args, "dependsOn")?,
                 parent,
                 worker,
                 assignee,
@@ -1459,6 +1466,20 @@ mod tests {
         let empty = json!({});
         let missing: Option<String> = arg(&empty, "model").unwrap();
         assert!(missing.is_none());
+    }
+
+    /// Feedback ddf843b0 / a43d1a92: a root task created without dependsOn
+    /// failed with "invalid type: null, expected a sequence".
+    #[test]
+    fn an_omitted_optional_list_is_empty_not_an_error() {
+        let none: Vec<String> = list_arg(&json!({}), "dependsOn").unwrap();
+        assert!(none.is_empty());
+        let null: Vec<String> = list_arg(&json!({ "dependsOn": null }), "dependsOn").unwrap();
+        assert!(null.is_empty());
+        let some: Vec<String> = list_arg(&json!({ "depends_on": ["t1"] }), "dependsOn").unwrap();
+        assert_eq!(some, vec!["t1".to_string()]);
+        let err = list_arg::<String>(&json!({ "dependsOn": "t1" }), "dependsOn").unwrap_err();
+        assert!(err.contains("dependsOn"), "{err}");
     }
 
     #[test]
