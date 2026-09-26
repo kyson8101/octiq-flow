@@ -147,6 +147,9 @@ pub struct AgentCommand<'a> {
     /// This process owns one host orchestration attempt. Its decision and
     /// completion protocol overrides ordinary chat question behaviour.
     pub orchestration_worker: bool,
+    /// Exact permission rules (`Bash(<line>)`) the person allowed once on a
+    /// Claude auto-mode card, for this launch only. See `safety_block`.
+    pub exact_grants: &'a [String],
 }
 
 /// A provider-specific permission request normalized for the shared responder.
@@ -430,6 +433,17 @@ impl AgentProvider for ClaudeProvider {
                     "{ASK_PROMPT}\n\n{READ_CONVERSATION_PROMPT}\n\n{HISTORY_PROMPT}\n\n{CHAT_TITLE_PROMPT}\n\n{FEEDBACK_PROMPT}\n\n{ORCHESTRATION_PROMPT}\n\n{MEMORY_VAULT_PROMPT}\n\n{DOCSPACE_PROMPT}\n\n{worker_prompt}"
                 )),
             ));
+        }
+        // What the person allowed on an auto-mode card: exactly that line, as
+        // a permission rule, which the classifier does not second-guess. A
+        // separate flag occurrence adds to the list above rather than
+        // replacing it.
+        if !request.exact_grants.is_empty() {
+            cmd.push_str(" --allowedTools");
+            for rule in request.exact_grants {
+                cmd.push(' ');
+                cmd.push_str(&sh_quote(rule));
+            }
         }
         // A clean Claude chat keeps its login and OctiqFlow's own tools while
         // dropping user/project settings, slash commands, and extra MCPs.
@@ -1123,6 +1137,7 @@ mod tests {
             mcp_config,
             persistent_authorizations: None,
             orchestration_worker: false,
+            exact_grants: &[],
         })
     }
 
@@ -1287,9 +1302,43 @@ mod tests {
             mcp_config: Some(Path::new("octiq-ask.json")),
             persistent_authorizations: None,
             orchestration_worker: true,
+            exact_grants: &[],
         });
         assert!(claude.contains("orchestration_gate_create"));
         assert!(claude.contains("orchestration_worker_report"));
+    }
+
+    #[test]
+    fn claude_carries_an_exact_grant_as_its_own_permission_rule() {
+        let grants = vec!["Bash(eas update --branch production)".to_string()];
+        let build = |grants: &[String]| {
+            provider_for(AgentKind::Claude).build_command(&AgentCommand {
+                model: None,
+                access: Some(Access::Auto),
+                prompt: "work",
+                resume: None,
+                extra_dirs: &[],
+                effort: None,
+                images: &[],
+                lite: true,
+                mcp_config: Some(Path::new("octiq-ask.json")),
+                persistent_authorizations: None,
+                orchestration_worker: true,
+                exact_grants: grants,
+            })
+        };
+        let with = build(&grants);
+        // One quoted word, so the shell keeps its spaces, after the MCP list
+        // rather than replacing it, and ended by the next flag.
+        assert!(
+            with.contains(
+                " --allowedTools 'Bash(eas update --branch production)' --strict-mcp-config"
+            ),
+            "{with}"
+        );
+        assert!(with.contains("mcp__octiq__orchestration_worker_report"));
+        assert_eq!(with.matches("--allowedTools").count(), 2);
+        assert_eq!(build(&[]).matches("--allowedTools").count(), 1);
     }
 
     #[test]
@@ -1332,6 +1381,7 @@ mod tests {
             mcp_config: None,
             persistent_authorizations: None,
             orchestration_worker: false,
+            exact_grants: &[],
         });
 
         assert!(pi.starts_with("pi --mode json --provider openai-codex"));

@@ -10446,6 +10446,22 @@ body.is-ultra .eff {
   color: var(--fg-1);
 }
 
+/* The exact line a Claude card would allow: shown whole, never paraphrased. */
+.safety-card-action {
+  margin: 3px 0 0;
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  background: var(--bg-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow: auto;
+}
+
 .safety-card-status {
   margin: 10px 0 0;
   padding: 7px 9px;

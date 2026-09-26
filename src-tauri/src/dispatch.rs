@@ -796,6 +796,13 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         "safety_block_dismiss" => Ok(json!(crate::safety_block::dismiss(&arg::<String>(
             &args, "id"
         )?,))),
+        // Browser-only, like every card answer: the person allows exactly the
+        // action a Claude auto-mode card names, once. Not in the agent hook's
+        // whitelist, so no agent can approve its own refused call.
+        "safety_block_grant_exact" => to_value(crate::agent_chat::grant_exact_action(
+            &svc.chats,
+            &arg::<String>(&args, "id")?,
+        )),
         "safety_block_authorize_project" => {
             let id: String = arg(&args, "id")?;
             Ok(json!(crate::safety_block::authorize_for_project(&id)?))
