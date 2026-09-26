@@ -108,10 +108,10 @@ export async function saveHome(id: string | null): Promise<string | null> {
 }
 
 /** The person approves a lead's plan; workers start on the next pass.
- *  `taskIds` is the plan they were shown: the host refuses the approval when
- *  the lead has changed it since. */
-export async function approvePlan(chatKey: string, runId: string, taskIds: string[]): Promise<void> {
-  await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId, taskIds });
+ *  `taskIds` and `revision` are the plan they were shown: the host refuses the
+ *  approval when the lead has changed anything in it since. */
+export async function approvePlan(chatKey: string, runId: string, taskIds: string[], revision?: number): Promise<void> {
+  await bridge.invoke("orchestration_plan_approve", { actorChatKey: chatKey, runId, taskIds, revision });
 }
 
 /** The conversation to reopen for "Talk to <head>": the newest one handed to

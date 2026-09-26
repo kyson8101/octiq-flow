@@ -77,6 +77,20 @@ export type RunStatus = "planning" | "running" | "waiting" | "completed" | "fail
 export type TaskStatus = "pending" | "ready" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 type AttemptStatus = "preparing" | "running" | "blocked" | "completed" | "failed" | "cancelled";
 
+/** Agents mode: the lead's plan and the person's answer to it. `revision`
+ *  moves on every change to what an approval would cover; an approval names
+ *  the revision it saw and the host refuses any other. */
+export type PlanApproval = {
+  status: "pending" | "approved";
+  requestedAt: number;
+  decidedAt?: number;
+  revision?: number;
+  revisedAt?: number;
+  /** How the last approval was given. `words` is the person's own message
+   *  when they approved in chat. */
+  consent?: { via: "button" | "conversation"; revision: number; at: number; turnId?: string; words?: string };
+};
+
 export type OrchestrationRun = {
   id: string;
   objective: string;
@@ -88,7 +102,7 @@ export type OrchestrationRun = {
   workspaceMode?: WorkspaceMode;
   workerDefaults?: WorkerDefaults | null;
   /** Agents mode: the lead's plan waits for the person before workers start. */
-  planApproval?: { status: "pending" | "approved"; requestedAt: number; decidedAt?: number };
+  planApproval?: PlanApproval;
   createdAt: number;
   updatedAt: number;
   stoppedReason?: string;

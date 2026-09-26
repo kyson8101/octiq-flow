@@ -83,6 +83,8 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_service_register",
     "orchestration_run_create",
     "orchestration_task_create",
+    "orchestration_task_revise",
+    "orchestration_plan_approve",
     "orchestration_destinations",
     "orchestration_snapshot",
     "orchestration_worker_start",
@@ -98,6 +100,10 @@ test("stdio MCP discovery and concurrent publishing preserve every image", async
     "orchestration_validation_create",
     "orchestration_validation_remove",
   ]);
+  // A lead approves in chat by naming the plan, never by passing words: the
+  // host reads the person's message itself.
+  const approve = bound.result.tools.find(tool => tool.name === "orchestration_plan_approve");
+  assert.deepEqual(Object.keys(approve.inputSchema.properties).sort(), ["revision", "runId"]);
   const service = bound.result.tools.find(tool => tool.name === "orchestration_service_register");
   assert.deepEqual(service.inputSchema.properties.host.enum, ["127.0.0.1", "::1"]);
   assert.equal(service.inputSchema.properties.port.minimum, 1);

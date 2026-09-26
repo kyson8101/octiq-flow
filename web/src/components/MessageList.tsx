@@ -1248,8 +1248,14 @@ const MessageListBody = function MessageList({
   loadingEarlier = false,
   earlierError,
   onLoadEarlier,
+  tail,
 }: {
   messages: Message[];
+  /** Drawn after the last turn, inside the transcript: a lead's plan card,
+   *  which lives at the end of the conversation because it is always the
+   *  CURRENT plan, read from the ledger, never a copy frozen into history.
+   *  Must be memoised by the caller like every other prop here. */
+  tail?: React.ReactNode;
   hasEarlier?: boolean;
   loadingEarlier?: boolean;
   earlierError?: string;
@@ -1794,6 +1800,7 @@ const MessageListBody = function MessageList({
           </Fragment>
         ))}
         {compactingSince !== undefined && <Compacting since={compactingSince} />}
+        {tail}
         {/* There were working dots here, in a slot held open so the transcript
             did not step up and down as they came and went several times a
             minute. They are gone, and the slot with them — not because the

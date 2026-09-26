@@ -60,7 +60,14 @@ export function planDestination(
  *  A manager's subtasks never wait for the person. Mirrors the host's check,
  *  which refuses an approval of any other set. */
 export function awaitingApproval(tasks: OrchestrationTask[]): string[] {
-  return tasks.filter((task) => !task.parentTaskId && !task.approvedAt).map((task) => task.id);
+  return tasks
+    .filter((task) => !task.parentTaskId && !task.approvedAt && task.status !== "cancelled")
+    .map((task) => task.id);
+}
+
+/** What a plan shows: every task but one the lead withdrew before approval. */
+export function planTasks(tasks: OrchestrationTask[]): OrchestrationTask[] {
+  return tasks.filter((task) => task.status !== "cancelled" || !!task.approvedAt);
 }
 
 function folderName(path: string): string {

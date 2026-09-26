@@ -26,6 +26,7 @@ use crate::workspaces::{Workspace, WorkspaceState};
 pub mod agent_view;
 mod archive;
 pub mod automation;
+pub mod consent;
 pub mod destination;
 pub mod execution;
 pub mod inbox;
@@ -132,6 +133,105 @@ pub struct PlanApproval {
     pub requested_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_at: Option<i64>,
+    /// Which version of the plan is on screen. It moves on EVERY change to
+    /// what an approval would cover — a task added, revised or withdrawn, an
+    /// owner, a destination, a planned branch — because `mutate` recomputes
+    /// `scope` after each write (see `refresh_plan_revisions`). An approval
+    /// names the revision it saw, and a different one is refused.
+    #[serde(default)]
+    pub revision: u32,
+    /// When `revision` last moved.
+    #[serde(default)]
+    pub revised_at: i64,
+    /// Digest of the displayed scope `revision` stands for. Persisted so a
+    /// restart does not move every revision; the browser ignores it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub scope: String,
+    /// How the last approval was given, and the person's words when it was
+    /// given in chat. The evidence an approval rests on, kept with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<PlanConsent>,
+    /// Chat turns that have already approved a revision of this plan. One
+    /// message approves once: a replay or a retry never approves again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consent_turns: Vec<String>,
+}
+
+impl PlanApproval {
+    fn pending(now: i64) -> Self {
+        Self {
+            status: PlanStatus::Pending,
+            requested_at: now,
+            decided_at: None,
+            revision: 0,
+            revised_at: now,
+            scope: String::new(),
+            consent: None,
+            consent_turns: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentVia {
+    /// The Approve button on a plan card.
+    Button,
+    /// The person said so in the lead's chat, and the host checked it.
+    Conversation,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanConsent {
+    pub via: ConsentVia,
+    /// The plan revision this approval covers.
+    pub revision: u32,
+    pub at: i64,
+    /// The person's own message, by its turn id and words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
+}
+
+/// A lead's change to a task of a plan still waiting for approval. `None`
+/// keeps a field; `route` is the host-resolved worker, owner and destination.
+#[derive(Clone, Debug, Default)]
+pub struct TaskRevision {
+    pub title: Option<String>,
+    pub spec: Option<String>,
+    pub card: Option<Option<TaskCard>>,
+    pub depends_on: Option<Vec<String>>,
+    #[allow(clippy::type_complexity)]
+    pub route: Option<(
+        Option<automation::WorkerSettings>,
+        Option<TaskAssignee>,
+        Option<TaskDestination>,
+    )>,
+    pub withdraw: bool,
+}
+
+/// A plan the browser had on screen when the person sent a message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeenPlan {
+    pub run_id: String,
+    pub revision: u32,
+}
+
+/// The message a chat's agent is answering right now, as the HOST knows it:
+/// typed by the person in the browser, never text an agent passed along.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonTurn {
+    pub turn_id: String,
+    /// The whole turn, every coalesced follow-up included.
+    pub text: String,
+    /// The plans on screen when each part of it was sent, one list per part:
+    /// coalesced follow-ups keep their own. Every part must have seen the
+    /// plan at the revision approved — a later look never vouches for an
+    /// earlier part.
+    pub parts_seen: Vec<Vec<SeenPlan>>,
 }
 
 impl Run {
@@ -438,6 +538,7 @@ impl OrchestrationStore {
                     recovered |= workspaces::recover_workspaces(&mut data);
                     recovered |= lifecycle::recover(&mut data);
                     recovered |= retention::prune_finished_runs(&mut data);
+                    recovered |= refresh_plan_revisions(&mut data);
                     inner.data = data;
                 }
                 Ok(data) => {
@@ -505,6 +606,9 @@ impl OrchestrationStore {
         }
         let mut next = inner.data.clone();
         let result = change(&mut next)?;
+        // In the same write as the change, so no reader ever sees a plan
+        // whose scope moved under an unchanged revision.
+        refresh_plan_revisions(&mut next);
         self.persist(&next)?;
         inner.data = next;
         Ok(result)
@@ -862,71 +966,144 @@ impl OrchestrationStore {
     pub fn require_plan_approval(&self, run_id: &str) -> Result<Run, String> {
         self.mutate(|data| {
             let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
-            run.plan_approval = Some(PlanApproval {
-                status: PlanStatus::Pending,
-                requested_at: now_ms(),
-                decided_at: None,
-            });
+            run.plan_approval = Some(PlanApproval::pending(now_ms()));
             Ok(run.clone())
         })
         .inspect(|run| announce(&run.id, "plan_pending"))
     }
 
-    /// The person approves the lead's plan; the scheduler starts the ready
-    /// wave on its next pass.
+    /// The person approves the lead's plan with the button on its card; the
+    /// scheduler starts the ready wave on its next pass.
     ///
     /// `seen` is the plan the person was looking at: the ids of the tasks
-    /// awaiting approval. When the lead added a task in the meantime, the
-    /// approval is refused rather than stretched over work nobody reviewed.
+    /// awaiting approval, and `revision` the version of it on screen. When
+    /// the lead added or changed anything in the meantime, the approval is
+    /// refused rather than stretched over work nobody reviewed.
     pub fn approve_plan(
         &self,
         actor_chat_key: &str,
         run_id: &str,
         seen: Option<&[String]>,
+        revision: Option<u32>,
     ) -> Result<Run, String> {
         self.mutate(|data| {
-            coordinator(data, run_id, actor_chat_key)?;
-            let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
-            if matches!(
-                run.status,
-                RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed
-            ) {
-                return Err("This run has ended.".into());
+            let consent = PlanConsent {
+                via: ConsentVia::Button,
+                revision: 0,
+                at: now_ms(),
+                turn_id: None,
+                words: None,
+            };
+            approve_in(data, actor_chat_key, run_id, seen, revision, consent)
+        })
+        .inspect(|run| announce(&run.id, "plan_approved"))
+    }
+
+    /// The lead approves its plan because the person just told it to, in the
+    /// message it is answering. Nothing the lead says counts: the host reads
+    /// that message itself (`turn`, from `ChatManager::person_turn`) and
+    /// approves only when all of this holds —
+    ///
+    /// - the whole message is a plain approval (`consent::read`);
+    /// - it names one plan: by handle, or "this plan" when only one waits and
+    ///   only one was on screen;
+    /// - that plan was on the person's screen when they sent it, at the very
+    ///   revision the lead names and the ledger holds now;
+    /// - the message has not approved a revision of this plan before.
+    ///
+    /// Then it is the button's approval, with the person's words kept as its
+    /// evidence.
+    pub fn approve_plan_in_conversation(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        revision: u32,
+        turn: &PersonTurn,
+    ) -> Result<Run, String> {
+        let said = consent::read(&turn.text)?;
+        self.mutate(|data| {
+            let run = coordinator(data, run_id, actor_chat_key)?;
+            let handle = consent::plan_handle(run_id);
+            // Every plan waiting in this chat, and every plan the person saw.
+            let waiting: Vec<&Run> = data
+                .runs
+                .values()
+                .filter(|run| run.coordinator_chat_key == actor_chat_key)
+                .filter(|run| run.awaiting_plan_approval() && !run_has_ended(run))
+                .collect();
+            let shown: BTreeSet<&str> = turn
+                .parts_seen
+                .iter()
+                .flatten()
+                .map(|seen| seen.run_id.as_str())
+                .collect();
+            match said.handle.as_deref() {
+                Some(named) if named != handle => {
+                    return Err(format!(
+                        "The person approved plan {named}, not this one (plan {handle}). Nothing was approved."
+                    ));
+                }
+                Some(_) => {
+                    let alike = waiting
+                        .iter()
+                        .filter(|other| consent::plan_handle(&other.id) == handle)
+                        .count();
+                    if alike > 1 {
+                        return Err(format!("Two waiting plans go by {handle}. Ask the person to approve with the button on the plan card."));
+                    }
+                }
+                None if waiting.len() > 1 || shown.len() > 1 => {
+                    return Err(format!(
+                        "More than one plan is waiting, and the person did not say which. Ask them to name it, for example \"approve plan {handle}\". Nothing was approved."
+                    ));
+                }
+                None => {}
             }
             let plan = run
                 .plan_approval
-                .as_mut()
+                .as_ref()
                 .ok_or("This run has no plan waiting for approval.")?;
+            // What each part of the message saw of THIS plan.
+            let saw: Vec<Option<u32>> = turn
+                .parts_seen
+                .iter()
+                .map(|part| {
+                    part.iter()
+                        .find(|seen| seen.run_id == run_id)
+                        .map(|seen| seen.revision)
+                })
+                .collect();
             if plan.status == PlanStatus::Approved {
                 return Err("This plan is already approved.".into());
             }
-            if !data.tasks.values().any(|task| task.run_id == run_id) {
-                return Err("The plan has no tasks yet.".into());
+            if saw.is_empty() || saw.iter().any(Option::is_none) {
+                return Err("This plan was not on the person's screen when they sent that message, so it cannot be their approval. Show them the plan; they can approve it in chat or on its card.".into());
             }
-            let waiting: BTreeSet<&str> = data
-                .tasks
-                .values()
-                .filter(|task| task.run_id == run_id && task.approved_at.is_none())
-                .filter(|task| task.parent_task_id.is_none())
-                .map(|task| task.id.as_str())
-                .collect();
-            if let Some(seen) = seen {
-                let seen: BTreeSet<&str> = seen.iter().map(String::as_str).collect();
-                if seen != waiting {
-                    return Err("The plan changed while you were reviewing it. Look it over again, then approve.".into());
-                }
+            if plan.consent_turns.iter().any(|id| *id == turn.turn_id) {
+                return Err("That message already approved an earlier version of this plan. The plan has changed since; the person approves the new version with a new message.".into());
             }
-            let now = now_ms();
-            plan.status = PlanStatus::Approved;
-            plan.decided_at = Some(now);
-            run.updated_at = now;
-            let approved = run.clone();
-            for task in data.tasks.values_mut() {
-                if task.run_id == run_id && task.approved_at.is_none() {
-                    task.approved_at = Some(now);
-                }
+            let saw: Vec<u32> = saw.into_iter().flatten().collect();
+            if revision != plan.revision {
+                return Err(format!(
+                    "You named revision {revision}, but the plan is at revision {}. Re-read orchestration_snapshot; nothing was approved.",
+                    plan.revision
+                ));
             }
-            Ok(approved)
+            if saw.iter().any(|seen| *seen != plan.revision) {
+                return Err(format!(
+                    "The plan changed after the person's message: they saw revision {}, and it is now revision {}. Show them the current plan and let them approve it again.",
+                    saw.iter().min().copied().unwrap_or_default(),
+                    plan.revision
+                ));
+            }
+            let consent = PlanConsent {
+                via: ConsentVia::Conversation,
+                revision,
+                at: now_ms(),
+                turn_id: Some(turn.turn_id.clone()),
+                words: Some(turn.text.trim().chars().take(200).collect()),
+            };
+            approve_in(data, actor_chat_key, run_id, None, Some(revision), consent)
         })
         .inspect(|run| announce(&run.id, "plan_approved"))
     }
@@ -1120,6 +1297,150 @@ impl OrchestrationStore {
                 announce(&run_id_for_event, "plan_pending");
             }
         })
+    }
+
+    /// The lead changes, or withdraws, a task of a plan the person has not
+    /// approved yet — how "change X" becomes a new revision they can see
+    /// before approving. An approved task is fixed: new work is a new task,
+    /// which puts the plan back in front of the person.
+    pub fn revise_task(
+        &self,
+        actor_chat_key: &str,
+        task_id: &str,
+        revision: TaskRevision,
+    ) -> Result<Task, String> {
+        let title = revision
+            .title
+            .map(|title| required_text("task title", title, 240))
+            .transpose()?;
+        let spec = revision
+            .spec
+            .map(|spec| required_text("task spec", spec, 40_000))
+            .transpose()?;
+        let route = revision
+            .route
+            .map(|(worker, assignee, destination)| {
+                worker
+                    .map(automation::WorkerSettings::normalized)
+                    .transpose()
+                    .map(|worker| (worker, assignee, destination))
+            })
+            .transpose()?;
+        // A new destination or worker needs a new branch plan, read from Git
+        // before the store is locked, exactly as a new task's is.
+        let proposal = match &route {
+            Some((worker, _, destination)) => {
+                let inner = self.inner.lock().map_err(|error| error.to_string())?;
+                let run = inner
+                    .data
+                    .tasks
+                    .get(task_id)
+                    .and_then(|task| inner.data.runs.get(&task.run_id))
+                    .cloned();
+                drop(inner);
+                run.map(|run| {
+                    workspaces::propose(&run, task_id, destination.as_ref(), worker.as_ref())
+                })
+            }
+            None => None,
+        };
+        let mut run_id = String::new();
+        self.mutate(|data| {
+            let task = data.tasks.get(task_id).ok_or("The task does not exist.")?;
+            let run = coordinator(data, &task.run_id, actor_chat_key)?;
+            run_id = run.id.clone();
+            if !run.awaiting_plan_approval() || run_has_ended(run) {
+                return Err("Only a plan still waiting for the person's approval can be revised. Add a new task instead; the plan goes back to them.".into());
+            }
+            if task.parent_task_id.is_some() || task.approved_at.is_some() {
+                return Err("This task is already approved and fixed. Add a new task instead.".into());
+            }
+            if task.active_attempt_id.is_some()
+                || !matches!(task.status, TaskStatus::Pending | TaskStatus::Ready)
+            {
+                return Err("This task has already started or been withdrawn.".into());
+            }
+            if revision.withdraw {
+                if let Some(dependant) = data.tasks.values().find(|other| {
+                    other.run_id == task.run_id
+                        && other.status != TaskStatus::Cancelled
+                        && other.depends_on.iter().any(|id| id == task_id)
+                }) {
+                    return Err(format!(
+                        "\"{}\" depends on this task. Revise or withdraw it first.",
+                        dependant.title
+                    ));
+                }
+            }
+            if let Some(depends_on) = &revision.depends_on {
+                let unique: BTreeSet<_> = depends_on.iter().collect();
+                if unique.len() != depends_on.len() {
+                    return Err("A task dependency was listed more than once.".into());
+                }
+                for dependency in depends_on {
+                    if dependency == task_id {
+                        return Err("A task cannot depend on itself.".into());
+                    }
+                    let other = data
+                        .tasks
+                        .get(dependency)
+                        .ok_or_else(|| format!("Dependency {dependency} does not exist."))?;
+                    if other.run_id != task.run_id || other.status == TaskStatus::Cancelled {
+                        return Err(format!("Dependency {dependency} is not part of this plan."));
+                    }
+                    if depends_on_transitively(data, dependency, task_id) {
+                        return Err("That dependency would make the tasks wait on each other.".into());
+                    }
+                }
+            }
+            let now = now_ms();
+            let ready = |data: &Stored, deps: &[String]| {
+                deps.iter().all(|dependency| {
+                    data.tasks
+                        .get(dependency)
+                        .is_some_and(|task| task.status == TaskStatus::Completed)
+                })
+            };
+            let next_deps = revision
+                .depends_on
+                .clone()
+                .unwrap_or_else(|| task.depends_on.clone());
+            let now_ready = ready(data, &next_deps);
+            let task = data.tasks.get_mut(task_id).ok_or("The task does not exist.")?;
+            if revision.withdraw {
+                task.status = TaskStatus::Cancelled;
+                task.result = Some("Withdrawn from the plan before approval.".into());
+            } else {
+                if let Some(title) = title {
+                    task.title = title;
+                }
+                if let Some(spec) = spec {
+                    task.spec = spec;
+                }
+                if let Some(card) = revision.card {
+                    task.card = card;
+                }
+                if let Some((worker, assignee, destination)) = route {
+                    task.worker = worker;
+                    task.assignee = assignee;
+                    task.destination = destination;
+                    task.workspace_proposal = proposal;
+                }
+                task.depends_on = next_deps;
+                task.status = if now_ready {
+                    TaskStatus::Ready
+                } else {
+                    TaskStatus::Pending
+                };
+            }
+            task.updated_at = now;
+            let revised = task.clone();
+            if let Some(run) = data.runs.get_mut(&revised.run_id) {
+                run.updated_at = now;
+            }
+            Ok(revised)
+        })
+        .inspect(|_| announce(&run_id, "task_revised"))
     }
 
     #[cfg(test)]
@@ -2082,6 +2403,175 @@ fn coordinator<'a>(
     Ok(run)
 }
 
+/// `from` waits, directly or through others, on `target`.
+fn depends_on_transitively(data: &Stored, from: &str, target: &str) -> bool {
+    let mut stack = vec![from.to_string()];
+    let mut seen = BTreeSet::new();
+    while let Some(id) = stack.pop() {
+        if id == target {
+            return true;
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(task) = data.tasks.get(&id) {
+            stack.extend(task.depends_on.iter().cloned());
+        }
+    }
+    false
+}
+
+fn run_has_ended(run: &Run) -> bool {
+    matches!(
+        run.status,
+        RunStatus::Stopped | RunStatus::Completed | RunStatus::Failed
+    )
+}
+
+/// The tasks a plan approval covers: the lead's own, not yet approved, and
+/// still in the plan.
+fn awaiting_approval<'a>(data: &'a Stored, run_id: &'a str) -> impl Iterator<Item = &'a Task> {
+    data.tasks.values().filter(move |task| {
+        task.run_id == run_id
+            && task.approved_at.is_none()
+            && task.parent_task_id.is_none()
+            && task.status != TaskStatus::Cancelled
+    })
+}
+
+/// The one place a plan becomes approved, whichever way the person said so.
+fn approve_in(
+    data: &mut Stored,
+    actor_chat_key: &str,
+    run_id: &str,
+    seen: Option<&[String]>,
+    revision: Option<u32>,
+    mut consent: PlanConsent,
+) -> Result<Run, String> {
+    coordinator(data, run_id, actor_chat_key)?;
+    let waiting: BTreeSet<String> = awaiting_approval(data, run_id)
+        .map(|task| task.id.clone())
+        .collect();
+    let run = data.runs.get(run_id).ok_or("The run does not exist.")?;
+    if run_has_ended(run) {
+        return Err("This run has ended.".into());
+    }
+    let plan = run
+        .plan_approval
+        .as_ref()
+        .ok_or("This run has no plan waiting for approval.")?;
+    if plan.status == PlanStatus::Approved {
+        return Err("This plan is already approved.".into());
+    }
+    if waiting.is_empty() {
+        return Err("The plan has no tasks yet.".into());
+    }
+    if let Some(seen) = seen {
+        let seen: BTreeSet<String> = seen.iter().cloned().collect();
+        if seen != waiting {
+            return Err(
+                "The plan changed while you were reviewing it. Look it over again, then approve."
+                    .into(),
+            );
+        }
+    }
+    if revision.is_some_and(|revision| revision != plan.revision) {
+        return Err(
+            "The plan changed while you were reviewing it. Look it over again, then approve."
+                .into(),
+        );
+    }
+    let now = now_ms();
+    consent.revision = plan.revision;
+    consent.at = now;
+    let run = data.runs.get_mut(run_id).ok_or("The run does not exist.")?;
+    let plan = run
+        .plan_approval
+        .as_mut()
+        .ok_or("This run has no plan waiting for approval.")?;
+    plan.status = PlanStatus::Approved;
+    plan.decided_at = Some(now);
+    if let Some(turn) = &consent.turn_id {
+        plan.consent_turns.push(turn.clone());
+        let over = plan.consent_turns.len().saturating_sub(32);
+        plan.consent_turns.drain(..over);
+    }
+    plan.consent = Some(consent);
+    run.updated_at = now;
+    let approved = run.clone();
+    for task in data.tasks.values_mut() {
+        if waiting.contains(&task.id) {
+            task.approved_at = Some(now);
+        }
+    }
+    Ok(approved)
+}
+
+/// What an approval of this plan would cover, as a digest: every field the
+/// plan card shows for each task still waiting, plus the run settings that
+/// decide how they execute. Equal digests, equal plans.
+fn plan_scope(data: &Stored, run: &Run) -> String {
+    use sha2::{Digest, Sha256};
+    let tasks: Vec<_> = awaiting_approval(data, &run.id)
+        .map(|task| {
+            // What was planned, not when: a timestamp is not scope.
+            let mut proposal =
+                serde_json::to_value(&task.workspace_proposal).unwrap_or(serde_json::Value::Null);
+            if let Some(object) = proposal.as_object_mut() {
+                object.remove("proposedAt");
+            }
+            json!({
+                "id": task.id,
+                "title": task.title,
+                "spec": task.spec,
+                "card": task.card,
+                "worker": task.worker,
+                "assignee": task.assignee,
+                "destination": task.destination,
+                "proposal": proposal,
+                "dependsOn": task.depends_on,
+            })
+        })
+        .collect();
+    let scope = json!({
+        "tasks": tasks,
+        "workerDefaults": run.worker_defaults,
+        "workspaceMode": run.workspace_mode,
+        "rootPath": run.root_path,
+    });
+    let digest = Sha256::digest(scope.to_string().as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Move each waiting plan's revision when what it covers has changed. Runs
+/// inside every write, so a revision can never lag its plan. `true` when any
+/// revision moved.
+fn refresh_plan_revisions(data: &mut Stored) -> bool {
+    let changed: Vec<(String, String)> = data
+        .runs
+        .values()
+        .filter(|run| run.awaiting_plan_approval())
+        .filter_map(|run| {
+            let scope = plan_scope(data, run);
+            let plan = run.plan_approval.as_ref()?;
+            (plan.scope != scope).then(|| (run.id.clone(), scope))
+        })
+        .collect();
+    let now = now_ms();
+    for (run_id, scope) in &changed {
+        if let Some(plan) = data
+            .runs
+            .get_mut(run_id)
+            .and_then(|run| run.plan_approval.as_mut())
+        {
+            plan.scope = scope.clone();
+            plan.revision += 1;
+            plan.revised_at = now;
+        }
+    }
+    !changed.is_empty()
+}
+
 fn active_task_for_actor(data: &Stored, actor_chat_key: &str) -> Option<Task> {
     data.attempts
         .values()
@@ -2300,7 +2790,7 @@ pub fn master_prompt(run: &Run) -> String {
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
     let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
     let brief = if run.awaiting_plan_approval() {
-        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval.")
+        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.", consent::plan_handle(&run.id))
     } else {
         brief
     };
@@ -2580,16 +3070,28 @@ mod tests {
         let run = run(&store);
         store.require_plan_approval(&run.id).unwrap();
         // Nothing to approve before the lead has made a plan.
-        assert!(store.approve_plan("chat:master", &run.id, None).is_err());
+        assert!(store
+            .approve_plan("chat:master", &run.id, None, None)
+            .is_err());
         let first = task(&store, &run, Vec::new());
         assert!(store
             .reserve_attempt("chat:master", &launch_for(&first.id))
             .unwrap_err()
             .contains("not approved"));
-        assert!(store.approve_plan("chat:worker", &run.id, None).is_err());
-        let approved = store.approve_plan("chat:master", &run.id, None).unwrap();
+        assert!(store
+            .approve_plan("chat:worker", &run.id, None, None)
+            .is_err());
+        let approved = store
+            .approve_plan("chat:master", &run.id, None, None)
+            .unwrap();
         assert!(!approved.awaiting_plan_approval());
-        assert!(store.approve_plan("chat:master", &run.id, None).is_err());
+        assert_eq!(
+            approved.plan_approval.unwrap().consent.unwrap().via,
+            ConsentVia::Button
+        );
+        assert!(store
+            .approve_plan("chat:master", &run.id, None, None)
+            .is_err());
         assert!(store
             .reserve_attempt("chat:master", &launch_for(&first.id))
             .is_ok());
@@ -2628,11 +3130,11 @@ mod tests {
         // The person approves exactly what they saw, nothing else.
         let stale = [first.id.clone(), "task_other".into()];
         assert!(store
-            .approve_plan("chat:master", &run.id, Some(&stale))
+            .approve_plan("chat:master", &run.id, Some(&stale), None)
             .unwrap_err()
             .contains("changed"));
         store
-            .approve_plan("chat:master", &run.id, Some(&[first.id.clone()]))
+            .approve_plan("chat:master", &run.id, Some(&[first.id.clone()]), None)
             .unwrap();
         assert!(store.snapshot(None).unwrap().tasks[0].approved_at.is_some());
 
@@ -2658,11 +3160,12 @@ mod tests {
             .approve_plan(
                 "chat:master",
                 &run.id,
-                Some(&[first.id.clone(), second.id.clone()])
+                Some(&[first.id.clone(), second.id.clone()]),
+                None
             )
             .is_err());
         store
-            .approve_plan("chat:master", &run.id, Some(&[second.id.clone()]))
+            .approve_plan("chat:master", &run.id, Some(&[second.id.clone()]), None)
             .unwrap();
 
         // A manager's own split is not the top plan and needs no approval.
@@ -2675,6 +3178,488 @@ mod tests {
         );
         assert!(part.is_ok());
         assert!(!store.snapshot(None).unwrap().runs[0].awaiting_plan_approval());
+    }
+
+    fn pending_plan(store: &OrchestrationStore) -> (Run, Task) {
+        let run = run(store);
+        store.require_plan_approval(&run.id).unwrap();
+        let task = task(store, &run, Vec::new());
+        (run, task)
+    }
+
+    fn plan_of(store: &OrchestrationStore, run_id: &str) -> PlanApproval {
+        store
+            .snapshot(Some(run_id))
+            .unwrap()
+            .runs
+            .remove(0)
+            .plan_approval
+            .unwrap()
+    }
+
+    /// A one-part message and what was on screen when it was sent.
+    fn said(turn: &str, text: &str, seen: &[(&str, u32)]) -> PersonTurn {
+        said_in_parts(turn, text, &[seen])
+    }
+
+    /// Coalesced follow-ups: what each part saw, part by part.
+    fn said_in_parts(turn: &str, text: &str, parts: &[&[(&str, u32)]]) -> PersonTurn {
+        PersonTurn {
+            turn_id: turn.into(),
+            text: text.into(),
+            parts_seen: parts
+                .iter()
+                .map(|seen| {
+                    seen.iter()
+                        .map(|(run_id, revision)| SeenPlan {
+                            run_id: (*run_id).into(),
+                            revision: *revision,
+                        })
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn every_change_to_a_waiting_plan_is_a_new_revision() {
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let one = plan_of(&store, &run.id).revision;
+        assert!(one > 0);
+        let changed = |revision: TaskRevision| {
+            store
+                .revise_task("chat:master", &first.id, revision)
+                .unwrap();
+            plan_of(&store, &run.id).revision
+        };
+        let two = changed(TaskRevision {
+            title: Some("Implement it properly".into()),
+            ..TaskRevision::default()
+        });
+        assert_eq!(two, one + 1);
+        let three = changed(TaskRevision {
+            card: Some(Some(TaskCard {
+                problem: "p".into(),
+                goal: "g".into(),
+                acceptance: vec!["a".into()],
+            })),
+            ..TaskRevision::default()
+        });
+        assert_eq!(three, two + 1);
+        let four = changed(TaskRevision {
+            route: Some((
+                None,
+                Some(TaskAssignee {
+                    id: "agent_bo".into(),
+                    name: "Bo".into(),
+                }),
+                None,
+            )),
+            ..TaskRevision::default()
+        });
+        assert_eq!(four, three + 1);
+        // A write that changes nothing the plan shows leaves it alone.
+        store
+            .record_message(
+                "chat:master",
+                run.id.clone(),
+                "coordinator".into(),
+                "status".into(),
+                "s".into(),
+                "b".into(),
+            )
+            .ok();
+        assert_eq!(plan_of(&store, &run.id).revision, four);
+
+        // The button names the revision it showed; an older one is refused.
+        let seen = [first.id.clone()];
+        assert!(store
+            .approve_plan("chat:master", &run.id, Some(&seen), Some(three))
+            .unwrap_err()
+            .contains("changed"));
+        let approved = store
+            .approve_plan("chat:master", &run.id, Some(&seen), Some(four))
+            .unwrap();
+        let consent = approved.plan_approval.unwrap().consent.unwrap();
+        assert_eq!((consent.via, consent.revision), (ConsentVia::Button, four));
+
+        // An approved task is fixed; new work re-opens the plan at a new
+        // revision that covers only the new task.
+        assert!(store
+            .revise_task(
+                "chat:master",
+                &first.id,
+                TaskRevision {
+                    title: Some("Sneaky".into()),
+                    ..TaskRevision::default()
+                }
+            )
+            .is_err());
+        let second = task(&store, &run, Vec::new());
+        let plan = plan_of(&store, &run.id);
+        assert_eq!(plan.status, PlanStatus::Pending);
+        assert!(plan.revision > four);
+        assert!(store
+            .approve_plan("chat:master", &run.id, Some(&seen), Some(plan.revision))
+            .is_err());
+        store
+            .approve_plan(
+                "chat:master",
+                &run.id,
+                Some(&[second.id.clone()]),
+                Some(plan.revision),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn revision_survives_a_restart_unchanged() {
+        let dir = std::env::temp_dir().join(format!("octiq-plan-{}", compact_id()));
+        let path = dir.join("orchestrations.json");
+        let store = OrchestrationStore::load(path.clone());
+        let (run, _) = pending_plan(&store);
+        let before = plan_of(&store, &run.id);
+        drop(store);
+        let reloaded = OrchestrationStore::load(path);
+        let after = plan_of(&reloaded, &run.id);
+        assert_eq!(
+            (after.revision, after.revised_at),
+            (before.revision, before.revised_at)
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_withdrawn_task_leaves_the_plan_and_its_dependants_hold_it() {
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let second = task(&store, &run, vec![first.id.clone()]);
+        let withdraw = TaskRevision {
+            withdraw: true,
+            ..TaskRevision::default()
+        };
+        assert!(store
+            .revise_task("chat:master", &first.id, withdraw.clone())
+            .unwrap_err()
+            .contains("depends on"));
+        // A cycle is refused too.
+        assert!(store
+            .revise_task(
+                "chat:master",
+                &first.id,
+                TaskRevision {
+                    depends_on: Some(vec![second.id.clone()]),
+                    ..TaskRevision::default()
+                }
+            )
+            .is_err());
+        store
+            .revise_task("chat:master", &second.id, withdraw.clone())
+            .unwrap();
+        // Only the coordinator revises its plan.
+        assert!(store
+            .revise_task("chat:worker", &first.id, withdraw)
+            .is_err());
+        let approved = store
+            .approve_plan("chat:master", &run.id, Some(&[first.id.clone()]), None)
+            .unwrap();
+        assert!(!approved.awaiting_plan_approval());
+        let tasks = store.snapshot(Some(&run.id)).unwrap().tasks;
+        let withdrawn = tasks.iter().find(|t| t.id == second.id).unwrap();
+        assert_eq!(withdrawn.status, TaskStatus::Cancelled);
+        assert!(withdrawn.approved_at.is_none());
+    }
+
+    #[test]
+    fn a_plain_approval_in_chat_approves_the_plan_it_saw() {
+        let store = OrchestrationStore::default();
+        let (run, _) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let turn = said("user-1", "Approve this plan", &[(&run.id, revision)]);
+        let approved = store
+            .approve_plan_in_conversation("chat:master", &run.id, revision, &turn)
+            .unwrap();
+        let plan = approved.plan_approval.unwrap();
+        assert_eq!(plan.status, PlanStatus::Approved);
+        let consent = plan.consent.unwrap();
+        assert_eq!(consent.via, ConsentVia::Conversation);
+        assert_eq!(consent.revision, revision);
+        assert_eq!(consent.turn_id.as_deref(), Some("user-1"));
+        assert_eq!(consent.words.as_deref(), Some("Approve this plan"));
+        // The same message again: nothing more to approve.
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, revision, &turn)
+            .unwrap_err()
+            .contains("already approved"));
+    }
+
+    #[test]
+    fn a_message_that_is_not_just_approval_approves_nothing() {
+        let store = OrchestrationStore::default();
+        let (run, _) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        for text in [
+            "approve\nbut change the branch name",
+            "approve if the tests pass",
+            "don't approve yet",
+            "should I approve?",
+            "ok",
+            "go ahead",
+            "> approve this plan",
+            "approve and deploy it",
+        ] {
+            let turn = said("user-1", text, &[(&run.id, revision)]);
+            assert!(
+                store
+                    .approve_plan_in_conversation("chat:master", &run.id, revision, &turn)
+                    .is_err(),
+                "{text:?}"
+            );
+        }
+        assert!(store.snapshot(None).unwrap().runs[0].awaiting_plan_approval());
+    }
+
+    #[test]
+    fn chat_approval_needs_the_plan_on_screen_at_its_current_revision() {
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let old = plan_of(&store, &run.id).revision;
+        // Not on screen at all.
+        let unseen = said("user-1", "approve", &[]);
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, old, &unseen)
+            .unwrap_err()
+            .contains("not on the person's screen"));
+        // The lead changes the plan after the person looked.
+        store
+            .revise_task(
+                "chat:master",
+                &first.id,
+                TaskRevision {
+                    title: Some("A different task".into()),
+                    ..TaskRevision::default()
+                },
+            )
+            .unwrap();
+        let new = plan_of(&store, &run.id).revision;
+        let stale = said("user-2", "approve this plan", &[(&run.id, old)]);
+        // The lead names the old revision, or the current one the person did
+        // not see: refused both ways, each saying which.
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, old, &stale)
+            .unwrap_err()
+            .contains(&format!("You named revision {old}")));
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, new, &stale)
+            .unwrap_err()
+            .contains(&format!(
+                "they saw revision {old}, and it is now revision {new}"
+            )));
+        // Parts of one turn that saw different revisions are not one view.
+        // "approve" typed at the old revision, "thanks" at the new one: the
+        // later look does not vouch for the earlier words.
+        let mixed = said_in_parts(
+            "user-3",
+            "approve\nthanks",
+            &[&[(&run.id, old)], &[(&run.id, new)]],
+        );
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, new, &mixed)
+            .unwrap_err()
+            .contains("changed"));
+        // Nor does a part that saw no plan at all.
+        let blind = said_in_parts("user-3b", "approve\nthanks", &[&[], &[(&run.id, new)]]);
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, new, &blind)
+            .unwrap_err()
+            .contains("not on the person's screen"));
+        // The lead cannot claim a revision the person did not see.
+        let current = said("user-4", "approve", &[(&run.id, new)]);
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, old, &current)
+            .is_err());
+        store
+            .approve_plan_in_conversation("chat:master", &run.id, new, &current)
+            .unwrap();
+    }
+
+    #[test]
+    fn one_message_never_approves_twice() {
+        let store = OrchestrationStore::default();
+        let (run, _) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let turn = said("user-1", "approve", &[(&run.id, revision)]);
+        store
+            .approve_plan_in_conversation("chat:master", &run.id, revision, &turn)
+            .unwrap();
+        // New work re-opens the plan. A retry or replay of the old message —
+        // even one claiming to have seen the new revision — is refused.
+        task(&store, &run, Vec::new());
+        let reopened = plan_of(&store, &run.id).revision;
+        let replay = said("user-1", "approve", &[(&run.id, reopened)]);
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &run.id, reopened, &replay)
+            .unwrap_err()
+            .contains("already approved an earlier version"));
+        assert!(store.snapshot(None).unwrap().runs[0].awaiting_plan_approval());
+    }
+
+    #[test]
+    fn with_several_plans_waiting_the_person_names_one() {
+        let store = OrchestrationStore::default();
+        let (a, _) = pending_plan(&store);
+        let (b, _) = pending_plan(&store);
+        let (ra, rb) = (
+            plan_of(&store, &a.id).revision,
+            plan_of(&store, &b.id).revision,
+        );
+        let both = [(a.id.as_str(), ra), (b.id.as_str(), rb)];
+        let vague = said("user-1", "approve this plan", &both);
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &a.id, ra, &vague)
+            .unwrap_err()
+            .contains("More than one plan"));
+        let handle_b = consent::plan_handle(&b.id);
+        let for_b = said("user-2", &format!("approve plan {handle_b}"), &both);
+        // Named B: it cannot approve A.
+        if consent::plan_handle(&a.id) != handle_b {
+            assert!(store
+                .approve_plan_in_conversation("chat:master", &a.id, ra, &for_b)
+                .is_err());
+            store
+                .approve_plan_in_conversation("chat:master", &b.id, rb, &for_b)
+                .unwrap();
+            let snapshot = store.snapshot(None).unwrap();
+            let waiting = |id: &str| {
+                snapshot
+                    .runs
+                    .iter()
+                    .find(|run| run.id == id)
+                    .unwrap()
+                    .awaiting_plan_approval()
+            };
+            assert!(waiting(&a.id));
+            assert!(!waiting(&b.id));
+        }
+    }
+
+    #[test]
+    fn chat_approval_is_the_coordinators_and_stays_in_its_run() {
+        let store = OrchestrationStore::default();
+        let (run, _) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let turn = said("user-1", "approve", &[(&run.id, revision)]);
+        assert!(store
+            .approve_plan_in_conversation("chat:worker", &run.id, revision, &turn)
+            .is_err());
+        // Another chat's run, with the plan this chat saw.
+        let other = store
+            .create_run(
+                "chat:other".into(),
+                "Other".into(),
+                "ws".into(),
+                "/tmp".into(),
+                None,
+            )
+            .unwrap();
+        store.require_plan_approval(&other.id).unwrap();
+        task_as(&store, &other, "chat:other");
+        let theirs = plan_of(&store, &other.id).revision;
+        assert!(store
+            .approve_plan_in_conversation("chat:master", &other.id, theirs, &turn)
+            .is_err());
+        assert!(store
+            .approve_plan_in_conversation("chat:other", &other.id, theirs, &turn)
+            .unwrap_err()
+            .contains("not on the person's screen"));
+    }
+
+    fn task_as(store: &OrchestrationStore, run: &Run, actor: &str) -> Task {
+        store
+            .create_task(
+                actor,
+                run.id.clone(),
+                "Other work".into(),
+                "Do it".into(),
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn an_approval_racing_a_new_task_never_covers_it() {
+        for _ in 0..25 {
+            let store = Arc::new(OrchestrationStore::default());
+            let (run, first) = pending_plan(&store);
+            let revision = plan_of(&store, &run.id).revision;
+            let seen = vec![first.id.clone()];
+            let approver = {
+                let store = store.clone();
+                let run_id = run.id.clone();
+                std::thread::spawn(move || {
+                    store
+                        .approve_plan("chat:master", &run_id, Some(&seen), Some(revision))
+                        .is_ok()
+                })
+            };
+            let adder = {
+                let store = store.clone();
+                let run = run.clone();
+                std::thread::spawn(move || task(&store, &run, Vec::new()).id)
+            };
+            let approved = approver.join().unwrap();
+            let added = adder.join().unwrap();
+            let snapshot = store.snapshot(None).unwrap();
+            let new = snapshot.tasks.iter().find(|t| t.id == added).unwrap();
+            assert!(new.approved_at.is_none(), "a task nobody saw was approved");
+            // Either way, the new task is waiting for the person.
+            assert!(snapshot.runs[0].awaiting_plan_approval());
+            let old = snapshot.tasks.iter().find(|t| t.id == first.id).unwrap();
+            assert_eq!(old.approved_at.is_some(), approved);
+        }
+    }
+
+    #[test]
+    fn an_approval_racing_a_revision_is_one_or_the_other() {
+        for _ in 0..25 {
+            let store = Arc::new(OrchestrationStore::default());
+            let (run, first) = pending_plan(&store);
+            let revision = plan_of(&store, &run.id).revision;
+            let turn = said("user-1", "approve this plan", &[(&run.id, revision)]);
+            let approver = {
+                let (store, run_id) = (store.clone(), run.id.clone());
+                std::thread::spawn(move || {
+                    store
+                        .approve_plan_in_conversation("chat:master", &run_id, revision, &turn)
+                        .is_ok()
+                })
+            };
+            let reviser = {
+                let (store, task_id) = (store.clone(), first.id.clone());
+                std::thread::spawn(move || {
+                    store
+                        .revise_task(
+                            "chat:master",
+                            &task_id,
+                            TaskRevision {
+                                title: Some("Something else".into()),
+                                ..TaskRevision::default()
+                            },
+                        )
+                        .is_ok()
+                })
+            };
+            let (approved, revised) = (approver.join().unwrap(), reviser.join().unwrap());
+            // Approved first: the task is fixed. Revised first: the person
+            // saw another revision. Never both.
+            assert_ne!(approved, revised);
+            let task = store.snapshot(None).unwrap().tasks.remove(0);
+            assert_eq!(task.approved_at.is_some(), approved);
+            assert_eq!(task.title == "Something else", revised);
+        }
     }
 
     #[test]

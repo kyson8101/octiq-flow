@@ -156,6 +156,8 @@ import { OrchestrationPanel } from "./components/OrchestrationPanel";
 import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type OrchestrationRun } from "./lib/orchestration";
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
+import { ChatPlanCards } from "./components/ChatPlanCards";
+import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
 import { useImagePreviews, previewSlots } from "./lib/imagePreview";
@@ -539,6 +541,10 @@ export default function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const orchestrationState = useOrchestrationFeed();
   const orchestration = orchestrationState.snapshot ?? EMPTY_ORCHESTRATION;
+  // Read by the send path, which must not re-create itself on every ledger
+  // change: the plans on screen as a message leaves (`seenPlans`).
+  const ledgerRef = useRef(orchestrationState.snapshot);
+  ledgerRef.current = orchestrationState.snapshot;
   const chatParents = useMemo(() => workerChatParents(orchestration), [orchestration]);
   const workerChat = isWorkerChat(conversationId, chatParents);
   /** Which chats the person opened the run surface for with Run, before the
@@ -3344,6 +3350,9 @@ export default function App() {
       // shows what was sent with it. The object URLs are dropped: they are this
       // page's copy of the bytes, and a stored one points at nothing.
       const turnId = userTurnId();
+      // The plans on this chat's screen as the message leaves: the only
+      // plans, at the only revisions, it can approve (lib/chatPlans).
+      const seen = seenPlans(chatPlans(ledgerRef.current, keyFor(id)));
       patch(id, (s) =>
         addUserTurn(
           s,
@@ -3486,7 +3495,7 @@ export default function App() {
         // Already running: this is the next turn of a conversation in flight.
         if (!switchingModel && runningRef.current.has(id)) {
           try {
-            await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
+            await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen });
             return;
           } catch (err) {
             if (!String((err as Error).message ?? err).includes("no such chat")) {
@@ -3540,6 +3549,7 @@ export default function App() {
             prompt: text,
             handoff: handoff ?? null,
             turnId,
+            seenPlans: seen,
             // Continuing an earlier conversation: the agent picks its own
             // context back up instead of being handed a transcript to read.
             resume,
@@ -3551,7 +3561,7 @@ export default function App() {
           // rather than reporting a collision as a failure.
           if (!switchingModel && String((err as Error).message ?? err).includes("already running")) {
             try {
-              await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId });
+              await bridge.invoke("chat_send", { key: keyFor(id), text, images, turnId, seenPlans: seen });
               return;
             } catch (second) {
               fail(second);
@@ -4008,6 +4018,23 @@ export default function App() {
   // to repair. Treat the composer as idle; its normal send path starts a new
   // process with this conversation's saved session id.
   const cutOff = !!conversationId && interruptedIds.has(conversationId);
+
+  // A lead's plan, at the end of its own chat: the same card as the run
+  // panel, from the same ledger. Memoised at every step, because the message
+  // list is memoised and App renders on every streaming delta.
+  const plansHere = useMemo(
+    () => (workerChat || !conversationId ? [] : chatPlans(orchestrationState.snapshot, keyFor(conversationId))),
+    [orchestrationState.snapshot, conversationId, workerChat],
+  );
+  const planDrafting = !workerChat && chat.busy && !cutOff;
+  const planProjectName = useCallback(
+    (id: string) => [...workspaces, ...shelved].find((item) => item.id === id)?.name,
+    [workspaces, shelved],
+  );
+  const planTail = useMemo(
+    () => (plansHere.length ? <ChatPlanCards plans={plansHere} drafting={planDrafting} projectName={planProjectName} /> : undefined),
+    [plansHere, planDrafting, planProjectName],
+  );
 
   const changeAccess = useCallback(
     (p: AccessLevel) => {
@@ -4622,6 +4649,7 @@ export default function App() {
                   <div className="chat-main">
                     <MessageList
                       messages={chat.messages}
+                      tail={planTail}
                       hasEarlier={!!conversationId && chatHistory.current.hasEarlier(conversationId)}
                       loadingEarlier={!!conversationId && !!earlierReads[conversationId]?.loading}
                       earlierError={conversationId ? earlierReads[conversationId]?.error : undefined}

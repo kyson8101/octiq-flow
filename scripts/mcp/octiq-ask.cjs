@@ -1272,9 +1272,55 @@ const ORCHESTRATION_TASK_CREATE = {
       repository: { type: "string", description: "A repository registered on that project: its path or folder name, from orchestration_destinations. Required when the project has more than one. An unregistered path is refused; the host never falls back to another checkout." },
       problem: { type: "string", description: "The plan card: the problem this task solves, in one short sentence (at most 300 characters). Shown to the person when they review the plan." },
       goal: { type: "string", description: "The plan card: the approach or outcome, in one short sentence (at most 300 characters)." },
-      acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "The plan card: 2–5 checkable acceptance criteria, one line each (at most 240 characters). Criteria, not results; the plan card is fixed once the task is created." },
+      acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "The plan card: 2–5 checkable acceptance criteria, one line each (at most 240 characters). Criteria, not results; the plan card is fixed once the person approves it (before that, change it with orchestration_task_revise)." },
     },
     required: ["runId", "title", "spec"],
+  },
+};
+
+const ORCHESTRATION_TASK_REVISE = {
+  name: "orchestration_task_revise",
+  description:
+    "Agents mode: change a task of YOUR plan while it still waits for the person's approval, or withdraw it from the plan. " +
+    "This is how a requested change becomes the new plan revision they see before approving. Only the fields you pass change; " +
+    "owner and destination are routed exactly as orchestration_task_create routes them. An approved task is fixed: add a new task instead.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string" },
+      title: { type: "string" },
+      spec: { type: "string" },
+      dependsOn: { type: "array", items: { type: "string" }, description: "Replaces the task's dependencies: task IDs of this plan." },
+      worker: { type: "object", properties: WORKER_SETTINGS_PROPERTIES, required: ["agent", "access"] },
+      assignee: { type: "string", description: "Another of your direct reports." },
+      project: { type: "string", description: "A new destination project, from orchestration_destinations." },
+      repository: { type: "string", description: "A new destination repository on that project." },
+      problem: { type: "string", description: "The plan card's problem, one short sentence." },
+      goal: { type: "string", description: "The plan card's goal, one short sentence." },
+      acceptance: { type: "array", items: { type: "string" }, maxItems: 5, description: "Replaces the plan card's acceptance criteria." },
+      withdraw: { type: "boolean", description: "Take this task out of the plan. Refused while another task depends on it." },
+    },
+    required: ["taskId"],
+  },
+};
+
+const ORCHESTRATION_PLAN_APPROVE = {
+  name: "orchestration_plan_approve",
+  description:
+    "Agents mode: approve your plan because the person just told you to in THIS chat, in the message you are answering. " +
+    "Call it only when that message is a plain approval of the plan card shown in the chat, such as \"approve this plan\" or " +
+    "\"approve plan <handle>\". The host reads the person's message itself; you pass only which plan and the revision you " +
+    "showed them (planApproval.revision from orchestration_snapshot). It refuses a message that asks for any change, is a " +
+    "question or conditional, names another plan, or leaves the plan ambiguous; a plan that changed since they saw it; and " +
+    "any turn that is a notification, a gate answer or a host message. A refusal means nothing was approved: tell the person " +
+    "why in one line. Plan approval never covers deploys, restarts, gates or permission prompts.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      runId: { type: "string" },
+      revision: { type: "integer", minimum: 0, description: "The plan revision on the person's screen: run.planApproval.revision." },
+    },
+    required: ["runId", "revision"],
   },
 };
 
@@ -1443,6 +1489,8 @@ const ORCHESTRATION_TOOLS = [
   },
   ORCHESTRATION_RUN_CREATE,
   ORCHESTRATION_TASK_CREATE,
+  ORCHESTRATION_TASK_REVISE,
+  ORCHESTRATION_PLAN_APPROVE,
   ORCHESTRATION_DESTINATIONS,
   ORCHESTRATION_SNAPSHOT,
   ORCHESTRATION_WORKER_START,

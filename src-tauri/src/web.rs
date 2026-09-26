@@ -961,6 +961,10 @@ async fn orchestration_handler(
     let command = match request.action.as_str() {
         "run_create" => "orchestration_run_create",
         "task_create" => "orchestration_task_create",
+        "task_revise" => "orchestration_task_revise",
+        // NOT the browser's `orchestration_plan_approve`: this one approves
+        // only on the person's own message, which the host reads itself.
+        "plan_approve" => "orchestration_plan_approve_in_chat",
         "destinations" => "orchestration_destinations",
         "snapshot" => "orchestration_snapshot",
         "worker_start" => "orchestration_worker_start",

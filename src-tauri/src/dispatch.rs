@@ -135,6 +135,82 @@ fn refresh_lead_turn(svc: &Services, key: &str, text: String) -> Result<String, 
 
 /// Run one command. `Err` is the message the client shows, so it is written for
 /// a person rather than a log.
+/// Who a task goes to and where it runs, as the host decides it from what
+/// the lead asked for. Agents mode: a lead names a registered agent and the
+/// host, not the lead, turns it into worker settings.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn route_task(
+    svc: &Services,
+    actor: &str,
+    run_id: &str,
+    parent: Option<&str>,
+    requested: Option<String>,
+    project: Option<String>,
+    repository: Option<String>,
+    mut worker: Option<crate::orchestration::automation::WorkerSettings>,
+) -> Result<
+    (
+        Option<crate::orchestration::automation::WorkerSettings>,
+        Option<crate::orchestration::TaskAssignee>,
+        Option<crate::orchestration::TaskDestination>,
+    ),
+    String,
+> {
+    let team_path = crate::team::default_path();
+    let (run_project, coordinator) = svc.orchestrations.run_owner(run_id)?;
+    // Whose direct reports this task may go to: the lead's when the
+    // coordinator of an agents-mode run creates it, the manager's when
+    // a second-level worker splits its own task.
+    let (manager, cross_project, parent_destination) = if actor != coordinator {
+        match parent {
+            Some(parent) => {
+                let (assignee, destination) = svc.orchestrations.task_route(parent)?;
+                (assignee.map(|a| a.id), false, destination)
+            }
+            None => (None, false, None),
+        }
+    } else {
+        match crate::team::lead_for_chat(&team_path, actor)? {
+            Some(lead) => (Some(lead.lead_id), lead.cross_project, None),
+            None => (None, false, None),
+        }
+    };
+    let requested = requested.filter(|who| !who.trim().is_empty());
+    if manager.is_some() && requested.is_none() {
+        return Err("Assign this task to one of your direct reports with `assignee`.".into());
+    }
+    let routed = crate::orchestration::destination::route(
+        &crate::team::list(&team_path, None, true)?,
+        &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
+        &crate::orchestration::destination::Route {
+            who: requested.as_deref(),
+            project: project.as_deref(),
+            repository: repository.as_deref(),
+            manager: manager.as_deref(),
+            cross_project,
+            run_project: &run_project,
+            parent: parent_destination.as_ref(),
+        },
+    )?;
+    let assignee = match routed.assignee {
+        Some(agent) => {
+            worker = Some(crate::orchestration::automation::WorkerSettings {
+                agent: agent.agent,
+                access: agent.access,
+                model: Some(agent.model.clone()),
+                effort: agent.effort.clone(),
+                recovery: worker.and_then(|w| w.recovery),
+            });
+            Some(crate::orchestration::TaskAssignee {
+                id: agent.id,
+                name: agent.name,
+            })
+        }
+        None => None,
+    };
+    Ok((worker, assignee, routed.destination))
+}
+
 pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String> {
     let git_write_path = match cmd {
         "git_commit" | "git_push" | "git_pull" | "git_switch_branch" => {
@@ -397,7 +473,17 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "useSandbox")?,
                 arg::<Option<String>>(&args, "resume")?.is_some(),
             )?;
-            let prompt = arg::<Option<String>>(&args, "prompt")?
+            let turn_id = crate::agent_chat::fresh_turn_id(arg(&args, "turnId")?);
+            let prompt: Option<String> = arg(&args, "prompt")?;
+            if let Some(words) = &prompt {
+                svc.chats.note_person_turn(
+                    &key,
+                    &turn_id,
+                    words,
+                    arg::<Option<_>>(&args, "seenPlans")?.unwrap_or_default(),
+                );
+            }
+            let prompt = prompt
                 .map(|text| refresh_lead_turn(svc, &key, text))
                 .transpose()?;
             unit(crate::agent_chat::chat_start_user_impl(
@@ -415,20 +501,36 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "effort")?,
                 arg(&args, "images")?,
                 arg(&args, "lite")?,
-                arg(&args, "turnId")?,
+                Some(turn_id),
             ))
         }
         "chat_send" => {
             let key: String = arg(&args, "key")?;
-            let text = refresh_lead_turn(svc, &key, arg(&args, "text")?)?;
+            let words: String = arg(&args, "text")?;
+            let record_user: Option<bool> = arg(&args, "recordUser")?;
+            // The person's own words and the plans on their screen, kept by
+            // turn id before the text is dressed for the agent. This is the
+            // only evidence `orchestration_plan_approve_in_chat` accepts.
+            let given: Option<String> = arg(&args, "turnId")?;
+            let turn_id =
+                (record_user != Some(false)).then(|| crate::agent_chat::fresh_turn_id(given));
+            if let Some(turn_id) = &turn_id {
+                svc.chats.note_person_turn(
+                    &key,
+                    turn_id,
+                    &words,
+                    arg::<Option<_>>(&args, "seenPlans")?.unwrap_or_default(),
+                );
+            }
+            let text = refresh_lead_turn(svc, &key, words)?;
             unit(crate::agent_chat::chat_send_user_impl(
                 svc.chats.clone(),
                 key,
                 text,
                 arg(&args, "images")?,
                 arg(&args, "to")?,
-                arg(&args, "turnId")?,
-                arg(&args, "recordUser")?,
+                turn_id,
+                record_user,
             ))
         }
         "chat_cancel_auto_resume" => to_value(crate::agent_chat::chat_cancel_auto_resume_impl(
@@ -869,38 +971,8 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         "orchestration_task_create" => {
             let run_id: String = arg(&args, "runId")?;
-            let mut worker: Option<crate::orchestration::automation::WorkerSettings> =
-                arg(&args, "worker")?;
-            // Agents mode: a lead names a registered agent and the host, not
-            // the lead, turns it into worker settings.
             let actor: String = arg(&args, "actorChatKey")?;
             let parent: Option<String> = arg(&args, "parentTaskId")?;
-            let team_path = crate::team::default_path();
-            let (project, coordinator) = svc.orchestrations.run_owner(&run_id)?;
-            // Whose direct reports this task may go to: the lead's when the
-            // coordinator of an agents-mode run creates it, the manager's when
-            // a second-level worker splits its own task.
-            let (manager, cross_project, parent_destination) = if actor != coordinator {
-                match parent.as_deref() {
-                    Some(parent) => {
-                        let (assignee, destination) = svc.orchestrations.task_route(parent)?;
-                        (assignee.map(|a| a.id), false, destination)
-                    }
-                    None => (None, false, None),
-                }
-            } else {
-                match crate::team::lead_for_chat(&team_path, &actor)? {
-                    Some(lead) => (Some(lead.lead_id), lead.cross_project, None),
-                    None => (None, false, None),
-                }
-            };
-            let requested =
-                arg::<Option<String>>(&args, "assignee")?.filter(|who| !who.trim().is_empty());
-            if manager.is_some() && requested.is_none() {
-                return Err(
-                    "Assign this task to one of your direct reports with `assignee`.".into(),
-                );
-            }
             // The plan card is checked before the task exists, so a bad card
             // refuses the whole call rather than leaving a task without it.
             let card = crate::orchestration::TaskCard::checked(
@@ -908,37 +980,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 arg(&args, "goal")?,
                 arg(&args, "acceptance")?,
             )?;
-            let project_arg: Option<String> = arg(&args, "project")?;
-            let repository_arg: Option<String> = arg(&args, "repository")?;
-            let routed = crate::orchestration::destination::route(
-                &crate::team::list(&team_path, None, true)?,
-                &crate::workspaces::list_workspaces_impl(&svc.workspaces)?,
-                &crate::orchestration::destination::Route {
-                    who: requested.as_deref(),
-                    project: project_arg.as_deref(),
-                    repository: repository_arg.as_deref(),
-                    manager: manager.as_deref(),
-                    cross_project,
-                    run_project: &project,
-                    parent: parent_destination.as_ref(),
-                },
+            let (worker, assignee, destination) = route_task(
+                svc,
+                &actor,
+                &run_id,
+                parent.as_deref(),
+                arg::<Option<String>>(&args, "assignee")?,
+                arg(&args, "project")?,
+                arg(&args, "repository")?,
+                arg(&args, "worker")?,
             )?;
-            let assignee = match routed.assignee {
-                Some(agent) => {
-                    worker = Some(crate::orchestration::automation::WorkerSettings {
-                        agent: agent.agent,
-                        access: agent.access,
-                        model: Some(agent.model.clone()),
-                        effort: agent.effort.clone(),
-                        recovery: worker.and_then(|w| w.recovery),
-                    });
-                    Some(crate::orchestration::TaskAssignee {
-                        id: agent.id,
-                        name: agent.name,
-                    })
-                }
-                None => None,
-            };
             to_value(svc.orchestrations.create_carded_task(
                 &actor,
                 run_id,
@@ -948,8 +999,73 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 parent,
                 worker,
                 assignee,
-                routed.destination,
+                destination,
                 card,
+            ))
+        }
+        // A lead changes or withdraws a task of a plan the person has not
+        // approved yet. Owner and destination go through the same routing as
+        // a new task, so a revision can reach no agent or project a new task
+        // could not.
+        "orchestration_task_revise" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let task_id: String = arg(&args, "taskId")?;
+            let current = svc
+                .orchestrations
+                .snapshot(None)?
+                .tasks
+                .into_iter()
+                .find(|task| task.id == task_id)
+                .ok_or("The task does not exist.")?;
+            let assignee_arg = arg::<Option<String>>(&args, "assignee")?;
+            let project_arg = arg::<Option<String>>(&args, "project")?;
+            let repository_arg = arg::<Option<String>>(&args, "repository")?;
+            let worker_arg =
+                arg::<Option<crate::orchestration::automation::WorkerSettings>>(&args, "worker")?;
+            let reroute = assignee_arg.is_some()
+                || project_arg.is_some()
+                || repository_arg.is_some()
+                || worker_arg.is_some();
+            let route = if reroute {
+                // What is not named stays as it was.
+                let kept = current.destination.as_ref();
+                Some(route_task(
+                    svc,
+                    &actor,
+                    &current.run_id,
+                    None,
+                    assignee_arg.or_else(|| current.assignee.as_ref().map(|a| a.id.clone())),
+                    project_arg.or_else(|| kept.map(|d| d.project_id.clone())),
+                    repository_arg.or_else(|| kept.map(|d| d.repository.clone())),
+                    worker_arg.or_else(|| current.worker.clone()),
+                )?)
+            } else {
+                None
+            };
+            let problem: Option<String> = arg(&args, "problem")?;
+            let goal: Option<String> = arg(&args, "goal")?;
+            let acceptance: Option<Vec<String>> = arg(&args, "acceptance")?;
+            let card = if problem.is_some() || goal.is_some() || acceptance.is_some() {
+                let was = current.card.clone().unwrap_or_default();
+                Some(crate::orchestration::TaskCard::checked(
+                    Some(problem.unwrap_or(was.problem)),
+                    Some(goal.unwrap_or(was.goal)),
+                    Some(acceptance.unwrap_or(was.acceptance)),
+                )?)
+            } else {
+                None
+            };
+            to_value(svc.orchestrations.revise_task(
+                &actor,
+                &task_id,
+                crate::orchestration::TaskRevision {
+                    title: arg(&args, "title")?,
+                    spec: arg(&args, "spec")?,
+                    card,
+                    depends_on: arg(&args, "dependsOn")?,
+                    route,
+                    withdraw: arg::<Option<bool>>(&args, "withdraw")?.unwrap_or(false),
+                },
             ))
         }
         // Where the caller may send work: registered projects, their
@@ -978,7 +1094,24 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
             arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
+            arg::<Option<u32>>(&args, "revision")?,
         )),
+        // Agent-reachable, and still the person's approval: the host reads
+        // the message the lead is answering from its own record of what the
+        // browser sent, and the lead supplies only which plan and revision.
+        // No gate, safety card, deploy or restart is decided here.
+        "orchestration_plan_approve_in_chat" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let turn = svc.chats.person_turn(&actor).ok_or(
+                "Only a message the person typed in this chat can approve a plan, and the message this turn answers is not one (a notification, a gate answer or a host message never is). Nothing was approved.",
+            )?;
+            to_value(svc.orchestrations.approve_plan_in_conversation(
+                &actor,
+                &arg::<String>(&args, "runId")?,
+                arg::<u32>(&args, "revision")?,
+                &turn,
+            ))
+        }
         "team_leads" => to_value(crate::team::leads(&crate::team::default_path())),
         "team_brief" => {
             let chat_key: String = arg(&args, "chatKey")?;

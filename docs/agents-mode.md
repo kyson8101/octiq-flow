@@ -228,8 +228,63 @@ project and repository, the full path in its tooltip; a task without a
 destination shows the run's own project and checkout. **Approve plan** calls
 the browser-only `orchestration_plan_approve`, which is deliberately left out
 of the agent hook so no agent can approve its own plan. To change the plan,
-reply in the chat. The button stays disabled while the lead is still in its
-turn.
+reply in the chat. The button is disabled only while the lead is still
+drafting and there is nothing to review yet.
+
+The same review is also drawn **at the end of the lead's own chat**
+(`components/ChatPlanCards`, `lib/chatPlans.ts`). It is the same component,
+reading the same ledger snapshot, so the chat and the run panel always show one
+state. A click in either shows "Approving…" in both and sends once
+(`lib/planApproving.ts`). Each card is named **Plan &lt;handle&gt;**, the first four
+hex digits of the run id, and carries its **revision**. An approved plan folds
+to one line, "Approved in chat · revision 4". A plan the lead changes after
+approval comes back as a new, waiting revision. It is never the old card with
+the new scope.
+
+### Approving by chat
+
+You can also approve by telling the lead, as in "approve this plan", or
+"approve plan 2278" when several plans wait. The lead calls the agent tool
+`orchestration_plan_approve` (hook action `plan_approve` →
+`orchestration_plan_approve_in_chat`) with only the run id and the revision it
+showed. **The lead never passes your words.** The host decides on evidence
+that only it holds:
+
+- **Whose message.** The browser's `chat_send` / `chat_start` record your words
+  by turn id before they are dressed for the agent (`ChatManager::
+  note_person_turn`). They also record the plans on your screen at that
+  moment, as `seenPlans` [{runId, revision}]. The chat session remembers
+  which turn it is answering (`ChatSession::answering`, set by every write to
+  the agent). A notification, a gate answer, an internal continuation or any
+  agent-to-agent text has no such record, so it can never approve. Coalesced
+  follow-ups join one record, so "approve" then "but change X" is read as one
+  turn.
+- **What it says.** `orchestration/consent.rs` accepts only a WHOLE message
+  that is a plain approval: *approve / approved / I approve*, at most one plan
+  referent, and politeness words (*please, thanks, ok, go ahead*). Any other
+  word, a `?`, a quote, a second line asking for a change, a negation or a
+  condition means the message is not consent. Generic assent on its own ("ok",
+  "go ahead") never approves.
+- **Which plan.** With more than one plan waiting, or more than one on screen,
+  the message must name the handle.
+- **Which revision.** Every write to the ledger recomputes a digest of what an
+  approval would cover. That covers each waiting task's title, spec, card,
+  owner, worker, destination, planned workspace and dependencies, plus the
+  run's worker defaults and mode (`refresh_plan_revisions`, run inside
+  `mutate`). Any change moves `planApproval.revision`. An approval is refused
+  unless the revision you saw, the revision the lead names and the ledger's
+  current revision are the same. The button sends its revision too.
+- **Once.** A message that approved a revision cannot approve again
+  (`planApproval.consentTurns`).
+
+The approval is recorded on `planApproval.consent` as `{via, revision, at,
+turnId, words}`. Plan approval covers only the plan. It never answers a gate,
+a permission card, a deploy or a restart.
+
+To change a waiting plan, the lead uses `orchestration_task_revise`. It can
+edit a task, re-route it through the same routing as task create, or withdraw
+it. This only works while the plan waits and the task is unapproved. Each
+revision is a new revision you see before approving.
 
 Each task in the review, and in the Run panel's task details, opens to the
 **standard plan card** (`components/TaskPlanCard`, `lib/taskPlanCard.ts`).
@@ -248,8 +303,10 @@ Approval is for exactly the plan you saw:
 - The browser sends the ids of the tasks it showed as awaiting approval; if the
   lead added a task in the meantime the host refuses ("The plan changed while
   you were reviewing it").
-- Approving stamps each task `approvedAt`. A task's destination and assignee
-  cannot be changed after creation — re-routing means a new task.
+- Approving stamps each task `approvedAt`. An approved task's destination and
+  assignee cannot be changed — re-routing means a new task. Before approval
+  the lead may revise it (`orchestration_task_revise`), which moves the
+  revision.
 - A task the lead adds **after** approval puts the whole run back to waiting
   for you; it is marked **New** in the review, and no worker starts (retries
   included) until you approve again. Running workers carry on.

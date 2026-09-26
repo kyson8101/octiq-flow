@@ -1,0 +1,31 @@
+/* The lead's plan inside its chat: a card in the transcript's own column,
+   quiet like a message, with the plan's own layout inside. */
+.chat-plans { display: grid; gap: 12px; min-width: 0; }
+.chat-plan {
+  min-width: 0; max-width: 100%;
+  padding: 2px 16px 16px;
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--bg-1);
+}
+.chat-plan .plan-review { margin-top: 14px; }
+/* The transcript scrolls under it: nothing inside pins. */
+.chat-plan .plan-review-actions { position: static; box-shadow: none; background: var(--bg-0, var(--bg-1)); }
+
+.chat-plan-approved { padding: 0; }
+.chat-plan-approved > summary {
+  display: flex; align-items: center; gap: 9px; min-width: 0;
+  padding: 10px 14px; list-style: none; cursor: pointer;
+  color: var(--fg-1); font-size: 12.5px;
+  transition: background 130ms ease-out;
+}
+.chat-plan-approved > summary::-webkit-details-marker { display: none; }
+.chat-plan-approved > summary:hover { background: var(--accent-tint); }
+.chat-plan-approved > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chat-plan-approved[open] .plan-task-chevron { transform: translateY(2px) rotate(-135deg); }
+.chat-plan-mark { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--ok, var(--fg-2)); }
+.chat-plan-line { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-plan-id { flex: 0 0 auto; color: var(--fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.chat-plan-approved > .plan-review,
+.chat-plan-words { padding: 0 14px; }
+.chat-plan-approved > .plan-review { margin: 4px 0 14px; }
+.chat-plan-words { margin: 0; color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }

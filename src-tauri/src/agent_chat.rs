@@ -207,7 +207,7 @@ pub(crate) fn record_chat_event(key: &str, event: Value) {
     );
 }
 
-fn fresh_turn_id(turn_id: Option<String>) -> String {
+pub(crate) fn fresh_turn_id(turn_id: Option<String>) -> String {
     turn_id
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| format!("octiq-user-{}", uuid::Uuid::new_v4()))
@@ -354,6 +354,12 @@ struct ChatSession {
     launch_id: String,
     /// A dispatched prompt still awaiting its provider acknowledgement.
     user_turn_id: Option<String>,
+    /// The id of the message the turn in flight is answering — set by every
+    /// write to the agent and by every launch with a prompt, including host
+    /// notifications, and never cleared by an acknowledgement. What
+    /// `ChatManager::person_turn` reads to know WHOSE words the agent is
+    /// acting on.
+    answering: Option<String>,
     child: Child,
     stdin: Option<ChildStdin>,
     /// Native Codex state. Present only when this process is `codex
@@ -652,9 +658,126 @@ pub struct ChatManager {
     /// A one-shot process is being replaced. Sends still join its queue, and a
     /// second client must not start a competing process in this gap.
     handoffs: Mutex<std::collections::HashSet<String>>,
+    /// What the person sent, as the browser handed it over — see
+    /// `TurnEvidence`. Newest last, bounded.
+    evidence: Mutex<VecDeque<TurnEvidence>>,
+}
+
+/// One message as the person sent it: their words BEFORE the host dressed
+/// them for the agent (a lead's roster refresh, a model handoff), and the
+/// plans their screen showed at that moment. Recorded only on the browser's
+/// send and start commands, so nothing an agent, a notification or a gate
+/// answer produces can ever have any.
+#[derive(Clone, Debug)]
+struct TurnEvidence {
+    chat_key: String,
+    turn_id: String,
+    text: String,
+    /// What each part saw: one list per coalesced send, never merged.
+    parts_seen: Vec<Vec<crate::orchestration::SeenPlan>>,
+}
+
+/// Enough for every chat's queue to hold a few messages each.
+const EVIDENCE_KEPT: usize = 256;
+
+/// Turn ids the host gives a person's own message. Notifications, receipts
+/// and host continuations never carry one.
+fn is_person_turn_id(turn_id: &str) -> bool {
+    turn_id.starts_with("user-") || turn_id.starts_with("octiq-user-")
 }
 
 impl ChatManager {
+    /// Keep the person's own words for a message the browser is sending. A
+    /// retried send of the same turn keeps what was first recorded.
+    pub(crate) fn note_person_turn(
+        &self,
+        chat_key: &str,
+        turn_id: &str,
+        text: &str,
+        seen_plans: Vec<crate::orchestration::SeenPlan>,
+    ) {
+        if !is_person_turn_id(turn_id) {
+            return;
+        }
+        let Ok(mut kept) = self.evidence.lock() else {
+            return;
+        };
+        if kept
+            .iter()
+            .any(|item| item.chat_key == chat_key && item.turn_id == turn_id)
+        {
+            return;
+        }
+        kept.push_back(TurnEvidence {
+            chat_key: chat_key.into(),
+            turn_id: turn_id.into(),
+            text: text.into(),
+            parts_seen: vec![seen_plans],
+        });
+        while kept.len() > EVIDENCE_KEPT {
+            kept.pop_front();
+        }
+    }
+
+    /// A follow-up joined a queued message (`QueuedTurn::append`): the
+    /// person's words and what they saw join its evidence the same way, so
+    /// the unit is judged whole — "approve" then "but change X" is one turn.
+    fn join_person_turn(&self, chat_key: &str, target: &str, source: &str) {
+        let Ok(mut kept) = self.evidence.lock() else {
+            return;
+        };
+        let find = |kept: &VecDeque<TurnEvidence>, id: &str| {
+            kept.iter()
+                .position(|item| item.chat_key == chat_key && item.turn_id == id)
+        };
+        let later = match find(&kept, source) {
+            Some(at) => kept.remove(at),
+            None => None,
+        };
+        let Some(at) = find(&kept, target) else {
+            return;
+        };
+        let joined = &mut kept[at];
+        match later {
+            Some(later) => {
+                joined.text.push('\n');
+                joined.text.push_str(&later.text);
+                joined.parts_seen.extend(later.parts_seen);
+            }
+            // A part the host never saw the person's words for makes the
+            // whole unit unreadable as consent, and it saw no plan.
+            None => {
+                joined.text.push_str("\n\u{fffd}");
+                joined.parts_seen.push(Vec::new());
+            }
+        }
+    }
+
+    /// The message this chat's agent is answering right now, if the person
+    /// typed it. `None` while idle, and for any turn the host started itself.
+    pub(crate) fn person_turn(&self, chat_key: &str) -> Option<crate::orchestration::PersonTurn> {
+        let turn_id = {
+            let sessions = self.sessions.lock().ok()?;
+            let session = sessions.get(chat_key)?.lock().ok()?;
+            if !session.busy {
+                return None;
+            }
+            session.answering.clone()?
+        };
+        if !is_person_turn_id(&turn_id) {
+            return None;
+        }
+        let kept = self.evidence.lock().ok()?;
+        let item = kept
+            .iter()
+            .find(|item| item.chat_key == chat_key && item.turn_id == turn_id)?;
+        Some(crate::orchestration::PersonTurn {
+            turn_id,
+            text: item.text.clone(),
+            parts_seen: item.parts_seen.clone(),
+        })
+    }
+
     pub(crate) fn with_saved_questions(path: std::path::PathBuf) -> Self {
         let auto_resume_path = path.with_file_name("auto-resumes.json");
         let background_path = path.with_file_name("background-tasks.json");
@@ -2045,6 +2168,7 @@ pub(crate) fn start_session(
     let session = Arc::new(Mutex::new(ChatSession {
         launch_id: launch_id.clone(),
         user_turn_id: user_turn_id.clone(),
+        answering: user_turn_id.clone(),
         child,
         stdin,
         codex,
@@ -2714,6 +2838,7 @@ fn write_user_message_locked(
     // Every turn this session is ever asked to do comes through here, so this
     // one line is the whole of "somebody is still using this chat".
     session.user_turn_id = turn_id.map(str::to_string);
+    session.answering = turn_id.map(str::to_string);
     session.turn_started();
     Ok(())
 }
@@ -3136,6 +3261,7 @@ fn queue_waiting_turn(
     record_durable_user_turn_with_append(stream_key, turn_id, text, images, append_to);
     record_delivery(stream_key, Some(turn_id), "queued");
     if let QueueTurnResult::Appended { target, source } = outcome {
+        manager.join_person_turn(stream_key, &target, &source);
         record_appended_turn(stream_key, &target, &source);
     }
     Ok(())
@@ -5658,6 +5784,7 @@ mod tests {
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "test-launch".into(),
                 user_turn_id: None,
+                answering: None,
                 child,
                 stdin: None,
                 codex: None,
@@ -5690,6 +5817,7 @@ mod tests {
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "test-launch".into(),
                 user_turn_id: None,
+                answering: None,
                 child,
                 stdin: None,
                 codex: None,
@@ -5951,6 +6079,7 @@ mod tests {
         Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
             user_turn_id: None,
+            answering: None,
             child,
             stdin,
             codex: None,
@@ -5972,6 +6101,7 @@ mod tests {
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "test-launch".into(),
                 user_turn_id: None,
+                answering: None,
                 child,
                 stdin,
                 codex: None,
@@ -6198,6 +6328,106 @@ mod tests {
     }
 
     #[test]
+    fn the_person_turn_is_the_whole_message_in_flight_and_only_theirs() {
+        use crate::orchestration::SeenPlan;
+        let manager = Arc::new(ChatManager::default());
+        let key = format!("claude-person-turn-{}", uuid::Uuid::new_v4().simple());
+        let session = claude_session(true);
+        hold(&manager, &key, session.clone());
+        let seen = |revision| {
+            vec![SeenPlan {
+                run_id: "run_a".into(),
+                revision,
+            }]
+        };
+
+        // Two messages queued behind a running turn become one unit, and so
+        // does what the host knows of them: "approve" is not read alone.
+        for (text, turn, revision) in [
+            ("approve this plan", "user-1", 3),
+            ("but change the branch", "user-2", 4),
+        ] {
+            manager.note_person_turn(&key, turn, text, seen(revision));
+            chat_send_user_impl(
+                manager.clone(),
+                key.clone(),
+                text.into(),
+                None,
+                None,
+                Some(turn.into()),
+                None,
+            )
+            .expect("queued behind the running turn");
+        }
+        // Nothing the person sent is being answered yet.
+        assert_eq!(manager.person_turn(&key), None);
+        {
+            let mut running = session.lock().unwrap();
+            running.turn_ended();
+            assert_eq!(
+                dispatch_next_persistent_turn(&manager, &key, &key, &mut running),
+                None
+            );
+        }
+        let turn = manager.person_turn(&key).expect("the person's own message");
+        assert_eq!(turn.turn_id, "user-1");
+        assert_eq!(turn.text, "approve this plan\nbut change the branch");
+        // Each part keeps what it saw; the later look is not merged into the
+        // earlier words.
+        assert_eq!(turn.parts_seen, vec![seen(3), seen(4)]);
+        // A retried send keeps the words first recorded.
+        manager.note_person_turn(&key, "user-1", "approve", Vec::new());
+        assert_eq!(
+            manager.person_turn(&key).unwrap().text,
+            "approve this plan\nbut change the branch"
+        );
+
+        // Another chat's evidence is not this chat's.
+        assert_eq!(manager.person_turn("chat:elsewhere"), None);
+
+        // A host notification is the next turn: nobody typed it.
+        {
+            let mut running = session.lock().unwrap();
+            running.turn_ended();
+            write_user_message_locked(&mut running, "notification", &[], Some("notif_1")).unwrap();
+        }
+        assert_eq!(manager.person_turn(&key), None);
+
+        // A host continuation carries no id at all.
+        manager.note_person_turn(&key, "user-3", "approve", seen(4));
+        {
+            let mut running = session.lock().unwrap();
+            running.turn_ended();
+            write_user_message_locked(&mut running, "approve", &[], Some("user-3")).unwrap();
+        }
+        assert!(manager.person_turn(&key).is_some());
+        {
+            let mut running = session.lock().unwrap();
+            running.turn_ended();
+            // Between turns the chat is answering nothing.
+            assert!(!running.busy);
+        }
+        assert_eq!(manager.person_turn(&key), None);
+        {
+            let mut running = session.lock().unwrap();
+            write_user_message_locked(&mut running, "gate answered", &[], None).unwrap();
+        }
+        assert_eq!(manager.person_turn(&key), None);
+
+        // Only the host's person turn ids are ever recorded.
+        manager.note_person_turn(&key, "notif_2", "approve", seen(4));
+        {
+            let mut running = session.lock().unwrap();
+            running.turn_ended();
+            write_user_message_locked(&mut running, "approve", &[], Some("notif_2")).unwrap();
+        }
+        assert_eq!(manager.person_turn(&key), None);
+
+        end_process(&manager, &key).expect("end the stand-in");
+        crate::transcript::forget(&key);
+    }
+
+    #[test]
     fn a_send_in_the_gap_after_a_stop_does_not_jump_the_queue() {
         // The interrupt ends the turn immediately, so until the agent's own
         // `result` lands the session reads idle with a message still stacked
@@ -6262,6 +6492,7 @@ mod tests {
         let session = Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
             user_turn_id: None,
+            answering: None,
             child,
             stdin,
             codex: Some(CodexAppSession {
@@ -6364,6 +6595,7 @@ mod tests {
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "test-launch".into(),
                 user_turn_id: None,
+                answering: None,
                 child,
                 stdin: None,
                 codex: None,
@@ -6467,6 +6699,7 @@ mod tests {
         let session = Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
             user_turn_id: None,
+            answering: None,
             child,
             stdin,
             codex: Some(CodexAppSession {
@@ -6644,6 +6877,7 @@ mod idle_tests {
         Arc::new(Mutex::new(ChatSession {
             launch_id: "test-launch".into(),
             user_turn_id: None,
+            answering: None,
             child,
             stdin: None,
             codex: None,
@@ -7089,6 +7323,7 @@ mod question_delivery_tests {
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "launch-1".into(),
                 user_turn_id: None,
+                answering: None,
                 child,
                 stdin: None,
                 codex: None,
@@ -7282,6 +7517,7 @@ mod question_delivery_tests {
             Arc::new(Mutex::new(ChatSession {
                 launch_id: "launch-1".into(),
                 user_turn_id: None,
+                answering: None,
                 child,
                 stdin,
                 codex: None,

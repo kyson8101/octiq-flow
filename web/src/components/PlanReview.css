@@ -148,6 +148,11 @@
 .plan-review-quiet:hover:not(:disabled) { border-color: var(--accent); color: var(--fg-0); }
 .plan-review-quiet:disabled { opacity: 0.45; cursor: default; }
 .plan-review-approve { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 14px; }
+/* In the lead's own chat the message box is right below: say how to answer
+   there instead of offering a second box. */
+.plan-review-chat-hint { margin: 0; color: var(--fg-2); font-size: 12px; }
+.plan-review-id { color: var(--fg-1); }
+.plan-review[data-approved] .plan-review-dot { background: var(--ok, var(--fg-2)); }
 .plan-review-hint { margin-right: auto; color: var(--fg-2); font-size: 12px; }
 
 @media (max-width: 640px) {
