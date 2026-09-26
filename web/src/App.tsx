@@ -158,6 +158,9 @@ import { EMPTY_ORCHESTRATION, isWorkerChat, mainChatId, workerChatParents, type 
 import { chatSnapshot, isActiveRun } from "./lib/chatWorkflow";
 import { ChatWorkflowBar } from "./components/ChatWorkflowBar";
 import { ChatPlanCards } from "./components/ChatPlanCards";
+import { PendingActionsContext, showPendingCard, type PendingActionsView } from "./components/PendingActionBadge";
+import { pendingActions, pendingByRow, pendingByTask, type PendingAction } from "./lib/pendingActions";
+const NO_ACTIONS: readonly PendingAction[] = [];
 import { chatPlans, seenPlans } from "./lib/chatPlans";
 import { useOrchestrationFeed } from "./lib/useOrchestrationSnapshot";
 import { ImagePreviewPanel, PreviewButton } from "./components/ImagePreviewPanel";
@@ -4133,6 +4136,68 @@ export default function App() {
     openConversation(conversation);
   };
 
+  // What each row and task is waiting on the person for (lib/pendingActions),
+  // from state this tab already holds for every chat: nothing is fetched per
+  // row, and a chat never opened still says so.
+  const pendingList = useMemo(
+    () => pendingActions({ orchestration, parents: chatParents, asks, safetyBlocks, questions }),
+    [orchestration, chatParents, asks, safetyBlocks, questions],
+  );
+  // A badge's way to its card: open the chat (and its run, for a decision),
+  // then show the card once it is drawn. `runFocus` tells the run panel which
+  // run to open; `cardFocus` is the card being looked for.
+  const [runFocus, setRunFocus] = useState<{ chatKey: string; runId: string; nonce: number } | null>(null);
+  const [cardFocus, setCardFocus] = useState<{ action: PendingAction; nonce: number } | null>(null);
+  const showRunFor = useCallback((chatId: string, runId: string) => {
+    setRunOpened((before) => ({ ...before, [chatId]: true }));
+    setWorkflowViews((before) => ({ ...before, [chatId]: "run" }));
+    setRunFocus({ chatKey: keyFor(chatId), runId, nonce: Date.now() });
+  }, []);
+  const revealPending = useCallback((action: PendingAction) => {
+    const conversation = conversationsRef.current.find((item) => item.id === action.openChatId);
+    if (!conversation) return;
+    if (action.surface === "run" && action.runId) showRunFor(conversation.id, action.runId);
+    else setWorkflowViews((before) => ({ ...before, [conversation.id]: "chat" }));
+    openConversation(conversation);
+    setCardFocus({ action, nonce: Date.now() });
+  }, [openConversation, showRunFor]);
+  useEffect(() => {
+    if (!cardFocus) return;
+    const { action } = cardFocus;
+    const started = Date.now();
+    let turnedToRun = false;
+    let frame = requestAnimationFrame(function look() {
+      if (showPendingCard(action.key)) {
+        setCardFocus(null);
+        setRunFocus(null);
+        return;
+      }
+      // A plan is drawn at the end of its transcript, which an empty or
+      // still-loading chat has not got; the run panel always has it.
+      if (!turnedToRun && action.kind === "plan" && action.runId && Date.now() - started > 1_200) {
+        turnedToRun = true;
+        showRunFor(action.openChatId, action.runId);
+      }
+      // Settled while we looked, or never drawn: the chat is open, that is all.
+      if (Date.now() - started > 4_000) {
+        setCardFocus(null);
+        setRunFocus(null);
+        return;
+      }
+      frame = requestAnimationFrame(look);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [cardFocus, showRunFor]);
+  const pendingView = useMemo<PendingActionsView>(() => {
+    const rows = pendingByRow(pendingList);
+    const tasks = pendingByTask(pendingList);
+    return {
+      forRow: (chatId) => rows.get(chatId) ?? NO_ACTIONS,
+      forTask: (taskId) => tasks.get(taskId) ?? NO_ACTIONS,
+      reveal: revealPending,
+    };
+  }, [pendingList, revealPending]);
+
   // Agents mode's creation action always prepares a new conversation, with
   // the configured head until the person picks someone else on its empty
   // page — the same page a first load shows. Existing conversations remain
@@ -4254,6 +4319,7 @@ export default function App() {
     <WorkspaceSlotsContext.Provider value={workspaceSlots}>
     <AgentRosterContext.Provider value={agentsMode ? roster : NO_ROSTER}>
     <ChatPersonaContext.Provider value={personaForChat}>
+    <PendingActionsContext.Provider value={pendingView}>
     <div
       ref={projectSwipeRef}
       className={`app ${showingProjects ? "projects-screen" : ""} ${navShut ? "nav-shut" : ""} ${chatExpanded ? "chat-wide" : ""} ${focusMode ? "focus-mode" : ""}`}
@@ -4540,6 +4606,7 @@ export default function App() {
               // Cards for the main chat and its workers render in the main
               // chat, so only there does its button carry them.
               pendingApprovals={workerChat ? 0 : pendingApprovals}
+              focusRun={runFocus && runFocus.chatKey === runChatKey ? runFocus : null}
               projectName={(id) => [...workspaces, ...shelved].find((item) => item.id === id)?.name}
               onSelectedRunChange={onSelectedRunChange}
               coordinatorBusy={!workerChat && chat.busy && !cutOff}
@@ -5057,6 +5124,7 @@ export default function App() {
       )}
 
     </div>
+    </PendingActionsContext.Provider>
     </ChatPersonaContext.Provider>
     </AgentRosterContext.Provider>
     </WorkspaceSlotsContext.Provider>

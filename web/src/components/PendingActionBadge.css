@@ -1,0 +1,50 @@
+/* Amber means "owed by you" here as everywhere else; the icon and the words
+   say it too, so the colour is never the only signal. One line, never
+   wrapped: the words are short on purpose and a long one is cut, not grown. */
+.pending-action-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 9px 0 7px;
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, var(--border));
+  border-radius: var(--r-pill, 999px);
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg-1));
+  color: var(--warn);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out;
+}
+.pending-action-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (hover: hover) {
+  .pending-action-badge:hover { background: color-mix(in srgb, var(--warn) 22%, var(--bg-1)); }
+}
+.pending-action-icon { flex: 0 0 auto; }
+.pending-action-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* Only there to carry a card's keys; the card inside keeps its own layout. */
+.pending-target { display: contents; }
+
+/* A card reached from a badge: a brief ring, so the eye lands on it. */
+.pending-revealed {
+  outline: 2px solid color-mix(in srgb, var(--warn) 70%, transparent);
+  outline-offset: 3px;
+  border-radius: var(--r-md, 10px);
+  animation: pending-reveal 1600ms ease-out forwards;
+}
+@keyframes pending-reveal {
+  0%, 60% { outline-color: color-mix(in srgb, var(--warn) 70%, transparent); }
+  100% { outline-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pending-action-badge { transition: none; }
+  .pending-revealed { animation-duration: 1ms; animation-delay: 1500ms; }
+}

@@ -104,6 +104,16 @@
 .sidebar .task-chat-list .chat-btn { height: auto; min-height: 78px; padding: 9px 6px 9px 45px; }
 .sidebar .task-chat-list .chat-rename { height: 78px; padding-left: 12px; }
 .sidebar .task-chat-list .chat-snippet { margin: 1px 0 0; padding: 0; line-height: 18px; }
+/* What the chat is waiting on you for: its own line under the row, lined up
+   with the title, so it outranks the snippet without pushing anything aside.
+   The row's own button gives up the room it would have padded with. */
+.sidebar .task-chat-list .chat.has-pending .chat-btn { min-height: 66px; padding-bottom: 3px; }
+.sidebar .task-chat-list .chat-pending {
+  grid-column: 1;
+  grid-row: 2;
+  justify-self: start;
+  margin: 0 6px 9px 45px;
+}
 
 .sidebar .chat-children {
   list-style: none;
@@ -150,6 +160,8 @@
      badge is a 40px target that toggles on tap, and the tick badge on a ticked
      chat is the only thing that says so. */
   .sidebar .task-chat-list .chat-btn { padding-left: 56px; }
+  .sidebar .task-chat-list .chat.has-pending .chat-btn { min-height: 68px; }
+  .sidebar .task-chat-list .chat-pending { height: 28px; margin-left: 56px; }
   .sidebar .task-chat-list .chat::after { left: 56px; }
   .sidebar .chat-badge { left: 8px; width: 40px; height: 40px; }
   .sidebar .chat-badge-ring { inset: 4px; }

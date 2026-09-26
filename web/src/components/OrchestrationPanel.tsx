@@ -26,6 +26,7 @@ import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
 import { BranchIcon, ClockIcon, TaskStatusIcon } from "./TaskMeter";
 import { OpenBesideButton } from "./OpenBesideButton";
+import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
 
 import {
   deliveryTone, EMPTY_ORCHESTRATION as EMPTY, WORKSPACE_MODES, workspaceDeliveryLabel,
@@ -84,8 +85,12 @@ export function OrchestrationPanel({
   projectName,
   allowManualRun = true,
   pendingApprovals = 0,
+  focusRun = null,
 }: {
   project: ProjectRef | null;
+  /** Show this run, open, on its Tasks tab: a badge in the chat list asked
+   *  for something it holds. A new nonce asks again for the same run. */
+  focusRun?: { runId: string; nonce: number } | null;
   coordinatorKey: string | null;
   /** The chat on screen. When it is one of this run's workers, its task is
    *  the one marked as open. */
@@ -312,6 +317,21 @@ export function OrchestrationPanel({
   };
 
   const setRunTab = (runId: string, tab: RunTab) => setRunTabs((before) => before[runId] === tab ? before : { ...before, [runId]: tab });
+
+  // Declared after the resets and the selection sync above, so on a mount or
+  // a coordinator switch the run asked for is the one that ends up selected.
+  // Only selects and opens: the card itself is found and shown by the caller.
+  const focusedRun = focusRun ? scopedRuns.find((run) => run.id === focusRun.runId) : undefined;
+  useEffect(() => {
+    if (!focusedRun) return;
+    setShowArchived(focusedRun.archivedAt != null);
+    setSelectedId(focusedRun.id);
+    setCreating(false);
+    setRunTab(focusedRun.id, "tasks");
+    setDisclosures((before) => before.expanded.has(focusedRun.id) ? before : toggleRunDisclosure(before, focusedRun.id));
+    // Only a new request moves the panel, not a ledger refresh under it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRun?.nonce, focusedRun?.id]);
 
   /** A collapsed run's attention count opens it on Tasks and puts focus on
    *  the first thing owed: the decision, the plan, or the stuck task. */
@@ -814,7 +834,8 @@ function RunDetail({
       {/* Owed to the person, so above every tab: switching tabs never hides a
           decision or a plan waiting for approval. */}
       {planPending && (
-        <div className="orch-attention-target" data-attention tabIndex={-1}>
+        <div className="orch-attention-target" data-attention tabIndex={-1}
+          data-pending-keys={`plan:${run.id}:${run.planApproval?.revision ?? 0}`}>
           <PlanReview run={run} tasks={tasks} drafting={coordinatorBusy} projectName={projectName} onApproved={onPlanApproved} onRequestChanges={onRequestPlanChanges} />
         </div>
       )}
@@ -823,7 +844,7 @@ function RunDetail({
         <section className="orch-decisions" aria-labelledby={`${tabsId}-decisions`} data-attention tabIndex={-1}>
           <h3 id={`${tabsId}-decisions`}>Needs you</h3>
           {openGates.map((gate) => (
-            <article className="orch-gate" key={gate.id}>
+            <article className="orch-gate" key={gate.id} data-pending-keys={`gate:${gate.id}`} tabIndex={-1}>
               <p className="orch-gate-task" title={gate.taskId ? taskNames.get(gate.taskId) : undefined}>{gate.taskId ? taskNames.get(gate.taskId) ?? "This task" : "This run"}</p>
               <p>{gate.question}</p>
               {!readOnly && gate.options.length > 0 && (
@@ -1087,6 +1108,9 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
   // What the run's attention count pointed at; a decision names its own task.
   const owed = !gateBlockedTasks.has(task.id)
     && (task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt));
+  // Cards this task is holding for the person; answered in the main chat or
+  // in this panel, never on the row.
+  const pending = usePendingActions().forTask(task.id);
 
   return (
     <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""}`} data-status={task.status}>
@@ -1121,6 +1145,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={expanded ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>
         </button>
       </div>
+      {pending.length > 0 && <PendingActionBadge className="orch-task-pending" actions={pending} subject={task.title} />}
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
         {/* The standard plan card: where it runs (planned until the host
             prepares it), who owns it on which model, and what done means. */}

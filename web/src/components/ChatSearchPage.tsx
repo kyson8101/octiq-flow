@@ -15,6 +15,8 @@ import type { Conversation } from "../lib/store";
 import { ConversationProjectAvatar, ConversationProjects } from "./ConversationProjects";
 import { chatTime, type Project } from "./Sidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
+import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
+import { pendingLabel } from "../lib/pendingActions";
 import "./ProjectsPage.css";
 import "./ChatSearchPage.css";
 
@@ -49,6 +51,7 @@ export function ChatSearchPage({
   initialState?: ChatSearchState;
   initialHits?: ChatSearchHit[];
 }) {
+  const pendingView = usePendingActions();
   const [query, setQuery] = useState(initialQuery);
   const [hits, setHits] = useState<ChatSearchHit[]>(initialHits ?? []);
   const [state, setState] = useState<ChatSearchState>(initialState ?? "idle");
@@ -94,6 +97,7 @@ export function ChatSearchPage({
     .slice(0, RECENT);
 
   const row = (chat: Conversation, excerpt: string) => {
+    const pending = pendingView.forRow(chat.id);
     const project = projectById.get(chat.projectId);
     const projectName = project?.name ?? "Unknown project";
     const projectInfo = conversationProjectInfo(chat, ledgerSnapshot, coordinatorChatKeys, ledgerUnavailable);
@@ -104,7 +108,7 @@ export function ChatSearchPage({
     return (
       <li key={chat.id}>
         <button type="button" className="projects-task chat-search-result" onClick={() => onOpenChat(chat)}
-          aria-label={`${chat.title}, ${projectSummary}`}>
+          aria-label={`${chat.title}, ${projectSummary}${pending.length ? `, ${pendingLabel(pending)}` : ""}`}>
           <ConversationProjectAvatar info={projectInfo} projects={projects} />
           <span className="chat-search-result-text">
             <span className="projects-task-line">
@@ -117,6 +121,7 @@ export function ChatSearchPage({
               : <ConversationProjects info={projectInfo} projects={projects} />}
           </span>
         </button>
+        <PendingActionBadge className="projects-task-pending" actions={pending} subject={chat.title} />
       </li>
     );
   };

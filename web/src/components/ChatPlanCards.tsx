@@ -25,7 +25,8 @@ export function ChatPlanCards({ plans, drafting, projectName }: {
   return (
     <div className="chat-plans">
       {plans.map((plan) => plan.pending ? (
-        <div className="chat-plan" key={plan.run.id} data-pending="">
+        <div className="chat-plan" key={plan.run.id} data-pending="" tabIndex={-1}
+          data-pending-keys={`plan:${plan.run.id}:${plan.revision}`}>
           <PlanReview run={plan.run} tasks={plan.tasks} drafting={drafting} projectName={projectName}
             chatHint={chatApprovalHint(plan, waiting)} onRequestChanges={inChat} />
         </div>

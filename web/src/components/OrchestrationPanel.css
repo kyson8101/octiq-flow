@@ -634,6 +634,8 @@
 .orch-task-heading:has(.orch-task-summary:not(:disabled):hover) { background: var(--bg-1); }
 /* The worker chat on screen. A tint, never a fill. */
 .orch-task.is-open .orch-task-heading { background: var(--accent-tint); }
+/* Lined up under the task's title, past its status glyph. */
+.orch-task-pending { margin: 0 12px 6px 38px; }
 .orch-task.is-open .orch-task-title { color: var(--fg-0); }
 .orch-task-summary:disabled { opacity: 1; cursor: default; }
 .orch-task-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

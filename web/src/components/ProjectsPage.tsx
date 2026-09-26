@@ -13,6 +13,8 @@ import type { Conversation } from "../lib/store";
 import { ProjectAvatar } from "./ProjectAvatar";
 import { chatTime, type Project } from "./Sidebar";
 import { WorkspaceHeader } from "./WorkspaceHeader";
+import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
+import { pendingLabel } from "../lib/pendingActions";
 import "./ProjectsPage.css";
 
 export function ProjectsPage({
@@ -45,6 +47,7 @@ export function ProjectsPage({
   /** Take one project off the shelf. */
   onRestoreProject?: (projectId: string) => Promise<void>;
 }) {
+  const pendingView = usePendingActions();
   const heading = useRef<HTMLHeadingElement>(null);
   const firstRender = useRef(true);
   const [restoring, setRestoring] = useState(false);
@@ -109,12 +112,13 @@ export function ProjectsPage({
                 {tasks.map((chat) => {
                   const working = busy.has(chat.id);
                   const done = isChatDone(chat);
+                  const pending = pendingView.forRow(chat.id);
                   const states = [working && "Working", done && "Done", chat.pinned && "Pinned"]
                     .filter((state): state is string => !!state);
                   return (
                     <li key={chat.id}>
                       <button type="button" className="projects-task" onClick={() => onOpenChat(chat)}
-                        aria-label={[chat.title, ...states].join(", ")}>
+                        aria-label={[chat.title, ...(pending.length ? [pendingLabel(pending)] : []), ...states].join(", ")}>
                         <span className="projects-task-line">
                           <span className="projects-task-title">{chat.title}</span>
                           <time dateTime={new Date(chat.updatedAt).toISOString()}>{chatTime(chat.updatedAt)}</time>
@@ -126,6 +130,7 @@ export function ProjectsPage({
                           </span>}
                         </span>
                       </button>
+                      <PendingActionBadge className="projects-task-pending" actions={pending} subject={chat.title} />
                     </li>
                   );
                 })}

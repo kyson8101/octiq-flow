@@ -155,6 +155,9 @@
 }
 .projects-task-states > .is-working { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
 .projects-task-states > .is-done { background: var(--accent-tint); color: var(--fg-1); }
+/* A chat waiting on you, under its row and lined up with its text. */
+.projects-task-pending { margin: -4px 12px 8px; }
+.chat-search-page .projects-task-pending { margin-left: 48px; }
 
 .projects-page-empty {
   display: grid;

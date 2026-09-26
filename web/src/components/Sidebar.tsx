@@ -24,6 +24,8 @@ import { ChatPreviewButton, type ChatPreviewSource } from "./ChatPreviewButton";
 import { ConversationProjectAvatar, ConversationProjects, conversationTintStyle } from "./ConversationProjects";
 import type { ProjectAppearance } from "./ProjectAvatar";
 import { SidebarMenu } from "./SidebarMenu";
+import { PendingActionBadge, usePendingActions } from "./PendingActionBadge";
+import { pendingLabel } from "../lib/pendingActions";
 import "./MobileSidebar.css";
 import "./SidebarArchive.css";
 
@@ -136,6 +138,7 @@ export function Sidebar({
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [menuScroll, setMenuScroll] = useState(INITIAL_MOBILE_MENU_SCROLL);
   const personaOf = useContext(ChatPersonaContext);
+  const pendingView = usePendingActions();
   const toolbar = useRef<HTMLDivElement | null>(null);
   const hold = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const holdStart = useRef({ x: 0, y: 0 });
@@ -278,6 +281,8 @@ export function Sidebar({
     // not the model it runs on; the model stays in the tooltip.
     const persona = personaOf(`chat:${chat.id}`);
     const latest = latestResponse(getPreviewMessages?.(chat.id) ?? chat.messages);
+    // Everything this chat and its hidden task chats are waiting on you for.
+    const pending = showArchived ? [] : pendingView.forRow(chat.id);
     const snippet = going ? "Deleting…"
       : latest?.text ?? chat.latestResponse ?? (busy.has(chat.id) ? "Working…" : "No response yet");
 
@@ -289,6 +294,7 @@ export function Sidebar({
           going ? "is-going" : "", isLeaving ? "is-leaving" : "",
           chat.pinned ? "is-pinned" : "", renaming === chat.id ? "is-renaming" : "",
           unread ? "is-unread" : "", done ? "is-done" : "", openWorker ? "is-worker-on" : "",
+          pending.length ? "has-pending" : "",
         ].filter(Boolean).join(" ")} style={chatTintStyle}>
           {renaming === chat.id ? (
             <form className="chat-rename" onSubmit={(event) => {
@@ -313,7 +319,7 @@ export function Sidebar({
             <ChatPreviewButton chat={chat} enabled={!going && !isLeaving && !actionsId}
               busy={busy.has(chat.id)} getPreviewMessages={getPreviewMessages} loadPreview={loadPreview}
               className="chat-btn" type="button"
-              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
+              aria-label={`${unread ? "Unread, " : ""}${chat.title}, ${projectSummary}${branch ? `, branch ${branch}` : ""}${persona ? `, with ${persona.name}` : model ? `, ${model.name} ${model.model}` : ""}${busy.has(chat.id) ? ", working" : running.has(chat.id) ? ", session running" : ""}${pending.length ? `, ${pendingLabel(pending)}` : ""}${done ? ", done" : ""}${chat.pinned ? ", pinned" : ""}`}
               disabled={isLeaving} aria-current={chat.id === currentConversation ? "page" : undefined}
               aria-description={`${parent ? `Agent chat under ${parent.title}. ` : ""}Hover to preview. Hold for chat actions.`}
               onPointerDown={(event) => {
@@ -361,6 +367,9 @@ export function Sidebar({
                 </span>
               </span>
             </ChatPreviewButton>
+          )}
+          {renaming !== chat.id && pending.length > 0 && (
+            <PendingActionBadge className="chat-pending" actions={pending} subject={chat.title} />
           )}
 
           {/* One slot on the left, answering three questions at once: whose
