@@ -265,6 +265,10 @@ export type Message = {
    * prompt. Keeping this id apart from `echo` reconciles optimistic sends,
    * durable replay, and provider acknowledgements without relying on text. */
   turnId?: string;
+  /** Every browser send folded into this one host-owned pending unit. The
+   * first id remains `turnId`; aliases keep retries and stale-tab actions
+   * truthful without rendering duplicate bubbles. */
+  sourceTurnIds?: string[];
   /** Codex's equivalent of `echo`: it does not replay the prompt, but its
    *  `turn.started` says it has begun this exact turn. Kept separate from the
    *  replay id because it is a state signal, not a second copy of the message.
@@ -311,6 +315,10 @@ export type Message = {
    *  else — see the `assistant` merge, which must not close it early. */
   partial?: boolean;
 };
+
+export function ownsTurnId(message: Pick<Message, "turnId" | "sourceTurnIds">, turnId: string): boolean {
+  return message.turnId === turnId || message.sourceTurnIds?.includes(turnId) === true;
+}
 
 export type ChatState = {
   messages: Message[];
@@ -927,10 +935,46 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
   // looking at when they cancelled. Written down only when the queued turn had
   // been — see `QueuedTurn::recorded`; a Claude turn was never in the record to
   // begin with, and this simply finds nothing to drop.
+  if (type === "octiq_user_turn_appended") {
+    const targetId = asStr(e.uuid);
+    const sourceId = asStr(e.appended_uuid);
+    if (!targetId || !sourceId || targetId === sourceId) return state;
+    const target = state.messages.find((message) => ownsTurnId(message, targetId));
+    const source = state.messages.find((message) => ownsTurnId(message, sourceId));
+    if (!target || !source || target === source || target.role !== "user" || source.role !== "user")
+      return state;
+    const targetText = target.blocks.flatMap((block) => block.kind === "text" ? [block.text] : []).join("");
+    const sourceText = source.blocks.flatMap((block) => block.kind === "text" ? [block.text] : []).join("");
+    const text = targetText && sourceText ? `${targetText}\n${sourceText}` : targetText || sourceText;
+    const sourceTurnIds = [...new Set([
+      ...(target.sourceTurnIds ?? (target.turnId ? [target.turnId] : [])),
+      ...(source.sourceTurnIds ?? (source.turnId ? [source.turnId] : [])),
+    ])];
+    const delivery = target.delivery === "starting" || source.delivery === "starting"
+      ? "starting"
+      : source.delivery ?? target.delivery;
+    const combined: Message = {
+      ...target,
+      blocks: [{ kind: "text", text }],
+      attachments: [...(target.attachments ?? []), ...(source.attachments ?? [])],
+      sourceTurnIds,
+      delivery,
+      queueLost: source.queueLost || target.queueLost || undefined,
+      queueAction: undefined,
+      queueError: source.queueError ?? target.queueError,
+      ...(asOneLine(text) ? { relay: asOneLine(text) } : { relay: undefined }),
+    };
+    return {
+      ...state,
+      messages: state.messages.flatMap((message) =>
+        message === target ? [combined] : message === source ? [] : [message]),
+    };
+  }
+
   if (type === "octiq_user_turn_cancelled" || type === "octiq_user_turn_dismissed") {
     const cancelled = asStr(e.uuid);
     if (!cancelled) return state;
-    return { ...state, messages: state.messages.filter((m) => m.turnId !== cancelled) };
+    return { ...state, messages: state.messages.filter((m) => !ownsTurnId(m, cancelled)) };
   }
 
   if (type === "octiq_user_turn_delivery") {
@@ -939,7 +983,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
     if (!["queued", "starting", "dispatched", "failed", "unknown"].includes(delivery)) return state;
     return {
       ...state,
-      messages: state.messages.map((m) => m.turnId === turnId && !m.echo && !m.takenUp
+      messages: state.messages.map((m) => ownsTurnId(m, turnId) && !m.echo && !m.takenUp
         ? { ...m, delivery: delivery as Message["delivery"], queueLost: delivery === "failed" || undefined, queueAction: undefined, queueError: undefined }
         : m),
     };
@@ -1352,7 +1396,7 @@ export function reduceChat(state: ChatState, raw: unknown, now: number = Date.no
         .find(
           (m) =>
             m.role === "user" &&
-            ((turnId && m.turnId === turnId) ||
+            ((turnId && ownsTurnId(m, turnId)) ||
               (!m.turnId &&
                 !m.echo &&
                 !m.takenUp &&
@@ -2470,7 +2514,7 @@ export function addUserTurn(
   // The backend can publish a fast Codex event before this React update runs.
   // In that order the durable event already made the bubble; never append it a
   // second time just because this was the optimistic path.
-  if (turnId && state.messages.some((m) => m.turnId === turnId)) return state;
+  if (turnId && state.messages.some((m) => ownsTurnId(m, turnId))) return state;
   return {
     ...state,
     ...(asked ? { model: asked, modelAsked: true } : {}),

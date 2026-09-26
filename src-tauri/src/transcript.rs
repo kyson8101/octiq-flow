@@ -168,7 +168,7 @@ pub struct Page {
 /// Start pages at an idle host's next prompt, never halfway through a streamed
 /// message or at a queued prompt inside the reply it is waiting behind.
 fn page_prompt(event: &Value) -> bool {
-    if event["type"] != "user" {
+    if event["type"] != "user" || event.get("octiq_append_to").is_some() {
         return false;
     }
     let content = &event["message"]["content"];
@@ -397,6 +397,37 @@ mod tests {
         assert_eq!(
             page.events.iter().map(|e| e.seq).collect::<Vec<_>>(),
             vec![3, 4, 5, 6]
+        );
+        forget(&key);
+    }
+
+    #[test]
+    fn appended_queue_envelopes_stay_on_their_combined_turn_page() {
+        let key = unique_key("page-appended-queue");
+        append(&key, &json!({"type":"user", "message":{"content":"old"}}));
+        append(&key, &json!({"type":"result"}));
+        append(
+            &key,
+            &json!({"type":"user", "uuid":"user-1", "octiq_user_turn":true, "message":{"content":"first"}}),
+        );
+        for id in ["user-2", "user-3", "user-4"] {
+            append(
+                &key,
+                &json!({"type":"user", "uuid":id, "octiq_user_turn":true, "octiq_append_to":"user-1", "message":{"content":id}}),
+            );
+            append(
+                &key,
+                &json!({"type":"octiq_user_turn_appended", "uuid":"user-1", "appended_uuid":id}),
+            );
+        }
+        let page = page_with_budget(&key, None, 1, 1).unwrap();
+        assert_eq!(page.before, Some(3));
+        assert_eq!(
+            page.events
+                .iter()
+                .map(|event| event.seq)
+                .collect::<Vec<_>>(),
+            (3..=9).collect::<Vec<_>>()
         );
         forget(&key);
     }

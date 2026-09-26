@@ -81,3 +81,10 @@ describe("messages left behind after queue loss", () => {
     expect(state.messages[0].queueLost).toBeUndefined();
   });
 });
+
+it("reconciles a combined queue unit from any source id", () => {
+  let state = addUserTurn(emptyChat(), "first", [], 1, "user-1");
+  state.messages[0].sourceTurnIds = ["user-1", "user-2"];
+  const next = reconcileUnsentMessages(state, { live: true, queuedTurnIds: ["user-2"] });
+  expect(next.messages[0]).toMatchObject({ delivery: "queued", queueLost: undefined });
+});

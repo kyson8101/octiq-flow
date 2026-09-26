@@ -1620,6 +1620,80 @@ describe("a message taken back before the agent was given it", () => {
   });
 });
 
+describe("queued follow-ups combined by the host", () => {
+  const appended = (target: string, source: string) => ({
+    type: "octiq_user_turn_appended",
+    uuid: target,
+    appended_uuid: source,
+  });
+
+  it("uses one newline-separated bubble with attachments in source order", () => {
+    let state = addUserTurn(emptyChat(), "first detail", [
+      { path: "/tmp/first.png", name: "first.png", isImage: true },
+    ], 1, "user-1");
+    state = addUserTurn(state, "second detail", [
+      { path: "/tmp/second.png", name: "second.png", isImage: true },
+    ], 2, "user-2");
+
+    state = reduceChat(state, appended("user-1", "user-2"));
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].blocks).toEqual([{ kind: "text", text: "first detail\nsecond detail" }]);
+    expect(state.messages[0].attachments?.map((attachment) => attachment.path)).toEqual([
+      "/tmp/first.png",
+      "/tmp/second.png",
+    ]);
+    expect(state.messages[0].sourceTurnIds).toEqual(["user-1", "user-2"]);
+  });
+
+  it("reconstructs the same combined bubble from durable envelopes", () => {
+    const envelope = (uuid: string, text: string, path: string) => ({
+      type: "user",
+      uuid,
+      octiq_user_turn: true,
+      message: { role: "user", content: [{ type: "text", text }] },
+      octiq_attachments: [{ path, name: path.split("/").pop(), isImage: true }],
+    });
+    let state = reduceChat(emptyChat(), envelope("user-1", "first detail", "/tmp/first.png"));
+    state = reduceChat(state, envelope("user-2", "second detail", "/tmp/second.png"));
+
+    state = reduceChat(state, appended("user-1", "user-2"));
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0].blocks).toEqual([{ kind: "text", text: "first detail\nsecond detail" }]);
+    expect(state.messages[0].attachments?.map((attachment) => attachment.path)).toEqual([
+      "/tmp/first.png",
+      "/tmp/second.png",
+    ]);
+  });
+
+  it("lets cancellation target any source id in the combined unit", () => {
+    let state = addUserTurn(emptyChat(), "first", [], 1, "user-1");
+    state = addUserTurn(state, "second", [], 2, "user-2");
+    state = reduceChat(state, appended("user-1", "user-2"));
+
+    state = reduceChat(state, { type: "octiq_user_turn_cancelled", uuid: "user-2" });
+
+    expect(state.messages).toHaveLength(0);
+  });
+
+  it("keeps send-now state when a final send joins before automatic drain", () => {
+    let state = addUserTurn(emptyChat(), "first", [], 1, "user-1");
+    state = reduceChat(state, { type: "octiq_user_turn_delivery", uuid: "user-1", state: "starting" });
+    state = addUserTurn(state, "last detail", [], 2, "user-2");
+    state = reduceChat(state, { type: "octiq_user_turn_delivery", uuid: "user-2", state: "queued" });
+
+    state = reduceChat(state, appended("user-1", "user-2"));
+
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({
+      turnId: "user-1",
+      sourceTurnIds: ["user-1", "user-2"],
+      delivery: "starting",
+    });
+  });
+});
+
 describe("a lost queued message dismissed by the user", () => {
   const dismissing = (turnId: string) =>
     ({ type: "octiq_user_turn_dismissed", uuid: turnId });

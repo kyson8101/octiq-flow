@@ -1,4 +1,4 @@
-import type { ChatState } from "./chat";
+import { ownsTurnId, type ChatState } from "./chat";
 
 /** A live provider event that proves a turn has started on this connection.
  *
@@ -40,17 +40,18 @@ export type ChatQueueState = { live: boolean; queuedTurnIds: string[] };
  * A live process without a queue entry is ambiguous on older transcripts;
  * never invent a provider acknowledgement from the absence of an entry. */
 export function reconcileUnsentMessages(chat: ChatState, queue: ChatQueueState): ChatState {
-  const queued = new Set(queue.queuedTurnIds);
+  const isQueued = (message: ChatState["messages"][number]) =>
+    queue.queuedTurnIds.some((turnId) => ownsTurnId(message, turnId));
   let changed = false;
   const messages = chat.messages.map((message) => {
     if (message.role !== "user" || !message.turnId || message.echo || message.takenUp) return message;
-    if ((message.delivery === "failed" || message.delivery === "unknown") && !queued.has(message.turnId)) return message;
-    if (message.delivery === "dispatched" && !queued.has(message.turnId)) {
+    if ((message.delivery === "failed" || message.delivery === "unknown") && !isQueued(message)) return message;
+    if (message.delivery === "dispatched" && !isQueued(message)) {
       if (queue.live) return message;
       changed = true;
       return { ...message, delivery: "unknown", queueLost: undefined } as typeof message;
     }
-    const delivery = queued.has(message.turnId) ? (message.delivery === "starting" ? "starting" : "queued") : queue.live ? "unknown" : "failed";
+    const delivery = isQueued(message) ? (message.delivery === "starting" ? "starting" : "queued") : queue.live ? "unknown" : "failed";
     const lost = delivery === "failed";
     if (!!message.queueLost === lost && message.delivery === delivery) return message;
     changed = true;
