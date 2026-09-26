@@ -308,6 +308,23 @@ impl OrchestrationStore {
 
     /// Bounded local probes only, with no shell, DNS, credentials or HTTP payload.
     pub(crate) fn check_services(&self, now: i64) -> Result<(), String> {
+        self.check_services_with(now, |service| {
+            TcpStream::connect_timeout(
+                &SocketAddr::new(service.host, service.port),
+                Duration::from_millis(100),
+            )
+            .is_ok()
+        })
+    }
+
+    /// `check_services` with the reachability probe given, so a test can
+    /// say "nothing listens now" without releasing a port that a parallel
+    /// test may bind again the next moment.
+    fn check_services_with(
+        &self,
+        now: i64,
+        listening: impl Fn(&Service) -> bool,
+    ) -> Result<(), String> {
         let candidates: Vec<_> = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             inner
@@ -332,12 +349,12 @@ impl OrchestrationStore {
         let observations: Vec<_> = candidates
             .into_iter()
             .map(|service| {
-                let listening = TcpStream::connect_timeout(
-                    &SocketAddr::new(service.host, service.port),
-                    Duration::from_millis(100),
-                )
-                .is_ok();
-                (service, if listening { "listening" } else { "stopped" })
+                let state = if listening(&service) {
+                    "listening"
+                } else {
+                    "stopped"
+                };
+                (service, state)
             })
             .collect();
         let runs = self.mutate(|data| {
@@ -573,8 +590,11 @@ mod tests {
                 },
             )
             .unwrap();
+        // The frontend goes away. Probed as gone rather than by dropping the
+        // listener: a released ephemeral port is bound again by a parallel
+        // test often enough to make the real probe flaky here.
         drop(listener);
-        store.check_services(110_001).unwrap();
+        store.check_services_with(110_001, |_| false).unwrap();
         let snapshot = store.snapshot(Some(&run.id)).unwrap();
         assert_eq!(snapshot.tasks[0].status, TaskStatus::Completed);
         assert_eq!(snapshot.services[0].state, "stopped");
