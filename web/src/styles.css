@@ -1620,6 +1620,22 @@ body {
   max-width: 60ch;
 }
 
+/* The lead's role on the new-chat welcome: the list's two-line clamp, set in
+   the hero's centred column. */
+.hero-role {
+  width: min(100%, 60ch);
+  margin-top: 8px;
+  justify-content: center;
+}
+.hero-role .agent-role-text { font-size: var(--text-sm); text-align: center; }
+
+@media (max-width: 640px) {
+  /* A phone's welcome is a heading and a line, then the picker and the
+     message box — not a page of prose above them. */
+  .hero .hero-title { font-size: 20px; }
+  .hero { padding-block: 16px; }
+}
+
 /* The same middle of the page while a picked session is still being read back.
    Deliberately almost nothing — a name and three dots. Anything more would be
    a second page to look at for the second it is there, and the transcript is
@@ -8621,6 +8637,10 @@ body.is-ultra .eff {
     flex-direction: column;
   }
 
+  /* Every section on screen at once, in as many rows as it takes. A strip
+     scrolling sideways with its scrollbar hidden left the later sections
+     past the edge of a 375px phone, a clipped icon the only hint they
+     existed (feedback f3fab989). */
   .settings-nav {
     width: auto;
     flex: 0 0 auto;
@@ -8628,24 +8648,19 @@ body.is-ultra .eff {
     padding: 8px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .settings-nav::-webkit-scrollbar {
-    display: none;
   }
 
   .settings-nav-list {
-    width: max-content;
     flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
   }
 
   .settings-nav-item {
     width: auto;
     min-height: 40px;
-    padding: 7px 11px;
+    gap: 8px;
+    padding: 6px 10px;
   }
 
   .settings-nav-copy small,

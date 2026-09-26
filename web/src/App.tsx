@@ -137,6 +137,7 @@ import { ProjectAvatar } from "./components/ProjectAvatar";
 import { Settings, type SettingsSection } from "./components/Settings";
 import { RecipientPicker } from "./components/AgentsSettings";
 import { AgentsDashboard } from "./components/AgentsDashboard";
+import { AgentRole } from "./components/AgentRole";
 import { pendingPlan, type LeadRecord } from "./lib/agentsDashboard";
 import {
   agentIdentity, conversationRecipient, conversationRecipients, leadSettings, loadHead, loadHome,
@@ -4608,13 +4609,17 @@ export default function App() {
                 : newTask
                 ? (project ? `What's the task in ${project.name}?` : "What's the task?")
                 : project ? `What do you want to do in ${project.name}?` : "What should we work on?"}</h1>
-              {newTask && lead && (
+              {newTask && lead && <>
+                {/* A role runs to a thousand characters: two lines, and the
+                    rest on request, so the picker and the message box stay in
+                    reach on a phone (feedback 020e4309). */}
+                {lead.role.trim() && <AgentRole className="hero-role" text={lead.role.trim()} name={lead.name} />}
                 <p className="hero-sub">
-                  {lead.role ? `${lead.role.replace(/[.\s]+$/, "")}. ` : ""}{headAtHome
+                  {headAtHome
                     ? "Works across every project: picks the project, repository and teammate for each part, and you approve the plan before anyone starts."
                     : `Works ${lead.projectId ? `only in ${project?.name ?? "its project"}` : "in any project"}: does the work itself or hands parts to its team, and you approve any plan first.`}
                 </p>
-              )}
+              </>}
               {(!project || newTask) && (
                 newChatError && <p className="hero-route-error" role="alert">{newChatError}</p>
               )}
