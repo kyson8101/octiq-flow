@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OrchestrationAttempt, OrchestrationGate, OrchestrationRun, OrchestrationTask } from "./orchestration";
-import { attentionLabel, mainChatTarget, nextRunTab, runAttention, splitArchived, stopRun } from "./runPanel";
+import { attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, splitArchived, stopRun } from "./runPanel";
 
 const run = (id: string, coordinatorChatKey: string, extra: Partial<OrchestrationRun> = {}): OrchestrationRun => ({
   id, objective: id, coordinatorChatKey, workspaceId: "project", rootPath: "/repo",
@@ -45,6 +45,64 @@ describe("run attention", () => {
     expect(runAttention(stopped, [], [], []).total).toBe(0);
     // Nor is a failure in it: nothing can retry a stopped run.
     expect(runAttention(stopped, [task("t", "failed")], [], []).total).toBe(0);
+  });
+});
+
+describe("who a run is with", () => {
+  const a = run("a", "chat:cto");
+  const assigned = (id: string, status: OrchestrationTask["status"], who: string, extra: Partial<OrchestrationTask> = {}) =>
+    task(id, status, { assignee: { id: who, name: `${who} (then)` }, ...extra });
+  const attempt = (id: string, taskId: string, extra: Partial<OrchestrationAttempt> = {}) =>
+    ({ id, runId: "a", taskId, number: 1, status: "running", ...extra }) as OrchestrationAttempt;
+  const roster = [
+    { id: "noah", name: "Noah", avatar: "noah.png" },
+    { id: "maya", name: "Maya" },
+    { id: "tofu", name: "Tofu" },
+  ];
+
+  it("tells working from merely assigned, stuck and finished, active first", () => {
+    const tasks = [
+      assigned("t1", "completed", "tofu"),
+      assigned("t2", "ready", "maya"),
+      assigned("t3", "running", "noah", { activeAttemptId: "x3" }),
+      assigned("t4", "blocked", "rex"),
+    ];
+    const people = runPeople(a, tasks, [attempt("x3", "t3", { execution: { state: "executing", retryCount: 0 } })], [],
+      [...roster, { id: "rex", name: "Rex" }]);
+    expect(people.map((p) => [p.name, p.state])).toEqual([["Noah", "working"], ["Rex", "blocked"], ["Maya", "assigned"], ["Tofu", "done"]]);
+    expect(people[0].avatar).toBe("noah.png");
+  });
+
+  it("does not call a running task working unless its worker is executing", () => {
+    const tasks = [assigned("t", "running", "noah", { activeAttemptId: "x" })];
+    const retrying = runPeople(a, tasks, [attempt("x", "t", { execution: { state: "retrying", retryCount: 1 } })], [], roster);
+    expect(retrying[0].state).toBe("assigned");
+    const stalled = runPeople(a, tasks, [attempt("x", "t", { execution: { state: "stalled", retryCount: 0 } })], [], roster);
+    expect(stalled[0].state).toBe("blocked");
+    // A task waiting on a decision is that person's block.
+    expect(runPeople(a, [assigned("g", "running", "maya")], [], [gate("q", "g")], roster)[0].state).toBe("blocked");
+  });
+
+  it("names each person once, with their most urgent state and the roster's current name", () => {
+    const tasks = [assigned("t1", "completed", "noah"), assigned("t2", "failed", "noah"), assigned("t3", "ready", "noah")];
+    const [noah, ...rest] = runPeople(a, tasks, [], [], roster);
+    expect(rest).toHaveLength(0);
+    expect(noah).toMatchObject({ name: "Noah", state: "blocked", tasks: 3, removed: false });
+  });
+
+  it("falls back to the name the task was given when the roster no longer has them", () => {
+    const tasks = [assigned("t", "ready", "gone")];
+    expect(runPeople(a, tasks, [], [], roster)[0]).toMatchObject({ name: "gone (then)", removed: true });
+    // An unloaded roster says nothing about removal.
+    expect(runPeople(a, tasks, [], [], [])[0]).toMatchObject({ name: "gone (then)", removed: false });
+    // Tasks with no assignee are not people.
+    expect(runPeople(a, [task("plain", "running")], [], [], roster)).toEqual([]);
+  });
+
+  it("marks unfinished work on a stopped run as stopped", () => {
+    const stopped = run("a", "chat:cto", { status: "stopped" });
+    const people = runPeople(stopped, [assigned("t1", "running", "noah"), assigned("t2", "completed", "maya")], [], [], roster);
+    expect(people.map((p) => [p.name, p.state])).toEqual([["Maya", "done"], ["Noah", "stopped"]]);
   });
 });
 

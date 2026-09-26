@@ -36,10 +36,18 @@ describe("PlanReview", () => {
     expect(html).not.toContain("<details open");
   });
 
-  it("will not approve a plan still being drafted, or an empty one", () => {
-    expect(render([task("a")], true)).toMatch(/<button[^>]*disabled=""[^>]*>Approve/);
-    expect(render([task("a")], true)).toContain("Drafting the plan");
+  it("will not approve an empty plan, but a busy main agent does not lock one on screen", () => {
+    // Any coordinator turn — a reply, a delivered notification — made the
+    // chat busy, and used to grey out an approval of a plan already written.
+    // The approval names the tasks seen; the host refuses it if they changed
+    // (orchestration.rs: approval_covers_the_plan_seen_and_new_lead_work_needs_it_again).
+    const busy = render([task("a")], true);
+    expect(busy).not.toMatch(/<button[^>]*disabled=""[^>]*>Approve/);
+    expect(busy).toContain("Plan ready for review");
+    expect(busy).not.toContain("Drafting the plan");
+    expect(busy).toContain("The main agent is still active. Approving covers the tasks shown.");
     const empty = render([], true);
+    expect(empty).toContain("Drafting the plan");
     expect(empty).toContain("Tasks appear here as the main agent writes them.");
     expect(empty).toMatch(/<button[^>]*disabled=""[^>]*>Approve plan/);
   });

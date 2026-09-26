@@ -860,6 +860,37 @@
 .orch-run-accordion-copy strong { overflow: hidden; color: var(--fg-0); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
 .orch-run-accordion-copy .orch-run-line { font-size: 10.5px; }
 .orch-run-accordion-chevron { flex: 0 0 auto; color: var(--fg-3); }
+
+/* Who the goal is with. Names are text; the state word says whether each is
+   actually working or only has a task waiting. */
+.orch-people { position: relative; display: block; min-width: 0; margin-top: 3px; }
+.orch-people-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Chips wrap rather than clip: a name is never squeezed away. */
+.orch-people-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.orch-person {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 100%;
+  padding: 1px 8px 1px 2px; border: 1px solid var(--border); border-radius: var(--r-pill);
+  color: var(--fg-1); font-size: 11px; line-height: 18px; white-space: nowrap;
+}
+.orch-person-name { min-width: 3ch; max-width: 14ch; overflow: hidden; text-overflow: ellipsis; font-weight: 550; }
+.orch-person-state { flex: 0 0 auto; color: var(--fg-3); }
+/* Having a task is the plain case, and a stopped goal already says stopped;
+   the word is spoken for both, and drawn only where it tells you something. */
+.orch-person[data-state="assigned"] .orch-person-state,
+.orch-person[data-state="stopped"] .orch-person-state { display: none; }
+.orch-person[data-state="working"] { border-color: color-mix(in srgb, var(--link) 45%, var(--border)); }
+.orch-person[data-state="working"] .orch-person-state { color: var(--link); }
+.orch-person[data-state="working"] .orch-person-state::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 4px; border-radius: 50%;
+  background: var(--link); vertical-align: 1px;
+}
+.orch-person[data-state="blocked"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); }
+.orch-person[data-state="blocked"] .orch-person-state { color: var(--warn); }
+.orch-person[data-state="done"],
+.orch-person[data-state="stopped"] { color: var(--fg-2); }
+.orch-person[data-overflow="all"] { display: none; }
+.orch-person-more { flex: 0 0 auto; color: var(--fg-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.orch-person-more.is-narrow { display: none; }
 .orch-run-accordion-body { padding: 10px 12px 18px; border-top: 1px solid var(--border); }
 .orch-run-accordion-body[hidden] { display: none; }
 .orch-run-accordion-body .orch-run-detail { width: 100%; }
@@ -899,6 +930,9 @@
   .orch-tab-short { display: inline; }
   .orch-tabs [role="tab"] { padding-inline: 7px; }
   .orch-run-actions .orch-stop-confirm { max-width: none; }
+  .orch-person[data-overflow="phone"],
+  .orch-person-more.is-wide { display: none; }
+  .orch-person-more.is-narrow { display: inline; }
 }
 
 .orch-execution { margin-block: 12px; font-size: 12px; color: var(--fg-2); }

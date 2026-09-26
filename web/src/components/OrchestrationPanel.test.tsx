@@ -10,6 +10,7 @@ vi.mock("../lib/bridge", () => ({
 }));
 
 import type { TaskWorkspace } from "../lib/orchestration";
+import { AgentRosterContext } from "../lib/agentRoster";
 import { boardCounts, EXECUTION_LABELS } from "../lib/agentTaskBoard";
 import type { ExecutionState } from "../lib/orchestration";
 import { OrchestrationPanel, retryLaunchArgs, type OrchestrationSnapshot } from "./OrchestrationPanel";
@@ -555,6 +556,33 @@ describe("compact run panel", () => {
     expect(only).not.toContain("Old goal");
     expect(only).toContain("<span>Archived</span>");
     expect(only).toContain("<span>Main agent chat</span>");
+  });
+
+  it("names who a collapsed goal is with, and whether each is actually working", () => {
+    const second = { ...snapshot.runs[0], id: "run_2", objective: "Second goal", status: "running" as const };
+    const people = ["noah", "maya", "tofu", "rex"];
+    const tasks = people.map((who, index) => ({ ...snapshot.tasks[0], id: `t_${who}`, runId: "run_2", title: who,
+      status: index === 0 ? "running" as const : "ready" as const, activeAttemptId: index === 0 ? "a_noah" : undefined,
+      assignee: { id: who, name: `${who}-old` } }));
+    const attempts = [{ ...snapshot.attempts[0], id: "a_noah", runId: "run_2", taskId: "t_noah", status: "running" as const,
+      execution: { state: "executing" as const, retryCount: 0 } }];
+    const ledger = { ...snapshot, runs: [snapshot.runs[0], second], tasks: [...snapshot.tasks, ...tasks], attempts: [...snapshot.attempts, ...attempts] };
+    const roster = [{ id: "noah", name: "Noah" }, { id: "maya", name: "Maya" }, { id: "tofu", name: "Tofu" }];
+    const html = renderToStaticMarkup(<AgentRosterContext.Provider value={roster}>
+      <OrchestrationPanel embedded sharedHeading allowManualRun={false} project={{ id: "project", name: "OctiqFlow" }}
+        coordinatorKey="chat:master" currentChatKey="chat:master" initialSnapshot={ledger} onOpenChat={() => {}} onClose={() => {}} />
+    </AgentRosterContext.Provider>);
+    const header = html.slice(html.indexOf("Second goal"), html.indexOf('id="orch-goal-run_2"'));
+    // Collapsed, and the names are text in the header — not tooltips.
+    expect(html).toContain('id="orch-goal-run_2" hidden=""');
+    expect(header).toContain('<span class="orch-person-name">Noah</span><span class="orch-person-state">working</span>');
+    expect(header).toContain('<span class="orch-person-name">Maya</span><span class="orch-person-state">assigned</span>');
+    // Not in the roster any more: the name it was given, marked as such.
+    expect(header).toContain("People: Noah, working; Maya, assigned; Tofu, assigned; rex-old (no longer registered), assigned");
+    expect(header).toContain('class="orch-person-more is-wide"');
+    expect(header).toMatch(/is-wide"[^>]*>\+1</);
+    expect(header).toMatch(/is-narrow"[^>]*>\+2</);
+    expect(header.match(/class="orch-person"/g)).toHaveLength(4);
   });
 
   it("offers to archive a finished run behind a confirmation, never by default", () => {

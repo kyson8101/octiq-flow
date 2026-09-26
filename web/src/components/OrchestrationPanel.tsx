@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
@@ -7,8 +7,8 @@ import {
   sortTasksByActivity, taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
 } from "../lib/agentTaskBoard";
 import {
-  attentionLabel, mainChatTarget, nextRunTab, runAttention, RUN_TABS, setRunArchived, splitArchived, stopRun,
-  type RunAttention, type RunTab,
+  attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
+  type PersonState, type RunAttention, type RunTab,
 } from "../lib/runPanel";
 import { agoLabel } from "../lib/chatTask";
 import { chatSnapshot, isActiveRun } from "../lib/chatWorkflow";
@@ -20,7 +20,7 @@ import { initialRunDisclosures, syncRunDisclosures, toggleRunDisclosure } from "
 import { AgentLogo } from "./AgentLogo";
 import { AgentAvatar } from "./AgentAvatar";
 import { TaskPlanCard } from "./TaskPlanCard";
-import { useRosterAgent } from "../lib/agentRoster";
+import { AgentRosterContext, useRosterAgent } from "../lib/agentRoster";
 import { PlanReview } from "./PlanReview";
 import { WorkerExecutionEvidence } from "./WorkerExecutionEvidence";
 import { TaskLifecycleEvidence } from "./TaskLifecycleEvidence";
@@ -481,6 +481,7 @@ export function OrchestrationPanel({
                         <span className="orch-run-accordion-copy">
                           <strong>{run.objective}</strong>
                           <RunLine snapshot={snapshot} run={run} tasks={runTasks} attempts={runAttempts} />
+                          <RunPeople run={run} tasks={runTasks} attempts={runAttempts} gates={snapshot.gates} />
                         </span>
                       </button>
                       {run.archivedAt != null
@@ -970,6 +971,40 @@ function RunLine({ snapshot, run, tasks, attempts }: {
         saying that nothing checked the outcome. */}
     {settled && <span className="orch-progress-acceptance" title={ACCEPTANCE_NOTE}>Acceptance: unverified</span>}
   </small>;
+}
+
+const PERSON_LABEL: Record<PersonState, string> = {
+  working: "working", blocked: "blocked", assigned: "assigned", done: "done", stopped: "stopped",
+};
+/** Chips shown before "+N"; a phone shows one fewer (see the CSS). */
+const PEOPLE_SHOWN = 3;
+
+/** Who a goal is with, readable collapsed: face and name, and what each is
+ *  doing — so "handed a task" never reads as "working". Names are text, not
+ *  tooltips. The full list is spoken once; the chips are its picture. */
+function RunPeople({ run, tasks, attempts, gates }: {
+  run: OrchestrationRun;
+  tasks: OrchestrationTask[];
+  attempts: OrchestrationAttempt[];
+  gates: OrchestrationGate[];
+}) {
+  const roster = useContext(AgentRosterContext);
+  const people = runPeople(run, tasks, attempts, gates, roster);
+  if (!people.length) return null;
+  const spoken = people.map((person) => `${person.name}${person.removed ? " (no longer registered)" : ""}, ${PERSON_LABEL[person.state]}`).join("; ");
+  return <span className="orch-people">
+    <span className="orch-people-sr">People: {spoken}</span>
+    <span className="orch-people-chips" aria-hidden="true">
+      {people.map((person, index) => <span key={person.id} className="orch-person" data-state={person.state}
+        data-overflow={index >= PEOPLE_SHOWN - 1 ? (index >= PEOPLE_SHOWN ? "all" : "phone") : undefined}>
+        <AgentAvatar name={person.name} avatar={person.avatar} id={person.id} size={16} removed={person.removed} decorative />
+        <span className="orch-person-name">{person.name}</span>
+        <span className="orch-person-state">{PERSON_LABEL[person.state]}</span>
+      </span>)}
+      {people.length > PEOPLE_SHOWN && <span className="orch-person-more is-wide" title={spoken}>+{people.length - PEOPLE_SHOWN}</span>}
+      {people.length > PEOPLE_SHOWN - 1 && <span className="orch-person-more is-narrow" title={spoken}>+{people.length - (PEOPLE_SHOWN - 1)}</span>}
+    </span>
+  </span>;
 }
 
 /** The one count of what a run owes, and the way to it. */

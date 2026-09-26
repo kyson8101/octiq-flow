@@ -64,13 +64,19 @@ export function PlanReview({ run, tasks, drafting, projectName, onApproved, onRe
     }
   };
 
-  const waitReason = drafting ? "The main agent is still writing the plan." : empty ? "The plan has no tasks yet." : "";
+  // A busy main agent is only "drafting" while there is nothing to review.
+  // Once tasks are on screen, its turn may be about anything — a reply, a
+  // notification — and must not lock an approval of them. The approval names
+  // the tasks it saw, and the host refuses it if the plan changed since.
+  const stillDrafting = drafting && empty;
+  const waitReason = stillDrafting ? "The main agent is still writing the plan." : empty ? "The plan has no tasks yet."
+    : drafting ? "The main agent is still active. Approving covers the tasks shown." : "";
   return (
-    <section className="plan-review" aria-labelledby="plan-review-title" data-drafting={drafting || undefined}>
+    <section className="plan-review" aria-labelledby="plan-review-title" data-drafting={stillDrafting || undefined}>
       <header className="plan-review-head">
         <div className="plan-review-state">
           <span className="plan-review-dot" aria-hidden="true" />
-          <h3 id="plan-review-title">{drafting ? "Drafting the plan" : "Plan ready for review"}</h3>
+          <h3 id="plan-review-title">{stillDrafting ? "Drafting the plan" : "Plan ready for review"}</h3>
         </div>
         {!empty && <p className="plan-review-meta">
           {count(tasks.length, "task")} · {count(stages.length, "stage")}
@@ -124,7 +130,7 @@ export function PlanReview({ run, tasks, drafting, projectName, onApproved, onRe
         </div>
         <div className="plan-review-approve">
           <span className="plan-review-hint">{waitReason || (blocked ? "Some tasks wait on each other and will never start." : "No worker starts until you approve.")}</span>
-          <button className="orch-primary" type="button" disabled={busy || drafting || empty} onClick={() => void approve()}>
+          <button className="orch-primary" type="button" disabled={busy || empty} onClick={() => void approve()}>
             {busy ? "Approving…" : "Approve plan"}
           </button>
         </div>

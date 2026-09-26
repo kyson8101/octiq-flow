@@ -59,6 +59,78 @@ export function attentionLabel(attention: RunAttention, planPending: boolean): s
   return `${attention.blocked} blocked`;
 }
 
+/** Where one person is on a run, most urgent first. "working" is only ever a
+ *  worker actually executing — handed a task is "assigned", however recently. */
+export type PersonState = "working" | "blocked" | "assigned" | "done" | "stopped";
+const PERSON_ORDER: PersonState[] = ["working", "blocked", "assigned", "done", "stopped"];
+
+export type RunPerson = {
+  id: string;
+  /** The registration's current name; the name the task was given when the
+   *  agent is not in the roster. */
+  name: string;
+  avatar?: string;
+  /** The roster is loaded and no longer has this agent. */
+  removed: boolean;
+  state: PersonState;
+  tasks: number;
+};
+
+type RosterEntry = { id: string; name: string; avatar?: string };
+
+function personState(
+  task: OrchestrationTask,
+  attempt: OrchestrationAttempt | undefined,
+  gated: boolean,
+): PersonState {
+  if (task.status === "completed") return "done";
+  if (task.status === "cancelled") return "stopped";
+  if (gated || task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt)) return "blocked";
+  const executing = !!attempt && (attempt.execution
+    ? ["executing", "waiting_tool"].includes(attempt.execution.state)
+    : attempt.status === "running");
+  return task.status === "running" && executing ? "working" : "assigned";
+}
+
+/** Everyone a run's tasks were handed to, once each, with their most urgent
+ *  state across their tasks: people working first, then stuck, then waiting
+ *  their turn, then finished. */
+export function runPeople(
+  run: OrchestrationRun,
+  tasks: readonly OrchestrationTask[],
+  attempts: readonly OrchestrationAttempt[],
+  gates: readonly OrchestrationGate[],
+  roster: readonly RosterEntry[],
+): RunPerson[] {
+  const gated = new Set(gates.filter((gate) => gate.runId === run.id && gate.status === "open").flatMap((gate) => gate.taskId ? [gate.taskId] : []));
+  const people = new Map<string, RunPerson>();
+  for (const task of tasks) {
+    if (task.runId !== run.id || !task.assignee) continue;
+    const mine = attempts.filter((attempt) => attempt.taskId === task.id);
+    const attempt = mine.find((candidate) => candidate.id === task.activeAttemptId)
+      ?? [...mine].sort((a, b) => b.number - a.number)[0];
+    // A stopped run's unfinished work is stopped, whatever its last attempt said.
+    const state = run.status === "stopped" && task.status !== "completed" ? "stopped" : personState(task, attempt, gated.has(task.id));
+    const known = people.get(task.assignee.id);
+    if (known) {
+      known.tasks += 1;
+      if (PERSON_ORDER.indexOf(state) < PERSON_ORDER.indexOf(known.state)) known.state = state;
+      continue;
+    }
+    const registered = roster.find((agent) => agent.id === task.assignee!.id);
+    people.set(task.assignee.id, {
+      id: task.assignee.id,
+      name: registered?.name ?? task.assignee.name,
+      avatar: registered?.avatar,
+      removed: roster.length > 0 && !registered,
+      state,
+      tasks: 1,
+    });
+  }
+  // Stable: a person keeps their place among others in the same state.
+  return [...people.values()].sort((a, b) => PERSON_ORDER.indexOf(a.state) - PERSON_ORDER.indexOf(b.state));
+}
+
 /** The main chat of the run on screen — the coordinator the ledger names for
  *  it, never a guess from the chat tree or a configured lead. With no run
  *  selected, the panel's own coordinator. */
