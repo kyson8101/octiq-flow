@@ -193,7 +193,32 @@ pub struct PlanConsent {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<String>,
+    /// A button approval: which card was clicked ("chat" at the end of the
+    /// lead's chat, "panel" in the run panel) and how long that revision had
+    /// been on it. Evidence of what was actually shown, not only that a
+    /// click arrived (feedback 713786e9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown_ms: Option<u64>,
 }
+
+/// Where a plan card was clicked, and how long it had shown the revision.
+#[derive(Clone, Debug)]
+pub struct CardView {
+    pub surface: String,
+    /// Since this revision appeared on the card, by opening or by a change.
+    pub shown_ms: Option<u64>,
+    /// Since this revision REPLACED another one on the same card; None when
+    /// the card opened on it.
+    pub updated_ms: Option<u64>,
+}
+
+/// A revision that replaced another on the card less than this long before
+/// Approve was clicked had only just replaced the one the person was reading.
+/// The card holds its button this long after a change; the host refuses
+/// anything quicker.
+pub const PLAN_SETTLE_MS: u64 = 1_500;
 
 /// A lead's change to a task of a plan still waiting for approval. `None`
 /// keeps a field; `route` is the host-resolved worker, owner and destination.
@@ -993,8 +1018,58 @@ impl OrchestrationStore {
                 at: now_ms(),
                 turn_id: None,
                 words: None,
+                surface: None,
+                shown_ms: None,
             };
             approve_in(data, actor_chat_key, run_id, seen, revision, consent)
+        })
+        .inspect(|run| announce(&run.id, "plan_approved"))
+    }
+
+    /// The Approve button on a plan card, as the browser sends it. Unlike
+    /// `approve_plan`, the tasks and the revision on screen are required: a
+    /// click that cannot say what it saw approves nothing. A revision shown
+    /// for less than `PLAN_SETTLE_MS` had only just replaced the one being
+    /// read, and is refused rather than approved unseen.
+    pub fn approve_plan_from_card(
+        &self,
+        actor_chat_key: &str,
+        run_id: &str,
+        seen: Option<&[String]>,
+        revision: Option<u32>,
+        view: CardView,
+    ) -> Result<Run, String> {
+        let (Some(seen), Some(revision)) = (seen, revision) else {
+            return Err("This page did not say which version of the plan you approved. Reload OctiqFlow, look the plan over, then approve.".into());
+        };
+        if view.updated_ms.is_some_and(|ms| ms < PLAN_SETTLE_MS) {
+            return Err(
+                "The plan changed a moment before your click. Look it over again, then approve."
+                    .into(),
+            );
+        }
+        let surface = match view.surface.as_str() {
+            "chat" | "panel" => view.surface,
+            _ => "unknown".into(),
+        };
+        self.mutate(|data| {
+            let consent = PlanConsent {
+                via: ConsentVia::Button,
+                revision: 0,
+                at: now_ms(),
+                turn_id: None,
+                words: None,
+                surface: Some(surface),
+                shown_ms: view.shown_ms,
+            };
+            approve_in(
+                data,
+                actor_chat_key,
+                run_id,
+                Some(seen),
+                Some(revision),
+                consent,
+            )
         })
         .inspect(|run| announce(&run.id, "plan_approved"))
     }
@@ -1102,6 +1177,8 @@ impl OrchestrationStore {
                 at: now_ms(),
                 turn_id: Some(turn.turn_id.clone()),
                 words: Some(turn.text.trim().chars().take(200).collect()),
+                surface: None,
+                shown_ms: None,
             };
             approve_in(data, actor_chat_key, run_id, None, Some(revision), consent)
         })
@@ -3219,6 +3296,73 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_card_click_must_say_what_it_showed_and_for_how_long() {
+        // Feedback 713786e9: revision 6 was recorded as button-approved two
+        // seconds after the lead changed the plan, and the person never saw
+        // it. A click names its card and how long the revision had been on
+        // it; one that cannot say what it saw approves nothing.
+        let store = OrchestrationStore::default();
+        let (run, first) = pending_plan(&store);
+        let revision = plan_of(&store, &run.id).revision;
+        let seen = [first.id.clone()];
+        let view = |shown_ms: Option<u64>| CardView {
+            surface: "chat".into(),
+            shown_ms,
+            updated_ms: shown_ms,
+        };
+        assert!(store
+            .approve_plan_from_card(
+                "chat:master",
+                &run.id,
+                None,
+                Some(revision),
+                view(Some(9_000))
+            )
+            .unwrap_err()
+            .contains("Reload"));
+        assert!(store
+            .approve_plan_from_card("chat:master", &run.id, Some(&seen), None, view(Some(9_000)))
+            .unwrap_err()
+            .contains("Reload"));
+        assert!(store
+            .approve_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                view(Some(400))
+            )
+            .unwrap_err()
+            .contains("a moment before your click"));
+        assert!(plan_of(&store, &run.id).status == PlanStatus::Pending);
+        // Opened on this revision a moment ago is not a change under the
+        // reader; nothing is held for it.
+        let opened = CardView {
+            surface: "panel".into(),
+            shown_ms: Some(300),
+            updated_ms: None,
+        };
+        assert!(store
+            .approve_plan_from_card("chat:worker", &run.id, Some(&seen), Some(revision), opened)
+            .unwrap_err()
+            .contains("coordinator"));
+        let approved = store
+            .approve_plan_from_card(
+                "chat:master",
+                &run.id,
+                Some(&seen),
+                Some(revision),
+                view(Some(4_200)),
+            )
+            .unwrap();
+        let consent = approved.plan_approval.unwrap().consent.unwrap();
+        assert_eq!(consent.via, ConsentVia::Button);
+        assert_eq!(consent.revision, revision);
+        assert_eq!(consent.surface.as_deref(), Some("chat"));
+        assert_eq!(consent.shown_ms, Some(4_200));
     }
 
     #[test]

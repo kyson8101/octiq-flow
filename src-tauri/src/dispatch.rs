@@ -1104,11 +1104,16 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
         }
         // Browser-only: the person approves an agents-mode lead's plan. Not in
         // the agent hook's whitelist, so no agent can approve its own plan.
-        "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan(
+        "orchestration_plan_approve" => to_value(svc.orchestrations.approve_plan_from_card(
             &arg::<String>(&args, "actorChatKey")?,
             &arg::<String>(&args, "runId")?,
             arg::<Option<Vec<String>>>(&args, "taskIds")?.as_deref(),
             arg::<Option<u32>>(&args, "revision")?,
+            crate::orchestration::CardView {
+                surface: arg::<Option<String>>(&args, "surface")?.unwrap_or_default(),
+                shown_ms: arg(&args, "shownMs")?,
+                updated_ms: arg(&args, "updatedMs")?,
+            },
         )),
         // Agent-reachable, and still the person's approval: the host reads
         // the message the lead is answering from its own record of what the

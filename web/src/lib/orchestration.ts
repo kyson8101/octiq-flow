@@ -88,7 +88,11 @@ export type PlanApproval = {
   revisedAt?: number;
   /** How the last approval was given. `words` is the person's own message
    *  when they approved in chat. */
-  consent?: { via: "button" | "conversation"; revision: number; at: number; turnId?: string; words?: string };
+  consent?: {
+    via: "button" | "conversation"; revision: number; at: number; turnId?: string; words?: string;
+    /** A button approval: which card, and how long it had shown the revision. */
+    surface?: "chat" | "panel" | "unknown"; shownMs?: number;
+  };
 };
 
 export type OrchestrationRun = {
