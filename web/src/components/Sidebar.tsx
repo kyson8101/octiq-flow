@@ -478,6 +478,7 @@ export function Sidebar({
           scroller.scrollTop,
           toolbar.current?.offsetHeight ?? 0,
           preserve,
+          scroller.scrollHeight - scroller.clientHeight,
         ));
       }}>
         <div
