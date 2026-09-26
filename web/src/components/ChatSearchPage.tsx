@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   chatSearchResults, isSearchable, type ChatSearchHit,
 } from "../lib/chatSearch";
+import { plainSnippet } from "../lib/chatPreview";
 import { conversationProjectInfo, conversationProjectSummary } from "../lib/conversationProjects";
 import { EMPTY_ORCHESTRATION, ordinaryChats, type OrchestrationSnapshot } from "../lib/orchestration";
 import type { Conversation } from "../lib/store";
@@ -110,7 +111,7 @@ export function ChatSearchPage({
               <span className="projects-task-title">{chat.title}</span>
               <time dateTime={new Date(chat.updatedAt).toISOString()}>{chatTime(chat.updatedAt)}</time>
             </span>
-            <span className="chat-search-excerpt">{excerpt.replace(/\s+/g, " ")}</span>
+            <span className="chat-search-excerpt">{plainSnippet(excerpt)}</span>
             {projectInfo.status === "home"
               ? <span className="chat-search-project">{projectName}</span>
               : <ConversationProjects info={projectInfo} projects={projects} />}

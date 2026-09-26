@@ -6,6 +6,7 @@
 // too: New project, and the shelf — what was put away, and the way back.
 import { useEffect, useRef, useState } from "react";
 import { isChatDone } from "../lib/chatFilter";
+import { plainSnippet } from "../lib/chatPreview";
 import { EMPTY_ORCHESTRATION, ordinaryChats, type OrchestrationSnapshot } from "../lib/orchestration";
 import { projectTaskCounts, projectTasks } from "../lib/projectTasks";
 import type { Conversation } from "../lib/store";
@@ -119,7 +120,7 @@ export function ProjectsPage({
                           <time dateTime={new Date(chat.updatedAt).toISOString()}>{chatTime(chat.updatedAt)}</time>
                         </span>
                         <span className="projects-task-line">
-                          <span className="projects-task-snippet">{(chat.latestResponse ?? (working ? "Working…" : "No response yet")).replace(/\s+/g, " ")}</span>
+                          <span className="projects-task-snippet">{plainSnippet(chat.latestResponse ?? (working ? "Working…" : "No response yet"))}</span>
                           {states.length > 0 && <span className="projects-task-states" aria-hidden="true">
                             {states.map((state) => <span key={state} className={`is-${state.toLowerCase()}`}>{state}</span>)}
                           </span>}

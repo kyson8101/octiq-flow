@@ -20,11 +20,26 @@ export function chatSnapshot(snapshot: OrchestrationSnapshot, coordinatorKey: st
 export function runSummary(snapshot: OrchestrationSnapshot, run: OrchestrationRun): string {
   const tasks = snapshot.tasks.filter((task) => task.runId === run.id);
   const gates = snapshot.gates.filter((gate) => gate.runId === run.id && gate.status === "open");
-  const progress = `${tasks.filter((task) => task.status === "completed").length}/${tasks.length}`;
+  const progress = `${tasks.filter((task) => task.status === "completed").length}/${tasks.length} done`;
   if (gates.length) return `Needs decision · ${progress}`;
   if (tasks.some((task) => task.status === "blocked" || task.status === "failed") && isActiveRun(run)) return `Needs attention · ${progress}`;
   const label = run.status.charAt(0).toUpperCase() + run.status.slice(1);
   return `${label} · ${progress}`;
+}
+
+/**
+ * A main chat's status line in the chat list. The progress is the run on show;
+ * a chat that has run more than once has had more tasks than that run holds,
+ * so the line also says how many in all. Without it "0/1" sat beside a
+ * "2 tasks" counted across every run, and read as a contradiction.
+ * `snapshot` is the chat's own (`chatSnapshot`).
+ */
+export function chatRunStatus(snapshot: OrchestrationSnapshot, run: OrchestrationRun): string {
+  const summary = runSummary(snapshot, run);
+  const total = snapshot.tasks.length;
+  const inRun = snapshot.tasks.filter((task) => task.runId === run.id).length;
+  if (snapshot.runs.length < 2 || total === inRun) return summary;
+  return `${summary} · ${total} ${total === 1 ? "task" : "tasks"} in ${snapshot.runs.length} runs`;
 }
 
 /** Keep old attempts searchable and selectable, but group the ordinary list by task. */

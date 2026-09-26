@@ -8,11 +8,15 @@ import "./ConversationProjects.css";
 
 type NamedProject = ProjectAppearance & { name: string };
 
-/** Compact, truthful work-project context for a conversation row. */
-export function ConversationProjects({ info, projects, limit = 2 }: {
+/** Compact, truthful work-project context for a conversation row. A row whose
+ *  status line already counts its tasks passes `taskCount={false}`: the same
+ *  number twice on one row was the crowding, and two different ones read as a
+ *  contradiction. The label keeps the count either way. */
+export function ConversationProjects({ info, projects, limit = 2, taskCount = true }: {
   info: ConversationProjectInfo;
   projects: readonly NamedProject[];
   limit?: number;
+  taskCount?: boolean;
 }) {
   const known = new Map(projects.map((project) => [project.id, project]));
   if (info.status === "loading") {
@@ -48,15 +52,16 @@ export function ConversationProjects({ info, projects, limit = 2 }: {
       {overflow > 0 && <span className="conversation-project-overflow">+{overflow}</span>}
       {unknown > 0 && <span className="conversation-project-unknown">+?</span>}
     </span>
-    <span className="conversation-project-task-count" aria-hidden="true">{taskLabel}</span>
+    {taskCount && <span className="conversation-project-task-count" aria-hidden="true">{taskLabel}</span>}
   </span>;
 }
 
 /**
  * The project mark at the head of a conversation row: the one registered
  * project the row is coloured by, otherwise a neutral tile — stacked for work
- * across several projects, "?" for a project unknown or since removed, and
- * blank while the ledger loads or before a discussion has any tasks.
+ * across several projects, a speech bubble for a discussion with no tasks yet,
+ * "?" for a project unknown or since removed, and blank only while the ledger
+ * loads. An empty tile beside a settled row read as an image that failed.
  */
 export function ConversationProjectAvatar({ info, projects }: {
   info: ConversationProjectInfo;
@@ -67,10 +72,17 @@ export function ConversationProjectAvatar({ info, projects }: {
   const project = projectId ? known.get(projectId) : undefined;
   if (project) return <ProjectAvatar project={project} size="medium" />;
   const several = info.status === "projects" && info.destinations.length > 1;
-  const pending = info.status === "loading" || info.status === "discussion";
-  return <span className={`project-avatar is-medium is-neutral${several ? " is-several" : ""}`} aria-hidden="true">
-    {several ? <SeveralIcon /> : pending ? null : "?"}
+  const discussion = info.status === "discussion";
+  return <span className={`project-avatar is-medium is-neutral${several ? " is-several" : ""}${discussion ? " is-discussion" : ""}`} aria-hidden="true">
+    {several ? <SeveralIcon /> : discussion ? <DiscussionIcon /> : info.status === "loading" ? null : "?"}
   </span>;
+}
+
+function DiscussionIcon() {
+  return <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5"
+    strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 2.5v-2.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z" />
+  </svg>;
 }
 
 /** The row's colour, as the custom property the chat-list rows tint from. */
