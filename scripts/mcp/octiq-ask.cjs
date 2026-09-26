@@ -1415,6 +1415,7 @@ const ORCHESTRATION_WORKER_REPORT = {
       outcome: { type: "string", enum: ["completed", "failed", "blocked"] },
       summary: { type: "string", description: "What changed, what was verified, and anything left." },
       filesModified: { type: "array", items: { type: "string" }, description: "Changed file paths, or an empty list." },
+      verdict: { type: "string", enum: ["pass", "fail"], description: "For a review, check or acceptance task: whether what you checked passed. Finishing a review that found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. Omit for ordinary work." },
     },
     required: ["attemptId", "outcome", "summary", "filesModified"],
   },

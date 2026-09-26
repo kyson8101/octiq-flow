@@ -462,6 +462,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "Upload remains blocked".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -554,6 +555,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Published".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -587,6 +589,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Frontend started".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -662,6 +665,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Unaffected work completed".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();

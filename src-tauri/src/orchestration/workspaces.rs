@@ -1137,6 +1137,7 @@ mod tests {
                     outcome,
                     summary: "Verified result".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -1355,7 +1356,8 @@ mod tests {
                     attempt_id: retry.id,
                     outcome: WorkerOutcome::Completed,
                     summary: "late".into(),
-                    files_modified: vec![]
+                    files_modified: vec![],
+                    verdict: None,
                 }
             )
             .unwrap_err()
@@ -1652,6 +1654,7 @@ mod recovery_tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();

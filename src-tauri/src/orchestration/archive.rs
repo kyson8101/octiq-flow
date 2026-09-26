@@ -173,6 +173,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "Implemented and checked".into(),
                     files_modified: vec!["feature.rs".into()],
+                    verdict: None,
                 },
             )
             .unwrap();

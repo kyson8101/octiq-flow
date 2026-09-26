@@ -1366,6 +1366,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     outcome: arg(&args, "outcome")?,
                     summary: arg(&args, "summary")?,
                     files_modified: arg(&args, "filesModified")?,
+                    verdict: arg(&args, "verdict")?,
                 },
             )?;
             to_value(Ok(task))

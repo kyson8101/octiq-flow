@@ -149,6 +149,9 @@ export type OrchestrationTask = {
   status: TaskStatus;
   activeAttemptId?: string;
   result?: string;
+  /** A review or check's own answer, apart from finishing: "fail" holds
+   *  whatever depends on it. */
+  verdict?: "pass" | "fail";
   /** "sandbox": the worker waits for its runnable test environment. */
   environment?: "none" | "sandbox";
   /** Every change of hands before the work finished, oldest first. */

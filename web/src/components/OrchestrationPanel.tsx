@@ -3,8 +3,8 @@ import { bridge } from "../lib/bridge";
 import "./OrchestrationPanel.css";
 import { AGENT_NAME } from "../lib/agentProviders";
 import {
-  attemptIsExecuting, boardCounts, executionNeedsAttention, EXECUTION_LABELS, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
-  sortTasksByActivity, taskElapsed, taskProgress, taskStage, TASK_LABELS, useElapsedTick,
+  attemptIsExecuting, boardCounts, executionNeedsAttention, runElapsed, runIsLive, shortBranch, shortWorkspacePath,
+  sortTasksByActivity, taskElapsed, taskProgress, taskStage, taskStateLabel, TASK_LABELS, useElapsedTick,
 } from "../lib/agentTaskBoard";
 import {
   attentionLabel, mainChatTarget, nextRunTab, runAttention, runPeople, RUN_TABS, setRunArchived, splitArchived, stopRun,
@@ -987,12 +987,15 @@ function RunLine({ snapshot, run, tasks, attempts }: {
   const working = attempts.filter(attemptIsExecuting).length;
   const elapsed = runElapsed(snapshot, run.id, now);
   const settled = counts.total > 0 && counts.done === counts.total;
+  // Finished is not passed: a check that failed is said out loud.
+  const failedChecks = tasks.filter((task) => task.status === "completed" && task.verdict === "fail").length;
   const parts = [
     `${counts.done}/${counts.total} tasks`,
     run.archivedAt != null ? `${statusLabel(run.status)} · archived` : statusLabel(run.status),
     working > 0 ? `${working} of ${run.maxConcurrent} working` : null,
     counts.todo > 0 ? `${counts.todo} queued` : null,
     counts.cancelled > 0 ? `${counts.cancelled} cancelled` : null,
+    failedChecks > 0 ? `${failedChecks} ${failedChecks === 1 ? "check" : "checks"} failed` : null,
   ].filter(Boolean);
   return <small className="orch-run-line">
     <span>{parts.join(" · ")}</span>
@@ -1098,7 +1101,7 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
     && !gateBlockedTasks.has(task.id);
   // What the run's attention count pointed at; a decision names its own task.
   const owed = !gateBlockedTasks.has(task.id)
-    && (task.status === "blocked" || task.status === "failed" || executionNeedsAttention(attempt));
+    && (task.status === "blocked" || task.status === "failed" || task.verdict === "fail" || executionNeedsAttention(attempt));
 
   return (
     <article className={`orch-task is-${task.status}${open || beside ? " is-open" : ""}`} data-status={task.status}>
@@ -1110,9 +1113,10 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
           <span className="orch-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
           <span className="orch-task-title">{task.title}</span>
-          <span className="orch-task-state">{attempt?.execution && task.activeAttemptId === attempt.id ? EXECUTION_LABELS[attempt.execution.state] : TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
+          <span className="orch-task-state">{taskStateLabel(task, attempt, snapshot.nativeDecisions)}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
           <span className="orch-task-meta">
             {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
+            {task.verdict === "fail" && <span className="orch-task-blocker" title="It finished, and what it checked did not pass. Tasks that depend on it wait.">Check failed</span>}
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
             {attempt && <span className="orch-task-agent" title={`${task.assignee ? `${assigneeFace?.name ?? task.assignee.name} · ` : ""}${AGENT_NAME[attempt.agent]} · attempt ${attempt.number}`}>{task.assignee

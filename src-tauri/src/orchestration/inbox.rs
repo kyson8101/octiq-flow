@@ -370,6 +370,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -560,6 +561,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();

@@ -325,6 +325,10 @@ pub struct Task {
     /// `TaskEnvironment`; `None` is the default and needs nothing.
     #[serde(default, skip_serializing_if = "TaskEnvironment::is_none")]
     pub environment: TaskEnvironment,
+    /// The verdict its last report gave, when it gave one. A completed task
+    /// with a failing verdict does not release what depends on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
     /// Every time the task changed hands before work finished, oldest first:
     /// who had it, who took it, why, and when. See `reassign_task`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -584,6 +588,19 @@ pub struct WorkerReport {
     pub summary: String,
     #[serde(default)]
     pub files_modified: Vec<String>,
+    /// For a review, check or acceptance task: whether what it checked
+    /// passed. Finishing the work and passing the check are different
+    /// answers (feedback ee0a43b0); a failing verdict holds dependants.
+    #[serde(default)]
+    pub verdict: Option<Verdict>,
+}
+
+/// What a checking task found, apart from whether it finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Pass,
+    Fail,
 }
 
 impl Default for OrchestrationStore {
@@ -1383,7 +1400,7 @@ impl OrchestrationStore {
             let ready = depends_on.iter().all(|dependency| {
                 data.tasks
                     .get(dependency)
-                    .is_some_and(|task| task.status == TaskStatus::Completed)
+                    .is_some_and(releases_dependants)
             });
             let task = Task {
                 id,
@@ -1407,6 +1424,7 @@ impl OrchestrationStore {
                 active_attempt_id: None,
                 result: None,
                 environment,
+                verdict: None,
                 handoffs: Vec::new(),
                 created_at: now,
                 updated_at: now,
@@ -1531,7 +1549,7 @@ impl OrchestrationStore {
             let ready = task.depends_on.iter().all(|dependency| {
                 data.tasks
                     .get(dependency)
-                    .is_some_and(|other| other.status == TaskStatus::Completed)
+                    .is_some_and(releases_dependants)
             });
             let now = now_ms();
             let task = data.tasks.get_mut(task_id).ok_or("The task does not exist.")?;
@@ -1674,7 +1692,7 @@ impl OrchestrationStore {
                 deps.iter().all(|dependency| {
                     data.tasks
                         .get(dependency)
-                        .is_some_and(|task| task.status == TaskStatus::Completed)
+                        .is_some_and(releases_dependants)
                 })
             };
             let next_deps = revision
@@ -1791,12 +1809,11 @@ impl OrchestrationStore {
             if task.status == TaskStatus::Completed || task.status == TaskStatus::Cancelled {
                 return Err("This task no longer accepts workers.".into());
             }
-            if task.depends_on.iter().any(|dependency| {
-                !data
-                    .tasks
-                    .get(dependency)
-                    .is_some_and(|dependency| dependency.status == TaskStatus::Completed)
-            }) {
+            if task
+                .depends_on
+                .iter()
+                .any(|dependency| !data.tasks.get(dependency).is_some_and(releases_dependants))
+            {
                 return Err("This task is waiting for its dependencies.".into());
             }
             let previous = task
@@ -2431,12 +2448,25 @@ impl OrchestrationStore {
                 ws.state = workspaces::WorkspaceState::Retained;
             }
             task_mut.result = Some(summary);
+            task_mut.verdict = report.verdict;
             task_mut.updated_at = now;
             let settled = task_mut.clone();
             event_run_id = task_mut.run_id.clone();
             make_ready(data, &attempt.run_id);
             recompute_run(data, &attempt.run_id);
             let target = data.runs[&attempt.run_id].coordinator_chat_key.clone();
+            if settled.status == TaskStatus::Completed && settled.verdict == Some(Verdict::Fail) {
+                let held: Vec<String> = data
+                    .tasks
+                    .values()
+                    .filter(|t| t.depends_on.contains(&settled.id) && t.status == TaskStatus::Pending)
+                    .map(|t| format!("{} ({})", t.id, t.title))
+                    .collect();
+                if !held.is_empty() {
+                    inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("verdict-fail:{}", attempt.id), "verdict",
+                        format!("Task {} ({}) finished with a FAILING verdict. Completed is not passed: its dependants stay waiting: {}. Fix what it found and reopen the task (orchestration_task_reopen), or revise the plan. Do not report the objective as done.", settled.id, settled.title, held.join(", ")));
+                }
+            }
             inbox::enqueue(data, &attempt.run_id, actor_chat_key, &target, format!("report:{}", attempt.id), "report",
                 format!("Worker reported {:?} for task {} ({}).\n\n{}\n\nRead orchestration_snapshot and continue coordination. Never resume a settled attempt; use an explicit retry if needed.", settled.status, settled.id, settled.title, settled.result.as_deref().unwrap_or_default()));
             Ok(settled)
@@ -3056,11 +3086,17 @@ fn attempt_is_unsettled(data: &Stored, attempt: &Attempt) -> bool {
     ) || (attempt.status == AttemptStatus::Blocked && attempt_has_open_gate(data, attempt))
 }
 
+/// Whether a task lets what depends on it start: completed, and not with a
+/// failing verdict.
+fn releases_dependants(task: &Task) -> bool {
+    task.status == TaskStatus::Completed && task.verdict != Some(Verdict::Fail)
+}
+
 fn make_ready(data: &mut Stored, run_id: &str) {
     let completed: BTreeSet<_> = data
         .tasks
         .values()
-        .filter(|task| task.run_id == run_id && task.status == TaskStatus::Completed)
+        .filter(|task| task.run_id == run_id && releases_dependants(task))
         .map(|task| task.id.clone())
         .collect();
     let now = now_ms();
@@ -3085,11 +3121,17 @@ fn recompute_run(data: &mut Stored, run_id: &str) {
         .gates
         .values()
         .any(|gate| gate.run_id == run_id && gate.status == GateStatus::Open);
+    // Held by a failing verdict: waiting on someone, not working.
+    let failed_check = data.tasks.values().any(|task| {
+        task.run_id == run_id
+            && task.status == TaskStatus::Completed
+            && task.verdict == Some(Verdict::Fail)
+    });
     let status = if tasks.is_empty() {
         RunStatus::Planning
     } else if tasks.iter().all(|status| *status == TaskStatus::Completed) {
         RunStatus::Completed
-    } else if has_open_gate || tasks.contains(&TaskStatus::Blocked) {
+    } else if has_open_gate || tasks.contains(&TaskStatus::Blocked) || failed_check {
         RunStatus::Waiting
     } else if tasks.iter().any(|status| {
         matches!(
@@ -3210,7 +3252,7 @@ fn recover_interrupted_workers(data: &mut Stored) -> bool {
 
 fn worker_prompt(run: &Run, task: &Task, attempt: &Attempt) -> String {
     let brief = format!(
-        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Use task_status to report a short checklist at the start, then send the whole checklist when a step finishes or the plan changes. Set nextStep to the current stage. These reports drive the task board; never invent a completion percentage. Before settling, report the final checklist state. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. A normal prose answer does not complete the task in OctiqFlow.",
+        "You are an OctiqFlow orchestration worker. This dispatch is authoritative only for the identifiers below.\n\nRun: {}\nTask: {}\nAttempt: {}\nObjective: {}\n\nYour task\nTitle: {}\n{}\n\nWork only on this task in the provided workspace. Use task_status to report a short checklist at the start, then send the whole checklist when a step finishes or the plan changes. Set nextStep to the current stage. These reports drive the task board; never invent a completion percentage. Before settling, report the final checklist state. Communicate only with your coordinator: use orchestration_message_send with to=coordinator. The person can inspect this chat but sends all instructions through the main chat. Do not ask the person directly, message other workers, or create a run. If a decision blocks you, call orchestration_gate_create for this run and task, then end your turn. A Codex safety rejection or a Claude auto-mode refusal with a pending OctiqFlow approval card is not a settled task: report the rejected action in prose, do not create a gate or report the worker, and end the turn so the card can resume this same attempt. When the task settles, call orchestration_worker_report exactly once with attemptId '{}', an outcome of completed, failed, or blocked, a concise summary, and the files you changed. If the task is a review, check or acceptance test, also pass verdict pass or fail: a review that finished and found blocking problems is outcome completed with verdict fail, which keeps dependent tasks waiting. A normal prose answer does not complete the task in OctiqFlow.",
         run.id,
         task.id,
         attempt.id,
@@ -3723,6 +3765,77 @@ mod tests {
     }
 
     #[test]
+    fn a_review_that_finished_but_failed_its_check_holds_what_depends_on_it() {
+        // Feedback ee0a43b0: a review that said NOT RELEASE-READY settled as
+        // completed and released the screenshot task behind it.
+        let settle = |verdict: Option<Verdict>| {
+            let store = OrchestrationStore::default();
+            let run = run(&store);
+            let review = task(&store, &run, Vec::new());
+            let screenshots = task(&store, &run, vec![review.id.clone()]);
+            let (_, _, attempt, _) = store
+                .reserve_attempt("chat:master", &launch_for(&review.id))
+                .unwrap();
+            let attempt = store
+                .activate_attempt(&attempt.id, "/tmp".into(), "review".into(), true)
+                .unwrap();
+            store
+                .report_worker(
+                    &attempt.worker_chat_key,
+                    WorkerReport {
+                        attempt_id: attempt.id,
+                        outcome: WorkerOutcome::Completed,
+                        summary: "Review completed: NOT RELEASE-READY".into(),
+                        files_modified: vec![],
+                        verdict,
+                    },
+                )
+                .unwrap();
+            (store, run, screenshots)
+        };
+
+        let (store, run, screenshots) = settle(Some(Verdict::Fail));
+        let snapshot = store.snapshot(Some(&run.id)).unwrap();
+        let held = snapshot
+            .tasks
+            .iter()
+            .find(|t| t.id == screenshots.id)
+            .unwrap();
+        assert_eq!(
+            held.status,
+            TaskStatus::Pending,
+            "a failing check releases nothing"
+        );
+        assert_eq!(snapshot.runs[0].status, RunStatus::Waiting);
+        assert!(snapshot
+            .tasks
+            .iter()
+            .any(|t| t.verdict == Some(Verdict::Fail)));
+        assert!(snapshot.notifications.iter().any(|n| n.kind == "verdict"
+            && n.body.contains("FAILING verdict")
+            && n.body.contains(&screenshots.id)));
+        assert!(store
+            .reserve_attempt("chat:master", &launch_for(&screenshots.id))
+            .unwrap_err()
+            .contains("waiting for its dependencies"));
+
+        // A pass, or no verdict at all (ordinary work), releases as before.
+        for verdict in [Some(Verdict::Pass), None] {
+            let (store, run, screenshots) = settle(verdict);
+            let snapshot = store.snapshot(Some(&run.id)).unwrap();
+            assert_eq!(
+                snapshot
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == screenshots.id)
+                    .unwrap()
+                    .status,
+                TaskStatus::Ready
+            );
+        }
+    }
+
+    #[test]
     fn a_task_whose_environment_cannot_be_made_ready_never_starts_and_holds_its_dependants() {
         // Feedback caa2ca88: dependent work ran on runtimes nobody had made
         // ready. A task that needs its environment starts only once the
@@ -3955,6 +4068,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "Provider limit".into(),
                     files_modified: vec![],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4687,6 +4801,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4720,6 +4835,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4890,6 +5006,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "done".into(),
                     files_modified: vec!["a.rs".into()],
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -4939,6 +5056,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "late".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap_err();
@@ -4974,6 +5092,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "not mine".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap_err();
@@ -5006,6 +5125,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "needs a different approach".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -5017,6 +5137,7 @@ mod tests {
                     outcome: WorkerOutcome::Completed,
                     summary: "late completion".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap_err();
@@ -5120,6 +5241,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "blocked".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();
@@ -5175,6 +5297,7 @@ mod tests {
                 outcome: WorkerOutcome::Blocked,
                 summary: "Waiting for upload decision".into(),
                 files_modified: vec![],
+                verdict: None,
             },
         );
         crate::safety_block::forget_chat(&attempt.worker_chat_key);
@@ -5246,6 +5369,7 @@ mod tests {
                     outcome: WorkerOutcome::Blocked,
                     summary: "blocked".into(),
                     files_modified: Vec::new(),
+                    verdict: None,
                 },
             )
             .unwrap();

@@ -279,6 +279,7 @@ fn compact(
                             "runId",
                             "title",
                             "status",
+                            "verdict",
                             "assignee",
                             "activeAttemptId",
                         ]
