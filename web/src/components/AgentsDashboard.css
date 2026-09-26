@@ -11,12 +11,14 @@
   background: color-mix(in srgb, var(--warn) 10%, transparent); color: var(--fg-1); font-size: 12px;
 }
 
+/* The indent and the branch mark are shared with Settings' org chart
+   (AgentsSettings.css). */
 .dash-agent {
-  padding: 11px 0 11px calc(var(--dash-depth, 0) * 22px);
+  padding: 11px 0 11px var(--row-indent);
   border-bottom: 1px solid var(--border);
 }
 .dash-agent-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
-.dash-agent-head > .team-row-branch { margin-top: 6px; }
+.dash-agent-role { margin: 4px 0 0 38px; }
 
 .dash-avatar { margin-top: 1px; }
 .dash-avatar.is-working { position: relative; overflow: visible; }
@@ -87,7 +89,6 @@
 .dash-recent .dash-item-title { color: inherit; }
 
 @media (max-width: 640px) {
-  .dash-agent { padding-inline-start: calc(var(--dash-depth, 0) * 12px); }
   .dash-agent-status { max-width: 42%; }
   .dash-agent-work { padding-inline-start: 30px; }
   .dash-item { min-height: 44px; }

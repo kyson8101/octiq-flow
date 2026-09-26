@@ -196,6 +196,13 @@ describe("agents dashboard", () => {
     expect(rows.ada.state).toBe("idle");
   });
 
+  it("keeps a role whole and apart from what the agent runs on", () => {
+    const role = "Leave module lead.\n\nOwns the rules, " + "and reviews every change; ".repeat(60);
+    const rows = byId(roster({ team: [agent("ada", "Ada", { role, agent: "codex", model: "gpt-5" })] }));
+    expect(rows.ada.role).toBe(role);
+    expect(rows.ada.detail).toBe("Claude gpt-5");
+  });
+
   it("maps work by id through a rename, and shows the real destination project", () => {
     const rows = byId(roster({
       team: [agent("ada", "Ada Lovelace", { agent: "codex", model: "gpt-5" })],
@@ -209,6 +216,7 @@ describe("agents dashboard", () => {
     }));
     expect(rows.ada.name).toBe("Ada Lovelace");
     expect(rows.ada.detail).toBe("Claude gpt-5");
+    expect(rows.ada.role).toBe("");
     const [working, queued] = rows.ada.activities;
     expect(working).toMatchObject({ project: { id: "p2", name: "pandahrms" }, chatKey: "chat:orch-a" });
     // No destination recorded: no project is guessed.

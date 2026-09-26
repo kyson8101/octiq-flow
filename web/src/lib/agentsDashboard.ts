@@ -98,8 +98,11 @@ export type AgentRow = {
   id: string;
   name: string;
   avatar?: string;
-  /** The role, or provider and model when it has none. */
+  /** What it runs on (provider and model), or why it has nothing. */
   detail: string;
+  /** Its whole registered role; empty when it has none. The list decides how
+   *  much of it shows. */
+  role: string;
   /** Its registration's project, or null for a global agent. */
   scope: ActivityProject | null;
   depth: number;
@@ -285,7 +288,8 @@ export function agentRoster(input: RosterInput): AgentRow[] {
     id: agent.id,
     name: agent.name,
     avatar: agent.avatar,
-    detail: agent.role || input.providerLabel(agent),
+    detail: input.providerLabel(agent),
+    role: agent.role,
     scope: agent.projectId ? projectById.get(agent.projectId) ?? { id: agent.projectId, name: "Unknown project" } : null,
     depth,
     removed: false,
@@ -303,7 +307,7 @@ export function agentRoster(input: RosterInput): AgentRow[] {
   }
   for (const [id, name] of removedNames) {
     if (!activitiesFor.get(id)?.length) continue;
-    rows.push(row({ id, name, detail: "No longer registered", scope: null, depth: 0, removed: true }));
+    rows.push(row({ id, name, detail: "No longer registered", role: "", scope: null, depth: 0, removed: true }));
   }
   return rows;
 }

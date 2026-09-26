@@ -7,16 +7,62 @@
 .team-group { display: grid; gap: 6px; }
 .team-group h4 { margin: 0; color: var(--fg-3); font-size: 11.5px; font-weight: 600; letter-spacing: .02em; }
 .team-list { list-style: none; margin: 0; padding: 0; display: grid; }
-.team-row {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 11px 0; border-bottom: 1px solid var(--border);
+/* A row in an org chart, here and on the Agents page. A report is indented
+   by its depth, capped so a deep line of reports never squeezes the row; the
+   branch mark sits in that indent rather than taking width beside the face. */
+.team-row, .dash-agent {
+  --row-step: 22px;
+  --row-indent: calc(min(var(--team-depth, 0), 3) * var(--row-step));
+  position: relative;
 }
-.team-row > svg, .team-row > span:first-child { margin-top: 2px; flex: 0 0 auto; }
-.team-row-branch { flex: 0 0 auto; margin-top: 1px; color: var(--fg-3); font-size: 12px; }
+.team-row {
+  display: grid; gap: 4px; min-width: 0;
+  padding: 11px 0 11px var(--row-indent); border-bottom: 1px solid var(--border);
+}
+.team-row-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.team-row-head > .agent-avatar { margin-top: 2px; flex: 0 0 auto; }
+.team-row-branch {
+  position: absolute; top: 16px; inset-inline-start: calc(var(--row-indent) - 15px);
+  color: var(--fg-3); font-size: 12px; line-height: 1;
+}
 .team-row-copy { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; }
-.team-row-name { display: flex; align-items: center; gap: 8px; color: var(--fg-0); font-size: 13.5px; font-weight: 600; }
-.team-row-meta { color: var(--fg-2); font-size: 12px; }
-.team-row-role { color: var(--fg-2); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.team-row-name { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; color: var(--fg-0); font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+.team-row-meta { color: var(--fg-2); font-size: 12px; overflow-wrap: anywhere; }
+.team-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.team-row-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.team-row-action svg { display: none; }
+.team-row-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The role lines up under the name, clear of the face. */
+.team-row-role { margin-inline-start: 38px; }
+
+/* An agent's role in a list: two lines, and the rest on request. */
+.agent-role { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
+.agent-role-text {
+  display: -webkit-box; flex: 1 1 auto; min-width: 0; margin: 0; overflow: hidden;
+  -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  color: var(--fg-2); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-line;
+}
+.agent-role.is-open .agent-role-text { display: block; -webkit-line-clamp: unset; }
+.agent-role-toggle {
+  flex: 0 0 auto; min-height: 24px; padding: 0 7px;
+  border: 0; border-radius: var(--r-sm); background: transparent; color: var(--fg-2);
+  font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer;
+  transition: background-color 130ms ease-out, color 130ms ease-out;
+}
+.agent-role-toggle[hidden] { display: none; }
+.agent-role-toggle:hover { background: var(--bg-2); color: var(--fg-0); }
+.agent-role-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 640px) {
+  .team-row, .dash-agent { --row-step: 12px; }
+  .team-row-branch { inset-inline-start: calc(var(--row-indent) - 11px); }
+  /* Faces, not words, and targets a thumb can hit; each keeps its name. */
+  .team-row-action { width: 44px; height: 44px; padding: 0; }
+  .team-row-action svg { display: block; }
+  .team-row-action-text { display: none; }
+  .team-row-actions { gap: 2px; margin-block: -6px; }
+  .agent-role-toggle { min-height: 44px; margin-block: -6px -10px; }
+}
 .team-tag {
   padding: 1px 6px; border-radius: var(--r-sm);
   background: color-mix(in srgb, var(--accent) 12%, transparent);

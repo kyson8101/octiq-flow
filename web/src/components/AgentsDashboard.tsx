@@ -17,6 +17,7 @@ import {
 import type { OrchestrationSnapshot } from "../lib/orchestration";
 import { bridge } from "../lib/bridge";
 import { AgentAvatar } from "./AgentAvatar";
+import { AgentRole } from "./AgentRole";
 import { ProjectAvatar, type ProjectAppearance } from "./ProjectAvatar";
 
 /** How many of an agent's current items show before "Show all". */
@@ -185,7 +186,7 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
     .filter(([state]) => state !== row.state);
   const stateText = AGENT_STATE_LABELS[row.state];
   return (
-    <li className="dash-agent" data-state={row.state} style={{ "--dash-depth": row.depth } as React.CSSProperties}>
+    <li className="dash-agent" data-state={row.state} style={{ "--team-depth": row.depth } as React.CSSProperties}>
       <div className="dash-agent-head">
         {row.depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
         <AgentAvatar name={row.name} avatar={row.avatar} id={row.id} size={28} removed={row.removed}
@@ -209,6 +210,7 @@ function AgentRowItem({ row, stale, expanded, onToggle, appearance, canOpen, onO
           ))}
         </span>
       </div>
+      {row.role && <AgentRole className="dash-agent-role" text={row.role} name={row.name} />}
 
       {row.activities.length > 0 ? (
         <div className="dash-agent-work">

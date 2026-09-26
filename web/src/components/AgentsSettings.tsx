@@ -14,6 +14,7 @@ import {
 import { orgChart } from "../lib/agentsDashboard";
 import { AgentAvatar } from "./AgentAvatar";
 import { AgentAvatarEditor } from "./AgentAvatarEditor";
+import { AgentRole, rolePreview } from "./AgentRole";
 
 type ProjectRef = { id: string; name: string };
 
@@ -112,22 +113,32 @@ export function AgentsSettings({ on, onToggle, projects }: {
   };
 
   const row = ({ agent, depth }: { agent: TeamAgent; depth: number }) => (
-    <li className="team-row" key={agent.id} style={{ paddingInlineStart: `${depth * 22}px` }}>
-      {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
-      <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
-      <span className="team-row-copy">
-        <span className="team-row-name">
-          {agent.name}
-          {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
+    <li className="team-row" key={agent.id} style={{ "--team-depth": depth } as React.CSSProperties}>
+      <div className="team-row-head">
+        {depth > 0 && <span className="team-row-branch" aria-hidden="true">└</span>}
+        <AgentAvatar name={agent.name} avatar={agent.avatar} id={agent.id} size={28} decorative />
+        <span className="team-row-copy">
+          <span className="team-row-name">
+            <bdi>{agent.name}</bdi>
+            {leadOnly(agent) && <span className="team-tag" title="Fable and Astra can lead a task but cannot take one">lead only</span>}
+          </span>
+          <span className="team-row-meta">
+            {AGENT_NAME[agent.agent]} {modelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
+            {" · "}{agent.projectId ? projectName.get(agent.projectId) ?? "Removed project" : "Every project"}
+          </span>
         </span>
-        <span className="team-row-meta">
-          {AGENT_NAME[agent.agent]} {modelLabel(agent)}{agent.effort ? ` · ${agent.effort}` : ""}
-          {" · "}{agent.projectId ? projectName.get(agent.projectId) ?? "Removed project" : "Every project"}
+        <span className="team-row-actions">
+          <button className="vault-button team-row-action" type="button" aria-label={`Edit ${agent.name}`} title="Edit"
+            onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null })}>
+            <EditIcon /><span className="team-row-action-text">Edit</span>
+          </button>
+          <button className="vault-button team-row-action" type="button" aria-label={`Remove ${agent.name}`} title="Remove"
+            onClick={() => void remove(agent)}>
+            <RemoveIcon /><span className="team-row-action-text">Remove</span>
+          </button>
         </span>
-        {agent.role && <span className="team-row-role">{agent.role}</span>}
-      </span>
-      <button className="vault-button" type="button" onClick={() => setDraft({ ...agent, projectId: agent.projectId ?? null, reportsTo: agent.reportsTo ?? null })}>Edit</button>
-      <button className="vault-button" type="button" aria-label={`Remove ${agent.name}`} onClick={() => void remove(agent)}>Remove</button>
+      </div>
+      {agent.role && <AgentRole className="team-row-role" text={agent.role} name={agent.name} />}
     </li>
   );
 
@@ -171,7 +182,7 @@ export function AgentsSettings({ on, onToggle, projects }: {
         >
           <option value="">{globalAgents.length === 0 ? "Add an agent for every project first" : "No one"}</option>
           {globalAgents.map((agent) => (
-            <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${agent.role}` : ""}</option>
+            <option key={agent.id} value={agent.id}>{agent.name}{agent.role ? ` · ${rolePreview(agent.role)}` : ""}</option>
           ))}
         </select>
       </div>
@@ -274,6 +285,14 @@ export function LeadPicker({ team, leadId, onPick, onManage }: {
       </p>
     </div>
   );
+}
+
+function EditIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z" /><path d="m13.5 6.5 4 4" /></svg>;
+}
+
+function RemoveIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path d="M6 7l1 13h10l1-13" /><path d="M9 7V4h6v3" /></svg>;
 }
 
 function modelLabel(agent: Pick<TeamAgent, "agent" | "model">): string {
