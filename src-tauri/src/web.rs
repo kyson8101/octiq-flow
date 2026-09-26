@@ -972,6 +972,8 @@ async fn orchestration_handler(
         "service_register" => "orchestration_service_register",
         "workspace_refresh" => "orchestration_workspace_refresh",
         "task_reopen" => "orchestration_task_reopen",
+        // A lead accepting a report's result; never the person's acceptance.
+        "task_accept" => "orchestration_task_accept_in_chat",
         "validation_create" => "orchestration_validation_create",
         "validation_remove" => "orchestration_validation_remove",
         "automation_configure" => "orchestration_automation_configure",

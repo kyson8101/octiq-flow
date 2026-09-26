@@ -1001,6 +1001,7 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                 assignee,
                 destination,
                 card,
+                arg(&args, "size")?,
             ))
         }
         // A lead changes or withdraws a task of a plan the person has not
@@ -1065,8 +1066,59 @@ pub fn dispatch(svc: &Services, cmd: &str, args: Value) -> Result<Value, String>
                     depends_on: arg(&args, "dependsOn")?,
                     route,
                     withdraw: arg::<Option<bool>>(&args, "withdraw")?.unwrap_or(false),
+                    size: arg(&args, "size")?,
                 },
             ))
+        }
+        // Browser-only: the person chooses a task's size before it starts.
+        "orchestration_task_size" => to_value(
+            svc.orchestrations
+                .set_task_size(&arg::<String>(&args, "taskId")?, arg(&args, "size")?),
+        ),
+        // Browser-only: the person accepts a completed task's result. The
+        // agent hook maps nothing to this, so no agent can accept as the
+        // person.
+        "orchestration_task_accept" => to_value(svc.orchestrations.accept_task(
+            crate::orchestration::levels::AcceptActor::Person,
+            &arg::<String>(&args, "taskId")?,
+            &arg::<String>(&args, "attemptId")?,
+        )),
+        // The hook's `task_accept`: a lead accepts from its own chat. Who it
+        // is comes from the host's records of that chat, never the arguments,
+        // and the store checks it is the lead responsible for this task.
+        "orchestration_task_accept_in_chat" => {
+            let actor: String = arg(&args, "actorChatKey")?;
+            let lead = crate::team::lead_for_chat(&crate::team::default_path(), &actor)?
+                .map(|record| (record.lead_id, record.lead_name));
+            to_value(svc.orchestrations.accept_task(
+                crate::orchestration::levels::AcceptActor::Chat {
+                    chat_key: &actor,
+                    lead,
+                },
+                &arg::<String>(&args, "taskId")?,
+                &arg::<String>(&args, "attemptId")?,
+            ))
+        }
+        // Every paid agent's level, for the roster.
+        "agent_levels" => to_value(svc.orchestrations.level_summaries()),
+        // One agent's level, a page of its XP history, what waits for
+        // acceptance, and the tokens its own chats used.
+        "agent_level_profile" => {
+            let agent_id: String = arg(&args, "agentId")?;
+            let offset = arg::<Option<usize>>(&args, "offset")?.unwrap_or(0);
+            let levels = svc.orchestrations.level_profile(&agent_id, offset)?;
+            let usage = svc.chats.usage.for_agent(&agent_id);
+            let mut value = serde_json::to_value(levels).map_err(|e| e.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                match usage {
+                    Ok(usage) => object.insert(
+                        "usage".into(),
+                        serde_json::to_value(usage).map_err(|e| e.to_string())?,
+                    ),
+                    Err(error) => object.insert("usageError".into(), Value::String(error)),
+                };
+            }
+            Ok(value)
         }
         // Where the caller may send work: registered projects, their
         // repositories, and which of its direct reports can work in each.

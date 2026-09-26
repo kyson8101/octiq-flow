@@ -1,4 +1,5 @@
 import type { TaskReport } from "./chatTask";
+import type { TaskAcceptance, TaskSize } from "./agentLevels";
 
 export type WorkspaceMode = "auto" | "worktree" | "direct";
 export type RecoveryPolicy = { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number; fallbackModel?: string | null; stallAfterMs?: number; toolStallAfterMs?: number };
@@ -136,6 +137,11 @@ export type OrchestrationTask = {
    *  checkable acceptance criteria. Fixed once the task is created. Absent on
    *  tasks from leads that did not give one. */
   card?: { problem: string; goal: string; acceptance: string[] };
+  /** What the task pays when accepted. Chosen before it starts, locked after.
+   *  Absent on a task that started before sizes existed. */
+  size?: TaskSize;
+  /** Who accepted the current result, and which attempt it was. */
+  acceptance?: TaskAcceptance;
   workspace?: TaskWorkspace;
   /** The branch and directory planned for it before it starts. Kept after
    *  launch as the record of what was approved; `workspace` is what exists. */

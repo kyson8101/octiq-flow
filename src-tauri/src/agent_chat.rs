@@ -645,6 +645,8 @@ enum QueueTurnResult {
 #[derive(Default)]
 pub struct ChatManager {
     background: crate::background_tasks::Store,
+    /// Tokens each registered agent's chats used (`agent_usage.rs`).
+    pub(crate) usage: crate::agent_usage::Store,
     pub(crate) orchestrations: Arc<crate::orchestration::OrchestrationStore>,
     pub(crate) questions: Arc<crate::question_store::QuestionStore>,
     pub(crate) auto_resumes: crate::auto_resume::Store,
@@ -781,8 +783,10 @@ impl ChatManager {
     pub(crate) fn with_saved_questions(path: std::path::PathBuf) -> Self {
         let auto_resume_path = path.with_file_name("auto-resumes.json");
         let background_path = path.with_file_name("background-tasks.json");
+        let usage_path = path.with_file_name("agent-usage.json");
         Self {
             background: crate::background_tasks::Store::load(background_path),
+            usage: crate::agent_usage::Store::load(usage_path),
             questions: Arc::new(crate::question_store::QuestionStore::load(path)),
             auto_resumes: crate::auto_resume::Store::load(auto_resume_path),
             ..Self::default()
@@ -2241,6 +2245,9 @@ pub(crate) fn start_session(
             // be read as the next one's answer.
             let mut carried = String::new();
             let mut snapshot_reads = crate::record_trim::SnapshotResults::default();
+            // This process's usage. Claude's totals restart with each process,
+            // and so does this.
+            let mut usage_meter = crate::agent_usage::Meter::default();
             let prelude = app_server_prelude
                 .into_iter()
                 .map(|message| Ok(message.to_string()));
@@ -2343,6 +2350,17 @@ pub(crate) fn start_session(
                             reading.orchestrations.observe_worker_event(&key, &event)
                         {
                             eprintln!("orchestration: cannot record provider event: {error}");
+                        }
+                        if let Some(used) = usage_meter.observe(stream_provider.kind(), &event) {
+                            if let Err(error) = reading.usage.record(
+                                &key,
+                                stream_provider.kind(),
+                                &used,
+                                crate::agent_usage::now_ms(),
+                                || crate::agent_usage::attribute(&reading.orchestrations, &key),
+                            ) {
+                                eprintln!("usage: cannot record tokens: {error}");
+                            }
                         }
                         if transport.is_app_server()
                             && event.get("type").and_then(Value::as_str) == Some("turn.started")

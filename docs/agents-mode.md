@@ -384,6 +384,64 @@ shows how many tasks the agent has active, stuck (failed or blocked), done and
 led. Expanding a row lists the chats it leads and the tasks it was given, and
 each one opens its conversation.
 
+## Levels, XP and token usage
+
+Each registered agent has a level, earned from work someone **accepted**
+(`orchestration/levels.rs`). The host computes every number; the browser only
+words them.
+
+- **Size.** Every task has a size: small (25 XP), medium (75 XP, the default)
+  or large (150 XP). The lead gives it on `orchestration_task_create` or
+  `orchestration_task_revise`, and the person can change it on the plan card
+  (`orchestration_task_size`, browser only). It is part of the plan digest, so
+  an approval covers it. Resizing a task the person already approved puts it,
+  and the plan, back in front of them before any worker starts. Once the task
+  has any attempt, the size is locked. A
+  task that started before sizes existed has none and earns nothing.
+- **Acceptance.** A worker reporting completed is not acceptance. The person
+  accepts a completed task on its plan card or on the agent's profile
+  (`orchestration_task_accept`, browser only). A lead accepts through the agent
+  tool `orchestration_task_accept` (hook action `task_accept` →
+  `orchestration_task_accept_in_chat`). The host allows that only from the
+  run's coordinator chat (whose lead comes from `team.json`), or, for a
+  subtask, from a worker chat of the parent task, where the manager is the
+  parent's assignee. Nobody accepts their own work. Every accept names the
+  completed attempt it reviewed; a newer result refuses it.
+- **Ledger.** The award goes into `xp_awards` in `orchestrations.json`, keyed
+  by task id, in the same write as the acceptance. One task pays once: a
+  repeated or racing accept, a retry, or a reopen never pays again. Reopening
+  keeps the earlier acceptance on record. The new result must be accepted
+  again, and the award stays. "Accepted tasks" counts paid tasks, once each,
+  for good. XP goes to the agent the accepted attempt ran as, recorded on the
+  attempt when it started. A manager is never paid for its reports' subtasks. Awards copy the
+  agent id, name, title and size, so renames, model changes and deleted runs
+  change nothing. `scoring_since` records when scoring began. Nothing earlier
+  is backfilled.
+- **Levels.** Level 1 starts at 0 XP. Going from level L to L+1 costs 100 × L,
+  so level L starts at 50 × L × (L − 1): 0, 100, 300, 600…
+- **Token usage** (`agent_usage.rs`, `<chats dir>/agent-usage.json`) is shown
+  for information only and never affects XP. Every chat's usage goes to the
+  agent it ran as when its first usage arrived: a worker attempt's assignee, or
+  the lead a chat was handed to. That attribution is stored and never
+  recomputed. Each worker attempt has its own chat, so a manager's total never
+  includes its reports' work. Ordinary chats are not counted. Claude's
+  `modelUsage` is cumulative per process and includes subagents, so the reader
+  keeps a per-process meter and records each turn's difference. Interrupted
+  and failed turns are counted once, when the provider reports them. A turn
+  killed before its report is not counted, so every total is a floor. Claude's
+  figures include the helper subagents it runs inside its own chat, which the
+  provider does not report apart; a registered report always has its own
+  chat. Codex app-server usage is each response's
+  `last` block. A notification whose thread total matches the last one
+  recorded is a repeat. Cached input is part of input, and reasoning is part of
+  output; they are shown as subsets and never added. Counting starts with this
+  build, and earlier chats are not read back.
+
+The Agents page shows a level chip on each row. The chip opens the agent's
+profile: level and progress, accepted tasks, tokens used, what waits for
+acceptance, the XP history (20 per page, each row opening its run), and the
+rules.
+
 ## Relation to orchestration
 
 Passing on and splitting use the existing [orchestration](orchestration.md)

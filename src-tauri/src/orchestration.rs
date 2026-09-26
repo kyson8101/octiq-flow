@@ -30,11 +30,13 @@ pub mod consent;
 pub mod destination;
 pub mod execution;
 pub mod inbox;
+pub mod levels;
 pub mod lifecycle;
 mod retention;
 mod workspaces;
 use crate::git_ops::workflow::WorkspaceMode;
 pub use destination::TaskDestination;
+pub use levels::{TaskAcceptance, TaskSize, XpAward};
 use workspaces::{TaskWorkspace, WorkspaceProposal};
 
 const STORE_VERSION: u32 = 4;
@@ -210,6 +212,7 @@ pub struct TaskRevision {
         Option<TaskDestination>,
     )>,
     pub withdraw: bool,
+    pub size: Option<TaskSize>,
 }
 
 /// A plan the browser had on screen when the person sent a message.
@@ -279,6 +282,17 @@ pub struct Task {
     /// when it creates the task and fixed from then on, like the destination.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card: Option<TaskCard>,
+    /// What the task is worth when accepted (`levels.rs`). Chosen before it
+    /// starts, medium unless someone says otherwise, and locked from its
+    /// first attempt on. `None` only on a task that started before sizes
+    /// existed: it has no agreed size, so it earns no XP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<TaskSize>,
+    /// Who accepted a result, and which attempt it was. Kept when the task is
+    /// reopened, so the record stays; a newer attempt's result is accepted on
+    /// its own, and never pays twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<TaskAcceptance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<TaskWorkspace>,
     /// The branch and directory the host will allocate, planned read-only
@@ -380,6 +394,11 @@ pub struct Attempt {
     pub is_worktree: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Agents mode: the registered agent this attempt ran as, copied from the
+    /// task when it was reserved. XP for the attempt's result is paid to this
+    /// record, never to whatever the task says later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<TaskAssignee>,
     #[serde(default)]
     pub files_modified: Vec<String>,
     /// Settlement time is immutable; later archival or delivery metadata is not runtime.
@@ -459,6 +478,13 @@ struct Stored {
     native_decisions: BTreeMap<String, lifecycle::NativeDecision>,
     #[serde(default)]
     services: BTreeMap<String, lifecycle::Service>,
+    /// XP paid for accepted tasks, keyed by task id: one award per task,
+    /// ever (`levels.rs`).
+    #[serde(default)]
+    xp_awards: BTreeMap<String, XpAward>,
+    /// When this ledger started paying XP. Nothing before it is scored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scoring_since: Option<i64>,
 }
 
 fn store_version() -> u32 {
@@ -478,6 +504,8 @@ impl Default for Stored {
             resume_contexts: BTreeMap::new(),
             native_decisions: BTreeMap::new(),
             services: BTreeMap::new(),
+            xp_awards: BTreeMap::new(),
+            scoring_since: None,
         }
     }
 }
@@ -539,6 +567,7 @@ impl OrchestrationStore {
                     recovered |= lifecycle::recover(&mut data);
                     recovered |= retention::prune_finished_runs(&mut data);
                     recovered |= refresh_plan_revisions(&mut data);
+                    recovered |= levels::stamp_scoring_since(&mut data, now_ms());
                     inner.data = data;
                 }
                 Ok(data) => {
@@ -556,6 +585,11 @@ impl OrchestrationStore {
             Err(error) => {
                 inner.load_error = Some(format!("Saved orchestrations could not be read: {error}"))
             }
+        }
+        // A profile with no ledger yet starts scoring now; the first write
+        // saves it.
+        if inner.load_error.is_none() {
+            levels::stamp_scoring_since(&mut inner.data, now_ms());
         }
         let store = Self {
             path: Some(path),
@@ -606,6 +640,7 @@ impl OrchestrationStore {
         }
         let mut next = inner.data.clone();
         let result = change(&mut next)?;
+        levels::stamp_scoring_since(&mut next, now_ms());
         // In the same write as the change, so no reader ever sees a plan
         // whose scope moved under an unchanged revision.
         refresh_plan_revisions(&mut next);
@@ -962,6 +997,27 @@ impl OrchestrationStore {
             .map(|assignee| assignee.id.clone()))
     }
 
+    /// The registered agent a worker chat runs as, with the task and run its
+    /// latest attempt belongs to. `None` for a chat that is no worker, or a
+    /// worker of a task with no assignee.
+    pub fn worker_assignment(
+        &self,
+        chat_key: &str,
+    ) -> Result<Option<(TaskAssignee, String, String)>, String> {
+        let inner = self.inner.lock().map_err(|error| error.to_string())?;
+        Ok(inner
+            .data
+            .attempts
+            .values()
+            .filter(|attempt| attempt.worker_chat_key == chat_key)
+            .max_by_key(|attempt| attempt.created_at)
+            .and_then(|attempt| inner.data.tasks.get(&attempt.task_id))
+            .and_then(|task| {
+                let assignee = task.assignee.clone()?;
+                Some((assignee, task.id.clone(), task.run_id.clone()))
+            }))
+    }
+
     /// Agents mode: hold this run's workers until the person approves.
     pub fn require_plan_approval(&self, run_id: &str) -> Result<Run, String> {
         self.mutate(|data| {
@@ -1133,6 +1189,7 @@ impl OrchestrationStore {
             assignee,
             destination,
             None,
+            None,
         )
     }
 
@@ -1154,6 +1211,7 @@ impl OrchestrationStore {
         assignee: Option<TaskAssignee>,
         destination: Option<TaskDestination>,
         card: Option<TaskCard>,
+        size: Option<TaskSize>,
     ) -> Result<Task, String> {
         let title = required_text("task title", title, 240)?;
         let spec = required_text("task spec", spec, 40_000)?;
@@ -1240,6 +1298,8 @@ impl OrchestrationStore {
                 destination,
                 approved_at: None,
                 card,
+                size: Some(size.unwrap_or_default()),
+                acceptance: None,
                 workspace: None,
                 workspace_proposal: proposal,
                 depends_on,
@@ -1416,6 +1476,9 @@ impl OrchestrationStore {
                 }
                 if let Some(spec) = spec {
                     task.spec = spec;
+                }
+                if let Some(size) = revision.size {
+                    task.size = Some(size);
                 }
                 if let Some(card) = revision.card {
                     task.card = card;
@@ -1594,6 +1657,7 @@ impl OrchestrationStore {
                 branch: String::new(),
                 is_worktree: false,
                 summary: None,
+                assignee: task.assignee.clone(),
                 files_modified: Vec::new(),
                 finished_at: None,
                 archived_at: None,
@@ -1609,6 +1673,12 @@ impl OrchestrationStore {
                 .get_mut(&task.id)
                 .expect("the task was read above");
             reserved_task.status = TaskStatus::Running;
+            // A task made before sizes existed that never started takes the
+            // default now, before its first attempt. One already started
+            // keeps none: its worth was never agreed.
+            if number == 1 && reserved_task.size.is_none() {
+                reserved_task.size = Some(TaskSize::default());
+            }
             reserved_task.worker = Some(worker);
             reserved_task.active_attempt_id = Some(id);
             reserved_task.result = None;
@@ -2520,7 +2590,7 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
             if let Some(object) = proposal.as_object_mut() {
                 object.remove("proposedAt");
             }
-            json!({
+            let mut entry = json!({
                 "id": task.id,
                 "title": task.title,
                 "spec": task.spec,
@@ -2530,7 +2600,13 @@ fn plan_scope(data: &Stored, run: &Run) -> String {
                 "destination": task.destination,
                 "proposal": proposal,
                 "dependsOn": task.depends_on,
-            })
+            });
+            // Absent on tasks made before sizes existed, so their plans keep
+            // the revision they had.
+            if let (Some(size), Some(object)) = (task.size, entry.as_object_mut()) {
+                object.insert("size".into(), json!(size));
+            }
+            entry
         })
         .collect();
     let scope = json!({
@@ -2790,7 +2866,7 @@ pub fn master_prompt(run: &Run) -> String {
     let brief = format!("{brief}\n\nChoose the provider, model, and reasoning effort suitable for EACH task and include them in orchestration_task_create's worker settings (agent, model, access, effort). You may mix Claude and Codex workers in one run. Use Sol (codex, gpt-5.6-sol) or Opus (claude, opus) for demanding implementation or review, Terra (codex, gpt-5.6-terra) or Sonnet (claude, sonnet) for everyday execution, and Luna (codex, gpt-5.6-luna) or Haiku (claude, haiku) for small, well-bounded tasks. Match effort to complexity. Use access=auto unless the task needs another boundary, such as read for investigation. Fable and Astra are reserved for main agents orchestrating other agents; NEVER choose either for an execution worker, including retries or review tasks. Do not inherit the main agent's model or leave worker selection to a CLI default. Explain the assignment briefly in the task spec. For manual dispatch and retries, pass the chosen settings to orchestration_worker_start.");
     let brief = format!("{brief}\n\nUse attempt.execution as host evidence of activity: state, lastActivityAt, lastProgressAt, lastProgress, currentOperation, and latestError. Task status running alone does not mean a worker is executing. Capacity-blocked, retrying, stalled, and disconnected workers need attention. The host records provider failures and durable notifications even when the worker cannot respond. Before a manual retry, inspect nextRetryAt and retryCount; an automatic recovery may already be scheduled. Recovery preserves the workspace and creates a new attempt. Do not replay a tool merely because it is quiet.");
     let brief = if run.awaiting_plan_approval() {
-        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.", consent::plan_handle(&run.id))
+        format!("{brief}\n\nThe person approves this run's plan before any worker starts; the host refuses every dispatch until then. Create all tasks, reply with the plan as one short list, and end your turn. Do not call orchestration_worker_start or orchestration_dispatch_ready before approval. The plan card (plan {}) shows in this chat. When the person's own message is just an approval of it, such as \"approve this plan\", call orchestration_plan_approve with the runId and the plan revision from orchestration_snapshot. The host reads their message itself and refuses anything else, so never call it for a message that asks for a change, is conditional or a question, or is a notification. When they ask for changes, apply them with orchestration_task_revise (or withdraw a task there) and orchestration_task_create. Then end your turn so they see and approve the new revision. Plan approval never covers deploying, restarting, gates or permission prompts.\n\nGive each task a size on orchestration_task_create: small, medium (the default) or large, by scope and risk. It sets the XP its assignee earns when the result is accepted, and it is fixed once the task starts. A worker reporting completed is not acceptance: check each completed task's result against its acceptance criteria, then accept it with orchestration_task_accept (taskId and the completed attemptId) only if it meets them. Otherwise reopen or retry it. Never accept a task you did not review.", consent::plan_handle(&run.id))
     } else {
         brief
     };
@@ -3036,6 +3112,7 @@ mod tests {
                 None,
                 None,
                 Some(card),
+                None,
             )
         };
         let created = carded("chat:master", card.clone()).unwrap();

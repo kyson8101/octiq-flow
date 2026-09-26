@@ -1362,6 +1362,47 @@ mod tests {
             .contains("stale"));
     }
     #[test]
+    fn a_reopened_task_needs_accepting_again_and_never_pays_twice() {
+        use super::super::levels::AcceptActor;
+        let repo = Repo::new();
+        let (store, _run, task) = setup(&repo, WorkspaceMode::Auto);
+        store
+            .mutate(|data| {
+                data.tasks.get_mut(&task.id).unwrap().assignee = Some(TaskAssignee {
+                    id: "agent_ada".into(),
+                    name: "Ada".into(),
+                });
+                Ok(())
+            })
+            .unwrap();
+        let first = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &first, WorkerOutcome::Completed);
+        let paid = store
+            .accept_task(AcceptActor::Person, &task.id, &first.id)
+            .unwrap();
+        assert!(paid.awarded);
+
+        let reopened = store
+            .reopen_task("chat:master", &task.id, "Address review".into())
+            .unwrap();
+        // The record of the earlier acceptance stays; it names the old result.
+        assert_eq!(reopened.acceptance.unwrap().attempt_id, first.id);
+        let fix = prepare(&store, &task, Access::Auto).unwrap();
+        report(&store, &fix, WorkerOutcome::Completed);
+        let profile = store.level_profile("agent_ada", 0).unwrap();
+        assert_eq!(profile.awaiting.len(), 1);
+        assert!(profile.awaiting[0].unscored, "it was paid already");
+        let again = store
+            .accept_task(AcceptActor::Person, &task.id, &fix.id)
+            .unwrap();
+        assert!(!again.awarded);
+        assert_eq!(again.task.acceptance.unwrap().attempt_id, fix.id);
+        let profile = store.level_profile("agent_ada", 0).unwrap();
+        assert_eq!((profile.progress.xp, profile.accepted_tasks), (75, 1));
+        assert!(profile.awaiting.is_empty());
+    }
+
+    #[test]
     fn direct_limits_concurrency_and_cross_run_lease_blocks_a_second_writer() {
         let repo = Repo::new();
         let (store, run, task) = setup(&repo, WorkspaceMode::Direct);

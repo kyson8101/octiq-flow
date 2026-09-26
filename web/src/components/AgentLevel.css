@@ -1,0 +1,84 @@
+/* Levels: the row chip and the profile. Token colours only; the accent is a
+   soft tint for progress, never a solid fill. */
+.level-chip {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  padding: 1px 8px 1px 7px; border: 0; border-radius: var(--r-pill);
+  background: var(--bg-2); color: var(--fg-1);
+  font: inherit; font-size: 11px; font-weight: 600; line-height: 18px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; cursor: pointer; vertical-align: 1px;
+  transition: background-color 150ms ease-out, color 150ms ease-out;
+}
+@media (hover: hover) {
+  .level-chip:hover { background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); color: var(--fg-0); }
+}
+.level-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.level-chip-bar, .level-bar {
+  position: relative; overflow: hidden; border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--fg-3) 22%, transparent);
+}
+.level-chip-bar { width: 28px; height: 4px; }
+.level-chip-bar > span, .level-bar > span {
+  display: block; height: 100%; border-radius: inherit;
+  background: color-mix(in srgb, var(--accent) 60%, var(--fg-3));
+  transition: width 220ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .level-chip-bar > span, .level-bar > span { transition: none; }
+}
+
+.agent-profile { width: 100%; max-width: 860px; margin-inline: auto; display: grid; gap: 14px; min-width: 0; }
+.agent-profile-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.agent-profile-title { display: grid; gap: 2px; min-width: 0; }
+.agent-profile-title h2 { margin: 0; font-size: 18px; line-height: 1.25; color: var(--fg-0); overflow-wrap: anywhere; }
+.agent-profile-notice {
+  margin: 0; padding: 6px 10px; border-radius: var(--r-sm); font-size: 12px; color: var(--fg-1);
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+}
+
+.level-block { display: grid; gap: 6px; }
+.level-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.level-number { font-size: 15px; color: var(--fg-0); }
+.level-xp { font-size: 12.5px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.level-bar { height: 8px; }
+.level-next { margin: 0; font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+
+.agent-profile-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.agent-profile-stats > div { padding: 8px 10px; border-radius: var(--r-sm); background: var(--bg-2); min-width: 0; }
+.agent-profile-stats dt { font-size: 11.5px; color: var(--fg-3); }
+.agent-profile-stats dd { margin: 2px 0 0; font-size: 16px; font-weight: 600; color: var(--fg-0); font-variant-numeric: tabular-nums; }
+
+.agent-profile-section { display: grid; gap: 4px; min-width: 0; }
+.agent-profile-section h3 { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; color: var(--fg-2); }
+.agent-profile-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; min-width: 0; }
+.xp-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.xp-row-open {
+  flex: 1 1 auto; min-width: 0; display: grid; gap: 1px; padding: 6px 8px;
+  border: 0; border-radius: var(--r-sm); background: none; color: var(--fg-1);
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background-color 130ms ease-out;
+}
+.xp-row-open:disabled { cursor: default; }
+@media (hover: hover) {
+  .xp-row-open:hover:not(:disabled) { background: var(--bg-2); }
+}
+.xp-row-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.xp-gain { flex: 0 0 auto; font-size: 12px; font-weight: 600; color: var(--fg-1); font-variant-numeric: tabular-nums; }
+.xp-accept { flex: 0 0 auto; padding: 5px 11px; font-size: 12.5px; }
+
+.agent-profile-details { border-top: 1px solid var(--border); padding-top: 10px; font-size: 12.5px; }
+.agent-profile-details summary { cursor: pointer; color: var(--fg-1); font-weight: 600; }
+.agent-profile-details[open] summary { margin-bottom: 8px; }
+.agent-profile-fine { margin: 8px 0 0; color: var(--fg-3); font-size: 11.5px; line-height: 1.45; }
+.agent-profile-rules { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--fg-2); line-height: 1.45; }
+
+/* The plan card's size picker and acceptance line. */
+.plan-card-size { font: inherit; font-size: 12px; padding: 1px 4px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: var(--bg-1); color: var(--fg-0); }
+.plan-card-accept { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.plan-card-accept p { margin: 0; color: var(--fg-2); flex: 1 1 200px; min-width: 0; }
+
+@media (max-width: 520px) {
+  .agent-profile-title h2 { font-size: 16px; }
+  .xp-row { align-items: flex-start; }
+  .xp-accept { margin-top: 4px; }
+}
