@@ -442,6 +442,16 @@ describe("embedded chat runs", () => {
     expect(renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />)).not.toContain("Open beside main");
   });
+  it("gives a task's title its own line, with status leading the line under it and the controls kept apart", () => {
+    const html = renderToStaticMarkup(<OrchestrationPanel embedded sharedHeading
+      project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:master" currentChatKey="chat:master"
+      initialSnapshot={snapshot} onOpenChat={() => {}} onOpenBeside={() => {}} onClose={() => {}} />);
+    const row = html.slice(html.indexOf('<div class="orch-task-heading">'), html.indexOf('<div class="orch-task-detail"'));
+    // Title, then the metadata line opening with the status; nothing sits beside the title.
+    expect(row).toMatch(/<span class="orch-task-title">Build the host ledger<\/span><span class="orch-task-meta"><span class="orch-task-state">/);
+    // Both controls live together outside the row button, so the button never nests one.
+    expect(row).toMatch(/<\/button><span class="orch-task-actions"><button type="button" class="open-beside orch-task-beside"[^>]*>.*<\/button><button type="button" class="orch-task-expand"/);
+  });
   it("scopes the ledger to the current chat and keeps the surrounding app visible", () => {
     const html = renderToStaticMarkup(<OrchestrationPanel embedded project={{ id: "project", name: "OctiqFlow" }} coordinatorKey="chat:other"
       initialSnapshot={snapshot} onOpenChat={() => {}} onClose={() => {}} />);

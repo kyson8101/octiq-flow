@@ -1098,8 +1098,8 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
           onClick={() => attempt && onOpenChat(attempt.workerChatKey)}>
           <span className="orch-task-glyph" aria-hidden="true"><TaskStatusIcon status={task.status} /></span>
           <span className="orch-task-title">{task.title}</span>
-          <span className="orch-task-state">{attempt?.execution && task.activeAttemptId === attempt.id ? EXECUTION_LABELS[attempt.execution.state] : TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
           <span className="orch-task-meta">
+            <span className="orch-task-state">{attempt?.execution && task.activeAttemptId === attempt.id ? EXECUTION_LABELS[attempt.execution.state] : TASK_LABELS[task.status]}{elapsed !== null ? ` · ${elapsedLabel(elapsed)}` : ""}</span>
             {snapshot.services?.some((service) => service.taskId === task.id && service.state !== "listening") && <span className="orch-task-blocker">Service needs attention</span>}
             {progress.percent !== null && <span className="orch-task-track" aria-hidden="true"><span style={{ width: `${progress.percent}%` }} /></span>}
             {reportedStage && <span className="orch-task-stage" title={reportedStage}>{reportedStage}</span>}
@@ -1112,14 +1112,16 @@ function RunTask({ run, snapshot, task, attempts, gates, taskNames, gateBlockedT
         {/* Only where it would change something: not for the task already
             beside main, and not for the one open full-width, whose own header
             carries the same button. */}
-        {attempt && onOpenBeside && !open && !beside && <OpenBesideButton className="orch-task-beside" title={task.title}
-          onClick={() => onOpenBeside(attempt.workerChatKey)} />}
-        <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
-          aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
-          title={expanded ? "Collapse task progress" : "Expand task progress"}
-          onClick={() => setExpanded(!expanded)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={expanded ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>
-        </button>
+        <span className="orch-task-actions">
+          {attempt && onOpenBeside && !open && !beside && <OpenBesideButton className="orch-task-beside" title={task.title}
+            onClick={() => onOpenBeside(attempt.workerChatKey)} />}
+          <button type="button" className="orch-task-expand" aria-expanded={expanded} aria-controls={detailId}
+            aria-label={`${expanded ? "Collapse" : "Expand"} task progress: ${task.title}`}
+            title={expanded ? "Collapse task progress" : "Expand task progress"}
+            onClick={() => setExpanded(!expanded)}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={expanded ? "m6 15 6-6 6 6" : "m9 6 6 6-6 6"} /></svg>
+          </button>
+        </span>
       </div>
       <div className="orch-task-detail" id={detailId} hidden={!expanded}>
         {/* The standard plan card: where it runs (planned until the host
